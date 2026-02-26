@@ -1,0 +1,210 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/ferro-labs/ai-gateway/internal/admin"
+	"github.com/ferro-labs/ai-gateway/providers"
+)
+
+type fakeProvider struct {
+	name   string
+	models []string
+}
+
+func (f *fakeProvider) Name() string              { return f.name }
+func (f *fakeProvider) SupportedModels() []string { return f.models }
+func (f *fakeProvider) SupportsModel(m string) bool {
+	for _, mm := range f.models {
+		if mm == m {
+			return true
+		}
+	}
+	return false
+}
+func (f *fakeProvider) Models() []providers.ModelInfo {
+	out := make([]providers.ModelInfo, len(f.models))
+	for i, m := range f.models {
+		out[i] = providers.ModelInfo{ID: m, Object: "model", OwnedBy: f.name}
+	}
+	return out
+}
+func (f *fakeProvider) Complete(_ context.Context, _ providers.Request) (*providers.Response, error) {
+	return &providers.Response{
+		ID:    "fake-id",
+		Model: f.models[0],
+		Choices: []providers.Choice{{
+			Index:        0,
+			Message:      providers.Message{Role: "assistant", Content: "hello"},
+			FinishReason: "stop",
+		}},
+	}, nil
+}
+
+func testRegistry() *providers.Registry {
+	r := providers.NewRegistry()
+	r.Register(&fakeProvider{name: "test", models: []string{"test-model"}})
+	return r
+}
+
+func testKeyStore() *admin.KeyStore {
+	return admin.NewKeyStore()
+}
+
+func TestHealth(t *testing.T) {
+	ks := testKeyStore()
+	r := newRouter(testRegistry(), ks, nil, nil)
+	req := httptest.NewRequest("GET", "/health", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+	if w.Body.String() != "OK" {
+		t.Errorf("body = %q", w.Body.String())
+	}
+}
+
+func TestModels(t *testing.T) {
+	ks := testKeyStore()
+	r := newRouter(testRegistry(), ks, nil, nil)
+	req := httptest.NewRequest("GET", "/v1/models", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+
+	var body map[string]interface{}
+	_ = json.NewDecoder(w.Body).Decode(&body)
+	if body["object"] != "list" {
+		t.Errorf("object = %v", body["object"])
+	}
+}
+
+func TestChatCompletions(t *testing.T) {
+	ks := testKeyStore()
+	r := newRouter(testRegistry(), ks, nil, nil)
+	payload := `{"model":"test-model","messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200, body = %s", w.Code, w.Body.String())
+	}
+
+	var resp providers.Response
+	_ = json.NewDecoder(w.Body).Decode(&resp)
+	if resp.ID != "fake-id" {
+		t.Errorf("got ID %q", resp.ID)
+	}
+}
+
+func TestChatCompletions_ValidationError(t *testing.T) {
+	ks := testKeyStore()
+	r := newRouter(testRegistry(), ks, nil, nil)
+	payload := `{"model":"","messages":[]}`
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", w.Code)
+	}
+}
+
+func TestChatCompletions_UnsupportedModel(t *testing.T) {
+	ks := testKeyStore()
+	r := newRouter(testRegistry(), ks, nil, nil)
+	payload := `{"model":"unknown","messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", w.Code)
+	}
+}
+
+type fakeStreamProvider struct {
+	fakeProvider
+}
+
+func (f *fakeStreamProvider) CompleteStream(_ context.Context, _ providers.Request) (<-chan providers.StreamChunk, error) {
+	ch := make(chan providers.StreamChunk, 2)
+	ch <- providers.StreamChunk{
+		ID:    "stream-1",
+		Model: f.models[0],
+		Choices: []providers.StreamChoice{{
+			Index: 0,
+			Delta: providers.MessageDelta{Role: "assistant", Content: "hel"},
+		}},
+	}
+	ch <- providers.StreamChunk{
+		ID:    "stream-1",
+		Model: f.models[0],
+		Choices: []providers.StreamChoice{{
+			Index:        0,
+			Delta:        providers.MessageDelta{Content: "lo"},
+			FinishReason: "stop",
+		}},
+	}
+	close(ch)
+	return ch, nil
+}
+
+func testStreamRegistry() *providers.Registry {
+	r := providers.NewRegistry()
+	r.Register(&fakeStreamProvider{fakeProvider{name: "test-stream", models: []string{"test-stream-model"}}})
+	return r
+}
+
+func TestChatCompletions_Stream(t *testing.T) {
+	ks := testKeyStore()
+	r := newRouter(testStreamRegistry(), ks, nil, nil)
+	payload := `{"model":"test-stream-model","messages":[{"role":"user","content":"hi"}],"stream":true}`
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200, body = %s", w.Code, w.Body.String())
+	}
+	ct := w.Header().Get("Content-Type")
+	if ct != "text/event-stream" {
+		t.Errorf("Content-Type = %q, want text/event-stream", ct)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "data: ") {
+		t.Errorf("body missing data: lines: %s", body)
+	}
+	if !strings.HasSuffix(body, "data: [DONE]\n\n") {
+		t.Errorf("body should end with data: [DONE], got: %s", body)
+	}
+}
+
+func TestChatCompletions_StreamUnsupported(t *testing.T) {
+	ks := testKeyStore()
+	r := newRouter(testRegistry(), ks, nil, nil)
+	payload := `{"model":"test-model","messages":[{"role":"user","content":"hi"}],"stream":true}`
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", w.Code)
+	}
+}

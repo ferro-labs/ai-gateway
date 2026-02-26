@@ -1,0 +1,81 @@
+{
+  "strategy": {
+    "mode": "fallback"
+  },
+  "targets": [
+    {
+      "virtual_key": "openai",
+      "retry": {
+        "attempts": 3
+      }
+    },
+    {
+      "virtual_key": "anthropic"
+    },
+    {
+      "virtual_key": "gemini"
+    },
+    {
+      "virtual_key": "mistral"
+    },
+    {
+      "virtual_key": "groq"
+    },
+    {
+      "virtual_key": "together"
+    },
+    {
+      "virtual_key": "cohere"
+    },
+    {
+      "virtual_key": "deepseek"
+    },
+    {
+      "virtual_key": "azure-openai"
+    },
+    {
+      "virtual_key": "ollama"
+    }
+  ],
+  "plugins": [
+    {
+      "name": "word-filter",
+      "type": "guardrail",
+      "stage": "before_request",
+      "enabled": true,
+      "config": {
+        "blocked_words": ["password", "secret"],
+        "case_sensitive": false
+      }
+    },
+    {
+      "name": "max-token",
+      "type": "guardrail",
+      "stage": "before_request",
+      "enabled": true,
+      "config": {
+        "max_tokens": 4096,
+        "max_messages": 50
+      }
+    },
+    {
+      "name": "response-cache",
+      "type": "transform",
+      "stage": "before_request",
+      "enabled": false,
+      "config": {
+        "max_age": 300,
+        "max_entries": 1000
+      }
+    },
+    {
+      "name": "request-logger",
+      "type": "logging",
+      "stage": "before_request",
+      "enabled": true,
+      "config": {
+        "level": "info"
+      }
+    }
+  ]
+}

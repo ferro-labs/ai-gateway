@@ -1,0 +1,270 @@
+package providers
+
+import (
+	"context"
+	"encoding/json"
+	"strings"
+
+	"github.com/openai/openai-go"
+	"github.com/openai/openai-go/option"
+)
+
+// OpenAIProvider implements the Provider interface for OpenAI.
+type OpenAIProvider struct {
+	client  openai.Client
+	name    string
+	apiKey  string
+	baseURL string
+}
+
+// NewOpenAI creates a new OpenAI provider. The optional baseURL parameter
+// allows overriding the API endpoint (pass "" for the default).
+func NewOpenAI(apiKey string, baseURL string) (*OpenAIProvider, error) {
+	opts := []option.RequestOption{
+		option.WithAPIKey(apiKey),
+	}
+	resolvedBase := "https://api.openai.com"
+	if baseURL != "" {
+		opts = append(opts, option.WithBaseURL(baseURL))
+		resolvedBase = baseURL
+	}
+	client := openai.NewClient(opts...)
+	return &OpenAIProvider{
+		client:  client,
+		name:    "openai",
+		apiKey:  apiKey,
+		baseURL: resolvedBase,
+	}, nil
+}
+
+// BaseURL implements ProxiableProvider.
+func (p *OpenAIProvider) BaseURL() string { return p.baseURL }
+
+// AuthHeaders implements ProxiableProvider.
+func (p *OpenAIProvider) AuthHeaders() map[string]string {
+	return map[string]string{"Authorization": "Bearer " + p.apiKey}
+}
+
+// Name returns the provider name.
+func (p *OpenAIProvider) Name() string {
+	return p.name
+}
+
+// SupportedModels returns the list of models supported by this provider.
+// For now, we return a static list, but this could be dynamic.
+func (p *OpenAIProvider) SupportedModels() []string {
+	return []string{
+		"gpt-4o",
+		"gpt-4-turbo",
+		"gpt-4",
+		"gpt-3.5-turbo",
+	}
+}
+
+// SupportsModel returns true if the model matches known OpenAI prefixes.
+func (p *OpenAIProvider) SupportsModel(model string) bool {
+	for _, prefix := range []string{"gpt-", "chatgpt-", "dall-e-", "whisper-", "tts-", "text-embedding-", "ft:", "babbage-", "davinci-"} {
+		if strings.HasPrefix(model, prefix) {
+			return true
+		}
+	}
+	if len(model) >= 2 && model[0] == 'o' && model[1] >= '0' && model[1] <= '9' {
+		return true
+	}
+	return false
+}
+
+// Models returns model information for all supported models.
+func (p *OpenAIProvider) Models() []ModelInfo {
+	supported := p.SupportedModels()
+	models := make([]ModelInfo, len(supported))
+	for i, id := range supported {
+		models[i] = ModelInfo{
+			ID:      id,
+			Object:  "model",
+			OwnedBy: p.name,
+		}
+	}
+	return models
+}
+
+// Complete sends a chat completion request to OpenAI.
+func (p *OpenAIProvider) Complete(ctx context.Context, req Request) (*Response, error) {
+	params := openai.ChatCompletionNewParams{
+		Messages: buildOpenAIMessages(req.Messages),
+		Model:    req.Model,
+	}
+	applyOpenAIParams(&params, req)
+
+	completion, err := p.client.Chat.Completions.New(ctx, params)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := &Response{
+		ID:    completion.ID,
+		Model: completion.Model,
+		Usage: Usage{
+			PromptTokens:     int(completion.Usage.PromptTokens),
+			CompletionTokens: int(completion.Usage.CompletionTokens),
+			TotalTokens:      int(completion.Usage.TotalTokens),
+		},
+	}
+	for i, choice := range completion.Choices {
+		msg := Message{
+			Role:    string(choice.Message.Role),
+			Content: choice.Message.Content,
+		}
+		for _, tc := range choice.Message.ToolCalls {
+			msg.ToolCalls = append(msg.ToolCalls, ToolCall{
+				ID:   tc.ID,
+				Type: string(tc.Type),
+				Function: FunctionCall{
+					Name:      tc.Function.Name,
+					Arguments: tc.Function.Arguments,
+				},
+			})
+		}
+		resp.Choices = append(resp.Choices, Choice{
+			Index:        i,
+			Message:      msg,
+			FinishReason: string(choice.FinishReason),
+		})
+	}
+	return resp, nil
+}
+
+// CompleteStream sends a streaming chat completion request to OpenAI.
+func (p *OpenAIProvider) CompleteStream(ctx context.Context, req Request) (<-chan StreamChunk, error) {
+	params := openai.ChatCompletionNewParams{
+		Messages: buildOpenAIMessages(req.Messages),
+		Model:    req.Model,
+	}
+	applyOpenAIParams(&params, req)
+
+	stream := p.client.Chat.Completions.NewStreaming(ctx, params)
+
+	ch := make(chan StreamChunk)
+	go func() {
+		defer close(ch)
+		for stream.Next() {
+			chunk := stream.Current()
+			sc := StreamChunk{
+				ID:    chunk.ID,
+				Model: chunk.Model,
+			}
+			for _, c := range chunk.Choices {
+				sc.Choices = append(sc.Choices, StreamChoice{
+					Index: int(c.Index),
+					Delta: MessageDelta{
+						Role:    c.Delta.Role,
+						Content: c.Delta.Content,
+					},
+					FinishReason: c.FinishReason,
+				})
+			}
+			ch <- sc
+		}
+		if err := stream.Err(); err != nil {
+			ch <- StreamChunk{Error: err}
+		}
+	}()
+
+	return ch, nil
+}
+
+// buildOpenAIMessages converts gateway Messages to the openai-go SDK union type.
+func buildOpenAIMessages(msgs []Message) []openai.ChatCompletionMessageParamUnion {
+	out := make([]openai.ChatCompletionMessageParamUnion, 0, len(msgs))
+	for _, msg := range msgs {
+		switch msg.Role {
+		case RoleUser:
+			out = append(out, openai.UserMessage(msg.Content))
+		case RoleAssistant:
+			out = append(out, openai.AssistantMessage(msg.Content))
+		case RoleSystem:
+			out = append(out, openai.SystemMessage(msg.Content))
+		case RoleTool:
+			out = append(out, openai.ToolMessage(msg.Content, msg.ToolCallID))
+		default:
+			out = append(out, openai.UserMessage(msg.Content))
+		}
+	}
+	return out
+}
+
+// applyOpenAIParams applies all optional Request fields to the SDK params struct.
+func applyOpenAIParams(params *openai.ChatCompletionNewParams, req Request) {
+	if req.Temperature != nil {
+		params.Temperature = openai.Float(*req.Temperature)
+	}
+	if req.TopP != nil {
+		params.TopP = openai.Float(*req.TopP)
+	}
+	if req.N != nil {
+		params.N = openai.Int(int64(*req.N))
+	}
+	if req.Seed != nil {
+		params.Seed = openai.Int(*req.Seed)
+	}
+	if req.MaxTokens != nil {
+		params.MaxTokens = openai.Int(int64(*req.MaxTokens))
+	}
+	if req.PresencePenalty != nil {
+		params.PresencePenalty = openai.Float(*req.PresencePenalty)
+	}
+	if req.FrequencyPenalty != nil {
+		params.FrequencyPenalty = openai.Float(*req.FrequencyPenalty)
+	}
+	if req.User != "" {
+		params.User = openai.String(req.User)
+	}
+	if req.LogProbs {
+		params.Logprobs = openai.Bool(true)
+	}
+	if req.TopLogProbs != nil {
+		params.TopLogprobs = openai.Int(int64(*req.TopLogProbs))
+	}
+	if len(req.Stop) > 0 {
+		params.Stop = openai.ChatCompletionNewParamsStopUnion{
+			OfStringArray: req.Stop,
+		}
+	}
+	if req.ResponseFormat != nil {
+		switch req.ResponseFormat.Type {
+		case "json_object":
+			params.ResponseFormat = openai.ChatCompletionNewParamsResponseFormatUnion{
+				OfJSONObject: &openai.ResponseFormatJSONObjectParam{},
+			}
+		case "json_schema":
+			if len(req.ResponseFormat.JSONSchema) > 0 {
+				var schema openai.ResponseFormatJSONSchemaJSONSchemaParam
+				if err := json.Unmarshal(req.ResponseFormat.JSONSchema, &schema); err == nil {
+					params.ResponseFormat = openai.ChatCompletionNewParamsResponseFormatUnion{
+						OfJSONSchema: &openai.ResponseFormatJSONSchemaParam{
+							JSONSchema: schema,
+						},
+					}
+				}
+			}
+		}
+	}
+	if len(req.Tools) > 0 {
+		tools := make([]openai.ChatCompletionToolParam, 0, len(req.Tools))
+		for _, t := range req.Tools {
+			var paramSchema openai.FunctionParameters
+			if len(t.Function.Parameters) > 0 {
+				json.Unmarshal(t.Function.Parameters, &paramSchema) //nolint:errcheck,gosec
+			}
+			tools = append(tools, openai.ChatCompletionToolParam{
+				Function: openai.FunctionDefinitionParam{
+					Name:        t.Function.Name,
+					Description: openai.String(t.Function.Description),
+					Parameters:  paramSchema,
+					Strict:      openai.Bool(t.Function.Strict),
+				},
+			})
+		}
+		params.Tools = tools
+	}
+}

@@ -1,0 +1,14 @@
+# Dockerfile used by GoReleaser to package the pre-built binary.
+# GoReleaser cross-compiles ferrogw for the target platform and copies it
+# into the Docker build context before running this file, so there is no
+# need to build from source here.
+FROM alpine:3.20
+
+RUN apk add --no-cache ca-certificates tzdata
+
+# Pre-built binary is placed in the build context by GoReleaser.
+COPY ferrogw /bin/ferrogw
+
+EXPOSE 8080
+
+ENTRYPOINT ["/bin/ferrogw"]

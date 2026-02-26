@@ -1,0 +1,200 @@
+# GoReleaser configuration for FerroGateway.
+# Docs: https://goreleaser.com
+version: 2
+
+before:
+  hooks:
+    - go mod download
+    - go mod verify
+
+# ─── Builds ──────────────────────────────────────────────────────────────────
+
+builds:
+  - id: ferrogw
+    binary: ferrogw
+    main: ./cmd/ferrogw
+    ldflags:
+      - -s -w
+      - -X github.com/ferro-labs/ai-gateway/internal/version.Version={{.Version}}
+      - -X github.com/ferro-labs/ai-gateway/internal/version.Commit={{.ShortCommit}}
+      - -X github.com/ferro-labs/ai-gateway/internal/version.Date={{.Date}}
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+
+  - id: ferrogw-cli
+    binary: ferrogw-cli
+    main: ./cmd/ferrogw-cli
+    ldflags:
+      - -s -w
+      - -X github.com/ferro-labs/ai-gateway/internal/version.Version={{.Version}}
+      - -X github.com/ferro-labs/ai-gateway/internal/version.Commit={{.ShortCommit}}
+      - -X github.com/ferro-labs/ai-gateway/internal/version.Date={{.Date}}
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+
+# ─── Archives ────────────────────────────────────────────────────────────────
+
+archives:
+  - id: ferrogw
+    builds: [ferrogw]
+    name_template: "ferrogw_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - README.md
+      - LICENSE
+      - CHANGELOG.md
+      - config.example.yaml
+      - config.example.json
+
+  - id: ferrogw-cli
+    builds: [ferrogw-cli]
+    name_template: "ferrogw-cli_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - README.md
+      - LICENSE
+
+# ─── Checksums ───────────────────────────────────────────────────────────────
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+# ─── Snapshot ────────────────────────────────────────────────────────────────
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+# ─── Changelog ───────────────────────────────────────────────────────────────
+
+changelog:
+  sort: asc
+  use: github
+  groups:
+    - title: "New Features"
+      regexp: '^feat(\(.+\))?!?:'
+      order: 0
+    - title: "Bug Fixes"
+      regexp: '^fix(\(.+\))?!?:'
+      order: 1
+    - title: "Performance"
+      regexp: '^perf(\(.+\))?!?:'
+      order: 2
+    - title: "Documentation"
+      regexp: '^docs(\(.+\))?!?:'
+      order: 3
+    - title: "Other Changes"
+      order: 999
+  filters:
+    exclude:
+      - '^chore(\(.+\))?:'
+      - '^ci(\(.+\))?:'
+      - '^test(\(.+\))?:'
+      - "^Merge pull request"
+      - "^Merge branch"
+
+# ─── GitHub Release ──────────────────────────────────────────────────────────
+
+release:
+  github:
+    owner: ferro-labs
+    name: ai-gateway
+  draft: false
+  prerelease: auto
+  name_template: "v{{ .Version }}"
+  header: |
+    ## Ferro AI Gateway {{ .Version }}
+
+    **Full Changelog**: https://github.com/ferro-labs/ai-gateway/blob/main/CHANGELOG.md
+
+# ─── Docker images ───────────────────────────────────────────────────────────
+# Uses Dockerfile.release which copies the pre-built binary instead of
+# building from source, so each platform gets the right binary.
+
+dockers:
+  - id: ferrogw-linux-amd64
+    goos: linux
+    goarch: amd64
+    ids: [ferrogw]
+    image_templates:
+      - "ghcr.io/ferro-labs/ai-gateway:{{ .Version }}-amd64"
+      - "ghcr.io/ferro-labs/ai-gateway:latest-amd64"
+    dockerfile: Dockerfile.release
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.title=FerroGateway"
+      - "--label=org.opencontainers.image.description=Open-source AI Gateway for LLM routing"
+      - "--label=org.opencontainers.image.url=https://github.com/ferro-labs/ai-gateway"
+      - "--label=org.opencontainers.image.source=https://github.com/ferro-labs/ai-gateway"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.created={{ .Date }}"
+      - "--label=org.opencontainers.image.licenses=Apache-2.0"
+
+  - id: ferrogw-linux-arm64
+    goos: linux
+    goarch: arm64
+    ids: [ferrogw]
+    image_templates:
+      - "ghcr.io/ferro-labs/ai-gateway:{{ .Version }}-arm64"
+      - "ghcr.io/ferro-labs/ai-gateway:latest-arm64"
+    dockerfile: Dockerfile.release
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/arm64"
+      - "--label=org.opencontainers.image.title=FerroGateway"
+      - "--label=org.opencontainers.image.description=Open-source AI Gateway for LLM routing"
+      - "--label=org.opencontainers.image.url=https://github.com/ferro-labs/ai-gateway"
+      - "--label=org.opencontainers.image.source=https://github.com/ferro-labs/ai-gateway"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.created={{ .Date }}"
+      - "--label=org.opencontainers.image.licenses=Apache-2.0"
+
+# Multi-arch manifests so `docker pull ghcr.io/ferro-labs/ai-gateway` works on
+# both amd64 and arm64 without specifying a platform suffix.
+docker_manifests:
+  - name_template: "ghcr.io/ferro-labs/ai-gateway:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/ferro-labs/ai-gateway:{{ .Version }}-amd64"
+      - "ghcr.io/ferro-labs/ai-gateway:{{ .Version }}-arm64"
+
+  - name_template: "ghcr.io/ferro-labs/ai-gateway:latest"
+    image_templates:
+      - "ghcr.io/ferro-labs/ai-gateway:latest-amd64"
+      - "ghcr.io/ferro-labs/ai-gateway:latest-arm64"
+
+# ─── Announce (Go Package Warming) ───────────────────────────────────────────
+
+announce:
+  webhook:
+    enabled: true
+    # Triggers proxy.golang.org to immediately cache the newly created tag
+    # so that pkg.go.dev documentation is instantly available.
+    endpoint_url: "https://proxy.golang.org/github.com/ferro-labs/ai-gateway/@v/v{{ .Version }}.info"
+    skip_tls_verify: false

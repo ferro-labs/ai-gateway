@@ -1,0 +1,71 @@
+# CI workflow — runs on every push and pull request.
+# Covers: build, test (with race detector), lint.
+
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+  pull_request:
+    branches: ["main"]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (Go ${{ matrix.go }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go: ["1.24.x"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+          cache: true
+
+      - name: Download modules
+        run: go mod download
+
+      - name: Verify modules
+        run: go mod verify
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test (race + short)
+        run: go test -v -short -race -timeout 60s ./...
+
+      - name: Test coverage
+        run: |
+          go test -short -race -coverprofile=coverage.out -covermode=atomic ./...
+          go tool cover -func=coverage.out | grep total
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v6
+
+    - name: Set up Go
+      uses: actions/setup-go@v6
+      with:
+        go-version: '1.24.x'
+
+    - name: Run golangci-lint (v2)
+      uses: golangci/golangci-lint-action@v9
+      with:
+        version: v2.1.0
+        args: --verbose
