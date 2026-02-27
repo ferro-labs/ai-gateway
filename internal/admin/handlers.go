@@ -28,6 +28,7 @@ type Handlers struct {
 	Providers providers.ProviderSource
 	Configs   ConfigManager
 	Logs      requestlog.Reader
+	LogAdmin  requestlog.Maintainer
 }
 
 // Routes returns a chi.Router with all admin endpoints mounted.
@@ -53,6 +54,7 @@ func (h *Handlers) Routes() chi.Router {
 		r.Delete("/keys/{id}", h.deleteKey)
 		r.Post("/keys/{id}/revoke", h.revokeKey)
 		r.Post("/keys/{id}/rotate", h.rotateKey)
+		r.Delete("/logs", h.deleteLogs)
 		r.Put("/config", h.updateConfig)
 	})
 
@@ -308,6 +310,47 @@ func (h *Handlers) listLogs(w http.ResponseWriter, r *http.Request) {
 			"model":    query.Model,
 			"provider": query.Provider,
 			"since":    r.URL.Query().Get("since"),
+		},
+	})
+}
+
+func (h *Handlers) deleteLogs(w http.ResponseWriter, r *http.Request) {
+	if h.LogAdmin == nil {
+		writeError(w, http.StatusNotImplemented, "request log storage is not enabled", "not_implemented_error", "not_implemented")
+		return
+	}
+
+	beforeRaw := r.URL.Query().Get("before")
+	if beforeRaw == "" {
+		writeError(w, http.StatusBadRequest, "before is required and must be RFC3339 format", "invalid_request_error", "invalid_request")
+		return
+	}
+
+	before, err := time.Parse(time.RFC3339, beforeRaw)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid before: must be RFC3339 format", "invalid_request_error", "invalid_request")
+		return
+	}
+
+	deleted, err := h.LogAdmin.Delete(r.Context(), requestlog.MaintenanceQuery{
+		Before:   &before,
+		Stage:    r.URL.Query().Get("stage"),
+		Model:    r.URL.Query().Get("model"),
+		Provider: r.URL.Query().Get("provider"),
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete request logs", "server_error", "internal_error")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"deleted": deleted,
+		"filters": map[string]interface{}{
+			"before":   beforeRaw,
+			"stage":    r.URL.Query().Get("stage"),
+			"model":    r.URL.Query().Get("model"),
+			"provider": r.URL.Query().Get("provider"),
 		},
 	})
 }

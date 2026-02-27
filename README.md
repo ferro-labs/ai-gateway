@@ -227,6 +227,28 @@ curl "http://localhost:8080/admin/logs?limit=20&offset=0&stage=on_error&since=20
 
 If request log storage is disabled, endpoint returns `501 Not Implemented`.
 
+### Cleanup old request logs
+
+```http
+DELETE /admin/logs?before=<RFC3339>
+Authorization: Bearer <admin-key>
+```
+
+Optional filters:
+
+* `stage`
+* `model`
+* `provider`
+
+Example:
+
+```bash
+curl -X DELETE "http://localhost:8080/admin/logs?before=2026-02-01T00:00:00Z&stage=on_error" \
+  -H "Authorization: Bearer gw-..."
+```
+
+Response includes the number of deleted entries in `deleted`.
+
 ---
 
 ## 🔌 1-Line Migration

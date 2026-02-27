@@ -58,13 +58,13 @@ func main() {
 	}
 
 	rlStore := newRateLimitStore()
-	logReader, logReaderBackend, err := createRequestLogReaderFromEnv()
+	logReader, logMaintainer, logReaderBackend, err := createRequestLogReaderFromEnv()
 	if err != nil {
 		logging.Logger.Error("failed to initialize request log reader", "error", err)
 		os.Exit(1)
 	}
 
-	r := newRouter(registry, keyStore, corsOrigins, gw, rlStore, logReader)
+	r := newRouter(registry, keyStore, corsOrigins, gw, rlStore, logReader, logMaintainer)
 
 	addr := ":8080"
 	if p := os.Getenv("PORT"); p != "" {
@@ -135,10 +135,10 @@ func createKeyStoreFromEnv() (admin.Store, string, error) {
 	}
 }
 
-func createRequestLogReaderFromEnv() (requestlog.Reader, string, error) {
+func createRequestLogReaderFromEnv() (requestlog.Reader, requestlog.Maintainer, string, error) {
 	backend := strings.ToLower(strings.TrimSpace(os.Getenv("REQUEST_LOG_STORE_BACKEND")))
 	if backend == "" {
-		return nil, "disabled", nil
+		return nil, nil, "disabled", nil
 	}
 
 	dsn := strings.TrimSpace(os.Getenv("REQUEST_LOG_STORE_DSN"))
@@ -147,17 +147,17 @@ func createRequestLogReaderFromEnv() (requestlog.Reader, string, error) {
 	case "sqlite":
 		reader, err := requestlog.NewSQLiteWriter(dsn)
 		if err != nil {
-			return nil, "", err
+			return nil, nil, "", err
 		}
-		return reader, "sqlite", nil
+		return reader, reader, "sqlite", nil
 	case "postgres", "postgresql":
 		reader, err := requestlog.NewPostgresWriter(dsn)
 		if err != nil {
-			return nil, "", err
+			return nil, nil, "", err
 		}
-		return reader, "postgres", nil
+		return reader, reader, "postgres", nil
 	default:
-		return nil, "", fmt.Errorf("unsupported request log store backend %q", backend)
+		return nil, nil, "", fmt.Errorf("unsupported request log store backend %q", backend)
 	}
 }
 
@@ -352,6 +352,7 @@ func newRouter(
 	gw *aigateway.Gateway,
 	rlStore *ratelimit.Store,
 	logReader requestlog.Reader,
+	logMaintainer requestlog.Maintainer,
 ) http.Handler {
 	if gw == nil {
 		defaultTargets := make([]aigateway.Target, 0, len(registry.List()))
@@ -436,6 +437,7 @@ func newRouter(
 		Providers: gw,
 		Configs:   gw,
 		Logs:      logReader,
+		LogAdmin:  logMaintainer,
 	}
 	r.Route("/admin", func(r chi.Router) {
 		r.Use(admin.AuthMiddleware(keyStore))

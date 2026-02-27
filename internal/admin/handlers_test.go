@@ -57,6 +57,46 @@ func (f *fakeLogReader) List(_ context.Context, query requestlog.Query) (request
 	return requestlog.ListResult{Data: filtered[start:end], Total: len(filtered)}, nil
 }
 
+type fakeLogStore struct {
+	entries []requestlog.Entry
+}
+
+func (f *fakeLogStore) List(_ context.Context, query requestlog.Query) (requestlog.ListResult, error) {
+	reader := &fakeLogReader{entries: f.entries}
+	return reader.List(context.Background(), query)
+}
+
+func (f *fakeLogStore) Delete(_ context.Context, query requestlog.MaintenanceQuery) (int, error) {
+	if query.Before == nil {
+		return 0, nil
+	}
+
+	remaining := make([]requestlog.Entry, 0, len(f.entries))
+	deleted := 0
+	for _, entry := range f.entries {
+		if !entry.CreatedAt.Before(*query.Before) {
+			remaining = append(remaining, entry)
+			continue
+		}
+		if query.Stage != "" && entry.Stage != query.Stage {
+			remaining = append(remaining, entry)
+			continue
+		}
+		if query.Model != "" && entry.Model != query.Model {
+			remaining = append(remaining, entry)
+			continue
+		}
+		if query.Provider != "" && entry.Provider != query.Provider {
+			remaining = append(remaining, entry)
+			continue
+		}
+		deleted++
+	}
+
+	f.entries = remaining
+	return deleted, nil
+}
+
 func (m *testConfigManager) GetConfig() aigateway.Config {
 	return m.cfg
 }
@@ -99,6 +139,9 @@ func setupTestRouterWithLogs(reader requestlog.Reader) (*Handlers, chi.Router) {
 		Keys:    store,
 		Configs: cm,
 		Logs:    reader,
+	}
+	if maintainer, ok := reader.(requestlog.Maintainer); ok {
+		h.LogAdmin = maintainer
 	}
 	r := chi.NewRouter()
 	r.Use(AuthMiddleware(store))
@@ -802,5 +845,95 @@ func TestLogsEndpointInvalidSince(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestDeleteLogsEndpoint(t *testing.T) {
+	now := time.Now().UTC()
+	store := &fakeLogStore{entries: []requestlog.Entry{
+		{TraceID: "1", Stage: "on_error", Provider: "openai", CreatedAt: now.Add(-2 * time.Hour)},
+		{TraceID: "2", Stage: "after_request", Provider: "openai", CreatedAt: now.Add(-90 * time.Minute)},
+		{TraceID: "3", Stage: "on_error", Provider: "openai", CreatedAt: now.Add(-10 * time.Minute)},
+	}}
+	h, r := setupTestRouterWithLogs(store)
+	adminKey := createAdminKey(t, h)
+
+	before := now.Add(-30 * time.Minute).Format(time.RFC3339)
+	req := authedRequest(http.MethodDelete, "/admin/logs?before="+before+"&stage=on_error", "", adminKey)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var payload struct {
+		Deleted int `json:"deleted"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode delete logs response: %v", err)
+	}
+	if payload.Deleted != 1 {
+		t.Fatalf("expected deleted=1, got %d", payload.Deleted)
+	}
+
+	listReq := authedRequest(http.MethodGet, "/admin/logs?stage=on_error", "", adminKey)
+	listW := httptest.NewRecorder()
+	r.ServeHTTP(listW, listReq)
+	if listW.Code != http.StatusOK {
+		t.Fatalf("expected list 200, got %d: %s", listW.Code, listW.Body.String())
+	}
+
+	var listPayload struct {
+		Summary struct {
+			TotalEntries int `json:"total_entries"`
+		} `json:"summary"`
+	}
+	if err := json.NewDecoder(listW.Body).Decode(&listPayload); err != nil {
+		t.Fatalf("decode list logs response: %v", err)
+	}
+	if listPayload.Summary.TotalEntries != 1 {
+		t.Fatalf("expected one on_error entry after cleanup, got %d", listPayload.Summary.TotalEntries)
+	}
+}
+
+func TestDeleteLogsEndpointMissingBefore(t *testing.T) {
+	store := &fakeLogStore{entries: []requestlog.Entry{}}
+	h, r := setupTestRouterWithLogs(store)
+	adminKey := createAdminKey(t, h)
+
+	req := authedRequest(http.MethodDelete, "/admin/logs", "", adminKey)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestDeleteLogsEndpointInvalidBefore(t *testing.T) {
+	store := &fakeLogStore{entries: []requestlog.Entry{}}
+	h, r := setupTestRouterWithLogs(store)
+	adminKey := createAdminKey(t, h)
+
+	req := authedRequest(http.MethodDelete, "/admin/logs?before=bad", "", adminKey)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestDeleteLogsEndpointNotEnabled(t *testing.T) {
+	h, r := setupTestRouter()
+	adminKey := createAdminKey(t, h)
+
+	req := authedRequest(http.MethodDelete, "/admin/logs?before=2026-02-01T00:00:00Z", "", adminKey)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotImplemented {
+		t.Fatalf("expected 501, got %d", w.Code)
 	}
 }

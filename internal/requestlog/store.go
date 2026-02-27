@@ -34,6 +34,14 @@ type Query struct {
 	Since    *time.Time
 }
 
+// MaintenanceQuery defines filters for request log cleanup operations.
+type MaintenanceQuery struct {
+	Before   *time.Time
+	Stage    string
+	Model    string
+	Provider string
+}
+
 // ListResult is a paginated request log query response.
 type ListResult struct {
 	Data  []Entry
@@ -48,6 +56,11 @@ type Writer interface {
 // Reader loads request log entries from persistent storage.
 type Reader interface {
 	List(ctx context.Context, query Query) (ListResult, error)
+}
+
+// Maintainer provides cleanup operations over persistent request logs.
+type Maintainer interface {
+	Delete(ctx context.Context, query MaintenanceQuery) (int, error)
 }
 
 // NoopWriter ignores all log writes.
@@ -256,6 +269,46 @@ func (w *SQLWriter) List(ctx context.Context, query Query) (ListResult, error) {
 	}
 
 	return ListResult{Data: entries, Total: total}, nil
+}
+
+// Delete removes request log entries matching maintenance filters.
+func (w *SQLWriter) Delete(ctx context.Context, query MaintenanceQuery) (int, error) {
+	if query.Before == nil {
+		return 0, fmt.Errorf("before is required")
+	}
+
+	whereClauses := []string{"created_at < ?"}
+	args := []interface{}{query.Before.UTC()}
+
+	if query.Stage != "" {
+		whereClauses = append(whereClauses, "stage = ?")
+		args = append(args, query.Stage)
+	}
+	if query.Model != "" {
+		whereClauses = append(whereClauses, "model = ?")
+		args = append(args, query.Model)
+	}
+	if query.Provider != "" {
+		whereClauses = append(whereClauses, "provider = ?")
+		args = append(args, query.Provider)
+	}
+
+	deleteQuery := "DELETE FROM request_logs WHERE " + strings.Join(whereClauses, " AND ")
+	if w.dialect == "postgres" {
+		deleteQuery = bindPostgres(deleteQuery)
+	}
+
+	result, err := w.db.ExecContext(ctx, deleteQuery, args...)
+	if err != nil {
+		return 0, fmt.Errorf("delete request logs: %w", err)
+	}
+
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("delete request logs rows affected: %w", err)
+	}
+
+	return int(affected), nil
 }
 
 func bindPostgres(query string) string {
