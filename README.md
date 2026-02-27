@@ -268,6 +268,18 @@ Response sections:
 
 ---
 
+## 🖥️ Built-in Admin Dashboard UI
+
+A minimal dashboard page is available at:
+
+```http
+GET /dashboard
+```
+
+It prompts for an admin/read-only key and then calls `GET /admin/dashboard` to render provider, key, and request-log summary cards.
+
+---
+
 ## 🔌 1-Line Migration
 
 FerroGateway natively speaks the OpenAI spec. Point your existing client SDKs to the Gateway by changing simply the `baseURL`—**no SDK changes, no prompt edits, no refactoring.**

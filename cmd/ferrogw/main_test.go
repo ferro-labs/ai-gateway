@@ -97,6 +97,24 @@ func TestModels(t *testing.T) {
 	}
 }
 
+func TestDashboardUIPage(t *testing.T) {
+	ks := testKeyStore()
+	r := newRouter(testRegistry(), ks, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest("GET", "/dashboard", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.Contains(ct, "text/html") {
+		t.Errorf("Content-Type = %q, want text/html", ct)
+	}
+	if !strings.Contains(w.Body.String(), "FerroGateway Dashboard") {
+		t.Errorf("dashboard html missing title")
+	}
+}
+
 func TestChatCompletions(t *testing.T) {
 	ks := testKeyStore()
 	r := newRouter(testRegistry(), ks, nil, nil, nil, nil, nil)

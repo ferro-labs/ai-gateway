@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html/template"
 	"net/http"
 	"os"
 	"os/signal"
@@ -423,6 +424,15 @@ func newRouter(
 	// Prometheus metrics endpoint.
 	r.Handle("/metrics", promhttp.Handler())
 
+	// Minimal built-in admin dashboard UI.
+	r.Get("/dashboard", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if err := template.Must(template.New("dashboard").Parse(dashboardHTML)).Execute(w, nil); err != nil {
+			writeOpenAIError(w, http.StatusInternalServerError, "failed to render dashboard", "server_error", "internal_error")
+			return
+		}
+	})
+
 	r.Get("/v1/models", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -505,6 +515,88 @@ func newRouter(
 
 	return r
 }
+
+const dashboardHTML = `<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1" />
+	<title>FerroGateway Admin Dashboard</title>
+	<style>
+		body { font-family: system-ui, -apple-system, sans-serif; margin: 24px; color: #111827; }
+		.row { display: flex; gap: 12px; align-items: center; margin-bottom: 16px; }
+		input { width: 420px; max-width: 100%; padding: 8px; }
+		button { padding: 8px 12px; }
+		.grid { display: grid; grid-template-columns: repeat(3, minmax(180px, 1fr)); gap: 12px; }
+		.card { border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px; }
+		.label { font-size: 12px; color: #6b7280; }
+		.value { font-size: 20px; font-weight: 600; margin-top: 4px; }
+		.error { color: #b91c1c; margin-top: 12px; }
+	</style>
+</head>
+<body>
+	<h1>FerroGateway Dashboard</h1>
+	<div class="row">
+		<input id="token" placeholder="Enter admin or read-only API key (gw-...)" />
+		<button id="load">Load</button>
+	</div>
+	<div id="error" class="error"></div>
+	<div class="grid">
+		<div class="card"><div class="label">Providers (available/total)</div><div class="value" id="providers">-</div></div>
+		<div class="card"><div class="label">Keys (active/total)</div><div class="value" id="keys">-</div></div>
+		<div class="card"><div class="label">Expired Keys</div><div class="value" id="expired">-</div></div>
+		<div class="card"><div class="label">Total Key Usage</div><div class="value" id="usage">-</div></div>
+		<div class="card"><div class="label">Request Logs Enabled</div><div class="value" id="logsEnabled">-</div></div>
+		<div class="card"><div class="label">Request Logs Total</div><div class="value" id="logsTotal">-</div></div>
+	</div>
+
+	<script>
+		const els = {
+			token: document.getElementById('token'),
+			load: document.getElementById('load'),
+			error: document.getElementById('error'),
+			providers: document.getElementById('providers'),
+			keys: document.getElementById('keys'),
+			expired: document.getElementById('expired'),
+			usage: document.getElementById('usage'),
+			logsEnabled: document.getElementById('logsEnabled'),
+			logsTotal: document.getElementById('logsTotal')
+		};
+
+		async function loadDashboard() {
+			els.error.textContent = '';
+			const token = els.token.value.trim();
+			if (!token) {
+				els.error.textContent = 'API key is required.';
+				return;
+			}
+
+			try {
+				const res = await fetch('/admin/dashboard', {
+					headers: { Authorization: 'Bearer ' + token }
+				});
+				const data = await res.json();
+				if (!res.ok) {
+					const msg = data && data.error && data.error.message ? data.error.message : 'request failed';
+					throw new Error(msg);
+				}
+
+				els.providers.textContent = data.providers.available + ' / ' + data.providers.total;
+				els.keys.textContent = data.keys.active + ' / ' + data.keys.total;
+				els.expired.textContent = String(data.keys.expired);
+				els.usage.textContent = String(data.keys.total_usage);
+				els.logsEnabled.textContent = data.request_logs.enabled ? 'yes' : 'no';
+				els.logsTotal.textContent = String(data.request_logs.total);
+			} catch (err) {
+				els.error.textContent = err.message || 'Failed to load dashboard.';
+			}
+		}
+
+		els.load.addEventListener('click', loadDashboard);
+	</script>
+</body>
+</html>
+`
 
 // rateLimitMiddleware rejects requests that exceed the per-IP token-bucket limit.
 func rateLimitMiddleware(store *ratelimit.Store) func(http.Handler) http.Handler {
