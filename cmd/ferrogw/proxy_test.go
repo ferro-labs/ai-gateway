@@ -11,6 +11,8 @@ import (
 	"github.com/ferro-labs/ai-gateway/providers"
 )
 
+const providerOpenAI = "openai"
+
 // buildTestRegistry creates a registry with an OpenAI provider pointing to upstream.
 func buildTestRegistry(upstreamURL string) *providers.Registry {
 	reg := providers.NewRegistry()
@@ -23,13 +25,13 @@ func TestResolveProvider_XProviderHeader(t *testing.T) {
 	reg := buildTestRegistry("http://localhost")
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/files", nil)
-	req.Header.Set("X-Provider", "openai")
+	req.Header.Set("X-Provider", providerOpenAI)
 
 	p, ok := resolveProvider(req, reg)
 	if !ok {
 		t.Fatal("resolveProvider() returned false, want true")
 	}
-	if p.Name() != "openai" {
+	if p.Name() != providerOpenAI {
 		t.Errorf("provider name = %q, want openai", p.Name())
 	}
 }
@@ -46,7 +48,7 @@ func TestResolveProvider_ModelInBody(t *testing.T) {
 	if !ok {
 		t.Fatal("resolveProvider() returned false, want true")
 	}
-	if p.Name() != "openai" {
+	if p.Name() != providerOpenAI {
 		t.Errorf("provider name = %q, want openai", p.Name())
 	}
 }
@@ -95,7 +97,7 @@ func TestResolveProvider_BodyRestoredAfterRead(t *testing.T) {
 
 func TestProxyHandler_ForwardsRequest(t *testing.T) {
 	// Upstream server that echoes back a 200.
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"result":"ok"}`))
@@ -106,7 +108,7 @@ func TestProxyHandler_ForwardsRequest(t *testing.T) {
 	handler := proxyHandler(reg)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/files", strings.NewReader(`{}`))
-	req.Header.Set("X-Provider", "openai")
+	req.Header.Set("X-Provider", providerOpenAI)
 	req.ContentLength = 2
 	w := httptest.NewRecorder()
 
@@ -131,7 +133,7 @@ func TestProxyHandler_InjectsAuthHeader(t *testing.T) {
 	handler := proxyHandler(reg)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/files", nil)
-	req.Header.Set("X-Provider", "openai")
+	req.Header.Set("X-Provider", providerOpenAI)
 	w := httptest.NewRecorder()
 
 	handler(w, req)
@@ -154,7 +156,7 @@ func TestProxyHandler_RemovesGatewayHeaders(t *testing.T) {
 	handler := proxyHandler(reg)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/files", nil)
-	req.Header.Set("X-Provider", "openai")
+	req.Header.Set("X-Provider", providerOpenAI)
 	w := httptest.NewRecorder()
 
 	handler(w, req)
@@ -175,12 +177,12 @@ func TestProxyHandler_AddsGatewayProviderHeader(t *testing.T) {
 	handler := proxyHandler(reg)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/files", nil)
-	req.Header.Set("X-Provider", "openai")
+	req.Header.Set("X-Provider", providerOpenAI)
 	w := httptest.NewRecorder()
 
 	handler(w, req)
 
-	if w.Header().Get("X-Gateway-Provider") != "openai" {
+	if w.Header().Get("X-Gateway-Provider") != providerOpenAI {
 		t.Errorf("X-Gateway-Provider = %q, want openai", w.Header().Get("X-Gateway-Provider"))
 	}
 }
@@ -197,7 +199,7 @@ func TestProxyHandler_PassthroughNon200(t *testing.T) {
 	handler := proxyHandler(reg)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/files", nil)
-	req.Header.Set("X-Provider", "openai")
+	req.Header.Set("X-Provider", providerOpenAI)
 	w := httptest.NewRecorder()
 
 	handler(w, req)

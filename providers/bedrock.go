@@ -401,11 +401,10 @@ func (p *BedrockProvider) CompleteStream(ctx context.Context, req Request) (<-ch
 	go func() {
 		defer close(ch)
 		stream := output.GetStream()
-		defer stream.Close()
+		defer func() { _ = stream.Close() }()
 
 		for event := range stream.Events() {
-			switch e := event.(type) {
-			case *types.ResponseStreamMemberChunk:
+			if e, ok := event.(*types.ResponseStreamMemberChunk); ok {
 				var delta struct {
 					Type  string `json:"type"`
 					Index int    `json:"index"`

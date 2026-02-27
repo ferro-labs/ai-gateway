@@ -84,7 +84,7 @@ func TestReplicateProvider_AuthHeaders(t *testing.T) {
 func TestReplicateProvider_Complete_MockHTTP(t *testing.T) {
 	// Mock Replicate: first POST creates the prediction, returns succeeded immediately.
 	callCount := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		callCount++
 		pred := replicatePrediction{
 			ID:     "pred-123",
@@ -151,7 +151,7 @@ func TestReplicateProvider_GenerateImage_MockHTTP(t *testing.T) {
 func TestReplicateProvider_Complete_PollingBehavior(t *testing.T) {
 	// First call: prediction is "processing", second call (poll): "succeeded"
 	callCount := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		callCount++
 		var pred replicatePrediction
 		if callCount == 1 {

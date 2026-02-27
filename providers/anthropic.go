@@ -173,7 +173,7 @@ func (p *AnthropicProvider) Complete(ctx context.Context, req Request) (*Respons
 	// Build the content string from content blocks.
 	var content strings.Builder
 	for _, block := range anthropicResp.Content {
-		if block.Type == "text" {
+		if block.Type == ContentTypeText {
 			content.WriteString(block.Text)
 		}
 	}

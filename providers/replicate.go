@@ -205,7 +205,7 @@ func (p *ReplicateProvider) GenerateImage(ctx context.Context, req ImageRequest)
 	// Parse size (e.g. "1024x1024") into width/height.
 	if req.Size != "" {
 		var w, h int
-		fmt.Sscanf(req.Size, "%dx%d", &w, &h) //nolint:errcheck
+		_, _ = fmt.Sscanf(req.Size, "%dx%d", &w, &h)
 		input.Width = w
 		input.Height = h
 	}

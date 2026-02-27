@@ -7,6 +7,12 @@ import (
 	"testing"
 )
 
+const (
+	ai21TestContentHello = "Hello"
+	ai21TestContentWorld = " world"
+	ai21TestChunkID      = "chatcmpl-1"
+)
+
 func TestNewAI21(t *testing.T) {
 	p, err := NewAI21("test-key", "")
 	if err != nil {
@@ -109,10 +115,10 @@ func TestAI21Provider_CompleteStream_JambaModel(t *testing.T) {
 	if len(chunks) < 3 {
 		t.Fatalf("expected at least 3 chunks, got %d", len(chunks))
 	}
-	if chunks[1].Choices[0].Delta.Content != "Hello" {
+	if chunks[1].Choices[0].Delta.Content != ai21TestContentHello {
 		t.Errorf("delta content = %q, want Hello", chunks[1].Choices[0].Delta.Content)
 	}
-	if chunks[2].Choices[0].Delta.Content != " world" {
+	if chunks[2].Choices[0].Delta.Content != ai21TestContentWorld {
 		t.Errorf("delta content = %q, want ' world'", chunks[2].Choices[0].Delta.Content)
 	}
 }
@@ -146,7 +152,7 @@ func TestAI21Provider_Complete_JambaModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Complete() error: %v", err)
 	}
-	if resp.ID != "chatcmpl-1" {
+	if resp.ID != ai21TestChunkID {
 		t.Errorf("Response.ID = %q, want chatcmpl-1", resp.ID)
 	}
 }
