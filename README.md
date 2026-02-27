@@ -258,6 +258,7 @@ Authorization: Bearer <admin-or-readonly-key>
 
 Optional filters:
 
+* `limit` (positive integer; caps `by_provider` and `by_model` cardinality)
 * `stage`
 * `model`
 * `provider`

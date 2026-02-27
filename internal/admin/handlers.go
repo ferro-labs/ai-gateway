@@ -435,6 +435,19 @@ func (h *Handlers) logsStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	limit := 0
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed <= 0 {
+			writeError(w, http.StatusBadRequest, "invalid limit: must be a positive integer", "invalid_request_error", "invalid_request")
+			return
+		}
+		if parsed > 100 {
+			parsed = 100
+		}
+		limit = parsed
+	}
+
 	var since *time.Time
 	if raw := r.URL.Query().Get("since"); raw != "" {
 		parsed, err := time.Parse(time.RFC3339, raw)
@@ -505,6 +518,9 @@ func (h *Handlers) logsStats(w http.ResponseWriter, r *http.Request) {
 		tokens += entry.TotalTokens
 	}
 
+	byProvider = limitCounts(byProvider, limit)
+	byModel = limitCounts(byModel, limit)
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"summary": map[string]interface{}{
@@ -516,12 +532,42 @@ func (h *Handlers) logsStats(w http.ResponseWriter, r *http.Request) {
 		"by_provider": byProvider,
 		"by_model":    byModel,
 		"filters": map[string]interface{}{
+			"limit":    limit,
 			"stage":    baseQuery.Stage,
 			"model":    baseQuery.Model,
 			"provider": baseQuery.Provider,
 			"since":    r.URL.Query().Get("since"),
 		},
 	})
+}
+
+func limitCounts(input map[string]int, limit int) map[string]int {
+	if limit <= 0 || len(input) <= limit {
+		return input
+	}
+
+	type item struct {
+		name  string
+		count int
+	}
+	items := make([]item, 0, len(input))
+	for name, count := range input {
+		items = append(items, item{name: name, count: count})
+	}
+
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].count != items[j].count {
+			return items[i].count > items[j].count
+		}
+		return items[i].name < items[j].name
+	})
+
+	trimmed := make(map[string]int, limit)
+	for i := 0; i < limit; i++ {
+		trimmed[items[i].name] = items[i].count
+	}
+
+	return trimmed
 }
 
 func (h *Handlers) updateKey(w http.ResponseWriter, r *http.Request) {

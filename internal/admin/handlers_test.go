@@ -1171,6 +1171,65 @@ func TestLogsStatsEndpoint(t *testing.T) {
 	}
 }
 
+func TestLogsStatsEndpointWithLimit(t *testing.T) {
+	now := time.Now().UTC()
+	reader := &fakeLogReader{entries: []requestlog.Entry{
+		{TraceID: "1", Stage: "after_request", Model: "gpt-4", Provider: "openai", TotalTokens: 10, CreatedAt: now.Add(-3 * time.Minute)},
+		{TraceID: "2", Stage: "on_error", Model: "gpt-4", Provider: "openai", ErrorMessage: "boom", TotalTokens: 20, CreatedAt: now.Add(-2 * time.Minute)},
+		{TraceID: "3", Stage: "after_request", Model: "claude", Provider: "anthropic", TotalTokens: 5, CreatedAt: now.Add(-1 * time.Minute)},
+	}}
+	h, r := setupTestRouterWithLogs(reader)
+	adminKey := createAdminKey(t, h)
+
+	req := authedRequest(http.MethodGet, "/admin/logs/stats?limit=1", "", adminKey)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var payload struct {
+		Summary struct {
+			TotalEntries int `json:"total_entries"`
+		} `json:"summary"`
+		ByProvider map[string]int `json:"by_provider"`
+		ByModel    map[string]int `json:"by_model"`
+		Filters    struct {
+			Limit int `json:"limit"`
+		} `json:"filters"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode logs stats response: %v", err)
+	}
+	if payload.Summary.TotalEntries != 3 {
+		t.Fatalf("expected total_entries=3, got %d", payload.Summary.TotalEntries)
+	}
+	if payload.Filters.Limit != 1 {
+		t.Fatalf("expected filters.limit=1, got %d", payload.Filters.Limit)
+	}
+	if len(payload.ByProvider) != 1 || payload.ByProvider["openai"] != 2 {
+		t.Fatalf("unexpected limited by_provider: %+v", payload.ByProvider)
+	}
+	if len(payload.ByModel) != 1 || payload.ByModel["gpt-4"] != 2 {
+		t.Fatalf("unexpected limited by_model: %+v", payload.ByModel)
+	}
+}
+
+func TestLogsStatsEndpointInvalidLimit(t *testing.T) {
+	reader := &fakeLogReader{entries: []requestlog.Entry{}}
+	h, r := setupTestRouterWithLogs(reader)
+	adminKey := createAdminKey(t, h)
+
+	req := authedRequest(http.MethodGet, "/admin/logs/stats?limit=bad", "", adminKey)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}
+
 func TestLogsStatsEndpointInvalidSince(t *testing.T) {
 	reader := &fakeLogReader{entries: []requestlog.Entry{}}
 	h, r := setupTestRouterWithLogs(reader)
