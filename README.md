@@ -139,6 +139,49 @@ Without that environment variable, Postgres integration tests are skipped automa
 
 ---
 
+## ⚙️ Storage Backend Env Quick Reference
+
+Use these environment variables to enable persistent backends:
+
+| Area | Backend Env | DSN Env | Supported Values |
+| --- | --- | --- | --- |
+| Runtime config store | `CONFIG_STORE_BACKEND` | `CONFIG_STORE_DSN` | `memory` (default), `sqlite`, `postgres` |
+| API key store | `API_KEY_STORE_BACKEND` | `API_KEY_STORE_DSN` | `memory` (default), `sqlite`, `postgres` |
+| Request log store | `REQUEST_LOG_STORE_BACKEND` | `REQUEST_LOG_STORE_DSN` | `sqlite`, `postgres` (unset = disabled) |
+
+Example (fully persistent local setup with SQLite):
+
+```bash
+export CONFIG_STORE_BACKEND=sqlite
+export CONFIG_STORE_DSN=./ferrogw-config.db
+
+export API_KEY_STORE_BACKEND=sqlite
+export API_KEY_STORE_DSN=./ferrogw-keys.db
+
+export REQUEST_LOG_STORE_BACKEND=sqlite
+export REQUEST_LOG_STORE_DSN=./ferrogw-requests.db
+```
+
+Example (production-style PostgreSQL setup):
+
+```bash
+export CONFIG_STORE_BACKEND=postgres
+export CONFIG_STORE_DSN='postgresql://user:pass@db:5432/ferrogw?sslmode=disable'
+
+export API_KEY_STORE_BACKEND=postgres
+export API_KEY_STORE_DSN='postgresql://user:pass@db:5432/ferrogw?sslmode=disable'
+
+export REQUEST_LOG_STORE_BACKEND=postgres
+export REQUEST_LOG_STORE_DSN='postgresql://user:pass@db:5432/ferrogw?sslmode=disable'
+```
+
+Production note:
+
+* You can use a single shared DSN for all three stores (simpler operations).
+* For stronger isolation, use separate databases or schemas per area (config, API keys, request logs) with least-privilege credentials.
+
+---
+
 ## 🔎 API Key Usage Analytics
 
 Admin API provides a usage analytics endpoint:
@@ -197,6 +240,19 @@ curl -X PUT "http://localhost:8080/admin/keys/<id>" \
   -H "Content-Type: application/json" \
   -d '{"clear_expiration":true}'
 ```
+
+---
+
+## 🔑 API Key Detail API
+
+Fetch a single API key by ID (masked key value):
+
+```http
+GET /admin/keys/{id}
+Authorization: Bearer <admin-or-readonly-key>
+```
+
+Returns `404` if the key does not exist.
 
 ---
 
@@ -287,6 +343,26 @@ Response sections:
 
 ## 🕘 Config History API
 
+Create/update/delete runtime config over admin APIs:
+
+```http
+POST /admin/config
+PUT /admin/config
+DELETE /admin/config
+Authorization: Bearer <admin-key>
+```
+
+Notes:
+
+* `POST /admin/config` creates a new runtime config version (same payload schema as `PUT`)
+* `PUT /admin/config` updates the current runtime config
+* `DELETE /admin/config` resets to startup config and clears persisted override
+
+Persist config across restarts via env vars:
+
+* `CONFIG_STORE_BACKEND`: `memory` (default), `sqlite`, `postgres`
+* `CONFIG_STORE_DSN`: backend DSN or SQLite file path
+
 Runtime config updates are tracked in-memory and exposed via:
 
 ```http
@@ -374,7 +450,7 @@ Ferro Gateway is actively developed to support an end-to-end AI operating enviro
 * [x] **v0.1.0** — Foundation Release: Core routing, multi-provider execution, basic guardrails, and streaming capabilities.
 * [x] **v0.2.0** — Observability & Resilience: Structured JSON logging with trace IDs, Prometheus metrics, per-provider circuit breakers, token-bucket rate limiting, deep health checks, and consistent error schema.
 * [x] **v0.3.0** — Modality Expansions: Embeddings, Image generation mapping, Cost tracking via pricing tables, and Model aliasing.
-* [ ] **v0.4.0** — Persistent State: Dedicated Admin API, SQLite/PostgreSQL persistence, robust CRUD configuration portals.
+* [x] **v0.4.0** — Persistent State: Dedicated Admin API, SQLite/PostgreSQL persistence, persistent request logs, dashboard, and runtime config CRUD.
 * [ ] **v0.5.0** — Advanced Intelligence: Least-latency and Cost-optimized algorithmic routing, A/B Testing modules, and Semantic Caching.
 * [ ] **v1.0.0** — Production Ready: Helm charts, open-telemetry export, edge caching, and official SDK embeddings.
 

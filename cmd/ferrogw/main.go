@@ -46,6 +46,11 @@ func main() {
 	}
 
 	gw := buildGateway(cfg, registry)
+	cfgManager, configStoreBackend, err := createConfigManagerFromEnv(gw)
+	if err != nil {
+		logging.Logger.Error("failed to initialize config store", "error", err)
+		os.Exit(1)
+	}
 
 	keyStore, keyStoreBackend, err := createKeyStoreFromEnv()
 	if err != nil {
@@ -65,7 +70,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	r := newRouter(registry, keyStore, corsOrigins, gw, rlStore, logReader, logMaintainer)
+	r := newRouter(registry, keyStore, corsOrigins, gw, cfgManager, rlStore, logReader, logMaintainer)
 
 	addr := ":8080"
 	if p := os.Getenv("PORT"); p != "" {
@@ -97,6 +102,7 @@ func main() {
 		"version", version.Short(),
 		"addr", addr,
 		"providers", len(registry.List()),
+		"config_store", configStoreBackend,
 		"api_key_store", keyStoreBackend,
 		"request_log_store", logReaderBackend,
 	)
@@ -159,6 +165,46 @@ func createRequestLogReaderFromEnv() (requestlog.Reader, requestlog.Maintainer, 
 		return reader, reader, "postgres", nil
 	default:
 		return nil, nil, "", fmt.Errorf("unsupported request log store backend %q", backend)
+	}
+}
+
+func createConfigManagerFromEnv(gw *aigateway.Gateway) (admin.ConfigManager, string, error) {
+	backend := strings.ToLower(strings.TrimSpace(os.Getenv("CONFIG_STORE_BACKEND")))
+	if backend == "" {
+		backend = "memory"
+	}
+
+	dsn := strings.TrimSpace(os.Getenv("CONFIG_STORE_DSN"))
+
+	switch backend {
+	case "memory", "in-memory", "inmemory":
+		manager, err := admin.NewGatewayConfigManager(gw, nil)
+		if err != nil {
+			return nil, "", err
+		}
+		return manager, "memory", nil
+	case "sqlite":
+		store, err := admin.NewSQLiteConfigStore(dsn)
+		if err != nil {
+			return nil, "", err
+		}
+		manager, err := admin.NewGatewayConfigManager(gw, store)
+		if err != nil {
+			return nil, "", err
+		}
+		return manager, "sqlite", nil
+	case "postgres", "postgresql":
+		store, err := admin.NewPostgresConfigStore(dsn)
+		if err != nil {
+			return nil, "", err
+		}
+		manager, err := admin.NewGatewayConfigManager(gw, store)
+		if err != nil {
+			return nil, "", err
+		}
+		return manager, "postgres", nil
+	default:
+		return nil, "", fmt.Errorf("unsupported config store backend %q", backend)
 	}
 }
 
@@ -351,6 +397,7 @@ func newRouter(
 	keyStore admin.Store,
 	corsOrigins []string,
 	gw *aigateway.Gateway,
+	cfgManager admin.ConfigManager,
 	rlStore *ratelimit.Store,
 	logReader requestlog.Reader,
 	logMaintainer requestlog.Maintainer,
@@ -445,7 +492,7 @@ func newRouter(
 	adminHandlers := &admin.Handlers{
 		Keys:      keyStore,
 		Providers: gw,
-		Configs:   gw,
+		Configs:   cfgManager,
 		Logs:      logReader,
 		LogAdmin:  logMaintainer,
 	}

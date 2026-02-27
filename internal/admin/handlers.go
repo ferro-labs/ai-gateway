@@ -53,6 +53,7 @@ func (h *Handlers) Routes() chi.Router {
 		r.Get("/dashboard", h.dashboard)
 		r.Get("/keys", h.listKeys)
 		r.Get("/keys/usage", h.keyUsage)
+		r.Get("/keys/{id}", h.getKey)
 		r.Get("/logs", h.listLogs)
 		r.Get("/logs/stats", h.logsStats)
 		r.Get("/providers", h.listProviders)
@@ -70,7 +71,9 @@ func (h *Handlers) Routes() chi.Router {
 		r.Post("/keys/{id}/revoke", h.revokeKey)
 		r.Post("/keys/{id}/rotate", h.rotateKey)
 		r.Delete("/logs", h.deleteLogs)
+		r.Post("/config", h.createConfig)
 		r.Put("/config", h.updateConfig)
+		r.Delete("/config", h.deleteConfig)
 		r.Post("/config/rollback/{version}", h.rollbackConfig)
 	})
 
@@ -175,6 +178,23 @@ func (h *Handlers) listKeys(w http.ResponseWriter, _ *http.Request) {
 	keys := h.Keys.List()
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(keys)
+}
+
+func (h *Handlers) getKey(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	key, ok := h.Keys.Get(id)
+	if !ok {
+		writeError(w, http.StatusNotFound, "key not found", "not_found_error", "resource_not_found")
+		return
+	}
+
+	masked := *key
+	if len(masked.Key) > 8 {
+		masked.Key = masked.Key[:8] + "..."
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(masked)
 }
 
 func (h *Handlers) keyUsage(w http.ResponseWriter, r *http.Request) {
@@ -743,6 +763,14 @@ func (h *Handlers) getConfigHistory(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (h *Handlers) updateConfig(w http.ResponseWriter, r *http.Request) {
+	h.applyConfigUpdate(w, r, http.StatusOK, "updated")
+}
+
+func (h *Handlers) createConfig(w http.ResponseWriter, r *http.Request) {
+	h.applyConfigUpdate(w, r, http.StatusCreated, "created")
+}
+
+func (h *Handlers) applyConfigUpdate(w http.ResponseWriter, r *http.Request, statusCode int, statusText string) {
 	if h.Configs == nil {
 		writeError(w, http.StatusNotImplemented, "config management is not enabled", "not_implemented_error", "not_implemented")
 		return
@@ -762,7 +790,31 @@ func (h *Handlers) updateConfig(w http.ResponseWriter, r *http.Request) {
 	h.appendConfigHistory(cfg, nil)
 
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]string{"status": "updated"})
+	w.WriteHeader(statusCode)
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": statusText})
+}
+
+func (h *Handlers) deleteConfig(w http.ResponseWriter, _ *http.Request) {
+	if h.Configs == nil {
+		writeError(w, http.StatusNotImplemented, "config management is not enabled", "not_implemented_error", "not_implemented")
+		return
+	}
+
+	resetter, ok := h.Configs.(ConfigResetter)
+	if !ok {
+		writeError(w, http.StatusNotImplemented, "config reset is not enabled", "not_implemented_error", "not_implemented")
+		return
+	}
+
+	if err := resetter.ResetConfig(); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error(), "server_error", "internal_error")
+		return
+	}
+
+	h.appendConfigHistory(h.Configs.GetConfig(), nil)
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
 }
 
 func (h *Handlers) rollbackConfig(w http.ResponseWriter, r *http.Request) {

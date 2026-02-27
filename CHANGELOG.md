@@ -5,7 +5,26 @@ All notable changes to FerroGateway will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] — v0.3.0
+## [Unreleased] — v0.4.0
+
+### Added
+
+- **Config persistence backends**: `internal/admin/config_store.go` introduces SQL-backed runtime config persistence for both SQLite (`CONFIG_STORE_BACKEND=sqlite`) and PostgreSQL (`CONFIG_STORE_BACKEND=postgres`) with `CONFIG_STORE_DSN`
+- **Runtime config manager**: `GatewayConfigManager` now bridges admin config API operations (`GetConfig`, `ReloadConfig`, `ResetConfig`) with optional persistent storage, including loading persisted config at startup
+- **Config store wiring**: `cmd/ferrogw/main.go` now initializes config manager via `createConfigManagerFromEnv()` and logs selected `config_store` backend at startup
+- **Config CRUD completion**: Admin routes now include `POST /admin/config`, `PUT /admin/config`, and `DELETE /admin/config` for create/update/reset semantics
+- **API key detail endpoint**: Added `GET /admin/keys/{id}` (masked key response) for full API-key CRUD coverage
+- **Request log SQL tests**: Added SQLite + optional PostgreSQL contract tests under `internal/requestlog/store_test.go`
+- **Config persistence tests**: Added env/backend wiring + SQLite persistence tests in `cmd/ferrogw/main_test.go`
+- **Admin API coverage**: Added tests for key-detail endpoint and config create/delete flows in `internal/admin/handlers_test.go`
+
+### Changed
+
+- **Admin router** (`internal/admin/handlers.go`): read/write route set expanded to include key-detail and full config CRUD endpoints while preserving RBAC scopes
+- **README**: documented `GET /admin/keys/{id}`, config CRUD endpoints, and `CONFIG_STORE_BACKEND` / `CONFIG_STORE_DSN` env vars
+- **Roadmap alignment**: v0.4.0 persistent storage/management milestones updated to released status
+
+## [0.3.0] — 2026-02-28
 
 ### Added
 

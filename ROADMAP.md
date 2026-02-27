@@ -93,17 +93,17 @@
 
 ## v0.4.0 — Persistent Storage & Management API
 
-**Status**: 📋 Planned  
+**Status**: ✅ Released  
 **Theme**: Move beyond in-memory state for production deployments.
 
-| Feature | Description |
-|---|---|
-| **SQLite storage** | Optional SQLite backend for API keys and config (zero-dependency) |
-| **PostgreSQL storage** | Optional PostgreSQL backend for larger deployments |
-| **Config API** | REST API to manage gateway config at runtime (CRUD) |
-| **API key management API** | Full CRUD with expiration, rotation, usage tracking |
-| **Request logging** | Persistent request/response log storage |
-| **Admin dashboard** | Minimal web UI for gateway status and config |
+| Feature | Description | Status |
+|---|---|---|
+| **SQLite storage** | Optional SQLite backend for API keys and config (zero-dependency) | ✅ Done |
+| **PostgreSQL storage** | Optional PostgreSQL backend for larger deployments | ✅ Done |
+| **Config API** | REST API to manage gateway config at runtime (CRUD) | ✅ Done |
+| **API key management API** | Full CRUD with expiration, rotation, usage tracking | ✅ Done |
+| **Request logging** | Persistent request/response log storage | ✅ Done |
+| **Admin dashboard** | Minimal web UI for gateway status and config | ✅ Done |
 
 ---
 

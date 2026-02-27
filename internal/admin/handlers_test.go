@@ -16,7 +16,8 @@ import (
 )
 
 type testConfigManager struct {
-	cfg aigateway.Config
+	cfg     aigateway.Config
+	initial aigateway.Config
 }
 
 type fakeLogReader struct {
@@ -109,6 +110,11 @@ func (m *testConfigManager) ReloadConfig(cfg aigateway.Config) error {
 	return nil
 }
 
+func (m *testConfigManager) ResetConfig() error {
+	m.cfg = m.initial
+	return nil
+}
+
 func setupTestRouter() (*Handlers, chi.Router) {
 	store := NewKeyStore()
 	cm := &testConfigManager{
@@ -117,6 +123,7 @@ func setupTestRouter() (*Handlers, chi.Router) {
 			Targets:  []aigateway.Target{{VirtualKey: "openai"}},
 		},
 	}
+	cm.initial = cm.cfg
 	h := &Handlers{
 		Keys:    store,
 		Configs: cm,
@@ -135,6 +142,7 @@ func setupTestRouterWithLogs(reader requestlog.Reader) (*Handlers, chi.Router) {
 			Targets:  []aigateway.Target{{VirtualKey: "openai"}},
 		},
 	}
+	cm.initial = cm.cfg
 	h := &Handlers{
 		Keys:    store,
 		Configs: cm,
@@ -258,6 +266,44 @@ func TestListKeys(t *testing.T) {
 		if len(k.Key) > 11 {
 			t.Errorf("expected masked key, got %s", k.Key)
 		}
+	}
+}
+
+func TestGetKeyByID(t *testing.T) {
+	h, r := setupTestRouter()
+	adminKey := createAdminKey(t, h)
+	created, _ := h.Keys.Create("key-1", nil, nil)
+
+	req := authedRequest(http.MethodGet, "/admin/keys/"+created.ID, "", adminKey)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var got APIKey
+	if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+		t.Fatalf("decode key response: %v", err)
+	}
+	if got.ID != created.ID {
+		t.Fatalf("expected id %s, got %s", created.ID, got.ID)
+	}
+	if got.Key == created.Key || len(got.Key) > 11 {
+		t.Fatalf("expected masked key, got %q", got.Key)
+	}
+}
+
+func TestGetKeyByIDNotFound(t *testing.T) {
+	h, r := setupTestRouter()
+	adminKey := createAdminKey(t, h)
+
+	req := authedRequest(http.MethodGet, "/admin/keys/not-found", "", adminKey)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", w.Code)
 	}
 }
 
@@ -541,6 +587,66 @@ func TestUpdateConfig(t *testing.T) {
 	}
 	if len(cfg.Targets) != 2 {
 		t.Fatalf("expected 2 targets, got %d", len(cfg.Targets))
+	}
+}
+
+func TestCreateConfig(t *testing.T) {
+	h, r := setupTestRouter()
+	adminKey := createAdminKey(t, h)
+
+	body := `{"strategy":{"mode":"fallback"},"targets":[{"virtual_key":"openai"},{"virtual_key":"anthropic"}]}`
+	req := authedRequest(http.MethodPost, "/admin/config", body, adminKey)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestDeleteConfig(t *testing.T) {
+	h, r := setupTestRouter()
+	adminKey := createAdminKey(t, h)
+
+	updateBody := `{"strategy":{"mode":"fallback"},"targets":[{"virtual_key":"openai"},{"virtual_key":"anthropic"}]}`
+	updateReq := authedRequest(http.MethodPut, "/admin/config", updateBody, adminKey)
+	updateW := httptest.NewRecorder()
+	r.ServeHTTP(updateW, updateReq)
+	if updateW.Code != http.StatusOK {
+		t.Fatalf("expected update 200, got %d: %s", updateW.Code, updateW.Body.String())
+	}
+
+	deleteReq := authedRequest(http.MethodDelete, "/admin/config", "", adminKey)
+	deleteW := httptest.NewRecorder()
+	r.ServeHTTP(deleteW, deleteReq)
+	if deleteW.Code != http.StatusOK {
+		t.Fatalf("expected delete 200, got %d: %s", deleteW.Code, deleteW.Body.String())
+	}
+
+	getReq := authedRequest(http.MethodGet, "/admin/config", "", adminKey)
+	getW := httptest.NewRecorder()
+	r.ServeHTTP(getW, getReq)
+
+	var cfg aigateway.Config
+	if err := json.NewDecoder(getW.Body).Decode(&cfg); err != nil {
+		t.Fatalf("decode config response: %v", err)
+	}
+	if cfg.Strategy.Mode != aigateway.ModeSingle {
+		t.Fatalf("expected reset mode single, got %s", cfg.Strategy.Mode)
+	}
+}
+
+func TestReadOnlyCannotDeleteConfig(t *testing.T) {
+	h, r := setupTestRouter()
+	createAdminKey(t, h)
+	roKey := createReadOnlyKey(t, h)
+
+	req := authedRequest(http.MethodDelete, "/admin/config", "", roKey)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
