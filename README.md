@@ -167,6 +167,39 @@ Response contains `data` (sorted by `usage_count` desc) and `summary` totals.
 
 ---
 
+## ⏱️ API Key Expiration Management
+
+Update key expiration without rotating or recreating the key:
+
+```http
+PUT /admin/keys/{id}
+Authorization: Bearer <admin-key>
+Content-Type: application/json
+```
+
+Supported expiration fields in request body:
+
+* `expires_at` (RFC3339 timestamp) to set/update expiration
+* `clear_expiration` (`true`) to remove expiration
+
+Examples:
+
+```bash
+curl -X PUT "http://localhost:8080/admin/keys/<id>" \
+  -H "Authorization: Bearer gw-..." \
+  -H "Content-Type: application/json" \
+  -d '{"expires_at":"2026-03-15T00:00:00Z"}'
+```
+
+```bash
+curl -X PUT "http://localhost:8080/admin/keys/<id>" \
+  -H "Authorization: Bearer gw-..." \
+  -H "Content-Type: application/json" \
+  -d '{"clear_expiration":true}'
+```
+
+---
+
 ## 📜 Admin Request Logs API
 
 When request log storage is enabled, admin API exposes persisted request logs:
@@ -178,12 +211,12 @@ Authorization: Bearer <admin-or-readonly-key>
 
 Supported query params:
 
-- `limit` (default `50`, max `200`)
-- `offset` (default `0`)
-- `stage` (e.g. `before_request`, `after_request`, `on_error`)
-- `model`
-- `provider`
-- `since` (RFC3339 timestamp)
+* `limit` (default `50`, max `200`)
+* `offset` (default `0`)
+* `stage` (e.g. `before_request`, `after_request`, `on_error`)
+* `model`
+* `provider`
+* `since` (RFC3339 timestamp)
 
 Example:
 

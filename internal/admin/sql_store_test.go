@@ -90,6 +90,20 @@ func runStoreContract(t *testing.T, store Store) {
 		t.Fatalf("expected updated scopes, got %v", updated.Scopes)
 	}
 
+	expiresAt := time.Now().Add(-1 * time.Minute)
+	if err := store.SetExpiration(created.ID, &expiresAt); err != nil {
+		t.Fatalf("set expiration: %v", err)
+	}
+	if _, valid := store.ValidateKey(created.Key); valid {
+		t.Fatalf("expected expired key to be invalid")
+	}
+	if err := store.SetExpiration(created.ID, nil); err != nil {
+		t.Fatalf("clear expiration: %v", err)
+	}
+	if _, valid := store.ValidateKey(created.Key); !valid {
+		t.Fatalf("expected key to validate after clearing expiration")
+	}
+
 	rotated, err := store.RotateKey(created.ID)
 	if err != nil {
 		t.Fatalf("rotate key: %v", err)

@@ -256,6 +256,69 @@ func TestUpdateKeyNotFound(t *testing.T) {
 	}
 }
 
+func TestUpdateKeyExpiration(t *testing.T) {
+	h, r := setupTestRouter()
+	adminKey := createAdminKey(t, h)
+	target, _ := h.Keys.Create("expirable", nil, nil)
+
+	expiresAt := time.Now().Add(10 * time.Minute).UTC().Format(time.RFC3339)
+	body := `{"expires_at":"` + expiresAt + `"}`
+	req := authedRequest(http.MethodPut, "/admin/keys/"+target.ID, body, adminKey)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	fresh, ok := h.Keys.Get(target.ID)
+	if !ok {
+		t.Fatal("expected key to exist")
+	}
+	if fresh.ExpiresAt == nil {
+		t.Fatal("expected expires_at to be set")
+	}
+}
+
+func TestUpdateKeyClearExpiration(t *testing.T) {
+	h, r := setupTestRouter()
+	adminKey := createAdminKey(t, h)
+	expiry := time.Now().Add(10 * time.Minute)
+	target, _ := h.Keys.Create("expirable", nil, &expiry)
+
+	body := `{"clear_expiration":true}`
+	req := authedRequest(http.MethodPut, "/admin/keys/"+target.ID, body, adminKey)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	fresh, ok := h.Keys.Get(target.ID)
+	if !ok {
+		t.Fatal("expected key to exist")
+	}
+	if fresh.ExpiresAt != nil {
+		t.Fatal("expected expires_at to be cleared")
+	}
+}
+
+func TestUpdateKeyInvalidExpiration(t *testing.T) {
+	h, r := setupTestRouter()
+	adminKey := createAdminKey(t, h)
+	target, _ := h.Keys.Create("expirable", nil, nil)
+
+	body := `{"expires_at":"not-a-timestamp"}`
+	req := authedRequest(http.MethodPut, "/admin/keys/"+target.ID, body, adminKey)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 func TestDeleteKey(t *testing.T) {
 	h, r := setupTestRouter()
 	adminKey := createAdminKey(t, h)

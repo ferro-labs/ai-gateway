@@ -262,6 +262,24 @@ func (s *SQLStore) Update(id string, name string, scopes []string) (*APIKey, err
 	return &masked, nil
 }
 
+func (s *SQLStore) SetExpiration(id string, expiresAt *time.Time) error {
+	if expiresAt != nil {
+		t := expiresAt.UTC()
+		expiresAt = &t
+	}
+
+	q := s.bind(`UPDATE api_keys SET expires_at = ? WHERE id = ?`)
+	res, err := s.db.Exec(q, expiresAt, id)
+	if err != nil {
+		return fmt.Errorf("set key expiration: %w", err)
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		return fmt.Errorf("key not found: %s", id)
+	}
+	return nil
+}
+
 func (s *SQLStore) Delete(id string) error {
 	q := s.bind(`DELETE FROM api_keys WHERE id = ?`)
 	res, err := s.db.Exec(q, id)

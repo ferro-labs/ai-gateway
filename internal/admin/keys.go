@@ -133,6 +133,18 @@ func (s *KeyStore) Update(id string, name string, scopes []string) (*APIKey, err
 	return &masked, nil
 }
 
+// SetExpiration updates the expiration time for an API key.
+func (s *KeyStore) SetExpiration(id string, expiresAt *time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	k, ok := s.byID[id]
+	if !ok {
+		return fmt.Errorf("key not found: %s", id)
+	}
+	k.ExpiresAt = expiresAt
+	return nil
+}
+
 // Delete removes an API key from the store.
 func (s *KeyStore) Delete(id string) error {
 	s.mu.Lock()

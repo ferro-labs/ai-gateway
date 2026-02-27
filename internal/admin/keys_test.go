@@ -3,6 +3,7 @@ package admin
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCreate(t *testing.T) {
@@ -162,5 +163,33 @@ func TestValidateKey_UnknownFails(t *testing.T) {
 	_, ok := store.ValidateKey("gw-unknown-key")
 	if ok {
 		t.Error("expected unknown key to fail validation")
+	}
+}
+
+func TestSetExpiration_ExpiredFailsValidation(t *testing.T) {
+	store := NewKeyStore()
+	created, _ := store.Create("expires-soon", nil, nil)
+
+	expiresAt := time.Now().Add(-1 * time.Minute)
+	if err := store.SetExpiration(created.ID, &expiresAt); err != nil {
+		t.Fatalf("set expiration: %v", err)
+	}
+
+	if _, ok := store.ValidateKey(created.Key); ok {
+		t.Fatal("expected expired key to fail validation")
+	}
+}
+
+func TestSetExpiration_ClearAllowsValidation(t *testing.T) {
+	store := NewKeyStore()
+	expiresAt := time.Now().Add(-1 * time.Minute)
+	created, _ := store.Create("expired", nil, &expiresAt)
+
+	if err := store.SetExpiration(created.ID, nil); err != nil {
+		t.Fatalf("clear expiration: %v", err)
+	}
+
+	if _, ok := store.ValidateKey(created.Key); !ok {
+		t.Fatal("expected key to validate after clearing expiration")
 	}
 }

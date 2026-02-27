@@ -315,8 +315,10 @@ func (h *Handlers) listLogs(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) updateKey(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	var body struct {
-		Name   string   `json:"name"`
-		Scopes []string `json:"scopes"`
+		Name            string   `json:"name"`
+		Scopes          []string `json:"scopes"`
+		ExpiresAt       string   `json:"expires_at"`
+		ClearExpiration bool     `json:"clear_expiration"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body", "invalid_request_error", "invalid_request")
@@ -327,6 +329,26 @@ func (h *Handlers) updateKey(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error(), "not_found_error", "resource_not_found")
 		return
+	}
+
+	if body.ClearExpiration {
+		if err := h.Keys.SetExpiration(id, nil); err != nil {
+			writeError(w, http.StatusNotFound, err.Error(), "not_found_error", "resource_not_found")
+			return
+		}
+		key.ExpiresAt = nil
+	} else if body.ExpiresAt != "" {
+		expiresAt, parseErr := time.Parse(time.RFC3339, body.ExpiresAt)
+		if parseErr != nil {
+			writeError(w, http.StatusBadRequest, "invalid expires_at: must be RFC3339 format", "invalid_request_error", "invalid_request")
+			return
+		}
+		if err := h.Keys.SetExpiration(id, &expiresAt); err != nil {
+			writeError(w, http.StatusNotFound, err.Error(), "not_found_error", "resource_not_found")
+			return
+		}
+		t := expiresAt
+		key.ExpiresAt = &t
 	}
 
 	w.Header().Set("Content-Type", "application/json")
