@@ -136,6 +136,9 @@ func registerProviders() *providers.Registry {
 		{"MISTRAL_API_KEY", "mistral", func(k, b string) (providers.Provider, error) { return providers.NewMistral(k, b) }},
 		{"COHERE_API_KEY", "cohere", func(k, b string) (providers.Provider, error) { return providers.NewCohere(k, b) }},
 		{"DEEPSEEK_API_KEY", "deepseek", func(k, b string) (providers.Provider, error) { return providers.NewDeepSeek(k, b) }},
+		{"PERPLEXITY_API_KEY", "perplexity", func(k, b string) (providers.Provider, error) { return providers.NewPerplexity(k, b) }},
+		{"FIREWORKS_API_KEY", "fireworks", func(k, b string) (providers.Provider, error) { return providers.NewFireworks(k, b) }},
+		{"AI21_API_KEY", "ai21", func(k, b string) (providers.Provider, error) { return providers.NewAI21(k, b) }},
 	}
 	for _, pe := range autoProviders {
 		if key := os.Getenv(pe.envKey); key != "" {
@@ -180,6 +183,36 @@ func registerProviders() *providers.Registry {
 		}
 		registry.Register(p)
 		logging.Logger.Info("provider registered", "provider", "ollama", "models", p.SupportedModels())
+	}
+
+	// Replicate requires an API token and optional model lists.
+	if token := os.Getenv("REPLICATE_API_TOKEN"); token != "" {
+		var textModels, imageModels []string
+		if m := os.Getenv("REPLICATE_TEXT_MODELS"); m != "" {
+			textModels = strings.Split(m, ",")
+		}
+		if m := os.Getenv("REPLICATE_IMAGE_MODELS"); m != "" {
+			imageModels = strings.Split(m, ",")
+		}
+		p, err := providers.NewReplicate(token, "", textModels, imageModels)
+		if err != nil {
+			logging.Logger.Error("provider init failed", "provider", "replicate", "error", err)
+			os.Exit(1)
+		}
+		registry.Register(p)
+		logging.Logger.Info("provider registered", "provider", "replicate")
+	}
+
+	// AWS Bedrock uses the AWS credential chain (env vars, ~/.aws/credentials, IAM roles).
+	if region := os.Getenv("AWS_REGION"); region != "" || os.Getenv("AWS_ACCESS_KEY_ID") != "" {
+		bedrockRegion := os.Getenv("AWS_REGION")
+		p, err := providers.NewBedrock(bedrockRegion)
+		if err != nil {
+			logging.Logger.Error("provider init failed", "provider", "bedrock", "error", err)
+		} else {
+			registry.Register(p)
+			logging.Logger.Info("provider registered", "provider", "bedrock", "region", bedrockRegion)
+		}
 	}
 
 	return registry
@@ -389,6 +422,12 @@ func newRouter(
 
 	// Legacy text completions.
 	r.Post("/v1/completions", completionsHandler(registry))
+
+	// Embeddings endpoint.
+	r.Post("/v1/embeddings", embeddingsHandler(gw))
+
+	// Image generation endpoint.
+	r.Post("/v1/images/generations", imagesHandler(gw))
 
 	// Proxy pass-through for unhandled /v1/* endpoints.
 	r.HandleFunc("/v1/*", proxyHandler(registry))

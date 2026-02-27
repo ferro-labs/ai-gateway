@@ -54,6 +54,86 @@ type ProxiableProvider interface {
 	AuthHeaders() map[string]string
 }
 
+// EmbeddingProvider is an optional interface for providers that support
+// the /v1/embeddings endpoint.
+type EmbeddingProvider interface {
+	Provider
+	Embed(ctx context.Context, req EmbeddingRequest) (*EmbeddingResponse, error)
+}
+
+// ImageProvider is an optional interface for providers that support
+// the /v1/images/generations endpoint.
+type ImageProvider interface {
+	Provider
+	GenerateImage(ctx context.Context, req ImageRequest) (*ImageResponse, error)
+}
+
+// DiscoveryProvider is an optional interface for providers that can
+// enumerate their available models live from the provider API.
+type DiscoveryProvider interface {
+	Provider
+	DiscoverModels(ctx context.Context) ([]ModelInfo, error)
+}
+
+// --------------------------------------------------------------- Embeddings --
+
+// EmbeddingRequest mirrors the OpenAI /v1/embeddings request schema.
+type EmbeddingRequest struct {
+	Model          string      `json:"model"`
+	Input          interface{} `json:"input"` // string or []string
+	EncodingFormat string      `json:"encoding_format,omitempty"`
+	Dimensions     *int        `json:"dimensions,omitempty"`
+	User           string      `json:"user,omitempty"`
+}
+
+// EmbeddingResponse mirrors the OpenAI /v1/embeddings response schema.
+type EmbeddingResponse struct {
+	Object string         `json:"object"`
+	Data   []Embedding    `json:"data"`
+	Model  string         `json:"model"`
+	Usage  EmbeddingUsage `json:"usage"`
+}
+
+// Embedding holds a single embedding vector and its index.
+type Embedding struct {
+	Object    string    `json:"object"`
+	Embedding []float64 `json:"embedding"`
+	Index     int       `json:"index"`
+}
+
+// EmbeddingUsage carries token consumption for an embedding request.
+type EmbeddingUsage struct {
+	PromptTokens int `json:"prompt_tokens"`
+	TotalTokens  int `json:"total_tokens"`
+}
+
+// ---------------------------------------------------------- Image Generation --
+
+// ImageRequest mirrors the OpenAI /v1/images/generations request schema.
+type ImageRequest struct {
+	Model          string `json:"model"`
+	Prompt         string `json:"prompt"`
+	N              *int   `json:"n,omitempty"`
+	Size           string `json:"size,omitempty"`
+	ResponseFormat string `json:"response_format,omitempty"` // "url" | "b64_json"
+	Quality        string `json:"quality,omitempty"`
+	Style          string `json:"style,omitempty"`
+	User           string `json:"user,omitempty"`
+}
+
+// ImageResponse mirrors the OpenAI /v1/images/generations response schema.
+type ImageResponse struct {
+	Created int64            `json:"created"`
+	Data    []GeneratedImage `json:"data"`
+}
+
+// GeneratedImage holds the result of a single image generation.
+type GeneratedImage struct {
+	URL           string `json:"url,omitempty"`
+	B64JSON       string `json:"b64_json,omitempty"`
+	RevisedPrompt string `json:"revised_prompt,omitempty"`
+}
+
 // ------------------------------------------------------------------ types ---
 
 // ContentPart is a single element of a multipart message content array.

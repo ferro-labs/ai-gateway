@@ -67,6 +67,107 @@ func (p *OpenAIProvider) Models() []ModelInfo {
 	return ModelsFromList(p.name, p.SupportedModels())
 }
 
+// Embed sends an embedding request to OpenAI.
+func (p *OpenAIProvider) Embed(ctx context.Context, req EmbeddingRequest) (*EmbeddingResponse, error) {
+	params := openai.EmbeddingNewParams{
+		Model: req.Model,
+	}
+	switch v := req.Input.(type) {
+	case string:
+		params.Input = openai.EmbeddingNewParamsInputUnion{OfString: openai.String(v)}
+	case []string:
+		params.Input = openai.EmbeddingNewParamsInputUnion{OfArrayOfStrings: v}
+	case []interface{}:
+		strs := make([]string, 0, len(v))
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				strs = append(strs, s)
+			}
+		}
+		params.Input = openai.EmbeddingNewParamsInputUnion{OfArrayOfStrings: strs}
+	}
+	if req.EncodingFormat == "float" || req.EncodingFormat == "" {
+		params.EncodingFormat = openai.EmbeddingNewParamsEncodingFormatFloat
+	}
+	if req.Dimensions != nil {
+		params.Dimensions = openai.Int(int64(*req.Dimensions))
+	}
+	if req.User != "" {
+		params.User = openai.String(req.User)
+	}
+
+	result, err := p.client.Embeddings.New(ctx, params)
+	if err != nil {
+		return nil, err
+	}
+
+	embeddings := make([]Embedding, len(result.Data))
+	for i, d := range result.Data {
+		embeddings[i] = Embedding{
+			Object:    string(d.Object),
+			Embedding: d.Embedding,
+			Index:     int(d.Index),
+		}
+	}
+
+	return &EmbeddingResponse{
+		Object: string(result.Object),
+		Data:   embeddings,
+		Model:  string(result.Model),
+		Usage: EmbeddingUsage{
+			PromptTokens: int(result.Usage.PromptTokens),
+			TotalTokens:  int(result.Usage.TotalTokens),
+		},
+	}, nil
+}
+
+// GenerateImage sends an image generation request to OpenAI (DALL-E).
+func (p *OpenAIProvider) GenerateImage(ctx context.Context, req ImageRequest) (*ImageResponse, error) {
+	params := openai.ImageGenerateParams{
+		Prompt: req.Prompt,
+		Model:  openai.ImageModel(req.Model),
+	}
+	if req.N != nil {
+		params.N = openai.Int(int64(*req.N))
+	}
+	if req.Size != "" {
+		params.Size = openai.ImageGenerateParamsSize(req.Size)
+	}
+	if req.Quality != "" {
+		params.Quality = openai.ImageGenerateParamsQuality(req.Quality)
+	}
+	if req.Style != "" {
+		params.Style = openai.ImageGenerateParamsStyle(req.Style)
+	}
+	if req.ResponseFormat == "b64_json" {
+		params.ResponseFormat = openai.ImageGenerateParamsResponseFormatB64JSON
+	} else {
+		params.ResponseFormat = openai.ImageGenerateParamsResponseFormatURL
+	}
+	if req.User != "" {
+		params.User = openai.String(req.User)
+	}
+
+	result, err := p.client.Images.Generate(ctx, params)
+	if err != nil {
+		return nil, err
+	}
+
+	images := make([]GeneratedImage, len(result.Data))
+	for i, d := range result.Data {
+		images[i] = GeneratedImage{
+			URL:           d.URL,
+			B64JSON:       d.B64JSON,
+			RevisedPrompt: d.RevisedPrompt,
+		}
+	}
+
+	return &ImageResponse{
+		Created: result.Created,
+		Data:    images,
+	}, nil
+}
+
 // Complete sends a chat completion request to OpenAI.
 func (p *OpenAIProvider) Complete(ctx context.Context, req Request) (*Response, error) {
 	params := openai.ChatCompletionNewParams{

@@ -77,4 +77,15 @@ var (
 		},
 		[]string{"key_type"},
 	)
+
+	// RequestCostUSD tracks the estimated cumulative cost of requests in USD,
+	// labelled by provider and model. Uses public pricing tables; actual costs
+	// may differ.
+	RequestCostUSD = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "gateway_request_cost_usd_total",
+			Help: "Estimated total cost of requests in USD (based on public pricing tables).",
+		},
+		[]string{"provider", "model"},
+	)
 )

@@ -71,5 +71,21 @@ func ValidateConfig(cfg Config) error {
 		}
 	}
 
+	// Validate aliases: no alias may point to another alias (no cycles/chains).
+	for name, target := range cfg.Aliases {
+		if name == "" {
+			return fmt.Errorf("alias name must not be empty")
+		}
+		if target == "" {
+			return fmt.Errorf("alias %q must not map to an empty string", name)
+		}
+		if name == target {
+			return fmt.Errorf("alias %q must not point to itself", name)
+		}
+		if _, chainedAlias := cfg.Aliases[target]; chainedAlias {
+			return fmt.Errorf("alias %q points to another alias %q; chained aliases are not supported", name, target)
+		}
+	}
+
 	return nil
 }
