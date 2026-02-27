@@ -90,6 +90,81 @@ make run
 
 ---
 
+## 🧾 Persistent Request Logging
+
+The built-in `request-logger` plugin can persist request lifecycle events (`before_request`, `after_request`, `on_error`) into SQLite or PostgreSQL.
+
+### Plugin config (YAML)
+
+```yaml
+plugins:
+  - name: request-logger
+    type: logging
+    stage: before_request
+    enabled: true
+    config:
+      level: info
+      persist: true
+      backend: sqlite   # sqlite | postgres
+      dsn: ferrogw-requests.db
+```
+
+For PostgreSQL:
+
+```yaml
+plugins:
+  - name: request-logger
+    type: logging
+    stage: before_request
+    enabled: true
+    config:
+      level: info
+      persist: true
+      backend: postgres
+      dsn: postgresql://user:pass@localhost:5432/ferrogw?sslmode=disable
+```
+
+---
+
+## 🧪 Postgres Integration Tests
+
+PostgreSQL store integration tests are opt-in. Set `FERROGW_TEST_POSTGRES_DSN` and run the admin package tests.
+
+```bash
+export FERROGW_TEST_POSTGRES_DSN='postgresql://user:pass@localhost:5432/ferrogw_test?sslmode=disable'
+go test ./internal/admin
+```
+
+Without that environment variable, Postgres integration tests are skipped automatically.
+
+---
+
+## 🔎 API Key Usage Analytics
+
+Admin API provides a usage analytics endpoint:
+
+```http
+GET /admin/keys/usage
+Authorization: Bearer <admin-or-readonly-key>
+```
+
+Supported query params:
+
+* `limit` (default `20`, max `100`)
+* `active` (`true` or `false`)
+* `since` (RFC3339 timestamp; filters by `last_used_at >= since`)
+
+Example:
+
+```bash
+curl "http://localhost:8080/admin/keys/usage?limit=10&active=true&since=2026-02-01T00:00:00Z" \
+  -H "Authorization: Bearer gw-..."
+```
+
+Response contains `data` (sorted by `usage_count` desc) and `summary` totals.
+
+---
+
 ## 🔌 1-Line Migration
 
 FerroGateway natively speaks the OpenAI spec. Point your existing client SDKs to the Gateway by changing simply the `baseURL`—**no SDK changes, no prompt edits, no refactoring.**

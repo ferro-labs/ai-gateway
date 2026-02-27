@@ -6,16 +6,26 @@ package admin
 import (
 	"encoding/json"
 	"net/http"
+	"sort"
+	"strconv"
 	"time"
 
+	aigateway "github.com/ferro-labs/ai-gateway"
 	"github.com/ferro-labs/ai-gateway/providers"
 	"github.com/go-chi/chi/v5"
 )
+
+// ConfigManager exposes the minimal gateway config operations needed by admin API.
+type ConfigManager interface {
+	GetConfig() aigateway.Config
+	ReloadConfig(cfg aigateway.Config) error
+}
 
 // Handlers holds dependencies for admin HTTP handlers.
 type Handlers struct {
 	Keys      Store
 	Providers providers.ProviderSource
+	Configs   ConfigManager
 }
 
 // Routes returns a chi.Router with all admin endpoints mounted.
@@ -26,8 +36,10 @@ func (h *Handlers) Routes() chi.Router {
 	r.Group(func(r chi.Router) {
 		r.Use(RequireScope(ScopeReadOnly, ScopeAdmin))
 		r.Get("/keys", h.listKeys)
+		r.Get("/keys/usage", h.keyUsage)
 		r.Get("/providers", h.listProviders)
 		r.Get("/health", h.healthCheck)
+		r.Get("/config", h.getConfig)
 	})
 
 	// Write endpoints (admin scope only).
@@ -38,6 +50,7 @@ func (h *Handlers) Routes() chi.Router {
 		r.Delete("/keys/{id}", h.deleteKey)
 		r.Post("/keys/{id}/revoke", h.revokeKey)
 		r.Post("/keys/{id}/rotate", h.rotateKey)
+		r.Put("/config", h.updateConfig)
 	})
 
 	return r
@@ -83,6 +96,103 @@ func (h *Handlers) listKeys(w http.ResponseWriter, _ *http.Request) {
 	keys := h.Keys.List()
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(keys)
+}
+
+func (h *Handlers) keyUsage(w http.ResponseWriter, r *http.Request) {
+	limit := 20
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed <= 0 {
+			writeError(w, http.StatusBadRequest, "invalid limit: must be a positive integer", "invalid_request_error", "invalid_request")
+			return
+		}
+		if parsed > 100 {
+			parsed = 100
+		}
+		limit = parsed
+	}
+
+	activeFilter := ""
+	if raw := r.URL.Query().Get("active"); raw != "" {
+		parsed, err := strconv.ParseBool(raw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid active: must be true or false", "invalid_request_error", "invalid_request")
+			return
+		}
+		activeFilter = strconv.FormatBool(parsed)
+	}
+
+	var sinceFilter *time.Time
+	if raw := r.URL.Query().Get("since"); raw != "" {
+		parsed, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid since: must be RFC3339 format", "invalid_request_error", "invalid_request")
+			return
+		}
+		sinceFilter = &parsed
+	}
+
+	filteredKeys := make([]*APIKey, 0)
+	for _, key := range h.Keys.List() {
+		if activeFilter != "" {
+			requireActive := activeFilter == "true"
+			if key.Active != requireActive {
+				continue
+			}
+		}
+		if sinceFilter != nil {
+			if key.LastUsedAt == nil || key.LastUsedAt.Before(*sinceFilter) {
+				continue
+			}
+		}
+		filteredKeys = append(filteredKeys, key)
+	}
+
+	sort.Slice(filteredKeys, func(i, j int) bool {
+		if filteredKeys[i].UsageCount != filteredKeys[j].UsageCount {
+			return filteredKeys[i].UsageCount > filteredKeys[j].UsageCount
+		}
+		if filteredKeys[i].LastUsedAt == nil && filteredKeys[j].LastUsedAt != nil {
+			return false
+		}
+		if filteredKeys[i].LastUsedAt != nil && filteredKeys[j].LastUsedAt == nil {
+			return true
+		}
+		if filteredKeys[i].LastUsedAt != nil && filteredKeys[j].LastUsedAt != nil && !filteredKeys[i].LastUsedAt.Equal(*filteredKeys[j].LastUsedAt) {
+			return filteredKeys[i].LastUsedAt.After(*filteredKeys[j].LastUsedAt)
+		}
+		return filteredKeys[i].CreatedAt.After(filteredKeys[j].CreatedAt)
+	})
+
+	totalUsage := int64(0)
+	activeKeys := 0
+	for _, key := range filteredKeys {
+		totalUsage += key.UsageCount
+		if key.Active {
+			activeKeys++
+		}
+	}
+
+	keys := filteredKeys
+	if limit < len(keys) {
+		keys = keys[:limit]
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"data": keys,
+		"summary": map[string]interface{}{
+			"total_keys":    len(filteredKeys),
+			"active_keys":   activeKeys,
+			"total_usage":   totalUsage,
+			"returned_keys": len(keys),
+		},
+		"filters": map[string]interface{}{
+			"limit":  limit,
+			"active": activeFilter,
+			"since":  r.URL.Query().Get("since"),
+		},
+	})
 }
 
 func (h *Handlers) updateKey(w http.ResponseWriter, r *http.Request) {
@@ -203,4 +313,35 @@ func (h *Handlers) healthCheck(w http.ResponseWriter, _ *http.Request) {
 		"status":    overallStatus,
 		"providers": providerStatuses,
 	})
+}
+
+func (h *Handlers) getConfig(w http.ResponseWriter, _ *http.Request) {
+	if h.Configs == nil {
+		writeError(w, http.StatusNotImplemented, "config management is not enabled", "not_implemented_error", "not_implemented")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(h.Configs.GetConfig())
+}
+
+func (h *Handlers) updateConfig(w http.ResponseWriter, r *http.Request) {
+	if h.Configs == nil {
+		writeError(w, http.StatusNotImplemented, "config management is not enabled", "not_implemented_error", "not_implemented")
+		return
+	}
+
+	var cfg aigateway.Config
+	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body", "invalid_request_error", "invalid_request")
+		return
+	}
+
+	if err := h.Configs.ReloadConfig(cfg); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error(), "invalid_request_error", "invalid_config")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "updated"})
 }

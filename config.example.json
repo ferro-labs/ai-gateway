@@ -74,7 +74,10 @@
       "stage": "before_request",
       "enabled": true,
       "config": {
-        "level": "info"
+        "level": "info",
+        "persist": false,
+        "backend": "sqlite",
+        "dsn": "ferrogw-requests.db"
       }
     }
   ]

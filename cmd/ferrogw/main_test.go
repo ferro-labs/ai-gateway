@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -213,5 +214,61 @@ func TestChatCompletions_StreamUnsupported(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", w.Code)
+	}
+}
+
+func TestCreateKeyStoreFromEnv_DefaultMemory(t *testing.T) {
+	t.Setenv("API_KEY_STORE_BACKEND", "")
+	t.Setenv("API_KEY_STORE_DSN", "")
+
+	store, backend, err := createKeyStoreFromEnv()
+	if err != nil {
+		t.Fatalf("createKeyStoreFromEnv returned error: %v", err)
+	}
+	if backend != "memory" {
+		t.Fatalf("backend = %s, want memory", backend)
+	}
+	if _, ok := store.(*admin.KeyStore); !ok {
+		t.Fatalf("expected memory KeyStore type")
+	}
+}
+
+func TestCreateKeyStoreFromEnv_SQLite(t *testing.T) {
+	dsn := filepath.Join(t.TempDir(), "keys.db")
+	t.Setenv("API_KEY_STORE_BACKEND", "sqlite")
+	t.Setenv("API_KEY_STORE_DSN", dsn)
+
+	store, backend, err := createKeyStoreFromEnv()
+	if err != nil {
+		t.Fatalf("createKeyStoreFromEnv returned error: %v", err)
+	}
+	if backend != "sqlite" {
+		t.Fatalf("backend = %s, want sqlite", backend)
+	}
+
+	created, err := store.Create("test", nil, nil)
+	if err != nil {
+		t.Fatalf("create key on sqlite store: %v", err)
+	}
+	if _, ok := store.ValidateKey(created.Key); !ok {
+		t.Fatalf("expected created sqlite key to validate")
+	}
+}
+
+func TestCreateKeyStoreFromEnv_UnknownBackend(t *testing.T) {
+	t.Setenv("API_KEY_STORE_BACKEND", "unknown")
+	t.Setenv("API_KEY_STORE_DSN", "")
+
+	if _, _, err := createKeyStoreFromEnv(); err == nil {
+		t.Fatalf("expected error for unsupported backend")
+	}
+}
+
+func TestCreateKeyStoreFromEnv_PostgresMissingDSN(t *testing.T) {
+	t.Setenv("API_KEY_STORE_BACKEND", "postgres")
+	t.Setenv("API_KEY_STORE_DSN", "")
+
+	if _, _, err := createKeyStoreFromEnv(); err == nil {
+		t.Fatalf("expected error for missing postgres dsn")
 	}
 }

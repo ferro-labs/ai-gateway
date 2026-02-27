@@ -45,7 +45,11 @@ func main() {
 
 	gw := buildGateway(cfg, registry)
 
-	keyStore := admin.NewKeyStore()
+	keyStore, keyStoreBackend, err := createKeyStoreFromEnv()
+	if err != nil {
+		logging.Logger.Error("failed to initialize API key store", "error", err)
+		os.Exit(1)
+	}
 
 	var corsOrigins []string
 	if origins := os.Getenv("CORS_ORIGINS"); origins != "" {
@@ -86,6 +90,7 @@ func main() {
 		"version", version.Short(),
 		"addr", addr,
 		"providers", len(registry.List()),
+		"api_key_store", keyStoreBackend,
 	)
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		stop()
@@ -93,6 +98,34 @@ func main() {
 		os.Exit(1) //nolint:gocritic
 	}
 	logging.Logger.Info("server stopped")
+}
+
+func createKeyStoreFromEnv() (admin.Store, string, error) {
+	backend := strings.ToLower(strings.TrimSpace(os.Getenv("API_KEY_STORE_BACKEND")))
+	if backend == "" {
+		backend = "memory"
+	}
+
+	storeDSN := strings.TrimSpace(os.Getenv("API_KEY_STORE_DSN"))
+
+	switch backend {
+	case "memory", "in-memory", "inmemory":
+		return admin.NewKeyStore(), "memory", nil
+	case "sqlite":
+		store, err := admin.NewSQLiteStore(storeDSN)
+		if err != nil {
+			return nil, "", err
+		}
+		return store, "sqlite", nil
+	case "postgres", "postgresql":
+		store, err := admin.NewPostgresStore(storeDSN)
+		if err != nil {
+			return nil, "", err
+		}
+		return store, "postgres", nil
+	default:
+		return nil, "", fmt.Errorf("unsupported API key store backend %q", backend)
+	}
 }
 
 // loadConfig loads and validates the gateway config from GATEWAY_CONFIG env var.
@@ -367,6 +400,7 @@ func newRouter(
 	adminHandlers := &admin.Handlers{
 		Keys:      keyStore,
 		Providers: gw,
+		Configs:   gw,
 	}
 	r.Route("/admin", func(r chi.Router) {
 		r.Use(admin.AuthMiddleware(keyStore))

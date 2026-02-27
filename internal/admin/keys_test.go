@@ -121,6 +121,29 @@ func TestValidateKey_Valid(t *testing.T) {
 	if got.ID != created.ID {
 		t.Errorf("got ID %q, want %q", got.ID, created.ID)
 	}
+	if got.UsageCount != 1 {
+		t.Errorf("expected usage_count 1, got %d", got.UsageCount)
+	}
+	if got.LastUsedAt == nil {
+		t.Error("expected last_used_at to be set")
+	}
+}
+
+func TestValidateKey_IncrementsUsage(t *testing.T) {
+	store := NewKeyStore()
+	created, _ := store.Create("usage-key", nil, nil)
+
+	_, ok := store.ValidateKey(created.Key)
+	if !ok {
+		t.Fatal("expected first validation to pass")
+	}
+	second, ok := store.ValidateKey(created.Key)
+	if !ok {
+		t.Fatal("expected second validation to pass")
+	}
+	if second.UsageCount != 2 {
+		t.Fatalf("expected usage_count 2, got %d", second.UsageCount)
+	}
 }
 
 func TestValidateKey_RevokedFails(t *testing.T) {

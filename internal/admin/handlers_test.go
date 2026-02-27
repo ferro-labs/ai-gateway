@@ -6,14 +6,39 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	aigateway "github.com/ferro-labs/ai-gateway"
 	"github.com/go-chi/chi/v5"
 )
 
+type testConfigManager struct {
+	cfg aigateway.Config
+}
+
+func (m *testConfigManager) GetConfig() aigateway.Config {
+	return m.cfg
+}
+
+func (m *testConfigManager) ReloadConfig(cfg aigateway.Config) error {
+	if err := aigateway.ValidateConfig(cfg); err != nil {
+		return err
+	}
+	m.cfg = cfg
+	return nil
+}
+
 func setupTestRouter() (*Handlers, chi.Router) {
 	store := NewKeyStore()
+	cm := &testConfigManager{
+		cfg: aigateway.Config{
+			Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeSingle},
+			Targets:  []aigateway.Target{{VirtualKey: "openai"}},
+		},
+	}
 	h := &Handlers{
-		Keys: store,
+		Keys:    store,
+		Configs: cm,
 	}
 	r := chi.NewRouter()
 	r.Use(AuthMiddleware(store))
@@ -290,19 +315,215 @@ func TestUnauthorizedRequest(t *testing.T) {
 	}
 }
 
-func TestReadOnlyCannotCreateConfig(t *testing.T) {
+func TestReadOnlyCannotUpdateConfig(t *testing.T) {
 	h, r := setupTestRouter()
 	createAdminKey(t, h)
 	roKey := createReadOnlyKey(t, h)
 
-	// Since /admin/configs route no longer exists, read-only should get 405 (Method Not Allowed) or 404
-	body := `{"name":"test","config":{"strategy":{"mode":"single"},"targets":[{"virtual_key":"k"}]}}`
-	req := authedRequest(http.MethodPost, "/admin/configs", body, roKey)
+	body := `{"strategy":{"mode":"single"},"targets":[{"virtual_key":"openai"}]}`
+	req := authedRequest(http.MethodPut, "/admin/config", body, roKey)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
-	// Route is gone — expect 404 or 405
-	if w.Code == http.StatusCreated {
-		t.Fatalf("config route should not exist, got 201")
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected read-only config update to fail (403), got %d", w.Code)
+	}
+}
+
+func TestGetConfig(t *testing.T) {
+	h, r := setupTestRouter()
+	adminKey := createAdminKey(t, h)
+
+	req := authedRequest(http.MethodGet, "/admin/config", "", adminKey)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var cfg aigateway.Config
+	if err := json.NewDecoder(w.Body).Decode(&cfg); err != nil {
+		t.Fatalf("failed to decode config response: %v", err)
+	}
+	if cfg.Strategy.Mode != aigateway.ModeSingle {
+		t.Fatalf("expected mode single, got %s", cfg.Strategy.Mode)
+	}
+}
+
+func TestUpdateConfig(t *testing.T) {
+	h, r := setupTestRouter()
+	adminKey := createAdminKey(t, h)
+
+	body := `{"strategy":{"mode":"fallback"},"targets":[{"virtual_key":"openai"},{"virtual_key":"anthropic"}]}`
+	req := authedRequest(http.MethodPut, "/admin/config", body, adminKey)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	getReq := authedRequest(http.MethodGet, "/admin/config", "", adminKey)
+	getW := httptest.NewRecorder()
+	r.ServeHTTP(getW, getReq)
+
+	var cfg aigateway.Config
+	_ = json.NewDecoder(getW.Body).Decode(&cfg)
+	if cfg.Strategy.Mode != aigateway.ModeFallback {
+		t.Fatalf("expected updated mode fallback, got %s", cfg.Strategy.Mode)
+	}
+	if len(cfg.Targets) != 2 {
+		t.Fatalf("expected 2 targets, got %d", len(cfg.Targets))
+	}
+}
+
+func TestUpdateConfigInvalidPayload(t *testing.T) {
+	h, r := setupTestRouter()
+	adminKey := createAdminKey(t, h)
+
+	body := `{"strategy":{"mode":"invalid"},"targets":[]}`
+	req := authedRequest(http.MethodPut, "/admin/config", body, adminKey)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestKeyUsageEndpoint(t *testing.T) {
+	h, r := setupTestRouter()
+	adminKey := createAdminKey(t, h)
+	keyA, _ := h.Keys.Create("key-a", []string{ScopeReadOnly}, nil)
+	keyB, _ := h.Keys.Create("key-b", []string{ScopeReadOnly}, nil)
+
+	_, _ = h.Keys.ValidateKey(keyA.Key)
+	_, _ = h.Keys.ValidateKey(keyA.Key)
+	_, _ = h.Keys.ValidateKey(keyA.Key)
+	_, _ = h.Keys.ValidateKey(keyB.Key)
+	_, _ = h.Keys.ValidateKey(keyB.Key)
+
+	req := authedRequest(http.MethodGet, "/admin/keys/usage?limit=2", "", adminKey)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var payload struct {
+		Data    []APIKey `json:"data"`
+		Summary struct {
+			TotalKeys    int   `json:"total_keys"`
+			ActiveKeys   int   `json:"active_keys"`
+			TotalUsage   int64 `json:"total_usage"`
+			ReturnedKeys int   `json:"returned_keys"`
+		} `json:"summary"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	if payload.Summary.ReturnedKeys != 2 {
+		t.Fatalf("expected returned_keys 2, got %d", payload.Summary.ReturnedKeys)
+	}
+	if len(payload.Data) != 2 {
+		t.Fatalf("expected 2 keys in response data, got %d", len(payload.Data))
+	}
+	if payload.Data[0].Name != "key-a" {
+		t.Fatalf("expected top key key-a, got %s", payload.Data[0].Name)
+	}
+	if payload.Data[0].UsageCount < payload.Data[1].UsageCount {
+		t.Fatalf("expected descending usage sort, got %d then %d", payload.Data[0].UsageCount, payload.Data[1].UsageCount)
+	}
+}
+
+func TestKeyUsageInvalidLimit(t *testing.T) {
+	h, r := setupTestRouter()
+	adminKey := createAdminKey(t, h)
+
+	req := authedRequest(http.MethodGet, "/admin/keys/usage?limit=bad", "", adminKey)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestKeyUsageFilterActive(t *testing.T) {
+	h, r := setupTestRouter()
+	adminKey := createAdminKey(t, h)
+	activeKey, _ := h.Keys.Create("active-key", []string{ScopeReadOnly}, nil)
+	inactiveKey, _ := h.Keys.Create("inactive-key", []string{ScopeReadOnly}, nil)
+	_ = h.Keys.Revoke(inactiveKey.ID)
+	_, _ = h.Keys.ValidateKey(activeKey.Key)
+
+	req := authedRequest(http.MethodGet, "/admin/keys/usage?active=true", "", adminKey)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var payload struct {
+		Data []APIKey `json:"data"`
+	}
+	_ = json.NewDecoder(w.Body).Decode(&payload)
+	for _, k := range payload.Data {
+		if !k.Active {
+			t.Fatalf("expected only active keys, got inactive key %s", k.Name)
+		}
+	}
+}
+
+func TestKeyUsageFilterSince(t *testing.T) {
+	h, r := setupTestRouter()
+	adminKey := createAdminKey(t, h)
+	usedKey, _ := h.Keys.Create("used-key", []string{ScopeReadOnly}, nil)
+	idleKey, _ := h.Keys.Create("idle-key", []string{ScopeReadOnly}, nil)
+	_, _ = h.Keys.ValidateKey(usedKey.Key)
+
+	since := time.Now().Add(-1 * time.Minute).UTC().Format(time.RFC3339)
+	req := authedRequest(http.MethodGet, "/admin/keys/usage?since="+since, "", adminKey)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var payload struct {
+		Data []APIKey `json:"data"`
+	}
+	_ = json.NewDecoder(w.Body).Decode(&payload)
+	if len(payload.Data) == 0 {
+		t.Fatalf("expected at least one key")
+	}
+	for _, k := range payload.Data {
+		if k.Name == idleKey.Name {
+			t.Fatalf("did not expect key without recent usage in since-filtered results")
+		}
+	}
+}
+
+func TestKeyUsageInvalidFilters(t *testing.T) {
+	h, r := setupTestRouter()
+	adminKey := createAdminKey(t, h)
+
+	req := authedRequest(http.MethodGet, "/admin/keys/usage?active=nope", "", adminKey)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid active filter, got %d", w.Code)
+	}
+
+	req = authedRequest(http.MethodGet, "/admin/keys/usage?since=badtime", "", adminKey)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid since filter, got %d", w.Code)
 	}
 }
