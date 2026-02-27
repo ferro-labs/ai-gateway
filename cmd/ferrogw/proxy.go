@@ -31,6 +31,7 @@ func proxyHandler(registry *providers.Registry) http.HandlerFunc {
 			writeOpenAIError(w, http.StatusBadRequest,
 				`no provider resolved; set the X-Provider header (e.g. "X-Provider: openai") or include a "model" field in the request body`,
 				"invalid_request_error",
+				"provider_not_resolved",
 			)
 			return
 		}
@@ -40,13 +41,14 @@ func proxyHandler(registry *providers.Registry) http.HandlerFunc {
 			writeOpenAIError(w, http.StatusNotImplemented,
 				"provider "+p.Name()+" does not support proxy pass-through",
 				"invalid_request_error",
+				"proxy_not_supported",
 			)
 			return
 		}
 
 		target, err := url.Parse(pp.BaseURL())
 		if err != nil {
-			writeOpenAIError(w, http.StatusInternalServerError, "invalid provider base URL: "+err.Error(), "server_error")
+			writeOpenAIError(w, http.StatusInternalServerError, "invalid provider base URL: "+err.Error(), "server_error", "internal_error")
 			return
 		}
 

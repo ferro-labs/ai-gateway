@@ -13,9 +13,8 @@ import (
 
 // OllamaProvider implements the Provider interface for Ollama.
 type OllamaProvider struct {
+	Base
 	httpClient *http.Client
-	baseURL    string
-	name       string
 	models     []string
 }
 
@@ -31,18 +30,11 @@ func NewOllama(baseURL string, models []string) (*OllamaProvider, error) {
 	}
 
 	return &OllamaProvider{
+		Base:       Base{name: "ollama", baseURL: baseURL},
 		httpClient: &http.Client{},
-		baseURL:    baseURL,
-		name:       "ollama",
 		models:     models,
 	}, nil
 }
-
-// Name returns the provider identifier.
-func (p *OllamaProvider) Name() string { return p.name }
-
-// BaseURL implements ProxiableProvider.
-func (p *OllamaProvider) BaseURL() string { return p.baseURL }
 
 // AuthHeaders implements ProxiableProvider.
 // Ollama is a local server with no API key requirement.
@@ -60,15 +52,7 @@ func (p *OllamaProvider) SupportsModel(_ string) bool {
 
 // Models returns structured model metadata for the /v1/models endpoint.
 func (p *OllamaProvider) Models() []ModelInfo {
-	models := make([]ModelInfo, len(p.models))
-	for i, id := range p.models {
-		models[i] = ModelInfo{
-			ID:      id,
-			Object:  "model",
-			OwnedBy: p.name,
-		}
-	}
-	return models
+	return ModelsFromList(p.name, p.SupportedModels())
 }
 
 // ollamaRequest is OpenAI-compatible.

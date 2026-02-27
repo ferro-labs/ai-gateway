@@ -42,11 +42,26 @@ type Target struct {
 	Weight float64 `json:"weight,omitempty" yaml:"weight,omitempty"`
 	// Retry configuration for this target.
 	Retry *RetryConfig `json:"retry,omitempty" yaml:"retry,omitempty"`
+	// CircuitBreaker configuration for this target (optional).
+	CircuitBreaker *CircuitBreakerConfig `json:"circuit_breaker,omitempty" yaml:"circuit_breaker,omitempty"`
 }
 
 // RetryConfig defines retry behavior.
 type RetryConfig struct {
 	Attempts int `json:"attempts" yaml:"attempts"`
+}
+
+// CircuitBreakerConfig configures the per-provider circuit breaker.
+type CircuitBreakerConfig struct {
+	// FailureThreshold is the number of consecutive failures before the circuit
+	// opens. Defaults to 5.
+	FailureThreshold int `json:"failure_threshold" yaml:"failure_threshold"`
+	// SuccessThreshold is the number of consecutive successes in half-open state
+	// required to close the circuit. Defaults to 1.
+	SuccessThreshold int `json:"success_threshold" yaml:"success_threshold"`
+	// Timeout is the duration the circuit stays open before transitioning to
+	// half-open (e.g. "30s"). Defaults to "30s".
+	Timeout string `json:"timeout" yaml:"timeout"`
 }
 
 // PluginConfig holds plugin configuration.

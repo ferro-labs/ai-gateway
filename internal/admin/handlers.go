@@ -14,8 +14,8 @@ import (
 
 // Handlers holds dependencies for admin HTTP handlers.
 type Handlers struct {
-	Keys     Store
-	Registry *providers.Registry
+	Keys      Store
+	Providers providers.ProviderSource
 }
 
 // Routes returns a chi.Router with all admin endpoints mounted.
@@ -50,11 +50,11 @@ func (h *Handlers) createKey(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt string   `json:"expires_at"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		writeError(w, http.StatusBadRequest, "invalid request body", "invalid_request_error", "invalid_request")
 		return
 	}
 	if body.Name == "" {
-		writeError(w, http.StatusBadRequest, "name is required")
+		writeError(w, http.StatusBadRequest, "name is required", "invalid_request_error", "invalid_request")
 		return
 	}
 
@@ -62,7 +62,7 @@ func (h *Handlers) createKey(w http.ResponseWriter, r *http.Request) {
 	if body.ExpiresAt != "" {
 		t, err := time.Parse(time.RFC3339, body.ExpiresAt)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid expires_at: must be RFC3339 format")
+			writeError(w, http.StatusBadRequest, "invalid expires_at: must be RFC3339 format", "invalid_request_error", "invalid_request")
 			return
 		}
 		expiresAt = &t
@@ -70,7 +70,7 @@ func (h *Handlers) createKey(w http.ResponseWriter, r *http.Request) {
 
 	key, err := h.Keys.Create(body.Name, body.Scopes, expiresAt)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, http.StatusInternalServerError, err.Error(), "server_error", "internal_error")
 		return
 	}
 
@@ -92,13 +92,13 @@ func (h *Handlers) updateKey(w http.ResponseWriter, r *http.Request) {
 		Scopes []string `json:"scopes"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		writeError(w, http.StatusBadRequest, "invalid request body", "invalid_request_error", "invalid_request")
 		return
 	}
 
 	key, err := h.Keys.Update(id, body.Name, body.Scopes)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		writeError(w, http.StatusNotFound, err.Error(), "not_found_error", "resource_not_found")
 		return
 	}
 
@@ -109,7 +109,7 @@ func (h *Handlers) updateKey(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) deleteKey(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if err := h.Keys.Delete(id); err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		writeError(w, http.StatusNotFound, err.Error(), "not_found_error", "resource_not_found")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -118,7 +118,7 @@ func (h *Handlers) deleteKey(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) revokeKey(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if err := h.Keys.Revoke(id); err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		writeError(w, http.StatusNotFound, err.Error(), "not_found_error", "resource_not_found")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -129,7 +129,7 @@ func (h *Handlers) rotateKey(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	key, err := h.Keys.RotateKey(id)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		writeError(w, http.StatusNotFound, err.Error(), "not_found_error", "resource_not_found")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -143,9 +143,9 @@ func (h *Handlers) listProviders(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	var result []providerInfo
-	if h.Registry != nil {
-		for _, name := range h.Registry.List() {
-			p, ok := h.Registry.Get(name)
+	if h.Providers != nil {
+		for _, name := range h.Providers.List() {
+			p, ok := h.Providers.Get(name)
 			if !ok {
 				continue
 			}
@@ -173,9 +173,9 @@ func (h *Handlers) healthCheck(w http.ResponseWriter, _ *http.Request) {
 	var providerStatuses []providerHealth
 	overallStatus := "healthy"
 
-	if h.Registry != nil {
-		for _, name := range h.Registry.List() {
-			p, ok := h.Registry.Get(name)
+	if h.Providers != nil {
+		for _, name := range h.Providers.List() {
+			p, ok := h.Providers.Get(name)
 			if !ok {
 				providerStatuses = append(providerStatuses, providerHealth{
 					Name:    name,

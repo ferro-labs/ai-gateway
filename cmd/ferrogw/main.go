@@ -4,44 +4,122 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	aigateway "github.com/ferro-labs/ai-gateway"
 	"github.com/ferro-labs/ai-gateway/internal/admin"
+	"github.com/ferro-labs/ai-gateway/internal/logging"
+	"github.com/ferro-labs/ai-gateway/internal/metrics"
+	"github.com/ferro-labs/ai-gateway/internal/ratelimit"
 	"github.com/ferro-labs/ai-gateway/internal/version"
 	"github.com/ferro-labs/ai-gateway/providers"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	// Register built-in plugins so they can be loaded from config.
 	_ "github.com/ferro-labs/ai-gateway/internal/plugins/cache"
 	_ "github.com/ferro-labs/ai-gateway/internal/plugins/logger"
 	_ "github.com/ferro-labs/ai-gateway/internal/plugins/maxtoken"
+	_ "github.com/ferro-labs/ai-gateway/internal/plugins/ratelimit"
 	_ "github.com/ferro-labs/ai-gateway/internal/plugins/wordfilter"
 )
 
 func main() {
-	// Load and validate config if GATEWAY_CONFIG is set.
-	var cfg *aigateway.Config
-	if cfgPath := os.Getenv("GATEWAY_CONFIG"); cfgPath != "" {
-		loaded, err := aigateway.LoadConfig(cfgPath)
-		if err != nil {
-			log.Fatalf("Failed to load config: %v", err)
-		}
-		if err := aigateway.ValidateConfig(*loaded); err != nil {
-			log.Fatalf("Invalid config: %v", err)
-		}
-		cfg = loaded
-		log.Printf("Config loaded: strategy=%s, targets=%d", cfg.Strategy.Mode, len(cfg.Targets))
+	// Initialise structured logging before anything else.
+	logging.Setup(os.Getenv("LOG_LEVEL"), os.Getenv("LOG_FORMAT"))
+
+	cfg := loadConfig()
+	registry := registerProviders()
+
+	if len(registry.List()) == 0 {
+		logging.Logger.Error("no providers configured; set at least one provider API key (e.g. OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY) or OLLAMA_HOST for local models")
+		os.Exit(1)
 	}
 
-	// Auto-register providers based on environment variables.
+	gw := buildGateway(cfg, registry)
+
+	keyStore := admin.NewKeyStore()
+
+	var corsOrigins []string
+	if origins := os.Getenv("CORS_ORIGINS"); origins != "" {
+		corsOrigins = strings.Split(origins, ",")
+	}
+
+	rlStore := newRateLimitStore()
+
+	r := newRouter(registry, keyStore, corsOrigins, gw, rlStore)
+
+	addr := ":8080"
+	if p := os.Getenv("PORT"); p != "" {
+		addr = ":" + p
+	}
+	srv := &http.Server{
+		Addr:         addr,
+		Handler:      r,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 120 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+
+	// Graceful shutdown on SIGINT / SIGTERM.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	go func() {
+		<-ctx.Done()
+		logging.Logger.Info("shutting down gracefully")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			logging.Logger.Error("shutdown error", "error", err)
+		}
+	}()
+
+	logging.Logger.Info("ferrogw started",
+		"version", version.Short(),
+		"addr", addr,
+		"providers", len(registry.List()),
+	)
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		stop()
+		logging.Logger.Error("server error", "error", err)
+		os.Exit(1) //nolint:gocritic
+	}
+	logging.Logger.Info("server stopped")
+}
+
+// loadConfig loads and validates the gateway config from GATEWAY_CONFIG env var.
+// Returns nil if GATEWAY_CONFIG is not set (caller uses default config).
+func loadConfig() *aigateway.Config {
+	cfgPath := os.Getenv("GATEWAY_CONFIG")
+	if cfgPath == "" {
+		return nil
+	}
+	loaded, err := aigateway.LoadConfig(cfgPath)
+	if err != nil {
+		logging.Logger.Error("failed to load config", "error", err)
+		os.Exit(1)
+	}
+	if err := aigateway.ValidateConfig(*loaded); err != nil {
+		logging.Logger.Error("invalid config", "error", err)
+		os.Exit(1)
+	}
+	logging.Logger.Info("config loaded",
+		"strategy", loaded.Strategy.Mode,
+		"targets", len(loaded.Targets),
+	)
+	return loaded
+}
+
+// registerProviders auto-registers all providers found via environment variables.
+func registerProviders() *providers.Registry {
 	registry := providers.NewRegistry()
 
 	type providerEntry struct {
@@ -63,10 +141,11 @@ func main() {
 		if key := os.Getenv(pe.envKey); key != "" {
 			p, err := pe.create(key, "")
 			if err != nil {
-				log.Fatalf("%s provider: %v", pe.name, err)
+				logging.Logger.Error("provider init failed", "provider", pe.name, "error", err)
+				os.Exit(1)
 			}
 			registry.Register(p)
-			log.Printf("Provider registered: %s", pe.name)
+			logging.Logger.Info("provider registered", "provider", pe.name)
 		}
 	}
 
@@ -78,12 +157,13 @@ func main() {
 		if baseURL != "" && deployment != "" {
 			p, err := providers.NewAzureOpenAI(key, baseURL, deployment, apiVersion)
 			if err != nil {
-				log.Fatalf("Azure OpenAI provider: %v", err)
+				logging.Logger.Error("provider init failed", "provider", "azure-openai", "error", err)
+				os.Exit(1)
 			}
 			registry.Register(p)
-			log.Println("Provider registered: azure-openai")
+			logging.Logger.Info("provider registered", "provider", "azure-openai")
 		} else {
-			log.Println("Warning: AZURE_OPENAI_API_KEY set but AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_DEPLOYMENT are required")
+			logging.Logger.Warn("AZURE_OPENAI_API_KEY set but AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_DEPLOYMENT are required")
 		}
 	}
 
@@ -95,16 +175,19 @@ func main() {
 		}
 		p, err := providers.NewOllama(ollamaURL, models)
 		if err != nil {
-			log.Fatalf("Ollama provider: %v", err)
+			logging.Logger.Error("provider init failed", "provider", "ollama", "error", err)
+			os.Exit(1)
 		}
 		registry.Register(p)
-		log.Printf("Provider registered: ollama (models: %s)", strings.Join(p.SupportedModels(), ", "))
+		logging.Logger.Info("provider registered", "provider", "ollama", "models", p.SupportedModels())
 	}
 
-	if len(registry.List()) == 0 {
-		log.Fatal("No providers configured. Set at least one provider API key (e.g., OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY) or OLLAMA_HOST for local models")
-	}
+	return registry
+}
 
+// buildGateway constructs the Gateway, wires providers, and loads plugins.
+// If cfg is nil a default fallback config is created from the registry.
+func buildGateway(cfg *aigateway.Config, registry *providers.Registry) *aigateway.Gateway {
 	if cfg == nil {
 		defaultTargets := make([]aigateway.Target, 0, len(registry.List()))
 		for _, name := range registry.List() {
@@ -114,17 +197,17 @@ func main() {
 			Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeFallback},
 			Targets:  defaultTargets,
 		}
-		log.Printf("No GATEWAY_CONFIG set; using default strategy=%s with %d target(s)", cfg.Strategy.Mode, len(cfg.Targets))
+		logging.Logger.Info("using default config",
+			"strategy", cfg.Strategy.Mode,
+			"targets", len(cfg.Targets),
+		)
 	}
 
-	// Build and wire the Gateway.
-	var gw *aigateway.Gateway
-	var err error
-	gw, err = aigateway.New(*cfg)
+	gw, err := aigateway.New(*cfg)
 	if err != nil {
-		log.Fatalf("Failed to create gateway: %v", err)
+		logging.Logger.Error("failed to create gateway", "error", err)
+		os.Exit(1)
 	}
-	// Register all env-var providers on the Gateway so strategies can route to them.
 	for _, name := range registry.List() {
 		if p, ok := registry.Get(name); ok {
 			gw.RegisterProvider(p)
@@ -132,56 +215,44 @@ func main() {
 	}
 	if len(cfg.Plugins) > 0 {
 		if err := gw.LoadPlugins(); err != nil {
-			log.Fatalf("Failed to load plugins: %v", err)
+			logging.Logger.Error("failed to load plugins", "error", err)
+			os.Exit(1)
 		}
-		log.Printf("Gateway ready: %d plugin(s) loaded", len(cfg.Plugins))
+		logging.Logger.Info("plugins loaded", "count", len(cfg.Plugins))
 	}
+	return gw
+}
 
-	keyStore := admin.NewKeyStore()
-
-	var corsOrigins []string
-	if origins := os.Getenv("CORS_ORIGINS"); origins != "" {
-		corsOrigins = strings.Split(origins, ",")
+// newRateLimitStore builds a per-IP token-bucket store from env vars.
+// Returns nil if RATE_LIMIT_RPS is not set or is not a positive number.
+func newRateLimitStore() *ratelimit.Store {
+	rpsStr := os.Getenv("RATE_LIMIT_RPS")
+	if rpsStr == "" {
+		return nil
 	}
-
-	r := newRouter(registry, keyStore, corsOrigins, gw)
-
-	addr := ":8080"
-	if p := os.Getenv("PORT"); p != "" {
-		addr = ":" + p
+	rps, err := strconv.ParseFloat(rpsStr, 64)
+	if err != nil || rps <= 0 {
+		return nil
 	}
-	srv := &http.Server{
-		Addr:         addr,
-		Handler:      r,
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 120 * time.Second,
-		IdleTimeout:  60 * time.Second,
-	}
-
-	// Graceful shutdown on SIGINT / SIGTERM.
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	go func() {
-		<-ctx.Done()
-		log.Println("Shutting down gracefully…")
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		if err := srv.Shutdown(shutdownCtx); err != nil {
-			log.Printf("Shutdown error: %v", err)
+	var burst float64
+	if burstStr := os.Getenv("RATE_LIMIT_BURST"); burstStr != "" {
+		if v, err := strconv.ParseFloat(burstStr, 64); err == nil {
+			burst = v
 		}
-	}()
-
-	log.Printf("FerroGateway %s listening on %s (%d provider(s))", version.Short(), addr, len(registry.List()))
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		stop()
-		log.Fatalf("Server error: %v", err) //nolint:gocritic
 	}
-	log.Println("Server stopped.")
+	store := ratelimit.NewStore(rps, burst)
+	logging.Logger.Info("rate limiting enabled", "rps", rps, "burst", burst)
+	return store
 }
 
 // newRouter builds the HTTP router.
-func newRouter(registry *providers.Registry, keyStore admin.Store, corsOrigins []string, gw *aigateway.Gateway) http.Handler {
+func newRouter(
+	registry *providers.Registry,
+	keyStore admin.Store,
+	corsOrigins []string,
+	gw *aigateway.Gateway,
+	rlStore *ratelimit.Store,
+) http.Handler {
 	if gw == nil {
 		defaultTargets := make([]aigateway.Target, 0, len(registry.List()))
 		for _, name := range registry.List() {
@@ -203,28 +274,66 @@ func newRouter(registry *providers.Registry, keyStore admin.Store, corsOrigins [
 	}
 
 	r := chi.NewRouter()
-	r.Use(middleware.Logger)
+
+	// Core middleware stack.
+	r.Use(logging.Middleware) // inject trace ID + X-Request-ID header
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.RealIP)
 	r.Use(corsMiddleware(corsOrigins...))
 
+	// Optional per-IP rate limiting middleware.
+	if rlStore != nil {
+		r.Use(rateLimitMiddleware(rlStore))
+	}
+
+	// Health check — deep: lists registered providers and their model counts.
 	r.Get("/health", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/plain")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("OK"))
+		type providerHealth struct {
+			Name   string `json:"name"`
+			Status string `json:"status"`
+			Models int    `json:"models"`
+		}
+		var providerStatuses []providerHealth
+		for _, name := range gw.ListProviders() {
+			p, ok := gw.GetProvider(name)
+			if !ok {
+				continue
+			}
+			providerStatuses = append(providerStatuses, providerHealth{
+				Name:   name,
+				Status: "available",
+				Models: len(p.Models()),
+			})
+		}
+		if providerStatuses == nil {
+			providerStatuses = []providerHealth{}
+		}
+		status := "ok"
+		if len(providerStatuses) == 0 {
+			status = "no_providers"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":    status,
+			"providers": providerStatuses,
+		})
 	})
+
+	// Prometheus metrics endpoint.
+	r.Handle("/metrics", promhttp.Handler())
 
 	r.Get("/v1/models", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"object": "list",
-			"data":   registry.AllModels(),
+			"data":   gw.AllModels(),
 		})
 	})
 
+	// Admin routes — pass the gateway as the ProviderSource.
 	adminHandlers := &admin.Handlers{
-		Keys:     keyStore,
-		Registry: registry,
+		Keys:      keyStore,
+		Providers: gw,
 	}
 	r.Route("/admin", func(r chi.Router) {
 		r.Use(admin.AuthMiddleware(keyStore))
@@ -234,28 +343,28 @@ func newRouter(registry *providers.Registry, keyStore admin.Store, corsOrigins [
 	r.Post("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
 		var req providers.Request
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeOpenAIError(w, http.StatusBadRequest, err.Error(), "invalid_request_error")
+			writeOpenAIError(w, http.StatusBadRequest, err.Error(), "invalid_request_error", "invalid_request")
 			return
 		}
 		if err := req.Validate(); err != nil {
-			writeOpenAIError(w, http.StatusBadRequest, err.Error(), "invalid_request_error")
+			writeOpenAIError(w, http.StatusBadRequest, err.Error(), "invalid_request_error", "invalid_request")
 			return
 		}
 
 		// --- Streaming path ---
 		if req.Stream {
-			if !hasModelProvider(registry, req.Model) {
-				writeOpenAIError(w, http.StatusBadRequest, "no provider supports model: "+req.Model, "invalid_request_error")
+			if _, ok := gw.FindByModel(req.Model); !ok {
+				writeOpenAIError(w, http.StatusBadRequest, "no provider supports model: "+req.Model, "invalid_request_error", "model_not_found")
 				return
 			}
-			if !hasStreamingProviderForModel(registry, req.Model) {
-				writeOpenAIError(w, http.StatusBadRequest, "provider does not support streaming", "invalid_request_error")
+			if !hasStreamingProviderForModel(gw, req.Model) {
+				writeOpenAIError(w, http.StatusBadRequest, "provider does not support streaming", "invalid_request_error", "streaming_not_supported")
 				return
 			}
 
 			ch, err := gw.RouteStream(r.Context(), req)
 			if err != nil {
-				writeOpenAIError(w, http.StatusInternalServerError, err.Error(), "server_error")
+				writeOpenAIError(w, http.StatusInternalServerError, err.Error(), "server_error", "routing_error")
 				return
 			}
 			writeSSE(w, ch)
@@ -263,14 +372,14 @@ func newRouter(registry *providers.Registry, keyStore admin.Store, corsOrigins [
 		}
 
 		// --- Non-streaming path ---
-		if !hasModelProvider(registry, req.Model) {
-			writeOpenAIError(w, http.StatusBadRequest, "no provider supports model: "+req.Model, "invalid_request_error")
+		if _, ok := gw.FindByModel(req.Model); !ok {
+			writeOpenAIError(w, http.StatusBadRequest, "no provider supports model: "+req.Model, "invalid_request_error", "model_not_found")
 			return
 		}
 
 		resp, err := gw.Route(r.Context(), req)
 		if err != nil {
-			writeOpenAIError(w, http.StatusInternalServerError, err.Error(), "server_error")
+			writeOpenAIError(w, http.StatusInternalServerError, err.Error(), "server_error", "routing_error")
 			return
 		}
 
@@ -278,27 +387,44 @@ func newRouter(registry *providers.Registry, keyStore admin.Store, corsOrigins [
 		_ = json.NewEncoder(w).Encode(resp)
 	})
 
-	// Legacy text completions (e.g. gpt-3.5-turbo-instruct, deepseek-chat).
-	// Proxies natively to providers that support it, or shims via chat for others.
+	// Legacy text completions.
 	r.Post("/v1/completions", completionsHandler(registry))
 
-	// Proxy pass-through: forward any unhandled /v1/* request to the upstream
-	// provider.  This covers files, batches, fine-tuning, audio, images/edits,
-	// responses API, realtime, etc. without needing a dedicated handler.
-	// Must be registered LAST so explicit routes take precedence.
+	// Proxy pass-through for unhandled /v1/* endpoints.
 	r.HandleFunc("/v1/*", proxyHandler(registry))
 
 	return r
 }
 
-// writeOpenAIError writes an OpenAI-compatible JSON error response.
-func writeOpenAIError(w http.ResponseWriter, status int, message, errType string) {
+// rateLimitMiddleware rejects requests that exceed the per-IP token-bucket limit.
+func rateLimitMiddleware(store *ratelimit.Store) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ip := r.RemoteAddr
+			if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+				parts := strings.SplitN(xff, ",", 2)
+				ip = strings.TrimSpace(parts[0])
+			}
+			if !store.Allow(ip) {
+				metrics.RateLimitRejections.WithLabelValues("ip").Inc()
+				writeOpenAIError(w, http.StatusTooManyRequests,
+					"rate limit exceeded", "rate_limit_error", "rate_limit_exceeded")
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// writeOpenAIError writes a unified OpenAI-compatible JSON error response.
+func writeOpenAIError(w http.ResponseWriter, status int, message, errType, code string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
-		"error": map[string]interface{}{
+		"error": map[string]string{
 			"message": message,
 			"type":    errType,
+			"code":    code,
 		},
 	})
 }
@@ -312,7 +438,7 @@ func writeSSE(w http.ResponseWriter, ch <-chan providers.StreamChunk) {
 	now := time.Now().Unix()
 	for chunk := range ch {
 		if chunk.Error != nil {
-			errData := fmt.Sprintf(`{"error":{"message":"%s","type":"stream_error"}}`, chunk.Error.Error())
+			errData := fmt.Sprintf(`{"error":{"message":%q,"type":"stream_error","code":"stream_error"}}`, chunk.Error.Error())
 			_, _ = fmt.Fprintf(w, "data: %s\n\n", errData)
 			if flusher != nil {
 				flusher.Flush()
@@ -337,14 +463,9 @@ func writeSSE(w http.ResponseWriter, ch <-chan providers.StreamChunk) {
 	}
 }
 
-func hasModelProvider(registry *providers.Registry, model string) bool {
-	_, ok := registry.FindByModel(model)
-	return ok
-}
-
-func hasStreamingProviderForModel(registry *providers.Registry, model string) bool {
-	for _, name := range registry.List() {
-		p, ok := registry.Get(name)
+func hasStreamingProviderForModel(src providers.ProviderSource, model string) bool {
+	for _, name := range src.List() {
+		p, ok := src.Get(name)
 		if !ok || !p.SupportsModel(model) {
 			continue
 		}

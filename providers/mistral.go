@@ -13,10 +13,8 @@ import (
 
 // MistralProvider implements the Provider interface for Mistral AI.
 type MistralProvider struct {
+	Base
 	httpClient *http.Client
-	apiKey     string
-	baseURL    string
-	name       string
 }
 
 // NewMistral creates a new Mistral AI provider.
@@ -27,18 +25,10 @@ func NewMistral(apiKey string, baseURL string) (*MistralProvider, error) {
 	baseURL = strings.TrimRight(baseURL, "/")
 
 	return &MistralProvider{
+		Base:       Base{name: "mistral", apiKey: apiKey, baseURL: baseURL},
 		httpClient: &http.Client{},
-		apiKey:     apiKey,
-		baseURL:    baseURL,
-		name:       "mistral",
 	}, nil
 }
-
-// Name returns the provider identifier.
-func (p *MistralProvider) Name() string { return p.name }
-
-// BaseURL implements ProxiableProvider.
-func (p *MistralProvider) BaseURL() string { return p.baseURL }
 
 // AuthHeaders implements ProxiableProvider.
 func (p *MistralProvider) AuthHeaders() map[string]string {
@@ -67,16 +57,7 @@ func (p *MistralProvider) SupportsModel(model string) bool {
 
 // Models returns structured model metadata for the /v1/models endpoint.
 func (p *MistralProvider) Models() []ModelInfo {
-	supported := p.SupportedModels()
-	models := make([]ModelInfo, len(supported))
-	for i, id := range supported {
-		models[i] = ModelInfo{
-			ID:      id,
-			Object:  "model",
-			OwnedBy: p.name,
-		}
-	}
-	return models
+	return ModelsFromList(p.name, p.SupportedModels())
 }
 
 // mistralRequest is OpenAI-compatible.

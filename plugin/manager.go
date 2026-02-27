@@ -3,7 +3,8 @@ package plugin
 import (
 	"context"
 	"fmt"
-	"log/slog"
+
+	"github.com/ferro-labs/ai-gateway/internal/logging"
 )
 
 // Manager manages plugin lifecycle and execution.
@@ -30,7 +31,7 @@ func (m *Manager) Register(stage Stage, p Plugin) error {
 	default:
 		return fmt.Errorf("unknown plugin stage: %s", stage)
 	}
-	slog.Info("plugin registered", "name", p.Name(), "type", p.Type(), "stage", stage)
+	logging.Logger.Info("plugin registered", "name", p.Name(), "type", p.Type(), "stage", stage)
 	return nil
 }
 
@@ -55,7 +56,7 @@ func (m *Manager) RunBefore(ctx context.Context, pctx *Context) error {
 func (m *Manager) RunAfter(ctx context.Context, pctx *Context) error {
 	for _, p := range m.after {
 		if err := p.Execute(ctx, pctx); err != nil {
-			slog.Warn("after-request plugin error", "plugin", p.Name(), "error", err)
+			logging.Logger.Warn("after-request plugin error", "plugin", p.Name(), "error", err)
 		}
 		if pctx.Skip {
 			break
@@ -68,7 +69,7 @@ func (m *Manager) RunAfter(ctx context.Context, pctx *Context) error {
 func (m *Manager) RunOnError(ctx context.Context, pctx *Context) {
 	for _, p := range m.onErr {
 		if err := p.Execute(ctx, pctx); err != nil {
-			slog.Warn("on-error plugin error", "plugin", p.Name(), "error", err)
+			logging.Logger.Warn("on-error plugin error", "plugin", p.Name(), "error", err)
 		}
 	}
 }
