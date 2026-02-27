@@ -112,6 +112,25 @@ func (h *Handlers) keyUsage(w http.ResponseWriter, r *http.Request) {
 		limit = parsed
 	}
 
+	offset := 0
+	if raw := r.URL.Query().Get("offset"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 0 {
+			writeError(w, http.StatusBadRequest, "invalid offset: must be a non-negative integer", "invalid_request_error", "invalid_request")
+			return
+		}
+		offset = parsed
+	}
+
+	sortBy := r.URL.Query().Get("sort")
+	if sortBy == "" {
+		sortBy = "usage"
+	}
+	if sortBy != "usage" && sortBy != "last_used" {
+		writeError(w, http.StatusBadRequest, "invalid sort: must be usage or last_used", "invalid_request_error", "invalid_request")
+		return
+	}
+
 	activeFilter := ""
 	if raw := r.URL.Query().Get("active"); raw != "" {
 		parsed, err := strconv.ParseBool(raw)
@@ -149,9 +168,26 @@ func (h *Handlers) keyUsage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sort.Slice(filteredKeys, func(i, j int) bool {
+		if sortBy == "last_used" {
+			if filteredKeys[i].LastUsedAt == nil && filteredKeys[j].LastUsedAt != nil {
+				return false
+			}
+			if filteredKeys[i].LastUsedAt != nil && filteredKeys[j].LastUsedAt == nil {
+				return true
+			}
+			if filteredKeys[i].LastUsedAt != nil && filteredKeys[j].LastUsedAt != nil && !filteredKeys[i].LastUsedAt.Equal(*filteredKeys[j].LastUsedAt) {
+				return filteredKeys[i].LastUsedAt.After(*filteredKeys[j].LastUsedAt)
+			}
+			if filteredKeys[i].UsageCount != filteredKeys[j].UsageCount {
+				return filteredKeys[i].UsageCount > filteredKeys[j].UsageCount
+			}
+			return filteredKeys[i].CreatedAt.After(filteredKeys[j].CreatedAt)
+		}
+
 		if filteredKeys[i].UsageCount != filteredKeys[j].UsageCount {
 			return filteredKeys[i].UsageCount > filteredKeys[j].UsageCount
 		}
+
 		if filteredKeys[i].LastUsedAt == nil && filteredKeys[j].LastUsedAt != nil {
 			return false
 		}
@@ -161,6 +197,7 @@ func (h *Handlers) keyUsage(w http.ResponseWriter, r *http.Request) {
 		if filteredKeys[i].LastUsedAt != nil && filteredKeys[j].LastUsedAt != nil && !filteredKeys[i].LastUsedAt.Equal(*filteredKeys[j].LastUsedAt) {
 			return filteredKeys[i].LastUsedAt.After(*filteredKeys[j].LastUsedAt)
 		}
+
 		return filteredKeys[i].CreatedAt.After(filteredKeys[j].CreatedAt)
 	})
 
@@ -173,9 +210,12 @@ func (h *Handlers) keyUsage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	keys := filteredKeys
-	if limit < len(keys) {
-		keys = keys[:limit]
+	keys := make([]*APIKey, 0)
+	if offset < len(filteredKeys) {
+		keys = filteredKeys[offset:]
+		if limit < len(keys) {
+			keys = keys[:limit]
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -189,6 +229,8 @@ func (h *Handlers) keyUsage(w http.ResponseWriter, r *http.Request) {
 		},
 		"filters": map[string]interface{}{
 			"limit":  limit,
+			"offset": offset,
+			"sort":   sortBy,
 			"active": activeFilter,
 			"since":  r.URL.Query().Get("since"),
 		},

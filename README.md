@@ -151,13 +151,15 @@ Authorization: Bearer <admin-or-readonly-key>
 Supported query params:
 
 * `limit` (default `20`, max `100`)
+* `offset` (default `0`)
+* `sort` (`usage` or `last_used`; default `usage`)
 * `active` (`true` or `false`)
 * `since` (RFC3339 timestamp; filters by `last_used_at >= since`)
 
 Example:
 
 ```bash
-curl "http://localhost:8080/admin/keys/usage?limit=10&active=true&since=2026-02-01T00:00:00Z" \
+curl "http://localhost:8080/admin/keys/usage?limit=10&offset=0&sort=usage&active=true&since=2026-02-01T00:00:00Z" \
   -H "Authorization: Bearer gw-..."
 ```
 

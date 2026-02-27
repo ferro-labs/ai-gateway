@@ -526,4 +526,96 @@ func TestKeyUsageInvalidFilters(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for invalid since filter, got %d", w.Code)
 	}
+
+	req = authedRequest(http.MethodGet, "/admin/keys/usage?offset=-1", "", adminKey)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid offset, got %d", w.Code)
+	}
+
+	req = authedRequest(http.MethodGet, "/admin/keys/usage?sort=unknown", "", adminKey)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid sort, got %d", w.Code)
+	}
+}
+
+func TestKeyUsageOffsetAndSort(t *testing.T) {
+	h, _ := setupTestRouter()
+	keyA, _ := h.Keys.Create("key-a", []string{ScopeReadOnly}, nil)
+	keyB, _ := h.Keys.Create("key-b", []string{ScopeReadOnly}, nil)
+	keyC, _ := h.Keys.Create("key-c", []string{ScopeReadOnly}, nil)
+
+	_, _ = h.Keys.ValidateKey(keyA.Key)
+	_, _ = h.Keys.ValidateKey(keyA.Key)
+	time.Sleep(5 * time.Millisecond)
+	_, _ = h.Keys.ValidateKey(keyB.Key)
+	time.Sleep(5 * time.Millisecond)
+	_, _ = h.Keys.ValidateKey(keyC.Key)
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/keys/usage?sort=usage&limit=4", nil)
+	w := httptest.NewRecorder()
+	h.keyUsage(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var usagePayload struct {
+		Data []APIKey `json:"data"`
+	}
+	_ = json.NewDecoder(w.Body).Decode(&usagePayload)
+	if len(usagePayload.Data) < 2 {
+		t.Fatalf("expected at least 2 usage entries, got %d", len(usagePayload.Data))
+	}
+	for i := 1; i < len(usagePayload.Data); i++ {
+		if usagePayload.Data[i-1].UsageCount < usagePayload.Data[i].UsageCount {
+			t.Fatalf("usage sort should be descending, got %d then %d", usagePayload.Data[i-1].UsageCount, usagePayload.Data[i].UsageCount)
+		}
+	}
+
+	secondExpected := usagePayload.Data[1].ID
+	req = httptest.NewRequest(http.MethodGet, "/admin/keys/usage?sort=usage&limit=1&offset=1", nil)
+	w = httptest.NewRecorder()
+	h.keyUsage(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var offsetPayload struct {
+		Data []APIKey `json:"data"`
+	}
+	_ = json.NewDecoder(w.Body).Decode(&offsetPayload)
+	if len(offsetPayload.Data) != 1 {
+		t.Fatalf("expected 1 result with limit=1, got %d", len(offsetPayload.Data))
+	}
+	if offsetPayload.Data[0].ID != secondExpected {
+		t.Fatalf("offset pagination mismatch: expected id %s got %s", secondExpected, offsetPayload.Data[0].ID)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/admin/keys/usage?sort=last_used&limit=4", nil)
+	w = httptest.NewRecorder()
+	h.keyUsage(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var recentPayload struct {
+		Data []APIKey `json:"data"`
+	}
+	_ = json.NewDecoder(w.Body).Decode(&recentPayload)
+	if len(recentPayload.Data) < 2 {
+		t.Fatalf("expected at least 2 results for last_used sort")
+	}
+	for i := 1; i < len(recentPayload.Data); i++ {
+		prev := recentPayload.Data[i-1].LastUsedAt
+		curr := recentPayload.Data[i].LastUsedAt
+		if prev == nil || curr == nil {
+			continue
+		}
+		if prev.Before(*curr) {
+			t.Fatalf("last_used sort should be descending")
+		}
+	}
 }
