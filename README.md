@@ -251,6 +251,23 @@ Response includes the number of deleted entries in `deleted`.
 
 ---
 
+## 📊 Admin Dashboard Summary API
+
+For a minimal admin dashboard UI, fetch aggregate status from one endpoint:
+
+```http
+GET /admin/dashboard
+Authorization: Bearer <admin-or-readonly-key>
+```
+
+Response sections:
+
+* `providers` (`total`, `available`)
+* `keys` (`total`, `active`, `expired`, `total_usage`)
+* `request_logs` (`enabled`, `total`)
+
+---
+
 ## 🔌 1-Line Migration
 
 FerroGateway natively speaks the OpenAI spec. Point your existing client SDKs to the Gateway by changing simply the `baseURL`—**no SDK changes, no prompt edits, no refactoring.**

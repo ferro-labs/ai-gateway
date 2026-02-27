@@ -38,6 +38,7 @@ func (h *Handlers) Routes() chi.Router {
 	// Read-only endpoints (accessible with read-only or admin scope).
 	r.Group(func(r chi.Router) {
 		r.Use(RequireScope(ScopeReadOnly, ScopeAdmin))
+		r.Get("/dashboard", h.dashboard)
 		r.Get("/keys", h.listKeys)
 		r.Get("/keys/usage", h.keyUsage)
 		r.Get("/logs", h.listLogs)
@@ -59,6 +60,64 @@ func (h *Handlers) Routes() chi.Router {
 	})
 
 	return r
+}
+
+func (h *Handlers) dashboard(w http.ResponseWriter, r *http.Request) {
+	providersCount := 0
+	availableProviders := 0
+	if h.Providers != nil {
+		providers := h.Providers.List()
+		providersCount = len(providers)
+		for _, name := range providers {
+			if _, ok := h.Providers.Get(name); ok {
+				availableProviders++
+			}
+		}
+	}
+
+	keys := h.Keys.List()
+	activeKeys := 0
+	expiredKeys := 0
+	totalUsage := int64(0)
+	now := time.Now().UTC()
+	for _, key := range keys {
+		if key.Active {
+			activeKeys++
+		}
+		if key.ExpiresAt != nil && key.ExpiresAt.Before(now) {
+			expiredKeys++
+		}
+		totalUsage += key.UsageCount
+	}
+
+	requestLogs := map[string]interface{}{
+		"enabled": false,
+		"total":   0,
+	}
+	if h.Logs != nil {
+		logsResult, err := h.Logs.List(r.Context(), requestlog.Query{Limit: 1, Offset: 0})
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load dashboard summary", "server_error", "internal_error")
+			return
+		}
+		requestLogs["enabled"] = true
+		requestLogs["total"] = logsResult.Total
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"providers": map[string]interface{}{
+			"total":     providersCount,
+			"available": availableProviders,
+		},
+		"keys": map[string]interface{}{
+			"total":       len(keys),
+			"active":      activeKeys,
+			"expired":     expiredKeys,
+			"total_usage": totalUsage,
+		},
+		"request_logs": requestLogs,
+	})
 }
 
 func (h *Handlers) createKey(w http.ResponseWriter, r *http.Request) {
