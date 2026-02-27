@@ -11,6 +11,7 @@ import (
 	"time"
 
 	aigateway "github.com/ferro-labs/ai-gateway"
+	"github.com/ferro-labs/ai-gateway/internal/requestlog"
 	"github.com/ferro-labs/ai-gateway/providers"
 	"github.com/go-chi/chi/v5"
 )
@@ -26,6 +27,7 @@ type Handlers struct {
 	Keys      Store
 	Providers providers.ProviderSource
 	Configs   ConfigManager
+	Logs      requestlog.Reader
 }
 
 // Routes returns a chi.Router with all admin endpoints mounted.
@@ -37,6 +39,7 @@ func (h *Handlers) Routes() chi.Router {
 		r.Use(RequireScope(ScopeReadOnly, ScopeAdmin))
 		r.Get("/keys", h.listKeys)
 		r.Get("/keys/usage", h.keyUsage)
+		r.Get("/logs", h.listLogs)
 		r.Get("/providers", h.listProviders)
 		r.Get("/health", h.healthCheck)
 		r.Get("/config", h.getConfig)
@@ -233,6 +236,78 @@ func (h *Handlers) keyUsage(w http.ResponseWriter, r *http.Request) {
 			"sort":   sortBy,
 			"active": activeFilter,
 			"since":  r.URL.Query().Get("since"),
+		},
+	})
+}
+
+func (h *Handlers) listLogs(w http.ResponseWriter, r *http.Request) {
+	if h.Logs == nil {
+		writeError(w, http.StatusNotImplemented, "request log storage is not enabled", "not_implemented_error", "not_implemented")
+		return
+	}
+
+	limit := 50
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed <= 0 {
+			writeError(w, http.StatusBadRequest, "invalid limit: must be a positive integer", "invalid_request_error", "invalid_request")
+			return
+		}
+		if parsed > 200 {
+			parsed = 200
+		}
+		limit = parsed
+	}
+
+	offset := 0
+	if raw := r.URL.Query().Get("offset"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 0 {
+			writeError(w, http.StatusBadRequest, "invalid offset: must be a non-negative integer", "invalid_request_error", "invalid_request")
+			return
+		}
+		offset = parsed
+	}
+
+	var since *time.Time
+	if raw := r.URL.Query().Get("since"); raw != "" {
+		parsed, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid since: must be RFC3339 format", "invalid_request_error", "invalid_request")
+			return
+		}
+		since = &parsed
+	}
+
+	query := requestlog.Query{
+		Limit:    limit,
+		Offset:   offset,
+		Stage:    r.URL.Query().Get("stage"),
+		Model:    r.URL.Query().Get("model"),
+		Provider: r.URL.Query().Get("provider"),
+		Since:    since,
+	}
+
+	result, err := h.Logs.List(r.Context(), query)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list request logs", "server_error", "internal_error")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"data": result.Data,
+		"summary": map[string]interface{}{
+			"total_entries":    result.Total,
+			"returned_entries": len(result.Data),
+		},
+		"filters": map[string]interface{}{
+			"limit":    limit,
+			"offset":   offset,
+			"stage":    query.Stage,
+			"model":    query.Model,
+			"provider": query.Provider,
+			"since":    r.URL.Query().Get("since"),
 		},
 	})
 }

@@ -167,6 +167,35 @@ Response contains `data` (sorted by `usage_count` desc) and `summary` totals.
 
 ---
 
+## 📜 Admin Request Logs API
+
+When request log storage is enabled, admin API exposes persisted request logs:
+
+```http
+GET /admin/logs
+Authorization: Bearer <admin-or-readonly-key>
+```
+
+Supported query params:
+
+- `limit` (default `50`, max `200`)
+- `offset` (default `0`)
+- `stage` (e.g. `before_request`, `after_request`, `on_error`)
+- `model`
+- `provider`
+- `since` (RFC3339 timestamp)
+
+Example:
+
+```bash
+curl "http://localhost:8080/admin/logs?limit=20&offset=0&stage=on_error&since=2026-02-01T00:00:00Z" \
+  -H "Authorization: Bearer gw-..."
+```
+
+If request log storage is disabled, endpoint returns `501 Not Implemented`.
+
+---
+
 ## 🔌 1-Line Migration
 
 FerroGateway natively speaks the OpenAI spec. Point your existing client SDKs to the Gateway by changing simply the `baseURL`—**no SDK changes, no prompt edits, no refactoring.**

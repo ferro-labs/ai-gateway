@@ -24,9 +24,30 @@ type Entry struct {
 	CreatedAt        time.Time
 }
 
+// Query defines request log listing filters.
+type Query struct {
+	Limit    int
+	Offset   int
+	Stage    string
+	Model    string
+	Provider string
+	Since    *time.Time
+}
+
+// ListResult is a paginated request log query response.
+type ListResult struct {
+	Data  []Entry
+	Total int
+}
+
 // Writer persists request log entries.
 type Writer interface {
 	Write(ctx context.Context, entry Entry) error
+}
+
+// Reader loads request log entries from persistent storage.
+type Reader interface {
+	List(ctx context.Context, query Query) (ListResult, error)
 }
 
 // NoopWriter ignores all log writes.
@@ -142,6 +163,115 @@ func (w *SQLWriter) Write(ctx context.Context, entry Entry) error {
 		return fmt.Errorf("write request log: %w", err)
 	}
 	return nil
+}
+
+// List returns paginated request log entries with optional filters.
+func (w *SQLWriter) List(ctx context.Context, query Query) (ListResult, error) {
+	if query.Limit <= 0 {
+		query.Limit = 50
+	}
+	if query.Limit > 200 {
+		query.Limit = 200
+	}
+	if query.Offset < 0 {
+		query.Offset = 0
+	}
+
+	whereClauses := make([]string, 0)
+	args := make([]interface{}, 0)
+
+	if query.Stage != "" {
+		whereClauses = append(whereClauses, "stage = ?")
+		args = append(args, query.Stage)
+	}
+	if query.Model != "" {
+		whereClauses = append(whereClauses, "model = ?")
+		args = append(args, query.Model)
+	}
+	if query.Provider != "" {
+		whereClauses = append(whereClauses, "provider = ?")
+		args = append(args, query.Provider)
+	}
+	if query.Since != nil {
+		whereClauses = append(whereClauses, "created_at >= ?")
+		args = append(args, query.Since.UTC())
+	}
+
+	whereSQL := ""
+	if len(whereClauses) > 0 {
+		whereSQL = " WHERE " + strings.Join(whereClauses, " AND ")
+	}
+
+	countQuery := "SELECT COUNT(*) FROM request_logs" + whereSQL
+	if w.dialect == "postgres" {
+		countQuery = bindPostgres(countQuery)
+	}
+
+	var total int
+	if err := w.db.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
+		return ListResult{}, fmt.Errorf("count request logs: %w", err)
+	}
+
+	listQuery := "SELECT trace_id, stage, model, provider, prompt_tokens, completion_tokens, total_tokens, error_message, created_at FROM request_logs" + whereSQL + " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+	listArgs := append(args, query.Limit, query.Offset)
+	if w.dialect == "postgres" {
+		listQuery = bindPostgres(listQuery)
+	}
+
+	rows, err := w.db.QueryContext(ctx, listQuery, listArgs...)
+	if err != nil {
+		return ListResult{}, fmt.Errorf("list request logs: %w", err)
+	}
+	defer rows.Close()
+
+	entries := make([]Entry, 0)
+	for rows.Next() {
+		var (
+			e        Entry
+			traceID  sql.NullString
+			model    sql.NullString
+			provider sql.NullString
+			errMsg   sql.NullString
+		)
+		if err := rows.Scan(&traceID, &e.Stage, &model, &provider, &e.PromptTokens, &e.CompletionTokens, &e.TotalTokens, &errMsg, &e.CreatedAt); err != nil {
+			return ListResult{}, fmt.Errorf("scan request log row: %w", err)
+		}
+		if traceID.Valid {
+			e.TraceID = traceID.String
+		}
+		if model.Valid {
+			e.Model = model.String
+		}
+		if provider.Valid {
+			e.Provider = provider.String
+		}
+		if errMsg.Valid {
+			e.ErrorMessage = errMsg.String
+		}
+		entries = append(entries, e)
+	}
+
+	if err := rows.Err(); err != nil {
+		return ListResult{}, fmt.Errorf("iterate request logs: %w", err)
+	}
+
+	return ListResult{Data: entries, Total: total}, nil
+}
+
+func bindPostgres(query string) string {
+	var (
+		builder strings.Builder
+		index   = 1
+	)
+	for i := 0; i < len(query); i++ {
+		if query[i] == '?' {
+			builder.WriteString(fmt.Sprintf("$%d", index))
+			index++
+			continue
+		}
+		builder.WriteByte(query[i])
+	}
+	return builder.String()
 }
 
 func (w *SQLWriter) Close() error {

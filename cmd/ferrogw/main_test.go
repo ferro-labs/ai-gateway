@@ -59,7 +59,7 @@ func testKeyStore() *admin.KeyStore {
 
 func TestHealth(t *testing.T) {
 	ks := testKeyStore()
-	r := newRouter(testRegistry(), ks, nil, nil, nil)
+	r := newRouter(testRegistry(), ks, nil, nil, nil, nil)
 	req := httptest.NewRequest("GET", "/health", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -81,7 +81,7 @@ func TestHealth(t *testing.T) {
 
 func TestModels(t *testing.T) {
 	ks := testKeyStore()
-	r := newRouter(testRegistry(), ks, nil, nil, nil)
+	r := newRouter(testRegistry(), ks, nil, nil, nil, nil)
 	req := httptest.NewRequest("GET", "/v1/models", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -99,7 +99,7 @@ func TestModels(t *testing.T) {
 
 func TestChatCompletions(t *testing.T) {
 	ks := testKeyStore()
-	r := newRouter(testRegistry(), ks, nil, nil, nil)
+	r := newRouter(testRegistry(), ks, nil, nil, nil, nil)
 	payload := `{"model":"test-model","messages":[{"role":"user","content":"hi"}]}`
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
@@ -119,7 +119,7 @@ func TestChatCompletions(t *testing.T) {
 
 func TestChatCompletions_ValidationError(t *testing.T) {
 	ks := testKeyStore()
-	r := newRouter(testRegistry(), ks, nil, nil, nil)
+	r := newRouter(testRegistry(), ks, nil, nil, nil, nil)
 	payload := `{"model":"","messages":[]}`
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
@@ -133,7 +133,7 @@ func TestChatCompletions_ValidationError(t *testing.T) {
 
 func TestChatCompletions_UnsupportedModel(t *testing.T) {
 	ks := testKeyStore()
-	r := newRouter(testRegistry(), ks, nil, nil, nil)
+	r := newRouter(testRegistry(), ks, nil, nil, nil, nil)
 	payload := `{"model":"unknown","messages":[{"role":"user","content":"hi"}]}`
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
@@ -180,7 +180,7 @@ func testStreamRegistry() *providers.Registry {
 
 func TestChatCompletions_Stream(t *testing.T) {
 	ks := testKeyStore()
-	r := newRouter(testStreamRegistry(), ks, nil, nil, nil)
+	r := newRouter(testStreamRegistry(), ks, nil, nil, nil, nil)
 	payload := `{"model":"test-stream-model","messages":[{"role":"user","content":"hi"}],"stream":true}`
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
@@ -205,7 +205,7 @@ func TestChatCompletions_Stream(t *testing.T) {
 
 func TestChatCompletions_StreamUnsupported(t *testing.T) {
 	ks := testKeyStore()
-	r := newRouter(testRegistry(), ks, nil, nil, nil)
+	r := newRouter(testRegistry(), ks, nil, nil, nil, nil)
 	payload := `{"model":"test-model","messages":[{"role":"user","content":"hi"}],"stream":true}`
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")

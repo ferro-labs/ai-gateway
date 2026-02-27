@@ -2,18 +2,59 @@ package admin
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"testing"
 	"time"
 
 	aigateway "github.com/ferro-labs/ai-gateway"
+	"github.com/ferro-labs/ai-gateway/internal/requestlog"
 	"github.com/go-chi/chi/v5"
 )
 
 type testConfigManager struct {
 	cfg aigateway.Config
+}
+
+type fakeLogReader struct {
+	entries []requestlog.Entry
+}
+
+func (f *fakeLogReader) List(_ context.Context, query requestlog.Query) (requestlog.ListResult, error) {
+	filtered := make([]requestlog.Entry, 0)
+	for _, entry := range f.entries {
+		if query.Stage != "" && entry.Stage != query.Stage {
+			continue
+		}
+		if query.Model != "" && entry.Model != query.Model {
+			continue
+		}
+		if query.Provider != "" && entry.Provider != query.Provider {
+			continue
+		}
+		if query.Since != nil && entry.CreatedAt.Before(*query.Since) {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+
+	sort.Slice(filtered, func(i, j int) bool {
+		return filtered[i].CreatedAt.After(filtered[j].CreatedAt)
+	})
+
+	start := query.Offset
+	if start > len(filtered) {
+		start = len(filtered)
+	}
+	end := start + query.Limit
+	if query.Limit <= 0 || end > len(filtered) {
+		end = len(filtered)
+	}
+
+	return requestlog.ListResult{Data: filtered[start:end], Total: len(filtered)}, nil
 }
 
 func (m *testConfigManager) GetConfig() aigateway.Config {
@@ -39,6 +80,25 @@ func setupTestRouter() (*Handlers, chi.Router) {
 	h := &Handlers{
 		Keys:    store,
 		Configs: cm,
+	}
+	r := chi.NewRouter()
+	r.Use(AuthMiddleware(store))
+	r.Mount("/admin", h.Routes())
+	return h, r
+}
+
+func setupTestRouterWithLogs(reader requestlog.Reader) (*Handlers, chi.Router) {
+	store := NewKeyStore()
+	cm := &testConfigManager{
+		cfg: aigateway.Config{
+			Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeSingle},
+			Targets:  []aigateway.Target{{VirtualKey: "openai"}},
+		},
+	}
+	h := &Handlers{
+		Keys:    store,
+		Configs: cm,
+		Logs:    reader,
 	}
 	r := chi.NewRouter()
 	r.Use(AuthMiddleware(store))
@@ -617,5 +677,67 @@ func TestKeyUsageOffsetAndSort(t *testing.T) {
 		if prev.Before(*curr) {
 			t.Fatalf("last_used sort should be descending")
 		}
+	}
+}
+
+func TestLogsEndpoint(t *testing.T) {
+	now := time.Now().UTC()
+	reader := &fakeLogReader{entries: []requestlog.Entry{
+		{TraceID: "1", Stage: "after_request", Model: "gpt-4", Provider: "openai", TotalTokens: 10, CreatedAt: now.Add(-2 * time.Minute)},
+		{TraceID: "2", Stage: "on_error", Model: "gpt-4", Provider: "openai", ErrorMessage: "boom", CreatedAt: now.Add(-1 * time.Minute)},
+	}}
+	h, r := setupTestRouterWithLogs(reader)
+	adminKey := createAdminKey(t, h)
+
+	req := authedRequest(http.MethodGet, "/admin/logs?stage=on_error&limit=10", "", adminKey)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var payload struct {
+		Data    []requestlog.Entry `json:"data"`
+		Summary struct {
+			TotalEntries    int `json:"total_entries"`
+			ReturnedEntries int `json:"returned_entries"`
+		} `json:"summary"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode logs response: %v", err)
+	}
+	if payload.Summary.TotalEntries != 1 || payload.Summary.ReturnedEntries != 1 {
+		t.Fatalf("unexpected summary: %+v", payload.Summary)
+	}
+	if len(payload.Data) != 1 || payload.Data[0].Stage != "on_error" {
+		t.Fatalf("expected filtered on_error entry")
+	}
+}
+
+func TestLogsEndpointNotEnabled(t *testing.T) {
+	h, r := setupTestRouter()
+	adminKey := createAdminKey(t, h)
+
+	req := authedRequest(http.MethodGet, "/admin/logs", "", adminKey)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotImplemented {
+		t.Fatalf("expected 501, got %d", w.Code)
+	}
+}
+
+func TestLogsEndpointInvalidSince(t *testing.T) {
+	reader := &fakeLogReader{entries: []requestlog.Entry{}}
+	h, r := setupTestRouterWithLogs(reader)
+	adminKey := createAdminKey(t, h)
+
+	req := authedRequest(http.MethodGet, "/admin/logs?since=bad", "", adminKey)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
 	}
 }

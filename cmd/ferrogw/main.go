@@ -17,6 +17,7 @@ import (
 	"github.com/ferro-labs/ai-gateway/internal/logging"
 	"github.com/ferro-labs/ai-gateway/internal/metrics"
 	"github.com/ferro-labs/ai-gateway/internal/ratelimit"
+	"github.com/ferro-labs/ai-gateway/internal/requestlog"
 	"github.com/ferro-labs/ai-gateway/internal/version"
 	"github.com/ferro-labs/ai-gateway/providers"
 	"github.com/go-chi/chi/v5"
@@ -57,8 +58,13 @@ func main() {
 	}
 
 	rlStore := newRateLimitStore()
+	logReader, logReaderBackend, err := createRequestLogReaderFromEnv()
+	if err != nil {
+		logging.Logger.Error("failed to initialize request log reader", "error", err)
+		os.Exit(1)
+	}
 
-	r := newRouter(registry, keyStore, corsOrigins, gw, rlStore)
+	r := newRouter(registry, keyStore, corsOrigins, gw, rlStore, logReader)
 
 	addr := ":8080"
 	if p := os.Getenv("PORT"); p != "" {
@@ -91,6 +97,7 @@ func main() {
 		"addr", addr,
 		"providers", len(registry.List()),
 		"api_key_store", keyStoreBackend,
+		"request_log_store", logReaderBackend,
 	)
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		stop()
@@ -125,6 +132,32 @@ func createKeyStoreFromEnv() (admin.Store, string, error) {
 		return store, "postgres", nil
 	default:
 		return nil, "", fmt.Errorf("unsupported API key store backend %q", backend)
+	}
+}
+
+func createRequestLogReaderFromEnv() (requestlog.Reader, string, error) {
+	backend := strings.ToLower(strings.TrimSpace(os.Getenv("REQUEST_LOG_STORE_BACKEND")))
+	if backend == "" {
+		return nil, "disabled", nil
+	}
+
+	dsn := strings.TrimSpace(os.Getenv("REQUEST_LOG_STORE_DSN"))
+
+	switch backend {
+	case "sqlite":
+		reader, err := requestlog.NewSQLiteWriter(dsn)
+		if err != nil {
+			return nil, "", err
+		}
+		return reader, "sqlite", nil
+	case "postgres", "postgresql":
+		reader, err := requestlog.NewPostgresWriter(dsn)
+		if err != nil {
+			return nil, "", err
+		}
+		return reader, "postgres", nil
+	default:
+		return nil, "", fmt.Errorf("unsupported request log store backend %q", backend)
 	}
 }
 
@@ -318,6 +351,7 @@ func newRouter(
 	corsOrigins []string,
 	gw *aigateway.Gateway,
 	rlStore *ratelimit.Store,
+	logReader requestlog.Reader,
 ) http.Handler {
 	if gw == nil {
 		defaultTargets := make([]aigateway.Target, 0, len(registry.List()))
@@ -401,6 +435,7 @@ func newRouter(
 		Keys:      keyStore,
 		Providers: gw,
 		Configs:   gw,
+		Logs:      logReader,
 	}
 	r.Route("/admin", func(r chi.Router) {
 		r.Use(admin.AuthMiddleware(keyStore))
