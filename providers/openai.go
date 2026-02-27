@@ -3,6 +3,7 @@ package providers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/openai/openai-go"
@@ -72,23 +73,50 @@ func (p *OpenAIProvider) Embed(ctx context.Context, req EmbeddingRequest) (*Embe
 	params := openai.EmbeddingNewParams{
 		Model: req.Model,
 	}
+
+	// Validate and map req.Input. Return a descriptive error rather than
+	// letting the SDK send an empty/zero Input and receive a cryptic upstream
+	// error.
 	switch v := req.Input.(type) {
 	case string:
 		params.Input = openai.EmbeddingNewParamsInputUnion{OfString: openai.String(v)}
 	case []string:
+		if len(v) == 0 {
+			return nil, fmt.Errorf("embed: Input must not be an empty array")
+		}
 		params.Input = openai.EmbeddingNewParamsInputUnion{OfArrayOfStrings: v}
 	case []interface{}:
+		if len(v) == 0 {
+			return nil, fmt.Errorf("embed: Input must not be an empty array")
+		}
 		strs := make([]string, 0, len(v))
-		for _, item := range v {
-			if s, ok := item.(string); ok {
-				strs = append(strs, s)
+		for i, item := range v {
+			s, ok := item.(string)
+			if !ok {
+				return nil, fmt.Errorf("embed: Input[%d] is %T, want string", i, item)
 			}
+			strs = append(strs, s)
 		}
 		params.Input = openai.EmbeddingNewParamsInputUnion{OfArrayOfStrings: strs}
+	case nil:
+		return nil, fmt.Errorf("embed: Input must not be nil")
+	default:
+		return nil, fmt.Errorf("embed: unsupported Input type %T; want string or []string", req.Input)
 	}
-	if req.EncodingFormat == "float" || req.EncodingFormat == "" {
+
+	// Map EncodingFormat to the SDK constant. The OpenAI API only accepts
+	// "float" (default) and "base64"; anything else is rejected early with a
+	// clear error instead of being silently dropped or forwarded as an invalid
+	// value.
+	switch req.EncodingFormat {
+	case "", "float":
 		params.EncodingFormat = openai.EmbeddingNewParamsEncodingFormatFloat
+	case "base64":
+		params.EncodingFormat = openai.EmbeddingNewParamsEncodingFormatBase64
+	default:
+		return nil, fmt.Errorf("embed: unsupported encoding_format %q; valid values are \"float\" and \"base64\"", req.EncodingFormat)
 	}
+
 	if req.Dimensions != nil {
 		params.Dimensions = openai.Int(int64(*req.Dimensions))
 	}

@@ -98,6 +98,15 @@ func modelBaseName(path string) string {
 	return path
 }
 
+// modelVersion returns the version suffix after ":" in a model path, or empty
+// string if no version is specified.
+func modelVersion(path string) string {
+	if idx := strings.Index(path, ":"); idx != -1 {
+		return path[idx+1:]
+	}
+	return ""
+}
+
 // ── Replicate API types ───────────────────────────────────────────────────────
 
 type replicatePredictionInput struct {
@@ -107,7 +116,10 @@ type replicatePredictionInput struct {
 }
 
 type replicatePredictionRequest struct {
-	Input replicatePredictionInput `json:"input"`
+	// Version is the pinned model version hash. When set, the versioned
+	// predictions endpoint is used instead of the model-level endpoint.
+	Version string                   `json:"version,omitempty"`
+	Input   replicatePredictionInput `json:"input"`
 }
 
 type replicatePrediction struct {
@@ -125,7 +137,10 @@ type replicateImageInput struct {
 }
 
 type replicateImageRequest struct {
-	Input replicateImageInput `json:"input"`
+	// Version is the pinned model version hash. When set, the versioned
+	// predictions endpoint is used instead of the model-level endpoint.
+	Version string              `json:"version,omitempty"`
+	Input   replicateImageInput `json:"input"`
 }
 
 // Complete sends a chat completion request to Replicate and polls until done.
@@ -154,7 +169,8 @@ func (p *ReplicateProvider) Complete(ctx context.Context, req Request) (*Respons
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	// Resolve model path (strip version for URL path).
+	// Resolve model path — prefer the registered entry (which may carry a
+	// pinned version) over the bare request model string.
 	modelPath := req.Model
 	for _, m := range p.textModels {
 		if modelBaseName(m) == modelBaseName(req.Model) {
@@ -163,7 +179,19 @@ func (p *ReplicateProvider) Complete(ctx context.Context, req Request) (*Respons
 		}
 	}
 
-	url := fmt.Sprintf("%s/models/%s/predictions", p.baseURL, modelBaseName(modelPath))
+	// When a version is present use POST /predictions {"version":"...",...};
+	// otherwise use POST /models/{owner}/{name}/predictions.
+	var url string
+	if v := modelVersion(modelPath); v != "" {
+		predReq.Version = v
+		body, err = json.Marshal(predReq)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal versioned request: %w", err)
+		}
+		url = fmt.Sprintf("%s/predictions", p.baseURL)
+	} else {
+		url = fmt.Sprintf("%s/models/%s/predictions", p.baseURL, modelBaseName(modelPath))
+	}
 	pred, err := p.submitAndPoll(ctx, url, body)
 	if err != nil {
 		return nil, err
@@ -203,9 +231,13 @@ func (p *ReplicateProvider) GenerateImage(ctx context.Context, req ImageRequest)
 		input.NumImages = *req.N
 	}
 	// Parse size (e.g. "1024x1024") into width/height.
+	// Reject malformed or degenerate values up front so Replicate never
+	// receives a zero-dimension request.
 	if req.Size != "" {
 		var w, h int
-		_, _ = fmt.Sscanf(req.Size, "%dx%d", &w, &h)
+		if n, _ := fmt.Sscanf(req.Size, "%dx%d", &w, &h); n != 2 || w <= 0 || h <= 0 {
+			return nil, fmt.Errorf("invalid size %q: expected WxH format with positive integers (e.g. \"1024x1024\")", req.Size)
+		}
 		input.Width = w
 		input.Height = h
 	}
@@ -216,7 +248,8 @@ func (p *ReplicateProvider) GenerateImage(ctx context.Context, req ImageRequest)
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	// Resolve model path.
+	// Resolve model path — prefer the registered entry (which may carry a
+	// pinned version) over the bare request model string.
 	modelPath := req.Model
 	for _, m := range p.imageModels {
 		if modelBaseName(m) == modelBaseName(req.Model) {
@@ -225,7 +258,19 @@ func (p *ReplicateProvider) GenerateImage(ctx context.Context, req ImageRequest)
 		}
 	}
 
-	url := fmt.Sprintf("%s/models/%s/predictions", p.baseURL, modelBaseName(modelPath))
+	// When a version is present use POST /predictions {"version":"...",...};
+	// otherwise use POST /models/{owner}/{name}/predictions.
+	var url string
+	if v := modelVersion(modelPath); v != "" {
+		imgReq.Version = v
+		body, err = json.Marshal(imgReq)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal versioned request: %w", err)
+		}
+		url = fmt.Sprintf("%s/predictions", p.baseURL)
+	} else {
+		url = fmt.Sprintf("%s/models/%s/predictions", p.baseURL, modelBaseName(modelPath))
+	}
 	pred, err := p.submitAndPoll(ctx, url, body)
 	if err != nil {
 		return nil, err
@@ -308,9 +353,14 @@ func (p *ReplicateProvider) submitAndPoll(ctx context.Context, url string, body 
 			if err != nil {
 				return nil, fmt.Errorf("poll request failed: %w", err)
 			}
-			pollBody, _ := io.ReadAll(pollResp.Body)
-			_ = pollResp.Body.Close()
-
+			pollBody, readErr := io.ReadAll(pollResp.Body)
+			_ = pollResp.Body.Close() // manual close: defer inside a loop defers until function return
+			if readErr != nil {
+				return nil, fmt.Errorf("failed to read poll response body: %w", readErr)
+			}
+			if pollResp.StatusCode != http.StatusOK {
+				return nil, fmt.Errorf("replicate poll error (%d): %s", pollResp.StatusCode, string(pollBody))
+			}
 			if err := json.Unmarshal(pollBody, &pred); err != nil {
 				return nil, fmt.Errorf("failed to unmarshal poll response: %w", err)
 			}

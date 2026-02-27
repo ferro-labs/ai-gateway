@@ -63,6 +63,117 @@ func TestReplicateProvider_SupportsModel_WithVersion(t *testing.T) {
 	}
 }
 
+func TestModelVersion(t *testing.T) {
+	tests := []struct {
+		path    string
+		wantVer string
+	}{
+		{"owner/name", ""},
+		{"owner/name:abc123", "abc123"},
+		{"owner/name:sha256deadbeef", "sha256deadbeef"},
+	}
+	for _, tc := range tests {
+		if got := modelVersion(tc.path); got != tc.wantVer {
+			t.Errorf("modelVersion(%q) = %q, want %q", tc.path, got, tc.wantVer)
+		}
+	}
+}
+
+func TestReplicateProvider_Complete_PinnedVersion(t *testing.T) {
+	// Verify that when the registered model has a version suffix, Complete()
+	// sends the request to /predictions with a "version" field in the body,
+	// instead of /models/{owner}/{name}/predictions.
+	var gotPath string
+	var gotBody map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		pred := replicatePrediction{ID: "pred-ver", Status: "succeeded", Output: "ok"}
+		data, _ := json.Marshal(pred)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write(data)
+	}))
+	defer srv.Close()
+
+	const versionedModel = "meta/llama:abc123"
+	p, _ := NewReplicate("test-token", srv.URL, []string{versionedModel}, nil)
+	_, err := p.Complete(context.Background(), Request{
+		Model:    "meta/llama",
+		Messages: []Message{{Role: "user", Content: "Hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Complete() error: %v", err)
+	}
+	if gotPath != "/predictions" {
+		t.Errorf("request path = %q, want /predictions", gotPath)
+	}
+	if gotBody["version"] != "abc123" {
+		t.Errorf("body[\"version\"] = %v, want abc123", gotBody["version"])
+	}
+	if _, ok := gotBody["input"]; !ok {
+		t.Error("body missing \"input\" field")
+	}
+}
+
+func TestReplicateProvider_GenerateImage_PinnedVersion(t *testing.T) {
+	// Same check as above but for GenerateImage().
+	var gotPath string
+	var gotBody map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		pred := replicatePrediction{ID: "img-ver", Status: "succeeded", Output: []interface{}{"https://example.com/img.png"}}
+		data, _ := json.Marshal(pred)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write(data)
+	}))
+	defer srv.Close()
+
+	const versionedModel = "black-forest-labs/flux-schnell:deadbeef"
+	p, _ := NewReplicate("test-token", srv.URL, nil, []string{versionedModel})
+	_, err := p.GenerateImage(context.Background(), ImageRequest{
+		Model:  "black-forest-labs/flux-schnell",
+		Prompt: "A cat",
+	})
+	if err != nil {
+		t.Fatalf("GenerateImage() error: %v", err)
+	}
+	if gotPath != "/predictions" {
+		t.Errorf("request path = %q, want /predictions", gotPath)
+	}
+	if gotBody["version"] != "deadbeef" {
+		t.Errorf("body[\"version\"] = %v, want deadbeef", gotBody["version"])
+	}
+}
+
+func TestReplicateProvider_Complete_NoVersion_UsesModelPath(t *testing.T) {
+	// When no version is present the URL must be /models/{owner}/{name}/predictions.
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		pred := replicatePrediction{ID: "pred-nover", Status: "succeeded", Output: "ok"}
+		data, _ := json.Marshal(pred)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write(data)
+	}))
+	defer srv.Close()
+
+	p, _ := NewReplicate("test-token", srv.URL, []string{"meta/llama"}, nil)
+	_, err := p.Complete(context.Background(), Request{
+		Model:    "meta/llama",
+		Messages: []Message{{Role: "user", Content: "Hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Complete() error: %v", err)
+	}
+	if gotPath != "/models/meta/llama/predictions" {
+		t.Errorf("request path = %q, want /models/meta/llama/predictions", gotPath)
+	}
+}
+
 func TestReplicateProvider_Models(t *testing.T) {
 	p, _ := NewReplicate("test-token", "", nil, nil)
 	models := p.Models()
@@ -153,17 +264,18 @@ func TestReplicateProvider_Complete_PollingBehavior(t *testing.T) {
 	callCount := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		callCount++
+		w.Header().Set("Content-Type", "application/json")
 		var pred replicatePrediction
 		if callCount == 1 {
-			// Initial prediction
+			// Initial submission: 201 Created with processing status.
 			pred = replicatePrediction{ID: "pred-poll", Status: "processing"}
+			w.WriteHeader(http.StatusCreated)
 		} else {
-			// Poll request
+			// Poll request: 200 OK with succeeded status.
 			pred = replicatePrediction{ID: "pred-poll", Status: "succeeded", Output: "text result"}
+			w.WriteHeader(http.StatusOK)
 		}
 		data, _ := json.Marshal(pred)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusCreated)
 		_, _ = w.Write(data)
 	}))
 	defer srv.Close()
@@ -181,5 +293,93 @@ func TestReplicateProvider_Complete_PollingBehavior(t *testing.T) {
 	}
 	if resp.Choices[0].Message.Content != "text result" {
 		t.Errorf("polled content = %q, want 'text result'", resp.Choices[0].Message.Content)
+	}
+}
+
+// ── GenerateImage size validation ─────────────────────────────────────────────
+
+func TestReplicateProvider_GenerateImage_InvalidSize(t *testing.T) {
+	p, _ := NewReplicate("test-token", "http://unused", nil, []string{"owner/model"})
+
+	badSizes := []string{
+		"1024",        // only one dimension
+		"axb",         // non-integer
+		"0x1024",      // zero width
+		"1024x0",      // zero height
+		"-512x512",    // negative width
+		"512x-512",    // negative height
+		"1024 x 1024", // spaces instead of 'x'
+		"",            // empty is fine (skipped) — not tested here, see valid test
+	}
+	for _, size := range badSizes {
+		if size == "" {
+			continue
+		}
+		_, err := p.GenerateImage(context.Background(), ImageRequest{
+			Model:  "owner/model",
+			Prompt: "A robot",
+			Size:   size,
+		})
+		if err == nil {
+			t.Errorf("GenerateImage() with Size=%q: expected error, got nil", size)
+		}
+		if !strings.Contains(err.Error(), size) {
+			t.Errorf("error for size %q should mention the bad value; got: %v", size, err)
+		}
+	}
+}
+
+func TestReplicateProvider_GenerateImage_ValidSize(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		pred := replicatePrediction{ID: "img-sz", Status: "succeeded", Output: []interface{}{"https://example.com/img.png"}}
+		data, _ := json.Marshal(pred)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write(data)
+	}))
+	defer srv.Close()
+
+	p, _ := NewReplicate("test-token", srv.URL, nil, []string{"owner/model"})
+	_, err := p.GenerateImage(context.Background(), ImageRequest{
+		Model:  "owner/model",
+		Prompt: "A robot",
+		Size:   "1024x1024",
+	})
+	if err != nil {
+		t.Fatalf("GenerateImage() with valid size: unexpected error: %v", err)
+	}
+}
+
+// ── Poll loop error handling ───────────────────────────────────────────────────
+
+func TestReplicateProvider_Poll_NonOKStatus(t *testing.T) {
+	// First call: submit — returns processing. Second call: poll — returns 429.
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		callCount++
+		if callCount == 1 {
+			pred := replicatePrediction{ID: "pred-poll-err", Status: "processing"}
+			data, _ := json.Marshal(pred)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write(data)
+			return
+		}
+		// Poll response: non-200 error.
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"detail":"rate limited"}`))
+	}))
+	defer srv.Close()
+
+	p, _ := NewReplicate("test-token", srv.URL, []string{"test/model"}, nil)
+	_, err := p.Complete(context.Background(), Request{
+		Model:    "test/model",
+		Messages: []Message{{Role: "user", Content: "Hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected error from non-200 poll response, got nil")
+	}
+	if !strings.Contains(err.Error(), "429") {
+		t.Errorf("error should mention HTTP status 429; got: %v", err)
 	}
 }

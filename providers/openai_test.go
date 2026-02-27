@@ -2,9 +2,11 @@ package providers
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -182,5 +184,115 @@ func TestOpenAIProvider_CompleteStream_MockSSE(t *testing.T) {
 		if chunk.ID != "chatcmpl-1" {
 			t.Errorf("chunk ID = %q, want chatcmpl-1", chunk.ID)
 		}
+	}
+}
+
+// ── Embed() validation tests ─────────────────────────────────────────────────
+
+func TestOpenAIProvider_Embed_InvalidInputType(t *testing.T) {
+	p, _ := NewOpenAI("sk-test", "")
+	ctx := context.Background()
+
+	badInputs := []struct {
+		name  string
+		input interface{}
+	}{
+		{"nil", nil},
+		{"integer", 42},
+		{"float", 3.14},
+		{"bool", true},
+		{"map", map[string]string{"a": "b"}},
+	}
+	for _, tc := range badInputs {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := p.Embed(ctx, EmbeddingRequest{Model: "text-embedding-3-small", Input: tc.input})
+			if err == nil {
+				t.Errorf("Embed() with Input=%T: expected error, got nil", tc.input)
+			}
+		})
+	}
+}
+
+func TestOpenAIProvider_Embed_EmptyArrayInput(t *testing.T) {
+	p, _ := NewOpenAI("sk-test", "")
+	ctx := context.Background()
+
+	_, err := p.Embed(ctx, EmbeddingRequest{Model: "text-embedding-3-small", Input: []string{}})
+	if err == nil {
+		t.Error("Embed() with empty []string: expected error, got nil")
+	}
+
+	_, err = p.Embed(ctx, EmbeddingRequest{Model: "text-embedding-3-small", Input: []interface{}{}})
+	if err == nil {
+		t.Error("Embed() with empty []interface{}: expected error, got nil")
+	}
+}
+
+func TestOpenAIProvider_Embed_SliceWithNonStringElement(t *testing.T) {
+	p, _ := NewOpenAI("sk-test", "")
+	ctx := context.Background()
+
+	_, err := p.Embed(ctx, EmbeddingRequest{
+		Model: "text-embedding-3-small",
+		Input: []interface{}{"valid", 99, "also-valid"},
+	})
+	if err == nil {
+		t.Error("expected error for []interface{} with non-string element, got nil")
+	}
+	if !strings.Contains(err.Error(), "Input[1]") {
+		t.Errorf("error should mention the offending index, got: %v", err)
+	}
+}
+
+func TestOpenAIProvider_Embed_InvalidEncodingFormat(t *testing.T) {
+	p, _ := NewOpenAI("sk-test", "")
+	ctx := context.Background()
+
+	for _, format := range []string{"int8", "uint8", "binary", "ubinary", "invalid"} {
+		_, err := p.Embed(ctx, EmbeddingRequest{
+			Model:          "text-embedding-3-small",
+			Input:          "hello",
+			EncodingFormat: format,
+		})
+		if err == nil {
+			t.Errorf("Embed() with EncodingFormat=%q: expected error, got nil", format)
+		}
+		if !strings.Contains(err.Error(), format) {
+			t.Errorf("error for format %q should mention the bad value; got: %v", format, err)
+		}
+	}
+}
+
+func TestOpenAIProvider_Embed_ValidEncodingFormats(t *testing.T) {
+	// Mock server returns an OpenAI-compatible embedding response.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		resp := map[string]interface{}{
+			"object": "list",
+			"data": []map[string]interface{}{
+				{"object": "embedding", "embedding": []float64{0.1, 0.2}, "index": 0},
+			},
+			"model": "text-embedding-3-small",
+			"usage": map[string]int{"prompt_tokens": 1, "total_tokens": 1},
+		}
+		data, _ := json.Marshal(resp)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(data)
+	}))
+	defer srv.Close()
+
+	p, _ := NewOpenAI("sk-test", srv.URL)
+	ctx := context.Background()
+
+	for _, format := range []string{"", "float", "base64"} {
+		t.Run("format="+format, func(t *testing.T) {
+			_, err := p.Embed(ctx, EmbeddingRequest{
+				Model:          "text-embedding-3-small",
+				Input:          "hello",
+				EncodingFormat: format,
+			})
+			if err != nil {
+				t.Errorf("Embed() with EncodingFormat=%q: unexpected error: %v", format, err)
+			}
+		})
 	}
 }
