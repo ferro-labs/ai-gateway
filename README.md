@@ -10,6 +10,7 @@ Route, observe, and secure requests across 100+ LLM providers via a single OpenA
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/go-1.24+-00ADD8.svg)](https://go.dev)
 [![Go Reference](https://pkg.go.dev/badge/github.com/ferro-labs/ai-gateway.svg)](https://pkg.go.dev/github.com/ferro-labs/ai-gateway)
+[![Code Scanning](https://github.com/ferro-labs/ai-gateway/actions/workflows/code-scanning.yml/badge.svg)](https://github.com/ferro-labs/ai-gateway/actions/workflows/code-scanning.yml)
 [![Discord](https://img.shields.io/badge/Discord-Join%20Us-5865F2?logo=discord&logoColor=white)](https://discord.gg/yCAeYvJeDV)
 
 <br/>
@@ -36,6 +37,32 @@ Zero SDK changes required. Drop it into your existing OpenAI-reliant code in one
 
 ---
 
+## ✅ Integrated Model Providers
+
+The following providers are integrated in the gateway codebase:
+
+| Provider | Integrated |
+| --- | --- |
+| OpenAI | ✅ |
+| Anthropic | ✅ |
+| Gemini (Google) | ✅ |
+| Mistral | ✅ |
+| Groq | ✅ |
+| Cohere | ✅ |
+| DeepSeek | ✅ |
+| Together AI | ✅ |
+| Perplexity | ✅ |
+| Fireworks | ✅ |
+| AI21 | ✅ |
+| Azure OpenAI | ✅ |
+| Ollama (local/self-hosted) | ✅ |
+| Replicate | ✅ |
+| AWS Bedrock | ✅ |
+
+> Providers are enabled when their corresponding environment variables/credentials are configured.
+
+---
+
 ## ⚡ Quick Start
 
 ### Run via Docker
@@ -46,9 +73,6 @@ The fastest way to get started is pulling the official image from GitHub Contain
 docker run --rm -p 8080:8080 \
   -e OPENAI_API_KEY=sk-your-key \
   ghcr.io/ferro-labs/ai-gateway:latest
-
-# To run the absolute latest unreleased code from main:
-# ghcr.io/ferro-labs/ai-gateway:edge
 ```
 
 ### Build from Source
@@ -108,12 +132,12 @@ curl http://localhost:8080/v1/chat/completions \
 
 Ferro Gateway is actively developed to support an end-to-end AI operating environment. We are currently transitioning through major foundational and production-grade phases:
 
-- [x] **v0.1.0** — Foundation Release: Core routing, multi-provider execution, basic guardrails, and streaming capabilities.
-- [x] **v0.2.0** — Observability & Resilience: Structured JSON logging with trace IDs, Prometheus metrics, per-provider circuit breakers, token-bucket rate limiting, deep health checks, and consistent error schema.
-- [ ] **v0.3.0** — Modality Expansions: Embeddings, Image generation mapping, Cost tracking via pricing tables, and Model aliasing.
-- [ ] **v0.4.0** — Persistent State: Dedicated Admin API, SQLite/PostgreSQL persistence, robust CRUD configuration portals.
-- [ ] **v0.5.0** — Advanced Intelligence: Least-latency and Cost-optimized algorithmic routing, A/B Testing modules, and Semantic Caching.
-- [ ] **v1.0.0** — Production Ready: Helm charts, open-telemetry export, edge caching, and official SDK embeddings.
+* [x] **v0.1.0** — Foundation Release: Core routing, multi-provider execution, basic guardrails, and streaming capabilities.
+* [x] **v0.2.0** — Observability & Resilience: Structured JSON logging with trace IDs, Prometheus metrics, per-provider circuit breakers, token-bucket rate limiting, deep health checks, and consistent error schema.
+* [x] **v0.3.0** — Modality Expansions: Embeddings, Image generation mapping, Cost tracking via pricing tables, and Model aliasing.
+* [ ] **v0.4.0** — Persistent State: Dedicated Admin API, SQLite/PostgreSQL persistence, robust CRUD configuration portals.
+* [ ] **v0.5.0** — Advanced Intelligence: Least-latency and Cost-optimized algorithmic routing, A/B Testing modules, and Semantic Caching.
+* [ ] **v1.0.0** — Production Ready: Helm charts, open-telemetry export, edge caching, and official SDK embeddings.
 
 *Review our detailed [ROADMAP.md](ROADMAP.md) for deeper implementation plans.*
 
@@ -128,6 +152,7 @@ We welcome community contributions! The priority areas for ecosystem growth are:
 3. Enhancing test coverage and documentation.
 
 Please see our [CONTRIBUTING.md](CONTRIBUTING.md) for style guidelines and PR processes.
+By participating, you agree to follow our [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## 📄 License
 
