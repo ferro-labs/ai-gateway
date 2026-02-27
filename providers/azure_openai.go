@@ -13,12 +13,10 @@ import (
 
 // AzureOpenAIProvider implements the Provider interface for Azure OpenAI.
 type AzureOpenAIProvider struct {
+	Base
 	httpClient     *http.Client
-	apiKey         string
-	baseURL        string
 	deploymentName string
 	apiVersion     string
-	name           string
 }
 
 // NewAzureOpenAI creates a new Azure OpenAI provider.
@@ -29,20 +27,12 @@ func NewAzureOpenAI(apiKey string, baseURL string, deploymentName string, apiVer
 	}
 
 	return &AzureOpenAIProvider{
+		Base:           Base{name: "azure-openai", apiKey: apiKey, baseURL: baseURL},
 		httpClient:     &http.Client{},
-		apiKey:         apiKey,
-		baseURL:        baseURL,
 		deploymentName: deploymentName,
 		apiVersion:     apiVersion,
-		name:           "azure-openai",
 	}, nil
 }
-
-// Name returns the provider identifier.
-func (p *AzureOpenAIProvider) Name() string { return p.name }
-
-// BaseURL implements ProxiableProvider.
-func (p *AzureOpenAIProvider) BaseURL() string { return p.baseURL }
 
 // AuthHeaders implements ProxiableProvider.
 func (p *AzureOpenAIProvider) AuthHeaders() map[string]string {

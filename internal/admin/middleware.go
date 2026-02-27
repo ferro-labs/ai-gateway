@@ -30,14 +30,14 @@ func AuthMiddleware(store Store) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			auth := r.Header.Get("Authorization")
 			if auth == "" || !strings.HasPrefix(auth, "Bearer ") {
-				writeError(w, http.StatusUnauthorized, "missing or invalid authorization header")
+				writeError(w, http.StatusUnauthorized, "missing or invalid authorization header", "authentication_error", "missing_api_key")
 				return
 			}
 
 			key := strings.TrimPrefix(auth, "Bearer ")
 			apiKey, ok := store.ValidateKey(key)
 			if !ok {
-				writeError(w, http.StatusUnauthorized, "invalid or revoked API key")
+				writeError(w, http.StatusUnauthorized, "invalid or revoked API key", "authentication_error", "invalid_api_key")
 				return
 			}
 
@@ -54,7 +54,7 @@ func RequireScope(scopes ...string) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			apiKey, ok := APIKeyFromContext(r.Context())
 			if !ok {
-				writeError(w, http.StatusUnauthorized, "authentication required")
+				writeError(w, http.StatusUnauthorized, "authentication required", "authentication_error", "authentication_required")
 				return
 			}
 
@@ -67,13 +67,45 @@ func RequireScope(scopes ...string) func(http.Handler) http.Handler {
 				}
 			}
 
-			writeError(w, http.StatusForbidden, "insufficient permissions")
+			writeError(w, http.StatusForbidden, "insufficient permissions", "permission_error", "insufficient_scope")
 		})
 	}
 }
 
-func writeError(w http.ResponseWriter, status int, message string) {
+// writeError writes a unified OpenAI-compatible JSON error response:
+//
+//	{"error":{"message":"...","type":"...","code":"..."}}
+//
+// errType and code may be empty; defaults are derived from the HTTP status.
+func writeError(w http.ResponseWriter, status int, message, errType, code string) {
+	if errType == "" {
+		errType = defaultErrType(status)
+	}
+	if code == "" {
+		code = errType
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]string{"error": message})
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"error": map[string]string{
+			"message": message,
+			"type":    errType,
+			"code":    code,
+		},
+	})
+}
+
+func defaultErrType(status int) string {
+	switch {
+	case status == http.StatusUnauthorized:
+		return "authentication_error"
+	case status == http.StatusForbidden:
+		return "permission_error"
+	case status == http.StatusNotFound:
+		return "not_found_error"
+	case status >= 400 && status < 500:
+		return "invalid_request_error"
+	default:
+		return "server_error"
+	}
 }

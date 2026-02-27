@@ -6,7 +6,7 @@
 
 ---
 
-## v0.1.0 — Foundation Release (Current)
+## v0.1.0 — Foundation Release
 
 **Status**: ✅ Released  
 **Theme**: A working gateway that people can download, configure, and run today.
@@ -41,24 +41,35 @@
 
 ## v0.2.0 — Observability & Resilience
 
-**Status**: 📋 Planned  
+**Status**: ✅ Released
 **Theme**: Production visibility and operational confidence.
 
 | Feature | Description | Status |
 |---|---|---|
-| **Structured logging** | JSON structured logs with trace IDs, latency, token counts | |
-| **Prometheus metrics** | `/metrics` endpoint: request count, latency histograms, token usage, provider errors | |
-| **Health checks** | Deep health checks per provider (ping/list models) | |
-| **Rate limiting** | Per-key and per-provider rate limiting plugin (token bucket) | |
-| **Circuit breaker** | Per-provider circuit breaker (auto-disable failing providers) | |
+| **Structured logging** | JSON structured logs with trace IDs, latency, token counts | ✅ Done |
+| **Prometheus metrics** | `/metrics` endpoint: request count, latency histograms, token usage, provider errors | ✅ Done |
+| **Health checks** | Deep health checks per provider (ping/list models) | ✅ Done |
+| **Rate limiting** | Per-key and per-provider rate limiting plugin (token bucket) | ✅ Done |
+| **Circuit breaker** | Per-provider circuit breaker (auto-disable failing providers) | ✅ Done |
 | **Request timeout** | Configurable per-provider and per-request timeouts | ✅ Done |
 | **Graceful shutdown** | Drain in-flight requests on SIGTERM | ✅ Done |
-| **Consistent error schema** | Unified `{"error":{"message","type","code"}}` format across all endpoints (admin, completions, proxy) | |
+| **Consistent error schema** | Unified `{"error":{"message","type","code"}}` format across all endpoints (admin, completions, proxy) | ✅ Done |
 | **Streaming strategy unification** | `RouteStream` should use the configured strategy engine (fallback, load balance, conditional) instead of manual target walking | ✅ Done |
-| **BaseProvider extraction** | Extract shared provider boilerplate (`Name`, `Models`, HTTP client) into an embeddable struct to reduce ~400 LOC duplication | |
-| **File-backed key storage** | JSON or SQLite file persistence for API keys (survives restarts without external database) | |
-| **EventPublisher refactor** | Replace the baked-in `EventPublisher` interface with a plugin/hook pattern to keep the core clean for OSS | |
-| **Registry consolidation** | Unify `providers.Registry` with `Gateway`'s internal provider map to eliminate duplicate registration logic | |
+| **BaseProvider extraction** | Extract shared provider boilerplate (`Name`, `Models`, HTTP client) into an embeddable struct to reduce ~400 LOC duplication | ✅ Done |
+| **File-backed key storage** | JSON or SQLite file persistence for API keys (survives restarts without external database) | ⏭️ Deferred to v0.4.0 |
+| **EventPublisher refactor** | Replace the baked-in `EventPublisher` interface with a plugin/hook pattern to keep the core clean for OSS | ✅ Done |
+| **Registry consolidation** | Unify `providers.Registry` with `Gateway`'s internal provider map to eliminate duplicate registration logic | ✅ Done |
+
+### What ships
+
+| Category | Features |
+|---|---|
+| **Observability** | slog JSON logs, `X-Request-ID` trace IDs, Prometheus `/metrics`, 7 built-in metrics |
+| **Resilience** | Per-provider circuit breaker (3-state), token-bucket rate limiting (middleware + plugin) |
+| **Health** | Deep `/health` returns per-provider status and model count |
+| **Error handling** | Unified `{"error":{"message","type","code"}}` schema across all HTTP endpoints |
+| **Internals** | `BaseProvider` embeddable struct, `ProviderSource` interface, `EventHookFunc` hooks |
+| **Logging** | Single `logging.Logger` used everywhere — stdlib `log` removed, trace IDs in plugin logs |
 
 ---
 

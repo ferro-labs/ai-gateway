@@ -16,7 +16,7 @@ func TestNewAnthropic(t *testing.T) {
 		t.Fatalf("NewAnthropic() returned error: %v", err)
 	}
 	if provider == nil {
-		t.Error("NewAnthropic() returned nil provider")
+		t.Fatal("NewAnthropic() returned nil provider")
 	}
 	if provider.Name() != "anthropic" {
 		t.Errorf("NewAnthropic() provider name = %v, want anthropic", provider.Name())

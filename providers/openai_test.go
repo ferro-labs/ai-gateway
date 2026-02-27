@@ -14,7 +14,7 @@ func TestNewOpenAI(t *testing.T) {
 		t.Fatalf("NewOpenAI() returned error: %v", err)
 	}
 	if provider == nil {
-		t.Error("NewOpenAI() returned nil provider")
+		t.Fatal("NewOpenAI() returned nil provider")
 	}
 	if provider.Name() != "openai" {
 		t.Errorf("NewOpenAI() provider name = %v, want openai", provider.Name())

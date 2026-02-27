@@ -11,10 +11,8 @@ import (
 
 // OpenAIProvider implements the Provider interface for OpenAI.
 type OpenAIProvider struct {
-	client  openai.Client
-	name    string
-	apiKey  string
-	baseURL string
+	Base
+	client openai.Client
 }
 
 // NewOpenAI creates a new OpenAI provider. The optional baseURL parameter
@@ -30,24 +28,14 @@ func NewOpenAI(apiKey string, baseURL string) (*OpenAIProvider, error) {
 	}
 	client := openai.NewClient(opts...)
 	return &OpenAIProvider{
-		client:  client,
-		name:    "openai",
-		apiKey:  apiKey,
-		baseURL: resolvedBase,
+		Base:   Base{name: "openai", apiKey: apiKey, baseURL: resolvedBase},
+		client: client,
 	}, nil
 }
-
-// BaseURL implements ProxiableProvider.
-func (p *OpenAIProvider) BaseURL() string { return p.baseURL }
 
 // AuthHeaders implements ProxiableProvider.
 func (p *OpenAIProvider) AuthHeaders() map[string]string {
 	return map[string]string{"Authorization": "Bearer " + p.apiKey}
-}
-
-// Name returns the provider name.
-func (p *OpenAIProvider) Name() string {
-	return p.name
 }
 
 // SupportedModels returns the list of models supported by this provider.
@@ -76,16 +64,7 @@ func (p *OpenAIProvider) SupportsModel(model string) bool {
 
 // Models returns model information for all supported models.
 func (p *OpenAIProvider) Models() []ModelInfo {
-	supported := p.SupportedModels()
-	models := make([]ModelInfo, len(supported))
-	for i, id := range supported {
-		models[i] = ModelInfo{
-			ID:      id,
-			Object:  "model",
-			OwnedBy: p.name,
-		}
-	}
-	return models
+	return ModelsFromList(p.name, p.SupportedModels())
 }
 
 // Complete sends a chat completion request to OpenAI.

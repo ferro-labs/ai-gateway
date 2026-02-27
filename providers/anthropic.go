@@ -13,10 +13,8 @@ import (
 
 // AnthropicProvider implements the Provider interface for Anthropic.
 type AnthropicProvider struct {
+	Base
 	httpClient *http.Client
-	apiKey     string
-	baseURL    string
-	name       string
 }
 
 // NewAnthropic creates a new Anthropic provider. The optional baseURL parameter
@@ -28,15 +26,10 @@ func NewAnthropic(apiKey string, baseURL string) (*AnthropicProvider, error) {
 	baseURL = strings.TrimRight(baseURL, "/")
 
 	return &AnthropicProvider{
+		Base:       Base{name: "anthropic", apiKey: apiKey, baseURL: baseURL},
 		httpClient: &http.Client{},
-		apiKey:     apiKey,
-		baseURL:    baseURL,
-		name:       "anthropic",
 	}, nil
 }
-
-// BaseURL implements ProxiableProvider.
-func (p *AnthropicProvider) BaseURL() string { return p.baseURL }
 
 // AuthHeaders implements ProxiableProvider.
 func (p *AnthropicProvider) AuthHeaders() map[string]string {
@@ -44,11 +37,6 @@ func (p *AnthropicProvider) AuthHeaders() map[string]string {
 		"x-api-key":         p.apiKey,
 		"anthropic-version": "2023-06-01",
 	}
-}
-
-// Name returns the provider name.
-func (p *AnthropicProvider) Name() string {
-	return p.name
 }
 
 // SupportedModels returns the list of models supported by this provider.
@@ -68,16 +56,7 @@ func (p *AnthropicProvider) SupportsModel(model string) bool {
 
 // Models returns model information for all supported models.
 func (p *AnthropicProvider) Models() []ModelInfo {
-	supported := p.SupportedModels()
-	models := make([]ModelInfo, len(supported))
-	for i, id := range supported {
-		models[i] = ModelInfo{
-			ID:      id,
-			Object:  "model",
-			OwnedBy: p.name,
-		}
-	}
-	return models
+	return ModelsFromList(p.name, p.SupportedModels())
 }
 
 type anthropicMessage struct {

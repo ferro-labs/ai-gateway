@@ -3,10 +3,10 @@ package strategies
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"math"
 	"time"
 
+	"github.com/ferro-labs/ai-gateway/internal/logging"
 	"github.com/ferro-labs/ai-gateway/providers"
 )
 
@@ -42,7 +42,7 @@ func (f *Fallback) Execute(ctx context.Context, req providers.Request) (*provide
 	for _, target := range f.targets {
 		p, ok := f.lookup(target.VirtualKey)
 		if !ok {
-			slog.Warn("provider not found, skipping", "provider", target.VirtualKey)
+			logging.Logger.Warn("provider not found, skipping", "provider", target.VirtualKey)
 			lastErr = fmt.Errorf("provider not found: %s", target.VirtualKey)
 			continue
 		}
@@ -58,7 +58,7 @@ func (f *Fallback) Execute(ctx context.Context, req providers.Request) (*provide
 					return nil, ctx.Err()
 				case <-time.After(backoff):
 				}
-				slog.Info("retrying provider", "provider", target.VirtualKey, "attempt", attempt+1)
+				logging.Logger.Info("retrying provider", "provider", target.VirtualKey, "attempt", attempt+1)
 			}
 
 			resp, err := p.Complete(ctx, req)

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/ferro-labs/ai-gateway/internal/logging"
 	"github.com/ferro-labs/ai-gateway/plugin"
 )
 
@@ -47,10 +48,11 @@ func (l *RequestLogger) Init(config map[string]interface{}) error {
 }
 
 // Execute runs the plugin logic for the current request context.
-func (l *RequestLogger) Execute(_ context.Context, pctx *plugin.Context) error {
+func (l *RequestLogger) Execute(ctx context.Context, pctx *plugin.Context) error {
+	log := logging.FromContext(ctx)
 	if pctx.Request != nil && pctx.Response == nil && pctx.Error == nil {
 		// before_request stage
-		slog.Log(context.Background(), l.logLevel, "gateway request",
+		log.Log(ctx, l.logLevel, "gateway request",
 			"model", pctx.Request.Model,
 			"messages", len(pctx.Request.Messages),
 			"stream", pctx.Request.Stream,
@@ -60,7 +62,7 @@ func (l *RequestLogger) Execute(_ context.Context, pctx *plugin.Context) error {
 
 	if pctx.Response != nil {
 		// after_request stage
-		slog.Log(context.Background(), l.logLevel, "gateway response",
+		log.Log(ctx, l.logLevel, "gateway response",
 			"model", pctx.Response.Model,
 			"provider", pctx.Response.Provider,
 			"prompt_tokens", pctx.Response.Usage.PromptTokens,
@@ -73,7 +75,7 @@ func (l *RequestLogger) Execute(_ context.Context, pctx *plugin.Context) error {
 
 	if pctx.Error != nil {
 		// on_error stage
-		slog.Log(context.Background(), slog.LevelError, "gateway error",
+		log.Log(ctx, slog.LevelError, "gateway error",
 			"model", pctx.Request.Model,
 			"error", pctx.Error.Error(),
 			"timestamp", time.Now().UTC().Format(time.RFC3339),

@@ -13,10 +13,8 @@ import (
 
 // GroqProvider implements the Provider interface for Groq.
 type GroqProvider struct {
+	Base
 	httpClient *http.Client
-	apiKey     string
-	baseURL    string
-	name       string
 }
 
 // NewGroq creates a new Groq provider.
@@ -27,18 +25,10 @@ func NewGroq(apiKey string, baseURL string) (*GroqProvider, error) {
 	baseURL = strings.TrimRight(baseURL, "/")
 
 	return &GroqProvider{
+		Base:       Base{name: "groq", apiKey: apiKey, baseURL: baseURL},
 		httpClient: &http.Client{},
-		apiKey:     apiKey,
-		baseURL:    baseURL,
-		name:       "groq",
 	}, nil
 }
-
-// Name returns the provider identifier.
-func (p *GroqProvider) Name() string { return p.name }
-
-// BaseURL implements ProxiableProvider.
-func (p *GroqProvider) BaseURL() string { return p.baseURL }
 
 // AuthHeaders implements ProxiableProvider.
 func (p *GroqProvider) AuthHeaders() map[string]string {
@@ -62,16 +52,7 @@ func (p *GroqProvider) SupportsModel(_ string) bool {
 
 // Models returns structured model metadata for the /v1/models endpoint.
 func (p *GroqProvider) Models() []ModelInfo {
-	supported := p.SupportedModels()
-	models := make([]ModelInfo, len(supported))
-	for i, id := range supported {
-		models[i] = ModelInfo{
-			ID:      id,
-			Object:  "model",
-			OwnedBy: p.name,
-		}
-	}
-	return models
+	return ModelsFromList(p.name, p.SupportedModels())
 }
 
 // groqRequest is OpenAI-compatible.

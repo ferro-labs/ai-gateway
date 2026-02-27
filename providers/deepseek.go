@@ -13,10 +13,8 @@ import (
 
 // DeepSeekProvider implements the Provider interface for DeepSeek.
 type DeepSeekProvider struct {
+	Base
 	httpClient *http.Client
-	apiKey     string
-	baseURL    string
-	name       string
 }
 
 // NewDeepSeek creates a new DeepSeek provider.
@@ -27,18 +25,10 @@ func NewDeepSeek(apiKey string, baseURL string) (*DeepSeekProvider, error) {
 	baseURL = strings.TrimRight(baseURL, "/")
 
 	return &DeepSeekProvider{
+		Base:       Base{name: "deepseek", apiKey: apiKey, baseURL: baseURL},
 		httpClient: &http.Client{},
-		apiKey:     apiKey,
-		baseURL:    baseURL,
-		name:       "deepseek",
 	}, nil
 }
-
-// Name returns the provider identifier.
-func (p *DeepSeekProvider) Name() string { return p.name }
-
-// BaseURL implements ProxiableProvider.
-func (p *DeepSeekProvider) BaseURL() string { return p.baseURL }
 
 // AuthHeaders implements ProxiableProvider.
 func (p *DeepSeekProvider) AuthHeaders() map[string]string {
@@ -60,16 +50,7 @@ func (p *DeepSeekProvider) SupportsModel(model string) bool {
 
 // Models returns structured model metadata for the /v1/models endpoint.
 func (p *DeepSeekProvider) Models() []ModelInfo {
-	supported := p.SupportedModels()
-	models := make([]ModelInfo, len(supported))
-	for i, id := range supported {
-		models[i] = ModelInfo{
-			ID:      id,
-			Object:  "model",
-			OwnedBy: p.name,
-		}
-	}
-	return models
+	return ModelsFromList(p.name, p.SupportedModels())
 }
 
 // deepseekRequest is OpenAI-compatible.

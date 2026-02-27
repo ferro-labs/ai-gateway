@@ -29,8 +29,9 @@ Zero SDK changes required. Drop it into your existing OpenAI-reliant code in one
 * **Unified API:** Connect to 100+ top-tier models (OpenAI, Anthropic, Gemini, Mistral, Ollama, DeepSeek, and more) using the exact same standard OpenAI request/response format.
 * **Smart Routing Engine:** Mitigate downtime and optimize costs using 4 robust routing strategies: Single, Fallback (w/ exponential backoff), Weighted Load Balancing, and Conditional (model-based).
 * **Transparent Pass-Through Proxy:** Automatically forwards requests for non-chat endpoints (like `/v1/audio`, `/v1/images`, `/v1/files`, etc.) directly to the provider. The gateway securely injects your auth credentials while proxying raw bytes!
-* **Enterprise Reliability:** Native server-sent events (SSE) streaming support and drop-in client compatibility.
-* **Extensible Middleware:** Intercept requests via pluggable plugins for Guardrails (PII/word filtering), Token Limiting, exact-match Caching, and Request Logging.
+* **Observability Built-In:** Structured JSON logs with per-request trace IDs, Prometheus `/metrics` endpoint (request count, latency histograms, token usage), and a deep `/health` endpoint with per-provider status.
+* **Resilience by Default:** Per-provider circuit breakers (Closed/Open/HalfOpen) auto-disable failing backends. Token-bucket rate limiting is available as both an HTTP middleware (per-IP) and a plugin (per-provider).
+* **Extensible Middleware:** Intercept requests via pluggable plugins for Guardrails (PII/word filtering), Token Limiting, exact-match Caching, Rate Limiting, and Request Logging.
 * **Secure Access Manager:** Centrally issue scoped, auto-expiring API keys with native RBAC. Zero external database required for stand-up.
 
 ---
@@ -108,7 +109,7 @@ curl http://localhost:8080/v1/chat/completions \
 Ferro Gateway is actively developed to support an end-to-end AI operating environment. We are currently transitioning through major foundational and production-grade phases:
 
 - [x] **v0.1.0** — Foundation Release: Core routing, multi-provider execution, basic guardrails, and streaming capabilities.
-- [ ] **v0.2.0** — Observability & Resilience: Structured telemetry, Prometheus metrics hooks, robust circuit breaking, file-backed key storage, and deep health checks.
+- [x] **v0.2.0** — Observability & Resilience: Structured JSON logging with trace IDs, Prometheus metrics, per-provider circuit breakers, token-bucket rate limiting, deep health checks, and consistent error schema.
 - [ ] **v0.3.0** — Modality Expansions: Embeddings, Image generation mapping, Cost tracking via pricing tables, and Model aliasing.
 - [ ] **v0.4.0** — Persistent State: Dedicated Admin API, SQLite/PostgreSQL persistence, robust CRUD configuration portals.
 - [ ] **v0.5.0** — Advanced Intelligence: Least-latency and Cost-optimized algorithmic routing, A/B Testing modules, and Semantic Caching.

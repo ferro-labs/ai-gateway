@@ -12,43 +12,48 @@ package aigateway
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/ferro-labs/ai-gateway/internal/circuitbreaker"
+	"github.com/ferro-labs/ai-gateway/internal/logging"
+	"github.com/ferro-labs/ai-gateway/internal/metrics"
 	"github.com/ferro-labs/ai-gateway/internal/strategies"
 	"github.com/ferro-labs/ai-gateway/plugin"
 	"github.com/ferro-labs/ai-gateway/providers"
 )
 
-// EventPublisher is satisfied by any event bus implementation.
-// Any type with a Publish method can be used for event publishing.
-type EventPublisher interface {
-	Publish(ctx context.Context, subject string, payload interface{}) error
-}
+// EventHookFunc is called asynchronously after a gateway event (request
+// completed or failed). It replaces the old EventPublisher interface with a
+// simpler function-based hook pattern.
+type EventHookFunc func(ctx context.Context, subject string, data map[string]interface{})
 
 // Gateway is the main entry point for routing LLM requests.
 type Gateway struct {
-	mu        sync.RWMutex
-	config    Config
-	providers map[string]providers.Provider
-	strategy  strategies.Strategy
-	plugins   *plugin.Manager
-	events    EventPublisher
+	mu              sync.RWMutex
+	config          Config
+	providers       map[string]providers.Provider
+	strategy        strategies.Strategy
+	plugins         *plugin.Manager
+	hooks           []EventHookFunc
+	circuitBreakers map[string]*circuitbreaker.CircuitBreaker
 }
 
 // New creates a new Gateway instance with the given configuration.
 func New(cfg Config) (*Gateway, error) {
 	return &Gateway{
-		config:    cfg,
-		providers: make(map[string]providers.Provider),
-		plugins:   plugin.NewManager(),
+		config:          cfg,
+		providers:       make(map[string]providers.Provider),
+		plugins:         plugin.NewManager(),
+		circuitBreakers: make(map[string]*circuitbreaker.CircuitBreaker),
 	}, nil
 }
 
-// Event subject constants used when publishing gateway lifecycle events.
+// Event subject constants used when invoking gateway hooks.
 const (
 	SubjectRequestCompleted = "gateway.request.completed"
 	SubjectRequestFailed    = "gateway.request.failed"
@@ -59,7 +64,7 @@ func (g *Gateway) RegisterProvider(p providers.Provider) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.providers[p.Name()] = p
-	g.strategy = nil
+	g.strategy = nil // force strategy rebuild
 }
 
 // RegisterPlugin registers a plugin at the given lifecycle stage.
@@ -69,40 +74,64 @@ func (g *Gateway) RegisterPlugin(stage plugin.Stage, p plugin.Plugin) error {
 	return g.plugins.Register(stage, p)
 }
 
-// SetEventsPublisher sets the event publisher for the gateway.
-func (g *Gateway) SetEventsPublisher(p EventPublisher) {
+// AddHook registers an EventHookFunc that is called asynchronously on each
+// completed or failed request. Multiple hooks may be registered; all are
+// invoked for every event.
+func (g *Gateway) AddHook(fn EventHookFunc) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.events = p
+	g.hooks = append(g.hooks, fn)
 }
 
 // Route routes a request to the appropriate provider based on the configuration.
 func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.Response, error) {
 	start := time.Now()
+	log := logging.FromContext(ctx)
+
 	s, err := g.getStrategy()
 	if err != nil {
 		return nil, err
 	}
 
-	// Run before-request plugins.
+	// Run before-request plugins (guardrails, transforms, rate-limit).
 	pctx := plugin.NewContext(&req)
 	if g.plugins.HasPlugins() {
 		if err := g.plugins.RunBefore(ctx, pctx); err != nil {
+			metrics.RequestsTotal.WithLabelValues("", req.Model, "rejected").Inc()
 			return nil, err
 		}
 	}
 
-	// Execute the strategy.
+	// Execute the strategy (provider selection + actual call).
 	resp, err := s.Execute(ctx, req)
-	latency := int(time.Since(start).Milliseconds())
+	latency := time.Since(start)
 
 	if err != nil {
 		pctx.Error = err
 		g.plugins.RunOnError(ctx, pctx)
 
-		// Publish failure event if NATS is enabled
-		g.publishFailureEvent(ctx, req, err, latency)
+		provider := ""
+		errType := "provider_error"
+		if errors.Is(err, circuitbreaker.ErrCircuitOpen) {
+			errType = "circuit_open"
+		}
+		metrics.RequestsTotal.WithLabelValues(provider, req.Model, "error").Inc()
+		metrics.ProviderErrors.WithLabelValues(provider, errType).Inc()
 
+		log.Error("request failed",
+			"model", req.Model,
+			"latency_ms", latency.Milliseconds(),
+			"error", err.Error(),
+		)
+
+		g.publishEvent(ctx, SubjectRequestFailed, map[string]interface{}{
+			"trace_id":   logging.TraceIDFromContext(ctx),
+			"model":      req.Model,
+			"error":      err.Error(),
+			"status":     500,
+			"latency_ms": latency.Milliseconds(),
+			"timestamp":  time.Now(),
+		})
 		return nil, err
 	}
 
@@ -114,65 +143,51 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 		resp.Created = time.Now().Unix()
 	}
 
-	// Run after-request plugins.
+	// Run after-request plugins (logging, caching).
 	if g.plugins.HasPlugins() {
 		pctx.Response = resp
 		_ = g.plugins.RunAfter(ctx, pctx)
 	}
 
-	// Publish completion event if NATS is enabled
-	g.publishCompletionEvent(ctx, req, resp, latency)
+	// Emit Prometheus metrics.
+	metrics.RequestDuration.WithLabelValues(resp.Provider, resp.Model).Observe(latency.Seconds())
+	metrics.RequestsTotal.WithLabelValues(resp.Provider, resp.Model, "success").Inc()
+	metrics.TokensInput.WithLabelValues(resp.Provider, resp.Model).Add(float64(resp.Usage.PromptTokens))
+	metrics.TokensOutput.WithLabelValues(resp.Provider, resp.Model).Add(float64(resp.Usage.CompletionTokens))
 
-	return resp, nil
-}
+	log.Info("request completed",
+		"model", resp.Model,
+		"provider", resp.Provider,
+		"latency_ms", latency.Milliseconds(),
+		"tokens_in", resp.Usage.PromptTokens,
+		"tokens_out", resp.Usage.CompletionTokens,
+	)
 
-func (g *Gateway) publishCompletionEvent(_ context.Context, _ providers.Request, resp *providers.Response, latencyMS int) {
-	g.mu.RLock()
-	pub := g.events
-	g.mu.RUnlock()
-
-	if pub == nil {
-		return
-	}
-
-	payload := map[string]interface{}{
+	g.publishEvent(ctx, SubjectRequestCompleted, map[string]interface{}{
 		"trace_id":   resp.ID,
 		"provider":   resp.Provider,
 		"model":      resp.Model,
 		"status":     200,
-		"latency_ms": latencyMS,
+		"latency_ms": latency.Milliseconds(),
 		"tokens_in":  resp.Usage.PromptTokens,
 		"tokens_out": resp.Usage.CompletionTokens,
 		"timestamp":  time.Now(),
-	}
+	})
 
-	go func() {
-		pub.Publish(context.Background(), SubjectRequestCompleted, payload) //nolint:errcheck,gosec
-	}()
+	return resp, nil
 }
 
-func (g *Gateway) publishFailureEvent(_ context.Context, req providers.Request, err error, latencyMS int) {
+// publishEvent calls all registered hooks asynchronously.
+func (g *Gateway) publishEvent(ctx context.Context, subject string, data map[string]interface{}) {
 	g.mu.RLock()
-	pub := g.events
+	hooks := make([]EventHookFunc, len(g.hooks))
+	copy(hooks, g.hooks)
 	g.mu.RUnlock()
 
-	if pub == nil {
-		return
+	for _, h := range hooks {
+		fn := h
+		go fn(ctx, subject, data)
 	}
-
-	payload := map[string]interface{}{
-		"trace_id":   "",
-		"provider":   "",
-		"model":      req.Model,
-		"error":      err.Error(),
-		"status":     500,
-		"latency_ms": latencyMS,
-		"timestamp":  time.Now(),
-	}
-
-	go func() {
-		pub.Publish(context.Background(), SubjectRequestFailed, payload) //nolint:errcheck,gosec
-	}()
 }
 
 // ReloadConfig validates and applies a new configuration, forcing strategy rebuild on next request.
@@ -184,6 +199,7 @@ func (g *Gateway) ReloadConfig(cfg Config) error {
 	defer g.mu.Unlock()
 	g.config = cfg
 	g.strategy = nil // force rebuild on next request
+	g.circuitBreakers = make(map[string]*circuitbreaker.CircuitBreaker)
 	return nil
 }
 
@@ -195,6 +211,7 @@ func (g *Gateway) GetConfig() Config {
 }
 
 // getStrategy lazily builds the strategy from config and registered providers.
+// Circuit breakers are built once and applied in the provider lookup closure.
 func (g *Gateway) getStrategy() (strategies.Strategy, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -202,8 +219,28 @@ func (g *Gateway) getStrategy() (strategies.Strategy, error) {
 		return g.strategy, nil
 	}
 
+	// Build circuit breakers for targets that have them configured.
+	for _, t := range g.config.Targets {
+		if t.CircuitBreaker == nil {
+			continue
+		}
+		if _, exists := g.circuitBreakers[t.VirtualKey]; exists {
+			continue
+		}
+		timeout, _ := time.ParseDuration(t.CircuitBreaker.Timeout)
+		cb := circuitbreaker.New(t.CircuitBreaker.FailureThreshold, t.CircuitBreaker.SuccessThreshold, timeout)
+		g.circuitBreakers[t.VirtualKey] = cb
+	}
+
+	// Provider lookup with transparent circuit-breaker wrapping.
 	lookup := func(name string) (providers.Provider, bool) {
 		p, ok := g.providers[name]
+		if !ok {
+			return nil, false
+		}
+		if cb, hasCB := g.circuitBreakers[name]; hasCB {
+			return &cbProvider{Provider: p, cb: cb, name: name}, true
+		}
 		return p, ok
 	}
 
@@ -254,6 +291,49 @@ func (g *Gateway) getStrategy() (strategies.Strategy, error) {
 	return s, nil
 }
 
+// cbProvider wraps a Provider with a circuit breaker.
+type cbProvider struct {
+	providers.Provider
+	cb   *circuitbreaker.CircuitBreaker
+	name string
+}
+
+func (p *cbProvider) Complete(ctx context.Context, req providers.Request) (*providers.Response, error) {
+	if !p.cb.Allow() {
+		metrics.CircuitBreakerState.WithLabelValues(p.name).Set(1) // open
+		return nil, circuitbreaker.ErrCircuitOpen
+	}
+	resp, err := p.Provider.Complete(ctx, req)
+	if err != nil {
+		p.cb.RecordFailure()
+		metrics.CircuitBreakerState.WithLabelValues(p.name).Set(float64(p.cb.State()))
+		return nil, err
+	}
+	p.cb.RecordSuccess()
+	metrics.CircuitBreakerState.WithLabelValues(p.name).Set(0) // closed
+	return resp, nil
+}
+
+func (p *cbProvider) CompleteStream(ctx context.Context, req providers.Request) (<-chan providers.StreamChunk, error) {
+	if !p.cb.Allow() {
+		metrics.CircuitBreakerState.WithLabelValues(p.name).Set(1) // open
+		return nil, circuitbreaker.ErrCircuitOpen
+	}
+	sp, ok := p.Provider.(providers.StreamProvider)
+	if !ok {
+		return nil, fmt.Errorf("provider %s does not support streaming", p.name)
+	}
+	ch, err := sp.CompleteStream(ctx, req)
+	if err != nil {
+		p.cb.RecordFailure()
+		metrics.CircuitBreakerState.WithLabelValues(p.name).Set(float64(p.cb.State()))
+		return nil, err
+	}
+	p.cb.RecordSuccess()
+	metrics.CircuitBreakerState.WithLabelValues(p.name).Set(0)
+	return ch, nil
+}
+
 // LoadPlugins initializes and registers plugins from the gateway configuration.
 func (g *Gateway) LoadPlugins() error {
 	for _, pc := range g.config.Plugins {
@@ -280,13 +360,17 @@ func (g *Gateway) LoadPlugins() error {
 // Provider resolution follows the configured strategy mode, then falls back to any
 // registered provider that supports the requested model and streaming.
 func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-chan providers.StreamChunk, error) {
-	// Run before-request plugins (word-filter, max-token, etc.).
+	log := logging.FromContext(ctx)
+
+	// Run before-request plugins (word-filter, max-token, rate-limit, etc.).
 	pctx := plugin.NewContext(&req)
 	if g.plugins.HasPlugins() {
 		if err := g.plugins.RunBefore(ctx, pctx); err != nil {
+			metrics.RequestsTotal.WithLabelValues("", req.Model, "rejected").Inc()
 			return nil, err
 		}
 		if pctx.Reject {
+			metrics.RequestsTotal.WithLabelValues("", req.Model, "rejected").Inc()
 			return nil, fmt.Errorf("request rejected by plugin: %s", pctx.Reason)
 		}
 	}
@@ -298,21 +382,33 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 	orderedKeys := g.streamingTargetOrderLocked(req)
 	var sp providers.StreamProvider
 	for _, key := range orderedKeys {
-		if p, ok := g.providers[key]; ok && p.SupportsModel(req.Model) {
-			if casted, ok := p.(providers.StreamProvider); ok {
-				sp = casted
-				break
-			}
+		p, ok := g.providers[key]
+		if !ok || !p.SupportsModel(req.Model) {
+			continue
+		}
+		// Apply circuit breaker if configured.
+		candidate := p
+		if cb, hasCB := g.circuitBreakers[key]; hasCB {
+			candidate = &cbProvider{Provider: p, cb: cb, name: key}
+		}
+		if casted, ok := candidate.(providers.StreamProvider); ok {
+			sp = casted
+			break
 		}
 	}
 	// Fallback: any registered provider that supports this model and streaming.
 	if sp == nil {
-		for _, p := range g.providers {
-			if p.SupportsModel(req.Model) {
-				if casted, ok := p.(providers.StreamProvider); ok {
-					sp = casted
-					break
-				}
+		for key, p := range g.providers {
+			if !p.SupportsModel(req.Model) {
+				continue
+			}
+			candidate := p
+			if cb, hasCB := g.circuitBreakers[key]; hasCB {
+				candidate = &cbProvider{Provider: p, cb: cb, name: key}
+			}
+			if casted, ok := candidate.(providers.StreamProvider); ok {
+				sp = casted
+				break
 			}
 		}
 	}
@@ -321,6 +417,8 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 	if sp == nil {
 		return nil, fmt.Errorf("no streaming-capable provider found for model: %s", req.Model)
 	}
+
+	log.Info("stream request started", "model", req.Model)
 	return sp.CompleteStream(ctx, req)
 }
 
@@ -421,6 +519,63 @@ func weightedStartIndex(targets []Target) int {
 	}
 
 	return len(targets) - 1
+}
+
+// ── Registry-consolidation helpers ──────────────────────────────────────────
+// These methods make *Gateway satisfy providers.ProviderSource so that HTTP
+// handlers that previously held a *providers.Registry can accept the gateway
+// directly instead.
+
+// AllModels returns ModelInfo from all registered providers.
+func (g *Gateway) AllModels() []providers.ModelInfo {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	var models []providers.ModelInfo
+	for _, p := range g.providers {
+		models = append(models, p.Models()...)
+	}
+	return models
+}
+
+// GetProvider returns a registered provider by name.
+func (g *Gateway) GetProvider(name string) (providers.Provider, bool) {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	p, ok := g.providers[name]
+	return p, ok
+}
+
+// Get satisfies providers.ProviderSource (alias for GetProvider).
+func (g *Gateway) Get(name string) (providers.Provider, bool) {
+	return g.GetProvider(name)
+}
+
+// ListProviders returns the names of all registered providers.
+func (g *Gateway) ListProviders() []string {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	names := make([]string, 0, len(g.providers))
+	for name := range g.providers {
+		names = append(names, name)
+	}
+	return names
+}
+
+// List satisfies providers.ProviderSource (alias for ListProviders).
+func (g *Gateway) List() []string {
+	return g.ListProviders()
+}
+
+// FindByModel returns the first registered provider that supports the given model.
+func (g *Gateway) FindByModel(model string) (providers.Provider, bool) {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	for _, p := range g.providers {
+		if p.SupportsModel(model) {
+			return p, true
+		}
+	}
+	return nil, false
 }
 
 // Close cleans up resources.

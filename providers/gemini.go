@@ -13,10 +13,8 @@ import (
 
 // GeminiProvider implements the Provider interface for Google Gemini.
 type GeminiProvider struct {
+	Base
 	httpClient *http.Client
-	apiKey     string
-	baseURL    string
-	name       string
 }
 
 // NewGemini creates a new Google Gemini provider.
@@ -27,18 +25,10 @@ func NewGemini(apiKey string, baseURL string) (*GeminiProvider, error) {
 	baseURL = strings.TrimRight(baseURL, "/")
 
 	return &GeminiProvider{
+		Base:       Base{name: "gemini", apiKey: apiKey, baseURL: baseURL},
 		httpClient: &http.Client{},
-		apiKey:     apiKey,
-		baseURL:    baseURL,
-		name:       "gemini",
 	}, nil
 }
-
-// Name returns the provider identifier.
-func (p *GeminiProvider) Name() string { return p.name }
-
-// BaseURL implements ProxiableProvider.
-func (p *GeminiProvider) BaseURL() string { return p.baseURL }
 
 // AuthHeaders implements ProxiableProvider.
 // Gemini authenticates via the ?key= query parameter (added by the proxy
@@ -64,16 +54,7 @@ func (p *GeminiProvider) SupportsModel(model string) bool {
 
 // Models returns structured model metadata for the /v1/models endpoint.
 func (p *GeminiProvider) Models() []ModelInfo {
-	supported := p.SupportedModels()
-	models := make([]ModelInfo, len(supported))
-	for i, id := range supported {
-		models[i] = ModelInfo{
-			ID:      id,
-			Object:  "model",
-			OwnedBy: p.name,
-		}
-	}
-	return models
+	return ModelsFromList(p.name, p.SupportedModels())
 }
 
 // geminiPart represents a content part in Gemini API.
