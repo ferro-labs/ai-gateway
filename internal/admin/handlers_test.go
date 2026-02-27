@@ -1120,6 +1120,80 @@ func TestLogsEndpointInvalidSince(t *testing.T) {
 	}
 }
 
+func TestLogsStatsEndpoint(t *testing.T) {
+	now := time.Now().UTC()
+	reader := &fakeLogReader{entries: []requestlog.Entry{
+		{TraceID: "1", Stage: "after_request", Model: "gpt-4", Provider: "openai", TotalTokens: 10, CreatedAt: now.Add(-3 * time.Minute)},
+		{TraceID: "2", Stage: "on_error", Model: "gpt-4", Provider: "openai", ErrorMessage: "boom", TotalTokens: 20, CreatedAt: now.Add(-2 * time.Minute)},
+		{TraceID: "3", Stage: "after_request", Model: "claude", Provider: "anthropic", TotalTokens: 5, CreatedAt: now.Add(-1 * time.Minute)},
+	}}
+	h, r := setupTestRouterWithLogs(reader)
+	adminKey := createAdminKey(t, h)
+
+	req := authedRequest(http.MethodGet, "/admin/logs/stats", "", adminKey)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var payload struct {
+		Summary struct {
+			TotalEntries int `json:"total_entries"`
+			ErrorEntries int `json:"error_entries"`
+			TotalTokens  int `json:"total_tokens"`
+		} `json:"summary"`
+		ByStage    map[string]int `json:"by_stage"`
+		ByProvider map[string]int `json:"by_provider"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode logs stats response: %v", err)
+	}
+	if payload.Summary.TotalEntries != 3 {
+		t.Fatalf("expected total_entries=3, got %d", payload.Summary.TotalEntries)
+	}
+	if payload.Summary.ErrorEntries != 1 {
+		t.Fatalf("expected error_entries=1, got %d", payload.Summary.ErrorEntries)
+	}
+	if payload.Summary.TotalTokens != 35 {
+		t.Fatalf("expected total_tokens=35, got %d", payload.Summary.TotalTokens)
+	}
+	if payload.ByStage["after_request"] != 2 || payload.ByStage["on_error"] != 1 {
+		t.Fatalf("unexpected by_stage: %+v", payload.ByStage)
+	}
+	if payload.ByProvider["openai"] != 2 || payload.ByProvider["anthropic"] != 1 {
+		t.Fatalf("unexpected by_provider: %+v", payload.ByProvider)
+	}
+}
+
+func TestLogsStatsEndpointInvalidSince(t *testing.T) {
+	reader := &fakeLogReader{entries: []requestlog.Entry{}}
+	h, r := setupTestRouterWithLogs(reader)
+	adminKey := createAdminKey(t, h)
+
+	req := authedRequest(http.MethodGet, "/admin/logs/stats?since=bad", "", adminKey)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestLogsStatsEndpointNotEnabled(t *testing.T) {
+	h, r := setupTestRouter()
+	adminKey := createAdminKey(t, h)
+
+	req := authedRequest(http.MethodGet, "/admin/logs/stats", "", adminKey)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotImplemented {
+		t.Fatalf("expected 501, got %d", w.Code)
+	}
+}
+
 func TestDeleteLogsEndpoint(t *testing.T) {
 	now := time.Now().UTC()
 	store := &fakeLogStore{entries: []requestlog.Entry{

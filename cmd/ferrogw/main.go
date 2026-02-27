@@ -641,6 +641,10 @@ const dashboardHTML = `<!doctype html>
 		async function rollbackConfig(version) {
 			els.error.textContent = '';
 			els.status.textContent = '';
+			const ok = window.confirm('Rollback to config version ' + version + '?');
+			if (!ok) {
+				return;
+			}
 			try {
 				await apiRequest('/admin/config/rollback/' + encodeURIComponent(String(version)), { method: 'POST' });
 				els.status.textContent = 'Rolled back to version ' + version + '.';

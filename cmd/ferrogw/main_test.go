@@ -119,6 +119,9 @@ func TestDashboardUIPage(t *testing.T) {
 	if !strings.Contains(w.Body.String(), "/admin/config/rollback/") {
 		t.Errorf("dashboard html missing rollback integration")
 	}
+	if !strings.Contains(w.Body.String(), "window.confirm(") {
+		t.Errorf("dashboard html missing rollback confirmation safeguard")
+	}
 }
 
 func TestChatCompletions(t *testing.T) {

@@ -54,6 +54,7 @@ func (h *Handlers) Routes() chi.Router {
 		r.Get("/keys", h.listKeys)
 		r.Get("/keys/usage", h.keyUsage)
 		r.Get("/logs", h.listLogs)
+		r.Get("/logs/stats", h.logsStats)
 		r.Get("/providers", h.listProviders)
 		r.Get("/health", h.healthCheck)
 		r.Get("/config", h.getConfig)
@@ -424,6 +425,93 @@ func (h *Handlers) deleteLogs(w http.ResponseWriter, r *http.Request) {
 			"stage":    r.URL.Query().Get("stage"),
 			"model":    r.URL.Query().Get("model"),
 			"provider": r.URL.Query().Get("provider"),
+		},
+	})
+}
+
+func (h *Handlers) logsStats(w http.ResponseWriter, r *http.Request) {
+	if h.Logs == nil {
+		writeError(w, http.StatusNotImplemented, "request log storage is not enabled", "not_implemented_error", "not_implemented")
+		return
+	}
+
+	var since *time.Time
+	if raw := r.URL.Query().Get("since"); raw != "" {
+		parsed, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid since: must be RFC3339 format", "invalid_request_error", "invalid_request")
+			return
+		}
+		since = &parsed
+	}
+
+	baseQuery := requestlog.Query{
+		Limit:    200,
+		Offset:   0,
+		Stage:    r.URL.Query().Get("stage"),
+		Model:    r.URL.Query().Get("model"),
+		Provider: r.URL.Query().Get("provider"),
+		Since:    since,
+	}
+
+	result, err := h.Logs.List(r.Context(), baseQuery)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to compute request log stats", "server_error", "internal_error")
+		return
+	}
+
+	entries := make([]requestlog.Entry, 0, result.Total)
+	entries = append(entries, result.Data...)
+	for len(entries) < result.Total {
+		baseQuery.Offset = len(entries)
+		next, listErr := h.Logs.List(r.Context(), baseQuery)
+		if listErr != nil {
+			writeError(w, http.StatusInternalServerError, "failed to compute request log stats", "server_error", "internal_error")
+			return
+		}
+		if len(next.Data) == 0 {
+			break
+		}
+		entries = append(entries, next.Data...)
+	}
+
+	byStage := map[string]int{}
+	byProvider := map[string]int{}
+	errorCount := 0
+	tokens := 0
+	for _, entry := range entries {
+		stage := entry.Stage
+		if stage == "" {
+			stage = "unknown"
+		}
+		byStage[stage]++
+
+		provider := entry.Provider
+		if provider == "" {
+			provider = "unknown"
+		}
+		byProvider[provider]++
+
+		if entry.ErrorMessage != "" || stage == "on_error" {
+			errorCount++
+		}
+		tokens += entry.TotalTokens
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"summary": map[string]interface{}{
+			"total_entries": len(entries),
+			"error_entries": errorCount,
+			"total_tokens":  tokens,
+		},
+		"by_stage":    byStage,
+		"by_provider": byProvider,
+		"filters": map[string]interface{}{
+			"stage":    baseQuery.Stage,
+			"model":    baseQuery.Model,
+			"provider": baseQuery.Provider,
+			"since":    r.URL.Query().Get("since"),
 		},
 	})
 }

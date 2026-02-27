@@ -249,6 +249,22 @@ curl -X DELETE "http://localhost:8080/admin/logs?before=2026-02-01T00:00:00Z&sta
 
 Response includes the number of deleted entries in `deleted`.
 
+### Request log stats
+
+```http
+GET /admin/logs/stats
+Authorization: Bearer <admin-or-readonly-key>
+```
+
+Optional filters:
+
+* `stage`
+* `model`
+* `provider`
+* `since` (RFC3339 timestamp)
+
+Response contains aggregated `summary`, `by_stage`, and `by_provider` counts.
+
 ---
 
 ## 📊 Admin Dashboard Summary API
