@@ -308,6 +308,8 @@ GET /dashboard
 
 It prompts for an admin/read-only key and then calls `GET /admin/dashboard` to render provider, key, and request-log summary cards.
 
+The page also loads `GET /admin/config/history` and includes per-version rollback actions using `POST /admin/config/rollback/{version}`.
+
 ---
 
 ## 🔌 1-Line Migration

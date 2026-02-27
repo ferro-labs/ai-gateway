@@ -531,7 +531,11 @@ const dashboardHTML = `<!doctype html>
 		.card { border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px; }
 		.label { font-size: 12px; color: #6b7280; }
 		.value { font-size: 20px; font-weight: 600; margin-top: 4px; }
+		table { width: 100%; border-collapse: collapse; margin-top: 16px; }
+		th, td { border-bottom: 1px solid #e5e7eb; padding: 8px; text-align: left; }
+		th { font-size: 12px; color: #6b7280; }
 		.error { color: #b91c1c; margin-top: 12px; }
+		.muted { color: #6b7280; font-size: 12px; }
 	</style>
 </head>
 <body>
@@ -541,6 +545,7 @@ const dashboardHTML = `<!doctype html>
 		<button id="load">Load</button>
 	</div>
 	<div id="error" class="error"></div>
+	<div id="status" class="muted"></div>
 	<div class="grid">
 		<div class="card"><div class="label">Providers (available/total)</div><div class="value" id="providers">-</div></div>
 		<div class="card"><div class="label">Keys (active/total)</div><div class="value" id="keys">-</div></div>
@@ -550,36 +555,107 @@ const dashboardHTML = `<!doctype html>
 		<div class="card"><div class="label">Request Logs Total</div><div class="value" id="logsTotal">-</div></div>
 	</div>
 
+	<h2>Config History</h2>
+	<table>
+		<thead>
+			<tr>
+				<th>Version</th>
+				<th>Updated At</th>
+				<th>Mode</th>
+				<th>Rollback Source</th>
+				<th>Action</th>
+			</tr>
+		</thead>
+		<tbody id="historyBody">
+			<tr><td colspan="5" class="muted">Load dashboard to fetch history.</td></tr>
+		</tbody>
+	</table>
+
 	<script>
 		const els = {
 			token: document.getElementById('token'),
 			load: document.getElementById('load'),
 			error: document.getElementById('error'),
+			status: document.getElementById('status'),
 			providers: document.getElementById('providers'),
 			keys: document.getElementById('keys'),
 			expired: document.getElementById('expired'),
 			usage: document.getElementById('usage'),
 			logsEnabled: document.getElementById('logsEnabled'),
-			logsTotal: document.getElementById('logsTotal')
+			logsTotal: document.getElementById('logsTotal'),
+			historyBody: document.getElementById('historyBody')
 		};
 
-		async function loadDashboard() {
-			els.error.textContent = '';
+		async function apiRequest(path, options) {
 			const token = els.token.value.trim();
 			if (!token) {
-				els.error.textContent = 'API key is required.';
+				throw new Error('API key is required.');
+			}
+			const res = await fetch(path, {
+				...(options || {}),
+				headers: {
+					Authorization: 'Bearer ' + token,
+					...((options && options.headers) || {})
+				}
+			});
+			const data = await res.json();
+			if (!res.ok) {
+				const msg = data && data.error && data.error.message ? data.error.message : 'request failed';
+				throw new Error(msg);
+			}
+			return data;
+		}
+
+		function renderHistory(historyItems) {
+			if (!Array.isArray(historyItems) || historyItems.length === 0) {
+				els.historyBody.innerHTML = '<tr><td colspan="5" class="muted">No config history yet.</td></tr>';
 				return;
 			}
 
-			try {
-				const res = await fetch('/admin/dashboard', {
-					headers: { Authorization: 'Bearer ' + token }
+			els.historyBody.innerHTML = '';
+			historyItems.forEach(function (item) {
+				const tr = document.createElement('tr');
+				const mode = item && item.config && item.config.strategy ? item.config.strategy.mode : '-';
+				const rollbackSource = item && item.rolled_back_from ? String(item.rolled_back_from) : '-';
+
+				tr.innerHTML =
+					'<td>' + item.version + '</td>' +
+					'<td>' + new Date(item.updated_at).toLocaleString() + '</td>' +
+					'<td>' + mode + '</td>' +
+					'<td>' + rollbackSource + '</td>' +
+					'<td><button data-version="' + item.version + '">Rollback</button></td>';
+
+				const btn = tr.querySelector('button');
+				btn.addEventListener('click', function () {
+					rollbackConfig(item.version);
 				});
-				const data = await res.json();
-				if (!res.ok) {
-					const msg = data && data.error && data.error.message ? data.error.message : 'request failed';
-					throw new Error(msg);
-				}
+				els.historyBody.appendChild(tr);
+			});
+		}
+
+		async function loadHistory() {
+			const history = await apiRequest('/admin/config/history');
+			renderHistory(history.data || []);
+		}
+
+		async function rollbackConfig(version) {
+			els.error.textContent = '';
+			els.status.textContent = '';
+			try {
+				await apiRequest('/admin/config/rollback/' + encodeURIComponent(String(version)), { method: 'POST' });
+				els.status.textContent = 'Rolled back to version ' + version + '.';
+				await loadDashboard();
+			} catch (err) {
+				els.error.textContent = err.message || 'Rollback failed.';
+			}
+		}
+
+		async function loadDashboard() {
+			els.error.textContent = '';
+			els.status.textContent = '';
+
+			try {
+				const data = await apiRequest('/admin/dashboard');
 
 				els.providers.textContent = data.providers.available + ' / ' + data.providers.total;
 				els.keys.textContent = data.keys.active + ' / ' + data.keys.total;
@@ -587,6 +663,7 @@ const dashboardHTML = `<!doctype html>
 				els.usage.textContent = String(data.keys.total_usage);
 				els.logsEnabled.textContent = data.request_logs.enabled ? 'yes' : 'no';
 				els.logsTotal.textContent = String(data.request_logs.total);
+				await loadHistory();
 			} catch (err) {
 				els.error.textContent = err.message || 'Failed to load dashboard.';
 			}

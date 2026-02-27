@@ -113,6 +113,12 @@ func TestDashboardUIPage(t *testing.T) {
 	if !strings.Contains(w.Body.String(), "FerroGateway Dashboard") {
 		t.Errorf("dashboard html missing title")
 	}
+	if !strings.Contains(w.Body.String(), "/admin/config/history") {
+		t.Errorf("dashboard html missing config history integration")
+	}
+	if !strings.Contains(w.Body.String(), "/admin/config/rollback/") {
+		t.Errorf("dashboard html missing rollback integration")
+	}
 }
 
 func TestChatCompletions(t *testing.T) {
