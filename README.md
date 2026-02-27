@@ -268,6 +268,22 @@ Response sections:
 
 ---
 
+## 🕘 Config History API
+
+Runtime config updates are tracked in-memory and exposed via:
+
+```http
+GET /admin/config/history
+Authorization: Bearer <admin-or-readonly-key>
+```
+
+Response includes:
+
+* `data[]` with `version`, `updated_at`, and `config`
+* `summary.total_versions`
+
+---
+
 ## 🖥️ Built-in Admin Dashboard UI
 
 A minimal dashboard page is available at:

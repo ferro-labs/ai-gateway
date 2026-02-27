@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"sync"
 	"time"
 
 	aigateway "github.com/ferro-labs/ai-gateway"
@@ -29,6 +30,16 @@ type Handlers struct {
 	Configs   ConfigManager
 	Logs      requestlog.Reader
 	LogAdmin  requestlog.Maintainer
+
+	historyMu     sync.Mutex
+	configHistory []ConfigHistoryEntry
+}
+
+// ConfigHistoryEntry captures a runtime config update snapshot.
+type ConfigHistoryEntry struct {
+	Version   int              `json:"version"`
+	UpdatedAt time.Time        `json:"updated_at"`
+	Config    aigateway.Config `json:"config"`
 }
 
 // Routes returns a chi.Router with all admin endpoints mounted.
@@ -45,6 +56,7 @@ func (h *Handlers) Routes() chi.Router {
 		r.Get("/providers", h.listProviders)
 		r.Get("/health", h.healthCheck)
 		r.Get("/config", h.getConfig)
+		r.Get("/config/history", h.getConfigHistory)
 	})
 
 	// Write endpoints (admin scope only).
@@ -566,6 +578,26 @@ func (h *Handlers) getConfig(w http.ResponseWriter, _ *http.Request) {
 	_ = json.NewEncoder(w).Encode(h.Configs.GetConfig())
 }
 
+func (h *Handlers) getConfigHistory(w http.ResponseWriter, _ *http.Request) {
+	if h.Configs == nil {
+		writeError(w, http.StatusNotImplemented, "config management is not enabled", "not_implemented_error", "not_implemented")
+		return
+	}
+
+	h.historyMu.Lock()
+	history := make([]ConfigHistoryEntry, len(h.configHistory))
+	copy(history, h.configHistory)
+	h.historyMu.Unlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"data": history,
+		"summary": map[string]interface{}{
+			"total_versions": len(history),
+		},
+	})
+}
+
 func (h *Handlers) updateConfig(w http.ResponseWriter, r *http.Request) {
 	if h.Configs == nil {
 		writeError(w, http.StatusNotImplemented, "config management is not enabled", "not_implemented_error", "not_implemented")
@@ -582,6 +614,14 @@ func (h *Handlers) updateConfig(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error(), "invalid_request_error", "invalid_config")
 		return
 	}
+
+	h.historyMu.Lock()
+	h.configHistory = append(h.configHistory, ConfigHistoryEntry{
+		Version:   len(h.configHistory) + 1,
+		UpdatedAt: time.Now().UTC(),
+		Config:    cfg,
+	})
+	h.historyMu.Unlock()
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "updated"})

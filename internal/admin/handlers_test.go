@@ -558,6 +558,87 @@ func TestUpdateConfigInvalidPayload(t *testing.T) {
 	}
 }
 
+func TestGetConfigHistoryEmpty(t *testing.T) {
+	h, r := setupTestRouter()
+	adminKey := createAdminKey(t, h)
+
+	req := authedRequest(http.MethodGet, "/admin/config/history", "", adminKey)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var payload struct {
+		Data    []ConfigHistoryEntry `json:"data"`
+		Summary struct {
+			TotalVersions int `json:"total_versions"`
+		} `json:"summary"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode history response: %v", err)
+	}
+	if payload.Summary.TotalVersions != 0 {
+		t.Fatalf("expected total_versions 0, got %d", payload.Summary.TotalVersions)
+	}
+	if len(payload.Data) != 0 {
+		t.Fatalf("expected empty history, got %d items", len(payload.Data))
+	}
+}
+
+func TestConfigHistoryAfterUpdates(t *testing.T) {
+	h, r := setupTestRouter()
+	adminKey := createAdminKey(t, h)
+
+	first := `{"strategy":{"mode":"fallback"},"targets":[{"virtual_key":"openai"},{"virtual_key":"anthropic"}]}`
+	req := authedRequest(http.MethodPut, "/admin/config", first, adminKey)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected first update 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	second := `{"strategy":{"mode":"single"},"targets":[{"virtual_key":"gemini"}]}`
+	req = authedRequest(http.MethodPut, "/admin/config", second, adminKey)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected second update 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	historyReq := authedRequest(http.MethodGet, "/admin/config/history", "", adminKey)
+	historyW := httptest.NewRecorder()
+	r.ServeHTTP(historyW, historyReq)
+
+	if historyW.Code != http.StatusOK {
+		t.Fatalf("expected history 200, got %d: %s", historyW.Code, historyW.Body.String())
+	}
+
+	var payload struct {
+		Data    []ConfigHistoryEntry `json:"data"`
+		Summary struct {
+			TotalVersions int `json:"total_versions"`
+		} `json:"summary"`
+	}
+	if err := json.NewDecoder(historyW.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode history response: %v", err)
+	}
+
+	if payload.Summary.TotalVersions != 2 || len(payload.Data) != 2 {
+		t.Fatalf("expected 2 history versions, summary=%d len=%d", payload.Summary.TotalVersions, len(payload.Data))
+	}
+	if payload.Data[0].Version != 1 || payload.Data[1].Version != 2 {
+		t.Fatalf("unexpected history versions: %+v", payload.Data)
+	}
+	if payload.Data[0].Config.Strategy.Mode != aigateway.ModeFallback {
+		t.Fatalf("expected first history mode fallback, got %s", payload.Data[0].Config.Strategy.Mode)
+	}
+	if payload.Data[1].Config.Strategy.Mode != aigateway.ModeSingle {
+		t.Fatalf("expected second history mode single, got %s", payload.Data[1].Config.Strategy.Mode)
+	}
+}
+
 func TestKeyUsageEndpoint(t *testing.T) {
 	h, r := setupTestRouter()
 	adminKey := createAdminKey(t, h)
