@@ -111,7 +111,7 @@ func TestDashboardUIPage(t *testing.T) {
 	if ct := w.Header().Get("Content-Type"); !strings.Contains(ct, "text/html") {
 		t.Errorf("Content-Type = %q, want text/html", ct)
 	}
-	if !strings.Contains(w.Body.String(), "FerroGateway Dashboard") {
+	if !strings.Contains(w.Body.String(), "Ferro AI Gateway Dashboard") {
 		t.Errorf("dashboard html missing title")
 	}
 	if !strings.Contains(w.Body.String(), "/admin/config/history") {

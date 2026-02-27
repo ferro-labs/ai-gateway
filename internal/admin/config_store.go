@@ -9,7 +9,9 @@ import (
 	"time"
 
 	aigateway "github.com/ferro-labs/ai-gateway"
+	// Register Postgres SQL driver.
 	_ "github.com/lib/pq"
+	// Register SQLite SQL driver.
 	_ "modernc.org/sqlite"
 )
 
@@ -38,6 +40,7 @@ type SQLConfigStore struct {
 	dialect sqlConfigDialect
 }
 
+// NewSQLiteConfigStore creates a SQLite-backed config store.
 func NewSQLiteConfigStore(dsn string) (*SQLConfigStore, error) {
 	dsn = strings.TrimSpace(dsn)
 	if dsn == "" {
@@ -55,6 +58,7 @@ func NewSQLiteConfigStore(dsn string) (*SQLConfigStore, error) {
 	return s, nil
 }
 
+// NewPostgresConfigStore creates a Postgres-backed config store.
 func NewPostgresConfigStore(dsn string) (*SQLConfigStore, error) {
 	dsn = strings.TrimSpace(dsn)
 	if dsn == "" {
@@ -99,6 +103,7 @@ CREATE TABLE IF NOT EXISTS gateway_config (
 	return nil
 }
 
+// Save persists the current gateway config snapshot.
 func (s *SQLConfigStore) Save(cfg aigateway.Config) error {
 	data, err := json.Marshal(cfg)
 	if err != nil {
@@ -123,6 +128,7 @@ ON CONFLICT(id) DO UPDATE SET config_json = EXCLUDED.config_json, updated_at = E
 	return nil
 }
 
+// Load returns the persisted config snapshot when one exists.
 func (s *SQLConfigStore) Load() (aigateway.Config, bool, error) {
 	query := `SELECT config_json FROM gateway_config WHERE id = 1`
 	row := s.db.QueryRow(query)
@@ -141,6 +147,7 @@ func (s *SQLConfigStore) Load() (aigateway.Config, bool, error) {
 	return cfg, true, nil
 }
 
+// Delete removes the persisted config snapshot.
 func (s *SQLConfigStore) Delete() error {
 	query := `DELETE FROM gateway_config WHERE id = 1`
 	if _, err := s.db.Exec(query); err != nil {
@@ -149,6 +156,7 @@ func (s *SQLConfigStore) Delete() error {
 	return nil
 }
 
+// Close closes the underlying SQL connection.
 func (s *SQLConfigStore) Close() error {
 	if s == nil || s.db == nil {
 		return nil
@@ -165,6 +173,7 @@ type GatewayConfigManager struct {
 	store   ConfigStore
 }
 
+// NewGatewayConfigManager creates a config manager backed by an optional persistent store.
 func NewGatewayConfigManager(gw *aigateway.Gateway, store ConfigStore) (*GatewayConfigManager, error) {
 	if gw == nil {
 		return nil, fmt.Errorf("gateway is required")
@@ -191,10 +200,12 @@ func NewGatewayConfigManager(gw *aigateway.Gateway, store ConfigStore) (*Gateway
 	return m, nil
 }
 
+// GetConfig returns the active runtime config.
 func (m *GatewayConfigManager) GetConfig() aigateway.Config {
 	return m.gw.GetConfig()
 }
 
+// ReloadConfig validates/applies config and persists it when a store is configured.
 func (m *GatewayConfigManager) ReloadConfig(cfg aigateway.Config) error {
 	if err := m.gw.ReloadConfig(cfg); err != nil {
 		return err
@@ -207,6 +218,7 @@ func (m *GatewayConfigManager) ReloadConfig(cfg aigateway.Config) error {
 	return nil
 }
 
+// ResetConfig restores startup config and clears persisted overrides.
 func (m *GatewayConfigManager) ResetConfig() error {
 	m.mu.RLock()
 	initial := m.initial

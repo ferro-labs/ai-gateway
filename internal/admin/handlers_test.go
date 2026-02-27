@@ -20,6 +20,8 @@ type testConfigManager struct {
 	initial aigateway.Config
 }
 
+const fallbackConfigBody = `{"strategy":{"mode":"fallback"},"targets":[{"virtual_key":"openai"},{"virtual_key":"anthropic"}]}`
+
 type fakeLogReader struct {
 	entries []requestlog.Entry
 }
@@ -567,7 +569,7 @@ func TestUpdateConfig(t *testing.T) {
 	h, r := setupTestRouter()
 	adminKey := createAdminKey(t, h)
 
-	body := `{"strategy":{"mode":"fallback"},"targets":[{"virtual_key":"openai"},{"virtual_key":"anthropic"}]}`
+	body := fallbackConfigBody
 	req := authedRequest(http.MethodPut, "/admin/config", body, adminKey)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -608,7 +610,7 @@ func TestDeleteConfig(t *testing.T) {
 	h, r := setupTestRouter()
 	adminKey := createAdminKey(t, h)
 
-	updateBody := `{"strategy":{"mode":"fallback"},"targets":[{"virtual_key":"openai"},{"virtual_key":"anthropic"}]}`
+	updateBody := fallbackConfigBody
 	updateReq := authedRequest(http.MethodPut, "/admin/config", updateBody, adminKey)
 	updateW := httptest.NewRecorder()
 	r.ServeHTTP(updateW, updateReq)
@@ -697,7 +699,7 @@ func TestConfigHistoryAfterUpdates(t *testing.T) {
 	h, r := setupTestRouter()
 	adminKey := createAdminKey(t, h)
 
-	first := `{"strategy":{"mode":"fallback"},"targets":[{"virtual_key":"openai"},{"virtual_key":"anthropic"}]}`
+	first := fallbackConfigBody
 	req := authedRequest(http.MethodPut, "/admin/config", first, adminKey)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -749,7 +751,7 @@ func TestRollbackConfig(t *testing.T) {
 	h, r := setupTestRouter()
 	adminKey := createAdminKey(t, h)
 
-	first := `{"strategy":{"mode":"fallback"},"targets":[{"virtual_key":"openai"},{"virtual_key":"anthropic"}]}`
+	first := fallbackConfigBody
 	req := authedRequest(http.MethodPut, "/admin/config", first, adminKey)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)

@@ -407,7 +407,7 @@ The page also loads `GET /admin/config/history` and includes per-version rollbac
 
 ## 🔌 1-Line Migration
 
-FerroGateway natively speaks the OpenAI spec. Point your existing client SDKs to the Gateway by changing simply the `baseURL`—**no SDK changes, no prompt edits, no refactoring.**
+Ferro AI Gateway natively speaks the OpenAI spec. Point your existing client SDKs to the Gateway by changing simply the `baseURL`—**no SDK changes, no prompt edits, no refactoring.**
 
 #### Python
 
@@ -471,4 +471,4 @@ By participating, you agree to follow our [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## 📄 License
 
-FerroGateway is proudly open-source and released under the [Apache 2.0 License](LICENSE).
+Ferro AI Gateway is proudly open-source and released under the [Apache 2.0 License](LICENSE).

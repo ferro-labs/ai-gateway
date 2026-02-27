@@ -43,6 +43,8 @@ type ConfigHistoryEntry struct {
 	RolledBackFrom *int             `json:"rolled_back_from,omitempty"`
 }
 
+const unknownLabel = "unknown"
+
 // Routes returns a chi.Router with all admin endpoints mounted.
 func (h *Handlers) Routes() chi.Router {
 	r := chi.NewRouter()
@@ -197,6 +199,7 @@ func (h *Handlers) getKey(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(masked)
 }
 
+//nolint:gocyclo // Query parsing + filtering/sorting logic is intentionally centralized for the endpoint.
 func (h *Handlers) keyUsage(w http.ResponseWriter, r *http.Request) {
 	limit := 20
 	if raw := r.URL.Query().Get("limit"); raw != "" {
@@ -516,19 +519,19 @@ func (h *Handlers) logsStats(w http.ResponseWriter, r *http.Request) {
 	for _, entry := range entries {
 		stage := entry.Stage
 		if stage == "" {
-			stage = "unknown"
+			stage = unknownLabel
 		}
 		byStage[stage]++
 
 		provider := entry.Provider
 		if provider == "" {
-			provider = "unknown"
+			provider = unknownLabel
 		}
 		byProvider[provider]++
 
 		model := entry.Model
 		if model == "" {
-			model = "unknown"
+			model = unknownLabel
 		}
 		byModel[model]++
 

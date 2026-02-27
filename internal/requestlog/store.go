@@ -1,3 +1,4 @@
+// Package requestlog provides persistent storage primitives for request/response logs.
 package requestlog
 
 import (
@@ -7,8 +8,15 @@ import (
 	"strings"
 	"time"
 
+	// Register Postgres SQL driver.
 	_ "github.com/lib/pq"
+	// Register SQLite SQL driver.
 	_ "modernc.org/sqlite"
+)
+
+const (
+	requestLogDialectSQLite   = "sqlite"
+	requestLogDialectPostgres = "postgres"
 )
 
 // Entry represents a persistent request log event emitted by logging plugins.
@@ -74,6 +82,7 @@ type SQLWriter struct {
 	dialect string
 }
 
+// NewSQLiteWriter creates a SQLite-backed request log writer.
 func NewSQLiteWriter(dsn string) (*SQLWriter, error) {
 	dsn = strings.TrimSpace(dsn)
 	if dsn == "" {
@@ -83,7 +92,7 @@ func NewSQLiteWriter(dsn string) (*SQLWriter, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite request log writer: %w", err)
 	}
-	w := &SQLWriter{db: db, dialect: "sqlite"}
+	w := &SQLWriter{db: db, dialect: requestLogDialectSQLite}
 	if err := w.init(); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -91,6 +100,7 @@ func NewSQLiteWriter(dsn string) (*SQLWriter, error) {
 	return w, nil
 }
 
+// NewPostgresWriter creates a Postgres-backed request log writer.
 func NewPostgresWriter(dsn string) (*SQLWriter, error) {
 	dsn = strings.TrimSpace(dsn)
 	if dsn == "" {
@@ -100,7 +110,7 @@ func NewPostgresWriter(dsn string) (*SQLWriter, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open postgres request log writer: %w", err)
 	}
-	w := &SQLWriter{db: db, dialect: "postgres"}
+	w := &SQLWriter{db: db, dialect: requestLogDialectPostgres}
 	if err := w.init(); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -127,7 +137,7 @@ CREATE TABLE IF NOT EXISTS request_logs (
 	created_at TIMESTAMP NOT NULL
 );`
 
-	if w.dialect == "postgres" {
+	if w.dialect == requestLogDialectPostgres {
 		ddl = `
 CREATE TABLE IF NOT EXISTS request_logs (
 	id BIGSERIAL PRIMARY KEY,
@@ -156,7 +166,7 @@ func (w *SQLWriter) Write(ctx context.Context, entry Entry) error {
 
 	query := `INSERT INTO request_logs(trace_id, stage, model, provider, prompt_tokens, completion_tokens, total_tokens, error_message, created_at)
 	VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`
-	if w.dialect == "postgres" {
+	if w.dialect == requestLogDialectPostgres {
 		query = `INSERT INTO request_logs(trace_id, stage, model, provider, prompt_tokens, completion_tokens, total_tokens, error_message, created_at)
 		VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9)`
 	}
@@ -216,7 +226,7 @@ func (w *SQLWriter) List(ctx context.Context, query Query) (ListResult, error) {
 	}
 
 	countQuery := "SELECT COUNT(*) FROM request_logs" + whereSQL
-	if w.dialect == "postgres" {
+	if w.dialect == requestLogDialectPostgres {
 		countQuery = bindPostgres(countQuery)
 	}
 
@@ -225,9 +235,12 @@ func (w *SQLWriter) List(ctx context.Context, query Query) (ListResult, error) {
 		return ListResult{}, fmt.Errorf("count request logs: %w", err)
 	}
 
+	// #nosec G202 -- whereSQL is built only from fixed predicates and bound placeholders.
 	listQuery := "SELECT trace_id, stage, model, provider, prompt_tokens, completion_tokens, total_tokens, error_message, created_at FROM request_logs" + whereSQL + " ORDER BY created_at DESC LIMIT ? OFFSET ?"
-	listArgs := append(args, query.Limit, query.Offset)
-	if w.dialect == "postgres" {
+	listArgs := make([]interface{}, 0, len(args)+2)
+	listArgs = append(listArgs, args...)
+	listArgs = append(listArgs, query.Limit, query.Offset)
+	if w.dialect == requestLogDialectPostgres {
 		listQuery = bindPostgres(listQuery)
 	}
 
@@ -235,7 +248,9 @@ func (w *SQLWriter) List(ctx context.Context, query Query) (ListResult, error) {
 	if err != nil {
 		return ListResult{}, fmt.Errorf("list request logs: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		_ = rows.Close()
+	}()
 
 	entries := make([]Entry, 0)
 	for rows.Next() {
@@ -293,8 +308,9 @@ func (w *SQLWriter) Delete(ctx context.Context, query MaintenanceQuery) (int, er
 		args = append(args, query.Provider)
 	}
 
+	// #nosec G202 -- delete predicates are assembled from a fixed allowlist with placeholders.
 	deleteQuery := "DELETE FROM request_logs WHERE " + strings.Join(whereClauses, " AND ")
-	if w.dialect == "postgres" {
+	if w.dialect == requestLogDialectPostgres {
 		deleteQuery = bindPostgres(deleteQuery)
 	}
 
@@ -327,6 +343,7 @@ func bindPostgres(query string) string {
 	return builder.String()
 }
 
+// Close closes the underlying SQL connection.
 func (w *SQLWriter) Close() error {
 	if w == nil || w.db == nil {
 		return nil

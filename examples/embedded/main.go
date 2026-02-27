@@ -1,4 +1,4 @@
-// Package main demonstrates embedding FerroGateway inside an existing Go HTTP server.
+// Package main demonstrates embedding Ferro AI Gateway inside an existing Go HTTP server.
 //
 // Instead of running ferrogw as a standalone binary, you can import the library
 // and mount the gateway handler alongside your own application routes.

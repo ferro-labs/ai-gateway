@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1" />
+	<title>Ferro AI Gateway Admin Dashboard</title>
+	<style>
+		body { font-family: system-ui, -apple-system, sans-serif; margin: 24px; color: #111827; }
+		.row { display: flex; gap: 12px; align-items: center; margin-bottom: 16px; }
+		input { width: 420px; max-width: 100%; padding: 8px; }
+		button { padding: 8px 12px; }
+		.grid { display: grid; grid-template-columns: repeat(3, minmax(180px, 1fr)); gap: 12px; }
+		.card { border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px; }
+		.label { font-size: 12px; color: #6b7280; }
+		.value { font-size: 20px; font-weight: 600; margin-top: 4px; }
+		table { width: 100%; border-collapse: collapse; margin-top: 16px; }
+		th, td { border-bottom: 1px solid #e5e7eb; padding: 8px; text-align: left; }
+		th { font-size: 12px; color: #6b7280; }
+		.error { color: #b91c1c; margin-top: 12px; }
+		.muted { color: #6b7280; font-size: 12px; }
+	</style>
+</head>
+<body>
+	<h1>Ferro AI Gateway Dashboard</h1>
+	<div class="row">
+		<input id="token" placeholder="Enter admin or read-only API key (gw-...)" />
+		<button id="load">Load</button>
+	</div>
+	<div id="error" class="error"></div>
+	<div id="status" class="muted"></div>
+	<div class="grid">
+		<div class="card"><div class="label">Providers (available/total)</div><div class="value" id="providers">-</div></div>
+		<div class="card"><div class="label">Keys (active/total)</div><div class="value" id="keys">-</div></div>
+		<div class="card"><div class="label">Expired Keys</div><div class="value" id="expired">-</div></div>
+		<div class="card"><div class="label">Total Key Usage</div><div class="value" id="usage">-</div></div>
+		<div class="card"><div class="label">Request Logs Enabled</div><div class="value" id="logsEnabled">-</div></div>
+		<div class="card"><div class="label">Request Logs Total</div><div class="value" id="logsTotal">-</div></div>
+	</div>
+
+	<h2>Config History</h2>
+	<table>
+		<thead>
+			<tr>
+				<th>Version</th>
+				<th>Updated At</th>
+				<th>Mode</th>
+				<th>Rollback Source</th>
+				<th>Action</th>
+			</tr>
+		</thead>
+		<tbody id="historyBody">
+			<tr><td colspan="5" class="muted">Load dashboard to fetch history.</td></tr>
+		</tbody>
+	</table>
+
+	<script>
+		const els = {
+			token: document.getElementById('token'),
+			load: document.getElementById('load'),
+			error: document.getElementById('error'),
+			status: document.getElementById('status'),
+			providers: document.getElementById('providers'),
+			keys: document.getElementById('keys'),
+			expired: document.getElementById('expired'),
+			usage: document.getElementById('usage'),
+			logsEnabled: document.getElementById('logsEnabled'),
+			logsTotal: document.getElementById('logsTotal'),
+			historyBody: document.getElementById('historyBody')
+		};
+
+		async function apiRequest(path, options) {
+			const token = els.token.value.trim();
+			if (!token) {
+				throw new Error('API key is required.');
+			}
+			const res = await fetch(path, {
+				...(options || {}),
+				headers: {
+					Authorization: 'Bearer ' + token,
+					...((options && options.headers) || {})
+				}
+			});
+			const data = await res.json();
+			if (!res.ok) {
+				const msg = data && data.error && data.error.message ? data.error.message : 'request failed';
+				throw new Error(msg);
+			}
+			return data;
+		}
+
+		function renderHistory(historyItems) {
+			if (!Array.isArray(historyItems) || historyItems.length === 0) {
+				els.historyBody.innerHTML = '<tr><td colspan="5" class="muted">No config history yet.</td></tr>';
+				return;
+			}
+
+			els.historyBody.innerHTML = '';
+			historyItems.forEach(function (item) {
+				const tr = document.createElement('tr');
+				const mode = item && item.config && item.config.strategy ? item.config.strategy.mode : '-';
+				const rollbackSource = item && item.rolled_back_from ? String(item.rolled_back_from) : '-';
+
+				tr.innerHTML =
+					'<td>' + item.version + '</td>' +
+					'<td>' + new Date(item.updated_at).toLocaleString() + '</td>' +
+					'<td>' + mode + '</td>' +
+					'<td>' + rollbackSource + '</td>' +
+					'<td><button data-version="' + item.version + '">Rollback</button></td>';
+
+				const btn = tr.querySelector('button');
+				btn.addEventListener('click', function () {
+					rollbackConfig(item.version);
+				});
+				els.historyBody.appendChild(tr);
+			});
+		}
+
+		async function loadHistory() {
+			const history = await apiRequest('/admin/config/history');
+			renderHistory(history.data || []);
+		}
+
+		async function rollbackConfig(version) {
+			els.error.textContent = '';
+			els.status.textContent = '';
+			const ok = window.confirm('Rollback to config version ' + version + '?');
+			if (!ok) {
+				return;
+			}
+			try {
+				await apiRequest('/admin/config/rollback/' + encodeURIComponent(String(version)), { method: 'POST' });
+				els.status.textContent = 'Rolled back to version ' + version + '.';
+				await loadDashboard();
+			} catch (err) {
+				els.error.textContent = err.message || 'Rollback failed.';
+			}
+		}
+
+		async function loadDashboard() {
+			els.error.textContent = '';
+			els.status.textContent = '';
+
+			try {
+				const data = await apiRequest('/admin/dashboard');
+
+				els.providers.textContent = data.providers.available + ' / ' + data.providers.total;
+				els.keys.textContent = data.keys.active + ' / ' + data.keys.total;
+				els.expired.textContent = String(data.keys.expired);
+				els.usage.textContent = String(data.keys.total_usage);
+				els.logsEnabled.textContent = data.request_logs.enabled ? 'yes' : 'no';
+				els.logsTotal.textContent = String(data.request_logs.total);
+				await loadHistory();
+			} catch (err) {
+				els.error.textContent = err.message || 'Failed to load dashboard.';
+			}
+		}
+
+		els.load.addEventListener('click', loadDashboard);
+	</script>
+</body>
+</html>

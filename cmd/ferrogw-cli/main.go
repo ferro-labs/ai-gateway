@@ -1,4 +1,4 @@
-// Package main provides the ferrogw-cli command-line tool for managing the FerroGateway.
+// Package main provides the ferrogw-cli command-line tool for managing the Ferro AI Gateway.
 package main
 
 import (
@@ -17,7 +17,7 @@ import (
 	_ "github.com/ferro-labs/ai-gateway/internal/plugins/wordfilter"
 )
 
-const usage = `ferrogw-cli — FerroGateway command line tool
+const usage = `ferrogw-cli — Ferro AI Gateway command line tool
 
 Usage:
   ferrogw-cli <command> [arguments]

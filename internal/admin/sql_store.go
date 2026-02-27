@@ -9,7 +9,9 @@ import (
 	"strings"
 	"time"
 
+	// Register Postgres SQL driver.
 	_ "github.com/lib/pq"
+	// Register SQLite SQL driver.
 	_ "modernc.org/sqlite"
 )
 
@@ -132,6 +134,7 @@ func (s *SQLStore) ensureUsageColumns() error {
 	return nil
 }
 
+// Create inserts a new API key in the SQL store.
 func (s *SQLStore) Create(name string, scopes []string, expiresAt *time.Time) (*APIKey, error) {
 	if len(scopes) == 0 {
 		scopes = []string{ScopeAdmin}
@@ -176,6 +179,7 @@ VALUES(?, ?, ?, ?, ?, NULL, ?, NULL, ?, ?, NULL)`)
 	}, nil
 }
 
+// Get retrieves an API key by ID from the SQL store.
 func (s *SQLStore) Get(id string) (*APIKey, bool) {
 	q := s.bind(`
 SELECT id, key, name, scopes, created_at, revoked_at, expires_at, rotated_at, last_used_at, usage_count, active
@@ -192,6 +196,7 @@ WHERE id = ?`)
 	return key, true
 }
 
+// List returns all API keys with masked key values.
 func (s *SQLStore) List() []*APIKey {
 	q := `
 SELECT id, key, name, scopes, created_at, revoked_at, expires_at, rotated_at, last_used_at, usage_count, active
@@ -201,7 +206,9 @@ FROM api_keys`
 	if err != nil {
 		return []*APIKey{}
 	}
-	defer rows.Close()
+	defer func() {
+		_ = rows.Close()
+	}()
 
 	keys := make([]*APIKey, 0)
 	for rows.Next() {
@@ -218,6 +225,7 @@ FROM api_keys`
 	return keys
 }
 
+// Revoke marks an API key as inactive and records the revocation timestamp.
 func (s *SQLStore) Revoke(id string) error {
 	now := time.Now().UTC()
 	q := s.bind(`UPDATE api_keys SET revoked_at = ?, active = ? WHERE id = ?`)
@@ -232,6 +240,7 @@ func (s *SQLStore) Revoke(id string) error {
 	return nil
 }
 
+// Update modifies API key metadata (name/scopes).
 func (s *SQLStore) Update(id string, name string, scopes []string) (*APIKey, error) {
 	current, ok := s.Get(id)
 	if !ok {
@@ -262,6 +271,7 @@ func (s *SQLStore) Update(id string, name string, scopes []string) (*APIKey, err
 	return &masked, nil
 }
 
+// SetExpiration updates or clears the API key expiration time.
 func (s *SQLStore) SetExpiration(id string, expiresAt *time.Time) error {
 	if expiresAt != nil {
 		t := expiresAt.UTC()
@@ -280,6 +290,7 @@ func (s *SQLStore) SetExpiration(id string, expiresAt *time.Time) error {
 	return nil
 }
 
+// Delete removes an API key by ID.
 func (s *SQLStore) Delete(id string) error {
 	q := s.bind(`DELETE FROM api_keys WHERE id = ?`)
 	res, err := s.db.Exec(q, id)
@@ -293,6 +304,7 @@ func (s *SQLStore) Delete(id string) error {
 	return nil
 }
 
+// ValidateKey validates a full API key value and updates usage counters.
 func (s *SQLStore) ValidateKey(key string) (*APIKey, bool) {
 	q := s.bind(`
 SELECT id, key, name, scopes, created_at, revoked_at, expires_at, rotated_at, last_used_at, usage_count, active
@@ -322,6 +334,7 @@ WHERE key = ?`)
 	return apiKey, true
 }
 
+// RotateKey rotates the secret value for an existing API key.
 func (s *SQLStore) RotateKey(id string) (*APIKey, error) {
 	newKey, err := generateAPIKeyString()
 	if err != nil {

@@ -21,6 +21,7 @@ import (
 	"github.com/ferro-labs/ai-gateway/internal/requestlog"
 	"github.com/ferro-labs/ai-gateway/internal/version"
 	"github.com/ferro-labs/ai-gateway/providers"
+	webassets "github.com/ferro-labs/ai-gateway/web"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -31,6 +32,15 @@ import (
 	_ "github.com/ferro-labs/ai-gateway/internal/plugins/maxtoken"
 	_ "github.com/ferro-labs/ai-gateway/internal/plugins/ratelimit"
 	_ "github.com/ferro-labs/ai-gateway/internal/plugins/wordfilter"
+)
+
+var webTemplates = template.Must(template.ParseFS(webassets.Templates, "*.html"))
+
+const (
+	backendMemory      = "memory"
+	backendSQLite      = "sqlite"
+	backendPostgres    = "postgres"
+	backendPostgresSQL = "postgresql"
 )
 
 func main() {
@@ -117,26 +127,26 @@ func main() {
 func createKeyStoreFromEnv() (admin.Store, string, error) {
 	backend := strings.ToLower(strings.TrimSpace(os.Getenv("API_KEY_STORE_BACKEND")))
 	if backend == "" {
-		backend = "memory"
+		backend = backendMemory
 	}
 
 	storeDSN := strings.TrimSpace(os.Getenv("API_KEY_STORE_DSN"))
 
 	switch backend {
-	case "memory", "in-memory", "inmemory":
-		return admin.NewKeyStore(), "memory", nil
-	case "sqlite":
+	case backendMemory, "in-memory", "inmemory":
+		return admin.NewKeyStore(), backendMemory, nil
+	case backendSQLite:
 		store, err := admin.NewSQLiteStore(storeDSN)
 		if err != nil {
 			return nil, "", err
 		}
-		return store, "sqlite", nil
-	case "postgres", "postgresql":
+		return store, backendSQLite, nil
+	case backendPostgres, backendPostgresSQL:
 		store, err := admin.NewPostgresStore(storeDSN)
 		if err != nil {
 			return nil, "", err
 		}
-		return store, "postgres", nil
+		return store, backendPostgres, nil
 	default:
 		return nil, "", fmt.Errorf("unsupported API key store backend %q", backend)
 	}
@@ -151,18 +161,18 @@ func createRequestLogReaderFromEnv() (requestlog.Reader, requestlog.Maintainer, 
 	dsn := strings.TrimSpace(os.Getenv("REQUEST_LOG_STORE_DSN"))
 
 	switch backend {
-	case "sqlite":
+	case backendSQLite:
 		reader, err := requestlog.NewSQLiteWriter(dsn)
 		if err != nil {
 			return nil, nil, "", err
 		}
-		return reader, reader, "sqlite", nil
-	case "postgres", "postgresql":
+		return reader, reader, backendSQLite, nil
+	case backendPostgres, backendPostgresSQL:
 		reader, err := requestlog.NewPostgresWriter(dsn)
 		if err != nil {
 			return nil, nil, "", err
 		}
-		return reader, reader, "postgres", nil
+		return reader, reader, backendPostgres, nil
 	default:
 		return nil, nil, "", fmt.Errorf("unsupported request log store backend %q", backend)
 	}
@@ -171,19 +181,19 @@ func createRequestLogReaderFromEnv() (requestlog.Reader, requestlog.Maintainer, 
 func createConfigManagerFromEnv(gw *aigateway.Gateway) (admin.ConfigManager, string, error) {
 	backend := strings.ToLower(strings.TrimSpace(os.Getenv("CONFIG_STORE_BACKEND")))
 	if backend == "" {
-		backend = "memory"
+		backend = backendMemory
 	}
 
 	dsn := strings.TrimSpace(os.Getenv("CONFIG_STORE_DSN"))
 
 	switch backend {
-	case "memory", "in-memory", "inmemory":
+	case backendMemory, "in-memory", "inmemory":
 		manager, err := admin.NewGatewayConfigManager(gw, nil)
 		if err != nil {
 			return nil, "", err
 		}
-		return manager, "memory", nil
-	case "sqlite":
+		return manager, backendMemory, nil
+	case backendSQLite:
 		store, err := admin.NewSQLiteConfigStore(dsn)
 		if err != nil {
 			return nil, "", err
@@ -192,8 +202,8 @@ func createConfigManagerFromEnv(gw *aigateway.Gateway) (admin.ConfigManager, str
 		if err != nil {
 			return nil, "", err
 		}
-		return manager, "sqlite", nil
-	case "postgres", "postgresql":
+		return manager, backendSQLite, nil
+	case backendPostgres, backendPostgresSQL:
 		store, err := admin.NewPostgresConfigStore(dsn)
 		if err != nil {
 			return nil, "", err
@@ -202,7 +212,7 @@ func createConfigManagerFromEnv(gw *aigateway.Gateway) (admin.ConfigManager, str
 		if err != nil {
 			return nil, "", err
 		}
-		return manager, "postgres", nil
+		return manager, backendPostgres, nil
 	default:
 		return nil, "", fmt.Errorf("unsupported config store backend %q", backend)
 	}
@@ -473,8 +483,7 @@ func newRouter(
 
 	// Minimal built-in admin dashboard UI.
 	r.Get("/dashboard", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if err := template.Must(template.New("dashboard").Parse(dashboardHTML)).Execute(w, nil); err != nil {
+		if err := renderWebTemplate(w, "dashboard.html", nil); err != nil {
 			writeOpenAIError(w, http.StatusInternalServerError, "failed to render dashboard", "server_error", "internal_error")
 			return
 		}
@@ -563,168 +572,10 @@ func newRouter(
 	return r
 }
 
-const dashboardHTML = `<!doctype html>
-<html lang="en">
-<head>
-	<meta charset="utf-8" />
-	<meta name="viewport" content="width=device-width, initial-scale=1" />
-	<title>FerroGateway Admin Dashboard</title>
-	<style>
-		body { font-family: system-ui, -apple-system, sans-serif; margin: 24px; color: #111827; }
-		.row { display: flex; gap: 12px; align-items: center; margin-bottom: 16px; }
-		input { width: 420px; max-width: 100%; padding: 8px; }
-		button { padding: 8px 12px; }
-		.grid { display: grid; grid-template-columns: repeat(3, minmax(180px, 1fr)); gap: 12px; }
-		.card { border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px; }
-		.label { font-size: 12px; color: #6b7280; }
-		.value { font-size: 20px; font-weight: 600; margin-top: 4px; }
-		table { width: 100%; border-collapse: collapse; margin-top: 16px; }
-		th, td { border-bottom: 1px solid #e5e7eb; padding: 8px; text-align: left; }
-		th { font-size: 12px; color: #6b7280; }
-		.error { color: #b91c1c; margin-top: 12px; }
-		.muted { color: #6b7280; font-size: 12px; }
-	</style>
-</head>
-<body>
-	<h1>FerroGateway Dashboard</h1>
-	<div class="row">
-		<input id="token" placeholder="Enter admin or read-only API key (gw-...)" />
-		<button id="load">Load</button>
-	</div>
-	<div id="error" class="error"></div>
-	<div id="status" class="muted"></div>
-	<div class="grid">
-		<div class="card"><div class="label">Providers (available/total)</div><div class="value" id="providers">-</div></div>
-		<div class="card"><div class="label">Keys (active/total)</div><div class="value" id="keys">-</div></div>
-		<div class="card"><div class="label">Expired Keys</div><div class="value" id="expired">-</div></div>
-		<div class="card"><div class="label">Total Key Usage</div><div class="value" id="usage">-</div></div>
-		<div class="card"><div class="label">Request Logs Enabled</div><div class="value" id="logsEnabled">-</div></div>
-		<div class="card"><div class="label">Request Logs Total</div><div class="value" id="logsTotal">-</div></div>
-	</div>
-
-	<h2>Config History</h2>
-	<table>
-		<thead>
-			<tr>
-				<th>Version</th>
-				<th>Updated At</th>
-				<th>Mode</th>
-				<th>Rollback Source</th>
-				<th>Action</th>
-			</tr>
-		</thead>
-		<tbody id="historyBody">
-			<tr><td colspan="5" class="muted">Load dashboard to fetch history.</td></tr>
-		</tbody>
-	</table>
-
-	<script>
-		const els = {
-			token: document.getElementById('token'),
-			load: document.getElementById('load'),
-			error: document.getElementById('error'),
-			status: document.getElementById('status'),
-			providers: document.getElementById('providers'),
-			keys: document.getElementById('keys'),
-			expired: document.getElementById('expired'),
-			usage: document.getElementById('usage'),
-			logsEnabled: document.getElementById('logsEnabled'),
-			logsTotal: document.getElementById('logsTotal'),
-			historyBody: document.getElementById('historyBody')
-		};
-
-		async function apiRequest(path, options) {
-			const token = els.token.value.trim();
-			if (!token) {
-				throw new Error('API key is required.');
-			}
-			const res = await fetch(path, {
-				...(options || {}),
-				headers: {
-					Authorization: 'Bearer ' + token,
-					...((options && options.headers) || {})
-				}
-			});
-			const data = await res.json();
-			if (!res.ok) {
-				const msg = data && data.error && data.error.message ? data.error.message : 'request failed';
-				throw new Error(msg);
-			}
-			return data;
-		}
-
-		function renderHistory(historyItems) {
-			if (!Array.isArray(historyItems) || historyItems.length === 0) {
-				els.historyBody.innerHTML = '<tr><td colspan="5" class="muted">No config history yet.</td></tr>';
-				return;
-			}
-
-			els.historyBody.innerHTML = '';
-			historyItems.forEach(function (item) {
-				const tr = document.createElement('tr');
-				const mode = item && item.config && item.config.strategy ? item.config.strategy.mode : '-';
-				const rollbackSource = item && item.rolled_back_from ? String(item.rolled_back_from) : '-';
-
-				tr.innerHTML =
-					'<td>' + item.version + '</td>' +
-					'<td>' + new Date(item.updated_at).toLocaleString() + '</td>' +
-					'<td>' + mode + '</td>' +
-					'<td>' + rollbackSource + '</td>' +
-					'<td><button data-version="' + item.version + '">Rollback</button></td>';
-
-				const btn = tr.querySelector('button');
-				btn.addEventListener('click', function () {
-					rollbackConfig(item.version);
-				});
-				els.historyBody.appendChild(tr);
-			});
-		}
-
-		async function loadHistory() {
-			const history = await apiRequest('/admin/config/history');
-			renderHistory(history.data || []);
-		}
-
-		async function rollbackConfig(version) {
-			els.error.textContent = '';
-			els.status.textContent = '';
-			const ok = window.confirm('Rollback to config version ' + version + '?');
-			if (!ok) {
-				return;
-			}
-			try {
-				await apiRequest('/admin/config/rollback/' + encodeURIComponent(String(version)), { method: 'POST' });
-				els.status.textContent = 'Rolled back to version ' + version + '.';
-				await loadDashboard();
-			} catch (err) {
-				els.error.textContent = err.message || 'Rollback failed.';
-			}
-		}
-
-		async function loadDashboard() {
-			els.error.textContent = '';
-			els.status.textContent = '';
-
-			try {
-				const data = await apiRequest('/admin/dashboard');
-
-				els.providers.textContent = data.providers.available + ' / ' + data.providers.total;
-				els.keys.textContent = data.keys.active + ' / ' + data.keys.total;
-				els.expired.textContent = String(data.keys.expired);
-				els.usage.textContent = String(data.keys.total_usage);
-				els.logsEnabled.textContent = data.request_logs.enabled ? 'yes' : 'no';
-				els.logsTotal.textContent = String(data.request_logs.total);
-				await loadHistory();
-			} catch (err) {
-				els.error.textContent = err.message || 'Failed to load dashboard.';
-			}
-		}
-
-		els.load.addEventListener('click', loadDashboard);
-	</script>
-</body>
-</html>
-`
+func renderWebTemplate(w http.ResponseWriter, templateName string, data interface{}) error {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	return webTemplates.ExecuteTemplate(w, templateName, data)
+}
 
 // rateLimitMiddleware rejects requests that exceed the per-IP token-bucket limit.
 func rateLimitMiddleware(store *ratelimit.Store) func(http.Handler) http.Handler {
