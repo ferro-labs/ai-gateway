@@ -263,7 +263,7 @@ Optional filters:
 * `provider`
 * `since` (RFC3339 timestamp)
 
-Response contains aggregated `summary`, `by_stage`, and `by_provider` counts.
+Response contains aggregated `summary`, `by_stage`, `by_provider`, and `by_model` counts.
 
 ---
 

@@ -477,6 +477,7 @@ func (h *Handlers) logsStats(w http.ResponseWriter, r *http.Request) {
 
 	byStage := map[string]int{}
 	byProvider := map[string]int{}
+	byModel := map[string]int{}
 	errorCount := 0
 	tokens := 0
 	for _, entry := range entries {
@@ -491,6 +492,12 @@ func (h *Handlers) logsStats(w http.ResponseWriter, r *http.Request) {
 			provider = "unknown"
 		}
 		byProvider[provider]++
+
+		model := entry.Model
+		if model == "" {
+			model = "unknown"
+		}
+		byModel[model]++
 
 		if entry.ErrorMessage != "" || stage == "on_error" {
 			errorCount++
@@ -507,6 +514,7 @@ func (h *Handlers) logsStats(w http.ResponseWriter, r *http.Request) {
 		},
 		"by_stage":    byStage,
 		"by_provider": byProvider,
+		"by_model":    byModel,
 		"filters": map[string]interface{}{
 			"stage":    baseQuery.Stage,
 			"model":    baseQuery.Model,

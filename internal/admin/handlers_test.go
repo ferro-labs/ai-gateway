@@ -1146,6 +1146,7 @@ func TestLogsStatsEndpoint(t *testing.T) {
 		} `json:"summary"`
 		ByStage    map[string]int `json:"by_stage"`
 		ByProvider map[string]int `json:"by_provider"`
+		ByModel    map[string]int `json:"by_model"`
 	}
 	if err := json.NewDecoder(w.Body).Decode(&payload); err != nil {
 		t.Fatalf("decode logs stats response: %v", err)
@@ -1164,6 +1165,9 @@ func TestLogsStatsEndpoint(t *testing.T) {
 	}
 	if payload.ByProvider["openai"] != 2 || payload.ByProvider["anthropic"] != 1 {
 		t.Fatalf("unexpected by_provider: %+v", payload.ByProvider)
+	}
+	if payload.ByModel["gpt-4"] != 2 || payload.ByModel["claude"] != 1 {
+		t.Fatalf("unexpected by_model: %+v", payload.ByModel)
 	}
 }
 
