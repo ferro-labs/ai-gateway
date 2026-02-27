@@ -37,9 +37,10 @@ type Handlers struct {
 
 // ConfigHistoryEntry captures a runtime config update snapshot.
 type ConfigHistoryEntry struct {
-	Version   int              `json:"version"`
-	UpdatedAt time.Time        `json:"updated_at"`
-	Config    aigateway.Config `json:"config"`
+	Version        int              `json:"version"`
+	UpdatedAt      time.Time        `json:"updated_at"`
+	Config         aigateway.Config `json:"config"`
+	RolledBackFrom *int             `json:"rolled_back_from,omitempty"`
 }
 
 // Routes returns a chi.Router with all admin endpoints mounted.
@@ -69,6 +70,7 @@ func (h *Handlers) Routes() chi.Router {
 		r.Post("/keys/{id}/rotate", h.rotateKey)
 		r.Delete("/logs", h.deleteLogs)
 		r.Put("/config", h.updateConfig)
+		r.Post("/config/rollback/{version}", h.rollbackConfig)
 	})
 
 	return r
@@ -615,14 +617,71 @@ func (h *Handlers) updateConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.historyMu.Lock()
-	h.configHistory = append(h.configHistory, ConfigHistoryEntry{
-		Version:   len(h.configHistory) + 1,
-		UpdatedAt: time.Now().UTC(),
-		Config:    cfg,
-	})
-	h.historyMu.Unlock()
+	h.appendConfigHistory(cfg, nil)
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "updated"})
+}
+
+func (h *Handlers) rollbackConfig(w http.ResponseWriter, r *http.Request) {
+	if h.Configs == nil {
+		writeError(w, http.StatusNotImplemented, "config management is not enabled", "not_implemented_error", "not_implemented")
+		return
+	}
+
+	requestedVersion, err := strconv.Atoi(chi.URLParam(r, "version"))
+	if err != nil || requestedVersion <= 0 {
+		writeError(w, http.StatusBadRequest, "invalid version: must be a positive integer", "invalid_request_error", "invalid_request")
+		return
+	}
+
+	h.historyMu.Lock()
+	var target *ConfigHistoryEntry
+	for i := range h.configHistory {
+		if h.configHistory[i].Version == requestedVersion {
+			copyEntry := h.configHistory[i]
+			target = &copyEntry
+			break
+		}
+	}
+	h.historyMu.Unlock()
+
+	if target == nil {
+		writeError(w, http.StatusNotFound, "config version not found", "not_found_error", "resource_not_found")
+		return
+	}
+
+	if err := h.Configs.ReloadConfig(target.Config); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error(), "invalid_request_error", "invalid_config")
+		return
+	}
+
+	rollbackFrom := requestedVersion
+	h.appendConfigHistory(target.Config, &rollbackFrom)
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":               "rolled_back",
+		"rolled_back_to":       requestedVersion,
+		"current_history_size": len(h.getConfigHistorySnapshot()),
+	})
+}
+
+func (h *Handlers) appendConfigHistory(cfg aigateway.Config, rolledBackFrom *int) {
+	h.historyMu.Lock()
+	defer h.historyMu.Unlock()
+	h.configHistory = append(h.configHistory, ConfigHistoryEntry{
+		Version:        len(h.configHistory) + 1,
+		UpdatedAt:      time.Now().UTC(),
+		Config:         cfg,
+		RolledBackFrom: rolledBackFrom,
+	})
+}
+
+func (h *Handlers) getConfigHistorySnapshot() []ConfigHistoryEntry {
+	h.historyMu.Lock()
+	defer h.historyMu.Unlock()
+	history := make([]ConfigHistoryEntry, len(h.configHistory))
+	copy(history, h.configHistory)
+	return history
 }

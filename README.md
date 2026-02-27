@@ -282,6 +282,20 @@ Response includes:
 * `data[]` with `version`, `updated_at`, and `config`
 * `summary.total_versions`
 
+Rollback to a previous version:
+
+```http
+POST /admin/config/rollback/{version}
+Authorization: Bearer <admin-key>
+```
+
+Example:
+
+```bash
+curl -X POST "http://localhost:8080/admin/config/rollback/2" \
+  -H "Authorization: Bearer gw-..."
+```
+
 ---
 
 ## 🖥️ Built-in Admin Dashboard UI

@@ -639,6 +639,107 @@ func TestConfigHistoryAfterUpdates(t *testing.T) {
 	}
 }
 
+func TestRollbackConfig(t *testing.T) {
+	h, r := setupTestRouter()
+	adminKey := createAdminKey(t, h)
+
+	first := `{"strategy":{"mode":"fallback"},"targets":[{"virtual_key":"openai"},{"virtual_key":"anthropic"}]}`
+	req := authedRequest(http.MethodPut, "/admin/config", first, adminKey)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected first update 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	second := `{"strategy":{"mode":"single"},"targets":[{"virtual_key":"gemini"}]}`
+	req = authedRequest(http.MethodPut, "/admin/config", second, adminKey)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected second update 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	req = authedRequest(http.MethodPost, "/admin/config/rollback/1", "", adminKey)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected rollback 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	getReq := authedRequest(http.MethodGet, "/admin/config", "", adminKey)
+	getW := httptest.NewRecorder()
+	r.ServeHTTP(getW, getReq)
+
+	var cfg aigateway.Config
+	if err := json.NewDecoder(getW.Body).Decode(&cfg); err != nil {
+		t.Fatalf("decode config response: %v", err)
+	}
+	if cfg.Strategy.Mode != aigateway.ModeFallback {
+		t.Fatalf("expected rolled back mode fallback, got %s", cfg.Strategy.Mode)
+	}
+	if len(cfg.Targets) != 2 {
+		t.Fatalf("expected rolled back config with 2 targets, got %d", len(cfg.Targets))
+	}
+
+	historyReq := authedRequest(http.MethodGet, "/admin/config/history", "", adminKey)
+	historyW := httptest.NewRecorder()
+	r.ServeHTTP(historyW, historyReq)
+
+	var historyPayload struct {
+		Data []ConfigHistoryEntry `json:"data"`
+	}
+	if err := json.NewDecoder(historyW.Body).Decode(&historyPayload); err != nil {
+		t.Fatalf("decode history response: %v", err)
+	}
+	if len(historyPayload.Data) != 3 {
+		t.Fatalf("expected 3 history entries after rollback, got %d", len(historyPayload.Data))
+	}
+	last := historyPayload.Data[2]
+	if last.RolledBackFrom == nil || *last.RolledBackFrom != 1 {
+		t.Fatalf("expected rolled_back_from=1, got %+v", last.RolledBackFrom)
+	}
+}
+
+func TestRollbackConfigInvalidVersion(t *testing.T) {
+	h, r := setupTestRouter()
+	adminKey := createAdminKey(t, h)
+
+	req := authedRequest(http.MethodPost, "/admin/config/rollback/not-a-number", "", adminKey)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestRollbackConfigVersionNotFound(t *testing.T) {
+	h, r := setupTestRouter()
+	adminKey := createAdminKey(t, h)
+
+	req := authedRequest(http.MethodPost, "/admin/config/rollback/1", "", adminKey)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestReadOnlyCannotRollbackConfig(t *testing.T) {
+	h, r := setupTestRouter()
+	createAdminKey(t, h)
+	roKey := createReadOnlyKey(t, h)
+
+	req := authedRequest(http.MethodPost, "/admin/config/rollback/1", "", roKey)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 func TestKeyUsageEndpoint(t *testing.T) {
 	h, r := setupTestRouter()
 	adminKey := createAdminKey(t, h)
