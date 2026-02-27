@@ -8,6 +8,9 @@ type Config struct {
 	Targets []Target `json:"targets" yaml:"targets"`
 	// Plugins configuration (optional).
 	Plugins []PluginConfig `json:"plugins,omitempty" yaml:"plugins,omitempty"`
+	// Aliases maps friendly model names (e.g. "fast", "smart") to concrete model IDs.
+	// Aliases are resolved before routing — they must not reference other aliases.
+	Aliases map[string]string `json:"aliases,omitempty" yaml:"aliases,omitempty"`
 }
 
 // StrategyConfig defines the routing strategy.

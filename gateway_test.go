@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/ferro-labs/ai-gateway/plugin"
 	"github.com/ferro-labs/ai-gateway/providers"
@@ -251,4 +252,138 @@ func TestGateway_LoadPlugins_UnknownPlugin(t *testing.T) {
 	if got := err.Error(); got != "unknown plugin: does-not-exist" {
 		t.Errorf("got error %q, want %q", got, "unknown plugin: does-not-exist")
 	}
+}
+
+// ── mockEmbeddingProvider ─────────────────────────────────────────────────────
+
+type mockEmbeddingProvider struct {
+	mockProvider
+	capturedModel string
+}
+
+func (m *mockEmbeddingProvider) Embed(_ context.Context, req providers.EmbeddingRequest) (*providers.EmbeddingResponse, error) {
+	m.capturedModel = req.Model
+	return &providers.EmbeddingResponse{Model: req.Model}, nil
+}
+
+// ── mockImageProvider ─────────────────────────────────────────────────────────
+
+type mockImageProvider struct {
+	mockProvider
+	capturedModel string
+}
+
+func (m *mockImageProvider) GenerateImage(_ context.Context, req providers.ImageRequest) (*providers.ImageResponse, error) {
+	m.capturedModel = req.Model
+	return &providers.ImageResponse{}, nil
+}
+
+// ── alias resolution tests ────────────────────────────────────────────────────
+
+func TestGateway_Embed_ResolvesAlias(t *testing.T) {
+	ep := &mockEmbeddingProvider{
+		mockProvider: mockProvider{
+			name:   "mock",
+			models: []string{"text-embedding-3-small"},
+		},
+	}
+	gw, _ := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: "mock"}},
+		Aliases:  map[string]string{"my-embed": "text-embedding-3-small"},
+	})
+	gw.RegisterProvider(ep)
+
+	_, err := gw.Embed(context.Background(), providers.EmbeddingRequest{
+		Model: "my-embed",
+		Input: "hello",
+	})
+	if err != nil {
+		t.Fatalf("Embed() error: %v", err)
+	}
+	if ep.capturedModel != "text-embedding-3-small" {
+		t.Errorf("provider received model %q, want text-embedding-3-small (alias not resolved)", ep.capturedModel)
+	}
+}
+
+func TestGateway_Embed_NoAliasPassthrough(t *testing.T) {
+	ep := &mockEmbeddingProvider{
+		mockProvider: mockProvider{
+			name:   "mock",
+			models: []string{"text-embedding-3-small"},
+		},
+	}
+	gw, _ := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: "mock"}},
+	})
+	gw.RegisterProvider(ep)
+
+	_, err := gw.Embed(context.Background(), providers.EmbeddingRequest{
+		Model: "text-embedding-3-small",
+		Input: "hello",
+	})
+	if err != nil {
+		t.Fatalf("Embed() error: %v", err)
+	}
+	if ep.capturedModel != "text-embedding-3-small" {
+		t.Errorf("provider received model %q, want text-embedding-3-small", ep.capturedModel)
+	}
+}
+
+func TestGateway_GenerateImage_ResolvesAlias(t *testing.T) {
+	ip := &mockImageProvider{
+		mockProvider: mockProvider{
+			name:   "mock",
+			models: []string{"dall-e-3"},
+		},
+	}
+	gw, _ := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: "mock"}},
+		Aliases:  map[string]string{"my-image-model": "dall-e-3"},
+	})
+	gw.RegisterProvider(ip)
+
+	_, err := gw.GenerateImage(context.Background(), providers.ImageRequest{
+		Model:  "my-image-model",
+		Prompt: "a cat",
+	})
+	if err != nil {
+		t.Fatalf("GenerateImage() error: %v", err)
+	}
+	if ip.capturedModel != "dall-e-3" {
+		t.Errorf("provider received model %q, want dall-e-3 (alias not resolved)", ip.capturedModel)
+	}
+}
+
+// ── StartDiscovery interval validation tests ──────────────────────────────────
+
+func TestGateway_StartDiscovery_ZeroInterval(t *testing.T) {
+	gw, _ := New(Config{})
+	err := gw.StartDiscovery(context.Background(), 0)
+	if err == nil {
+		t.Fatal("StartDiscovery(0) should return an error")
+	}
+}
+
+func TestGateway_StartDiscovery_NegativeInterval(t *testing.T) {
+	gw, _ := New(Config{})
+	err := gw.StartDiscovery(context.Background(), -time.Second)
+	if err == nil {
+		t.Fatal("StartDiscovery(-1s) should return an error")
+	}
+}
+
+func TestGateway_StartDiscovery_ValidInterval(t *testing.T) {
+	gw, _ := New(Config{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err := gw.StartDiscovery(ctx, time.Hour)
+	if err != nil {
+		t.Fatalf("StartDiscovery(1h) returned unexpected error: %v", err)
+	}
+	// Cancel immediately; just verifies no panic and clean return.
+	cancel()
 }

@@ -5,6 +5,37 @@ All notable changes to FerroGateway will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — v0.3.0
+
+### Added
+
+- **Embeddings API**: `POST /v1/embeddings` endpoint; `EmbeddingProvider` interface + `EmbeddingRequest`/`EmbeddingResponse` types; implemented by OpenAI
+- **Image Generation API**: `POST /v1/images/generations` endpoint; `ImageProvider` interface + `ImageRequest`/`ImageResponse` types; implemented by OpenAI and Replicate
+- **5 new providers**:
+  - **Perplexity** (`PERPLEXITY_API_KEY`): sonar, sonar-pro, sonar-reasoning and sonar-reasoning-pro models with streaming
+  - **Fireworks AI** (`FIREWORKS_API_KEY`): Llama, Mixtral, Qwen, DeepSeek and Firefunction models with streaming
+  - **AI21 Labs** (`AI21_API_KEY`): Jamba models via OpenAI-compatible endpoint + Jurassic models via native `/complete` endpoint
+  - **Replicate** (`REPLICATE_API_TOKEN`): async-polling prediction model for text and image generation; configurable via `REPLICATE_TEXT_MODELS` / `REPLICATE_IMAGE_MODELS`
+  - **AWS Bedrock** (`AWS_REGION` + standard AWS credential chain): Claude, Amazon Titan, and Meta Llama model families via `bedrock-runtime`
+- **Model aliasing**: `aliases` top-level config key maps friendly names (e.g. `fast`, `smart`) to real model IDs; resolved at routing time before plugins run; cycle/self-reference validation in `ValidateConfig()`
+- **Provider auto-discovery** (`DiscoveryProvider` interface): Perplexity and Fireworks providers implement `DiscoverModels(ctx)`; `Gateway.StartDiscovery(ctx, interval)` polls live model lists and updates `GET /v1/models` responses
+- **Cost tracking**: `providers.EstimateCost()` uses a built-in pricing table (50+ models) to estimate request cost in USD; `gateway_request_cost_usd_total` Prometheus counter emitted after every successful `Route()` call
+- **Streaming tests**: Mock-SSE streaming tests added for Perplexity, Fireworks, AI21, Replicate, and all new providers; OpenAI `StreamProvider` interface compliance test added
+- **Proxy handler tests**: `cmd/ferrogw/proxy_test.go` covers provider resolution (X-Provider header + model body), auth header injection, gateway header removal, `X-Gateway-Provider` response header, non-200 passthroughs, and no-provider 400 error
+
+### Changed
+
+- `config.go`: Added `Aliases map[string]string` field to `Config`
+- `gateway.go`: `Route()` and `RouteStream()` resolve aliases before strategy execution; `AllModels()` prefers live-discovered models; added `Embed()`, `GenerateImage()`, `StartDiscovery()` methods
+- `cmd/ferrogw/main.go`: Registered Perplexity, Fireworks, AI21, Replicate, and AWS Bedrock providers; added `POST /v1/embeddings` and `POST /v1/images/generations` routes
+
+### Internal
+
+- `providers/pricing.go`: New pricing table + `EstimateCost()` helper
+- `providers/discovery.go`: Shared `discoverOpenAICompatibleModels()` helper for providers with `/v1/models` endpoints
+- `internal/metrics/metrics.go`: Added `gateway_request_cost_usd_total` counter
+- `go.mod`: Added `github.com/aws/aws-sdk-go-v2` modules for Bedrock
+
 ## [0.2.0] — 2026-02-27
 
 ### Added

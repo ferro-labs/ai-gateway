@@ -3,6 +3,7 @@ package providers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/openai/openai-go"
@@ -65,6 +66,134 @@ func (p *OpenAIProvider) SupportsModel(model string) bool {
 // Models returns model information for all supported models.
 func (p *OpenAIProvider) Models() []ModelInfo {
 	return ModelsFromList(p.name, p.SupportedModels())
+}
+
+// Embed sends an embedding request to OpenAI.
+func (p *OpenAIProvider) Embed(ctx context.Context, req EmbeddingRequest) (*EmbeddingResponse, error) {
+	params := openai.EmbeddingNewParams{
+		Model: req.Model,
+	}
+
+	// Validate and map req.Input. Return a descriptive error rather than
+	// letting the SDK send an empty/zero Input and receive a cryptic upstream
+	// error.
+	switch v := req.Input.(type) {
+	case string:
+		params.Input = openai.EmbeddingNewParamsInputUnion{OfString: openai.String(v)}
+	case []string:
+		if len(v) == 0 {
+			return nil, fmt.Errorf("embed: Input must not be an empty array")
+		}
+		params.Input = openai.EmbeddingNewParamsInputUnion{OfArrayOfStrings: v}
+	case []interface{}:
+		if len(v) == 0 {
+			return nil, fmt.Errorf("embed: Input must not be an empty array")
+		}
+		strs := make([]string, 0, len(v))
+		for i, item := range v {
+			s, ok := item.(string)
+			if !ok {
+				return nil, fmt.Errorf("embed: Input[%d] is %T, want string", i, item)
+			}
+			strs = append(strs, s)
+		}
+		params.Input = openai.EmbeddingNewParamsInputUnion{OfArrayOfStrings: strs}
+	case nil:
+		return nil, fmt.Errorf("embed: Input must not be nil")
+	default:
+		return nil, fmt.Errorf("embed: unsupported Input type %T; want string or []string", req.Input)
+	}
+
+	// Map EncodingFormat to the SDK constant. The OpenAI API only accepts
+	// "float" (default) and "base64"; anything else is rejected early with a
+	// clear error instead of being silently dropped or forwarded as an invalid
+	// value.
+	switch req.EncodingFormat {
+	case "", "float":
+		params.EncodingFormat = openai.EmbeddingNewParamsEncodingFormatFloat
+	case "base64":
+		params.EncodingFormat = openai.EmbeddingNewParamsEncodingFormatBase64
+	default:
+		return nil, fmt.Errorf("embed: unsupported encoding_format %q; valid values are \"float\" and \"base64\"", req.EncodingFormat)
+	}
+
+	if req.Dimensions != nil {
+		params.Dimensions = openai.Int(int64(*req.Dimensions))
+	}
+	if req.User != "" {
+		params.User = openai.String(req.User)
+	}
+
+	result, err := p.client.Embeddings.New(ctx, params)
+	if err != nil {
+		return nil, err
+	}
+
+	embeddings := make([]Embedding, len(result.Data))
+	for i, d := range result.Data {
+		embeddings[i] = Embedding{
+			Object:    string(d.Object),
+			Embedding: d.Embedding,
+			Index:     int(d.Index),
+		}
+	}
+
+	return &EmbeddingResponse{
+		Object: string(result.Object),
+		Data:   embeddings,
+		Model:  string(result.Model),
+		Usage: EmbeddingUsage{
+			PromptTokens: int(result.Usage.PromptTokens),
+			TotalTokens:  int(result.Usage.TotalTokens),
+		},
+	}, nil
+}
+
+// GenerateImage sends an image generation request to OpenAI (DALL-E).
+func (p *OpenAIProvider) GenerateImage(ctx context.Context, req ImageRequest) (*ImageResponse, error) {
+	params := openai.ImageGenerateParams{
+		Prompt: req.Prompt,
+		Model:  openai.ImageModel(req.Model),
+	}
+	if req.N != nil {
+		params.N = openai.Int(int64(*req.N))
+	}
+	if req.Size != "" {
+		params.Size = openai.ImageGenerateParamsSize(req.Size)
+	}
+	if req.Quality != "" {
+		params.Quality = openai.ImageGenerateParamsQuality(req.Quality)
+	}
+	if req.Style != "" {
+		params.Style = openai.ImageGenerateParamsStyle(req.Style)
+	}
+	if req.ResponseFormat == "b64_json" {
+		params.ResponseFormat = openai.ImageGenerateParamsResponseFormatB64JSON
+	} else {
+		params.ResponseFormat = openai.ImageGenerateParamsResponseFormatURL
+	}
+	if req.User != "" {
+		params.User = openai.String(req.User)
+	}
+
+	result, err := p.client.Images.Generate(ctx, params)
+	if err != nil {
+		return nil, err
+	}
+
+	images := make([]GeneratedImage, len(result.Data))
+	for i, d := range result.Data {
+		images[i] = GeneratedImage{
+			URL:           d.URL,
+			B64JSON:       d.B64JSON,
+			RevisedPrompt: d.RevisedPrompt,
+		}
+	}
+
+	return &ImageResponse{
+		Created: result.Created,
+		Data:    images,
+	}, nil
 }
 
 // Complete sends a chat completion request to OpenAI.

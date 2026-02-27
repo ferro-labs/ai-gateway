@@ -14,6 +14,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/rand"
 	"strings"
 	"sync"
@@ -34,22 +35,24 @@ type EventHookFunc func(ctx context.Context, subject string, data map[string]int
 
 // Gateway is the main entry point for routing LLM requests.
 type Gateway struct {
-	mu              sync.RWMutex
-	config          Config
-	providers       map[string]providers.Provider
-	strategy        strategies.Strategy
-	plugins         *plugin.Manager
-	hooks           []EventHookFunc
-	circuitBreakers map[string]*circuitbreaker.CircuitBreaker
+	mu               sync.RWMutex
+	config           Config
+	providers        map[string]providers.Provider
+	strategy         strategies.Strategy
+	plugins          *plugin.Manager
+	hooks            []EventHookFunc
+	circuitBreakers  map[string]*circuitbreaker.CircuitBreaker
+	discoveredModels map[string][]providers.ModelInfo
 }
 
 // New creates a new Gateway instance with the given configuration.
 func New(cfg Config) (*Gateway, error) {
 	return &Gateway{
-		config:          cfg,
-		providers:       make(map[string]providers.Provider),
-		plugins:         plugin.NewManager(),
-		circuitBreakers: make(map[string]*circuitbreaker.CircuitBreaker),
+		config:           cfg,
+		providers:        make(map[string]providers.Provider),
+		plugins:          plugin.NewManager(),
+		circuitBreakers:  make(map[string]*circuitbreaker.CircuitBreaker),
+		discoveredModels: make(map[string][]providers.ModelInfo),
 	}, nil
 }
 
@@ -87,6 +90,9 @@ func (g *Gateway) AddHook(fn EventHookFunc) {
 func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.Response, error) {
 	start := time.Now()
 	log := logging.FromContext(ctx)
+
+	// Resolve model alias before routing.
+	req = g.resolveAlias(req)
 
 	s, err := g.getStrategy()
 	if err != nil {
@@ -155,12 +161,19 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	metrics.TokensInput.WithLabelValues(resp.Provider, resp.Model).Add(float64(resp.Usage.PromptTokens))
 	metrics.TokensOutput.WithLabelValues(resp.Provider, resp.Model).Add(float64(resp.Usage.CompletionTokens))
 
+	// Emit cost metrics.
+	cost := providers.EstimateCost(resp.Provider, resp.Model, resp.Usage)
+	if cost > 0 {
+		metrics.RequestCostUSD.WithLabelValues(resp.Provider, resp.Model).Add(cost)
+	}
+
 	log.Info("request completed",
 		"model", resp.Model,
 		"provider", resp.Provider,
 		"latency_ms", latency.Milliseconds(),
 		"tokens_in", resp.Usage.PromptTokens,
 		"tokens_out", resp.Usage.CompletionTokens,
+		"cost_usd", cost,
 	)
 
 	g.publishEvent(ctx, SubjectRequestCompleted, map[string]interface{}{
@@ -171,6 +184,7 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 		"latency_ms": latency.Milliseconds(),
 		"tokens_in":  resp.Usage.PromptTokens,
 		"tokens_out": resp.Usage.CompletionTokens,
+		"cost_usd":   cost,
 		"timestamp":  time.Now(),
 	})
 
@@ -362,6 +376,9 @@ func (g *Gateway) LoadPlugins() error {
 func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-chan providers.StreamChunk, error) {
 	log := logging.FromContext(ctx)
 
+	// Resolve model alias before routing.
+	req = g.resolveAlias(req)
+
 	// Run before-request plugins (word-filter, max-token, rate-limit, etc.).
 	pctx := plugin.NewContext(&req)
 	if g.plugins.HasPlugins() {
@@ -527,12 +544,18 @@ func weightedStartIndex(targets []Target) int {
 // directly instead.
 
 // AllModels returns ModelInfo from all registered providers.
+// If auto-discovery has run for a provider, discovered models take precedence
+// over the provider's static model list.
 func (g *Gateway) AllModels() []providers.ModelInfo {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 	var models []providers.ModelInfo
-	for _, p := range g.providers {
-		models = append(models, p.Models()...)
+	for name, p := range g.providers {
+		if discovered, ok := g.discoveredModels[name]; ok && len(discovered) > 0 {
+			models = append(models, discovered...)
+		} else {
+			models = append(models, p.Models()...)
+		}
 	}
 	return models
 }
@@ -581,4 +604,140 @@ func (g *Gateway) FindByModel(model string) (providers.Provider, bool) {
 // Close cleans up resources.
 func (g *Gateway) Close() error {
 	return nil
+}
+
+// ── Alias resolution ─────────────────────────────────────────────────────────
+
+// resolveModelAlias returns the alias target for model, or model unchanged.
+func (g *Gateway) resolveModelAlias(model string) string {
+	g.mu.RLock()
+	target, ok := g.config.Aliases[model]
+	g.mu.RUnlock()
+	if ok {
+		return target
+	}
+	return model
+}
+
+// resolveAlias replaces req.Model with its configured alias target (if any).
+func (g *Gateway) resolveAlias(req providers.Request) providers.Request {
+	req.Model = g.resolveModelAlias(req.Model)
+	return req
+}
+
+// ── Multi-modal endpoints ────────────────────────────────────────────────────
+
+// Embed routes an embedding request to the first registered EmbeddingProvider
+// that supports the requested model.
+func (g *Gateway) Embed(ctx context.Context, req providers.EmbeddingRequest) (*providers.EmbeddingResponse, error) {
+	log := logging.FromContext(ctx)
+
+	// Resolve model alias so embedding endpoints honour the same aliases as chat.
+	req.Model = g.resolveModelAlias(req.Model)
+
+	g.mu.RLock()
+	var ep providers.EmbeddingProvider
+	for _, p := range g.providers {
+		if ep2, ok := p.(providers.EmbeddingProvider); ok && p.SupportsModel(req.Model) {
+			ep = ep2
+			break
+		}
+	}
+	g.mu.RUnlock()
+
+	if ep == nil {
+		return nil, fmt.Errorf("no embedding provider found for model: %s", req.Model)
+	}
+
+	resp, err := ep.Embed(ctx, req)
+	if err != nil {
+		log.Error("embedding request failed", "model", req.Model, "error", err.Error())
+		return nil, err
+	}
+
+	log.Info("embedding request completed", "model", resp.Model, "tokens", resp.Usage.TotalTokens)
+	return resp, nil
+}
+
+// GenerateImage routes an image generation request to the first registered
+// ImageProvider that supports the requested model.
+func (g *Gateway) GenerateImage(ctx context.Context, req providers.ImageRequest) (*providers.ImageResponse, error) {
+	log := logging.FromContext(ctx)
+
+	// Resolve model alias so image endpoints honour the same aliases as chat.
+	req.Model = g.resolveModelAlias(req.Model)
+
+	g.mu.RLock()
+	var ip providers.ImageProvider
+	for _, p := range g.providers {
+		if ip2, ok := p.(providers.ImageProvider); ok && p.SupportsModel(req.Model) {
+			ip = ip2
+			break
+		}
+	}
+	g.mu.RUnlock()
+
+	if ip == nil {
+		return nil, fmt.Errorf("no image generation provider found for model: %s", req.Model)
+	}
+
+	resp, err := ip.GenerateImage(ctx, req)
+	if err != nil {
+		log.Error("image generation request failed", "model", req.Model, "error", err.Error())
+		return nil, err
+	}
+
+	log.Info("image generation request completed", "model", req.Model, "images", len(resp.Data))
+	return resp, nil
+}
+
+// ── Auto-discovery ───────────────────────────────────────────────────────────
+
+// StartDiscovery periodically refreshes model lists from providers that implement
+// DiscoveryProvider. It runs in a background goroutine until ctx is cancelled.
+// interval must be greater than zero; an error is returned otherwise.
+func (g *Gateway) StartDiscovery(ctx context.Context, interval time.Duration) error {
+	if interval <= 0 {
+		return fmt.Errorf("StartDiscovery: interval must be greater than zero, got %v", interval)
+	}
+	log := logging.FromContext(ctx)
+	go func() {
+		g.runDiscovery(ctx, log)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				g.runDiscovery(ctx, log)
+			}
+		}
+	}()
+	return nil
+}
+
+func (g *Gateway) runDiscovery(ctx context.Context, log *slog.Logger) {
+	g.mu.RLock()
+	providersCopy := make(map[string]providers.Provider, len(g.providers))
+	for k, v := range g.providers {
+		providersCopy[k] = v
+	}
+	g.mu.RUnlock()
+
+	for name, p := range providersCopy {
+		dp, ok := p.(providers.DiscoveryProvider)
+		if !ok {
+			continue
+		}
+		models, err := dp.DiscoverModels(ctx)
+		if err != nil {
+			log.Error("model discovery failed", "provider", name, "error", err.Error())
+			continue
+		}
+		g.mu.Lock()
+		g.discoveredModels[name] = models
+		g.mu.Unlock()
+		log.Info("model discovery completed", "provider", name, "models", len(models))
+	}
 }

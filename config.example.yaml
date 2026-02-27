@@ -15,8 +15,21 @@ targets:
   - virtual_key: together
   - virtual_key: cohere
   - virtual_key: deepseek
+  - virtual_key: perplexity
+  - virtual_key: fireworks
+  - virtual_key: ai21
+  - virtual_key: replicate
+  - virtual_key: bedrock
   - virtual_key: azure-openai
   - virtual_key: ollama
+
+# Model aliases: map friendly names to actual model IDs.
+# Aliases are resolved before routing and plugin execution.
+aliases:
+  fast: gpt-4o-mini
+  smart: claude-3-5-sonnet-20241022
+  cheap: gemini-1.5-flash
+  code: deepseek-coder
 
 # Optional plugins
 plugins:
