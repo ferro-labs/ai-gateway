@@ -1,4 +1,4 @@
-// Package main demonstrates how to write and register a custom plugin with FerroGateway.
+// Package main demonstrates how to write and register a custom plugin with Ferro AI Gateway.
 //
 // This example:
 //   - Implements the plugin.Plugin interface with a request-ID injector plugin

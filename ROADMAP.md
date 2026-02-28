@@ -1,6 +1,6 @@
-# FerroGateway — Public Roadmap
+# Ferro AI Gateway — Public Roadmap
 
-> FerroGateway is an open-source AI Gateway that routes requests across LLM
+> Ferro AI Gateway is an open-source AI Gateway that routes requests across LLM
 > providers with a single OpenAI-compatible API. This roadmap outlines the
 > planned evolution from the initial v0.1.0 release through production-grade v1.0.
 
@@ -19,7 +19,7 @@
 | Config-less startup bypassed strategy engine | Added default fallback strategy over discovered providers | ✅ Done |
 | Streaming route selection ignored strategy mode | `RouteStream` now resolves providers by configured strategy mode | ✅ Done |
 | CORS multi-origin behavior invalid | Origin-aware CORS response with allowlist matching | ✅ Done |
-| Naming mismatch in docs | Aligned security doc naming to FerroGateway | ✅ Done |
+| Naming mismatch in docs | Aligned security doc naming to Ferro AI Gateway | ✅ Done |
 
 ### What ships
 
@@ -93,17 +93,17 @@
 
 ## v0.4.0 — Persistent Storage & Management API
 
-**Status**: 📋 Planned  
+**Status**: ✅ Released  
 **Theme**: Move beyond in-memory state for production deployments.
 
-| Feature | Description |
-|---|---|
-| **SQLite storage** | Optional SQLite backend for API keys and config (zero-dependency) |
-| **PostgreSQL storage** | Optional PostgreSQL backend for larger deployments |
-| **Config API** | REST API to manage gateway config at runtime (CRUD) |
-| **API key management API** | Full CRUD with expiration, rotation, usage tracking |
-| **Request logging** | Persistent request/response log storage |
-| **Admin dashboard** | Minimal web UI for gateway status and config |
+| Feature | Description | Status |
+|---|---|---|
+| **SQLite storage** | Optional SQLite backend for API keys and config (zero-dependency) | ✅ Done |
+| **PostgreSQL storage** | Optional PostgreSQL backend for larger deployments | ✅ Done |
+| **Config API** | REST API to manage gateway config at runtime (CRUD) | ✅ Done |
+| **API key management API** | Full CRUD with expiration, rotation, usage tracking | ✅ Done |
+| **Request logging** | Persistent request/response log storage | ✅ Done |
+| **Admin dashboard** | Minimal web UI for gateway status and config | ✅ Done |
 
 ---
 
@@ -114,6 +114,7 @@
 
 | Feature | Description |
 |---|---|
+| **CLI UX overhaul** | Improve `ferrogw-cli` with richer admin command groups, clearer help output, structured output modes (`table/json/yaml`), and shell completions |
 | **Least-latency routing** | Route to the provider with lowest p50 latency |
 | **Cost-optimized routing** | Route to cheapest provider that meets quality threshold |
 | **Content-based routing** | Route based on prompt content (code → Codex, chat → GPT) |

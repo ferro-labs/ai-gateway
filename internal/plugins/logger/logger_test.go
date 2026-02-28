@@ -97,3 +97,17 @@ func TestRequestLogger_ExecuteError(t *testing.T) {
 		t.Fatalf("Execute error: %v", err)
 	}
 }
+
+func TestRequestLogger_ExecuteErrorWithoutRequest(t *testing.T) {
+	l := &RequestLogger{}
+	if err := l.Init(map[string]interface{}{}); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+
+	pctx := plugin.NewContext(nil)
+	pctx.Error = errors.New("provider timeout")
+
+	if err := l.Execute(context.Background(), pctx); err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+}

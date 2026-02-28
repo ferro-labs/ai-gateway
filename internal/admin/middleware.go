@@ -2,8 +2,11 @@ package admin
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 )
 
@@ -26,6 +29,28 @@ func APIKeyFromContext(ctx context.Context) (*APIKey, bool) {
 // AuthMiddleware returns a chi-compatible middleware that validates API keys
 // and stores the authenticated key in the request context.
 func AuthMiddleware(store Store) func(http.Handler) http.Handler {
+	bootstrapAdminKey := strings.TrimSpace(os.Getenv("ADMIN_BOOTSTRAP_KEY"))
+	bootstrapReadOnlyKey := strings.TrimSpace(os.Getenv("ADMIN_BOOTSTRAP_READ_ONLY_KEY"))
+	bootstrapEnabled := true
+	if raw := strings.TrimSpace(os.Getenv("ADMIN_BOOTSTRAP_ENABLED")); raw != "" {
+		if parsed, err := strconv.ParseBool(raw); err == nil {
+			bootstrapEnabled = parsed
+		}
+	}
+
+	bootstrapAdminAPIKey := &APIKey{
+		ID:     "bootstrap-admin",
+		Name:   "bootstrap-admin",
+		Scopes: []string{ScopeAdmin},
+		Active: true,
+	}
+	bootstrapReadOnlyAPIKey := &APIKey{
+		ID:     "bootstrap-read-only",
+		Name:   "bootstrap-read-only",
+		Scopes: []string{ScopeReadOnly},
+		Active: true,
+	}
+
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			auth := r.Header.Get("Authorization")
@@ -35,6 +60,20 @@ func AuthMiddleware(store Store) func(http.Handler) http.Handler {
 			}
 
 			key := strings.TrimPrefix(auth, "Bearer ")
+			if bootstrapEnabled && len(store.List()) == 0 {
+				if bootstrapAdminKey != "" && subtle.ConstantTimeCompare([]byte(key), []byte(bootstrapAdminKey)) == 1 {
+					ctx := context.WithValue(r.Context(), apiKeyContextKey, bootstrapAdminAPIKey)
+					next.ServeHTTP(w, r.WithContext(ctx))
+					return
+				}
+
+				if bootstrapReadOnlyKey != "" && subtle.ConstantTimeCompare([]byte(key), []byte(bootstrapReadOnlyKey)) == 1 {
+					ctx := context.WithValue(r.Context(), apiKeyContextKey, bootstrapReadOnlyAPIKey)
+					next.ServeHTTP(w, r.WithContext(ctx))
+					return
+				}
+			}
+
 			apiKey, ok := store.ValidateKey(key)
 			if !ok {
 				writeError(w, http.StatusUnauthorized, "invalid or revoked API key", "authentication_error", "invalid_api_key")

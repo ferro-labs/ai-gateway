@@ -8,6 +8,16 @@
 - **Go version**: 1.24+
 - **License**: Apache 2.0
 
+### Current Development Snapshot (feat/v0-4-storage-admin-foundation)
+
+- Admin API expanded in `internal/admin/handlers.go` (dashboard, keys, usage, logs, config history/rollback).
+- Key timestamp behavior aligned to UTC (`LastUsedAt`, expiration normalization/copy semantics).
+- Logger plugin `on_error` path hardened for nil request context.
+- Rollback history semantics fixed: `rolled_back_from` stores the prior active version.
+- Log stats aggregation bounded to avoid unbounded scans (`logsStatsMaxScannedEntries`).
+- Dashboard history rendering hardened (DOM API + `textContent`, no unsafe `innerHTML` composition).
+- README production Postgres guidance updated to prefer TLS DSNs.
+
 ---
 
 ## Build, Test, and Run Commands
@@ -171,6 +181,7 @@ plugins:
 | `/v1/completions` | POST | Legacy text completion |
 | `/v1/*` | Any | Pass-through proxy to provider |
 | `/admin/keys` | GET, POST | API key management (requires auth) |
+| `/admin/*` | Mixed | Admin dashboard/usage/log/config-history routes (see `internal/admin/handlers.go`) |
 
 ---
 
@@ -215,3 +226,10 @@ Minimal by design — no database, no heavy logging framework, no ORM.
 - Integration tests require real provider API keys; run with `make test-integration`
 - Use `make precommit` (fmt + test) before committing
 - Benchmarks with `make bench`
+
+### Additional checks for this branch
+
+- `go test ./internal/admin/...`
+- `go test ./internal/plugins/logger/...`
+- Prefer UTC assertions for persisted/admin timestamps.
+- For dashboard rendering, avoid `innerHTML` with API data; use DOM node creation APIs.

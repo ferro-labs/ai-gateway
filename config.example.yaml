@@ -1,4 +1,4 @@
-# FerroGateway Configuration Example
+# Ferro AI Gateway Configuration Example
 # Copy to config.yaml and customize.
 
 strategy:
@@ -63,3 +63,10 @@ plugins:
     enabled: true
     config:
       level: info
+      # Optional persistent request log storage.
+      # When disabled, logs are emitted only to stdout.
+      persist: false
+      # backend: sqlite | postgres
+      backend: sqlite
+      # SQLite file path or Postgres DSN (required for postgres backend).
+      dsn: ferrogw-requests.db

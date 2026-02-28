@@ -1,4 +1,4 @@
-# GoReleaser configuration for FerroGateway.
+# GoReleaser configuration for Ferro AI Gateway.
 # Docs: https://goreleaser.com
 version: 2
 
@@ -147,7 +147,7 @@ dockers:
     use: buildx
     build_flag_templates:
       - "--platform=linux/amd64"
-      - "--label=org.opencontainers.image.title=FerroGateway"
+      - "--label=org.opencontainers.image.title=Ferro AI Gateway"
       - "--label=org.opencontainers.image.description=Open-source AI Gateway for LLM routing"
       - "--label=org.opencontainers.image.url=https://github.com/ferro-labs/ai-gateway"
       - "--label=org.opencontainers.image.source=https://github.com/ferro-labs/ai-gateway"
@@ -167,7 +167,7 @@ dockers:
     use: buildx
     build_flag_templates:
       - "--platform=linux/arm64"
-      - "--label=org.opencontainers.image.title=FerroGateway"
+      - "--label=org.opencontainers.image.title=Ferro AI Gateway"
       - "--label=org.opencontainers.image.description=Open-source AI Gateway for LLM routing"
       - "--label=org.opencontainers.image.url=https://github.com/ferro-labs/ai-gateway"
       - "--label=org.opencontainers.image.source=https://github.com/ferro-labs/ai-gateway"

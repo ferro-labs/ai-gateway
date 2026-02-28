@@ -11,6 +11,7 @@ type Store interface {
 	List() []*APIKey
 	Revoke(id string) error
 	Update(id string, name string, scopes []string) (*APIKey, error)
+	SetExpiration(id string, expiresAt *time.Time) error
 	Delete(id string) error
 	ValidateKey(key string) (*APIKey, bool)
 	RotateKey(id string) (*APIKey, error)

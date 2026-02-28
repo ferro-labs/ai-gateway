@@ -10,22 +10,24 @@ import (
 
 // APIKey represents an API key for authenticating requests to the gateway.
 type APIKey struct {
-	ID        string     `json:"id"`
-	Key       string     `json:"key"`
-	Name      string     `json:"name"`
-	Scopes    []string   `json:"scopes"`
-	CreatedAt time.Time  `json:"created_at"`
-	RevokedAt *time.Time `json:"revoked_at,omitempty"`
-	ExpiresAt *time.Time `json:"expires_at,omitempty"`
-	RotatedAt *time.Time `json:"rotated_at,omitempty"`
-	Active    bool       `json:"active"`
+	ID         string     `json:"id"`
+	Key        string     `json:"key"`
+	Name       string     `json:"name"`
+	Scopes     []string   `json:"scopes"`
+	CreatedAt  time.Time  `json:"created_at"`
+	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
+	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
+	RotatedAt  *time.Time `json:"rotated_at,omitempty"`
+	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
+	UsageCount int64      `json:"usage_count"`
+	Active     bool       `json:"active"`
 }
 
 // KeyStore is an in-memory store for API keys.
 type KeyStore struct {
-	mu     sync.RWMutex
-	byID   map[string]*APIKey
-	byKey  map[string]string // key string -> ID
+	mu    sync.RWMutex
+	byID  map[string]*APIKey
+	byKey map[string]string // key string -> ID
 }
 
 // NewKeyStore creates a new KeyStore.
@@ -56,13 +58,14 @@ func (s *KeyStore) Create(name string, scopes []string, expiresAt *time.Time) (*
 	}
 
 	apiKey := &APIKey{
-		ID:        id,
-		Key:       key,
-		Name:      name,
-		Scopes:    scopes,
-		CreatedAt: time.Now(),
-		ExpiresAt: expiresAt,
-		Active:    true,
+		ID:         id,
+		Key:        key,
+		Name:       name,
+		Scopes:     scopes,
+		CreatedAt:  time.Now(),
+		ExpiresAt:  expiresAt,
+		UsageCount: 0,
+		Active:     true,
 	}
 
 	s.mu.Lock()
@@ -130,6 +133,25 @@ func (s *KeyStore) Update(id string, name string, scopes []string) (*APIKey, err
 	return &masked, nil
 }
 
+// SetExpiration updates the expiration time for an API key.
+func (s *KeyStore) SetExpiration(id string, expiresAt *time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	k, ok := s.byID[id]
+	if !ok {
+		return fmt.Errorf("key not found: %s", id)
+	}
+	if expiresAt == nil {
+		k.ExpiresAt = nil
+		return nil
+	}
+
+	normalized := expiresAt.UTC()
+	t := normalized
+	k.ExpiresAt = &t
+	return nil
+}
+
 // Delete removes an API key from the store.
 func (s *KeyStore) Delete(id string) error {
 	s.mu.Lock()
@@ -169,8 +191,8 @@ func (s *KeyStore) RotateKey(id string) (*APIKey, error) {
 
 // ValidateKey looks up a key by its full string and returns it if active.
 func (s *KeyStore) ValidateKey(key string) (*APIKey, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	id, ok := s.byKey[key]
 	if !ok {
 		return nil, false
@@ -182,5 +204,9 @@ func (s *KeyStore) ValidateKey(key string) (*APIKey, bool) {
 	if k.ExpiresAt != nil && time.Now().After(*k.ExpiresAt) {
 		return nil, false
 	}
+	now := time.Now().UTC()
+	lastUsedAt := now
+	k.LastUsedAt = &lastUsedAt
+	k.UsageCount++
 	return k, true
 }

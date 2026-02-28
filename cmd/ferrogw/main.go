@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html/template"
+	"io/fs"
 	"net/http"
 	"os"
 	"os/signal"
@@ -17,8 +19,10 @@ import (
 	"github.com/ferro-labs/ai-gateway/internal/logging"
 	"github.com/ferro-labs/ai-gateway/internal/metrics"
 	"github.com/ferro-labs/ai-gateway/internal/ratelimit"
+	"github.com/ferro-labs/ai-gateway/internal/requestlog"
 	"github.com/ferro-labs/ai-gateway/internal/version"
 	"github.com/ferro-labs/ai-gateway/providers"
+	webassets "github.com/ferro-labs/ai-gateway/web"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -29,6 +33,15 @@ import (
 	_ "github.com/ferro-labs/ai-gateway/internal/plugins/maxtoken"
 	_ "github.com/ferro-labs/ai-gateway/internal/plugins/ratelimit"
 	_ "github.com/ferro-labs/ai-gateway/internal/plugins/wordfilter"
+)
+
+var webTemplates = template.Must(template.ParseFS(webassets.Assets, "*.html"))
+
+const (
+	backendMemory      = "memory"
+	backendSQLite      = "sqlite"
+	backendPostgres    = "postgres"
+	backendPostgresSQL = "postgresql"
 )
 
 func main() {
@@ -44,8 +57,18 @@ func main() {
 	}
 
 	gw := buildGateway(cfg, registry)
+	cfgManager, configStoreBackend, err := createConfigManagerFromEnv(gw)
+	if err != nil {
+		logging.Logger.Error("failed to initialize config store", "error", err)
+		os.Exit(1)
+	}
 
-	keyStore := admin.NewKeyStore()
+	keyStore, keyStoreBackend, err := createKeyStoreFromEnv()
+	if err != nil {
+		logging.Logger.Error("failed to initialize API key store", "error", err)
+		os.Exit(1)
+	}
+	logBootstrapConfigurationWarnings(keyStore)
 
 	var corsOrigins []string
 	if origins := os.Getenv("CORS_ORIGINS"); origins != "" {
@@ -53,8 +76,13 @@ func main() {
 	}
 
 	rlStore := newRateLimitStore()
+	logReader, logMaintainer, logReaderBackend, err := createRequestLogReaderFromEnv()
+	if err != nil {
+		logging.Logger.Error("failed to initialize request log reader", "error", err)
+		os.Exit(1)
+	}
 
-	r := newRouter(registry, keyStore, corsOrigins, gw, rlStore)
+	r := newRouter(registry, keyStore, corsOrigins, gw, cfgManager, rlStore, logReader, logMaintainer)
 
 	addr := ":8080"
 	if p := os.Getenv("PORT"); p != "" {
@@ -86,6 +114,9 @@ func main() {
 		"version", version.Short(),
 		"addr", addr,
 		"providers", len(registry.List()),
+		"config_store", configStoreBackend,
+		"api_key_store", keyStoreBackend,
+		"request_log_store", logReaderBackend,
 	)
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		stop()
@@ -93,6 +124,138 @@ func main() {
 		os.Exit(1) //nolint:gocritic
 	}
 	logging.Logger.Info("server stopped")
+}
+
+func createKeyStoreFromEnv() (admin.Store, string, error) {
+	backend := strings.ToLower(strings.TrimSpace(os.Getenv("API_KEY_STORE_BACKEND")))
+	if backend == "" {
+		backend = backendMemory
+	}
+
+	storeDSN := strings.TrimSpace(os.Getenv("API_KEY_STORE_DSN"))
+
+	switch backend {
+	case backendMemory, "in-memory", "inmemory":
+		return admin.NewKeyStore(), backendMemory, nil
+	case backendSQLite:
+		store, err := admin.NewSQLiteStore(storeDSN)
+		if err != nil {
+			return nil, "", err
+		}
+		return store, backendSQLite, nil
+	case backendPostgres, backendPostgresSQL:
+		store, err := admin.NewPostgresStore(storeDSN)
+		if err != nil {
+			return nil, "", err
+		}
+		return store, backendPostgres, nil
+	default:
+		return nil, "", fmt.Errorf("unsupported API key store backend %q", backend)
+	}
+}
+
+func createRequestLogReaderFromEnv() (requestlog.Reader, requestlog.Maintainer, string, error) {
+	backend := strings.ToLower(strings.TrimSpace(os.Getenv("REQUEST_LOG_STORE_BACKEND")))
+	if backend == "" {
+		return nil, nil, "disabled", nil
+	}
+
+	dsn := strings.TrimSpace(os.Getenv("REQUEST_LOG_STORE_DSN"))
+
+	switch backend {
+	case backendSQLite:
+		reader, err := requestlog.NewSQLiteWriter(dsn)
+		if err != nil {
+			return nil, nil, "", err
+		}
+		return reader, reader, backendSQLite, nil
+	case backendPostgres, backendPostgresSQL:
+		reader, err := requestlog.NewPostgresWriter(dsn)
+		if err != nil {
+			return nil, nil, "", err
+		}
+		return reader, reader, backendPostgres, nil
+	default:
+		return nil, nil, "", fmt.Errorf("unsupported request log store backend %q", backend)
+	}
+}
+
+func createConfigManagerFromEnv(gw *aigateway.Gateway) (admin.ConfigManager, string, error) {
+	backend := strings.ToLower(strings.TrimSpace(os.Getenv("CONFIG_STORE_BACKEND")))
+	if backend == "" {
+		backend = backendMemory
+	}
+
+	dsn := strings.TrimSpace(os.Getenv("CONFIG_STORE_DSN"))
+
+	switch backend {
+	case backendMemory, "in-memory", "inmemory":
+		manager, err := admin.NewGatewayConfigManager(gw, nil)
+		if err != nil {
+			return nil, "", err
+		}
+		return manager, backendMemory, nil
+	case backendSQLite:
+		store, err := admin.NewSQLiteConfigStore(dsn)
+		if err != nil {
+			return nil, "", err
+		}
+		manager, err := admin.NewGatewayConfigManager(gw, store)
+		if err != nil {
+			return nil, "", err
+		}
+		return manager, backendSQLite, nil
+	case backendPostgres, backendPostgresSQL:
+		store, err := admin.NewPostgresConfigStore(dsn)
+		if err != nil {
+			return nil, "", err
+		}
+		manager, err := admin.NewGatewayConfigManager(gw, store)
+		if err != nil {
+			return nil, "", err
+		}
+		return manager, backendPostgres, nil
+	default:
+		return nil, "", fmt.Errorf("unsupported config store backend %q", backend)
+	}
+}
+
+func logBootstrapConfigurationWarnings(keyStore admin.Store) {
+	bootstrapAdminConfigured := strings.TrimSpace(os.Getenv("ADMIN_BOOTSTRAP_KEY")) != ""
+	bootstrapReadOnlyConfigured := strings.TrimSpace(os.Getenv("ADMIN_BOOTSTRAP_READ_ONLY_KEY")) != ""
+	if !bootstrapAdminConfigured && !bootstrapReadOnlyConfigured {
+		return
+	}
+
+	bootstrapEnabled := true
+	if raw := strings.TrimSpace(os.Getenv("ADMIN_BOOTSTRAP_ENABLED")); raw != "" {
+		parsed, err := strconv.ParseBool(raw)
+		if err != nil {
+			logging.Logger.Warn("invalid ADMIN_BOOTSTRAP_ENABLED value; expected true/false, defaulting to enabled", "value", raw)
+		} else {
+			bootstrapEnabled = parsed
+		}
+	}
+
+	if !bootstrapEnabled {
+		logging.Logger.Info("bootstrap keys configured but disabled by ADMIN_BOOTSTRAP_ENABLED=false")
+		return
+	}
+
+	existingKeys := len(keyStore.List())
+	if existingKeys > 0 {
+		logging.Logger.Warn("bootstrap keys configured but ignored because API key store is not empty",
+			"existing_keys", existingKeys,
+			"bootstrap_admin_configured", bootstrapAdminConfigured,
+			"bootstrap_read_only_configured", bootstrapReadOnlyConfigured,
+		)
+		return
+	}
+
+	logging.Logger.Warn("bootstrap keys enabled for first-run setup; create persistent API keys and then unset bootstrap env vars",
+		"bootstrap_admin_configured", bootstrapAdminConfigured,
+		"bootstrap_read_only_configured", bootstrapReadOnlyConfigured,
+	)
 }
 
 // loadConfig loads and validates the gateway config from GATEWAY_CONFIG env var.
@@ -284,7 +447,10 @@ func newRouter(
 	keyStore admin.Store,
 	corsOrigins []string,
 	gw *aigateway.Gateway,
+	cfgManager admin.ConfigManager,
 	rlStore *ratelimit.Store,
+	logReader requestlog.Reader,
+	logMaintainer requestlog.Maintainer,
 ) http.Handler {
 	if gw == nil {
 		defaultTargets := make([]aigateway.Target, 0, len(registry.List()))
@@ -355,6 +521,23 @@ func newRouter(
 	// Prometheus metrics endpoint.
 	r.Handle("/metrics", promhttp.Handler())
 
+	// Minimal built-in admin dashboard UI.
+	r.Get("/dashboard", func(w http.ResponseWriter, _ *http.Request) {
+		if err := renderWebTemplate(w, "dashboard.html", nil); err != nil {
+			writeOpenAIError(w, http.StatusInternalServerError, "failed to render dashboard", "server_error", "internal_error")
+			return
+		}
+	})
+	r.Get("/logo.png", func(w http.ResponseWriter, _ *http.Request) {
+		data, err := fs.ReadFile(webassets.Assets, "logo.png")
+		if err != nil {
+			writeOpenAIError(w, http.StatusNotFound, "logo not found", "not_found_error", "resource_not_found")
+			return
+		}
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(data)
+	})
+
 	r.Get("/v1/models", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -367,6 +550,9 @@ func newRouter(
 	adminHandlers := &admin.Handlers{
 		Keys:      keyStore,
 		Providers: gw,
+		Configs:   cfgManager,
+		Logs:      logReader,
+		LogAdmin:  logMaintainer,
 	}
 	r.Route("/admin", func(r chi.Router) {
 		r.Use(admin.AuthMiddleware(keyStore))
@@ -433,6 +619,11 @@ func newRouter(
 	r.HandleFunc("/v1/*", proxyHandler(registry))
 
 	return r
+}
+
+func renderWebTemplate(w http.ResponseWriter, templateName string, data interface{}) error {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	return webTemplates.ExecuteTemplate(w, templateName, data)
 }
 
 // rateLimitMiddleware rejects requests that exceed the per-IP token-bucket limit.
