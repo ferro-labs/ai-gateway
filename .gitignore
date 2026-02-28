@@ -20,7 +20,6 @@ profile.cov
 # Dependency directories (remove the comment below to include it)
 vendor/
 scripts/*
-!scripts/convert_catalog.py
 !scripts/catalog-check/
 scripts/catalog-check/*
 !scripts/catalog-check/main.go
