@@ -216,6 +216,8 @@ func (p *OpenAIProvider) Complete(ctx context.Context, req Request) (*Response, 
 			PromptTokens:     int(completion.Usage.PromptTokens),
 			CompletionTokens: int(completion.Usage.CompletionTokens),
 			TotalTokens:      int(completion.Usage.TotalTokens),
+			ReasoningTokens:  int(completion.Usage.CompletionTokensDetails.ReasoningTokens),
+			CacheReadTokens:  int(completion.Usage.PromptTokensDetails.CachedTokens),
 		},
 	}
 	for i, choice := range completion.Choices {
