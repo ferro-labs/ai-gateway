@@ -128,6 +128,9 @@ func TestValidateKey_Valid(t *testing.T) {
 	if got.LastUsedAt == nil {
 		t.Error("expected last_used_at to be set")
 	}
+	if got.LastUsedAt != nil && got.LastUsedAt.Location() != time.UTC {
+		t.Errorf("expected last_used_at in UTC, got %v", got.LastUsedAt.Location())
+	}
 }
 
 func TestValidateKey_IncrementsUsage(t *testing.T) {
@@ -191,5 +194,35 @@ func TestSetExpiration_ClearAllowsValidation(t *testing.T) {
 
 	if _, ok := store.ValidateKey(created.Key); !ok {
 		t.Fatal("expected key to validate after clearing expiration")
+	}
+}
+
+func TestSetExpiration_StoresUTCCopyWithoutAliasing(t *testing.T) {
+	store := NewKeyStore()
+	created, _ := store.Create("copy-expiration", nil, nil)
+
+	loc := time.FixedZone("UTC+5", 5*60*60)
+	input := time.Date(2026, 2, 28, 10, 30, 0, 0, loc)
+	originalInput := input
+
+	if err := store.SetExpiration(created.ID, &input); err != nil {
+		t.Fatalf("set expiration: %v", err)
+	}
+
+	stored, ok := store.Get(created.ID)
+	if !ok {
+		t.Fatal("expected key to exist")
+	}
+	if stored.ExpiresAt == nil {
+		t.Fatal("expected expiration to be set")
+	}
+	if stored.ExpiresAt.Location() != time.UTC {
+		t.Fatalf("expected UTC location, got %v", stored.ExpiresAt.Location())
+	}
+
+	input = input.Add(24 * time.Hour)
+	expectedUTC := originalInput.UTC()
+	if !stored.ExpiresAt.Equal(expectedUTC) {
+		t.Fatalf("expected stored expiration %v, got %v", expectedUTC, *stored.ExpiresAt)
 	}
 }

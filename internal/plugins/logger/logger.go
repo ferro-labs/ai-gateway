@@ -121,15 +121,15 @@ func (l *RequestLogger) Execute(ctx context.Context, pctx *plugin.Context) error
 	if pctx.Error != nil {
 		// on_error stage
 		now := time.Now().UTC()
-		log.Log(ctx, slog.LevelError, "gateway error",
-			"model", pctx.Request.Model,
-			"error", pctx.Error.Error(),
-			"timestamp", now.Format(time.RFC3339),
-		)
 		model := ""
 		if pctx.Request != nil {
 			model = pctx.Request.Model
 		}
+		log.Log(ctx, slog.LevelError, "gateway error",
+			"model", model,
+			"error", pctx.Error.Error(),
+			"timestamp", now.Format(time.RFC3339),
+		)
 		_ = l.writer.Write(ctx, requestlog.Entry{
 			TraceID:      logging.TraceIDFromContext(ctx),
 			Stage:        string(plugin.StageOnError),

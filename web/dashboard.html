@@ -100,17 +100,32 @@
 				const mode = item && item.config && item.config.strategy ? item.config.strategy.mode : '-';
 				const rollbackSource = item && item.rolled_back_from ? String(item.rolled_back_from) : '-';
 
-				tr.innerHTML =
-					'<td>' + item.version + '</td>' +
-					'<td>' + new Date(item.updated_at).toLocaleString() + '</td>' +
-					'<td>' + mode + '</td>' +
-					'<td>' + rollbackSource + '</td>' +
-					'<td><button data-version="' + item.version + '">Rollback</button></td>';
+				const versionCell = document.createElement('td');
+				versionCell.textContent = String(item.version);
 
-				const btn = tr.querySelector('button');
+				const updatedAtCell = document.createElement('td');
+				updatedAtCell.textContent = new Date(item.updated_at).toLocaleString();
+
+				const modeCell = document.createElement('td');
+				modeCell.textContent = String(mode);
+
+				const rollbackSourceCell = document.createElement('td');
+				rollbackSourceCell.textContent = rollbackSource;
+
+				const actionCell = document.createElement('td');
+				const btn = document.createElement('button');
+				btn.dataset.version = String(item.version);
+				btn.textContent = 'Rollback';
 				btn.addEventListener('click', function () {
 					rollbackConfig(item.version);
 				});
+				actionCell.appendChild(btn);
+
+				tr.appendChild(versionCell);
+				tr.appendChild(updatedAtCell);
+				tr.appendChild(modeCell);
+				tr.appendChild(rollbackSourceCell);
+				tr.appendChild(actionCell);
 				els.historyBody.appendChild(tr);
 			});
 		}

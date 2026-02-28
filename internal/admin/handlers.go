@@ -44,6 +44,7 @@ type ConfigHistoryEntry struct {
 }
 
 const unknownLabel = "unknown"
+const logsStatsMaxScannedEntries = 5000
 
 // Routes returns a chi.Router with all admin endpoints mounted.
 func (h *Handlers) Routes() chi.Router {
@@ -498,7 +499,7 @@ func (h *Handlers) logsStats(w http.ResponseWriter, r *http.Request) {
 
 	entries := make([]requestlog.Entry, 0, result.Total)
 	entries = append(entries, result.Data...)
-	for len(entries) < result.Total {
+	for len(entries) < result.Total && len(entries) < logsStatsMaxScannedEntries {
 		baseQuery.Offset = len(entries)
 		next, listErr := h.Logs.List(r.Context(), baseQuery)
 		if listErr != nil {
@@ -508,8 +509,16 @@ func (h *Handlers) logsStats(w http.ResponseWriter, r *http.Request) {
 		if len(next.Data) == 0 {
 			break
 		}
+		remaining := logsStatsMaxScannedEntries - len(entries)
+		if remaining <= 0 {
+			break
+		}
+		if len(next.Data) > remaining {
+			next.Data = next.Data[:remaining]
+		}
 		entries = append(entries, next.Data...)
 	}
+	truncated := len(entries) < result.Total
 
 	byStage := map[string]int{}
 	byProvider := map[string]int{}
@@ -547,9 +556,12 @@ func (h *Handlers) logsStats(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"summary": map[string]interface{}{
-			"total_entries": len(entries),
-			"error_entries": errorCount,
-			"total_tokens":  tokens,
+			"total_entries":     len(entries),
+			"error_entries":     errorCount,
+			"total_tokens":      tokens,
+			"truncated":         truncated,
+			"available_entries": result.Total,
+			"scan_limit":        logsStatsMaxScannedEntries,
 		},
 		"by_stage":    byStage,
 		"by_provider": byProvider,
@@ -834,6 +846,10 @@ func (h *Handlers) rollbackConfig(w http.ResponseWriter, r *http.Request) {
 
 	h.historyMu.Lock()
 	var target *ConfigHistoryEntry
+	latestVersion := 0
+	if len(h.configHistory) > 0 {
+		latestVersion = h.configHistory[len(h.configHistory)-1].Version
+	}
 	for i := range h.configHistory {
 		if h.configHistory[i].Version == requestedVersion {
 			copyEntry := h.configHistory[i]
@@ -853,7 +869,7 @@ func (h *Handlers) rollbackConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rollbackFrom := requestedVersion
+	rollbackFrom := latestVersion
 	h.appendConfigHistory(target.Config, &rollbackFrom)
 
 	w.Header().Set("Content-Type", "application/json")

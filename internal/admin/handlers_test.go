@@ -803,8 +803,8 @@ func TestRollbackConfig(t *testing.T) {
 		t.Fatalf("expected 3 history entries after rollback, got %d", len(historyPayload.Data))
 	}
 	last := historyPayload.Data[2]
-	if last.RolledBackFrom == nil || *last.RolledBackFrom != 1 {
-		t.Fatalf("expected rolled_back_from=1, got %+v", last.RolledBackFrom)
+	if last.RolledBackFrom == nil || *last.RolledBackFrom != 2 {
+		t.Fatalf("expected rolled_back_from=2, got %+v", last.RolledBackFrom)
 	}
 }
 
@@ -1321,6 +1321,59 @@ func TestLogsStatsEndpointWithLimit(t *testing.T) {
 	}
 	if len(payload.ByModel) != 1 || payload.ByModel["gpt-4"] != 2 {
 		t.Fatalf("unexpected limited by_model: %+v", payload.ByModel)
+	}
+}
+
+func TestLogsStatsEndpointTruncatesLargeDatasets(t *testing.T) {
+	now := time.Now().UTC()
+	entries := make([]requestlog.Entry, 0, logsStatsMaxScannedEntries+10)
+	for i := 0; i < logsStatsMaxScannedEntries+10; i++ {
+		entries = append(entries, requestlog.Entry{
+			TraceID:      "trace",
+			Stage:        "after_request",
+			Model:        "gpt-4",
+			Provider:     "openai",
+			TotalTokens:  1,
+			ErrorMessage: "",
+			CreatedAt:    now.Add(-time.Duration(i) * time.Second),
+		})
+	}
+
+	reader := &fakeLogReader{entries: entries}
+	h, r := setupTestRouterWithLogs(reader)
+	adminKey := createAdminKey(t, h)
+
+	req := authedRequest(http.MethodGet, "/admin/logs/stats", "", adminKey)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var payload struct {
+		Summary struct {
+			TotalEntries     int  `json:"total_entries"`
+			AvailableEntries int  `json:"available_entries"`
+			Truncated        bool `json:"truncated"`
+			ScanLimit        int  `json:"scan_limit"`
+		} `json:"summary"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode logs stats response: %v", err)
+	}
+
+	if !payload.Summary.Truncated {
+		t.Fatal("expected truncated=true for oversized dataset")
+	}
+	if payload.Summary.TotalEntries != logsStatsMaxScannedEntries {
+		t.Fatalf("expected total_entries=%d, got %d", logsStatsMaxScannedEntries, payload.Summary.TotalEntries)
+	}
+	if payload.Summary.AvailableEntries != logsStatsMaxScannedEntries+10 {
+		t.Fatalf("expected available_entries=%d, got %d", logsStatsMaxScannedEntries+10, payload.Summary.AvailableEntries)
+	}
+	if payload.Summary.ScanLimit != logsStatsMaxScannedEntries {
+		t.Fatalf("expected scan_limit=%d, got %d", logsStatsMaxScannedEntries, payload.Summary.ScanLimit)
 	}
 }
 

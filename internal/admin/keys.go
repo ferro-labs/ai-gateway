@@ -141,7 +141,14 @@ func (s *KeyStore) SetExpiration(id string, expiresAt *time.Time) error {
 	if !ok {
 		return fmt.Errorf("key not found: %s", id)
 	}
-	k.ExpiresAt = expiresAt
+	if expiresAt == nil {
+		k.ExpiresAt = nil
+		return nil
+	}
+
+	normalized := expiresAt.UTC()
+	t := normalized
+	k.ExpiresAt = &t
 	return nil
 }
 
@@ -197,8 +204,9 @@ func (s *KeyStore) ValidateKey(key string) (*APIKey, bool) {
 	if k.ExpiresAt != nil && time.Now().After(*k.ExpiresAt) {
 		return nil, false
 	}
-	now := time.Now()
-	k.LastUsedAt = &now
+	now := time.Now().UTC()
+	lastUsedAt := now
+	k.LastUsedAt = &lastUsedAt
 	k.UsageCount++
 	return k, true
 }

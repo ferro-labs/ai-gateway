@@ -166,19 +166,21 @@ Example (production-style PostgreSQL setup):
 
 ```bash
 export CONFIG_STORE_BACKEND=postgres
-export CONFIG_STORE_DSN='postgresql://user:pass@db:5432/ferrogw?sslmode=disable'
+export CONFIG_STORE_DSN='postgresql://user:pass@db:5432/ferrogw?sslmode=require'
 
 export API_KEY_STORE_BACKEND=postgres
-export API_KEY_STORE_DSN='postgresql://user:pass@db:5432/ferrogw?sslmode=disable'
+export API_KEY_STORE_DSN='postgresql://user:pass@db:5432/ferrogw?sslmode=require'
 
 export REQUEST_LOG_STORE_BACKEND=postgres
-export REQUEST_LOG_STORE_DSN='postgresql://user:pass@db:5432/ferrogw?sslmode=disable'
+export REQUEST_LOG_STORE_DSN='postgresql://user:pass@db:5432/ferrogw?sslmode=require'
 ```
 
 Production note:
 
 * You can use a single shared DSN for all three stores (simpler operations).
 * For stronger isolation, use separate databases or schemas per area (config, API keys, request logs) with least-privilege credentials.
+* Prefer TLS-enabled Postgres connections in production (`sslmode=require` at minimum; `sslmode=verify-full` when certificate validation is configured).
+* Use `sslmode=disable` only when transport encryption is enforced outside Postgres (for example, mTLS service mesh or a trusted local Unix socket).
 
 ---
 
