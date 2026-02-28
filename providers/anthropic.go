@@ -79,8 +79,10 @@ type anthropicContentBlock struct {
 }
 
 type anthropicUsage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 }
 
 type anthropicResponse struct {
@@ -197,6 +199,8 @@ func (p *AnthropicProvider) Complete(ctx context.Context, req Request) (*Respons
 			PromptTokens:     anthropicResp.Usage.InputTokens,
 			CompletionTokens: anthropicResp.Usage.OutputTokens,
 			TotalTokens:      totalTokens,
+			CacheReadTokens:  anthropicResp.Usage.CacheReadInputTokens,
+			CacheWriteTokens: anthropicResp.Usage.CacheCreationInputTokens,
 		},
 	}, nil
 }
