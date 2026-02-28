@@ -3,7 +3,7 @@ package web
 
 import "embed"
 
-// Templates contains embedded HTML templates for the built-in web UI.
+// Assets contains embedded web UI assets for the built-in dashboard.
 //
 //go:embed *.html *.png
 var Assets embed.FS
