@@ -42,4 +42,4 @@ config.json
 bin/
 
 # Database files
-*.db
+*.dbdocs/ferro-model-catalog-implementation-guide.md
