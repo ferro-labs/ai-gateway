@@ -5,5 +5,5 @@ import "embed"
 
 // Templates contains embedded HTML templates for the built-in web UI.
 //
-//go:embed *.html
-var Templates embed.FS
+//go:embed *.html *.png
+var Assets embed.FS

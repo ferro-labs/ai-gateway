@@ -3,9 +3,11 @@
 <head>
 	<meta charset="utf-8" />
 	<meta name="viewport" content="width=device-width, initial-scale=1" />
-	<title>Ferro AI Gateway Admin Dashboard</title>
+	<title>AI Gateway Admin Dashboard</title>
 	<style>
 		body { font-family: system-ui, -apple-system, sans-serif; margin: 24px; color: #111827; }
+		.header { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+		.logo { height: 48px; width: auto; }
 		.row { display: flex; gap: 12px; align-items: center; margin-bottom: 16px; }
 		input { width: 420px; max-width: 100%; padding: 8px; }
 		button { padding: 8px 12px; }
@@ -21,7 +23,10 @@
 	</style>
 </head>
 <body>
-	<h1>Ferro AI Gateway Dashboard</h1>
+	<div class="header">
+		<img class="logo" src="/logo.png" alt="AI Gateway Logo" />
+		<h1>AI Gateway Dashboard</h1>
+	</div>
 	<div class="row">
 		<input id="token" placeholder="Enter admin or read-only API key (gw-...)" />
 		<button id="load">Load</button>

@@ -114,6 +114,7 @@
 
 | Feature | Description |
 |---|---|
+| **CLI UX overhaul** | Improve `ferrogw-cli` with richer admin command groups, clearer help output, structured output modes (`table/json/yaml`), and shell completions |
 | **Least-latency routing** | Route to the provider with lowest p50 latency |
 | **Cost-optimized routing** | Route to cheapest provider that meets quality threshold |
 | **Content-based routing** | Route based on prompt content (code → Codex, chat → GPT) |

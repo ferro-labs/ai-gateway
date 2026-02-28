@@ -182,6 +182,30 @@ Production note:
 * Prefer TLS-enabled Postgres connections in production (`sslmode=require` at minimum; `sslmode=verify-full` when certificate validation is configured).
 * Use `sslmode=disable` only when transport encryption is enforced outside Postgres (for example, mTLS service mesh or a trusted local Unix socket).
 
+### First-run bootstrap keys (optional)
+
+For first-time setup, you can provide bootstrap bearer keys for `/admin/*` routes:
+
+```bash
+export ADMIN_BOOTSTRAP_KEY='change-me-to-a-long-random-value'
+export ADMIN_BOOTSTRAP_READ_ONLY_KEY='change-me-to-a-long-random-value'
+export ADMIN_BOOTSTRAP_ENABLED=true
+```
+
+* `ADMIN_BOOTSTRAP_KEY` is treated as `admin` scope.
+* `ADMIN_BOOTSTRAP_READ_ONLY_KEY` is treated as `read_only` scope.
+* Bootstrap keys are only honored while the API key store is empty.
+* Set `ADMIN_BOOTSTRAP_ENABLED=false` to force-disable bootstrap auth.
+
+Use it as:
+
+```bash
+curl http://localhost:8080/admin/dashboard \
+  -H "Authorization: Bearer $ADMIN_BOOTSTRAP_KEY"
+```
+
+After creating persistent API keys via `POST /admin/keys`, remove or unset bootstrap values and restart.
+
 ---
 
 ## 🔎 API Key Usage Analytics

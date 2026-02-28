@@ -34,3 +34,12 @@ go.work.sum
 
 # Python virtual environment
 .venv
+
+#config
+config.json
+
+# binaries
+bin/
+
+# Database files
+*.db

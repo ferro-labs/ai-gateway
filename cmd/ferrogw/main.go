@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"io/fs"
 	"net/http"
 	"os"
 	"os/signal"
@@ -34,7 +35,7 @@ import (
 	_ "github.com/ferro-labs/ai-gateway/internal/plugins/wordfilter"
 )
 
-var webTemplates = template.Must(template.ParseFS(webassets.Templates, "*.html"))
+var webTemplates = template.Must(template.ParseFS(webassets.Assets, "*.html"))
 
 const (
 	backendMemory      = "memory"
@@ -67,6 +68,7 @@ func main() {
 		logging.Logger.Error("failed to initialize API key store", "error", err)
 		os.Exit(1)
 	}
+	logBootstrapConfigurationWarnings(keyStore)
 
 	var corsOrigins []string
 	if origins := os.Getenv("CORS_ORIGINS"); origins != "" {
@@ -216,6 +218,44 @@ func createConfigManagerFromEnv(gw *aigateway.Gateway) (admin.ConfigManager, str
 	default:
 		return nil, "", fmt.Errorf("unsupported config store backend %q", backend)
 	}
+}
+
+func logBootstrapConfigurationWarnings(keyStore admin.Store) {
+	bootstrapAdminConfigured := strings.TrimSpace(os.Getenv("ADMIN_BOOTSTRAP_KEY")) != ""
+	bootstrapReadOnlyConfigured := strings.TrimSpace(os.Getenv("ADMIN_BOOTSTRAP_READ_ONLY_KEY")) != ""
+	if !bootstrapAdminConfigured && !bootstrapReadOnlyConfigured {
+		return
+	}
+
+	bootstrapEnabled := true
+	if raw := strings.TrimSpace(os.Getenv("ADMIN_BOOTSTRAP_ENABLED")); raw != "" {
+		parsed, err := strconv.ParseBool(raw)
+		if err != nil {
+			logging.Logger.Warn("invalid ADMIN_BOOTSTRAP_ENABLED value; expected true/false, defaulting to enabled", "value", raw)
+		} else {
+			bootstrapEnabled = parsed
+		}
+	}
+
+	if !bootstrapEnabled {
+		logging.Logger.Info("bootstrap keys configured but disabled by ADMIN_BOOTSTRAP_ENABLED=false")
+		return
+	}
+
+	existingKeys := len(keyStore.List())
+	if existingKeys > 0 {
+		logging.Logger.Warn("bootstrap keys configured but ignored because API key store is not empty",
+			"existing_keys", existingKeys,
+			"bootstrap_admin_configured", bootstrapAdminConfigured,
+			"bootstrap_read_only_configured", bootstrapReadOnlyConfigured,
+		)
+		return
+	}
+
+	logging.Logger.Warn("bootstrap keys enabled for first-run setup; create persistent API keys and then unset bootstrap env vars",
+		"bootstrap_admin_configured", bootstrapAdminConfigured,
+		"bootstrap_read_only_configured", bootstrapReadOnlyConfigured,
+	)
 }
 
 // loadConfig loads and validates the gateway config from GATEWAY_CONFIG env var.
@@ -487,6 +527,15 @@ func newRouter(
 			writeOpenAIError(w, http.StatusInternalServerError, "failed to render dashboard", "server_error", "internal_error")
 			return
 		}
+	})
+	r.Get("/logo.png", func(w http.ResponseWriter, _ *http.Request) {
+		data, err := fs.ReadFile(webassets.Assets, "logo.png")
+		if err != nil {
+			writeOpenAIError(w, http.StatusNotFound, "logo not found", "not_found_error", "resource_not_found")
+			return
+		}
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(data)
 	})
 
 	r.Get("/v1/models", func(w http.ResponseWriter, _ *http.Request) {
