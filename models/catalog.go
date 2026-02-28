@@ -46,6 +46,7 @@ type Model struct {
 // ModelMode identifies what kind of requests a model handles.
 type ModelMode string
 
+// Model mode constants used in catalog entries and cost calculation dispatch.
 const (
 	ModeChat      ModelMode = "chat"
 	ModeEmbedding ModelMode = "embedding"
@@ -119,7 +120,7 @@ func fetchRemote(url string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("catalog fetch: HTTP %d", resp.StatusCode)
 	}
