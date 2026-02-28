@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"math/rand"
 	"strings"
 	"sync"
@@ -64,11 +65,14 @@ func New(cfg Config) (*Gateway, error) {
 	}, nil
 }
 
-// Catalog returns the loaded model catalog.
+// Catalog returns a shallow copy of the loaded model catalog.
+// A copy is returned so callers cannot mutate the gateway's internal catalog.
 func (g *Gateway) Catalog() models.Catalog {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
-	return g.catalog
+	cp := make(models.Catalog, len(g.catalog))
+	maps.Copy(cp, g.catalog)
+	return cp
 }
 
 // Event subject constants used when invoking gateway hooks.

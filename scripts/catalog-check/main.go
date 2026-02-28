@@ -104,11 +104,17 @@ func main() {
 
 			resp, err := client.Do(req)
 			if err != nil {
+				if resp != nil {
+					_ = resp.Body.Close()
+				}
 				// Some servers reject HEAD at the transport level; retry with GET.
 				req2, _ := http.NewRequest(http.MethodGet, u, nil)
 				req2.Header.Set("User-Agent", req.Header.Get("User-Agent"))
 				resp2, err2 := client.Do(req2)
 				if err2 != nil {
+					if resp2 != nil {
+						_ = resp2.Body.Close()
+					}
 					results <- result{url: u, err: fmt.Errorf("HEAD: %w; GET: %w", err, err2)}
 					return
 				}
@@ -125,6 +131,9 @@ func main() {
 				req2.Header.Set("User-Agent", req.Header.Get("User-Agent"))
 				resp2, err2 := client.Do(req2)
 				if err2 != nil {
+					if resp2 != nil {
+						_ = resp2.Body.Close()
+					}
 					results <- result{url: u, err: fmt.Errorf("HEAD: %d; GET: %w", resp.StatusCode, err2)}
 					return
 				}

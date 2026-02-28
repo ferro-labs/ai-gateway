@@ -110,7 +110,8 @@ func Load() (Catalog, error) {
 		if c, err := parse(data); err == nil {
 			return c, nil
 		}
-		// Remote payload parsed successfully but was invalid JSON — fall through.
+		// Remote fetch succeeded but JSON unmarshal failed (truncated download,
+		// invalid payload, schema mismatch) — fall through to embedded backup.
 	}
 	// Silent fallback — use the embedded copy shipped with the binary.
 	return parse(bundledCatalog)
