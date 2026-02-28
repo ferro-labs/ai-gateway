@@ -5,6 +5,28 @@ All notable changes to Ferro AI Gateway will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.5] — 2026-02-28
+
+### Added
+
+- **Model catalog** (`models/` package): `Catalog`, `Model`, `Pricing`, `Capabilities`, `Lifecycle` types; embedded 2531-entry `catalog.json` (sourced from LiteLLM's pricing file); `Load()` fetches fresh copy from remote URL and falls back to the embedded file
+- **Cost calculator** (`models.Calculate()`): dispatches by model mode (chat, embedding, image, audio); returns itemised `CostResult` with 9 buckets — `InputUSD`, `OutputUSD`, `CacheReadUSD`, `CacheWriteUSD`, `ReasoningUSD`, `ImageUSD`, `AudioUSD`, `EmbeddingUSD`, `TotalUSD`
+- **Provider token extensions**: OpenAI response parser extracts `reasoning_tokens` (from `completion_tokens_details`) and `cached_tokens` (from `prompt_tokens_details`); Anthropic parser extracts `cache_creation_input_tokens` and `cache_read_input_tokens`
+- **`/v1/models` enrichment** (`cmd/ferrogw/models_handler.go`): each model in the list response is enriched with `context_window`, `max_output_tokens`, `capabilities` (array), `status`, and `deprecated` flag sourced from the catalog
+- **Catalog CI check** (`.github/workflows/catalog-check.yml`): weekly scheduled job runs `go run ./scripts/catalog-check` to HEAD-check all remote pricing source URLs; opens a deduplicated GitHub issue on failure
+- **Catalog source URL checker** (`scripts/catalog-check/main.go`): concurrent HTTP checker; exits with code 1 and lists all failed URLs
+
+### Changed
+
+- **Gateway cost calculation** (`gateway.go`): `Route()` and `RouteStream()` now call `models.Calculate()` instead of the removed `providers.EstimateCost()`; `publishEvent` emits 9 cost fields (`cost_usd`, `cost_input_usd`, `cost_output_usd`, `cost_cache_read_usd`, `cost_cache_write_usd`, `cost_reasoning_usd`, `cost_image_usd`, `cost_audio_usd`, `cost_embedding_usd`) plus `cost_model_found`
+- **`Gateway.New()`**: loads model catalog at startup (non-fatal on failure; falls back to embedded JSON)
+
+### Removed
+
+- **`providers/pricing.go`**: hardcoded 50-model pricing table and `EstimateCost()` helper removed; `models.Calculate()` with the full catalog is the single source of truth
+
+---
+
 ## [0.4.0] — 2026-02-28
 
 ### Added
