@@ -16,6 +16,7 @@ type EnrichedModelInfo struct {
 	MaxOutputTokens int      `json:"max_output_tokens,omitempty"`
 	Capabilities    []string `json:"capabilities,omitempty"`
 	Status          string   `json:"status,omitempty"`
+	Deprecated      bool     `json:"deprecated,omitempty"`
 }
 
 // enrichFromCatalog builds an EnrichedModelInfo for provider/modelID by
@@ -37,6 +38,7 @@ func enrichFromCatalog(catalog models.Catalog, provider, modelID string) Enriche
 	base.MaxOutputTokens = m.MaxOutputTokens
 	base.Capabilities = buildCapsList(m.Capabilities)
 	base.Status = m.Lifecycle.Status
+	base.Deprecated = m.IsDeprecated()
 	return base
 }
 

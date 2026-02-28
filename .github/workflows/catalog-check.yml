@@ -19,13 +19,12 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: ai-gateway/go.mod
-          cache-dependency-path: ai-gateway/go.sum
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
 
       - name: Run catalog source URL check
         id: check
         run: go run ./scripts/catalog-check
-        working-directory: ai-gateway
         continue-on-error: true
 
       - name: Open issue on failure

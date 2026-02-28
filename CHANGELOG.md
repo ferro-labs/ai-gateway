@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Model catalog** (`models/` package): `Catalog`, `Model`, `Pricing`, `Capabilities`, `Lifecycle` types; embedded 2531-entry `catalog.json` (sourced from LiteLLM's pricing file); `Load()` fetches fresh copy from remote URL and falls back to the embedded file
+- **Model catalog** (`models/` package): `Catalog`, `Model`, `Pricing`, `Capabilities`, `Lifecycle` types; embedded 2531-entry `catalog_backup.json` (sourced from LiteLLM's pricing file); `Load()` fetches fresh copy from remote URL and falls back to the embedded file
 - **Cost calculator** (`models.Calculate()`): dispatches by model mode (chat, embedding, image, audio); returns itemised `CostResult` with 9 buckets — `InputUSD`, `OutputUSD`, `CacheReadUSD`, `CacheWriteUSD`, `ReasoningUSD`, `ImageUSD`, `AudioUSD`, `EmbeddingUSD`, `TotalUSD`
 - **Provider token extensions**: OpenAI response parser extracts `reasoning_tokens` (from `completion_tokens_details`) and `cached_tokens` (from `prompt_tokens_details`); Anthropic parser extracts `cache_creation_input_tokens` and `cache_read_input_tokens`
 - **`/v1/models` enrichment** (`cmd/ferrogw/models_handler.go`): each model in the list response is enriched with `context_window`, `max_output_tokens`, `capabilities` (array), `status`, and `deprecated` flag sourced from the catalog
@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Gateway cost calculation** (`gateway.go`): `Route()` and `RouteStream()` now call `models.Calculate()` instead of the removed `providers.EstimateCost()`; `publishEvent` emits 9 cost fields (`cost_usd`, `cost_input_usd`, `cost_output_usd`, `cost_cache_read_usd`, `cost_cache_write_usd`, `cost_reasoning_usd`, `cost_image_usd`, `cost_audio_usd`, `cost_embedding_usd`) plus `cost_model_found`
+- **Gateway cost calculation** (`gateway.go`): `Route()` now calls `models.Calculate()` instead of the removed `providers.EstimateCost()`; `publishEvent` emits 9 cost fields (`cost_usd`, `cost_input_usd`, `cost_output_usd`, `cost_cache_read_usd`, `cost_cache_write_usd`, `cost_reasoning_usd`, `cost_image_usd`, `cost_audio_usd`, `cost_embedding_usd`) plus `cost_model_found`; streaming responses via `RouteStream()` do not yet emit cost metrics (no final usage data available mid-stream)
 - **`Gateway.New()`**: loads model catalog at startup (non-fatal on failure; falls back to embedded JSON)
 
 ### Removed

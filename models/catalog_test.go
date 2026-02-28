@@ -20,13 +20,15 @@ func TestCatalogBackupParseable(t *testing.T) {
 }
 
 // TestCatalogRequiredFields checks that every entry in the backup has the
-// mandatory fields filled in (provider, model_id, mode, source).
+// mandatory fields filled in (provider, model_id, mode). The source field
+// is present in most but not all entries and is logged as informational.
 func TestCatalogRequiredFields(t *testing.T) {
 	c, err := parse(bundledCatalog)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
 
+	noSource := 0
 	for key, m := range c {
 		if m.Provider == "" {
 			t.Errorf("%s: missing provider", key)
@@ -37,6 +39,12 @@ func TestCatalogRequiredFields(t *testing.T) {
 		if m.Mode == "" {
 			t.Errorf("%s: missing mode", key)
 		}
+		if m.Source == "" {
+			noSource++
+		}
+	}
+	if noSource > 0 {
+		t.Logf("INFO: %d/%d entries have no source URL — not a hard requirement", noSource, len(c))
 	}
 }
 

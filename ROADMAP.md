@@ -118,7 +118,7 @@
 | **Full pricing coverage** | Per-model input, output, cache-read, cache-write, reasoning, image, audio, and embedding prices (USD/1M tokens) | ✅ Done |
 | **Cost calculator** | `models.Calculate()` dispatches by model mode; returns itemised `CostResult` with 9 cost buckets | ✅ Done |
 | **Provider token extensions** | OpenAI extracts `reasoning_tokens` + `cached_tokens`; Anthropic extracts `cache_creation` / `cache_read` tokens from API responses | ✅ Done |
-| **Gateway wiring** | `Gateway.New()` loads catalog; `Route()` / `RouteStream()` call `models.Calculate()` replacing `EstimateCost()` | ✅ Done |
+| **Gateway wiring** | `Gateway.New()` loads catalog; `Route()` calls `models.Calculate()` replacing `EstimateCost()` (streaming cost tracking is a v0.5 item) | ✅ Done |
 | **Event cost breakdown** | `publishEvent` emits 9 cost fields: `cost_usd`, `cost_input_usd`, `cost_output_usd`, `cost_cache_read_usd`, `cost_cache_write_usd`, `cost_reasoning_usd`, `cost_image_usd`, `cost_audio_usd`, `cost_embedding_usd` | ✅ Done |
 | **`/v1/models` enrichment** | Response enriched with `context_window`, `max_output_tokens`, `capabilities`, `status`, `deprecated` from catalog | ✅ Done |
 | **Catalog CI check** | Weekly GitHub Action (`catalog-check.yml`) validates all remote pricing source URLs; opens an issue on failure | ✅ Done |
@@ -134,6 +134,7 @@
 | Feature | Description |
 |---|---|
 | **CLI UX overhaul** | Improve `ferrogw-cli` with richer admin command groups, clearer help output, structured output modes (`table/json/yaml`), and shell completions |
+| **Streaming cost tracking** | Consume final `usage` chunk from SSE stream in `RouteStream()` and emit cost metrics/events on stream close, matching `Route()` behavior |
 | **Least-latency routing** | Route to the provider with lowest p50 latency |
 | **Cost-optimized routing** | Route to cheapest provider that meets quality threshold |
 | **Content-based routing** | Route based on prompt content (code → Codex, chat → GPT) |

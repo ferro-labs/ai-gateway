@@ -2,8 +2,9 @@
 // supported model's pricing, capabilities, and lifecycle metadata.
 //
 // The catalog is loaded once at gateway startup from a remote URL with an
-// embedded backup as fallback. It is never read on the hot request path;
-// cost calculation happens asynchronously after the response is returned.
+// embedded backup as fallback. Cost calculation via [Calculate] is performed
+// synchronously after the upstream provider responds, before the gateway
+// publishes its completion event.
 package models
 
 import (
@@ -105,13 +106,14 @@ func Load() (Catalog, error) {
 		url = defaultCatalogURL
 	}
 
-	data, err := fetchRemote(url)
-	if err != nil {
-		// Silent fallback — use the embedded copy shipped with the binary.
-		data = bundledCatalog
+	if data, err := fetchRemote(url); err == nil {
+		if c, err := parse(data); err == nil {
+			return c, nil
+		}
+		// Remote payload parsed successfully but was invalid JSON — fall through.
 	}
-
-	return parse(data)
+	// Silent fallback — use the embedded copy shipped with the binary.
+	return parse(bundledCatalog)
 }
 
 func fetchRemote(url string) ([]byte, error) {

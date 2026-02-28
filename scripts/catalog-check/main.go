@@ -30,6 +30,11 @@ func main() {
 	concurrency := flag.Int("concurrency", 10, "number of parallel HTTP requests")
 	flag.Parse()
 
+	if *concurrency < 1 {
+		fmt.Fprintf(os.Stderr, "error: -concurrency must be >= 1, got %d\n", *concurrency)
+		os.Exit(2)
+	}
+
 	if *catalogPath == "" {
 		cwd, _ := os.Getwd()
 		*catalogPath = cwd + "/models/catalog.json"
@@ -99,12 +104,12 @@ func main() {
 
 			resp, err := client.Do(req)
 			if err != nil {
-				// Some servers reject HEAD; retry with GET.
+				// Some servers reject HEAD at the transport level; retry with GET.
 				req2, _ := http.NewRequest(http.MethodGet, u, nil)
 				req2.Header.Set("User-Agent", req.Header.Get("User-Agent"))
 				resp2, err2 := client.Do(req2)
 				if err2 != nil {
-					results <- result{url: u, err: err}
+					results <- result{url: u, err: fmt.Errorf("HEAD: %w; GET: %w", err, err2)}
 					return
 				}
 				_ = resp2.Body.Close()
@@ -112,6 +117,22 @@ func main() {
 				return
 			}
 			_ = resp.Body.Close()
+
+			// Some servers return 405 (Method Not Allowed) or 501 (Not Implemented)
+			// for HEAD without a transport error; retry those with GET.
+			if resp.StatusCode == http.StatusMethodNotAllowed || resp.StatusCode == http.StatusNotImplemented {
+				req2, _ := http.NewRequest(http.MethodGet, u, nil)
+				req2.Header.Set("User-Agent", req.Header.Get("User-Agent"))
+				resp2, err2 := client.Do(req2)
+				if err2 != nil {
+					results <- result{url: u, err: fmt.Errorf("HEAD: %d; GET: %w", resp.StatusCode, err2)}
+					return
+				}
+				_ = resp2.Body.Close()
+				results <- result{url: u, status: resp2.StatusCode}
+				return
+			}
+
 			results <- result{url: u, status: resp.StatusCode}
 		}()
 	}
