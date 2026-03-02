@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"math/rand"
 	"strings"
 	"sync"
@@ -24,6 +25,7 @@ import (
 	"github.com/ferro-labs/ai-gateway/internal/logging"
 	"github.com/ferro-labs/ai-gateway/internal/metrics"
 	"github.com/ferro-labs/ai-gateway/internal/strategies"
+	"github.com/ferro-labs/ai-gateway/models"
 	"github.com/ferro-labs/ai-gateway/plugin"
 	"github.com/ferro-labs/ai-gateway/providers"
 )
@@ -37,6 +39,7 @@ type EventHookFunc func(ctx context.Context, subject string, data map[string]int
 type Gateway struct {
 	mu               sync.RWMutex
 	config           Config
+	catalog          models.Catalog
 	providers        map[string]providers.Provider
 	strategy         strategies.Strategy
 	plugins          *plugin.Manager
@@ -47,13 +50,29 @@ type Gateway struct {
 
 // New creates a new Gateway instance with the given configuration.
 func New(cfg Config) (*Gateway, error) {
+	catalog, err := models.Load()
+	if err != nil {
+		// Non-fatal: operate without model metadata (no enrichment / cost reporting).
+		catalog = models.Catalog{}
+	}
 	return &Gateway{
 		config:           cfg,
+		catalog:          catalog,
 		providers:        make(map[string]providers.Provider),
 		plugins:          plugin.NewManager(),
 		circuitBreakers:  make(map[string]*circuitbreaker.CircuitBreaker),
 		discoveredModels: make(map[string][]providers.ModelInfo),
 	}, nil
+}
+
+// Catalog returns a shallow copy of the loaded model catalog.
+// A copy is returned so callers cannot mutate the gateway's internal catalog.
+func (g *Gateway) Catalog() models.Catalog {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	cp := make(models.Catalog, len(g.catalog))
+	maps.Copy(cp, g.catalog)
+	return cp
 }
 
 // Event subject constants used when invoking gateway hooks.
@@ -161,10 +180,19 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	metrics.TokensInput.WithLabelValues(resp.Provider, resp.Model).Add(float64(resp.Usage.PromptTokens))
 	metrics.TokensOutput.WithLabelValues(resp.Provider, resp.Model).Add(float64(resp.Usage.CompletionTokens))
 
-	// Emit cost metrics.
-	cost := providers.EstimateCost(resp.Provider, resp.Model, resp.Usage)
-	if cost > 0 {
-		metrics.RequestCostUSD.WithLabelValues(resp.Provider, resp.Model).Add(cost)
+	// Emit cost metrics using the model catalog.
+	g.mu.RLock()
+	catalog := g.catalog
+	g.mu.RUnlock()
+	cost := models.Calculate(catalog, resp.Provider+"/"+resp.Model, models.Usage{
+		PromptTokens:     resp.Usage.PromptTokens,
+		CompletionTokens: resp.Usage.CompletionTokens,
+		ReasoningTokens:  resp.Usage.ReasoningTokens,
+		CacheReadTokens:  resp.Usage.CacheReadTokens,
+		CacheWriteTokens: resp.Usage.CacheWriteTokens,
+	})
+	if cost.TotalUSD > 0 {
+		metrics.RequestCostUSD.WithLabelValues(resp.Provider, resp.Model).Add(cost.TotalUSD)
 	}
 
 	log.Info("request completed",
@@ -173,19 +201,28 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 		"latency_ms", latency.Milliseconds(),
 		"tokens_in", resp.Usage.PromptTokens,
 		"tokens_out", resp.Usage.CompletionTokens,
-		"cost_usd", cost,
+		"cost_usd", cost.TotalUSD,
 	)
 
 	g.publishEvent(ctx, SubjectRequestCompleted, map[string]interface{}{
-		"trace_id":   resp.ID,
-		"provider":   resp.Provider,
-		"model":      resp.Model,
-		"status":     200,
-		"latency_ms": latency.Milliseconds(),
-		"tokens_in":  resp.Usage.PromptTokens,
-		"tokens_out": resp.Usage.CompletionTokens,
-		"cost_usd":   cost,
-		"timestamp":  time.Now(),
+		"trace_id":             resp.ID,
+		"provider":             resp.Provider,
+		"model":                resp.Model,
+		"status":               200,
+		"latency_ms":           latency.Milliseconds(),
+		"tokens_in":            resp.Usage.PromptTokens,
+		"tokens_out":           resp.Usage.CompletionTokens,
+		"cost_usd":             cost.TotalUSD,
+		"cost_input_usd":       cost.InputUSD,
+		"cost_output_usd":      cost.OutputUSD,
+		"cost_cache_read_usd":  cost.CacheReadUSD,
+		"cost_cache_write_usd": cost.CacheWriteUSD,
+		"cost_reasoning_usd":   cost.ReasoningUSD,
+		"cost_image_usd":       cost.ImageUSD,
+		"cost_audio_usd":       cost.AudioUSD,
+		"cost_embedding_usd":   cost.EmbeddingUSD,
+		"cost_model_found":     cost.ModelFound,
+		"timestamp":            time.Now(),
 	})
 
 	return resp, nil

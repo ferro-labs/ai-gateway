@@ -75,19 +75,19 @@
 
 ## v0.3.0 — More Providers & Multi-Modal
 
-**Status**: 📋 Planned  
+**Status**: ✅ Released  
 **Theme**: Broader provider coverage and beyond chat completions.
 
-| Feature | Description |
-|---|---|
-| **Embeddings API** | `/v1/embeddings` endpoint with provider routing |
-| **Image generation** | `/v1/images/generations` endpoint (DALL-E, Stability AI) |
-| **Additional providers** | AWS Bedrock, Perplexity, AI21, Fireworks AI, Replicate |
-| **Provider auto-discovery** | Auto-detect available models from provider APIs |
-| **Model aliasing** | Map friendly names (`fast`, `smart`, `cheap`) to specific models |
-| **Cost tracking** | Per-request cost calculation with provider pricing tables |
-| **Streaming test coverage** | End-to-end tests for streaming code paths across all providers |
-| **Proxy handler tests** | Tests for the reverse-proxy pass-through (`/v1/*` catch-all) |
+| Feature | Description | Status |
+|---|---|---|
+| **Embeddings API** | `/v1/embeddings` endpoint with provider routing | ✅ Done |
+| **Image generation** | `/v1/images/generations` endpoint (DALL-E, Stability AI) | ✅ Done |
+| **Additional providers** | AWS Bedrock, Perplexity, AI21, Fireworks AI, Replicate | ✅ Done |
+| **Provider auto-discovery** | Auto-detect available models from provider APIs | ✅ Done |
+| **Model aliasing** | Map friendly names (`fast`, `smart`, `cheap`) to specific models | ✅ Done |
+| **Cost tracking** | Per-request cost calculation with provider pricing tables | ✅ Done |
+| **Streaming test coverage** | End-to-end tests for streaming code paths across all providers | ✅ Done |
+| **Proxy handler tests** | Tests for the reverse-proxy pass-through (`/v1/*` catch-all) | ✅ Done |
 
 ---
 
@@ -107,6 +107,25 @@
 
 ---
 
+## v0.4.5 — Model Catalog & Accurate Pricing
+
+**Status**: ✅ Released  
+**Theme**: Replace hardcoded pricing with a live 2500+ model catalog for accurate, per-request cost tracking.
+
+| Feature | Description | Status |
+|---|---|---|
+| **Model catalog** | `models` package: typed catalog with 2531 entries loaded from an embedded JSON file (with remote refresh fallback) | ✅ Done |
+| **Full pricing coverage** | Per-model input, output, cache-read, cache-write, reasoning, image, audio, and embedding prices (USD/1M tokens) | ✅ Done |
+| **Cost calculator** | `models.Calculate()` dispatches by model mode; returns itemised `CostResult` with 9 cost buckets | ✅ Done |
+| **Provider token extensions** | OpenAI extracts `reasoning_tokens` + `cached_tokens`; Anthropic extracts `cache_creation` / `cache_read` tokens from API responses | ✅ Done |
+| **Gateway wiring** | `Gateway.New()` loads catalog; `Route()` calls `models.Calculate()` replacing `EstimateCost()` (streaming cost tracking is a v0.5 item) | ✅ Done |
+| **Event cost breakdown** | `publishEvent` emits 9 cost fields: `cost_usd`, `cost_input_usd`, `cost_output_usd`, `cost_cache_read_usd`, `cost_cache_write_usd`, `cost_reasoning_usd`, `cost_image_usd`, `cost_audio_usd`, `cost_embedding_usd` | ✅ Done |
+| **`/v1/models` enrichment** | Response enriched with `context_window`, `max_output_tokens`, `capabilities`, `status`, `deprecated` from catalog | ✅ Done |
+| **Catalog CI check** | Weekly GitHub Action (`catalog-check.yml`) validates all remote pricing source URLs; opens an issue on failure | ✅ Done |
+| **Remove hardcoded pricing** | `providers/pricing.go` deleted; catalog is the single source of truth | ✅ Done |
+
+---
+
 ## v0.5.0 — Advanced Routing & Intelligence
 
 **Status**: 📋 Planned  
@@ -115,6 +134,7 @@
 | Feature | Description |
 |---|---|
 | **CLI UX overhaul** | Improve `ferrogw-cli` with richer admin command groups, clearer help output, structured output modes (`table/json/yaml`), and shell completions |
+| **Streaming cost tracking** | Consume final `usage` chunk from SSE stream in `RouteStream()` and emit cost metrics/events on stream close, matching `Route()` behavior |
 | **Least-latency routing** | Route to the provider with lowest p50 latency |
 | **Cost-optimized routing** | Route to cheapest provider that meets quality threshold |
 | **Content-based routing** | Route based on prompt content (code → Codex, chat → GPT) |

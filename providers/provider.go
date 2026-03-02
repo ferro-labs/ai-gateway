@@ -401,6 +401,10 @@ type Usage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
 	TotalTokens      int `json:"total_tokens"`
+	// Extended fields — populated by providers that surface them.
+	ReasoningTokens  int `json:"reasoning_tokens,omitempty"`
+	CacheReadTokens  int `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens int `json:"cache_write_tokens,omitempty"`
 }
 
 // ModelInfo describes a single model offered by a provider.
