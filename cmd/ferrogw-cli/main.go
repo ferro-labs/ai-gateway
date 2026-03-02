@@ -3,6 +3,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -30,54 +31,59 @@ Commands:
 `
 
 func main() {
-	if len(os.Args) < 2 {
-		fmt.Print(usage)
-		os.Exit(0)
+	os.Exit(execute(os.Args, os.Stdout, os.Stderr))
+}
+
+func execute(args []string, stdout, stderr io.Writer) int {
+	if len(args) < 2 {
+		fmt.Fprint(stdout, usage)
+		return 0
 	}
 
-	switch os.Args[1] {
+	switch args[1] {
 	case "validate":
-		cmdValidate()
+		return cmdValidate(args, stdout, stderr)
 	case "plugins":
-		cmdPlugins()
+		return cmdPlugins(stdout, stderr)
 	case "version":
-		cmdVersion()
+		return cmdVersion(stdout, stderr)
 	case "help", "-h", "--help":
-		fmt.Print(usage)
+		fmt.Fprint(stdout, usage)
+		return 0
 	default:
-		fmt.Fprintf(os.Stderr, "Unknown command: %s\n\n", os.Args[1])
-		fmt.Print(usage)
-		os.Exit(1)
+		fmt.Fprintf(stderr, "Unknown command: %s\n\n", args[1])
+		fmt.Fprint(stdout, usage)
+		return 1
 	}
 }
 
-func cmdValidate() {
-	if len(os.Args) < 3 {
-		fmt.Fprintln(os.Stderr, "Usage: ferrogw-cli validate <config-file>")
-		os.Exit(1)
+func cmdValidate(args []string, stdout, stderr io.Writer) int {
+	if len(args) < 3 {
+		fmt.Fprintln(stderr, "Usage: ferrogw-cli validate <config-file>")
+		return 1
 	}
-	path := os.Args[2]
+	path := args[2]
 
 	cfg, err := aigateway.LoadConfig(path)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
-		os.Exit(1)
+		fmt.Fprintf(stderr, "Error loading config: %v\n", err)
+		return 1
 	}
 
 	if err := aigateway.ValidateConfig(*cfg); err != nil {
-		fmt.Fprintf(os.Stderr, "Validation error: %v\n", err)
-		os.Exit(1)
+		fmt.Fprintf(stderr, "Validation error: %v\n", err)
+		return 1
 	}
 
-	fmt.Printf("✓ Config is valid\n")
-	fmt.Printf("  Strategy:  %s\n", cfg.Strategy.Mode)
-	fmt.Printf("  Targets:   %d\n", len(cfg.Targets))
+	fmt.Fprintf(stdout, "✓ Config is valid\n")
+	fmt.Fprintf(stdout, "  Strategy:  %s\n", cfg.Strategy.Mode)
+	fmt.Fprintf(stdout, "  Targets:   %d\n", len(cfg.Targets))
 
 	var targetNames []string
 	for _, t := range cfg.Targets {
 		targetNames = append(targetNames, t.VirtualKey)
 	}
-	fmt.Printf("  Providers: %s\n", strings.Join(targetNames, ", "))
+	fmt.Fprintf(stdout, "  Providers: %s\n", strings.Join(targetNames, ", "))
 
 	if len(cfg.Plugins) > 0 {
 		var pluginNames []string
@@ -88,24 +94,27 @@ func cmdValidate() {
 			}
 			pluginNames = append(pluginNames, fmt.Sprintf("%s (%s)", p.Name, status))
 		}
-		fmt.Printf("  Plugins:   %s\n", strings.Join(pluginNames, ", "))
+		fmt.Fprintf(stdout, "  Plugins:   %s\n", strings.Join(pluginNames, ", "))
 	}
+	return 0
 }
 
-func cmdPlugins() {
+func cmdPlugins(stdout, stderr io.Writer) int {
 	names := plugin.RegisteredPlugins()
 	if len(names) == 0 {
-		fmt.Println("No plugins registered.")
-		return
+		fmt.Fprintln(stdout, "No plugins registered.")
+		return 0
 	}
-	fmt.Println("Registered plugins:")
+	fmt.Fprintln(stdout, "Registered plugins:")
 	for _, name := range names {
 		factory, _ := plugin.GetFactory(name)
 		p := factory()
-		fmt.Printf("  %-20s type=%s\n", name, p.Type())
+		fmt.Fprintf(stdout, "  %-20s type=%s\n", name, p.Type())
 	}
+	return 0
 }
 
-func cmdVersion() {
-	fmt.Printf("ferrogw-cli %s\n", version.String())
+func cmdVersion(stdout, stderr io.Writer) int {
+	fmt.Fprintf(stdout, "ferrogw-cli %s\n", version.String())
+	return 0
 }
