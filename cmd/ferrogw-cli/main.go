@@ -15,6 +15,7 @@ import (
 	_ "github.com/ferro-labs/ai-gateway/internal/plugins/logger"
 	_ "github.com/ferro-labs/ai-gateway/internal/plugins/maxtoken"
 	_ "github.com/ferro-labs/ai-gateway/internal/plugins/wordfilter"
+	_ "github.com/ferro-labs/ai-gateway/internal/plugins/ratelimit"
 )
 
 const usage = `ferrogw-cli — Ferro Labs AI Gateway command line tool
