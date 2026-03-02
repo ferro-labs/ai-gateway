@@ -1,4 +1,4 @@
-# Contributing to Ferro AI Gateway
+# Contributing to Ferro Labs AI Gateway
 
 Thank you for your interest in contributing! This document covers everything you need to get started.
 

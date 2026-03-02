@@ -14,7 +14,7 @@ LDFLAGS  := -s -w \
 
 # Default target
 help:
-	@echo "Ferro AI Gateway — Development Commands"
+	@echo "Ferro Labs AI Gateway — Development Commands"
 	@echo ""
 	@echo "Build:"
 	@echo "  make build             Build ferrogw binary (./bin/ferrogw)"
