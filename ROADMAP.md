@@ -1,6 +1,6 @@
-# Ferro AI Gateway — Public Roadmap
+# Ferro Labs AI Gateway — Public Roadmap
 
-> Ferro AI Gateway is an open-source AI Gateway that routes requests across LLM
+> Ferro Labs AI Gateway is an open-source AI Gateway that routes requests across LLM
 > providers with a single OpenAI-compatible API. This roadmap outlines the
 > planned evolution from the initial v0.1.0 release through production-grade v1.0.
 
@@ -19,7 +19,7 @@
 | Config-less startup bypassed strategy engine | Added default fallback strategy over discovered providers | ✅ Done |
 | Streaming route selection ignored strategy mode | `RouteStream` now resolves providers by configured strategy mode | ✅ Done |
 | CORS multi-origin behavior invalid | Origin-aware CORS response with allowlist matching | ✅ Done |
-| Naming mismatch in docs | Aligned security doc naming to Ferro AI Gateway | ✅ Done |
+| Naming mismatch in docs | Aligned security doc naming to Ferro Labs AI Gateway | ✅ Done |
 
 ### What ships
 

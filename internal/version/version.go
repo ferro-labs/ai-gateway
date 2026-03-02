@@ -1,4 +1,4 @@
-// Package version holds build-time version information for Ferro AI Gateway
+// Package version holds build-time version information for Ferro Labs AI Gateway
 // binaries. The variables are injected by GoReleaser (and the Makefile dev
 // targets) via -ldflags:
 //

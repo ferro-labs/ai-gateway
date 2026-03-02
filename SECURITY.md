@@ -29,7 +29,7 @@ Once a fix is ready, we will:
 
 ## Security Considerations
 
-Ferro AI Gateway acts as a reverse proxy for LLM API calls. Operators should be aware of:
+Ferro Labs AI Gateway acts as a reverse proxy for LLM API calls. Operators should be aware of:
 
 - **API key exposure**: Provider API keys are read from environment variables. Never commit keys to source control or expose them in logs.
 - **Admin API**: The `/admin` routes are protected by bearer token. Admin tokens should be rotated regularly and never shared.

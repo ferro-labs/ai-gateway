@@ -1,7 +1,7 @@
 <div align="center">
 
 <h1 align="center">
-  <img src="docs/logo.png" alt="Ferro Logo" height="60" align="absmiddle" /> Ferro AI Gateway
+  <img src="docs/logo.png" alt="Ferro Logo" height="60" align="absmiddle" /> Ferro Labs AI Gateway
 </h1>
 
 **The high-performance, open-source control plane for your AI applications.**  
@@ -433,7 +433,7 @@ The page also loads `GET /admin/config/history` and includes per-version rollbac
 
 ## 🔌 1-Line Migration
 
-Ferro AI Gateway natively speaks the OpenAI spec. Point your existing client SDKs to the Gateway by changing simply the `baseURL`—**no SDK changes, no prompt edits, no refactoring.**
+Ferro Labs AI Gateway natively speaks the OpenAI spec. Point your existing client SDKs to the Gateway by changing simply the `baseURL`—**no SDK changes, no prompt edits, no refactoring.**
 
 #### Python
 
@@ -497,4 +497,4 @@ By participating, you agree to follow our [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## 📄 License
 
-Ferro AI Gateway is proudly open-source and released under the [Apache 2.0 License](LICENSE).
+Ferro Labs AI Gateway is proudly open-source and released under the [Apache 2.0 License](LICENSE).
