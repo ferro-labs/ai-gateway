@@ -1,6 +1,9 @@
 package providers
 
 import (
+	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -274,4 +277,63 @@ func floatPtr(f float64) *float64 {
 
 func intPtr(i int) *int {
 	return &i
+}
+
+func TestParseStatusCode(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want int
+	}{
+		{"nil error", nil, 0},
+		{"standard 429", fmt.Errorf("provider error (429): rate limited"), 429},
+		{"standard 503", fmt.Errorf("cohere API error (503): service unavailable"), 503},
+		{"standard 400", fmt.Errorf("mistral API error (400): bad request"), 400},
+		{"no status code", fmt.Errorf("network timeout"), 0},
+		{"partial number", fmt.Errorf("attempt 3 failed"), 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ParseStatusCode(tt.err)
+			if got != tt.want {
+				t.Errorf("ParseStatusCode(%v) = %d, want %d", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestStreamChunkUsageOmitEmpty(t *testing.T) {
+	chunk := StreamChunk{
+		ID:      "test-id",
+		Object:  "chat.completion.chunk",
+		Created: 1,
+		Model:   "gpt-4o",
+		Choices: []StreamChoice{
+			{
+				Index: 0,
+				Delta: MessageDelta{Content: "hi"},
+			},
+		},
+	}
+
+	data, err := json.Marshal(chunk)
+	if err != nil {
+		t.Fatalf("Marshal(StreamChunk) error = %v", err)
+	}
+	if strings.Contains(string(data), `"usage"`) {
+		t.Fatalf("usage should be omitted when nil, got: %s", string(data))
+	}
+
+	chunk.Usage = &Usage{
+		PromptTokens:     1,
+		CompletionTokens: 1,
+		TotalTokens:      2,
+	}
+	data, err = json.Marshal(chunk)
+	if err != nil {
+		t.Fatalf("Marshal(StreamChunk with usage) error = %v", err)
+	}
+	if !strings.Contains(string(data), `"usage"`) {
+		t.Fatalf("usage should be present when set, got: %s", string(data))
+	}
 }

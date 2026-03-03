@@ -2,12 +2,17 @@ package aigateway
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
 
+	"github.com/ferro-labs/ai-gateway/internal/circuitbreaker"
+	"github.com/ferro-labs/ai-gateway/internal/metrics"
 	"github.com/ferro-labs/ai-gateway/plugin"
 	"github.com/ferro-labs/ai-gateway/providers"
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 )
 
 // mockProvider is a test double for providers.Provider.
@@ -31,6 +36,24 @@ func (m *mockProvider) SupportsModel(model string) bool {
 }
 func (m *mockProvider) Complete(_ context.Context, _ providers.Request) (*providers.Response, error) {
 	return m.resp, m.err
+}
+
+type mockStreamProvider struct {
+	mockProvider
+	streamErr error
+}
+
+func (m *mockStreamProvider) CompleteStream(_ context.Context, _ providers.Request) (<-chan providers.StreamChunk, error) {
+	return nil, m.streamErr
+}
+
+func counterValue(t *testing.T, c prometheus.Counter) float64 {
+	t.Helper()
+	m := &dto.Metric{}
+	if err := c.Write(m); err != nil {
+		t.Fatalf("failed to read counter value: %v", err)
+	}
+	return m.GetCounter().GetValue()
 }
 
 func TestGateway_Route_Single(t *testing.T) {
@@ -98,6 +121,74 @@ func TestGateway_Route_NoTargets(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error for no targets")
+	}
+}
+
+func TestGateway_RouteStream_ImmediateFailure_IncrementsProviderErrors(t *testing.T) {
+	gw, _ := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: "mock-stream"}},
+	})
+	gw.RegisterProvider(&mockStreamProvider{
+		mockProvider: mockProvider{
+			name:   "mock-stream",
+			models: []string{"gpt-4o"},
+		},
+		streamErr: errors.New("stream failed"),
+	})
+
+	beforeReq := counterValue(t, metrics.RequestsTotal.WithLabelValues("mock-stream", "gpt-4o", "error"))
+	beforeProvErr := counterValue(t, metrics.ProviderErrors.WithLabelValues("mock-stream", "provider_error"))
+
+	_, err := gw.RouteStream(context.Background(), providers.Request{
+		Model:    "gpt-4o",
+		Messages: []providers.Message{{Role: "user", Content: "hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected stream startup error")
+	}
+
+	afterReq := counterValue(t, metrics.RequestsTotal.WithLabelValues("mock-stream", "gpt-4o", "error"))
+	afterProvErr := counterValue(t, metrics.ProviderErrors.WithLabelValues("mock-stream", "provider_error"))
+	if afterReq-beforeReq != 1 {
+		t.Fatalf("gateway_requests_total error delta = %v, want 1", afterReq-beforeReq)
+	}
+	if afterProvErr-beforeProvErr != 1 {
+		t.Fatalf("gateway_provider_errors_total provider_error delta = %v, want 1", afterProvErr-beforeProvErr)
+	}
+}
+
+func TestGateway_RouteStream_ImmediateCircuitOpen_IncrementsCircuitOpenProviderErrors(t *testing.T) {
+	gw, _ := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: "mock-stream"}},
+	})
+	gw.RegisterProvider(&mockStreamProvider{
+		mockProvider: mockProvider{
+			name:   "mock-stream",
+			models: []string{"gpt-4o"},
+		},
+		streamErr: circuitbreaker.ErrCircuitOpen,
+	})
+
+	beforeReq := counterValue(t, metrics.RequestsTotal.WithLabelValues("mock-stream", "gpt-4o", "error"))
+	beforeProvErr := counterValue(t, metrics.ProviderErrors.WithLabelValues("mock-stream", "circuit_open"))
+
+	_, err := gw.RouteStream(context.Background(), providers.Request{
+		Model:    "gpt-4o",
+		Messages: []providers.Message{{Role: "user", Content: "hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected circuit-open stream startup error")
+	}
+
+	afterReq := counterValue(t, metrics.RequestsTotal.WithLabelValues("mock-stream", "gpt-4o", "error"))
+	afterProvErr := counterValue(t, metrics.ProviderErrors.WithLabelValues("mock-stream", "circuit_open"))
+	if afterReq-beforeReq != 1 {
+		t.Fatalf("gateway_requests_total error delta = %v, want 1", afterReq-beforeReq)
+	}
+	if afterProvErr-beforeProvErr != 1 {
+		t.Fatalf("gateway_provider_errors_total circuit_open delta = %v, want 1", afterProvErr-beforeProvErr)
 	}
 }
 

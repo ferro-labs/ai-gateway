@@ -11,6 +11,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"regexp"
+	"strconv"
 )
 
 // Message role constants used across multiple providers.
@@ -379,7 +381,31 @@ type StreamChunk struct {
 	Created int64          `json:"created"`
 	Model   string         `json:"model"`
 	Choices []StreamChoice `json:"choices"`
-	Error   error          `json:"-"` // non-nil signals a stream failure
+	// Usage is populated in the final chunk by providers that support streaming
+	// usage reporting (e.g. OpenAI with stream_options.include_usage=true);
+	// non-final chunks leave this nil so it is omitted from SSE payloads.
+	Usage *Usage `json:"usage,omitempty"`
+	Error error  `json:"-"` // non-nil signals a stream failure
+}
+
+// statusCodePattern matches HTTP status codes formatted as "(NNN)" inside
+// provider error messages (e.g. "provider API error (429): ...").
+var statusCodePattern = regexp.MustCompile(`\((\d{3})\)`)
+
+// ParseStatusCode extracts the HTTP status code embedded in a provider error
+// message. Returns 0 if no 3-digit parenthesised code can be found.
+// All built-in providers embed a 3-digit HTTP status code in parentheses inside
+// their error messages (e.g. "... API error (NNN): message").
+func ParseStatusCode(err error) int {
+	if err == nil {
+		return 0
+	}
+	m := statusCodePattern.FindStringSubmatch(err.Error())
+	if len(m) < 2 {
+		return 0
+	}
+	code, _ := strconv.Atoi(m[1])
+	return code
 }
 
 // StreamChoice is a single choice in a streaming chunk.
