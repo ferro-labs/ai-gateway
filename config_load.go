@@ -45,7 +45,7 @@ func ValidateConfig(cfg Config) error {
 	}
 
 	switch mode {
-	case ModeSingle, ModeFallback, ModeLoadBalance, ModeConditional:
+	case ModeSingle, ModeFallback, ModeLoadBalance, ModeConditional, ModeLatency, ModeCostOptimized:
 	default:
 		return fmt.Errorf("unknown strategy mode: %q", cfg.Strategy.Mode)
 	}
