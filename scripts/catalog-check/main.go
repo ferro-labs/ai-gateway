@@ -34,6 +34,7 @@ type failureHistory struct {
 	UpdatedAt               string         `json:"updated_at"`
 }
 
+//nolint:gocyclo // CLI orchestration is intentionally linear and explicit here.
 func main() {
 	catalogPath := flag.String("catalog", "", "path to catalog.json (default: models/catalog.json in cwd)")
 	concurrency := flag.Int("concurrency", 10, "number of parallel HTTP requests")
@@ -93,7 +94,7 @@ func main() {
 	// Collect unique non-empty source URLs.
 	seen := map[string]bool{}
 	var urls []string
-	skippedInvalidURL := 0
+	var invalidSources []string
 	for _, m := range catalog {
 		u := strings.TrimSpace(m.Source)
 		if u == "" || seen[u] {
@@ -101,17 +102,19 @@ func main() {
 		}
 		parsed, err := url.Parse(u)
 		if err != nil || parsed.Scheme == "" || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
-			skippedInvalidURL++
+			invalidSources = append(invalidSources, u)
+			seen[u] = true
 			continue
 		}
 		seen[u] = true
 		urls = append(urls, u)
 	}
 	sort.Strings(urls)
+	sort.Strings(invalidSources)
 
 	fmt.Fprintf(os.Stderr, "Checking %d unique source URLs (mode=%s, concurrency=%d, allow-status=%s)...\n", len(urls), *modeFlag, *concurrency, *allowStatusFlag)
-	if skippedInvalidURL > 0 {
-		fmt.Fprintf(os.Stderr, "Skipped %d invalid/non-HTTP source entries\n", skippedInvalidURL)
+	if len(invalidSources) > 0 {
+		fmt.Fprintf(os.Stderr, "Found %d invalid/non-HTTP source entries\n", len(invalidSources))
 	}
 
 	type result struct {
@@ -158,6 +161,11 @@ func main() {
 				_ = headResp.Body.Close()
 			}
 
+			if headErr == nil && allowedStatus[headStatus] {
+				results <- result{url: u, status: headStatus}
+				return
+			}
+
 			needGetFallback := headErr != nil || headStatus >= 400
 			if !needGetFallback {
 				results <- result{url: u, status: headStatus}
@@ -177,6 +185,7 @@ func main() {
 			}
 			getReq.Header.Set("User-Agent", userAgent)
 			getReq.Header.Set("Range", "bytes=0-0")
+			getReq.Header.Set("Accept-Encoding", "identity")
 
 			getResp, getErr := client.Do(getReq)
 			if getErr != nil {
@@ -190,7 +199,8 @@ func main() {
 				results <- result{url: u, err: fmt.Errorf("HEAD: %d; GET: %w", headStatus, getErr)}
 				return
 			}
-			_, _ = io.Copy(io.Discard, getResp.Body)
+			const maxProbeBodyBytes = 64 * 1024
+			_, _ = io.Copy(io.Discard, io.LimitReader(getResp.Body, maxProbeBodyBytes))
 			_ = getResp.Body.Close()
 			results <- result{url: u, status: getResp.StatusCode}
 		}()
@@ -202,6 +212,10 @@ func main() {
 	var failures []string
 	ok := 0
 	hardFailuresThisRun := make(map[string]bool)
+	hasInvalidSources := len(invalidSources) > 0
+	for _, invalid := range invalidSources {
+		failures = append(failures, fmt.Sprintf("  INVALID    %s", invalid))
+	}
 	for r := range results {
 		switch {
 		case r.err != nil:
@@ -270,6 +284,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	if hasInvalidSources {
+		fmt.Fprintln(os.Stderr, "strict mode: invalid source entries detected")
+		os.Exit(1)
+	}
+
 	if len(failures) > 0 {
 		fmt.Fprintf(os.Stderr, "strict mode: no hard-failure streak reached %d yet, exit code is 0\n", *failAfter)
 	}
@@ -295,6 +314,7 @@ func parseAllowedStatuses(raw string) (map[int]bool, error) {
 }
 
 func loadFailureHistory(path string) (map[string]int, error) {
+	// #nosec G304 -- path is controlled by CLI flag for an expected local history file.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -323,5 +343,5 @@ func saveFailureHistory(path string, consecutive map[string]int) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o644)
+	return os.WriteFile(path, data, 0o600)
 }
