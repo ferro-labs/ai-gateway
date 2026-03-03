@@ -13,9 +13,13 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"os"
+	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -25,19 +29,53 @@ type catalogEntry struct {
 	Source string `json:"source"`
 }
 
+type failureHistory struct {
+	ConsecutiveHardFailures map[string]int `json:"consecutive_hard_failures"`
+	UpdatedAt               string         `json:"updated_at"`
+}
+
 func main() {
 	catalogPath := flag.String("catalog", "", "path to catalog.json (default: models/catalog.json in cwd)")
 	concurrency := flag.Int("concurrency", 10, "number of parallel HTTP requests")
+	allowStatusFlag := flag.String("allow-status", "403", "comma-separated HTTP status codes to treat as OK (e.g. 403,429)")
+	modeFlag := flag.String("mode", "strict", "checker mode: strict or warn-only")
+	historyPathFlag := flag.String("history", "", "path to failure history JSON (default: .catalog-check-history.json in cwd)")
+	failAfter := flag.Int("fail-after", 3, "in strict mode, fail only after this many consecutive hard failures")
+	hardStatusFlag := flag.String("hard-status", "404,410", "comma-separated HTTP statuses considered hard failures")
 	flag.Parse()
 
 	if *concurrency < 1 {
 		fmt.Fprintf(os.Stderr, "error: -concurrency must be >= 1, got %d\n", *concurrency)
 		os.Exit(2)
 	}
+	if *failAfter < 1 {
+		fmt.Fprintf(os.Stderr, "error: -fail-after must be >= 1, got %d\n", *failAfter)
+		os.Exit(2)
+	}
+	if *modeFlag != "strict" && *modeFlag != "warn-only" {
+		fmt.Fprintf(os.Stderr, "error: -mode must be one of strict or warn-only, got %q\n", *modeFlag)
+		os.Exit(2)
+	}
+
+	allowedStatus, err := parseAllowedStatuses(*allowStatusFlag)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: invalid -allow-status: %v\n", err)
+		os.Exit(2)
+	}
+
+	hardStatus, err := parseAllowedStatuses(*hardStatusFlag)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: invalid -hard-status: %v\n", err)
+		os.Exit(2)
+	}
 
 	if *catalogPath == "" {
 		cwd, _ := os.Getwd()
 		*catalogPath = cwd + "/models/catalog.json"
+	}
+	if *historyPathFlag == "" {
+		cwd, _ := os.Getwd()
+		*historyPathFlag = filepath.Join(cwd, ".catalog-check-history.json")
 	}
 
 	data, err := os.ReadFile(*catalogPath)
@@ -55,9 +93,15 @@ func main() {
 	// Collect unique non-empty source URLs.
 	seen := map[string]bool{}
 	var urls []string
+	skippedInvalidURL := 0
 	for _, m := range catalog {
 		u := strings.TrimSpace(m.Source)
 		if u == "" || seen[u] {
+			continue
+		}
+		parsed, err := url.Parse(u)
+		if err != nil || parsed.Scheme == "" || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+			skippedInvalidURL++
 			continue
 		}
 		seen[u] = true
@@ -65,7 +109,10 @@ func main() {
 	}
 	sort.Strings(urls)
 
-	fmt.Fprintf(os.Stderr, "Checking %d unique source URLs (concurrency=%d)...\n", len(urls), *concurrency)
+	fmt.Fprintf(os.Stderr, "Checking %d unique source URLs (mode=%s, concurrency=%d, allow-status=%s)...\n", len(urls), *modeFlag, *concurrency, *allowStatusFlag)
+	if skippedInvalidURL > 0 {
+		fmt.Fprintf(os.Stderr, "Skipped %d invalid/non-HTTP source entries\n", skippedInvalidURL)
+	}
 
 	type result struct {
 		url    string
@@ -95,54 +142,57 @@ func main() {
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			req, err := http.NewRequest(http.MethodHead, u, nil)
+			userAgent := "ferro-catalog-check/1.0 (+https://github.com/ferro-labs/ai-gateway)"
+
+			headReq, err := http.NewRequest(http.MethodHead, u, nil)
 			if err != nil {
 				results <- result{url: u, err: err}
 				return
 			}
-			req.Header.Set("User-Agent", "ferro-catalog-check/1.0 (+https://github.com/ferro-labs/ai-gateway)")
+			headReq.Header.Set("User-Agent", userAgent)
 
-			resp, err := client.Do(req)
+			headResp, headErr := client.Do(headReq)
+			headStatus := 0
+			if headResp != nil {
+				headStatus = headResp.StatusCode
+				_ = headResp.Body.Close()
+			}
+
+			needGetFallback := headErr != nil || headStatus >= 400
+			if !needGetFallback {
+				results <- result{url: u, status: headStatus}
+				return
+			}
+
+			// Some servers return 4xx/5xx for HEAD but succeed on GET.
+			// Use a lightweight GET probe first before reporting failure.
+			getReq, err := http.NewRequest(http.MethodGet, u, nil)
 			if err != nil {
-				if resp != nil {
-					_ = resp.Body.Close()
-				}
-				// Some servers reject HEAD at the transport level; retry with GET.
-				req2, _ := http.NewRequest(http.MethodGet, u, nil)
-				req2.Header.Set("User-Agent", req.Header.Get("User-Agent"))
-				resp2, err2 := client.Do(req2)
-				if err2 != nil {
-					if resp2 != nil {
-						_ = resp2.Body.Close()
-					}
-					results <- result{url: u, err: fmt.Errorf("HEAD: %w; GET: %w", err, err2)}
+				if headErr != nil {
+					results <- result{url: u, err: fmt.Errorf("HEAD: %w; GET request build: %w", headErr, err)}
 					return
 				}
-				_ = resp2.Body.Close()
-				results <- result{url: u, status: resp2.StatusCode}
+				results <- result{url: u, status: headStatus}
 				return
 			}
-			_ = resp.Body.Close()
+			getReq.Header.Set("User-Agent", userAgent)
+			getReq.Header.Set("Range", "bytes=0-0")
 
-			// Some servers return 405 (Method Not Allowed) or 501 (Not Implemented)
-			// for HEAD without a transport error; retry those with GET.
-			if resp.StatusCode == http.StatusMethodNotAllowed || resp.StatusCode == http.StatusNotImplemented {
-				req2, _ := http.NewRequest(http.MethodGet, u, nil)
-				req2.Header.Set("User-Agent", req.Header.Get("User-Agent"))
-				resp2, err2 := client.Do(req2)
-				if err2 != nil {
-					if resp2 != nil {
-						_ = resp2.Body.Close()
-					}
-					results <- result{url: u, err: fmt.Errorf("HEAD: %d; GET: %w", resp.StatusCode, err2)}
+			getResp, getErr := client.Do(getReq)
+			if getErr != nil {
+				if getResp != nil {
+					_ = getResp.Body.Close()
+				}
+				if headErr != nil {
+					results <- result{url: u, err: fmt.Errorf("HEAD: %w; GET: %w", headErr, getErr)}
 					return
 				}
-				_ = resp2.Body.Close()
-				results <- result{url: u, status: resp2.StatusCode}
+				results <- result{url: u, err: fmt.Errorf("HEAD: %d; GET: %w", headStatus, getErr)}
 				return
 			}
-
-			results <- result{url: u, status: resp.StatusCode}
+			_, _ = io.Copy(io.Discard, getResp.Body)
+			_ = getResp.Body.Close()
+			results <- result{url: u, status: getResp.StatusCode}
 		}()
 	}
 
@@ -151,25 +201,127 @@ func main() {
 
 	var failures []string
 	ok := 0
+	hardFailuresThisRun := make(map[string]bool)
 	for r := range results {
 		switch {
 		case r.err != nil:
 			failures = append(failures, fmt.Sprintf("  CONN ERR  %s\n            %v", r.url, r.err))
+		case allowedStatus[r.status]:
+			ok++
 		case r.status >= 400:
 			failures = append(failures, fmt.Sprintf("  HTTP %-4d  %s", r.status, r.url))
+			if hardStatus[r.status] {
+				hardFailuresThisRun[r.url] = true
+			}
 		default:
 			ok++
 		}
 	}
 
+	previousHistory, err := loadFailureHistory(*historyPathFlag)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: cannot read history file %s: %v\n", *historyPathFlag, err)
+		previousHistory = map[string]int{}
+	}
+	updatedHistory := make(map[string]int, len(urls))
+	for _, u := range urls {
+		if hardFailuresThisRun[u] {
+			updatedHistory[u] = previousHistory[u] + 1
+		} else {
+			updatedHistory[u] = 0
+		}
+	}
+	if err := saveFailureHistory(*historyPathFlag, updatedHistory); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: cannot write history file %s: %v\n", *historyPathFlag, err)
+	}
+
 	sort.Strings(failures)
 	fmt.Fprintf(os.Stderr, "%d OK, %d failed\n\n", ok, len(failures))
+	fmt.Fprintf(os.Stderr, "Hard-failure policy: statuses=%s, fail-after=%d, history=%s\n\n", *hardStatusFlag, *failAfter, *historyPathFlag)
 
 	if len(failures) > 0 {
 		fmt.Fprintln(os.Stderr, "Failed URLs:")
 		for _, f := range failures {
 			fmt.Fprintln(os.Stderr, f)
 		}
+		fmt.Fprintln(os.Stderr)
+	}
+
+	if *modeFlag == "warn-only" {
+		if len(failures) > 0 {
+			fmt.Fprintln(os.Stderr, "warn-only mode: failures detected but exit code is 0")
+		}
+		return
+	}
+
+	triggered := make([]string, 0)
+	for u := range hardFailuresThisRun {
+		if updatedHistory[u] >= *failAfter {
+			triggered = append(triggered, fmt.Sprintf("  HTTP hard-failure streak %d/%d  %s", updatedHistory[u], *failAfter, u))
+		}
+	}
+	sort.Strings(triggered)
+
+	if len(triggered) > 0 {
+		fmt.Fprintln(os.Stderr, "Gate-triggering failures:")
+		for _, t := range triggered {
+			fmt.Fprintln(os.Stderr, t)
+		}
 		os.Exit(1)
 	}
+
+	if len(failures) > 0 {
+		fmt.Fprintf(os.Stderr, "strict mode: no hard-failure streak reached %d yet, exit code is 0\n", *failAfter)
+	}
+}
+
+func parseAllowedStatuses(raw string) (map[int]bool, error) {
+	allowed := make(map[int]bool)
+	for _, part := range strings.Split(raw, ",") {
+		p := strings.TrimSpace(part)
+		if p == "" {
+			continue
+		}
+		code, err := strconv.Atoi(p)
+		if err != nil {
+			return nil, fmt.Errorf("%q is not a valid status code", p)
+		}
+		if code < 100 || code > 599 {
+			return nil, fmt.Errorf("%q is out of HTTP status code range", p)
+		}
+		allowed[code] = true
+	}
+	return allowed, nil
+}
+
+func loadFailureHistory(path string) (map[string]int, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return map[string]int{}, nil
+		}
+		return nil, err
+	}
+
+	var history failureHistory
+	if err := json.Unmarshal(data, &history); err != nil {
+		return nil, err
+	}
+	if history.ConsecutiveHardFailures == nil {
+		return map[string]int{}, nil
+	}
+	return history.ConsecutiveHardFailures, nil
+}
+
+func saveFailureHistory(path string, consecutive map[string]int) error {
+	history := failureHistory{
+		ConsecutiveHardFailures: consecutive,
+		UpdatedAt:               time.Now().UTC().Format(time.RFC3339),
+	}
+
+	data, err := json.MarshalIndent(history, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o644)
 }
