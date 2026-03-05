@@ -40,10 +40,21 @@ func (m *Manager) Register(stage Stage, p Plugin) error {
 func (m *Manager) RunBefore(ctx context.Context, pctx *Context) error {
 	for _, p := range m.before {
 		if err := p.Execute(ctx, pctx); err != nil {
+			if pctx.Reject {
+				reason := pctx.Reason
+				if reason == "" {
+					reason = err.Error()
+				}
+				return &RejectionError{Plugin: p.Name(), Stage: StageBeforeRequest, Reason: reason}
+			}
 			return fmt.Errorf("plugin %s failed: %w", p.Name(), err)
 		}
 		if pctx.Reject {
-			return &RejectionError{Plugin: p.Name(), Stage: StageBeforeRequest, Reason: pctx.Reason}
+			reason := pctx.Reason
+			if reason == "" {
+				reason = "rejected"
+			}
+			return &RejectionError{Plugin: p.Name(), Stage: StageBeforeRequest, Reason: reason}
 		}
 		if pctx.Skip {
 			break

@@ -11,5 +11,12 @@ type RejectionError struct {
 
 // Error implements the error interface.
 func (e *RejectionError) Error() string {
-	return fmt.Sprintf("request rejected by %s (%s): %s", e.Plugin, e.Stage, e.Reason)
+	switch e.Stage {
+	case StageBeforeRequest:
+		return fmt.Sprintf("request rejected by %s (%s): %s", e.Plugin, e.Stage, e.Reason)
+	case StageAfterRequest:
+		return fmt.Sprintf("response rejected by %s (%s): %s", e.Plugin, e.Stage, e.Reason)
+	default:
+		return fmt.Sprintf("rejected by %s (%s): %s", e.Plugin, e.Stage, e.Reason)
+	}
 }

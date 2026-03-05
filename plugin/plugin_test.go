@@ -2,6 +2,8 @@ package plugin
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/ferro-labs/ai-gateway/providers"
@@ -88,6 +90,67 @@ func TestManager_RunBefore_Reject(t *testing.T) {
 	err := m.RunBefore(context.Background(), pctx)
 	if err == nil {
 		t.Fatal("expected rejection error")
+	}
+
+	var rejection *RejectionError
+	if !errors.As(err, &rejection) {
+		t.Fatalf("expected RejectionError, got %T", err)
+	}
+}
+
+func TestManager_RunBefore_RejectWithError_ReturnsRejectionError(t *testing.T) {
+	m := NewManager()
+	_ = m.Register(StageBeforeRequest, &mockPlugin{
+		name: "rate-limit",
+		typ:  TypeRateLimit,
+		execFn: func(_ context.Context, pctx *Context) error {
+			pctx.Reject = true
+			pctx.Reason = "rate limit exceeded"
+			return fmt.Errorf("rate limit exceeded")
+		},
+	})
+
+	pctx := NewContext(&providers.Request{Model: "gpt-4o"})
+	err := m.RunBefore(context.Background(), pctx)
+	if err == nil {
+		t.Fatal("expected rejection error")
+	}
+
+	var rejection *RejectionError
+	if !errors.As(err, &rejection) {
+		t.Fatalf("expected RejectionError, got %T", err)
+	}
+	if rejection.Stage != StageBeforeRequest {
+		t.Fatalf("stage = %q, want %q", rejection.Stage, StageBeforeRequest)
+	}
+	if rejection.Reason != "rate limit exceeded" {
+		t.Fatalf("reason = %q, want %q", rejection.Reason, "rate limit exceeded")
+	}
+}
+
+func TestManager_RunBefore_RejectWithError_FallsBackToErrorMessage(t *testing.T) {
+	m := NewManager()
+	_ = m.Register(StageBeforeRequest, &mockPlugin{
+		name: "guardrail",
+		typ:  TypeGuardrail,
+		execFn: func(_ context.Context, pctx *Context) error {
+			pctx.Reject = true
+			return fmt.Errorf("blocked by policy")
+		},
+	})
+
+	pctx := NewContext(&providers.Request{Model: "gpt-4o"})
+	err := m.RunBefore(context.Background(), pctx)
+	if err == nil {
+		t.Fatal("expected rejection error")
+	}
+
+	var rejection *RejectionError
+	if !errors.As(err, &rejection) {
+		t.Fatalf("expected RejectionError, got %T", err)
+	}
+	if rejection.Reason != "blocked by policy" {
+		t.Fatalf("reason = %q, want %q", rejection.Reason, "blocked by policy")
 	}
 }
 
