@@ -26,17 +26,16 @@ func init() {
 }
 
 type secretPattern struct {
-	name          string
-	pattern       string
-	minEntropy    float64
-	excludePrefix string
+	name       string
+	pattern    string
+	minEntropy float64
 }
 
 var builtinSecretPatterns = []secretPattern{
 	{name: "aws_access_key", pattern: `\bAKIA[0-9A-Z]{16}\b`},
 	{name: "aws_secret_key", pattern: `[0-9a-zA-Z/+]{40}`, minEntropy: 4.5},
 	{name: "gcp_private_key", pattern: `-----BEGIN (RSA )?PRIVATE KEY-----`},
-	{name: "openai_key", pattern: `\bsk-[a-zA-Z0-9]{48}\b`, excludePrefix: "sk-ferro-"},
+	{name: "openai_key", pattern: `\bsk-[a-zA-Z0-9]{48}\b`},
 	{name: "anthropic_key", pattern: `\bsk-ant-[a-zA-Z0-9\-_]{95}\b`},
 	{name: "huggingface_token", pattern: `\bhf_[a-zA-Z]{34}\b`},
 	{name: "github_pat_classic", pattern: `\bghp_[a-zA-Z0-9]{36}\b`},
@@ -51,10 +50,9 @@ var builtinSecretPatterns = []secretPattern{
 }
 
 type compiledSecretPattern struct {
-	name          string
-	compiled      *regexp.Regexp
-	minEntropy    float64
-	excludePrefix string
+	name       string
+	compiled   *regexp.Regexp
+	minEntropy float64
 }
 
 // SecretScan detects hardcoded credentials and secrets in request content.
@@ -97,10 +95,9 @@ func (s *SecretScan) Init(config map[string]interface{}) error {
 		}
 
 		s.patterns = append(s.patterns, compiledSecretPattern{
-			name:          pattern.name,
-			compiled:      compiled,
-			minEntropy:    pattern.minEntropy,
-			excludePrefix: pattern.excludePrefix,
+			name:       pattern.name,
+			compiled:   compiled,
+			minEntropy: pattern.minEntropy,
 		})
 	}
 
@@ -183,9 +180,6 @@ func parsePatternSet(config map[string]interface{}) (map[string]struct{}, error)
 func patternMatches(pattern compiledSecretPattern, content string, entropyCheck bool) bool {
 	matches := pattern.compiled.FindAllString(content, -1)
 	for _, match := range matches {
-		if pattern.excludePrefix != "" && strings.HasPrefix(match, pattern.excludePrefix) {
-			continue
-		}
 		if entropyCheck && pattern.minEntropy > 0 && shannonEntropy(match) < pattern.minEntropy {
 			continue
 		}

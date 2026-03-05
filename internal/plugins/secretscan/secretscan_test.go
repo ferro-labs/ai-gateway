@@ -68,7 +68,7 @@ func TestSecretScan_BlocksOpenAIKey(t *testing.T) {
 	}
 }
 
-func TestSecretScan_SkipsFerroGatewayKey(t *testing.T) {
+func TestSecretScan_FerroStyleKeyNotMatched(t *testing.T) {
 	key := "sk-ferro-" + strings.Repeat("a", 40)
 	s := initSecretScan(t, map[string]interface{}{"action": "block"})
 	pctx := plugin.NewContext(secretRequest("internal key: " + key))
@@ -77,7 +77,7 @@ func TestSecretScan_SkipsFerroGatewayKey(t *testing.T) {
 		t.Fatalf("Execute error: %v", err)
 	}
 	if pctx.Reject {
-		t.Fatal("expected FerroGateway-prefixed key to be ignored")
+		t.Fatal("expected non-OpenAI key format to be ignored")
 	}
 }
 

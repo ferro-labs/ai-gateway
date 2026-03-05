@@ -214,7 +214,7 @@ func TestPromptShield_CustomSignal_Triggers(t *testing.T) {
 	}
 }
 
-func TestPromptShield_IncididentalLowScoreNotBlocked(t *testing.T) {
+func TestPromptShield_IncidentalLowScoreNotBlocked(t *testing.T) {
 	p := initPromptShield(t, map[string]interface{}{})
 	pctx := plugin.NewContext(shieldRequest(providers.Message{Role: "user", Content: "ignore the noise while debugging"}))
 
