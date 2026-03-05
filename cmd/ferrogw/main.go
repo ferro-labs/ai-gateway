@@ -681,7 +681,14 @@ func routeErrorDetails(err error) (status int, errType, code string) {
 
 	var rejection *plugin.RejectionError
 	if errors.As(err, &rejection) {
-		return http.StatusBadRequest, "invalid_request_error", "request_rejected"
+		switch rejection.Stage {
+		case plugin.StageBeforeRequest:
+			return http.StatusBadRequest, "invalid_request_error", "request_rejected"
+		case plugin.StageAfterRequest:
+			return http.StatusBadGateway, "upstream_error", "response_rejected"
+		default:
+			return http.StatusInternalServerError, "server_error", "request_rejected"
+		}
 	}
 
 	return status, errType, code

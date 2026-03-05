@@ -113,12 +113,7 @@ func (s *SchemaGuard) Execute(_ context.Context, pctx *plugin.Context) error {
 			continue
 		}
 
-		var document interface{}
-		if err := json.Unmarshal([]byte(content), &document); err != nil {
-			continue
-		}
-
-		if err := s.schema.Validate(document); err != nil {
+		if err := s.validateJSON(content); err != nil {
 			message := "input failed schema validation: " + err.Error()
 			s.handleViolation(pctx, message)
 			if s.action == schemaGuardActionBlock {

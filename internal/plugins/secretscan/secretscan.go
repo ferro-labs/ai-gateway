@@ -144,16 +144,10 @@ func (s *SecretScan) Execute(_ context.Context, pctx *plugin.Context) error {
 }
 
 func parseAction(config map[string]interface{}) string {
-	if config == nil {
-		return secretScanActionBlock
-	}
-	raw, ok := config["action"].(string)
-	if !ok {
-		return secretScanActionBlock
-	}
-	switch strings.ToLower(strings.TrimSpace(raw)) {
+	action := guardrailutil.ParseAction(config, "action", secretScanActionBlock)
+	switch action {
 	case secretScanActionBlock, secretScanActionWarn, secretScanActionLog:
-		return strings.ToLower(strings.TrimSpace(raw))
+		return action
 	default:
 		return secretScanActionBlock
 	}

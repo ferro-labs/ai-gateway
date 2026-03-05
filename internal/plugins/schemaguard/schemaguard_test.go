@@ -180,6 +180,42 @@ func TestSchemaGuard_ApplyToInput_ValidatesRequest(t *testing.T) {
 	}
 }
 
+func TestSchemaGuard_ApplyToInput_NonJSON_Blocks(t *testing.T) {
+	config := baseSchemaConfig()
+	config["apply_to"] = schemaGuardApplyToInput
+	s := initSchemaGuard(t, config)
+	pctx := requestContext("not-json")
+
+	if err := s.Execute(context.Background(), pctx); err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if !pctx.Reject {
+		t.Fatal("expected non-JSON input to be rejected")
+	}
+	violation, _ := pctx.Metadata["schema_violation"].(string)
+	if !strings.HasPrefix(violation, "input failed schema validation:") {
+		t.Fatalf("schema_violation = %q, expected input validation failure prefix", violation)
+	}
+}
+
+func TestSchemaGuard_ApplyToInput_NonJSON_WarnSetsMetadata(t *testing.T) {
+	config := baseSchemaConfig()
+	config["apply_to"] = schemaGuardApplyToInput
+	config["action"] = schemaGuardActionWarn
+	s := initSchemaGuard(t, config)
+	pctx := requestContext("not-json")
+
+	if err := s.Execute(context.Background(), pctx); err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if pctx.Reject {
+		t.Fatal("expected warn mode not to reject non-JSON input")
+	}
+	if _, ok := pctx.Metadata["schema_violation"]; !ok {
+		t.Fatal("expected schema_violation metadata for non-JSON input")
+	}
+}
+
 func TestSchemaGuard_ApplyToOutput_SkipsRequest(t *testing.T) {
 	s := initSchemaGuard(t, baseSchemaConfig())
 	pctx := requestContext("this is not json")
