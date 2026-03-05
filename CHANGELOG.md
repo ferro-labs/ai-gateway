@@ -5,6 +5,27 @@ All notable changes to Ferro Labs AI Gateway will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [0.6.0] — 2026-03-06
+
+### Added
+
+- **`pii-redact` guardrail plugin** (`internal/plugins/pii/`): detects PII entities (email, phone, credit card with Luhn validation, SSN, IP, AWS access key, IBAN, passport) with configurable actions (`block|redact|warn|log`), per-entity overrides, input/output scope, and redaction modes (`mask`, `replace_type`, `hash`, `synthetic`)
+- **`secret-scan` guardrail plugin** (`internal/plugins/secretscan/`): detects hardcoded credentials and DSNs across cloud/API/source-control/payment patterns with optional Shannon entropy filtering for generic high-entropy tokens
+- **`prompt-shield` guardrail plugin** (`internal/plugins/promptshield/`): scores prompt-injection signals using max-confidence matching with threshold-based enforcement and optional custom tenant signals
+- **`schema-guard` guardrail plugin** (`internal/plugins/schemaguard/`): validates JSON content against tenant-provided JSON Schema (draft-07 via `github.com/santhosh-tekuri/jsonschema/v5`), including optional markdown code-fence JSON extraction
+- **`regex-guard` guardrail plugin** (`internal/plugins/regexguard/`): ordered, per-rule regex guardrail supporting stage targeting (`input|output|both`) and per-rule actions (`block|warn|log`)
+- **Shared guardrail helpers** (`internal/plugins/guardrailutil/`): common parsing and message extraction helpers used by guardrail plugins to keep config handling consistent
+
+### Changed
+
+- **Plugin rejection handling** (`plugin/errors.go`, `plugin/manager.go`): introduced typed `RejectionError` for intentional guardrail rejections and extended after-request lifecycle to propagate rejections (needed for output guardrails such as `schema-guard`)
+- **Gateway request mutation propagation** (`gateway.go`): `Route()` now applies before-request plugin request mutations before strategy execution (enables in-place redaction plugins)
+- **HTTP error mapping for guardrail rejections** (`cmd/ferrogw/main.go`): chat-completions routes now return `400 invalid_request_error` for plugin rejection errors instead of generic `500 routing_error`
+- **Plugin registration** (`cmd/ferrogw/main.go`, `cmd/ferrogw-cli/main.go`): wired all new guardrail plugins into server and CLI plugin listing
+- **Config examples** (`config.example.yaml`, `config.example.json`): added sample blocks for all new guardrail plugins
+
 ## [0.5.0] — 2026-03-03
 
 ### Added

@@ -155,7 +155,8 @@
 
 ## v0.6.0 — Developer Experience
 
-**Status**: 🔮 Future
+**Status**: ✅ Completed  
+**Release Date**: 2026-03-06  
 **Theme**: Server-side prompt management to eliminate client-side template sprawl.
 
 | Feature | Description |

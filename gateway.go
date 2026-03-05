@@ -130,6 +130,10 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 			return nil, err
 		}
 	}
+	// Propagate any request mutations made by before-request plugins.
+	if pctx.Request != nil {
+		req = *pctx.Request
+	}
 
 	// Execute the strategy (provider selection + actual call).
 	resp, err := s.Execute(ctx, req)
@@ -180,7 +184,13 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	// Run after-request plugins (logging, caching).
 	if g.plugins.HasPlugins() {
 		pctx.Response = resp
-		_ = g.plugins.RunAfter(ctx, pctx)
+		if err := g.plugins.RunAfter(ctx, pctx); err != nil {
+			metrics.RequestsTotal.WithLabelValues(resp.Provider, resp.Model, "rejected").Inc()
+			return nil, err
+		}
+		if pctx.Response != nil {
+			resp = pctx.Response
+		}
 	}
 
 	// Emit Prometheus metrics.
@@ -454,7 +464,9 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 		}
 	}
 	// Propagate any modifications made by plugins (e.g., capped max_tokens).
-	req = *pctx.Request
+	if pctx.Request != nil {
+		req = *pctx.Request
+	}
 
 	// Resolve provider according to strategy mode.
 	g.mu.RLock()

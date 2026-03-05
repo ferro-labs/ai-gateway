@@ -477,7 +477,8 @@ Ferro Gateway is actively developed to support an end-to-end AI operating enviro
 * [x] **v0.2.0** — Observability & Resilience: Structured JSON logging with trace IDs, Prometheus metrics, per-provider circuit breakers, token-bucket rate limiting, deep health checks, and consistent error schema.
 * [x] **v0.3.0** — Modality Expansions: Embeddings, Image generation mapping, Cost tracking via pricing tables, and Model aliasing.
 * [x] **v0.4.0** — Persistent State: Dedicated Admin API, SQLite/PostgreSQL persistence, persistent request logs, dashboard, and runtime config CRUD.
-* [ ] **v0.5.0** — Advanced Intelligence: Least-latency and Cost-optimized algorithmic routing, A/B Testing modules, and Semantic Caching.
+* [x] **v0.5.0** — Advanced Intelligence: Least-latency and Cost-optimized algorithmic routing, A/B Testing modules, and Semantic Caching.
+* [x] **v0.6.0** — Developer Experience: Server-side prompt templates and expanded guardrails.
 * [ ] **v1.0.0** — Production Ready: Helm charts, open-telemetry export, edge caching, and official SDK embeddings.
 
 *Review our detailed [ROADMAP.md](ROADMAP.md) for deeper implementation plans.*
