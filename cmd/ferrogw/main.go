@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"io/fs"
@@ -21,6 +22,7 @@ import (
 	"github.com/ferro-labs/ai-gateway/internal/ratelimit"
 	"github.com/ferro-labs/ai-gateway/internal/requestlog"
 	"github.com/ferro-labs/ai-gateway/internal/version"
+	"github.com/ferro-labs/ai-gateway/plugin"
 	"github.com/ferro-labs/ai-gateway/providers"
 	webassets "github.com/ferro-labs/ai-gateway/web"
 	"github.com/go-chi/chi/v5"
@@ -31,7 +33,12 @@ import (
 	_ "github.com/ferro-labs/ai-gateway/internal/plugins/cache"
 	_ "github.com/ferro-labs/ai-gateway/internal/plugins/logger"
 	_ "github.com/ferro-labs/ai-gateway/internal/plugins/maxtoken"
+	_ "github.com/ferro-labs/ai-gateway/internal/plugins/pii"
+	_ "github.com/ferro-labs/ai-gateway/internal/plugins/promptshield"
 	_ "github.com/ferro-labs/ai-gateway/internal/plugins/ratelimit"
+	_ "github.com/ferro-labs/ai-gateway/internal/plugins/regexguard"
+	_ "github.com/ferro-labs/ai-gateway/internal/plugins/schemaguard"
+	_ "github.com/ferro-labs/ai-gateway/internal/plugins/secretscan"
 	_ "github.com/ferro-labs/ai-gateway/internal/plugins/wordfilter"
 )
 
@@ -589,7 +596,8 @@ func newRouter(
 
 			ch, err := gw.RouteStream(r.Context(), req)
 			if err != nil {
-				writeOpenAIError(w, http.StatusInternalServerError, err.Error(), "server_error", "routing_error")
+				status, errType, code := routeErrorDetails(err)
+				writeOpenAIError(w, status, err.Error(), errType, code)
 				return
 			}
 			writeSSE(w, ch)
@@ -604,7 +612,8 @@ func newRouter(
 
 		resp, err := gw.Route(r.Context(), req)
 		if err != nil {
-			writeOpenAIError(w, http.StatusInternalServerError, err.Error(), "server_error", "routing_error")
+			status, errType, code := routeErrorDetails(err)
+			writeOpenAIError(w, status, err.Error(), errType, code)
 			return
 		}
 
@@ -663,6 +672,19 @@ func writeOpenAIError(w http.ResponseWriter, status int, message, errType, code 
 			"code":    code,
 		},
 	})
+}
+
+func routeErrorDetails(err error) (status int, errType, code string) {
+	status = http.StatusInternalServerError
+	errType = "server_error"
+	code = "routing_error"
+
+	var rejection *plugin.RejectionError
+	if errors.As(err, &rejection) {
+		return http.StatusBadRequest, "invalid_request_error", "request_rejected"
+	}
+
+	return status, errType, code
 }
 
 // writeSSE streams SSE chunks from ch to the response writer.

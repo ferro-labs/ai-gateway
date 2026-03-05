@@ -31,12 +31,33 @@
       "virtual_key": "deepseek"
     },
     {
+      "virtual_key": "perplexity"
+    },
+    {
+      "virtual_key": "fireworks"
+    },
+    {
+      "virtual_key": "ai21"
+    },
+    {
+      "virtual_key": "replicate"
+    },
+    {
+      "virtual_key": "bedrock"
+    },
+    {
       "virtual_key": "azure-openai"
     },
     {
       "virtual_key": "ollama"
     }
   ],
+  "aliases": {
+    "fast": "gpt-4o-mini",
+    "smart": "claude-3-5-sonnet-20241022",
+    "cheap": "gemini-1.5-flash",
+    "code": "deepseek-coder"
+  },
   "plugins": [
     {
       "name": "word-filter",
@@ -78,6 +99,76 @@
         "persist": false,
         "backend": "sqlite",
         "dsn": "ferrogw-requests.db"
+      }
+    },
+    {
+      "name": "pii-redact",
+      "type": "guardrail",
+      "stage": "before_request",
+      "enabled": false,
+      "config": {
+        "action": "redact",
+        "redact_mode": "replace_type",
+        "apply_to": "input",
+        "entities": []
+      }
+    },
+    {
+      "name": "secret-scan",
+      "type": "guardrail",
+      "stage": "before_request",
+      "enabled": false,
+      "config": {
+        "action": "block",
+        "entropy_check": true
+      }
+    },
+    {
+      "name": "prompt-shield",
+      "type": "guardrail",
+      "stage": "before_request",
+      "enabled": false,
+      "config": {
+        "action": "block",
+        "threshold": 0.9,
+        "apply_to": "user_messages"
+      }
+    },
+    {
+      "name": "schema-guard",
+      "type": "guardrail",
+      "stage": "after_request",
+      "enabled": false,
+      "config": {
+        "apply_to": "output",
+        "action": "block",
+        "extract_json": true,
+        "schema": {
+          "type": "object",
+          "required": [
+            "name",
+            "confidence"
+          ],
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "confidence": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "regex-guard",
+      "type": "guardrail",
+      "stage": "before_request",
+      "enabled": false,
+      "config": {
+        "rules": []
       }
     }
   ]

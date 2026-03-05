@@ -43,7 +43,7 @@ func (m *Manager) RunBefore(ctx context.Context, pctx *Context) error {
 			return fmt.Errorf("plugin %s failed: %w", p.Name(), err)
 		}
 		if pctx.Reject {
-			return fmt.Errorf("request rejected by %s: %s", p.Name(), pctx.Reason)
+			return &RejectionError{Plugin: p.Name(), Stage: StageBeforeRequest, Reason: pctx.Reason}
 		}
 		if pctx.Skip {
 			break
@@ -57,6 +57,9 @@ func (m *Manager) RunAfter(ctx context.Context, pctx *Context) error {
 	for _, p := range m.after {
 		if err := p.Execute(ctx, pctx); err != nil {
 			logging.Logger.Warn("after-request plugin error", "plugin", p.Name(), "error", err)
+		}
+		if pctx.Reject {
+			return &RejectionError{Plugin: p.Name(), Stage: StageAfterRequest, Reason: pctx.Reason}
 		}
 		if pctx.Skip {
 			break
