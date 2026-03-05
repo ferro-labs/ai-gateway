@@ -38,6 +38,13 @@ func TestExecute(t *testing.T) {
 			expectedStderr: "",
 		},
 		{
+			name:           "--help flag",
+			args:           []string{"ferrogw-cli", "--help"},
+			expectedExit:   0,
+			expectedStdout: "Usage:",
+			expectedStderr: "",
+		},
+		{
 			name:           "version command",
 			args:           []string{"ferrogw-cli", "version"},
 			expectedExit:   0,
@@ -78,5 +85,23 @@ func TestExecute(t *testing.T) {
 				t.Errorf("expected stderr to contain %q, got %q", tt.expectedStderr, stderr.String())
 			}
 		})
+	}
+}
+
+func TestPluginsListsBuiltinNames(t *testing.T) {
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	exitCode := execute([]string{"ferrogw-cli", "plugins"}, stdout, stderr)
+
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d", exitCode)
+	}
+
+	out := stdout.String()
+	knownPlugins := []string{"response-cache", "request-logger", "max-token", "word-filter"}
+	for _, name := range knownPlugins {
+		if !strings.Contains(out, name) {
+			t.Errorf("expected plugins output to contain built-in plugin %q, got %q", name, out)
+		}
 	}
 }
