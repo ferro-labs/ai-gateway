@@ -2,6 +2,7 @@ package regexguard
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/ferro-labs/ai-gateway/plugin"
@@ -66,6 +67,19 @@ func TestRegexGuard_Init_EmptyRules(t *testing.T) {
 	}
 }
 
+func TestRegexGuard_Init_InvalidRulesType_ReturnsError(t *testing.T) {
+	r := &RegexGuard{}
+	err := r.Init(map[string]interface{}{
+		"rules": map[string]interface{}{"name": "bad"},
+	})
+	if err == nil {
+		t.Fatal("expected invalid rules type init to fail")
+	}
+	if !strings.Contains(err.Error(), "rules must be a list") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestRegexGuard_BlocksMatchingInput(t *testing.T) {
 	r := initRegexGuard(t, map[string]interface{}{
 		"rules": []interface{}{
@@ -114,6 +128,22 @@ func TestRegexGuard_WarnMode_NoReject_MetadataSet(t *testing.T) {
 	}
 	if _, ok := pctx.Metadata["regex_rule"]; !ok {
 		t.Fatal("expected regex_rule metadata")
+	}
+}
+
+func TestRegexGuard_RedactActionFallsBackToBlock(t *testing.T) {
+	r := initRegexGuard(t, map[string]interface{}{
+		"rules": []interface{}{
+			map[string]interface{}{"name": "redact_not_supported", "pattern": `blocked`, "action": "redact"},
+		},
+	})
+	pctx := plugin.NewContext(regexRequest("blocked"))
+
+	if err := r.Execute(context.Background(), pctx); err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if !pctx.Reject {
+		t.Fatal("expected unsupported redact action to fall back to blocking")
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/ferro-labs/ai-gateway/internal/plugins/guardrailutil"
 	"github.com/ferro-labs/ai-gateway/plugin"
 )
 
@@ -53,7 +54,7 @@ func (r *RegexGuard) Init(config map[string]interface{}) error {
 
 	list, ok := rawRules.([]interface{})
 	if !ok {
-		return nil
+		return fmt.Errorf("regex-guard rules must be a list, got %T", rawRules)
 	}
 
 	for _, entry := range list {
@@ -81,7 +82,7 @@ func (r *RegexGuard) Init(config map[string]interface{}) error {
 		parsedRule := rule{
 			name:     name,
 			compiled: compiled,
-			applyTo:  parseApplyTo(mapped),
+			applyTo:  guardrailutil.ParseApplyTo(mapped),
 			action:   parseAction(mapped),
 		}
 		r.rules = append(r.rules, parsedRule)
@@ -148,27 +149,11 @@ func ruleMatches(configuredRule rule, pctx *plugin.Context, isAfterRequest bool)
 	return false
 }
 
-func parseApplyTo(config map[string]interface{}) string {
-	raw, ok := config["apply_to"].(string)
-	if !ok {
-		return regexGuardApplyToInput
-	}
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case regexGuardApplyToInput, regexGuardApplyToOutput, regexGuardApplyToBoth:
-		return strings.ToLower(strings.TrimSpace(raw))
-	default:
-		return regexGuardApplyToInput
-	}
-}
-
 func parseAction(config map[string]interface{}) string {
-	raw, ok := config["action"].(string)
-	if !ok {
-		return regexGuardActionBlock
-	}
-	switch strings.ToLower(strings.TrimSpace(raw)) {
+	action := guardrailutil.ParseAction(config, "action", regexGuardActionBlock)
+	switch action {
 	case regexGuardActionBlock, regexGuardActionWarn, regexGuardActionLog:
-		return strings.ToLower(strings.TrimSpace(raw))
+		return action
 	default:
 		return regexGuardActionBlock
 	}
