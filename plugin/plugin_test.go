@@ -174,6 +174,60 @@ func TestManager_RunAfter(t *testing.T) {
 	}
 }
 
+func TestManager_RunAfter_RejectWithEmptyReason_UsesDefault(t *testing.T) {
+	m := NewManager()
+	_ = m.Register(StageAfterRequest, &mockPlugin{
+		name: "post-guardrail",
+		typ:  TypeGuardrail,
+		execFn: func(_ context.Context, pctx *Context) error {
+			pctx.Reject = true
+			return nil
+		},
+	})
+
+	pctx := NewContext(&providers.Request{})
+	pctx.Response = &providers.Response{ID: "r1"}
+	err := m.RunAfter(context.Background(), pctx)
+	if err == nil {
+		t.Fatal("expected rejection error")
+	}
+
+	var rejection *RejectionError
+	if !errors.As(err, &rejection) {
+		t.Fatalf("expected RejectionError, got %T", err)
+	}
+	if rejection.Reason != "rejected" {
+		t.Fatalf("reason = %q, want %q", rejection.Reason, "rejected")
+	}
+}
+
+func TestManager_RunAfter_RejectWithErrorAndEmptyReason_UsesErrorMessage(t *testing.T) {
+	m := NewManager()
+	_ = m.Register(StageAfterRequest, &mockPlugin{
+		name: "schema-guard",
+		typ:  TypeGuardrail,
+		execFn: func(_ context.Context, pctx *Context) error {
+			pctx.Reject = true
+			return fmt.Errorf("schema mismatch")
+		},
+	})
+
+	pctx := NewContext(&providers.Request{})
+	pctx.Response = &providers.Response{ID: "r1"}
+	err := m.RunAfter(context.Background(), pctx)
+	if err == nil {
+		t.Fatal("expected rejection error")
+	}
+
+	var rejection *RejectionError
+	if !errors.As(err, &rejection) {
+		t.Fatalf("expected RejectionError, got %T", err)
+	}
+	if rejection.Reason != "schema mismatch" {
+		t.Fatalf("reason = %q, want %q", rejection.Reason, "schema mismatch")
+	}
+}
+
 func TestManager_NoPlugins(t *testing.T) {
 	m := NewManager()
 	if m.HasPlugins() {

@@ -192,6 +192,30 @@ func TestGateway_RouteStream_ImmediateCircuitOpen_IncrementsCircuitOpenProviderE
 	}
 }
 
+func TestGateway_RouteStream_BeforePluginCanSetNilRequest(t *testing.T) {
+	gw, _ := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: "missing"}},
+	})
+
+	_ = gw.RegisterPlugin(plugin.StageBeforeRequest, &testPlugin{
+		name: "nil-request",
+		typ:  plugin.TypeGuardrail,
+		execFn: func(_ context.Context, pctx *plugin.Context) error {
+			pctx.Request = nil
+			return nil
+		},
+	})
+
+	_, err := gw.RouteStream(context.Background(), providers.Request{
+		Model:    "gpt-4o",
+		Messages: []providers.Message{{Role: "user", Content: "hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected error for missing streaming provider")
+	}
+}
+
 func TestGateway_Route_ProviderNotFound(t *testing.T) {
 	gw, _ := New(Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},

@@ -7,6 +7,8 @@ import (
 	"github.com/ferro-labs/ai-gateway/internal/logging"
 )
 
+const defaultRejectionReason = "rejected"
+
 // Manager manages plugin lifecycle and execution.
 type Manager struct {
 	before []Plugin
@@ -52,7 +54,7 @@ func (m *Manager) RunBefore(ctx context.Context, pctx *Context) error {
 		if pctx.Reject {
 			reason := pctx.Reason
 			if reason == "" {
-				reason = "rejected"
+				reason = defaultRejectionReason
 			}
 			return &RejectionError{Plugin: p.Name(), Stage: StageBeforeRequest, Reason: reason}
 		}
@@ -66,11 +68,20 @@ func (m *Manager) RunBefore(ctx context.Context, pctx *Context) error {
 // RunAfter executes all after-request plugins.
 func (m *Manager) RunAfter(ctx context.Context, pctx *Context) error {
 	for _, p := range m.after {
-		if err := p.Execute(ctx, pctx); err != nil {
+		err := p.Execute(ctx, pctx)
+		if err != nil {
 			logging.Logger.Warn("after-request plugin error", "plugin", p.Name(), "error", err)
 		}
 		if pctx.Reject {
-			return &RejectionError{Plugin: p.Name(), Stage: StageAfterRequest, Reason: pctx.Reason}
+			reason := pctx.Reason
+			if reason == "" {
+				if err != nil {
+					reason = err.Error()
+				} else {
+					reason = defaultRejectionReason
+				}
+			}
+			return &RejectionError{Plugin: p.Name(), Stage: StageAfterRequest, Reason: reason}
 		}
 		if pctx.Skip {
 			break

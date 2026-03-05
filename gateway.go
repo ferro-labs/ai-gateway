@@ -464,7 +464,9 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 		}
 	}
 	// Propagate any modifications made by plugins (e.g., capped max_tokens).
-	req = *pctx.Request
+	if pctx.Request != nil {
+		req = *pctx.Request
+	}
 
 	// Resolve provider according to strategy mode.
 	g.mu.RLock()
