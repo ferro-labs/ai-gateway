@@ -2,10 +2,11 @@ package vertexai
 
 import (
 	"context"
-	core "github.com/ferro-labs/ai-gateway/providers/core"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	core "github.com/ferro-labs/ai-gateway/providers/core"
 )
 
 func TestNewVertexAI_APIKeyMode(t *testing.T) {
