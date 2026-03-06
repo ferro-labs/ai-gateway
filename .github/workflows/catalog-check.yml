@@ -23,7 +23,7 @@ jobs:
           cache-dependency-path: go.sum
 
       - name: Restore catalog check history
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: .catalog-check-history.json
           key: catalog-check-history-${{ github.ref_name }}-${{ github.run_id }}
@@ -43,7 +43,7 @@ jobs:
 
       - name: Save catalog check history
         if: always()
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           path: .catalog-check-history.json
           key: catalog-check-history-${{ github.ref_name }}-${{ github.run_id }}
