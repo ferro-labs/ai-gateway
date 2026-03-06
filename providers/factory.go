@@ -22,6 +22,14 @@ func ProviderConfigFromEnv(entry ProviderEntry) ProviderConfig {
 			cfg[m.ConfigKey] = val
 		}
 	}
+	// If a custom configured? gate is provided, apply it after reading env vars.
+	// ConfiguredFn is used for providers whose activation depends on an OR
+	// condition across multiple env vars (e.g. Bedrock: AWS_REGION OR
+	// AWS_ACCESS_KEY_ID). When ConfiguredFn is set, no EnvMapping needs
+	// Required=true for that provider.
+	if entry.ConfiguredFn != nil && !entry.ConfiguredFn(cfg) {
+		return nil
+	}
 	return cfg
 }
 
@@ -111,6 +119,18 @@ type ProviderEntry struct {
 	// Returns an error if required config keys are absent or invalid.
 	// Never reads environment variables directly — callers supply all inputs.
 	Build func(cfg ProviderConfig) (Provider, error)
+
+	// ConfiguredFn is an optional custom "configured?" gate used by
+	// ProviderConfigFromEnv after all env vars have been read. When non-nil it
+	// takes the place of the default Required=true EnvMapping gate for this
+	// provider. Return false to signal "not configured" (silent skip).
+	//
+	// Use this for providers whose activation depends on an OR condition across
+	// multiple env vars — for example, Bedrock is considered configured when
+	// either AWS_REGION or AWS_ACCESS_KEY_ID is set (allowing instance-role auth
+	// with an explicit region, or explicit static credentials without a region
+	// env var). When ConfiguredFn is set, no EnvMapping needs Required=true.
+	ConfiguredFn func(cfg ProviderConfig) bool
 }
 
 // AllProviders returns the complete ordered list of built-in ProviderEntry records.

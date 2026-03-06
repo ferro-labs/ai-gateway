@@ -88,13 +88,22 @@ var allProviders = []ProviderEntry{
 	{
 		ID:           NameBedrock,
 		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityProxy},
-		// AWS_REGION is required; static credentials are optional (falls back to
-		// the default AWS credential chain: env → ~/.aws/credentials → instance role).
+		// All Bedrock env mappings are optional because the provider can be
+		// configured in two different ways:
+		//   1. Instance-role / credential-chain auth: only AWS_REGION is set.
+		//   2. Static credentials: AWS_ACCESS_KEY_ID (+ secret) are set;
+		//      region may be absent and defaults to us-east-1 inside NewWithOptions.
+		// The ConfiguredFn below mirrors the dual-key gate used in main.go:
+		// Bedrock is considered configured when AWS_REGION OR AWS_ACCESS_KEY_ID
+		// is present.
 		EnvMappings: []EnvMapping{
-			{CfgKeyRegion, "AWS_REGION", true},
+			{CfgKeyRegion, "AWS_REGION", false},
 			{CfgKeyAccessKeyID, "AWS_ACCESS_KEY_ID", false},
 			{CfgKeySecretAccessKey, "AWS_SECRET_ACCESS_KEY", false},
 			{CfgKeySessionToken, "AWS_SESSION_TOKEN", false},
+		},
+		ConfiguredFn: func(cfg ProviderConfig) bool {
+			return cfg[CfgKeyRegion] != "" || cfg[CfgKeyAccessKeyID] != ""
 		},
 		Build: func(cfg ProviderConfig) (Provider, error) {
 			return bedrockpkg.NewWithOptions(bedrockpkg.Options{

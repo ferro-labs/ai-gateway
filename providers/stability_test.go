@@ -329,9 +329,15 @@ func TestProviderCapabilitiesNotEmpty(t *testing.T) {
 }
 
 // TestProviderEnvMappingsHaveRequiredKey verifies that each provider entry has
-// at least one required EnvMapping (the "configured?" gate used by auto-registration).
+// a configured? gate: either at least one EnvMapping with Required=true, or a
+// ConfiguredFn (used for providers whose gate is an OR across multiple env vars,
+// e.g. Bedrock: AWS_REGION OR AWS_ACCESS_KEY_ID).
 func TestProviderEnvMappingsHaveRequiredKey(t *testing.T) {
 	for _, e := range AllProviders() {
+		if e.ConfiguredFn != nil {
+			// Custom gate provided — no Required mapping needed.
+			continue
+		}
 		hasRequired := false
 		for _, m := range e.EnvMappings {
 			if m.Required {
@@ -340,7 +346,7 @@ func TestProviderEnvMappingsHaveRequiredKey(t *testing.T) {
 			}
 		}
 		if !hasRequired {
-			t.Errorf("provider %q has no required EnvMapping — at least one must be required to act as the configured? gate", e.ID)
+			t.Errorf("provider %q has no configured? gate: add a Required EnvMapping or a ConfiguredFn", e.ID)
 		}
 	}
 }
