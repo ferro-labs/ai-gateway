@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -11,7 +12,13 @@ import (
 
 	aigateway "github.com/ferro-labs/ai-gateway"
 	"github.com/ferro-labs/ai-gateway/internal/admin"
+	"github.com/ferro-labs/ai-gateway/plugin"
 	"github.com/ferro-labs/ai-gateway/providers"
+)
+
+const (
+	testErrTypeServerError = "server_error"
+	testCodeRequestReject  = "request_rejected"
 )
 
 type fakeProvider struct {
@@ -390,6 +397,58 @@ func TestCreateConfigManagerFromEnv_PostgresMissingDSN(t *testing.T) {
 
 	if _, _, err := createConfigManagerFromEnv(gw); err == nil {
 		t.Fatalf("expected error for missing postgres dsn")
+	}
+}
+
+func TestRouteErrorDetails_BeforeRequestRejection(t *testing.T) {
+	status, errType, code := routeErrorDetails(&plugin.RejectionError{Stage: plugin.StageBeforeRequest, Reason: "blocked"})
+	if status != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", status, http.StatusBadRequest)
+	}
+	if errType != "invalid_request_error" {
+		t.Fatalf("errType = %q, want %q", errType, "invalid_request_error")
+	}
+	if code != testCodeRequestReject {
+		t.Fatalf("code = %q, want %q", code, testCodeRequestReject)
+	}
+}
+
+func TestRouteErrorDetails_AfterRequestRejection(t *testing.T) {
+	status, errType, code := routeErrorDetails(&plugin.RejectionError{Stage: plugin.StageAfterRequest, Reason: "schema mismatch"})
+	if status != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d", status, http.StatusBadGateway)
+	}
+	if errType != "upstream_error" {
+		t.Fatalf("errType = %q, want %q", errType, "upstream_error")
+	}
+	if code != "response_rejected" {
+		t.Fatalf("code = %q, want %q", code, "response_rejected")
+	}
+}
+
+func TestRouteErrorDetails_UnknownStageRejection(t *testing.T) {
+	status, errType, code := routeErrorDetails(&plugin.RejectionError{Stage: plugin.Stage("custom_stage"), Reason: "custom"})
+	if status != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", status, http.StatusInternalServerError)
+	}
+	if errType != testErrTypeServerError {
+		t.Fatalf("errType = %q, want %q", errType, testErrTypeServerError)
+	}
+	if code != testCodeRequestReject {
+		t.Fatalf("code = %q, want %q", code, testCodeRequestReject)
+	}
+}
+
+func TestRouteErrorDetails_NonRejectionError(t *testing.T) {
+	status, errType, code := routeErrorDetails(errors.New("boom"))
+	if status != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", status, http.StatusInternalServerError)
+	}
+	if errType != testErrTypeServerError {
+		t.Fatalf("errType = %q, want %q", errType, testErrTypeServerError)
+	}
+	if code != "routing_error" {
+		t.Fatalf("code = %q, want %q", code, "routing_error")
 	}
 }
 

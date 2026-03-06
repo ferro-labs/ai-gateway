@@ -54,6 +54,28 @@ func TestValidateConfig_Valid(t *testing.T) {
 	}
 }
 
+func TestValidateConfig_NewStrategyModes(t *testing.T) {
+	tests := []struct {
+		name string
+		mode StrategyMode
+	}{
+		{name: "least-latency", mode: ModeLatency},
+		{name: "cost-optimized", mode: ModeCostOptimized},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Config{
+				Strategy: StrategyConfig{Mode: tt.mode},
+				Targets:  []Target{{VirtualKey: "key1"}},
+			}
+			if err := ValidateConfig(cfg); err != nil {
+				t.Fatalf("unexpected error for mode %q: %v", tt.mode, err)
+			}
+		})
+	}
+}
+
 func TestValidateConfig_DefaultsToSingle(t *testing.T) {
 	cfg := Config{
 		Strategy: StrategyConfig{Mode: ""},

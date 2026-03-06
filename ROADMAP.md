@@ -128,19 +128,40 @@
 
 ## v0.5.0 — Advanced Routing & Intelligence
 
-**Status**: 📋 Planned  
+**Status**: ✅ Released
 **Theme**: Smart routing based on cost, latency, and content.
+
+| Feature | Description | Status |
+|---|---|---|
+| **CLI UX overhaul** | `ferrogw-cli` migrated to Cobra: richer admin command groups (`admin keys`, `admin config`, `admin logs`, `admin providers`), `--format table/json/yaml` output flag, shell completions via `ferrogw-cli completion` | ✅ Done |
+| **Streaming cost tracking** | `RouteStream()` now wraps the SSE channel in a metering goroutine; emits Prometheus metrics (duration, tokens, cost) and event hooks on stream close, matching `Route()` behaviour | ✅ Done |
+| **Retry policies** | `RetryConfig` extended with `on_status_codes` (only retry listed HTTP status codes) and `initial_backoff_ms` (configurable exponential backoff base); applied per-target in the fallback strategy | ✅ Done |
+| **Least-latency routing** | New `least-latency` strategy mode; in-process rolling-window p50 tracker (`internal/latency`) records observed latency per provider; routes to fastest compatible provider, falls back to random when no samples exist | ✅ Done |
+| **Cost-optimized routing** | New `cost-optimized` strategy mode; estimates prompt cost via the model catalog for each compatible provider and routes to the cheapest; falls back to first compatible provider when pricing is unavailable | ✅ Done |
+
+---
+
+## v0.5.5 — Intelligent Request Handling
+
+**Status**: 📋 Planned
+**Theme**: Route based on what the request says, not just what model it targets.
 
 | Feature | Description |
 |---|---|
-| **CLI UX overhaul** | Improve `ferrogw-cli` with richer admin command groups, clearer help output, structured output modes (`table/json/yaml`), and shell completions |
-| **Streaming cost tracking** | Consume final `usage` chunk from SSE stream in `RouteStream()` and emit cost metrics/events on stream close, matching `Route()` behavior |
-| **Least-latency routing** | Route to the provider with lowest p50 latency |
-| **Cost-optimized routing** | Route to cheapest provider that meets quality threshold |
-| **Content-based routing** | Route based on prompt content (code → Codex, chat → GPT) |
-| **A/B testing** | Split traffic between models for comparison |
-| **Prompt templates** | Server-side prompt template management and versioning |
-| **Retry policies** | Configurable retry with status code filtering per provider |
+| **Content-based routing** | Extend conditional strategy with `prompt_contains` and `prompt_regex` match keys; `X-Route-Tag` header overrides all rules via `header_routing` config map |
+| **A/B testing** | New `ab-test` strategy mode; traffic split by percentage across named variants; `variant` label on all Prometheus metrics; `GET /admin/experiments` endpoint for live stats |
+
+---
+
+## v0.6.0 — Developer Experience
+
+**Status**: ✅ Completed  
+**Release Date**: 2026-03-06  
+**Theme**: Server-side prompt management to eliminate client-side template sprawl.
+
+| Feature | Description |
+|---|---|
+| **Prompt templates** | First-class `PromptTemplate` entity with CRUD admin API (`/admin/templates`); `template_id` + `variables` fields in request body; Go `text/template` rendering injected into `messages` before routing; memory / SQLite / PostgreSQL backends |
 
 ---
 

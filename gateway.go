@@ -22,9 +22,11 @@ import (
 	"time"
 
 	"github.com/ferro-labs/ai-gateway/internal/circuitbreaker"
+	"github.com/ferro-labs/ai-gateway/internal/latency"
 	"github.com/ferro-labs/ai-gateway/internal/logging"
 	"github.com/ferro-labs/ai-gateway/internal/metrics"
 	"github.com/ferro-labs/ai-gateway/internal/strategies"
+	"github.com/ferro-labs/ai-gateway/internal/streamwrap"
 	"github.com/ferro-labs/ai-gateway/models"
 	"github.com/ferro-labs/ai-gateway/plugin"
 	"github.com/ferro-labs/ai-gateway/providers"
@@ -46,6 +48,7 @@ type Gateway struct {
 	hooks            []EventHookFunc
 	circuitBreakers  map[string]*circuitbreaker.CircuitBreaker
 	discoveredModels map[string][]providers.ModelInfo
+	latencyTracker   *latency.Tracker
 }
 
 // New creates a new Gateway instance with the given configuration.
@@ -62,6 +65,7 @@ func New(cfg Config) (*Gateway, error) {
 		plugins:          plugin.NewManager(),
 		circuitBreakers:  make(map[string]*circuitbreaker.CircuitBreaker),
 		discoveredModels: make(map[string][]providers.ModelInfo),
+		latencyTracker:   latency.New(0), // default window size (100 samples)
 	}, nil
 }
 
@@ -126,6 +130,10 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 			return nil, err
 		}
 	}
+	// Propagate any request mutations made by before-request plugins.
+	if pctx.Request != nil {
+		req = *pctx.Request
+	}
 
 	// Execute the strategy (provider selection + actual call).
 	resp, err := s.Execute(ctx, req)
@@ -168,10 +176,21 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 		resp.Created = time.Now().Unix()
 	}
 
+	// Record latency for the least-latency routing strategy.
+	if resp.Provider != "" {
+		g.latencyTracker.Record(resp.Provider, latency)
+	}
+
 	// Run after-request plugins (logging, caching).
 	if g.plugins.HasPlugins() {
 		pctx.Response = resp
-		_ = g.plugins.RunAfter(ctx, pctx)
+		if err := g.plugins.RunAfter(ctx, pctx); err != nil {
+			metrics.RequestsTotal.WithLabelValues(resp.Provider, resp.Model, "rejected").Inc()
+			return nil, err
+		}
+		if pctx.Response != nil {
+			resp = pctx.Response
+		}
 	}
 
 	// Emit Prometheus metrics.
@@ -312,12 +331,25 @@ func (g *Gateway) getStrategy() (strategies.Strategy, error) {
 		s = strategies.NewSingle(targets[0], lookup)
 	case ModeFallback:
 		fb := strategies.NewFallback(targets, lookup)
-		if len(g.config.Targets) > 0 && g.config.Targets[0].Retry != nil {
-			fb.WithMaxRetries(g.config.Targets[0].Retry.Attempts)
+		for _, t := range g.config.Targets {
+			if t.Retry == nil {
+				continue
+			}
+			fb.WithTargetRetry(t.VirtualKey, t.Retry.Attempts, t.Retry.OnStatusCodes, t.Retry.InitialBackoffMs)
 		}
 		s = fb
 	case ModeLoadBalance:
 		s = strategies.NewLoadBalance(targets, lookup)
+	case ModeLatency:
+		if len(targets) == 0 {
+			return nil, fmt.Errorf("no targets configured for least-latency strategy")
+		}
+		s = strategies.NewLeastLatency(targets, lookup, g.latencyTracker)
+	case ModeCostOptimized:
+		if len(targets) == 0 {
+			return nil, fmt.Errorf("no targets configured for cost-optimized strategy")
+		}
+		s = strategies.NewCostOptimized(targets, lookup, g.catalog)
 	case ModeConditional:
 		if len(g.config.Strategy.Conditions) == 0 {
 			return nil, fmt.Errorf("no conditions configured for conditional strategy")
@@ -407,10 +439,13 @@ func (g *Gateway) LoadPlugins() error {
 	return nil
 }
 
-// RouteStream runs before-request plugins then returns a streaming response channel.
-// Provider resolution follows the configured strategy mode, then falls back to any
-// registered provider that supports the requested model and streaming.
+// RouteStream runs before-request plugins then returns a metered streaming
+// response channel. Provider resolution follows the configured strategy mode,
+// then falls back to any registered provider that supports the requested model
+// and streaming. Prometheus metrics and event hooks are emitted when the
+// returned channel drains (matching the behaviour of Route for non-streaming).
 func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-chan providers.StreamChunk, error) {
+	start := time.Now()
 	log := logging.FromContext(ctx)
 
 	// Resolve model alias before routing.
@@ -429,7 +464,9 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 		}
 	}
 	// Propagate any modifications made by plugins (e.g., capped max_tokens).
-	req = *pctx.Request
+	if pctx.Request != nil {
+		req = *pctx.Request
+	}
 
 	// Resolve provider according to strategy mode.
 	g.mu.RLock()
@@ -472,8 +509,44 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 		return nil, fmt.Errorf("no streaming-capable provider found for model: %s", req.Model)
 	}
 
-	log.Info("stream request started", "model", req.Model)
-	return sp.CompleteStream(ctx, req)
+	providerName := sp.Name()
+	log.Info("stream request started", "model", req.Model, "provider", providerName)
+
+	rawCh, err := sp.CompleteStream(ctx, req)
+	if err != nil {
+		errType := "provider_error"
+		if errors.Is(err, circuitbreaker.ErrCircuitOpen) {
+			errType = "circuit_open"
+		}
+		metrics.RequestsTotal.WithLabelValues(providerName, req.Model, "error").Inc()
+		metrics.ProviderErrors.WithLabelValues(providerName, errType).Inc()
+		g.publishEvent(ctx, SubjectRequestFailed, map[string]interface{}{
+			"trace_id":   logging.TraceIDFromContext(ctx),
+			"provider":   providerName,
+			"model":      req.Model,
+			"error":      err.Error(),
+			"status":     500,
+			"latency_ms": time.Since(start).Milliseconds(),
+			"stream":     true,
+			"timestamp":  time.Now(),
+		})
+		return nil, err
+	}
+
+	// Wrap the raw channel with a metering goroutine that emits Prometheus
+	// metrics and event hooks once the stream completes.
+	g.mu.RLock()
+	catalog := g.catalog
+	g.mu.RUnlock()
+
+	meta := streamwrap.MeterMeta{
+		Provider:  providerName,
+		Model:     req.Model,
+		Catalog:   catalog,
+		PublishFn: g.publishEvent,
+		TraceID:   logging.TraceIDFromContext(ctx),
+	}
+	return streamwrap.Meter(ctx, rawCh, start, meta), nil
 }
 
 func (g *Gateway) streamingTargetOrderLocked(req providers.Request) []string {

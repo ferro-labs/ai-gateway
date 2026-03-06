@@ -10,6 +10,9 @@ require (
 	github.com/lib/pq v1.10.9
 	github.com/openai/openai-go v1.12.0
 	github.com/prometheus/client_golang v1.23.2
+	github.com/prometheus/client_model v0.6.2
+	github.com/santhosh-tekuri/jsonschema/v5 v5.3.1
+	github.com/spf13/cobra v1.10.2
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.40.1
 )
@@ -32,14 +35,15 @@ require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
+	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/kr/text v0.2.0 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/ncruces/go-strftime v0.1.9 // indirect
-	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.66.1 // indirect
 	github.com/prometheus/procfs v0.16.1 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
+	github.com/spf13/pflag v1.0.9 // indirect
 	github.com/tidwall/gjson v1.14.4 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect

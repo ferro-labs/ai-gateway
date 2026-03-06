@@ -5,6 +5,49 @@ All notable changes to Ferro Labs AI Gateway will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [0.6.0] — 2026-03-06
+
+### Added
+
+- **`pii-redact` guardrail plugin** (`internal/plugins/pii/`): detects PII entities (email, phone, credit card with Luhn validation, SSN, IP, AWS access key, IBAN, passport) with configurable actions (`block|redact|warn|log`), per-entity overrides, input/output scope, and redaction modes (`mask`, `replace_type`, `hash`, `synthetic`)
+- **`secret-scan` guardrail plugin** (`internal/plugins/secretscan/`): detects hardcoded credentials and DSNs across cloud/API/source-control/payment patterns with optional Shannon entropy filtering for generic high-entropy tokens
+- **`prompt-shield` guardrail plugin** (`internal/plugins/promptshield/`): scores prompt-injection signals using max-confidence matching with threshold-based enforcement and optional custom tenant signals
+- **`schema-guard` guardrail plugin** (`internal/plugins/schemaguard/`): validates JSON content against tenant-provided JSON Schema (draft-07 via `github.com/santhosh-tekuri/jsonschema/v5`), including optional markdown code-fence JSON extraction
+- **`regex-guard` guardrail plugin** (`internal/plugins/regexguard/`): ordered, per-rule regex guardrail supporting stage targeting (`input|output|both`) and per-rule actions (`block|warn|log`)
+- **Shared guardrail helpers** (`internal/plugins/guardrailutil/`): common parsing and message extraction helpers used by guardrail plugins to keep config handling consistent
+
+### Changed
+
+- **Plugin rejection handling** (`plugin/errors.go`, `plugin/manager.go`): introduced typed `RejectionError` for intentional guardrail rejections and extended after-request lifecycle to propagate rejections (needed for output guardrails such as `schema-guard`)
+- **Gateway request mutation propagation** (`gateway.go`): `Route()` now applies before-request plugin request mutations before strategy execution (enables in-place redaction plugins)
+- **HTTP error mapping for guardrail rejections** (`cmd/ferrogw/main.go`): chat-completions routes now return `400 invalid_request_error` for plugin rejection errors instead of generic `500 routing_error`
+- **Plugin registration** (`cmd/ferrogw/main.go`, `cmd/ferrogw-cli/main.go`): wired all new guardrail plugins into server and CLI plugin listing
+- **Config examples** (`config.example.yaml`, `config.example.json`): added sample blocks for all new guardrail plugins
+
+## [0.5.0] — 2026-03-03
+
+### Added
+
+- **Streaming cost tracking** (`internal/streamwrap/wrap.go`): `Meter()` wraps any `<-chan StreamChunk` in a transparent goroutine that accumulates token usage from the final chunk and emits `gateway_requests_total`, `gateway_request_duration_seconds`, `gateway_tokens_input_total`, `gateway_tokens_output_total`, and `gateway_request_cost_usd_total` Prometheus metrics plus `request.completed` event hooks on stream close; `RouteStream()` in `gateway.go` now fully mirrors `Route()` metrics coverage
+- **OpenAI streaming usage** (`providers/openai.go`): `CompleteStream()` now sets `stream_options.include_usage: true` so the final SSE chunk carries token counts; `StreamChunk` gained a `Usage` field populated from the final chunk's usage data (including `reasoning_tokens` and `cached_tokens`)
+- **`providers.ParseStatusCode(err)`** (`providers/provider.go`): regex-based helper extracting the HTTP status code from provider error messages formatted as `"... (NNN): ..."` — used by retry and fallback logic across all 15 providers without requiring per-provider changes
+- **Per-target retry status-code filtering** (`internal/strategies/fallback.go`): `Fallback.WithTargetRetry()` now accepts an `onStatusCodes []int` slice; if non-empty, retries are only attempted when the error's status code is in the list — e.g. retry on 429/503 but fail-fast on 400/401; `shouldRetry()` helper extracts codes via `ParseStatusCode`
+- **`RetryConfig` extensions** (`config.go`): new `on_status_codes` (array of ints) and `initial_backoff_ms` (int, default 100) fields on per-target retry config
+- **Least-latency routing strategy** (`internal/strategies/leastlatency.go`, `internal/latency/tracker.go`): `LeastLatency` strategy selects the compatible provider with the lowest P50 latency from a thread-safe in-process sliding window (default 100 samples per provider); falls back to random selection when a provider has no recorded samples; `Route()` records every successful call's latency into a shared `*latency.Tracker` on the `Gateway` struct
+- **Cost-optimized routing strategy** (`internal/strategies/costoptimized.go`): `CostOptimized` strategy estimates prompt token count (~4 chars/token heuristic on request messages), calls `models.Calculate()` for each compatible provider, and routes to the cheapest option; falls back to the first compatible provider when no catalog pricing is available
+- **`ModeLatency` / `ModeCostOptimized` strategy modes** (`config.go`): two new `StrategyMode` constants (`"least-latency"`, `"cost-optimized"`) wired into `gateway.go`'s `getStrategy()` switch
+- **CLI UX overhaul** (`cmd/ferrogw-cli/`): replaced hand-rolled `switch os.Args[1]` with [Cobra](https://github.com/spf13/cobra); added persistent `--gateway-url`, `--api-key`, and `--format table|json|yaml` flags; ported `validate`, `plugins`, `version` commands to `cobra.RunE`; added full `admin` command group (`admin keys list/get/create/delete/rotate`, `admin config get/history/update/rollback`, `admin logs list/stats`, `admin providers list/health`) in `admin.go`; thin admin HTTP client in `client.go`; table/JSON/YAML output formatter in `output.go`
+
+### Changed
+
+- **`gateway.go` `RouteStream()`**: emits error metrics on provider failure (previously silent); wraps the raw provider channel with `streamwrap.Meter()` for full metrics/event parity with `Route()`
+- **`gateway.go` `getStrategy()`**: `ModeFallback` now wires per-target `RetryConfig` (including `OnStatusCodes` and `InitialBackoffMs`) via `fb.WithTargetRetry()`; added `ModeLatency` and `ModeCostOptimized` cases
+- **`gateway.go` `Route()`**: records per-provider response latency into `g.latencyTracker` on every successful call
+
+---
+
 ## [0.4.5] — 2026-02-28
 
 ### Added

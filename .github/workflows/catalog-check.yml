@@ -22,10 +22,31 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
 
+      - name: Restore catalog check history
+        uses: actions/cache/restore@v4
+        with:
+          path: .catalog-check-history.json
+          key: catalog-check-history-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            catalog-check-history-${{ github.ref_name }}-
+
       - name: Run catalog source URL check
         id: check
-        run: go run ./scripts/catalog-check
+        run: >-
+          go run ./scripts/catalog-check
+          -mode strict
+          -fail-after 3
+          -hard-status 404,410
+          -allow-status 403,429
+          -history .catalog-check-history.json
         continue-on-error: true
+
+      - name: Save catalog check history
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .catalog-check-history.json
+          key: catalog-check-history-${{ github.ref_name }}-${{ github.run_id }}
 
       - name: Open issue on failure
         if: steps.check.outcome == 'failure'

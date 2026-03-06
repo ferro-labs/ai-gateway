@@ -248,10 +248,16 @@ func (p *OpenAIProvider) Complete(ctx context.Context, req Request) (*Response, 
 }
 
 // CompleteStream sends a streaming chat completion request to OpenAI.
+// stream_options.include_usage=true is set so that the final SSE chunk
+// carries token-usage statistics for cost and metrics tracking.
 func (p *OpenAIProvider) CompleteStream(ctx context.Context, req Request) (<-chan StreamChunk, error) {
 	params := openai.ChatCompletionNewParams{
 		Messages: buildOpenAIMessages(req.Messages),
 		Model:    req.Model,
+		// Request usage in the final chunk so the gateway can emit cost metrics.
+		StreamOptions: openai.ChatCompletionStreamOptionsParam{
+			IncludeUsage: openai.Bool(true),
+		},
 	}
 	applyOpenAIParams(&params, req)
 
@@ -275,6 +281,22 @@ func (p *OpenAIProvider) CompleteStream(ctx context.Context, req Request) (<-cha
 					},
 					FinishReason: c.FinishReason,
 				})
+			}
+			// Populate usage from the final chunk (only non-zero when
+			// stream_options.include_usage=true and this is the last chunk).
+			if chunk.Usage.TotalTokens > 0 {
+				usage := &Usage{
+					PromptTokens:     int(chunk.Usage.PromptTokens),
+					CompletionTokens: int(chunk.Usage.CompletionTokens),
+					TotalTokens:      int(chunk.Usage.TotalTokens),
+				}
+				if chunk.Usage.CompletionTokensDetails.ReasoningTokens > 0 {
+					usage.ReasoningTokens = int(chunk.Usage.CompletionTokensDetails.ReasoningTokens)
+				}
+				if chunk.Usage.PromptTokensDetails.CachedTokens > 0 {
+					usage.CacheReadTokens = int(chunk.Usage.PromptTokensDetails.CachedTokens)
+				}
+				sc.Usage = usage
 			}
 			ch <- sc
 		}

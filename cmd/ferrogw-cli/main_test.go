@@ -55,15 +55,15 @@ func TestExecute(t *testing.T) {
 			name:           "plugins command",
 			args:           []string{"ferrogw-cli", "plugins"},
 			expectedExit:   0,
-			expectedStdout: "Registered plugins:",
+			expectedStdout: "NAME",
 			expectedStderr: "",
 		},
 		{
 			name:           "unknown command",
 			args:           []string{"ferrogw-cli", "unknown"},
 			expectedExit:   1,
-			expectedStdout: "Usage:",
-			expectedStderr: "Unknown command: unknown",
+			expectedStdout: "",
+			expectedStderr: "unknown command",
 		},
 	}
 
