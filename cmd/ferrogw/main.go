@@ -24,6 +24,7 @@ import (
 	"github.com/ferro-labs/ai-gateway/internal/version"
 	"github.com/ferro-labs/ai-gateway/plugin"
 	"github.com/ferro-labs/ai-gateway/providers"
+	bedrockpkg "github.com/ferro-labs/ai-gateway/providers/bedrock"
 	webassets "github.com/ferro-labs/ai-gateway/web"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -292,96 +293,44 @@ func loadConfig() *aigateway.Config {
 func registerProviders() *providers.Registry {
 	registry := providers.NewRegistry()
 
-	type providerEntry struct {
-		envKey string
-		name   string
-		create func(key, baseURL string) (providers.Provider, error)
-	}
-	autoProviders := []providerEntry{
-		{"OPENAI_API_KEY", "openai", func(k, b string) (providers.Provider, error) { return providers.NewOpenAI(k, b) }},
-		{"ANTHROPIC_API_KEY", "anthropic", func(k, b string) (providers.Provider, error) { return providers.NewAnthropic(k, b) }},
-		{"GROQ_API_KEY", "groq", func(k, b string) (providers.Provider, error) { return providers.NewGroq(k, b) }},
-		{"TOGETHER_API_KEY", "together", func(k, b string) (providers.Provider, error) { return providers.NewTogether(k, b) }},
-		{"GEMINI_API_KEY", "gemini", func(k, b string) (providers.Provider, error) { return providers.NewGemini(k, b) }},
-		{"MISTRAL_API_KEY", "mistral", func(k, b string) (providers.Provider, error) { return providers.NewMistral(k, b) }},
-		{"COHERE_API_KEY", "cohere", func(k, b string) (providers.Provider, error) { return providers.NewCohere(k, b) }},
-		{"DEEPSEEK_API_KEY", "deepseek", func(k, b string) (providers.Provider, error) { return providers.NewDeepSeek(k, b) }},
-		{"PERPLEXITY_API_KEY", "perplexity", func(k, b string) (providers.Provider, error) { return providers.NewPerplexity(k, b) }},
-		{"FIREWORKS_API_KEY", "fireworks", func(k, b string) (providers.Provider, error) { return providers.NewFireworks(k, b) }},
-		{"AI21_API_KEY", "ai21", func(k, b string) (providers.Provider, error) { return providers.NewAI21(k, b) }},
-	}
-	for _, pe := range autoProviders {
-		if key := os.Getenv(pe.envKey); key != "" {
-			p, err := pe.create(key, "")
-			if err != nil {
-				logging.Logger.Error("provider init failed", "provider", pe.name, "error", err)
-				os.Exit(1)
-			}
-			registry.Register(p)
-			logging.Logger.Info("provider registered", "provider", pe.name)
+	// Register all providers whose required environment variables are set.
+	// Each ProviderEntry in providers.AllProviders() declares its own env var
+	// mappings and Build function — no special-casing per provider needed here,
+	// except for AWS Bedrock which uses a multi-key "configured?" gate.
+	for _, entry := range providers.AllProviders() {
+		if entry.ID == providers.NameBedrock {
+			continue // handled below with its dual-key detection
 		}
-	}
 
-	// Azure OpenAI requires additional config.
-	if key := os.Getenv("AZURE_OPENAI_API_KEY"); key != "" {
-		baseURL := os.Getenv("AZURE_OPENAI_ENDPOINT")
-		deployment := os.Getenv("AZURE_OPENAI_DEPLOYMENT")
-		apiVersion := os.Getenv("AZURE_OPENAI_API_VERSION")
-		if baseURL != "" && deployment != "" {
-			p, err := providers.NewAzureOpenAI(key, baseURL, deployment, apiVersion)
-			if err != nil {
-				logging.Logger.Error("provider init failed", "provider", "azure-openai", "error", err)
-				os.Exit(1)
-			}
-			registry.Register(p)
-			logging.Logger.Info("provider registered", "provider", "azure-openai")
-		} else {
-			logging.Logger.Warn("AZURE_OPENAI_API_KEY set but AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_DEPLOYMENT are required")
+		cfg := providers.ProviderConfigFromEnv(entry)
+		if cfg == nil {
+			continue // required env var unset — provider not configured, skip silently
 		}
-	}
 
-	// Ollama is local and needs no API key.
-	if ollamaURL := os.Getenv("OLLAMA_HOST"); ollamaURL != "" {
-		var models []string
-		if m := os.Getenv("OLLAMA_MODELS"); m != "" {
-			models = strings.Split(m, ",")
-		}
-		p, err := providers.NewOllama(ollamaURL, models)
+		p, err := entry.Build(cfg)
 		if err != nil {
-			logging.Logger.Error("provider init failed", "provider", "ollama", "error", err)
+			logging.Logger.Error("provider init failed", "provider", entry.ID, "error", err)
 			os.Exit(1)
 		}
 		registry.Register(p)
-		logging.Logger.Info("provider registered", "provider", "ollama", "models", p.SupportedModels())
+		logging.Logger.Info("provider registered", "provider", entry.ID)
 	}
 
-	// Replicate requires an API token and optional model lists.
-	if token := os.Getenv("REPLICATE_API_TOKEN"); token != "" {
-		var textModels, imageModels []string
-		if m := os.Getenv("REPLICATE_TEXT_MODELS"); m != "" {
-			textModels = strings.Split(m, ",")
-		}
-		if m := os.Getenv("REPLICATE_IMAGE_MODELS"); m != "" {
-			imageModels = strings.Split(m, ",")
-		}
-		p, err := providers.NewReplicate(token, "", textModels, imageModels)
-		if err != nil {
-			logging.Logger.Error("provider init failed", "provider", "replicate", "error", err)
-			os.Exit(1)
-		}
-		registry.Register(p)
-		logging.Logger.Info("provider registered", "provider", "replicate")
-	}
-
-	// AWS Bedrock uses the AWS credential chain (env vars, ~/.aws/credentials, IAM roles).
+	// AWS Bedrock: register if AWS_REGION or AWS_ACCESS_KEY_ID is set.
+	// Accepts instance-role auth (no key vars) as long as AWS_REGION is set,
+	// or explicit static credentials when AWS_ACCESS_KEY_ID is present.
 	if region := os.Getenv("AWS_REGION"); region != "" || os.Getenv("AWS_ACCESS_KEY_ID") != "" {
-		bedrockRegion := os.Getenv("AWS_REGION")
-		p, err := providers.NewBedrock(bedrockRegion)
+		p, err := bedrockpkg.NewWithOptions(bedrockpkg.Options{
+			Region:          os.Getenv("AWS_REGION"),
+			AccessKeyID:     os.Getenv("AWS_ACCESS_KEY_ID"),
+			SecretAccessKey: os.Getenv("AWS_SECRET_ACCESS_KEY"),
+			SessionToken:    os.Getenv("AWS_SESSION_TOKEN"),
+		})
 		if err != nil {
-			logging.Logger.Error("provider init failed", "provider", "bedrock", "error", err)
+			logging.Logger.Error("provider init failed", "provider", providers.NameBedrock, "error", err)
 		} else {
 			registry.Register(p)
-			logging.Logger.Info("provider registered", "provider", "bedrock", "region", bedrockRegion)
+			logging.Logger.Info("provider registered", "provider", providers.NameBedrock, "region", p.Region())
 		}
 	}
 

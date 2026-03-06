@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/ferro-labs/ai-gateway/providers"
+	openaipkg "github.com/ferro-labs/ai-gateway/providers/openai"
 )
 
 const providerOpenAI = "openai"
@@ -16,7 +17,7 @@ const providerOpenAI = "openai"
 // buildTestRegistry creates a registry with an OpenAI provider pointing to upstream.
 func buildTestRegistry(upstreamURL string) *providers.Registry {
 	reg := providers.NewRegistry()
-	p, _ := providers.NewOpenAI("sk-test-key", upstreamURL)
+	p, _ := openaipkg.New("sk-test-key", upstreamURL)
 	reg.Register(p)
 	return reg
 }

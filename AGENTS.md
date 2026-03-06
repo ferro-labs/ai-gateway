@@ -1,4 +1,4 @@
-# CLAUDE.md
+# AGENTS.md
 
 ## Project Overview
 
@@ -8,15 +8,18 @@
 - **Go version**: 1.24+
 - **License**: Apache 2.0
 
-### Current Development Snapshot (feat/v0-4-storage-admin-foundation)
+### Current Development Snapshot (feat/v0.6.5)
 
-- Admin API expanded in `internal/admin/handlers.go` (dashboard, keys, usage, logs, config history/rollback).
-- Key timestamp behavior aligned to UTC (`LastUsedAt`, expiration normalization/copy semantics).
-- Logger plugin `on_error` path hardened for nil request context.
-- Rollback history semantics fixed: `rolled_back_from` stores the prior active version.
-- Log stats aggregation bounded to avoid unbounded scans (`logsStatsMaxScannedEntries`).
-- Dashboard history rendering hardened (DOM API + `textContent`, no unsafe `innerHTML` composition).
-- README production Postgres guidance updated to prefer TLS DSNs.
+- **19 provider subpackages** — each provider lives in `providers/<id>/<id>.go` with its own test file. No root-level constructor shims remain.
+- **Unified factory** — `providers/factory.go` holds types/constants; `providers/providers_list.go` holds all 19 `ProviderEntry` records. Auto-registration via `AllProviders()` means `main.go` never needs editing for new providers.
+- **`providers/core/` split** — interfaces in `contracts.go`; shared types split into `chat.go`, `stream.go`, `embedding.go`, `image.go`, `model.go`, `constants.go`, `errors.go`.
+- **Single source of truth for name constants** — `providers/names.go` re-exports `NameXxx` from each subpackage's `const Name`.
+- **`internal/discovery/`** — shared OpenAI-compatible model discovery helper used by fireworks, hugging_face, perplexity, xai.
+- **New providers** — xAI (Grok), Azure AI Foundry, Hugging Face, Vertex AI (API-key + service-account), AWS Bedrock.
+- **New guardrail plugins** — PII scanner, regex guard, schema guard, secret scanner, prompt shield, rate limit.
+- **Admin API** — dashboard, key management, usage stats, request logs, config history/rollback (`internal/admin/handlers.go`).
+- **Metrics** — Prometheus metrics exposed at `/metrics` (`internal/metrics/`).
+- **Circuit breaker** — per-provider circuit breaker in `internal/circuitbreaker/`.
 
 ---
 
@@ -70,7 +73,38 @@ ai-gateway/
 │   ├── strategies/       # Routing strategy implementations
 │   └── version/
 ├── plugin/               # Public plugin framework (interfaces + manager + registry)
-├── providers/            # LLM provider implementations + registry
+├── providers/
+│   ├── core/             # Shared interfaces (contracts.go) and types (chat, stream, embedding, image, model)
+│   ├── <id>/             # One subpackage per provider: ai21, anthropic, azure_foundry,
+│   │                     #   azure_openai, bedrock, cohere, deepseek, fireworks, gemini,
+│   │                     #   groq, hugging_face, mistral, ollama, openai, perplexity,
+│   │                     #   replicate, together, vertex_ai, xai  (19 total)
+│   ├── factory.go        # ProviderConfig, ProviderEntry, CfgKey* & Capability* consts, lookup funcs
+│   ├── providers_list.go # allProviders slice — all 19 ProviderEntry registrations
+│   ├── names.go          # NameXxx constants (re-exported from each subpackage)
+│   ├── registry.go       # Registry type for runtime lookup by name
+│   └── facade_aliases.go # Type aliases re-exporting core.* for backwards compatibility
+├── internal/
+│   ├── admin/            # API key management, dashboard, logs, config history
+│   ├── cache/            # Cache interface + in-memory implementation
+│   ├── circuitbreaker/   # Per-provider circuit breaker
+│   ├── discovery/        # Shared OpenAI-compatible model discovery helper
+│   ├── latency/          # Latency tracking for least-latency strategy
+│   ├── metrics/          # Prometheus metrics
+│   ├── plugins/          # Built-in plugin implementations
+│   │   ├── cache/        # Request/response caching
+│   │   ├── logger/       # Request/response logging
+│   │   ├── maxtoken/     # Token/message limit guardrail
+│   │   ├── pii/          # PII detection guardrail
+│   │   ├── promptshield/ # Prompt injection detection
+│   │   ├── ratelimit/    # Rate limiting
+│   │   ├── regexguard/   # Regex-based content guardrail
+│   │   ├── schemaguard/  # JSON schema response validation
+│   │   ├── secretscan/   # Secret/credential leakage scanner
+│   │   └── wordfilter/   # Blocked word guardrail
+│   ├── ratelimit/        # Rate limit internals
+│   ├── strategies/       # Routing strategy implementations
+│   └── version/
 ├── examples/
 ├── docs/
 ├── gateway.go            # Core Gateway struct and orchestration
@@ -89,10 +123,15 @@ ai-gateway/
 | `gateway.go` | Core `Gateway` struct — routing, plugin lifecycle, strategy execution |
 | `config.go` | Config schema: `Config`, `StrategyConfig`, `Target`, `PluginConfig` |
 | `config_load.go` | `LoadConfig()` and `ValidateConfig()` for YAML/JSON |
-| `providers/provider.go` | `Provider`, `StreamProvider`, `ProxiableProvider` interfaces |
+| `providers/core/contracts.go` | `Provider`, `StreamProvider`, `EmbeddingProvider`, `ImageProvider`, `DiscoveryProvider`, `ProxiableProvider` interfaces |
+| `providers/factory.go` | `ProviderConfig`, `ProviderEntry`, `CfgKey*` / `Capability*` constants, `AllProviders()`, `GetProviderEntry()` |
+| `providers/providers_list.go` | All 19 `ProviderEntry` registrations with `Build` closures |
+| `providers/names.go` | Canonical `NameXxx` constants (re-exported from subpackages) |
+| `providers/registry.go` | `Registry` — runtime lookup by provider name |
 | `plugin/plugin.go` | `Plugin` interface, `PluginType`, `Stage`, `Context` |
 | `plugin/manager.go` | Plugin lifecycle: before/after/error stage execution |
 | `internal/strategies/strategy.go` | `Strategy` interface |
+| `internal/discovery/openai_compat.go` | `DiscoverOpenAICompatibleModels` — shared by fireworks, hugging_face, perplexity, xai |
 | `cmd/ferrogw/main.go` | HTTP server setup and entry point |
 | `internal/admin/middleware.go` | Bearer token auth middleware |
 
@@ -100,12 +139,13 @@ ai-gateway/
 
 ## Architecture & Design Patterns
 
-- **Strategy Pattern**: Routing strategies (`Single`, `Fallback`, `LoadBalance`, `Conditional`) all implement `Strategy` interface in `internal/strategies/`
-- **Factory/Registry Pattern**: `providers/registry.go` and `plugin/registry.go` for loose coupling
+- **Strategy Pattern**: Routing strategies (`Single`, `Fallback`, `LoadBalance`, `LeastLatency`, `CostOptimized`, `Conditional`) all implement `Strategy` interface in `internal/strategies/`
+- **Self-Describing Factory**: Each provider has a `ProviderEntry` in `providers/providers_list.go` — no `main.go` changes needed to add a provider
+- **Two-Mode Provider Init**: `ProviderConfigFromEnv` (OSS self-hosted) or direct `ProviderConfig` map (cloud/tenant credential injection)
 - **Plugin Middleware**: `plugin/manager.go` runs plugins at `before_request`, `after_request`, `on_error` stages
 - **OpenAI Compatibility**: All requests/responses match OpenAI spec — other provider responses are translated
 - **Pass-Through Proxy**: Unhandled `/v1/*` endpoints forwarded transparently via `cmd/ferrogw/proxy.go`
-- **Blank import registration**: Providers and plugins self-register via `init()` using `_` imports
+- **Compile-time assertions**: Every provider subpackage has `var _ core.XxxProvider = (*Provider)(nil)` guards
 
 ### Request Flow
 
@@ -167,6 +207,17 @@ plugins:
 | `AZURE_OPENAI_API_VERSION` | Azure API version |
 | `OLLAMA_HOST` | Ollama server URL |
 | `OLLAMA_MODELS` | Comma-separated Ollama model list |
+| `REPLICATE_API_TOKEN` | Replicate API token |
+| `XAI_API_KEY` | xAI (Grok) API key |
+| `AZURE_FOUNDRY_API_KEY` | Azure AI Foundry API key |
+| `AZURE_FOUNDRY_ENDPOINT` | Azure AI Foundry endpoint URL |
+| `HUGGING_FACE_API_KEY` | Hugging Face API token |
+| `VERTEX_AI_PROJECT_ID` | Google Cloud project ID (Vertex AI) |
+| `VERTEX_AI_REGION` | GCP region for Vertex AI |
+| `VERTEX_AI_API_KEY` | Vertex AI API key (alternative to service account) |
+| `AWS_REGION` | AWS region (Bedrock) |
+| `AWS_ACCESS_KEY_ID` | AWS access key (optional — falls back to instance role) |
+| `AWS_SECRET_ACCESS_KEY` | AWS secret key |
 | `CORS_ORIGINS` | Comma-separated allowed CORS origins |
 
 ---
@@ -181,7 +232,8 @@ plugins:
 | `/v1/completions` | POST | Legacy text completion |
 | `/v1/*` | Any | Pass-through proxy to provider |
 | `/admin/keys` | GET, POST | API key management (requires auth) |
-| `/admin/*` | Mixed | Admin dashboard/usage/log/config-history routes (see `internal/admin/handlers.go`) |
+| `/metrics` | GET | Prometheus metrics |
+| `/admin/*` | Mixed | Admin dashboard, usage stats, request logs, config history/rollback (see `internal/admin/handlers.go`) |
 
 ---
 
@@ -192,18 +244,48 @@ plugins:
 | `github.com/go-chi/chi/v5` | HTTP router |
 | `github.com/openai/openai-go` | OpenAI Go SDK |
 | `gopkg.in/yaml.v3` | YAML config parsing |
-| `github.com/tidwall/gjson` | JSON path parsing (indirect) |
+| `github.com/aws/aws-sdk-go-v2` | AWS Bedrock integration |
+| `github.com/prometheus/client_golang` | Prometheus metrics |
+| `github.com/santhosh-tekuri/jsonschema/v5` | JSON schema validation (schemaguard plugin) |
+| `golang.org/x/oauth2` | Vertex AI service-account auth |
+| `github.com/spf13/cobra` | CLI (`ferrogw-cli`) |
+| `modernc.org/sqlite` | SQLite for admin/key storage |
+| `github.com/lib/pq` | PostgreSQL support |
 
-Minimal by design — no database, no heavy logging framework, no ORM.
+Minimal by design — no heavy logging framework, no ORM.
 
 ---
 
 ## Adding a New Provider
 
-1. Create `providers/<name>.go` implementing `providers.Provider` (and optionally `StreamProvider`, `ProxiableProvider`)
-2. Register in the provider registry via `init()` using `providers.Register(...)`
-3. Add the corresponding environment variable handling in `cmd/ferrogw/main.go`
-4. Add tests in `providers/<name>_test.go`
+**No changes to `cmd/ferrogw/main.go` are needed.** The gateway auto-registers all entries in `providers/providers_list.go`.
+
+1. Create `providers/<id>/<id>.go` (package `<id>`) — implement `core.Provider` and any optional interfaces (`core.StreamProvider`, etc.). Add compile-time assertions:
+   ```go
+   var (
+       _ core.Provider       = (*Provider)(nil)
+       _ core.StreamProvider = (*Provider)(nil)
+   )
+   ```
+2. Add `const Name = "<id>"` in the new package and re-export it in `providers/names.go`:
+   ```go
+   import newpkg "github.com/ferro-labs/ai-gateway/providers/<id>"
+   const NameNew = newpkg.Name
+   ```
+3. Add a `ProviderEntry` to the `allProviders` slice in `providers/providers_list.go` — fill in `ID`, `Capabilities`, `EnvMappings`, and `Build`.
+4. Add `providers/<id>/<id>_test.go` — the stability tests in `providers/stability_test.go` automatically catch name drift and missing capabilities.
+
+## Adding a New Plugin
+
+1. Create `internal/plugins/<name>/<name>.go` (package `<name>`) implementing `plugin.Plugin`.
+2. Register a factory via `plugin.RegisterFactory("my-plugin", ...)` in an `init()` function.
+3. Add a blank import in `cmd/ferrogw/main.go`: `_ "github.com/ferro-labs/ai-gateway/internal/plugins/<name>"`
+
+## Adding a New Strategy
+
+1. Create `internal/strategies/<name>.go` implementing `strategies.Strategy`.
+2. Handle the new `StrategyMode` constant in `gateway.go`'s strategy selection logic.
+3. Add tests in `internal/strategies/<name>_test.go`.
 
 ## Adding a New Plugin
 

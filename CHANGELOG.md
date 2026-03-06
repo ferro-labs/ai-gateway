@@ -7,6 +7,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`providers/core` split** — `types.go` (379 lines) broken into six focused files:
+  `constants.go`, `chat.go`, `stream.go`, `embedding.go`, `image.go`, `model.go`.
+  No API changes; all symbols remain at the same import path.
+
+- **`providers/factory.go` split** — types, constants, and lookup functions remain in
+  `factory.go`; the `allProviders` registration data (all 19 provider `Build` closures)
+  moves to the new `providers/providers_list.go`. Adding a provider now touches one file.
+
+- **Single source of truth for `Name` constants** — `providers/names.go` re-exports each
+  `NameXxx` constant from its provider subpackage (e.g. `NameOpenAI = openai.Name`)
+  instead of duplicating the string literal. The subpackage `const Name` is now the
+  authoritative definition; the root package constants are transparent re-exports.
+
+### Removed
+
+- `providers/base.go` — `Base` struct was unused by all 19 subpackages (each defines its
+  own fields); `ModelsFromList` was an exact duplicate of `core.ModelsFromList`.
+- `providers/discovery.go` — empty file (single `package providers` declaration).
+
+## [0.7.0] — 2026-03-07
+
+This release is a **major structural refactor** of the provider layer. All 19 provider implementations are extracted into independent subpackages, a unified two-mode factory replaces ad-hoc constructors, and five new provider adapters are added. The public `providers.NewXxx()` root constructors have been removed.
+
+### Added
+
+- **5 new provider adapters** — xAI (`providers/xai/`), Azure Foundry (`providers/azure_foundry/`), Hugging Face (`providers/hugging_face/`), Vertex AI (`providers/vertex_ai/`), and AWS Bedrock static-credential support (`providers/bedrock/`):
+  - xAI: `xai` provider, default base URL `https://api.x.ai/v1`, chat + streaming, Grok-aware model support, auto-registration via `XAI_API_KEY`
+  - Azure Foundry: `azure-foundry` provider, `api-key` auth, chat + streaming, auto-registration via `AZURE_FOUNDRY_API_KEY` + `AZURE_FOUNDRY_ENDPOINT`
+  - Hugging Face: `hugging-face` provider, default `https://api-inference.huggingface.co/v1`, chat + streaming + embedding + image + discovery interfaces, auto-registration via `HUGGING_FACE_API_KEY`
+  - Vertex AI: `vertex-ai` provider, API-key mode (`x-goog-api-key`) and service-account JSON OAuth mode, chat + streaming, auto-registration via `VERTEX_AI_PROJECT_ID`
+  - Bedrock static credentials: `BedrockOptions` with `AccessKeyID`, `SecretAccessKey`, `SessionToken` fields alongside default credential-chain support
+- **`providers/core` subpackage** (`providers/core/`): canonical home for all shared interfaces (`Provider`, `StreamProvider`, `EmbeddingProvider`, `ImageProvider`, `DiscoveryProvider`, `ProxiableProvider`), request/response types, and error helpers — all exported as type aliases from the root `providers` package for backwards compatibility
+- **Canonical `Name*` constants** (`providers/names.go`): `NameOpenAI`, `NameAnthropic`, `NameBedrock`, etc. — one authoritative string per provider used across gateway routing configs, credential stores, and the factory registry
+- **Two-mode `ProviderConfig` factory** (`providers/factory.go`):
+  - `ProviderConfig` (`map[string]string`) — single input type for all provider `Build` functions; typed `CfgKey*` constants for all fields
+  - `ProviderEntry` — self-describing record per provider: `ID`, `Capabilities`, `EnvMappings`, `Build`
+  - `AllProviders()` — ordered slice of all 19 entries; `GetProviderEntry(id)` for lookup
+  - `ProviderConfigFromEnv(entry)` — reads env vars declared in `EnvMappings` and returns a populated `ProviderConfig`, or nil when the provider is unconfigured (no error)
+  - `AllProviderNames()` — returns all canonical name constants; used by stability tests
+- **Shared OpenAI-compatible discovery helper** (`internal/discovery/openai_compat.go`): `DiscoverOpenAICompatibleModels` shared by xAI, Fireworks, Perplexity, and Hugging Face to enumerate models via `GET /models`
+- **Per-provider subpackages** — all 19 providers extracted into `providers/<id>/<id>.go`, each with:
+  - A `Name` constant matching its `Name*` registry constant
+  - A standalone `New(...)` constructor
+  - Compile-time interface assertions (`var _ core.Provider = (*Provider)(nil)`, etc.)
+  - Tests co-located at `providers/<id>/<id>_test.go`
+- **`CONTRIBUTING.md` — Adding a New Provider guide**: updated to describe the 5-step subpackage convention (`impl`, `Name*` constant, `ProviderEntry`, test, stability check)
+
+### Changed
+
+- **`registerProviders()` in `cmd/ferrogw/main.go`**: rewritten to iterate `providers.AllProviders()` and call `entry.Build(cfg)` uniformly — no per-provider special-casing. Bedrock remains a separate branch for its dual-key detection (`AWS_REGION` / `AWS_ACCESS_KEY_ID`)
+- **All examples** (`examples/*/main.go`): updated to import provider subpackages directly (`openaipkg`, `anthropicpkg`, etc.) instead of the removed root constructors
+- **`providers/factory.go`**: all `Build` functions now call subpackage `New` directly instead of the removed shim functions
+
+### Removed
+
+- **All 19 deprecated root shim files** (`providers/ai21.go`, `providers/anthropic.go`, `providers/azure_foundry.go`, `providers/azure_openai.go`, `providers/bedrock.go`, `providers/cohere.go`, `providers/deepseek.go`, `providers/fireworks.go`, `providers/gemini.go`, `providers/groq.go`, `providers/hugging_face.go`, `providers/mistral.go`, `providers/ollama.go`, `providers/openai.go`, `providers/perplexity.go`, `providers/replicate.go`, `providers/together.go`, `providers/vertex_ai.go`, `providers/xai.go`): the `providers.NewXxx()` root constructors and `XxxProvider` type aliases are removed. Import `providers/<id>` and call `New(...)` directly, or use `providers.GetProviderEntry(id).Build(cfg)` for factory-based construction.
+- **`providers/<id>/impl.go` naming**: all implementation files renamed to `providers/<id>/<id>.go` for clarity
+
 ## [0.6.1] — 2026-03-06
 
 ### Changed

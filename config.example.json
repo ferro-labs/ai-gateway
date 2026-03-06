@@ -13,6 +13,9 @@
       "virtual_key": "anthropic"
     },
     {
+      "virtual_key": "xai"
+    },
+    {
       "virtual_key": "gemini"
     },
     {
@@ -47,6 +50,15 @@
     },
     {
       "virtual_key": "azure-openai"
+    },
+    {
+      "virtual_key": "azure-foundry"
+    },
+    {
+      "virtual_key": "vertex-ai"
+    },
+    {
+      "virtual_key": "hugging-face"
     },
     {
       "virtual_key": "ollama"

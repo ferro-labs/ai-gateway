@@ -9,6 +9,7 @@ targets:
     retry:
       attempts: 3
   - virtual_key: anthropic
+  - virtual_key: xai
   - virtual_key: gemini
   - virtual_key: mistral
   - virtual_key: groq
@@ -21,6 +22,9 @@ targets:
   - virtual_key: replicate
   - virtual_key: bedrock
   - virtual_key: azure-openai
+  - virtual_key: azure-foundry
+  - virtual_key: vertex-ai
+  - virtual_key: hugging-face
   - virtual_key: ollama
 
 # Model aliases: map friendly names to actual model IDs.
