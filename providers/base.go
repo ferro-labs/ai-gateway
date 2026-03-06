@@ -28,14 +28,3 @@ func ModelsFromList(providerName string, ids []string) []ModelInfo {
 	}
 	return models
 }
-
-// ProviderSource is a read-only view over a collection of registered providers.
-// Both *Registry and *Gateway implement this interface, enabling registry
-// consolidation: handlers that only need to read provider info can accept
-// a ProviderSource instead of a concrete *Registry.
-type ProviderSource interface {
-	Get(name string) (Provider, bool)
-	List() []string
-	AllModels() []ModelInfo
-	FindByModel(model string) (Provider, bool)
-}
