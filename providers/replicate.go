@@ -10,7 +10,7 @@ type ReplicateProvider = replicatepkg.Provider
 // Deprecated: Import providers/replicate and call New directly.
 // This compatibility wrapper will be removed in a future major version.
 func NewReplicate(apiToken, baseURL string, textModels, imageModels []string) (*ReplicateProvider, error) {
-return replicatepkg.New(apiToken, baseURL, textModels, imageModels)
+	return replicatepkg.New(apiToken, baseURL, textModels, imageModels)
 }
 
 // re-export private helpers used by tests

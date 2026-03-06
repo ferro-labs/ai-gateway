@@ -14,7 +14,7 @@ type BedrockProvider = bedrockpkg.Provider
 // Deprecated: Import providers/bedrock and call New directly.
 // This compatibility wrapper will be removed in a future major version.
 func NewBedrock(region string) (*BedrockProvider, error) {
-return bedrockpkg.New(region)
+	return bedrockpkg.New(region)
 }
 
 // NewBedrockWithOptions creates a new AWS Bedrock provider from options.
@@ -22,5 +22,5 @@ return bedrockpkg.New(region)
 // Deprecated: Import providers/bedrock and call NewWithOptions directly.
 // This compatibility wrapper will be removed in a future major version.
 func NewBedrockWithOptions(opts BedrockOptions) (*BedrockProvider, error) {
-return bedrockpkg.NewWithOptions(opts)
+	return bedrockpkg.NewWithOptions(opts)
 }

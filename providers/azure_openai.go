@@ -10,5 +10,5 @@ type AzureOpenAIProvider = azureopenapipkg.Provider
 // Deprecated: Import providers/azure_openai and call New directly.
 // This compatibility wrapper will be removed in a future major version.
 func NewAzureOpenAI(apiKey, baseURL, deploymentName, apiVersion string) (*AzureOpenAIProvider, error) {
-return azureopenapipkg.New(apiKey, baseURL, deploymentName, apiVersion)
+	return azureopenapipkg.New(apiKey, baseURL, deploymentName, apiVersion)
 }

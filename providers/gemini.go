@@ -10,5 +10,5 @@ type GeminiProvider = geminipkg.Provider
 // Deprecated: Import providers/gemini and call New directly.
 // This compatibility wrapper will be removed in a future major version.
 func NewGemini(apiKey, baseURL string) (*GeminiProvider, error) {
-return geminipkg.New(apiKey, baseURL)
+	return geminipkg.New(apiKey, baseURL)
 }

@@ -13,5 +13,5 @@ type VertexAIProvider = vertexaipkg.Provider
 // Deprecated: Import providers/vertex_ai and call New directly.
 // This compatibility wrapper will be removed in a future major version.
 func NewVertexAI(opts VertexAIOptions) (*VertexAIProvider, error) {
-return vertexaipkg.New(opts)
+	return vertexaipkg.New(opts)
 }
