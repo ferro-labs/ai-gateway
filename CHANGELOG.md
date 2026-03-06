@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] — 2026-03-06
+
+### Changed
+
+- **GitHub Actions workflow dependencies** (`.github/workflows/`): bumped core CI/release/security actions to current major versions, including `actions/checkout` (v4→v6), `actions/setup-go` (v5→v6), `github/codeql-action` (v3→v4), `goreleaser/goreleaser-action` (v6→v7), `actions/cache` (v4→v5), `actions/github-script` (v7→v8), `docker/login-action` (v3→v4), `docker/setup-buildx-action` (v3→v4), and `docker/setup-qemu-action` (v3→v4)
+- **Go dependency refresh** (`go.mod`, `go.sum`): updated runtime dependencies including `github.com/lib/pq` (`v1.10.9`→`v1.11.2`), `modernc.org/sqlite` (`v1.40.1`→`v1.46.1`), and AWS SDK modules used by Bedrock integration
+
 ## [0.6.0] — 2026-03-06
 
 ### Added
