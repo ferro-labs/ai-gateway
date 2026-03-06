@@ -9,6 +9,9 @@ type FireworksProvider = fireworkspkg.Provider
 
 // NewFireworks creates a new Fireworks AI provider.
 // The signature and return type are unchanged from the previous API.
+//
+// Deprecated: Import providers/fireworks and call New directly.
+// This compatibility wrapper will be removed in a future major version.
 func NewFireworks(apiKey, baseURL string) (*FireworksProvider, error) {
 	return fireworkspkg.New(apiKey, baseURL)
 }

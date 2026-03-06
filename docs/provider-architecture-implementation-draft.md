@@ -1,9 +1,9 @@
 # Provider Architecture Modernization — Implementation Draft
 
-Status: Living document — Phase 0 + Factory complete  
+Status: All planned phases complete — Phase 4 (deprecation) merged  
 Owner: ai-gateway maintainers  
 Branch context: `feat/v0.6.5`  
-Last updated: reflects commit `af942ae`
+Last updated: reflects commit `Phase 4 deprecation` (after `035aa60`)
 
 ## 1) Why this refactor
 
@@ -252,13 +252,13 @@ cmd/ferrogw  →  providers  →  providers/core
 |---|---|---|
 | 0 | Guardrails: lint green, tests green, this doc | ✅ Complete |
 | Factory | `names.go`, `factory.go`, `stability_test.go`, simplified `registerProviders()` | ✅ Complete (`af942ae`) |
-| 1 | `providers/core` subpackage + type aliases | ⏳ Planned (PR-1) |
-| 2A | Subpackage: Batch A — `xai`, `groq`, `together`, `perplexity`, `fireworks`, `deepseek`, `mistral` | ⏳ Planned (PR-2) |
-| 2B | Subpackage: Batch B — `openai`, `anthropic`, `cohere`, `ai21`, `azure_foundry`, `hugging_face` | ⏳ Planned (PR-3) |
-| 2C | Subpackage: Batch C — `gemini`, `azure_openai` (schema translation) | ⏳ Planned (PR-4) |
-| 2D | Subpackage: Batch D — `vertex_ai`, `bedrock`, `replicate`, `ollama` (SDK/auth chains) | ⏳ Planned (PR-5) |
-| 3 | `discovery.go` → `core/internal/discovery/` | ⏳ Planned (PR-5) |
-| 4 | Deprecation window — old constructor comments | ⏳ Planned (PR-6) |
+| 1 | `providers/core` subpackage + type aliases | ✅ Complete (`d40851d`) |
+| 2A | Subpackage: Batch A — `xai`, `groq`, `together`, `perplexity`, `fireworks`, `deepseek`, `mistral` | ✅ Complete (`9bf19e3`) |
+| 2B | Subpackage: Batch B — `openai`, `anthropic`, `cohere`, `ai21`, `azure_foundry`, `hugging_face` | ✅ Complete (`1be5c28`) |
+| 2C | Subpackage: Batch C — `gemini`, `azure_openai` (schema translation) | ✅ Complete (`a23eb4d`) |
+| 2D | Subpackage: Batch D — `vertex_ai`, `bedrock`, `replicate`, `ollama` (SDK/auth chains) | ✅ Complete (`035aa60`) |
+| 3 | `discovery.go` → `providers/internal/discovery/` | ✅ Complete (`035aa60`) |
+| 4 | Deprecation window — `// Deprecated:` markers on all 19 root constructor shims | ✅ Complete |
 
 ## 11) Risk analysis
 
@@ -319,12 +319,12 @@ Changelog requirements per release:
 | PR | Contents | Status |
 |---|---|---|
 | PR-0 | `names.go`, `factory.go`, `stability_test.go`, updated `registerProviders()`, all provider name constants + compile-time assertions | ✅ Merged (`af942ae`) |
-| PR-1 | `providers/core/` subpackage + type aliases in root + `ProviderSource` move | ⏳ |
-| PR-2 | Batch A subpackages: `xai`, `groq`, `together`, `perplexity`, `fireworks`, `deepseek`, `mistral` | ⏳ |
-| PR-3 | Batch B subpackages: `openai`, `anthropic`, `cohere`, `ai21`, `azure_foundry`, `hugging_face` | ⏳ |
-| PR-4 | Batch C subpackages: `gemini` (schema adapter), `azure_openai` | ⏳ |
-| PR-5 | Batch D subpackages: `vertex_ai`, `bedrock` (dual-auth tests), `replicate`, `ollama` + `discovery` relocation | ⏳ |
-| PR-6 | Deprecation comments on old root constructors | ⏳ |
+| PR-1 | `providers/core/` subpackage + type aliases in root + `ProviderSource` move | ✅ Merged (`d40851d`) |
+| PR-2 | Batch A subpackages: `xai`, `groq`, `together`, `perplexity`, `fireworks`, `deepseek`, `mistral` | ✅ Merged (`9bf19e3`) |
+| PR-3 | Batch B subpackages: `openai`, `anthropic`, `cohere`, `ai21`, `azure_foundry`, `hugging_face` | ✅ Merged (`1be5c28`) |
+| PR-4 | Batch C subpackages: `gemini` (schema adapter), `azure_openai` | ✅ Merged (`a23eb4d`) |
+| PR-5 | Batch D subpackages: `vertex_ai`, `bedrock` (dual-auth tests), `replicate`, `ollama` + `discovery` relocation | ✅ Merged (`035aa60`) |
+| PR-6 | Deprecation comments on all 19 root constructor shims | ✅ Merged |
 
 ## 15) Adding a new provider (post-refactor guide)
 
@@ -345,16 +345,16 @@ After Phase 2 is complete, adding a new provider is a 5-step process with **zero
 - [x] `registerProviders()` is data-driven — no per-provider `if os.Getenv(...)` blocks
 - [x] Compile-time interface assertions in all 19 provider files
 - [x] `ProviderConfig` two-mode design documented and tested
-- [ ] `providers/core` subpackage created with type aliases in root
-- [ ] `ProviderSource` moved to `providers/core`
-- [ ] All Batch A providers migrated to subpackages
-- [ ] All Batch B providers migrated to subpackages
-- [ ] Gemini schema adapter implemented and tested (Batch C gate)
-- [ ] Bedrock dual-auth credential chain tests pass (Batch D gate)
-- [ ] Vertex AI ADC-only path tested (Batch D gate)
-- [ ] `discoverOpenAICompatibleModels` moved to `core/internal/discovery/`
-- [ ] FerroCloud integration test: explicit `ProviderConfig` map (no env vars) routes correctly
-- [ ] Contributor docs updated with new provider folder pattern
+- [x] `providers/core` subpackage created with type aliases in root
+- [x] `ProviderSource` defined as interface in `providers/core/contracts.go`; old enum constants removed
+- [x] All Batch A providers migrated to subpackages
+- [x] All Batch B providers migrated to subpackages
+- [x] Gemini schema translation implemented in `providers/gemini/impl.go` (gemini-specific request/response structs + mock HTTP tests)
+- [x] Bedrock dual-auth credential chain tests pass (`TestNewBedrock_DefaultRegion`, `TestNewBedrockWithOptions_StaticCredentials`)
+- [x] Vertex AI auth paths tested: API key mode, service account JSON validation, mock HTTP complete + stream
+- [x] `discoverOpenAICompatibleModels` moved to `providers/internal/discovery/openai_compat.go`
+- [x] Contributor docs updated with new provider folder pattern (`CONTRIBUTING.md`)
+- [ ] FerroCloud integration test: explicit `ProviderConfig` map (no env vars) routes correctly ⏳
 
 ---
 

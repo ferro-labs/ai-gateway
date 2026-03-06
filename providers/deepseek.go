@@ -9,6 +9,9 @@ type DeepSeekProvider = deepseekpkg.Provider
 
 // NewDeepSeek creates a new DeepSeek provider.
 // The signature and return type are unchanged from the previous API.
+//
+// Deprecated: Import providers/deepseek and call New directly.
+// This compatibility wrapper will be removed in a future major version.
 func NewDeepSeek(apiKey, baseURL string) (*DeepSeekProvider, error) {
 	return deepseekpkg.New(apiKey, baseURL)
 }

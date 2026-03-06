@@ -9,6 +9,9 @@ type MistralProvider = mistralpkg.Provider
 
 // NewMistral creates a new Mistral provider.
 // The signature and return type are unchanged from the previous API.
+//
+// Deprecated: Import providers/mistral and call New directly.
+// This compatibility wrapper will be removed in a future major version.
 func NewMistral(apiKey, baseURL string) (*MistralProvider, error) {
 	return mistralpkg.New(apiKey, baseURL)
 }

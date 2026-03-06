@@ -104,13 +104,40 @@ Provider integration tests require real API keys and are gated behind the `-shor
 
 ## Adding a New Provider
 
-1. Create `providers/<name>.go` implementing the `providers.Provider` interface.
-2. Optionally implement `providers.StreamProvider` for streaming support.
-3. Add a constructor `New<Name>(apiKey, baseURL string) (*<Name>Provider, error)`.
-4. Register it in `cmd/ferrogw/main.go` with the corresponding env variable.
-5. Add `providers/<name>_test.go` with unit tests (mock the HTTP transport).
+Since v0.6.5 all provider implementations live in a dedicated subpackage.
+Adding a new provider is a **5-step process with zero changes to `main.go`**:
 
-See `providers/groq.go` for a minimal example.
+1. **Create `providers/<id>/impl.go`** — package should be named after the ID
+   (e.g. `package groq`). Import `providers/core` for interfaces and types.
+   Add compile-time assertions at the package level:
+   ```go
+   var (
+       _ core.Provider       = (*Provider)(nil)
+       _ core.StreamProvider = (*Provider)(nil) // if streaming is supported
+   )
+   ```
+
+2. **Add a `Name<ID>` constant to `providers/names.go`** — this string is
+   an immutable data contract (persisted in routing configs). Choose carefully.
+
+3. **Add a `ProviderEntry` to `providers/factory.go`** (`allProviders` slice) —
+   fill in `ID`, `Capabilities`, `EnvMappings`, and `Build`. The gateway
+   auto-registers it; `main.go` needs no changes.
+
+4. **Add a root constructor wrapper in `providers/<id>.go`** (optional but
+   recommended for backwards compatibility):
+   ```go
+   import idpkg "github.com/ferro-labs/ai-gateway/providers/<id>"
+   type <ID>Provider = idpkg.Provider
+   func New<ID>(apiKey, baseURL string) (*<ID>Provider, error) { return idpkg.New(apiKey, baseURL) }
+   ```
+
+5. **Run `go test ./providers/...`** — the stability tests in
+   `providers/stability_test.go` automatically catch missing registry entries,
+   empty capability lists, or name constant drift.
+
+See `providers/groq/impl.go` for a minimal example and `providers/groq.go` for
+the corresponding root wrapper.
 
 ---
 

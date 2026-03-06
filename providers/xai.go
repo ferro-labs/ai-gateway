@@ -9,6 +9,9 @@ type XAIProvider = xaipkg.Provider
 
 // NewXAI creates a new xAI provider.
 // The signature and return type are unchanged from the previous API.
+//
+// Deprecated: Import providers/xai and call New directly.
+// This compatibility wrapper will be removed in a future major version.
 func NewXAI(apiKey, baseURL string) (*XAIProvider, error) {
 	return xaipkg.New(apiKey, baseURL)
 }

@@ -9,6 +9,9 @@ type PerplexityProvider = perplexitypkg.Provider
 
 // NewPerplexity creates a new Perplexity provider.
 // The signature and return type are unchanged from the previous API.
+//
+// Deprecated: Import providers/perplexity and call New directly.
+// This compatibility wrapper will be removed in a future major version.
 func NewPerplexity(apiKey, baseURL string) (*PerplexityProvider, error) {
 	return perplexitypkg.New(apiKey, baseURL)
 }

@@ -6,6 +6,9 @@ import replicatepkg "github.com/ferro-labs/ai-gateway/providers/replicate"
 type ReplicateProvider = replicatepkg.Provider
 
 // NewReplicate creates a new Replicate provider.
+//
+// Deprecated: Import providers/replicate and call New directly.
+// This compatibility wrapper will be removed in a future major version.
 func NewReplicate(apiToken, baseURL string, textModels, imageModels []string) (*ReplicateProvider, error) {
 return replicatepkg.New(apiToken, baseURL, textModels, imageModels)
 }
