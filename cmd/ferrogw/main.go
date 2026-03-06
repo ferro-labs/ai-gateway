@@ -300,6 +300,7 @@ func registerProviders() *providers.Registry {
 	autoProviders := []providerEntry{
 		{"OPENAI_API_KEY", "openai", func(k, b string) (providers.Provider, error) { return providers.NewOpenAI(k, b) }},
 		{"ANTHROPIC_API_KEY", "anthropic", func(k, b string) (providers.Provider, error) { return providers.NewAnthropic(k, b) }},
+		{"XAI_API_KEY", "xai", func(k, b string) (providers.Provider, error) { return providers.NewXAI(k, b) }},
 		{"GROQ_API_KEY", "groq", func(k, b string) (providers.Provider, error) { return providers.NewGroq(k, b) }},
 		{"TOGETHER_API_KEY", "together", func(k, b string) (providers.Provider, error) { return providers.NewTogether(k, b) }},
 		{"GEMINI_API_KEY", "gemini", func(k, b string) (providers.Provider, error) { return providers.NewGemini(k, b) }},
@@ -340,6 +341,58 @@ func registerProviders() *providers.Registry {
 		}
 	}
 
+	// Azure Foundry requires endpoint and API key.
+	if key := os.Getenv("AZURE_FOUNDRY_API_KEY"); key != "" {
+		baseURL := os.Getenv("AZURE_FOUNDRY_ENDPOINT")
+		apiVersion := os.Getenv("AZURE_FOUNDRY_API_VERSION")
+		if baseURL != "" {
+			p, err := providers.NewAzureFoundry(key, baseURL, apiVersion)
+			if err != nil {
+				logging.Logger.Error("provider init failed", "provider", "azure-foundry", "error", err)
+				os.Exit(1)
+			}
+			registry.Register(p)
+			logging.Logger.Info("provider registered", "provider", "azure-foundry")
+		} else {
+			logging.Logger.Warn("AZURE_FOUNDRY_API_KEY set but AZURE_FOUNDRY_ENDPOINT is required")
+		}
+	}
+
+	// Vertex AI supports API key mode and service account mode.
+	if projectID := os.Getenv("VERTEX_AI_PROJECT_ID"); projectID != "" {
+		region := os.Getenv("VERTEX_AI_REGION")
+		apiKey := os.Getenv("VERTEX_AI_API_KEY")
+		serviceAccountJSON := os.Getenv("VERTEX_AI_SERVICE_ACCOUNT_JSON")
+		if region != "" && (apiKey != "" || serviceAccountJSON != "") {
+			p, err := providers.NewVertexAI(providers.VertexAIOptions{
+				ProjectID:          projectID,
+				Region:             region,
+				APIKey:             apiKey,
+				ServiceAccountJSON: serviceAccountJSON,
+			})
+			if err != nil {
+				logging.Logger.Error("provider init failed", "provider", "vertex-ai", "error", err)
+				os.Exit(1)
+			}
+			registry.Register(p)
+			logging.Logger.Info("provider registered", "provider", "vertex-ai", "region", region)
+		} else {
+			logging.Logger.Warn("VERTEX_AI_PROJECT_ID set but VERTEX_AI_REGION and either VERTEX_AI_API_KEY or VERTEX_AI_SERVICE_ACCOUNT_JSON are required")
+		}
+	}
+
+	// Hugging Face supports shared and dedicated inference endpoints.
+	if key := os.Getenv("HUGGING_FACE_API_KEY"); key != "" {
+		baseURL := os.Getenv("HUGGING_FACE_ENDPOINT")
+		p, err := providers.NewHuggingFace(key, baseURL)
+		if err != nil {
+			logging.Logger.Error("provider init failed", "provider", "hugging-face", "error", err)
+			os.Exit(1)
+		}
+		registry.Register(p)
+		logging.Logger.Info("provider registered", "provider", "hugging-face")
+	}
+
 	// Ollama is local and needs no API key.
 	if ollamaURL := os.Getenv("OLLAMA_HOST"); ollamaURL != "" {
 		var models []string
@@ -375,13 +428,18 @@ func registerProviders() *providers.Registry {
 
 	// AWS Bedrock uses the AWS credential chain (env vars, ~/.aws/credentials, IAM roles).
 	if region := os.Getenv("AWS_REGION"); region != "" || os.Getenv("AWS_ACCESS_KEY_ID") != "" {
-		bedrockRegion := os.Getenv("AWS_REGION")
-		p, err := providers.NewBedrock(bedrockRegion)
+		bedrockOpts := providers.BedrockOptions{
+			Region:          os.Getenv("AWS_REGION"),
+			AccessKeyID:     os.Getenv("AWS_ACCESS_KEY_ID"),
+			SecretAccessKey: os.Getenv("AWS_SECRET_ACCESS_KEY"),
+			SessionToken:    os.Getenv("AWS_SESSION_TOKEN"),
+		}
+		p, err := providers.NewBedrockWithOptions(bedrockOpts)
 		if err != nil {
 			logging.Logger.Error("provider init failed", "provider", "bedrock", "error", err)
 		} else {
 			registry.Register(p)
-			logging.Logger.Info("provider registered", "provider", "bedrock", "region", bedrockRegion)
+			logging.Logger.Info("provider registered", "provider", "bedrock", "region", bedrockOpts.Region)
 		}
 	}
 

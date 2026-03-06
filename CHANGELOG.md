@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **xAI provider adapter** (`providers/xai.go`): added `xai` provider with `NewXAI(apiKey, baseURL)`, default base URL `https://api.x.ai/v1`, chat completions + streaming support, Grok-aware `SupportsModel`, and environment-based auto-registration via `XAI_API_KEY`
+- **Bedrock options constructor** (`providers/bedrock.go`): added `BedrockOptions` and `NewBedrockWithOptions(opts)` to support static AWS credentials (`AccessKeyID`, `SecretAccessKey`, `SessionToken`) while preserving default credential-chain behavior
+- **Azure Foundry provider adapter** (`providers/azure_foundry.go`): added `azure-foundry` provider with `NewAzureFoundry(apiKey, baseURL, apiVersion)`, `api-key` auth, chat completions + streaming support, and env-based registration via `AZURE_FOUNDRY_API_KEY` + `AZURE_FOUNDRY_ENDPOINT`
+- **Hugging Face provider adapter** (`providers/hugging_face.go`): added `hugging-face` provider with `NewHuggingFace(apiKey, baseURL)`, shared API default (`https://api-inference.huggingface.co/v1`), chat completions + streaming support, plus optional embedding/image interfaces
+- **Vertex AI provider adapter** (`providers/vertex_ai.go`): added `vertex-ai` provider with `NewVertexAI(VertexAIOptions)` supporting API-key mode (`x-goog-api-key`) and service-account JSON mode (OAuth bearer token), including chat completions + streaming support
+
+### Changed
+
+- **Bedrock env registration** (`cmd/ferrogw/main.go`): Bedrock initialization now uses `NewBedrockWithOptions` and consumes `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and `AWS_SESSION_TOKEN`
+- **Examples/docs** (`config.example.yaml`, `config.example.json`, `.env.example`): added `xai` target in sample configs and documented `XAI_API_KEY` plus Bedrock static-credential env vars
+- **Provider registration wiring** (`cmd/ferrogw/main.go`): added runtime env-based registration for `azure-foundry`, `vertex-ai`, and `hugging-face`
+
 ## [0.6.1] — 2026-03-06
 
 ### Changed

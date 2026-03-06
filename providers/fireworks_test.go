@@ -62,8 +62,8 @@ func TestFireworksProvider_CompleteStream_Interface(_ *testing.T) {
 func TestFireworksProvider_AuthHeaders(t *testing.T) {
 	p, _ := NewFireworks("test-key", "")
 	headers := p.AuthHeaders()
-	if headers["Authorization"] != "Bearer test-key" {
-		t.Errorf("AuthHeaders Authorization = %q, want Bearer test-key", headers["Authorization"])
+	if headers["Authorization"] != testBearerAPIKey {
+		t.Errorf("AuthHeaders Authorization = %q, want %s", headers["Authorization"], testBearerAPIKey)
 	}
 }
 

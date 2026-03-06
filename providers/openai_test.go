@@ -181,8 +181,8 @@ func TestOpenAIProvider_CompleteStream_MockSSE(t *testing.T) {
 
 	// Verify chunk structure when SDK parses successfully.
 	for _, chunk := range chunks {
-		if chunk.ID != "chatcmpl-1" {
-			t.Errorf("chunk ID = %q, want chatcmpl-1", chunk.ID)
+		if chunk.ID != ai21TestChunkID {
+			t.Errorf("chunk ID = %q, want %s", chunk.ID, ai21TestChunkID)
 		}
 	}
 }

@@ -8,6 +8,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 )
@@ -21,16 +22,47 @@ type BedrockProvider struct {
 	region string
 }
 
+// BedrockOptions configures AWS Bedrock provider initialization.
+// If AccessKeyID and SecretAccessKey are set, static credentials are used.
+// Otherwise the default AWS credential chain is used.
+type BedrockOptions struct {
+	Region          string
+	AccessKeyID     string
+	SecretAccessKey string
+	SessionToken    string
+}
+
 // NewBedrock creates a new AWS Bedrock provider.
 // region defaults to us-east-1.
 func NewBedrock(region string) (*BedrockProvider, error) {
+	return NewBedrockWithOptions(BedrockOptions{Region: region})
+}
+
+// NewBedrockWithOptions creates a new AWS Bedrock provider from options.
+// Region defaults to us-east-1. If static credentials are not provided,
+// the AWS default credential chain is used.
+func NewBedrockWithOptions(opts BedrockOptions) (*BedrockProvider, error) {
+	region := strings.TrimSpace(opts.Region)
 	if region == "" {
 		region = "us-east-1"
 	}
 
-	cfg, err := config.LoadDefaultConfig(context.Background(),
+	cfgOpts := []func(*config.LoadOptions) error{
 		config.WithRegion(region),
-	)
+	}
+
+	accessKeyID := strings.TrimSpace(opts.AccessKeyID)
+	secretAccessKey := strings.TrimSpace(opts.SecretAccessKey)
+	sessionToken := strings.TrimSpace(opts.SessionToken)
+	if accessKeyID != "" || secretAccessKey != "" || sessionToken != "" {
+		if accessKeyID == "" || secretAccessKey == "" {
+			return nil, fmt.Errorf("bedrock static credentials require both access key ID and secret access key")
+		}
+		staticCreds := credentials.NewStaticCredentialsProvider(accessKeyID, secretAccessKey, sessionToken)
+		cfgOpts = append(cfgOpts, config.WithCredentialsProvider(aws.NewCredentialsCache(staticCreds)))
+	}
+
+	cfg, err := config.LoadDefaultConfig(context.Background(), cfgOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load AWS config: %w", err)
 	}

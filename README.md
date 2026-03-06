@@ -45,7 +45,9 @@ The following providers are integrated in the gateway codebase:
 | --- | --- |
 | OpenAI | ✅ |
 | Anthropic | ✅ |
+| xAI (Grok) | ✅ |
 | Gemini (Google) | ✅ |
+| Vertex AI | ✅ |
 | Mistral | ✅ |
 | Groq | ✅ |
 | Cohere | ✅ |
@@ -54,7 +56,9 @@ The following providers are integrated in the gateway codebase:
 | Perplexity | ✅ |
 | Fireworks | ✅ |
 | AI21 | ✅ |
+| Hugging Face | ✅ |
 | Azure OpenAI | ✅ |
+| Azure Foundry | ✅ |
 | Ollama (local/self-hosted) | ✅ |
 | Replicate | ✅ |
 | AWS Bedrock | ✅ |
