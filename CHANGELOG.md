@@ -48,7 +48,7 @@ This release is a **major structural refactor** of the provider layer. All 19 pr
   - `AllProviders()` — ordered slice of all 19 entries; `GetProviderEntry(id)` for lookup
   - `ProviderConfigFromEnv(entry)` — reads env vars declared in `EnvMappings` and returns a populated `ProviderConfig`, or nil when the provider is unconfigured (no error)
   - `AllProviderNames()` — returns all canonical name constants; used by stability tests
-- **Shared OpenAI-compatible discovery helper** (`providers/internal/discovery/openai_compat.go`): `DiscoverOpenAICompatibleModels` shared by xAI, Fireworks, Perplexity, and Hugging Face to enumerate models via `GET /models`
+- **Shared OpenAI-compatible discovery helper** (`internal/discovery/openai_compat.go`): `DiscoverOpenAICompatibleModels` shared by xAI, Fireworks, Perplexity, and Hugging Face to enumerate models via `GET /models`
 - **Per-provider subpackages** — all 19 providers extracted into `providers/<id>/<id>.go`, each with:
   - A `Name` constant matching its `Name*` registry constant
   - A standalone `New(...)` constructor

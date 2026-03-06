@@ -330,7 +330,7 @@ func registerProviders() *providers.Registry {
 			logging.Logger.Error("provider init failed", "provider", providers.NameBedrock, "error", err)
 		} else {
 			registry.Register(p)
-			logging.Logger.Info("provider registered", "provider", providers.NameBedrock, "region", os.Getenv("AWS_REGION"))
+			logging.Logger.Info("provider registered", "provider", providers.NameBedrock, "region", p.Region())
 		}
 	}
 
