@@ -25,6 +25,15 @@ import (
 
 	aigateway "github.com/ferro-labs/ai-gateway"
 	"github.com/ferro-labs/ai-gateway/providers"
+
+	anthropicpkg "github.com/ferro-labs/ai-gateway/providers/anthropic"
+	coherepkg "github.com/ferro-labs/ai-gateway/providers/cohere"
+	deepseekpkg "github.com/ferro-labs/ai-gateway/providers/deepseek"
+	geminipkg "github.com/ferro-labs/ai-gateway/providers/gemini"
+	groqpkg "github.com/ferro-labs/ai-gateway/providers/groq"
+	mistralpkg "github.com/ferro-labs/ai-gateway/providers/mistral"
+	openaipkg "github.com/ferro-labs/ai-gateway/providers/openai"
+	togetherpkg "github.com/ferro-labs/ai-gateway/providers/together"
 )
 
 func main() {
@@ -112,14 +121,14 @@ func firstProvider() providers.Provider {
 		create func(key string) (providers.Provider, error)
 	}
 	candidates := []entry{
-		{"OPENAI_API_KEY", func(k string) (providers.Provider, error) { return providers.NewOpenAI(k, "") }},
-		{"ANTHROPIC_API_KEY", func(k string) (providers.Provider, error) { return providers.NewAnthropic(k, "") }},
-		{"GROQ_API_KEY", func(k string) (providers.Provider, error) { return providers.NewGroq(k, "") }},
-		{"GEMINI_API_KEY", func(k string) (providers.Provider, error) { return providers.NewGemini(k, "") }},
-		{"MISTRAL_API_KEY", func(k string) (providers.Provider, error) { return providers.NewMistral(k, "") }},
-		{"TOGETHER_API_KEY", func(k string) (providers.Provider, error) { return providers.NewTogether(k, "") }},
-		{"COHERE_API_KEY", func(k string) (providers.Provider, error) { return providers.NewCohere(k, "") }},
-		{"DEEPSEEK_API_KEY", func(k string) (providers.Provider, error) { return providers.NewDeepSeek(k, "") }},
+		{"OPENAI_API_KEY", func(k string) (providers.Provider, error) { return openaipkg.New(k, "") }},
+		{"ANTHROPIC_API_KEY", func(k string) (providers.Provider, error) { return anthropicpkg.New(k, "") }},
+		{"GROQ_API_KEY", func(k string) (providers.Provider, error) { return groqpkg.New(k, "") }},
+		{"GEMINI_API_KEY", func(k string) (providers.Provider, error) { return geminipkg.New(k, "") }},
+		{"MISTRAL_API_KEY", func(k string) (providers.Provider, error) { return mistralpkg.New(k, "") }},
+		{"TOGETHER_API_KEY", func(k string) (providers.Provider, error) { return togetherpkg.New(k, "") }},
+		{"COHERE_API_KEY", func(k string) (providers.Provider, error) { return coherepkg.New(k, "") }},
+		{"DEEPSEEK_API_KEY", func(k string) (providers.Provider, error) { return deepseekpkg.New(k, "") }},
 	}
 	for _, c := range candidates {
 		if key := os.Getenv(c.env); key != "" {

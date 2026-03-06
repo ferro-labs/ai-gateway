@@ -4,6 +4,26 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	ai21pkg "github.com/ferro-labs/ai-gateway/providers/ai21"
+	anthropicpkg "github.com/ferro-labs/ai-gateway/providers/anthropic"
+	azurefoundrypkg "github.com/ferro-labs/ai-gateway/providers/azure_foundry"
+	azureopenaipkg "github.com/ferro-labs/ai-gateway/providers/azure_openai"
+	bedrockpkg "github.com/ferro-labs/ai-gateway/providers/bedrock"
+	coherepkg "github.com/ferro-labs/ai-gateway/providers/cohere"
+	deepseekpkg "github.com/ferro-labs/ai-gateway/providers/deepseek"
+	fireworkspkg "github.com/ferro-labs/ai-gateway/providers/fireworks"
+	geminipkg "github.com/ferro-labs/ai-gateway/providers/gemini"
+	groqpkg "github.com/ferro-labs/ai-gateway/providers/groq"
+	huggingfacepkg "github.com/ferro-labs/ai-gateway/providers/hugging_face"
+	mistralpkg "github.com/ferro-labs/ai-gateway/providers/mistral"
+	ollamapkg "github.com/ferro-labs/ai-gateway/providers/ollama"
+	openaipkg "github.com/ferro-labs/ai-gateway/providers/openai"
+	perplexitypkg "github.com/ferro-labs/ai-gateway/providers/perplexity"
+	replicatepkg "github.com/ferro-labs/ai-gateway/providers/replicate"
+	togetherpkg "github.com/ferro-labs/ai-gateway/providers/together"
+	vertexaipkg "github.com/ferro-labs/ai-gateway/providers/vertex_ai"
+	xaipkg "github.com/ferro-labs/ai-gateway/providers/xai"
 )
 
 // ProviderConfigFromEnv reads environment variables for the given ProviderEntry
@@ -68,8 +88,8 @@ const (
 	CfgKeyModels = "models" // comma-separated model list
 
 	// Replicate
-	CfgKeyAPIToken   = "api_token"   // Replicate API token (primary required key)
-	CfgKeyTextModels = "text_models" // comma-separated Replicate text model paths
+	CfgKeyAPIToken    = "api_token"    // Replicate API token (primary required key)
+	CfgKeyTextModels  = "text_models"  // comma-separated Replicate text model paths
 	CfgKeyImageModels = "image_models" // comma-separated Replicate image model paths
 )
 
@@ -129,7 +149,7 @@ var allProviders = []ProviderEntry{
 			{CfgKeyBaseURL, "AI21_BASE_URL", false},
 		},
 		Build: func(cfg ProviderConfig) (Provider, error) {
-			p, err := NewAI21(cfg[CfgKeyAPIKey], cfg[CfgKeyBaseURL])
+			p, err := ai21pkg.New(cfg[CfgKeyAPIKey], cfg[CfgKeyBaseURL])
 			return p, err
 		},
 	},
@@ -141,7 +161,7 @@ var allProviders = []ProviderEntry{
 			{CfgKeyBaseURL, "ANTHROPIC_BASE_URL", false},
 		},
 		Build: func(cfg ProviderConfig) (Provider, error) {
-			return NewAnthropic(cfg[CfgKeyAPIKey], cfg[CfgKeyBaseURL])
+			return anthropicpkg.New(cfg[CfgKeyAPIKey], cfg[CfgKeyBaseURL])
 		},
 	},
 	{
@@ -156,7 +176,7 @@ var allProviders = []ProviderEntry{
 			if cfg[CfgKeyBaseURL] == "" {
 				return nil, fmt.Errorf("%s: base_url (AZURE_FOUNDRY_ENDPOINT) is required", NameAzureFoundry)
 			}
-			return NewAzureFoundry(cfg[CfgKeyAPIKey], cfg[CfgKeyBaseURL], cfg[CfgKeyAPIVersion])
+			return azurefoundrypkg.New(cfg[CfgKeyAPIKey], cfg[CfgKeyBaseURL], cfg[CfgKeyAPIVersion])
 		},
 	},
 	{
@@ -175,7 +195,7 @@ var allProviders = []ProviderEntry{
 			if cfg[CfgKeyDeployment] == "" {
 				return nil, fmt.Errorf("%s: deployment (AZURE_OPENAI_DEPLOYMENT) is required", NameAzureOpenAI)
 			}
-			return NewAzureOpenAI(cfg[CfgKeyAPIKey], cfg[CfgKeyBaseURL], cfg[CfgKeyDeployment], cfg[CfgKeyAPIVersion])
+			return azureopenaipkg.New(cfg[CfgKeyAPIKey], cfg[CfgKeyBaseURL], cfg[CfgKeyDeployment], cfg[CfgKeyAPIVersion])
 		},
 	},
 	{
@@ -190,7 +210,7 @@ var allProviders = []ProviderEntry{
 			{CfgKeySessionToken, "AWS_SESSION_TOKEN", false},
 		},
 		Build: func(cfg ProviderConfig) (Provider, error) {
-			return NewBedrockWithOptions(BedrockOptions{
+			return bedrockpkg.NewWithOptions(bedrockpkg.Options{
 				Region:          cfg[CfgKeyRegion],
 				AccessKeyID:     cfg[CfgKeyAccessKeyID],
 				SecretAccessKey: cfg[CfgKeySecretAccessKey],
@@ -206,7 +226,7 @@ var allProviders = []ProviderEntry{
 			{CfgKeyBaseURL, "COHERE_BASE_URL", false},
 		},
 		Build: func(cfg ProviderConfig) (Provider, error) {
-			return NewCohere(cfg[CfgKeyAPIKey], cfg[CfgKeyBaseURL])
+			return coherepkg.New(cfg[CfgKeyAPIKey], cfg[CfgKeyBaseURL])
 		},
 	},
 	{
@@ -217,7 +237,7 @@ var allProviders = []ProviderEntry{
 			{CfgKeyBaseURL, "DEEPSEEK_BASE_URL", false},
 		},
 		Build: func(cfg ProviderConfig) (Provider, error) {
-			return NewDeepSeek(cfg[CfgKeyAPIKey], cfg[CfgKeyBaseURL])
+			return deepseekpkg.New(cfg[CfgKeyAPIKey], cfg[CfgKeyBaseURL])
 		},
 	},
 	{
@@ -228,7 +248,7 @@ var allProviders = []ProviderEntry{
 			{CfgKeyBaseURL, "FIREWORKS_BASE_URL", false},
 		},
 		Build: func(cfg ProviderConfig) (Provider, error) {
-			return NewFireworks(cfg[CfgKeyAPIKey], cfg[CfgKeyBaseURL])
+			return fireworkspkg.New(cfg[CfgKeyAPIKey], cfg[CfgKeyBaseURL])
 		},
 	},
 	{
@@ -239,7 +259,7 @@ var allProviders = []ProviderEntry{
 			{CfgKeyBaseURL, "GEMINI_BASE_URL", false},
 		},
 		Build: func(cfg ProviderConfig) (Provider, error) {
-			return NewGemini(cfg[CfgKeyAPIKey], cfg[CfgKeyBaseURL])
+			return geminipkg.New(cfg[CfgKeyAPIKey], cfg[CfgKeyBaseURL])
 		},
 	},
 	{
@@ -250,7 +270,7 @@ var allProviders = []ProviderEntry{
 			{CfgKeyBaseURL, "GROQ_BASE_URL", false},
 		},
 		Build: func(cfg ProviderConfig) (Provider, error) {
-			return NewGroq(cfg[CfgKeyAPIKey], cfg[CfgKeyBaseURL])
+			return groqpkg.New(cfg[CfgKeyAPIKey], cfg[CfgKeyBaseURL])
 		},
 	},
 	{
@@ -261,7 +281,7 @@ var allProviders = []ProviderEntry{
 			{CfgKeyBaseURL, "HUGGING_FACE_ENDPOINT", false},
 		},
 		Build: func(cfg ProviderConfig) (Provider, error) {
-			return NewHuggingFace(cfg[CfgKeyAPIKey], cfg[CfgKeyBaseURL])
+			return huggingfacepkg.New(cfg[CfgKeyAPIKey], cfg[CfgKeyBaseURL])
 		},
 	},
 	{
@@ -272,7 +292,7 @@ var allProviders = []ProviderEntry{
 			{CfgKeyBaseURL, "MISTRAL_BASE_URL", false},
 		},
 		Build: func(cfg ProviderConfig) (Provider, error) {
-			return NewMistral(cfg[CfgKeyAPIKey], cfg[CfgKeyBaseURL])
+			return mistralpkg.New(cfg[CfgKeyAPIKey], cfg[CfgKeyBaseURL])
 		},
 	},
 	{
@@ -288,7 +308,7 @@ var allProviders = []ProviderEntry{
 			if m := cfg[CfgKeyModels]; m != "" {
 				models = strings.Split(m, ",")
 			}
-			return NewOllama(cfg[CfgKeyHost], models)
+			return ollamapkg.New(cfg[CfgKeyHost], models)
 		},
 	},
 	{
@@ -299,7 +319,7 @@ var allProviders = []ProviderEntry{
 			{CfgKeyBaseURL, "OPENAI_BASE_URL", false},
 		},
 		Build: func(cfg ProviderConfig) (Provider, error) {
-			return NewOpenAI(cfg[CfgKeyAPIKey], cfg[CfgKeyBaseURL])
+			return openaipkg.New(cfg[CfgKeyAPIKey], cfg[CfgKeyBaseURL])
 		},
 	},
 	{
@@ -310,7 +330,7 @@ var allProviders = []ProviderEntry{
 			{CfgKeyBaseURL, "PERPLEXITY_BASE_URL", false},
 		},
 		Build: func(cfg ProviderConfig) (Provider, error) {
-			return NewPerplexity(cfg[CfgKeyAPIKey], cfg[CfgKeyBaseURL])
+			return perplexitypkg.New(cfg[CfgKeyAPIKey], cfg[CfgKeyBaseURL])
 		},
 	},
 	{
@@ -331,7 +351,7 @@ var allProviders = []ProviderEntry{
 			if m := cfg[CfgKeyImageModels]; m != "" {
 				imageModels = strings.Split(m, ",")
 			}
-			return NewReplicate(cfg[CfgKeyAPIToken], cfg[CfgKeyBaseURL], textModels, imageModels)
+			return replicatepkg.New(cfg[CfgKeyAPIToken], cfg[CfgKeyBaseURL], textModels, imageModels)
 		},
 	},
 	{
@@ -342,7 +362,7 @@ var allProviders = []ProviderEntry{
 			{CfgKeyBaseURL, "TOGETHER_BASE_URL", false},
 		},
 		Build: func(cfg ProviderConfig) (Provider, error) {
-			return NewTogether(cfg[CfgKeyAPIKey], cfg[CfgKeyBaseURL])
+			return togetherpkg.New(cfg[CfgKeyAPIKey], cfg[CfgKeyBaseURL])
 		},
 	},
 	{
@@ -364,7 +384,7 @@ var allProviders = []ProviderEntry{
 			if cfg[CfgKeyAPIKey] == "" && cfg[CfgKeyServiceAccountJSON] == "" {
 				return nil, fmt.Errorf("%s: either api_key (VERTEX_AI_API_KEY) or service_account_json (VERTEX_AI_SERVICE_ACCOUNT_JSON) is required", NameVertexAI)
 			}
-			return NewVertexAI(VertexAIOptions{
+			return vertexaipkg.New(vertexaipkg.Options{
 				ProjectID:          cfg[CfgKeyProjectID],
 				Region:             cfg[CfgKeyRegion],
 				APIKey:             cfg[CfgKeyAPIKey],
@@ -380,7 +400,7 @@ var allProviders = []ProviderEntry{
 			{CfgKeyBaseURL, "XAI_BASE_URL", false},
 		},
 		Build: func(cfg ProviderConfig) (Provider, error) {
-			return NewXAI(cfg[CfgKeyAPIKey], cfg[CfgKeyBaseURL])
+			return xaipkg.New(cfg[CfgKeyAPIKey], cfg[CfgKeyBaseURL])
 		},
 	},
 }

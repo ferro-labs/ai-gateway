@@ -24,6 +24,7 @@ import (
 	"github.com/ferro-labs/ai-gateway/internal/version"
 	"github.com/ferro-labs/ai-gateway/plugin"
 	"github.com/ferro-labs/ai-gateway/providers"
+	bedrockpkg "github.com/ferro-labs/ai-gateway/providers/bedrock"
 	webassets "github.com/ferro-labs/ai-gateway/web"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -319,7 +320,7 @@ func registerProviders() *providers.Registry {
 	// Accepts instance-role auth (no key vars) as long as AWS_REGION is set,
 	// or explicit static credentials when AWS_ACCESS_KEY_ID is present.
 	if region := os.Getenv("AWS_REGION"); region != "" || os.Getenv("AWS_ACCESS_KEY_ID") != "" {
-		p, err := providers.NewBedrockWithOptions(providers.BedrockOptions{
+		p, err := bedrockpkg.NewWithOptions(bedrockpkg.Options{
 			Region:          os.Getenv("AWS_REGION"),
 			AccessKeyID:     os.Getenv("AWS_ACCESS_KEY_ID"),
 			SecretAccessKey: os.Getenv("AWS_SECRET_ACCESS_KEY"),

@@ -1,6 +1,25 @@
 package providers
 
 import (
+	ai21pkg "github.com/ferro-labs/ai-gateway/providers/ai21"
+	anthropicpkg "github.com/ferro-labs/ai-gateway/providers/anthropic"
+	azurefoundrypkg "github.com/ferro-labs/ai-gateway/providers/azure_foundry"
+	azureopenaipkg "github.com/ferro-labs/ai-gateway/providers/azure_openai"
+	bedrockpkg "github.com/ferro-labs/ai-gateway/providers/bedrock"
+	coherepkg "github.com/ferro-labs/ai-gateway/providers/cohere"
+	deepseekpkg "github.com/ferro-labs/ai-gateway/providers/deepseek"
+	fireworkspkg "github.com/ferro-labs/ai-gateway/providers/fireworks"
+	geminipkg "github.com/ferro-labs/ai-gateway/providers/gemini"
+	groqpkg "github.com/ferro-labs/ai-gateway/providers/groq"
+	huggingfacepkg "github.com/ferro-labs/ai-gateway/providers/hugging_face"
+	mistralpkg "github.com/ferro-labs/ai-gateway/providers/mistral"
+	ollamapkg "github.com/ferro-labs/ai-gateway/providers/ollama"
+	openaipkg "github.com/ferro-labs/ai-gateway/providers/openai"
+	perplexitypkg "github.com/ferro-labs/ai-gateway/providers/perplexity"
+	replicatepkg "github.com/ferro-labs/ai-gateway/providers/replicate"
+	togetherpkg "github.com/ferro-labs/ai-gateway/providers/together"
+	vertexaipkg "github.com/ferro-labs/ai-gateway/providers/vertex_ai"
+	xaipkg "github.com/ferro-labs/ai-gateway/providers/xai"
 	"slices"
 	"testing"
 )
@@ -25,7 +44,7 @@ func TestProviderNameStability(t *testing.T) {
 			wantName: NameAI21,
 			build: func(t *testing.T) Provider {
 				t.Helper()
-				p, err := NewAI21(testAPIKey, "")
+				p, err := ai21pkg.New(testAPIKey, "")
 				if err != nil {
 					t.Fatalf("NewAI21: %v", err)
 				}
@@ -36,7 +55,7 @@ func TestProviderNameStability(t *testing.T) {
 			wantName: NameAnthropic,
 			build: func(t *testing.T) Provider {
 				t.Helper()
-				p, err := NewAnthropic(testAPIKey, "")
+				p, err := anthropicpkg.New(testAPIKey, "")
 				if err != nil {
 					t.Fatalf("NewAnthropic: %v", err)
 				}
@@ -47,7 +66,7 @@ func TestProviderNameStability(t *testing.T) {
 			wantName: NameAzureFoundry,
 			build: func(t *testing.T) Provider {
 				t.Helper()
-				p, err := NewAzureFoundry(testAPIKey, "https://example.openai.azure.com", "")
+				p, err := azurefoundrypkg.New(testAPIKey, "https://example.openai.azure.com", "")
 				if err != nil {
 					t.Fatalf("NewAzureFoundry: %v", err)
 				}
@@ -58,7 +77,7 @@ func TestProviderNameStability(t *testing.T) {
 			wantName: NameAzureOpenAI,
 			build: func(t *testing.T) Provider {
 				t.Helper()
-				p, err := NewAzureOpenAI(testAPIKey, "https://example.openai.azure.com", "gpt-4o", "")
+				p, err := azureopenaipkg.New(testAPIKey, "https://example.openai.azure.com", "gpt-4o", "")
 				if err != nil {
 					t.Fatalf("NewAzureOpenAI: %v", err)
 				}
@@ -69,7 +88,7 @@ func TestProviderNameStability(t *testing.T) {
 			wantName: NameBedrock,
 			build: func(t *testing.T) Provider {
 				t.Helper()
-				p, err := NewBedrock("us-east-1")
+				p, err := bedrockpkg.New("us-east-1")
 				if err != nil {
 					t.Fatalf("NewBedrock: %v", err)
 				}
@@ -80,7 +99,7 @@ func TestProviderNameStability(t *testing.T) {
 			wantName: NameCohere,
 			build: func(t *testing.T) Provider {
 				t.Helper()
-				p, err := NewCohere(testAPIKey, "")
+				p, err := coherepkg.New(testAPIKey, "")
 				if err != nil {
 					t.Fatalf("NewCohere: %v", err)
 				}
@@ -91,7 +110,7 @@ func TestProviderNameStability(t *testing.T) {
 			wantName: NameDeepSeek,
 			build: func(t *testing.T) Provider {
 				t.Helper()
-				p, err := NewDeepSeek(testAPIKey, "")
+				p, err := deepseekpkg.New(testAPIKey, "")
 				if err != nil {
 					t.Fatalf("NewDeepSeek: %v", err)
 				}
@@ -102,7 +121,7 @@ func TestProviderNameStability(t *testing.T) {
 			wantName: NameFireworks,
 			build: func(t *testing.T) Provider {
 				t.Helper()
-				p, err := NewFireworks(testAPIKey, "")
+				p, err := fireworkspkg.New(testAPIKey, "")
 				if err != nil {
 					t.Fatalf("NewFireworks: %v", err)
 				}
@@ -113,7 +132,7 @@ func TestProviderNameStability(t *testing.T) {
 			wantName: NameGemini,
 			build: func(t *testing.T) Provider {
 				t.Helper()
-				p, err := NewGemini(testAPIKey, "")
+				p, err := geminipkg.New(testAPIKey, "")
 				if err != nil {
 					t.Fatalf("NewGemini: %v", err)
 				}
@@ -124,7 +143,7 @@ func TestProviderNameStability(t *testing.T) {
 			wantName: NameGroq,
 			build: func(t *testing.T) Provider {
 				t.Helper()
-				p, err := NewGroq(testAPIKey, "")
+				p, err := groqpkg.New(testAPIKey, "")
 				if err != nil {
 					t.Fatalf("NewGroq: %v", err)
 				}
@@ -135,7 +154,7 @@ func TestProviderNameStability(t *testing.T) {
 			wantName: NameHuggingFace,
 			build: func(t *testing.T) Provider {
 				t.Helper()
-				p, err := NewHuggingFace(testAPIKey, "")
+				p, err := huggingfacepkg.New(testAPIKey, "")
 				if err != nil {
 					t.Fatalf("NewHuggingFace: %v", err)
 				}
@@ -146,7 +165,7 @@ func TestProviderNameStability(t *testing.T) {
 			wantName: NameMistral,
 			build: func(t *testing.T) Provider {
 				t.Helper()
-				p, err := NewMistral(testAPIKey, "")
+				p, err := mistralpkg.New(testAPIKey, "")
 				if err != nil {
 					t.Fatalf("NewMistral: %v", err)
 				}
@@ -157,7 +176,7 @@ func TestProviderNameStability(t *testing.T) {
 			wantName: NameOllama,
 			build: func(t *testing.T) Provider {
 				t.Helper()
-				p, err := NewOllama("http://localhost:11434", nil)
+				p, err := ollamapkg.New("http://localhost:11434", nil)
 				if err != nil {
 					t.Fatalf("NewOllama: %v", err)
 				}
@@ -168,7 +187,7 @@ func TestProviderNameStability(t *testing.T) {
 			wantName: NameOpenAI,
 			build: func(t *testing.T) Provider {
 				t.Helper()
-				p, err := NewOpenAI(testAPIKey, "")
+				p, err := openaipkg.New(testAPIKey, "")
 				if err != nil {
 					t.Fatalf("NewOpenAI: %v", err)
 				}
@@ -179,7 +198,7 @@ func TestProviderNameStability(t *testing.T) {
 			wantName: NamePerplexity,
 			build: func(t *testing.T) Provider {
 				t.Helper()
-				p, err := NewPerplexity(testAPIKey, "")
+				p, err := perplexitypkg.New(testAPIKey, "")
 				if err != nil {
 					t.Fatalf("NewPerplexity: %v", err)
 				}
@@ -190,7 +209,7 @@ func TestProviderNameStability(t *testing.T) {
 			wantName: NameReplicate,
 			build: func(t *testing.T) Provider {
 				t.Helper()
-				p, err := NewReplicate(testAPIKey, "", nil, nil)
+				p, err := replicatepkg.New(testAPIKey, "", nil, nil)
 				if err != nil {
 					t.Fatalf("NewReplicate: %v", err)
 				}
@@ -201,7 +220,7 @@ func TestProviderNameStability(t *testing.T) {
 			wantName: NameTogether,
 			build: func(t *testing.T) Provider {
 				t.Helper()
-				p, err := NewTogether(testAPIKey, "")
+				p, err := togetherpkg.New(testAPIKey, "")
 				if err != nil {
 					t.Fatalf("NewTogether: %v", err)
 				}
@@ -212,7 +231,7 @@ func TestProviderNameStability(t *testing.T) {
 			wantName: NameVertexAI,
 			build: func(t *testing.T) Provider {
 				t.Helper()
-				p, err := NewVertexAI(VertexAIOptions{
+				p, err := vertexaipkg.New(vertexaipkg.Options{
 					ProjectID: "test-project",
 					Region:    "us-central1",
 					APIKey:    testAPIKey,
@@ -227,7 +246,7 @@ func TestProviderNameStability(t *testing.T) {
 			wantName: NameXAI,
 			build: func(t *testing.T) Provider {
 				t.Helper()
-				p, err := NewXAI(testAPIKey, "")
+				p, err := xaipkg.New(testAPIKey, "")
 				if err != nil {
 					t.Fatalf("NewXAI: %v", err)
 				}
