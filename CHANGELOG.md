@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`providers/core` split** — `types.go` (379 lines) broken into six focused files:
+  `constants.go`, `chat.go`, `stream.go`, `embedding.go`, `image.go`, `model.go`.
+  No API changes; all symbols remain at the same import path.
+
+- **`providers/factory.go` split** — types, constants, and lookup functions remain in
+  `factory.go`; the `allProviders` registration data (all 19 provider `Build` closures)
+  moves to the new `providers/providers_list.go`. Adding a provider now touches one file.
+
+- **Single source of truth for `Name` constants** — `providers/names.go` re-exports each
+  `NameXxx` constant from its provider subpackage (e.g. `NameOpenAI = openai.Name`)
+  instead of duplicating the string literal. The subpackage `const Name` is now the
+  authoritative definition; the root package constants are transparent re-exports.
+
+### Removed
+
+- `providers/base.go` — `Base` struct was unused by all 19 subpackages (each defines its
+  own fields); `ModelsFromList` was an exact duplicate of `core.ModelsFromList`.
+- `providers/discovery.go` — empty file (single `package providers` declaration).
+
 ## [0.7.0] — 2026-03-07
 
 This release is a **major structural refactor** of the provider layer. All 19 provider implementations are extracted into independent subpackages, a unified two-mode factory replaces ad-hoc constructors, and five new provider adapters are added. The public `providers.NewXxx()` root constructors have been removed.
