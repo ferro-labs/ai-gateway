@@ -354,7 +354,7 @@ After Phase 2 is complete, adding a new provider is a 5-step process with **zero
 - [x] Vertex AI auth paths tested: API key mode, service account JSON validation, mock HTTP complete + stream
 - [x] `discoverOpenAICompatibleModels` moved to `providers/internal/discovery/openai_compat.go`
 - [x] Contributor docs updated with new provider folder pattern (`CONTRIBUTING.md`)
-- [ ] FerroCloud integration test: explicit `ProviderConfig` map (no env vars) routes correctly ⏳
+- [x] FerroCloud integration test: explicit `ProviderConfig` map (no env vars) routes correctly ✅\n  (`ferrocloud/internal/proxy/handler_factory_test.go` — 16 sub-tests, all pass)
 
 ---
 
