@@ -15,8 +15,8 @@ func TestNewAzureFoundry(t *testing.T) {
 	if p.Name() != "azure-foundry" {
 		t.Errorf("Name() = %q, want azure-foundry", p.Name())
 	}
-	if p.apiVersion != azureFoundryDefaultAPIVersion {
-		t.Errorf("apiVersion = %q, want %s", p.apiVersion, azureFoundryDefaultAPIVersion)
+	if p.APIVersion() != azureFoundryDefaultAPIVersion {
+		t.Errorf("apiVersion = %q, want %s", p.APIVersion(), azureFoundryDefaultAPIVersion)
 	}
 }
 
