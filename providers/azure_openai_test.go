@@ -19,15 +19,15 @@ func TestNewAzureOpenAI(t *testing.T) {
 
 func TestAzureOpenAIProvider_DefaultApiVersion(t *testing.T) {
 	p, _ := NewAzureOpenAI("test-key", "https://myresource.openai.azure.com", "gpt-4o", "")
-	if p.apiVersion != "2024-10-21" {
-		t.Errorf("apiVersion = %q, want 2024-10-21", p.apiVersion)
+	if p.APIVersion() != "2024-10-21" {
+		t.Errorf("APIVersion() = %q, want 2024-10-21", p.APIVersion())
 	}
 }
 
 func TestAzureOpenAIProvider_CustomApiVersion(t *testing.T) {
 	p, _ := NewAzureOpenAI("test-key", "https://myresource.openai.azure.com", "gpt-4o", "2024-06-01")
-	if p.apiVersion != "2024-06-01" {
-		t.Errorf("apiVersion = %q, want 2024-06-01", p.apiVersion)
+	if p.APIVersion() != "2024-06-01" {
+		t.Errorf("APIVersion() = %q, want 2024-06-01", p.APIVersion())
 	}
 }
 
