@@ -1,11 +1,9 @@
 package providers
 
-// Base provides common fields and methods shared by REST-based provider
-// implementations. Embed this struct to avoid repeating name, apiKey, and
-// baseURL handling across providers.
+// Base provides common fields and methods shared by provider implementations.
+// Embed this struct to avoid repeating name and baseURL handling across providers.
 type Base struct {
 	name    string
-	apiKey  string
 	baseURL string
 }
 

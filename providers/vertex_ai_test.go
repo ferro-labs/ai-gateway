@@ -98,7 +98,7 @@ func TestVertexAIProvider_Complete_MockHTTP(t *testing.T) {
 		Region:    "us-central1",
 		APIKey:    "test-key",
 	})
-	p.baseURL = srv.URL
+	p.SetBaseURL(srv.URL)
 
 	resp, err := p.Complete(context.Background(), Request{
 		Model:    "gemini-2.5-flash",
@@ -131,7 +131,7 @@ func TestVertexAIProvider_CompleteStream_MockSSE(t *testing.T) {
 		Region:    "us-central1",
 		APIKey:    "test-key",
 	})
-	p.baseURL = srv.URL
+	p.SetBaseURL(srv.URL)
 
 	ch, err := p.CompleteStream(context.Background(), Request{
 		Model:    "gemini-2.5-flash",

@@ -15,8 +15,8 @@ func TestNewBedrock_DefaultRegion(t *testing.T) {
 	if p.Name() != "bedrock" {
 		t.Errorf("Name() = %q, want bedrock", p.Name())
 	}
-	if p.region != "us-east-1" {
-		t.Errorf("region = %q, want us-east-1", p.region)
+	if p.Region() != "us-east-1" {
+		t.Errorf("region = %q, want us-east-1", p.Region())
 	}
 }
 
@@ -32,8 +32,8 @@ func TestNewBedrockWithOptions_StaticCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewBedrockWithOptions() error: %v", err)
 	}
-	if p.region != "us-west-2" {
-		t.Errorf("region = %q, want us-west-2", p.region)
+	if p.Region() != "us-west-2" {
+		t.Errorf("region = %q, want us-west-2", p.Region())
 	}
 }
 
