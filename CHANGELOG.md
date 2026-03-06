@@ -7,19 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-03-07
+
+This release is a **major structural refactor** of the provider layer. All 19 provider implementations are extracted into independent subpackages, a unified two-mode factory replaces ad-hoc constructors, and five new provider adapters are added. The public `providers.NewXxx()` root constructors have been removed.
+
 ### Added
 
-- **xAI provider adapter** (`providers/xai.go`): added `xai` provider with `NewXAI(apiKey, baseURL)`, default base URL `https://api.x.ai/v1`, chat completions + streaming support, Grok-aware `SupportsModel`, and environment-based auto-registration via `XAI_API_KEY`
-- **Bedrock options constructor** (`providers/bedrock.go`): added `BedrockOptions` and `NewBedrockWithOptions(opts)` to support static AWS credentials (`AccessKeyID`, `SecretAccessKey`, `SessionToken`) while preserving default credential-chain behavior
-- **Azure Foundry provider adapter** (`providers/azure_foundry.go`): added `azure-foundry` provider with `NewAzureFoundry(apiKey, baseURL, apiVersion)`, `api-key` auth, chat completions + streaming support, and env-based registration via `AZURE_FOUNDRY_API_KEY` + `AZURE_FOUNDRY_ENDPOINT`
-- **Hugging Face provider adapter** (`providers/hugging_face.go`): added `hugging-face` provider with `NewHuggingFace(apiKey, baseURL)`, shared API default (`https://api-inference.huggingface.co/v1`), chat completions + streaming support, plus optional embedding/image interfaces
-- **Vertex AI provider adapter** (`providers/vertex_ai.go`): added `vertex-ai` provider with `NewVertexAI(VertexAIOptions)` supporting API-key mode (`x-goog-api-key`) and service-account JSON mode (OAuth bearer token), including chat completions + streaming support
+- **5 new provider adapters** — xAI (`providers/xai/`), Azure Foundry (`providers/azure_foundry/`), Hugging Face (`providers/hugging_face/`), Vertex AI (`providers/vertex_ai/`), and AWS Bedrock static-credential support (`providers/bedrock/`):
+  - xAI: `xai` provider, default base URL `https://api.x.ai/v1`, chat + streaming, Grok-aware model support, auto-registration via `XAI_API_KEY`
+  - Azure Foundry: `azure-foundry` provider, `api-key` auth, chat + streaming, auto-registration via `AZURE_FOUNDRY_API_KEY` + `AZURE_FOUNDRY_ENDPOINT`
+  - Hugging Face: `hugging-face` provider, default `https://api-inference.huggingface.co/v1`, chat + streaming + embedding + image + discovery interfaces, auto-registration via `HUGGING_FACE_API_KEY`
+  - Vertex AI: `vertex-ai` provider, API-key mode (`x-goog-api-key`) and service-account JSON OAuth mode, chat + streaming, auto-registration via `VERTEX_AI_PROJECT_ID`
+  - Bedrock static credentials: `BedrockOptions` with `AccessKeyID`, `SecretAccessKey`, `SessionToken` fields alongside default credential-chain support
+- **`providers/core` subpackage** (`providers/core/`): canonical home for all shared interfaces (`Provider`, `StreamProvider`, `EmbeddingProvider`, `ImageProvider`, `DiscoveryProvider`, `ProxiableProvider`), request/response types, and error helpers — all exported as type aliases from the root `providers` package for backwards compatibility
+- **Canonical `Name*` constants** (`providers/names.go`): `NameOpenAI`, `NameAnthropic`, `NameBedrock`, etc. — one authoritative string per provider used across gateway routing configs, credential stores, and the factory registry
+- **Two-mode `ProviderConfig` factory** (`providers/factory.go`):
+  - `ProviderConfig` (`map[string]string`) — single input type for all provider `Build` functions; typed `CfgKey*` constants for all fields
+  - `ProviderEntry` — self-describing record per provider: `ID`, `Capabilities`, `EnvMappings`, `Build`
+  - `AllProviders()` — ordered slice of all 19 entries; `GetProviderEntry(id)` for lookup
+  - `ProviderConfigFromEnv(entry)` — reads env vars declared in `EnvMappings` and returns a populated `ProviderConfig`, or nil when the provider is unconfigured (no error)
+  - `AllProviderNames()` — returns all canonical name constants; used by stability tests
+- **Shared OpenAI-compatible discovery helper** (`providers/internal/discovery/openai_compat.go`): `DiscoverOpenAICompatibleModels` shared by xAI, Fireworks, Perplexity, and Hugging Face to enumerate models via `GET /models`
+- **Per-provider subpackages** — all 19 providers extracted into `providers/<id>/<id>.go`, each with:
+  - A `Name` constant matching its `Name*` registry constant
+  - A standalone `New(...)` constructor
+  - Compile-time interface assertions (`var _ core.Provider = (*Provider)(nil)`, etc.)
+  - Tests co-located at `providers/<id>/<id>_test.go`
+- **`CONTRIBUTING.md` — Adding a New Provider guide**: updated to describe the 5-step subpackage convention (`impl`, `Name*` constant, `ProviderEntry`, test, stability check)
 
 ### Changed
 
-- **Bedrock env registration** (`cmd/ferrogw/main.go`): Bedrock initialization now uses `NewBedrockWithOptions` and consumes `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and `AWS_SESSION_TOKEN`
-- **Examples/docs** (`config.example.yaml`, `config.example.json`, `.env.example`): added `xai` target in sample configs and documented `XAI_API_KEY` plus Bedrock static-credential env vars
-- **Provider registration wiring** (`cmd/ferrogw/main.go`): added runtime env-based registration for `azure-foundry`, `vertex-ai`, and `hugging-face`
+- **`registerProviders()` in `cmd/ferrogw/main.go`**: rewritten to iterate `providers.AllProviders()` and call `entry.Build(cfg)` uniformly — no per-provider special-casing. Bedrock remains a separate branch for its dual-key detection (`AWS_REGION` / `AWS_ACCESS_KEY_ID`)
+- **All examples** (`examples/*/main.go`): updated to import provider subpackages directly (`openaipkg`, `anthropicpkg`, etc.) instead of the removed root constructors
+- **`providers/factory.go`**: all `Build` functions now call subpackage `New` directly instead of the removed shim functions
+
+### Removed
+
+- **All 19 deprecated root shim files** (`providers/ai21.go`, `providers/anthropic.go`, `providers/azure_foundry.go`, `providers/azure_openai.go`, `providers/bedrock.go`, `providers/cohere.go`, `providers/deepseek.go`, `providers/fireworks.go`, `providers/gemini.go`, `providers/groq.go`, `providers/hugging_face.go`, `providers/mistral.go`, `providers/ollama.go`, `providers/openai.go`, `providers/perplexity.go`, `providers/replicate.go`, `providers/together.go`, `providers/vertex_ai.go`, `providers/xai.go`): the `providers.NewXxx()` root constructors and `XxxProvider` type aliases are removed. Import `providers/<id>` and call `New(...)` directly, or use `providers.GetProviderEntry(id).Build(cfg)` for factory-based construction.
+- **`providers/<id>/impl.go` naming**: all implementation files renamed to `providers/<id>/<id>.go` for clarity
 
 ## [0.6.1] — 2026-03-06
 

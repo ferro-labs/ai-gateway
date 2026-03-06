@@ -11,8 +11,8 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/ferro-labs/ai-gateway/internal/discovery"
 	"github.com/ferro-labs/ai-gateway/providers/core"
-	"github.com/ferro-labs/ai-gateway/providers/internal/discovery"
 )
 
 // Name is the canonical provider identifier.

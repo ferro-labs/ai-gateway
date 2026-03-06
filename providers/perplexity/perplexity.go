@@ -11,9 +11,8 @@ import (
 	"net/http"
 	"strings"
 
+	discov "github.com/ferro-labs/ai-gateway/internal/discovery"
 	"github.com/ferro-labs/ai-gateway/providers/core"
-
-	discov "github.com/ferro-labs/ai-gateway/providers/internal/discovery"
 )
 
 const (

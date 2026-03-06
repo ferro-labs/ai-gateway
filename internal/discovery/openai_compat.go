@@ -1,8 +1,5 @@
 // Package discovery provides shared helpers for providers that support live
 // model enumeration via OpenAI-compatible GET /v1/models (or similar) endpoints.
-//
-// This package is internal to the providers module and must not be imported
-// by packages outside providers/.
 package discovery
 
 import (
