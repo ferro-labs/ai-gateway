@@ -17,7 +17,7 @@ import (
 
 const (
 	// Name is the canonical identifier for the Fireworks AI provider.
-	// Must match providers.NameFireworks — verified by stability_test.go.
+	// Re-exported as providers.NameFireworks in providers/names.go.
 	Name           = "fireworks"
 	defaultBaseURL = "https://api.fireworks.ai/inference"
 )

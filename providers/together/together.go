@@ -16,7 +16,7 @@ import (
 
 const (
 	// Name is the canonical identifier for the Together AI provider.
-	// Must match providers.NameTogether — verified by stability_test.go.
+	// Re-exported as providers.NameTogether in providers/names.go.
 	Name           = "together"
 	defaultBaseURL = "https://api.together.xyz"
 )

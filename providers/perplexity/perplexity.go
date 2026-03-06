@@ -17,7 +17,7 @@ import (
 
 const (
 	// Name is the canonical identifier for the Perplexity provider.
-	// Must match providers.NamePerplexity — verified by stability_test.go.
+	// Re-exported as providers.NamePerplexity in providers/names.go.
 	Name           = "perplexity"
 	defaultBaseURL = "https://api.perplexity.ai"
 )

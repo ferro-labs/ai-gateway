@@ -16,7 +16,7 @@ import (
 
 const (
 	// Name is the canonical identifier for the Groq provider.
-	// Must match providers.NameGroq — verified by stability_test.go.
+	// Re-exported as providers.NameGroq in providers/names.go.
 	Name           = "groq"
 	defaultBaseURL = "https://api.groq.com/openai"
 )

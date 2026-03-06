@@ -17,7 +17,7 @@ import (
 
 const (
 	// Name is the canonical identifier for the xAI provider.
-	// Must match providers.NameXAI — verified by stability_test.go.
+	// Re-exported as providers.NameXAI in providers/names.go.
 	Name           = "xai"
 	defaultBaseURL = "https://api.x.ai/v1"
 )

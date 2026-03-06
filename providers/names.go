@@ -1,13 +1,33 @@
 package providers
 
+import (
+	ai21pkg "github.com/ferro-labs/ai-gateway/providers/ai21"
+	anthropicpkg "github.com/ferro-labs/ai-gateway/providers/anthropic"
+	azurefoundrypkg "github.com/ferro-labs/ai-gateway/providers/azure_foundry"
+	azureopenaipkg "github.com/ferro-labs/ai-gateway/providers/azure_openai"
+	bedrockpkg "github.com/ferro-labs/ai-gateway/providers/bedrock"
+	coherepkg "github.com/ferro-labs/ai-gateway/providers/cohere"
+	deepseekpkg "github.com/ferro-labs/ai-gateway/providers/deepseek"
+	fireworkspkg "github.com/ferro-labs/ai-gateway/providers/fireworks"
+	geminipkg "github.com/ferro-labs/ai-gateway/providers/gemini"
+	groqpkg "github.com/ferro-labs/ai-gateway/providers/groq"
+	huggingfacepkg "github.com/ferro-labs/ai-gateway/providers/hugging_face"
+	mistralpkg "github.com/ferro-labs/ai-gateway/providers/mistral"
+	ollamapkg "github.com/ferro-labs/ai-gateway/providers/ollama"
+	openaipkg "github.com/ferro-labs/ai-gateway/providers/openai"
+	perplexitypkg "github.com/ferro-labs/ai-gateway/providers/perplexity"
+	replicatepkg "github.com/ferro-labs/ai-gateway/providers/replicate"
+	togetherpkg "github.com/ferro-labs/ai-gateway/providers/together"
+	vertexaipkg "github.com/ferro-labs/ai-gateway/providers/vertex_ai"
+	xaipkg "github.com/ferro-labs/ai-gateway/providers/xai"
+)
+
 // Canonical provider name constants.
 //
-// These constants define the permanent, immutable identity of each provider
-// in the gateway. They are used as:
-//   - Registry keys (providers.Registry.Get / Register)
-//   - Routing config target names (gateway_configs, config.yaml "provider:" field)
-//   - Provider name returned by Provider.Name()
-//   - Log / metric labels
+// Each constant is sourced directly from its provider subpackage — the
+// subpackage is the single source of truth for its own identity string.
+// These re-exports exist so that code importing the root providers package
+// can use providers.NameOpenAI etc. without knowing the subpackage paths.
 //
 // IMPORTANT: These values are a stable public contract.
 // Changing any constant value is a BREAKING CHANGE that invalidates:
@@ -15,70 +35,65 @@ package providers
 //   - YAML / JSON gateway config files
 //   - Client code that matches on provider name strings
 //
-// To add a new provider: add a new constant here, use it in the provider
-// struct initialisation (Base{name: NameXxx, ...}), and add it to the
-// AllProviders registry in factory.go.
+// To add a new provider: add a constant here re-exporting from the new
+// subpackage, and add its ProviderEntry to providers_list.go.
 const (
 	// NameOpenAI is the canonical name for the OpenAI provider.
-	NameOpenAI = "openai"
+	NameOpenAI = openaipkg.Name
 
 	// NameAnthropic is the canonical name for the Anthropic provider.
-	NameAnthropic = "anthropic"
+	NameAnthropic = anthropicpkg.Name
 
 	// NameGemini is the canonical name for the Google Gemini provider.
-	NameGemini = "gemini"
+	NameGemini = geminipkg.Name
 
 	// NameGroq is the canonical name for the Groq provider.
-	NameGroq = "groq"
+	NameGroq = groqpkg.Name
 
 	// NameTogether is the canonical name for the Together AI provider.
-	NameTogether = "together"
+	NameTogether = togetherpkg.Name
 
 	// NameMistral is the canonical name for the Mistral AI provider.
-	NameMistral = "mistral"
+	NameMistral = mistralpkg.Name
 
 	// NameCohere is the canonical name for the Cohere provider.
-	NameCohere = "cohere"
+	NameCohere = coherepkg.Name
 
 	// NameDeepSeek is the canonical name for the DeepSeek provider.
-	NameDeepSeek = "deepseek"
+	NameDeepSeek = deepseekpkg.Name
 
 	// NamePerplexity is the canonical name for the Perplexity provider.
-	NamePerplexity = "perplexity"
+	NamePerplexity = perplexitypkg.Name
 
 	// NameFireworks is the canonical name for the Fireworks AI provider.
-	NameFireworks = "fireworks"
+	NameFireworks = fireworkspkg.Name
 
 	// NameAI21 is the canonical name for the AI21 Labs provider.
-	NameAI21 = "ai21"
+	NameAI21 = ai21pkg.Name
 
 	// NameXAI is the canonical name for the xAI (Grok) provider.
-	NameXAI = "xai"
+	NameXAI = xaipkg.Name
 
 	// NameAzureOpenAI is the canonical name for the Azure OpenAI provider.
-	// Note: uses a hyphen, not an underscore.
-	NameAzureOpenAI = "azure-openai"
+	NameAzureOpenAI = azureopenaipkg.Name
 
 	// NameAzureFoundry is the canonical name for the Azure AI Foundry provider.
-	// Note: uses a hyphen, not an underscore.
-	NameAzureFoundry = "azure-foundry"
+	NameAzureFoundry = azurefoundrypkg.Name
 
 	// NameVertexAI is the canonical name for the Google Vertex AI provider.
-	// Note: uses a hyphen, not an underscore.
-	NameVertexAI = "vertex-ai"
+	NameVertexAI = vertexaipkg.Name
 
 	// NameHuggingFace is the canonical name for the Hugging Face provider.
-	// Note: uses a hyphen, not an underscore.
-	NameHuggingFace = "hugging-face"
+	NameHuggingFace = huggingfacepkg.Name
 
 	// NameBedrock is the canonical name for the AWS Bedrock provider.
-	NameBedrock = "bedrock"
+	NameBedrock = bedrockpkg.Name
 
 	// NameOllama is the canonical name for the Ollama (local) provider.
-	NameOllama = "ollama"
+	NameOllama = ollamapkg.Name
 
 	// NameReplicate is the canonical name for the Replicate provider.
-	NameReplicate = "replicate"
+	NameReplicate = replicatepkg.Name
 )
 
 // AllProviderNames returns every registered canonical provider name in a

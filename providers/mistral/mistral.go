@@ -16,7 +16,7 @@ import (
 
 const (
 	// Name is the canonical identifier for the Mistral provider.
-	// Must match providers.NameMistral — verified by stability_test.go.
+	// Re-exported as providers.NameMistral in providers/names.go.
 	Name           = "mistral"
 	defaultBaseURL = "https://api.mistral.ai"
 )

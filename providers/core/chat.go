@@ -5,81 +5,6 @@ import (
 	"errors"
 )
 
-// Message role constants used across multiple providers.
-const (
-	RoleUser      = "user"
-	RoleAssistant = "assistant"
-	RoleSystem    = "system"
-	RoleTool      = "tool"
-
-	// ContentTypeText is the content-part type for plain text (multimodal messages).
-	ContentTypeText = "text"
-
-	// SSEDone is the sentinel value that marks the end of a server-sent event stream.
-	SSEDone = "[DONE]"
-)
-
-// --------------------------------------------------------------- Embeddings --
-
-// EmbeddingRequest mirrors the OpenAI /v1/embeddings request schema.
-type EmbeddingRequest struct {
-	Model          string      `json:"model"`
-	Input          interface{} `json:"input"` // string or []string
-	EncodingFormat string      `json:"encoding_format,omitempty"`
-	Dimensions     *int        `json:"dimensions,omitempty"`
-	User           string      `json:"user,omitempty"`
-}
-
-// EmbeddingResponse mirrors the OpenAI /v1/embeddings response schema.
-type EmbeddingResponse struct {
-	Object string         `json:"object"`
-	Data   []Embedding    `json:"data"`
-	Model  string         `json:"model"`
-	Usage  EmbeddingUsage `json:"usage"`
-}
-
-// Embedding holds a single embedding vector and its index.
-type Embedding struct {
-	Object    string    `json:"object"`
-	Embedding []float64 `json:"embedding"`
-	Index     int       `json:"index"`
-}
-
-// EmbeddingUsage carries token consumption for an embedding request.
-type EmbeddingUsage struct {
-	PromptTokens int `json:"prompt_tokens"`
-	TotalTokens  int `json:"total_tokens"`
-}
-
-// ---------------------------------------------------------- Image Generation --
-
-// ImageRequest mirrors the OpenAI /v1/images/generations request schema.
-type ImageRequest struct {
-	Model          string `json:"model"`
-	Prompt         string `json:"prompt"`
-	N              *int   `json:"n,omitempty"`
-	Size           string `json:"size,omitempty"`
-	ResponseFormat string `json:"response_format,omitempty"` // "url" | "b64_json"
-	Quality        string `json:"quality,omitempty"`
-	Style          string `json:"style,omitempty"`
-	User           string `json:"user,omitempty"`
-}
-
-// ImageResponse mirrors the OpenAI /v1/images/generations response schema.
-type ImageResponse struct {
-	Created int64            `json:"created"`
-	Data    []GeneratedImage `json:"data"`
-}
-
-// GeneratedImage holds the result of a single image generation.
-type GeneratedImage struct {
-	URL           string `json:"url,omitempty"`
-	B64JSON       string `json:"b64_json,omitempty"`
-	RevisedPrompt string `json:"revised_prompt,omitempty"`
-}
-
-// ------------------------------------------------------------------ types ---
-
 // ContentPart is a single element of a multipart message content array.
 // Used for vision/multimodal requests where content contains text and images.
 type ContentPart struct {
@@ -127,8 +52,6 @@ type ResponseFormat struct {
 	Type       string          `json:"type"`                  // "text" | "json_object" | "json_schema"
 	JSONSchema json.RawMessage `json:"json_schema,omitempty"` // required when type="json_schema"
 }
-
-// ----------------------------------------------------------------- Message ---
 
 // Message represents a single turn in a conversation.
 //
@@ -220,8 +143,6 @@ func (m *Message) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-// ----------------------------------------------------------------- Request ---
-
 // Request represents a chat completion request sent to the gateway.
 // Fields map 1-to-1 with the OpenAI Chat Completions API so that any
 // OpenAI-compatible client works without modification.
@@ -296,8 +217,6 @@ func (r Request) Validate() error {
 	return nil
 }
 
-// ----------------------------------------------------------------- Response --
-
 // Response represents a chat completion response normalised across providers.
 type Response struct {
 	ID       string   `json:"id"`
@@ -316,34 +235,6 @@ type Choice struct {
 	FinishReason string  `json:"finish_reason"`
 }
 
-// StreamChunk represents a single SSE chunk in a streaming response.
-type StreamChunk struct {
-	ID      string         `json:"id"`
-	Object  string         `json:"object"`
-	Created int64          `json:"created"`
-	Model   string         `json:"model"`
-	Choices []StreamChoice `json:"choices"`
-	// Usage is populated in the final chunk by providers that support streaming
-	// usage reporting (e.g. OpenAI with stream_options.include_usage=true);
-	// non-final chunks leave this nil so it is omitted from SSE payloads.
-	Usage *Usage `json:"usage,omitempty"`
-	Error error  `json:"-"` // non-nil signals a stream failure
-}
-
-// StreamChoice is a single choice in a streaming chunk.
-type StreamChoice struct {
-	Index        int          `json:"index"`
-	Delta        MessageDelta `json:"delta"`
-	FinishReason string       `json:"finish_reason,omitempty"`
-}
-
-// MessageDelta carries incremental content in a streaming response.
-type MessageDelta struct {
-	Role      string     `json:"role,omitempty"`
-	Content   string     `json:"content,omitempty"`
-	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
-}
-
 // Usage carries token consumption statistics.
 type Usage struct {
 	PromptTokens     int `json:"prompt_tokens"`
@@ -353,27 +244,4 @@ type Usage struct {
 	ReasoningTokens  int `json:"reasoning_tokens,omitempty"`
 	CacheReadTokens  int `json:"cache_read_tokens,omitempty"`
 	CacheWriteTokens int `json:"cache_write_tokens,omitempty"`
-}
-
-// ModelInfo describes a single model offered by a provider.
-// Fields match the OpenAI /v1/models response schema.
-type ModelInfo struct {
-	ID      string `json:"id"`
-	Object  string `json:"object"`
-	Created int64  `json:"created"`
-	OwnedBy string `json:"owned_by"`
-}
-
-// ModelsFromList builds a ModelInfo slice from a list of model IDs.
-// Provider subpackages call this to avoid repeating boilerplate in Models().
-func ModelsFromList(providerName string, ids []string) []ModelInfo {
-	models := make([]ModelInfo, len(ids))
-	for i, id := range ids {
-		models[i] = ModelInfo{
-			ID:      id,
-			Object:  "model",
-			OwnedBy: providerName,
-		}
-	}
-	return models
 }

@@ -16,7 +16,7 @@ import (
 
 const (
 	// Name is the canonical identifier for the DeepSeek provider.
-	// Must match providers.NameDeepSeek — verified by stability_test.go.
+	// Re-exported as providers.NameDeepSeek in providers/names.go.
 	Name           = "deepseek"
 	defaultBaseURL = "https://api.deepseek.com"
 )
