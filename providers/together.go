@@ -17,6 +17,13 @@ type TogetherProvider struct {
 	httpClient *http.Client
 }
 
+// Compile-time interface assertions — verified at compile time.
+var (
+	_ Provider          = (*TogetherProvider)(nil)
+	_ StreamProvider    = (*TogetherProvider)(nil)
+	_ ProxiableProvider = (*TogetherProvider)(nil)
+)
+
 // NewTogether creates a new Together AI provider.
 func NewTogether(apiKey string, baseURL string) (*TogetherProvider, error) {
 	if baseURL == "" {
@@ -25,7 +32,7 @@ func NewTogether(apiKey string, baseURL string) (*TogetherProvider, error) {
 	baseURL = strings.TrimRight(baseURL, "/")
 
 	return &TogetherProvider{
-		Base:       Base{name: "together", apiKey: apiKey, baseURL: baseURL},
+		Base:       Base{name: NameTogether, apiKey: apiKey, baseURL: baseURL},
 		httpClient: &http.Client{},
 	}, nil
 }

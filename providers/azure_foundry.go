@@ -18,6 +18,13 @@ type AzureFoundryProvider struct {
 	apiVersion string
 }
 
+// Compile-time interface assertions — verified at compile time.
+var (
+	_ Provider          = (*AzureFoundryProvider)(nil)
+	_ StreamProvider    = (*AzureFoundryProvider)(nil)
+	_ ProxiableProvider = (*AzureFoundryProvider)(nil)
+)
+
 // NewAzureFoundry creates a new Azure AI Foundry provider.
 func NewAzureFoundry(apiKey string, baseURL string, apiVersion string) (*AzureFoundryProvider, error) {
 	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
@@ -29,7 +36,7 @@ func NewAzureFoundry(apiKey string, baseURL string, apiVersion string) (*AzureFo
 	}
 
 	return &AzureFoundryProvider{
-		Base:       Base{name: "azure-foundry", apiKey: apiKey, baseURL: baseURL},
+		Base:       Base{name: NameAzureFoundry, apiKey: apiKey, baseURL: baseURL},
 		httpClient: &http.Client{},
 		apiVersion: apiVersion,
 	}, nil

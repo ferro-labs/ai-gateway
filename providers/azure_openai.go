@@ -19,6 +19,13 @@ type AzureOpenAIProvider struct {
 	apiVersion     string
 }
 
+// Compile-time interface assertions — verified at compile time.
+var (
+	_ Provider          = (*AzureOpenAIProvider)(nil)
+	_ StreamProvider    = (*AzureOpenAIProvider)(nil)
+	_ ProxiableProvider = (*AzureOpenAIProvider)(nil)
+)
+
 // NewAzureOpenAI creates a new Azure OpenAI provider.
 func NewAzureOpenAI(apiKey string, baseURL string, deploymentName string, apiVersion string) (*AzureOpenAIProvider, error) {
 	baseURL = strings.TrimRight(baseURL, "/")
@@ -27,7 +34,7 @@ func NewAzureOpenAI(apiKey string, baseURL string, deploymentName string, apiVer
 	}
 
 	return &AzureOpenAIProvider{
-		Base:           Base{name: "azure-openai", apiKey: apiKey, baseURL: baseURL},
+		Base:           Base{name: NameAzureOpenAI, apiKey: apiKey, baseURL: baseURL},
 		httpClient:     &http.Client{},
 		deploymentName: deploymentName,
 		apiVersion:     apiVersion,

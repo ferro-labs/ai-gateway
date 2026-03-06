@@ -17,6 +17,13 @@ type CohereProvider struct {
 	httpClient *http.Client
 }
 
+// Compile-time interface assertions — verified at compile time.
+var (
+	_ Provider          = (*CohereProvider)(nil)
+	_ StreamProvider    = (*CohereProvider)(nil)
+	_ ProxiableProvider = (*CohereProvider)(nil)
+)
+
 // NewCohere creates a new Cohere provider.
 func NewCohere(apiKey string, baseURL string) (*CohereProvider, error) {
 	if baseURL == "" {
@@ -25,7 +32,7 @@ func NewCohere(apiKey string, baseURL string) (*CohereProvider, error) {
 	baseURL = strings.TrimRight(baseURL, "/")
 
 	return &CohereProvider{
-		Base:       Base{name: "cohere", apiKey: apiKey, baseURL: baseURL},
+		Base:       Base{name: NameCohere, apiKey: apiKey, baseURL: baseURL},
 		httpClient: &http.Client{},
 	}, nil
 }

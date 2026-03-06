@@ -32,6 +32,13 @@ type BedrockOptions struct {
 	SessionToken    string
 }
 
+// Compile-time interface assertions — verified at compile time.
+var (
+	_ Provider          = (*BedrockProvider)(nil)
+	_ StreamProvider    = (*BedrockProvider)(nil)
+	_ ProxiableProvider = (*BedrockProvider)(nil)
+)
+
 // NewBedrock creates a new AWS Bedrock provider.
 // region defaults to us-east-1.
 func NewBedrock(region string) (*BedrockProvider, error) {
@@ -69,7 +76,7 @@ func NewBedrockWithOptions(opts BedrockOptions) (*BedrockProvider, error) {
 
 	client := bedrockruntime.NewFromConfig(cfg)
 	return &BedrockProvider{
-		Base:   Base{name: "bedrock", apiKey: "", baseURL: ""},
+		Base:   Base{name: NameBedrock, apiKey: "", baseURL: ""},
 		client: client,
 		region: region,
 	}, nil

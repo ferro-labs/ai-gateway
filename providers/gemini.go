@@ -17,6 +17,13 @@ type GeminiProvider struct {
 	httpClient *http.Client
 }
 
+// Compile-time interface assertions — verified at compile time.
+var (
+	_ Provider          = (*GeminiProvider)(nil)
+	_ StreamProvider    = (*GeminiProvider)(nil)
+	_ ProxiableProvider = (*GeminiProvider)(nil)
+)
+
 // NewGemini creates a new Google Gemini provider.
 func NewGemini(apiKey string, baseURL string) (*GeminiProvider, error) {
 	if baseURL == "" {
@@ -25,7 +32,7 @@ func NewGemini(apiKey string, baseURL string) (*GeminiProvider, error) {
 	baseURL = strings.TrimRight(baseURL, "/")
 
 	return &GeminiProvider{
-		Base:       Base{name: "gemini", apiKey: apiKey, baseURL: baseURL},
+		Base:       Base{name: NameGemini, apiKey: apiKey, baseURL: baseURL},
 		httpClient: &http.Client{},
 	}, nil
 }

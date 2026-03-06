@@ -292,154 +292,44 @@ func loadConfig() *aigateway.Config {
 func registerProviders() *providers.Registry {
 	registry := providers.NewRegistry()
 
-	type providerEntry struct {
-		envKey string
-		name   string
-		create func(key, baseURL string) (providers.Provider, error)
-	}
-	autoProviders := []providerEntry{
-		{"OPENAI_API_KEY", "openai", func(k, b string) (providers.Provider, error) { return providers.NewOpenAI(k, b) }},
-		{"ANTHROPIC_API_KEY", "anthropic", func(k, b string) (providers.Provider, error) { return providers.NewAnthropic(k, b) }},
-		{"XAI_API_KEY", "xai", func(k, b string) (providers.Provider, error) { return providers.NewXAI(k, b) }},
-		{"GROQ_API_KEY", "groq", func(k, b string) (providers.Provider, error) { return providers.NewGroq(k, b) }},
-		{"TOGETHER_API_KEY", "together", func(k, b string) (providers.Provider, error) { return providers.NewTogether(k, b) }},
-		{"GEMINI_API_KEY", "gemini", func(k, b string) (providers.Provider, error) { return providers.NewGemini(k, b) }},
-		{"MISTRAL_API_KEY", "mistral", func(k, b string) (providers.Provider, error) { return providers.NewMistral(k, b) }},
-		{"COHERE_API_KEY", "cohere", func(k, b string) (providers.Provider, error) { return providers.NewCohere(k, b) }},
-		{"DEEPSEEK_API_KEY", "deepseek", func(k, b string) (providers.Provider, error) { return providers.NewDeepSeek(k, b) }},
-		{"PERPLEXITY_API_KEY", "perplexity", func(k, b string) (providers.Provider, error) { return providers.NewPerplexity(k, b) }},
-		{"FIREWORKS_API_KEY", "fireworks", func(k, b string) (providers.Provider, error) { return providers.NewFireworks(k, b) }},
-		{"AI21_API_KEY", "ai21", func(k, b string) (providers.Provider, error) { return providers.NewAI21(k, b) }},
-	}
-	for _, pe := range autoProviders {
-		if key := os.Getenv(pe.envKey); key != "" {
-			p, err := pe.create(key, "")
-			if err != nil {
-				logging.Logger.Error("provider init failed", "provider", pe.name, "error", err)
-				os.Exit(1)
-			}
-			registry.Register(p)
-			logging.Logger.Info("provider registered", "provider", pe.name)
+	// Register all providers whose required environment variables are set.
+	// Each ProviderEntry in providers.AllProviders() declares its own env var
+	// mappings and Build function — no special-casing per provider needed here,
+	// except for AWS Bedrock which uses a multi-key "configured?" gate.
+	for _, entry := range providers.AllProviders() {
+		if entry.ID == providers.NameBedrock {
+			continue // handled below with its dual-key detection
 		}
-	}
 
-	// Azure OpenAI requires additional config.
-	if key := os.Getenv("AZURE_OPENAI_API_KEY"); key != "" {
-		baseURL := os.Getenv("AZURE_OPENAI_ENDPOINT")
-		deployment := os.Getenv("AZURE_OPENAI_DEPLOYMENT")
-		apiVersion := os.Getenv("AZURE_OPENAI_API_VERSION")
-		if baseURL != "" && deployment != "" {
-			p, err := providers.NewAzureOpenAI(key, baseURL, deployment, apiVersion)
-			if err != nil {
-				logging.Logger.Error("provider init failed", "provider", "azure-openai", "error", err)
-				os.Exit(1)
-			}
-			registry.Register(p)
-			logging.Logger.Info("provider registered", "provider", "azure-openai")
-		} else {
-			logging.Logger.Warn("AZURE_OPENAI_API_KEY set but AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_DEPLOYMENT are required")
+		cfg := providers.ProviderConfigFromEnv(entry)
+		if cfg == nil {
+			continue // required env var unset — provider not configured, skip silently
 		}
-	}
 
-	// Azure Foundry requires endpoint and API key.
-	if key := os.Getenv("AZURE_FOUNDRY_API_KEY"); key != "" {
-		baseURL := os.Getenv("AZURE_FOUNDRY_ENDPOINT")
-		apiVersion := os.Getenv("AZURE_FOUNDRY_API_VERSION")
-		if baseURL != "" {
-			p, err := providers.NewAzureFoundry(key, baseURL, apiVersion)
-			if err != nil {
-				logging.Logger.Error("provider init failed", "provider", "azure-foundry", "error", err)
-				os.Exit(1)
-			}
-			registry.Register(p)
-			logging.Logger.Info("provider registered", "provider", "azure-foundry")
-		} else {
-			logging.Logger.Warn("AZURE_FOUNDRY_API_KEY set but AZURE_FOUNDRY_ENDPOINT is required")
-		}
-	}
-
-	// Vertex AI supports API key mode and service account mode.
-	if projectID := os.Getenv("VERTEX_AI_PROJECT_ID"); projectID != "" {
-		region := os.Getenv("VERTEX_AI_REGION")
-		apiKey := os.Getenv("VERTEX_AI_API_KEY")
-		serviceAccountJSON := os.Getenv("VERTEX_AI_SERVICE_ACCOUNT_JSON")
-		if region != "" && (apiKey != "" || serviceAccountJSON != "") {
-			p, err := providers.NewVertexAI(providers.VertexAIOptions{
-				ProjectID:          projectID,
-				Region:             region,
-				APIKey:             apiKey,
-				ServiceAccountJSON: serviceAccountJSON,
-			})
-			if err != nil {
-				logging.Logger.Error("provider init failed", "provider", "vertex-ai", "error", err)
-				os.Exit(1)
-			}
-			registry.Register(p)
-			logging.Logger.Info("provider registered", "provider", "vertex-ai", "region", region)
-		} else {
-			logging.Logger.Warn("VERTEX_AI_PROJECT_ID set but VERTEX_AI_REGION and either VERTEX_AI_API_KEY or VERTEX_AI_SERVICE_ACCOUNT_JSON are required")
-		}
-	}
-
-	// Hugging Face supports shared and dedicated inference endpoints.
-	if key := os.Getenv("HUGGING_FACE_API_KEY"); key != "" {
-		baseURL := os.Getenv("HUGGING_FACE_ENDPOINT")
-		p, err := providers.NewHuggingFace(key, baseURL)
+		p, err := entry.Build(cfg)
 		if err != nil {
-			logging.Logger.Error("provider init failed", "provider", "hugging-face", "error", err)
+			logging.Logger.Error("provider init failed", "provider", entry.ID, "error", err)
 			os.Exit(1)
 		}
 		registry.Register(p)
-		logging.Logger.Info("provider registered", "provider", "hugging-face")
+		logging.Logger.Info("provider registered", "provider", entry.ID)
 	}
 
-	// Ollama is local and needs no API key.
-	if ollamaURL := os.Getenv("OLLAMA_HOST"); ollamaURL != "" {
-		var models []string
-		if m := os.Getenv("OLLAMA_MODELS"); m != "" {
-			models = strings.Split(m, ",")
-		}
-		p, err := providers.NewOllama(ollamaURL, models)
-		if err != nil {
-			logging.Logger.Error("provider init failed", "provider", "ollama", "error", err)
-			os.Exit(1)
-		}
-		registry.Register(p)
-		logging.Logger.Info("provider registered", "provider", "ollama", "models", p.SupportedModels())
-	}
-
-	// Replicate requires an API token and optional model lists.
-	if token := os.Getenv("REPLICATE_API_TOKEN"); token != "" {
-		var textModels, imageModels []string
-		if m := os.Getenv("REPLICATE_TEXT_MODELS"); m != "" {
-			textModels = strings.Split(m, ",")
-		}
-		if m := os.Getenv("REPLICATE_IMAGE_MODELS"); m != "" {
-			imageModels = strings.Split(m, ",")
-		}
-		p, err := providers.NewReplicate(token, "", textModels, imageModels)
-		if err != nil {
-			logging.Logger.Error("provider init failed", "provider", "replicate", "error", err)
-			os.Exit(1)
-		}
-		registry.Register(p)
-		logging.Logger.Info("provider registered", "provider", "replicate")
-	}
-
-	// AWS Bedrock uses the AWS credential chain (env vars, ~/.aws/credentials, IAM roles).
+	// AWS Bedrock: register if AWS_REGION or AWS_ACCESS_KEY_ID is set.
+	// Accepts instance-role auth (no key vars) as long as AWS_REGION is set,
+	// or explicit static credentials when AWS_ACCESS_KEY_ID is present.
 	if region := os.Getenv("AWS_REGION"); region != "" || os.Getenv("AWS_ACCESS_KEY_ID") != "" {
-		bedrockOpts := providers.BedrockOptions{
+		p, err := providers.NewBedrockWithOptions(providers.BedrockOptions{
 			Region:          os.Getenv("AWS_REGION"),
 			AccessKeyID:     os.Getenv("AWS_ACCESS_KEY_ID"),
 			SecretAccessKey: os.Getenv("AWS_SECRET_ACCESS_KEY"),
 			SessionToken:    os.Getenv("AWS_SESSION_TOKEN"),
-		}
-		p, err := providers.NewBedrockWithOptions(bedrockOpts)
+		})
 		if err != nil {
-			logging.Logger.Error("provider init failed", "provider", "bedrock", "error", err)
+			logging.Logger.Error("provider init failed", "provider", providers.NameBedrock, "error", err)
 		} else {
 			registry.Register(p)
-			logging.Logger.Info("provider registered", "provider", "bedrock", "region", bedrockOpts.Region)
+			logging.Logger.Info("provider registered", "provider", providers.NameBedrock, "region", os.Getenv("AWS_REGION"))
 		}
 	}
 

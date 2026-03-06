@@ -17,6 +17,13 @@ type AnthropicProvider struct {
 	httpClient *http.Client
 }
 
+// Compile-time interface assertions — verified at compile time.
+var (
+	_ Provider          = (*AnthropicProvider)(nil)
+	_ StreamProvider    = (*AnthropicProvider)(nil)
+	_ ProxiableProvider = (*AnthropicProvider)(nil)
+)
+
 // NewAnthropic creates a new Anthropic provider. The optional baseURL parameter
 // allows overriding the API endpoint (pass "" for the default).
 func NewAnthropic(apiKey string, baseURL string) (*AnthropicProvider, error) {
@@ -26,7 +33,7 @@ func NewAnthropic(apiKey string, baseURL string) (*AnthropicProvider, error) {
 	baseURL = strings.TrimRight(baseURL, "/")
 
 	return &AnthropicProvider{
-		Base:       Base{name: "anthropic", apiKey: apiKey, baseURL: baseURL},
+		Base:       Base{name: NameAnthropic, apiKey: apiKey, baseURL: baseURL},
 		httpClient: &http.Client{},
 	}, nil
 }

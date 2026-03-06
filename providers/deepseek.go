@@ -17,6 +17,13 @@ type DeepSeekProvider struct {
 	httpClient *http.Client
 }
 
+// Compile-time interface assertions — verified at compile time.
+var (
+	_ Provider          = (*DeepSeekProvider)(nil)
+	_ StreamProvider    = (*DeepSeekProvider)(nil)
+	_ ProxiableProvider = (*DeepSeekProvider)(nil)
+)
+
 // NewDeepSeek creates a new DeepSeek provider.
 func NewDeepSeek(apiKey string, baseURL string) (*DeepSeekProvider, error) {
 	if baseURL == "" {
@@ -25,7 +32,7 @@ func NewDeepSeek(apiKey string, baseURL string) (*DeepSeekProvider, error) {
 	baseURL = strings.TrimRight(baseURL, "/")
 
 	return &DeepSeekProvider{
-		Base:       Base{name: "deepseek", apiKey: apiKey, baseURL: baseURL},
+		Base:       Base{name: NameDeepSeek, apiKey: apiKey, baseURL: baseURL},
 		httpClient: &http.Client{},
 	}, nil
 }

@@ -18,6 +18,13 @@ type OllamaProvider struct {
 	models     []string
 }
 
+// Compile-time interface assertions — verified at compile time.
+var (
+	_ Provider          = (*OllamaProvider)(nil)
+	_ StreamProvider    = (*OllamaProvider)(nil)
+	_ ProxiableProvider = (*OllamaProvider)(nil)
+)
+
 // NewOllama creates a new Ollama provider.
 func NewOllama(baseURL string, models []string) (*OllamaProvider, error) {
 	if baseURL == "" {
@@ -30,7 +37,7 @@ func NewOllama(baseURL string, models []string) (*OllamaProvider, error) {
 	}
 
 	return &OllamaProvider{
-		Base:       Base{name: "ollama", baseURL: baseURL},
+		Base:       Base{name: NameOllama, baseURL: baseURL},
 		httpClient: &http.Client{},
 		models:     models,
 	}, nil

@@ -16,6 +16,15 @@ type OpenAIProvider struct {
 	client openai.Client
 }
 
+// Compile-time interface assertions — verified at compile time.
+var (
+	_ Provider          = (*OpenAIProvider)(nil)
+	_ StreamProvider    = (*OpenAIProvider)(nil)
+	_ EmbeddingProvider = (*OpenAIProvider)(nil)
+	_ ImageProvider     = (*OpenAIProvider)(nil)
+	_ ProxiableProvider = (*OpenAIProvider)(nil)
+)
+
 // NewOpenAI creates a new OpenAI provider. The optional baseURL parameter
 // allows overriding the API endpoint (pass "" for the default).
 func NewOpenAI(apiKey string, baseURL string) (*OpenAIProvider, error) {
@@ -29,7 +38,7 @@ func NewOpenAI(apiKey string, baseURL string) (*OpenAIProvider, error) {
 	}
 	client := openai.NewClient(opts...)
 	return &OpenAIProvider{
-		Base:   Base{name: "openai", apiKey: apiKey, baseURL: resolvedBase},
+		Base:   Base{name: NameOpenAI, apiKey: apiKey, baseURL: resolvedBase},
 		client: client,
 	}, nil
 }

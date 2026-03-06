@@ -17,6 +17,14 @@ type XAIProvider struct {
 	httpClient *http.Client
 }
 
+// Compile-time interface assertions — verified at compile time.
+var (
+	_ Provider          = (*XAIProvider)(nil)
+	_ StreamProvider    = (*XAIProvider)(nil)
+	_ DiscoveryProvider = (*XAIProvider)(nil)
+	_ ProxiableProvider = (*XAIProvider)(nil)
+)
+
 // NewXAI creates a new xAI provider.
 func NewXAI(apiKey, baseURL string) (*XAIProvider, error) {
 	if baseURL == "" {
@@ -25,7 +33,7 @@ func NewXAI(apiKey, baseURL string) (*XAIProvider, error) {
 	baseURL = strings.TrimRight(baseURL, "/")
 
 	return &XAIProvider{
-		Base:       Base{name: "xai", apiKey: apiKey, baseURL: baseURL},
+		Base:       Base{name: NameXAI, apiKey: apiKey, baseURL: baseURL},
 		httpClient: &http.Client{},
 	}, nil
 }

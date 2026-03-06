@@ -26,6 +26,13 @@ type ReplicateProvider struct {
 	imageModels []string
 }
 
+// Compile-time interface assertions — verified at compile time.
+var (
+	_ Provider          = (*ReplicateProvider)(nil)
+	_ ImageProvider     = (*ReplicateProvider)(nil)
+	_ ProxiableProvider = (*ReplicateProvider)(nil)
+)
+
 // NewReplicate creates a new Replicate provider.
 // textModels and imageModels should be "owner/name" or "owner/name:version" paths.
 func NewReplicate(apiToken, baseURL string, textModels, imageModels []string) (*ReplicateProvider, error) {
@@ -50,7 +57,7 @@ func NewReplicate(apiToken, baseURL string, textModels, imageModels []string) (*
 	}
 
 	return &ReplicateProvider{
-		Base:        Base{name: "replicate", apiKey: apiToken, baseURL: baseURL},
+		Base:        Base{name: NameReplicate, apiKey: apiToken, baseURL: baseURL},
 		httpClient:  &http.Client{},
 		textModels:  textModels,
 		imageModels: imageModels,

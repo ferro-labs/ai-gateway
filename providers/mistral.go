@@ -17,6 +17,13 @@ type MistralProvider struct {
 	httpClient *http.Client
 }
 
+// Compile-time interface assertions — verified at compile time.
+var (
+	_ Provider          = (*MistralProvider)(nil)
+	_ StreamProvider    = (*MistralProvider)(nil)
+	_ ProxiableProvider = (*MistralProvider)(nil)
+)
+
 // NewMistral creates a new Mistral AI provider.
 func NewMistral(apiKey string, baseURL string) (*MistralProvider, error) {
 	if baseURL == "" {
@@ -25,7 +32,7 @@ func NewMistral(apiKey string, baseURL string) (*MistralProvider, error) {
 	baseURL = strings.TrimRight(baseURL, "/")
 
 	return &MistralProvider{
-		Base:       Base{name: "mistral", apiKey: apiKey, baseURL: baseURL},
+		Base:       Base{name: NameMistral, apiKey: apiKey, baseURL: baseURL},
 		httpClient: &http.Client{},
 	}, nil
 }

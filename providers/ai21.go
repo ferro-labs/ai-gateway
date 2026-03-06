@@ -19,6 +19,13 @@ type AI21Provider struct {
 	httpClient *http.Client
 }
 
+// Compile-time interface assertions — verified at compile time.
+var (
+	_ Provider          = (*AI21Provider)(nil)
+	_ StreamProvider    = (*AI21Provider)(nil)
+	_ ProxiableProvider = (*AI21Provider)(nil)
+)
+
 // NewAI21 creates a new AI21 provider.
 func NewAI21(apiKey, baseURL string) (*AI21Provider, error) {
 	if baseURL == "" {
@@ -26,7 +33,7 @@ func NewAI21(apiKey, baseURL string) (*AI21Provider, error) {
 	}
 	baseURL = strings.TrimRight(baseURL, "/")
 	return &AI21Provider{
-		Base:       Base{name: "ai21", apiKey: apiKey, baseURL: baseURL},
+		Base:       Base{name: NameAI21, apiKey: apiKey, baseURL: baseURL},
 		httpClient: &http.Client{},
 	}, nil
 }

@@ -17,6 +17,14 @@ type FireworksProvider struct {
 	httpClient *http.Client
 }
 
+// Compile-time interface assertions — verified at compile time.
+var (
+	_ Provider          = (*FireworksProvider)(nil)
+	_ StreamProvider    = (*FireworksProvider)(nil)
+	_ DiscoveryProvider = (*FireworksProvider)(nil)
+	_ ProxiableProvider = (*FireworksProvider)(nil)
+)
+
 // NewFireworks creates a new Fireworks AI provider.
 func NewFireworks(apiKey, baseURL string) (*FireworksProvider, error) {
 	if baseURL == "" {
@@ -24,7 +32,7 @@ func NewFireworks(apiKey, baseURL string) (*FireworksProvider, error) {
 	}
 	baseURL = strings.TrimRight(baseURL, "/")
 	return &FireworksProvider{
-		Base:       Base{name: "fireworks", apiKey: apiKey, baseURL: baseURL},
+		Base:       Base{name: NameFireworks, apiKey: apiKey, baseURL: baseURL},
 		httpClient: &http.Client{},
 	}, nil
 }

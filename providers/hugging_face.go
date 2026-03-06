@@ -18,6 +18,16 @@ type HuggingFaceProvider struct {
 	httpClient *http.Client
 }
 
+// Compile-time interface assertions — verified at compile time.
+var (
+	_ Provider          = (*HuggingFaceProvider)(nil)
+	_ StreamProvider    = (*HuggingFaceProvider)(nil)
+	_ EmbeddingProvider = (*HuggingFaceProvider)(nil)
+	_ ImageProvider     = (*HuggingFaceProvider)(nil)
+	_ DiscoveryProvider = (*HuggingFaceProvider)(nil)
+	_ ProxiableProvider = (*HuggingFaceProvider)(nil)
+)
+
 // NewHuggingFace creates a new Hugging Face provider.
 // If baseURL is empty, the shared Inference API is used.
 func NewHuggingFace(apiKey string, baseURL string) (*HuggingFaceProvider, error) {
@@ -27,7 +37,7 @@ func NewHuggingFace(apiKey string, baseURL string) (*HuggingFaceProvider, error)
 	baseURL = strings.TrimRight(baseURL, "/")
 
 	return &HuggingFaceProvider{
-		Base:       Base{name: "hugging-face", apiKey: apiKey, baseURL: baseURL},
+		Base:       Base{name: NameHuggingFace, apiKey: apiKey, baseURL: baseURL},
 		httpClient: &http.Client{},
 	}, nil
 }

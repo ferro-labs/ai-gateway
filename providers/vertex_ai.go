@@ -29,6 +29,13 @@ type VertexAIProvider struct {
 	tokenSource oauth2.TokenSource
 }
 
+// Compile-time interface assertions — verified at compile time.
+var (
+	_ Provider          = (*VertexAIProvider)(nil)
+	_ StreamProvider    = (*VertexAIProvider)(nil)
+	_ ProxiableProvider = (*VertexAIProvider)(nil)
+)
+
 // NewVertexAI creates a new Vertex AI provider.
 // Supports API key mode and service-account JSON mode.
 func NewVertexAI(opts VertexAIOptions) (*VertexAIProvider, error) {
@@ -58,7 +65,7 @@ func NewVertexAI(opts VertexAIOptions) (*VertexAIProvider, error) {
 
 	baseURL := fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/endpoints/openapi", region, projectID, region)
 	return &VertexAIProvider{
-		Base:        Base{name: "vertex-ai", apiKey: apiKey, baseURL: baseURL},
+		Base:        Base{name: NameVertexAI, apiKey: apiKey, baseURL: baseURL},
 		httpClient:  &http.Client{},
 		tokenSource: tokenSource,
 	}, nil

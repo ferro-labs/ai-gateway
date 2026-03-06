@@ -17,6 +17,14 @@ type PerplexityProvider struct {
 	httpClient *http.Client
 }
 
+// Compile-time interface assertions — verified at compile time.
+var (
+	_ Provider          = (*PerplexityProvider)(nil)
+	_ StreamProvider    = (*PerplexityProvider)(nil)
+	_ DiscoveryProvider = (*PerplexityProvider)(nil)
+	_ ProxiableProvider = (*PerplexityProvider)(nil)
+)
+
 // NewPerplexity creates a new Perplexity provider.
 func NewPerplexity(apiKey, baseURL string) (*PerplexityProvider, error) {
 	if baseURL == "" {
@@ -24,7 +32,7 @@ func NewPerplexity(apiKey, baseURL string) (*PerplexityProvider, error) {
 	}
 	baseURL = strings.TrimRight(baseURL, "/")
 	return &PerplexityProvider{
-		Base:       Base{name: "perplexity", apiKey: apiKey, baseURL: baseURL},
+		Base:       Base{name: NamePerplexity, apiKey: apiKey, baseURL: baseURL},
 		httpClient: &http.Client{},
 	}, nil
 }

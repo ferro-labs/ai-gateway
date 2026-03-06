@@ -17,6 +17,13 @@ type GroqProvider struct {
 	httpClient *http.Client
 }
 
+// Compile-time interface assertions — verified at compile time.
+var (
+	_ Provider          = (*GroqProvider)(nil)
+	_ StreamProvider    = (*GroqProvider)(nil)
+	_ ProxiableProvider = (*GroqProvider)(nil)
+)
+
 // NewGroq creates a new Groq provider.
 func NewGroq(apiKey string, baseURL string) (*GroqProvider, error) {
 	if baseURL == "" {
@@ -25,7 +32,7 @@ func NewGroq(apiKey string, baseURL string) (*GroqProvider, error) {
 	baseURL = strings.TrimRight(baseURL, "/")
 
 	return &GroqProvider{
-		Base:       Base{name: "groq", apiKey: apiKey, baseURL: baseURL},
+		Base:       Base{name: NameGroq, apiKey: apiKey, baseURL: baseURL},
 		httpClient: &http.Client{},
 	}, nil
 }
