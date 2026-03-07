@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.6] — 2026-03-07
+
 ### Changed
 
 - **`providers/core` split** — `types.go` (379 lines) broken into six focused files:
@@ -22,13 +24,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of duplicating the string literal. The subpackage `const Name` is now the
   authoritative definition; the root package constants are transparent re-exports.
 
+- **Admin dashboard history rendering hardening** — `web/dashboard.html` now renders the
+  empty-state and row table cells via DOM node creation APIs instead of assigning
+  `innerHTML` from script logic.
+
+- **CORS wildcard-mode warning** (`cmd/ferrogw/cors.go`) — when no origins are configured
+  (`CORS_ORIGINS` unset/empty), middleware still falls back to `Access-Control-Allow-Origin: *`
+  and now emits a structured `slog.Warn` message to highlight production hardening.
+
 ### Removed
 
 - `providers/base.go` — `Base` struct was unused by all 19 subpackages (each defines its
   own fields); `ModelsFromList` was an exact duplicate of `core.ModelsFromList`.
 - `providers/discovery.go` — empty file (single `package providers` declaration).
 
-## [0.7.0] — 2026-03-07
+## [0.6.5] — 2026-03-07
 
 This release is a **major structural refactor** of the provider layer. All 19 provider implementations are extracted into independent subpackages, a unified two-mode factory replaces ad-hoc constructors, and five new provider adapters are added. The public `providers.NewXxx()` root constructors have been removed.
 

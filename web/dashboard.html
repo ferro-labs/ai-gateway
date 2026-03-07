@@ -94,12 +94,21 @@
 		}
 
 		function renderHistory(historyItems) {
+			while (els.historyBody.firstChild) {
+				els.historyBody.removeChild(els.historyBody.firstChild);
+			}
+
 			if (!Array.isArray(historyItems) || historyItems.length === 0) {
-				els.historyBody.innerHTML = '<tr><td colspan="5" class="muted">No config history yet.</td></tr>';
+				const emptyRow = document.createElement('tr');
+				const emptyCell = document.createElement('td');
+				emptyCell.colSpan = 5;
+				emptyCell.className = 'muted';
+				emptyCell.textContent = 'No config history yet.';
+				emptyRow.appendChild(emptyCell);
+				els.historyBody.appendChild(emptyRow);
 				return;
 			}
 
-			els.historyBody.innerHTML = '';
 			historyItems.forEach(function (item) {
 				const tr = document.createElement('tr');
 				const mode = item && item.config && item.config.strategy ? item.config.strategy.mode : '-';
