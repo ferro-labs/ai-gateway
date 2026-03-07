@@ -4,8 +4,8 @@
   <img src="docs/logo.png" alt="Ferro Logo" height="60" align="absmiddle" /> Ferro Labs AI Gateway
 </h1>
 
-**The high-performance, open-source control plane for your AI applications.**  
-Route, observe, and secure requests across 100+ LLM providers via a single OpenAI-compatible API.
+**Open-source, OpenAI-compatible AI gateway built in Go.**  
+Route, govern, and observe LLM traffic across multiple providers through one API.
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/go-1.24+-00ADD8.svg)](https://go.dev)
@@ -21,57 +21,32 @@ Route, observe, and secure requests across 100+ LLM providers via a single OpenA
 
 ---
 
-Ferro Gateway is a remarkably fast, lightweight routing tier built in Go. It acts as an intelligent intermediary between your applications and upstream foundation models, effectively transforming fragmented API integration into a unified, secure, and observable infrastructure layer.
+Ferro Labs AI Gateway is a lightweight control plane that sits between your app and model providers.
+It exposes OpenAI-style endpoints (`/v1/chat/completions`, `/v1/models`, `/v1/embeddings`, `/v1/images/generations`) while handling routing, retries, guardrails, logging, admin controls, and provider auth centrally.
 
-Zero SDK changes required. Drop it into your existing OpenAI-reliant code in one line.
+## Why use it
 
-## ✨ Core Capabilities
+- **OpenAI-compatible API surface** for easier migration and standard client support.
+- **Multi-provider routing** with 6 strategy modes: `single`, `fallback`, `loadbalance`, `conditional`, `least-latency`, `cost-optimized`.
+- **Built-in resilience** via per-target retry controls and circuit breakers.
+- **Built-in governance hooks** via plugin lifecycle stages (`before_request`, `after_request`, `on_error`).
+- **Operational visibility** through structured logs, `/metrics`, deep `/health`, admin APIs, and dashboard UI.
+- **Production-friendly storage options** for runtime config, API keys, and request logs (`memory`, `sqlite`, `postgres`).
 
-* **Unified API:** Connect to 100+ top-tier models (OpenAI, Anthropic, Gemini, Mistral, Ollama, DeepSeek, and more) using the exact same standard OpenAI request/response format.
-* **Smart Routing Engine:** Mitigate downtime and optimize costs using 4 robust routing strategies: Single, Fallback (w/ exponential backoff), Weighted Load Balancing, and Conditional (model-based).
-* **Transparent Pass-Through Proxy:** Automatically forwards requests for non-chat endpoints (like `/v1/audio`, `/v1/images`, `/v1/files`, etc.) directly to the provider. The gateway securely injects your auth credentials while proxying raw bytes!
-* **Observability Built-In:** Structured JSON logs with per-request trace IDs, Prometheus `/metrics` endpoint (request count, latency histograms, token usage), and a deep `/health` endpoint with per-provider status.
-* **Resilience by Default:** Per-provider circuit breakers (Closed/Open/HalfOpen) auto-disable failing backends. Token-bucket rate limiting is available as both an HTTP middleware (per-IP) and a plugin (per-provider).
-* **Extensible Middleware:** Intercept requests via pluggable plugins for Guardrails (PII/word filtering), Token Limiting, exact-match Caching, Rate Limiting, and Request Logging.
-* **Secure Access Manager:** Centrally issue scoped, auto-expiring API keys with native RBAC. Zero external database required for stand-up.
+## Current highlights
 
----
+Recent releases include:
 
-## ✅ Integrated Model Providers
+- Provider layer refactor into per-provider subpackages and canonical `Name*` constants.
+- Unified provider factory with `ProviderConfig` and `AllProviders()` registry entries.
+- Dashboard history rendering hardening (no script-driven `innerHTML` assignment).
+- CORS middleware warning when wildcard mode is active (unset/empty `CORS_ORIGINS`).
 
-The following providers are integrated in the gateway codebase:
+See [CHANGELOG.md](CHANGELOG.md) for full release notes.
 
-| Provider | Integrated |
-| --- | --- |
-| OpenAI | ✅ |
-| Anthropic | ✅ |
-| xAI (Grok) | ✅ |
-| Gemini (Google) | ✅ |
-| Vertex AI | ✅ |
-| Mistral | ✅ |
-| Groq | ✅ |
-| Cohere | ✅ |
-| DeepSeek | ✅ |
-| Together AI | ✅ |
-| Perplexity | ✅ |
-| Fireworks | ✅ |
-| AI21 | ✅ |
-| Hugging Face | ✅ |
-| Azure OpenAI | ✅ |
-| Azure Foundry | ✅ |
-| Ollama (local/self-hosted) | ✅ |
-| Replicate | ✅ |
-| AWS Bedrock | ✅ |
+## Quick start
 
-> Providers are enabled when their corresponding environment variables/credentials are configured.
-
----
-
-## ⚡ Quick Start
-
-### Run via Docker
-
-The fastest way to get started is pulling the official image from GitHub Container Registry.
+### Run with Docker
 
 ```bash
 docker run --rm -p 8080:8080 \
@@ -79,9 +54,7 @@ docker run --rm -p 8080:8080 \
   ghcr.io/ferro-labs/ai-gateway:latest
 ```
 
-### Build from Source
-
-Ensure you have Go 1.24+ installed.
+### Build from source
 
 ```bash
 git clone https://github.com/ferro-labs/ai-gateway.git
@@ -89,18 +62,99 @@ cd ai-gateway
 
 export OPENAI_API_KEY=sk-your-key
 make run
-# Server listens locally on :8080
 ```
 
----
+### Verify gateway is running
 
-## 🧾 Persistent Request Logging
+```bash
+curl -s http://localhost:8080/health | jq
+curl -s http://localhost:8080/v1/models | jq '.data | length'
+```
 
-The built-in `request-logger` plugin can persist request lifecycle events (`before_request`, `after_request`, `on_error`) into SQLite or PostgreSQL.
+### Send your first request
 
-### Plugin config (YAML)
+```bash
+curl -s http://localhost:8080/v1/chat/completions \
+  -H "Authorization: Bearer sk-ferro-or-upstream-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-4o-mini",
+    "messages": [{"role":"user","content":"Say hello from Ferro Gateway"}]
+  }' | jq
+```
+
+## Core endpoints
+
+### Public/API routes
+
+- `GET /health` — deep provider health summary.
+- `GET /metrics` — Prometheus metrics.
+- `GET /v1/models` — OpenAI-style model list, enriched from catalog when available.
+- `POST /v1/chat/completions` — chat (streaming + non-streaming).
+- `POST /v1/completions` — legacy text completions.
+- `POST /v1/embeddings` — embeddings.
+- `POST /v1/images/generations` — image generation.
+- `GET /dashboard` — built-in admin dashboard page.
+- `GET /v1/*` (other) — transparent proxy pass-through to provider.
+
+### Admin routes (Bearer auth required)
+
+Read scope (`read_only` or `admin`):
+
+- `GET /admin/dashboard`
+- `GET /admin/keys`, `GET /admin/keys/{id}`, `GET /admin/keys/usage`
+- `GET /admin/providers`, `GET /admin/health`
+- `GET /admin/config`, `GET /admin/config/history`
+- `GET /admin/logs`, `GET /admin/logs/stats`
+
+Admin scope (`admin` only):
+
+- `POST /admin/keys`, `PUT /admin/keys/{id}`, `DELETE /admin/keys/{id}`
+- `POST /admin/keys/{id}/revoke`, `POST /admin/keys/{id}/rotate`
+- `POST /admin/config`, `PUT /admin/config`, `DELETE /admin/config`
+- `POST /admin/config/rollback/{version}`
+- `DELETE /admin/logs`
+
+## Routing strategy modes
+
+Set `strategy.mode` in your config:
+
+- `single` — fixed provider target.
+- `fallback` — try targets in order, with per-target retry.
+- `loadbalance` — weighted selection across targets.
+- `conditional` — route by request conditions.
+- `least-latency` — pick lowest observed latency provider.
+- `cost-optimized` — pick cheapest compatible provider from model catalog pricing.
+
+## Configuration
+
+Use `GATEWAY_CONFIG` to load YAML/JSON config at startup.
+
+```bash
+export GATEWAY_CONFIG=./config.yaml
+```
+
+Minimal production-style example:
 
 ```yaml
+strategy:
+  mode: fallback
+
+targets:
+  - virtual_key: openai
+    retry:
+      attempts: 3
+      on_status_codes: [429, 502, 503]
+      initial_backoff_ms: 100
+
+  - virtual_key: anthropic
+    retry:
+      attempts: 2
+
+aliases:
+  fast: gpt-4o-mini
+  smart: claude-3-5-sonnet-20241022
+
 plugins:
   - name: request-logger
     type: logging
@@ -109,51 +163,64 @@ plugins:
     config:
       level: info
       persist: true
-      backend: sqlite   # sqlite | postgres
+      backend: sqlite
       dsn: ferrogw-requests.db
 ```
 
-For PostgreSQL:
+See [config.example.yaml](config.example.yaml) and [config.example.json](config.example.json) for a full template.
 
-```yaml
-plugins:
-  - name: request-logger
-    type: logging
-    stage: before_request
-    enabled: true
-    config:
-      level: info
-      persist: true
-      backend: postgres
-      dsn: postgresql://user:pass@localhost:5432/ferrogw?sslmode=disable
-```
+## Built-in providers
 
----
+Canonical provider keys used in config (`targets[].virtual_key`):
 
-## 🧪 Postgres Integration Tests
+| Virtual Key | Provider | Enablement Env |
+| --- | --- | --- |
+| `ai21` | AI21 | `AI21_API_KEY` |
+| `anthropic` | Anthropic | `ANTHROPIC_API_KEY` |
+| `azure-foundry` | Azure Foundry | `AZURE_FOUNDRY_API_KEY` + `AZURE_FOUNDRY_ENDPOINT` |
+| `azure-openai` | Azure OpenAI | `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_ENDPOINT` + `AZURE_OPENAI_DEPLOYMENT` |
+| `bedrock` | AWS Bedrock | `AWS_REGION` **or** `AWS_ACCESS_KEY_ID` |
+| `cohere` | Cohere | `COHERE_API_KEY` |
+| `deepseek` | DeepSeek | `DEEPSEEK_API_KEY` |
+| `fireworks` | Fireworks | `FIREWORKS_API_KEY` |
+| `gemini` | Google Gemini | `GEMINI_API_KEY` |
+| `groq` | Groq | `GROQ_API_KEY` |
+| `hugging-face` | Hugging Face | `HUGGING_FACE_API_KEY` |
+| `mistral` | Mistral | `MISTRAL_API_KEY` |
+| `ollama` | Ollama | `OLLAMA_HOST` |
+| `openai` | OpenAI | `OPENAI_API_KEY` |
+| `perplexity` | Perplexity | `PERPLEXITY_API_KEY` |
+| `replicate` | Replicate | `REPLICATE_API_TOKEN` |
+| `together` | Together AI | `TOGETHER_API_KEY` |
+| `vertex-ai` | Vertex AI | `VERTEX_AI_PROJECT_ID` + `VERTEX_AI_REGION` + (`VERTEX_AI_API_KEY` or `VERTEX_AI_SERVICE_ACCOUNT_JSON`) |
+| `xai` | xAI | `XAI_API_KEY` |
 
-PostgreSQL store integration tests are opt-in. Set `FERROGW_TEST_POSTGRES_DSN` and run the admin package tests.
+## Built-in plugins
+
+Registered plugin set:
+
+- Guardrails: `word-filter`, `max-token`, `pii-redact`, `secret-scan`, `prompt-shield`, `schema-guard`, `regex-guard`
+- Transform: `response-cache`
+- Logging: `request-logger`
+
+Inspect available plugins with:
 
 ```bash
-export FERROGW_TEST_POSTGRES_DSN='postgresql://user:pass@localhost:5432/ferrogw_test?sslmode=disable'
-go test ./internal/admin
+make build-cli
+./bin/ferrogw-cli plugins
 ```
 
-Without that environment variable, Postgres integration tests are skipped automatically.
+## Persistence backends
 
----
+Configure state backends with environment variables:
 
-## ⚙️ Storage Backend Env Quick Reference
-
-Use these environment variables to enable persistent backends:
-
-| Area | Backend Env | DSN Env | Supported Values |
+| Area | Backend Env | DSN Env | Values |
 | --- | --- | --- | --- |
-| Runtime config store | `CONFIG_STORE_BACKEND` | `CONFIG_STORE_DSN` | `memory` (default), `sqlite`, `postgres` |
-| API key store | `API_KEY_STORE_BACKEND` | `API_KEY_STORE_DSN` | `memory` (default), `sqlite`, `postgres` |
-| Request log store | `REQUEST_LOG_STORE_BACKEND` | `REQUEST_LOG_STORE_DSN` | `sqlite`, `postgres` (unset = disabled) |
+| Runtime config | `CONFIG_STORE_BACKEND` | `CONFIG_STORE_DSN` | `memory` (default), `sqlite`, `postgres` |
+| API keys | `API_KEY_STORE_BACKEND` | `API_KEY_STORE_DSN` | `memory` (default), `sqlite`, `postgres` |
+| Request logs | `REQUEST_LOG_STORE_BACKEND` | `REQUEST_LOG_STORE_DSN` | `sqlite`, `postgres` (`unset` = disabled) |
 
-Example (fully persistent local setup with SQLite):
+SQLite local example:
 
 ```bash
 export CONFIG_STORE_BACKEND=sqlite
@@ -166,7 +233,7 @@ export REQUEST_LOG_STORE_BACKEND=sqlite
 export REQUEST_LOG_STORE_DSN=./ferrogw-requests.db
 ```
 
-Example (production-style PostgreSQL setup):
+PostgreSQL example:
 
 ```bash
 export CONFIG_STORE_BACKEND=postgres
@@ -179,327 +246,95 @@ export REQUEST_LOG_STORE_BACKEND=postgres
 export REQUEST_LOG_STORE_DSN='postgresql://user:pass@db:5432/ferrogw?sslmode=require'
 ```
 
-Production note:
+## Security and production notes
 
-* You can use a single shared DSN for all three stores (simpler operations).
-* For stronger isolation, use separate databases or schemas per area (config, API keys, request logs) with least-privilege credentials.
-* Prefer TLS-enabled Postgres connections in production (`sslmode=require` at minimum; `sslmode=verify-full` when certificate validation is configured).
-* Use `sslmode=disable` only when transport encryption is enforced outside Postgres (for example, mTLS service mesh or a trusted local Unix socket).
+- **CORS defaults to wildcard** when `CORS_ORIGINS` is unset/empty. Set explicit origins in production.
+- **Bootstrap keys** (`ADMIN_BOOTSTRAP_KEY`, `ADMIN_BOOTSTRAP_READ_ONLY_KEY`) are for first-run setup only.
+- Prefer TLS-backed Postgres DSNs (`sslmode=require` or stronger).
+- Use scoped admin keys and rotate periodically.
 
-### First-run bootstrap keys (optional)
-
-For first-time setup, you can provide bootstrap bearer keys for `/admin/*` routes:
+Bootstrap key quick setup:
 
 ```bash
-export ADMIN_BOOTSTRAP_KEY='change-me-to-a-long-random-value'
-export ADMIN_BOOTSTRAP_READ_ONLY_KEY='change-me-to-a-long-random-value'
 export ADMIN_BOOTSTRAP_ENABLED=true
+export ADMIN_BOOTSTRAP_KEY='change-me-admin'
+export ADMIN_BOOTSTRAP_READ_ONLY_KEY='change-me-readonly'
 ```
 
-* `ADMIN_BOOTSTRAP_KEY` is treated as `admin` scope.
-* `ADMIN_BOOTSTRAP_READ_ONLY_KEY` is treated as `read_only` scope.
-* Bootstrap keys are only honored while the API key store is empty.
-* Set `ADMIN_BOOTSTRAP_ENABLED=false` to force-disable bootstrap auth.
+## CLI
 
-Use it as:
+`ferrogw-cli` manages and inspects a running gateway:
 
 ```bash
-curl http://localhost:8080/admin/dashboard \
-  -H "Authorization: Bearer $ADMIN_BOOTSTRAP_KEY"
+make build-cli
+
+./bin/ferrogw-cli validate config.example.yaml
+./bin/ferrogw-cli plugins
+./bin/ferrogw-cli admin providers list --api-key "$FERROGW_API_KEY"
+./bin/ferrogw-cli admin config history --api-key "$FERROGW_API_KEY"
 ```
 
-After creating persistent API keys via `POST /admin/keys`, remove or unset bootstrap values and restart.
+Persistent CLI flags:
 
----
+- `--gateway-url` (env: `FERROGW_URL`, default: `http://localhost:8080`)
+- `--api-key` (env: `FERROGW_API_KEY`)
+- `--format` (`table`, `json`, `yaml`)
 
-## 🔎 API Key Usage Analytics
+## Development
 
-Admin API provides a usage analytics endpoint:
-
-```http
-GET /admin/keys/usage
-Authorization: Bearer <admin-or-readonly-key>
-```
-
-Supported query params:
-
-* `limit` (default `20`, max `100`)
-* `offset` (default `0`)
-* `sort` (`usage` or `last_used`; default `usage`)
-* `active` (`true` or `false`)
-* `since` (RFC3339 timestamp; filters by `last_used_at >= since`)
-
-Example:
+Common Make targets:
 
 ```bash
-curl "http://localhost:8080/admin/keys/usage?limit=10&offset=0&sort=usage&active=true&since=2026-02-01T00:00:00Z" \
-  -H "Authorization: Bearer gw-..."
+make deps
+make fmt
+make lint
+make test
+make test-coverage
+make test-integration
+make bench
 ```
 
-Response contains `data` (sorted by `usage_count` desc) and `summary` totals.
-
----
-
-## ⏱️ API Key Expiration Management
-
-Update key expiration without rotating or recreating the key:
-
-```http
-PUT /admin/keys/{id}
-Authorization: Bearer <admin-key>
-Content-Type: application/json
-```
-
-Supported expiration fields in request body:
-
-* `expires_at` (RFC3339 timestamp) to set/update expiration
-* `clear_expiration` (`true`) to remove expiration
-
-Examples:
+Run release validation locally:
 
 ```bash
-curl -X PUT "http://localhost:8080/admin/keys/<id>" \
-  -H "Authorization: Bearer gw-..." \
-  -H "Content-Type: application/json" \
-  -d '{"expires_at":"2026-03-15T00:00:00Z"}'
+make release-check
+make release-dry-run
 ```
 
-```bash
-curl -X PUT "http://localhost:8080/admin/keys/<id>" \
-  -H "Authorization: Bearer gw-..." \
-  -H "Content-Type: application/json" \
-  -d '{"clear_expiration":true}'
-```
+## 1-line SDK migration
 
----
+Point existing OpenAI SDK clients to Ferro Gateway by changing only the base URL.
 
-## 🔑 API Key Detail API
-
-Fetch a single API key by ID (masked key value):
-
-```http
-GET /admin/keys/{id}
-Authorization: Bearer <admin-or-readonly-key>
-```
-
-Returns `404` if the key does not exist.
-
----
-
-## 📜 Admin Request Logs API
-
-When request log storage is enabled, admin API exposes persisted request logs:
-
-```http
-GET /admin/logs
-Authorization: Bearer <admin-or-readonly-key>
-```
-
-Supported query params:
-
-* `limit` (default `50`, max `200`)
-* `offset` (default `0`)
-* `stage` (e.g. `before_request`, `after_request`, `on_error`)
-* `model`
-* `provider`
-* `since` (RFC3339 timestamp)
-
-Example:
-
-```bash
-curl "http://localhost:8080/admin/logs?limit=20&offset=0&stage=on_error&since=2026-02-01T00:00:00Z" \
-  -H "Authorization: Bearer gw-..."
-```
-
-If request log storage is disabled, endpoint returns `501 Not Implemented`.
-
-### Cleanup old request logs
-
-```http
-DELETE /admin/logs?before=<RFC3339>
-Authorization: Bearer <admin-key>
-```
-
-Optional filters:
-
-* `stage`
-* `model`
-* `provider`
-
-Example:
-
-```bash
-curl -X DELETE "http://localhost:8080/admin/logs?before=2026-02-01T00:00:00Z&stage=on_error" \
-  -H "Authorization: Bearer gw-..."
-```
-
-Response includes the number of deleted entries in `deleted`.
-
-### Request log stats
-
-```http
-GET /admin/logs/stats
-Authorization: Bearer <admin-or-readonly-key>
-```
-
-Optional filters:
-
-* `limit` (positive integer; caps `by_provider` and `by_model` cardinality)
-* `stage`
-* `model`
-* `provider`
-* `since` (RFC3339 timestamp)
-
-Response contains aggregated `summary`, `by_stage`, `by_provider`, and `by_model` counts.
-
----
-
-## 📊 Admin Dashboard Summary API
-
-For a minimal admin dashboard UI, fetch aggregate status from one endpoint:
-
-```http
-GET /admin/dashboard
-Authorization: Bearer <admin-or-readonly-key>
-```
-
-Response sections:
-
-* `providers` (`total`, `available`)
-* `keys` (`total`, `active`, `expired`, `total_usage`)
-* `request_logs` (`enabled`, `total`)
-
----
-
-## 🕘 Config History API
-
-Create/update/delete runtime config over admin APIs:
-
-```http
-POST /admin/config
-PUT /admin/config
-DELETE /admin/config
-Authorization: Bearer <admin-key>
-```
-
-Notes:
-
-* `POST /admin/config` creates a new runtime config version (same payload schema as `PUT`)
-* `PUT /admin/config` updates the current runtime config
-* `DELETE /admin/config` resets to startup config and clears persisted override
-
-Persist config across restarts via env vars:
-
-* `CONFIG_STORE_BACKEND`: `memory` (default), `sqlite`, `postgres`
-* `CONFIG_STORE_DSN`: backend DSN or SQLite file path
-
-Runtime config updates are tracked in-memory and exposed via:
-
-```http
-GET /admin/config/history
-Authorization: Bearer <admin-or-readonly-key>
-```
-
-Response includes:
-
-* `data[]` with `version`, `updated_at`, and `config`
-* `summary.total_versions`
-
-Rollback to a previous version:
-
-```http
-POST /admin/config/rollback/{version}
-Authorization: Bearer <admin-key>
-```
-
-Example:
-
-```bash
-curl -X POST "http://localhost:8080/admin/config/rollback/2" \
-  -H "Authorization: Bearer gw-..."
-```
-
----
-
-## 🖥️ Built-in Admin Dashboard UI
-
-A minimal dashboard page is available at:
-
-```http
-GET /dashboard
-```
-
-It prompts for an admin/read-only key and then calls `GET /admin/dashboard` to render provider, key, and request-log summary cards.
-
-The page also loads `GET /admin/config/history` and includes per-version rollback actions using `POST /admin/config/rollback/{version}`.
-
----
-
-## 🔌 1-Line Migration
-
-Ferro Labs AI Gateway natively speaks the OpenAI spec. Point your existing client SDKs to the Gateway by changing simply the `baseURL`—**no SDK changes, no prompt edits, no refactoring.**
-
-#### Python
+### Python
 
 ```python
 from openai import OpenAI
 
 client = OpenAI(
-    api_key="sk-ferro-...", # Managed via ferro
-    base_url="http://localhost:8080/v1",  # ← Only change this line
+    api_key="sk-ferro-...",
+    base_url="http://localhost:8080/v1",
 )
 ```
 
-#### TypeScript / Node.js
+### TypeScript
 
 ```typescript
 import OpenAI from "openai";
 
 const client = new OpenAI({
   apiKey: "sk-ferro-...",
-  baseURL: "http://localhost:8080/v1",  // ← Only change this line 
+  baseURL: "http://localhost:8080/v1",
 });
 ```
 
-#### cURL
+## Roadmap
 
-```bash
-curl http://localhost:8080/v1/chat/completions \
-  -H "Authorization: Bearer sk-ferro-..." \
-  -H "Content-Type: application/json" \
-  -d '{"model":"claude-3-opus-20240229","messages":[{"role":"user","content":"Hello!"}]}'
-  # The gateway automatically detects the model and routes to Anthropic!
-```
+The project roadmap is maintained in [ROADMAP.md](ROADMAP.md).
 
----
+## Contributing
 
-## 🛣️ Project Roadmap
+Contributions are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) and follow [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
-Ferro Gateway is actively developed to support an end-to-end AI operating environment. We are currently transitioning through major foundational and production-grade phases:
+## License
 
-* [x] **v0.1.0** — Foundation Release: Core routing, multi-provider execution, basic guardrails, and streaming capabilities.
-* [x] **v0.2.0** — Observability & Resilience: Structured JSON logging with trace IDs, Prometheus metrics, per-provider circuit breakers, token-bucket rate limiting, deep health checks, and consistent error schema.
-* [x] **v0.3.0** — Modality Expansions: Embeddings, Image generation mapping, Cost tracking via pricing tables, and Model aliasing.
-* [x] **v0.4.0** — Persistent State: Dedicated Admin API, SQLite/PostgreSQL persistence, persistent request logs, dashboard, and runtime config CRUD.
-* [x] **v0.5.0** — Advanced Intelligence: Least-latency and Cost-optimized algorithmic routing, A/B Testing modules, and Semantic Caching.
-* [x] **v0.6.0** — Developer Experience: Server-side prompt templates and expanded guardrails.
-* [ ] **v1.0.0** — Production Ready: Helm charts, open-telemetry export, edge caching, and official SDK embeddings.
-
-*Review our detailed [ROADMAP.md](ROADMAP.md) for deeper implementation plans.*
-
----
-
-## 🤝 Contributing
-
-We welcome community contributions! The priority areas for ecosystem growth are:
-
-1. Adding support for new niche LLM providers.
-2. Building new middleware plugins (Guardrails, Modifiers, Analyzers).
-3. Enhancing test coverage and documentation.
-
-Please see our [CONTRIBUTING.md](CONTRIBUTING.md) for style guidelines and PR processes.
-By participating, you agree to follow our [Code of Conduct](CODE_OF_CONDUCT.md).
-
-## 📄 License
-
-Ferro Labs AI Gateway is proudly open-source and released under the [Apache 2.0 License](LICENSE).
+Licensed under [Apache 2.0](LICENSE).

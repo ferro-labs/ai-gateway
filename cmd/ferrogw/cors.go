@@ -1,12 +1,13 @@
 package main
 
 import (
+	"log/slog"
 	"net/http"
 	"strings"
 )
 
 // corsMiddleware returns middleware that sets CORS headers.
-// If no origins are provided, it defaults to "*".
+// When no origins are configured, it defaults to "*" and logs a security warning.
 func corsMiddleware(allowedOrigins ...string) func(http.Handler) http.Handler {
 	allowAny := len(allowedOrigins) == 0
 	allowed := make(map[string]struct{}, len(allowedOrigins))
@@ -16,6 +17,11 @@ func corsMiddleware(allowedOrigins ...string) func(http.Handler) http.Handler {
 			continue
 		}
 		allowed[origin] = struct{}{}
+	}
+
+	if allowAny || len(allowed) == 0 {
+		allowAny = true
+		slog.Warn("CORS configured with wildcard '*' — all origins allowed. Set CORS_ORIGINS for production use.")
 	}
 
 	return func(next http.Handler) http.Handler {
