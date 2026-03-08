@@ -5,6 +5,7 @@ package admin
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"sort"
 	"strconv"
@@ -798,7 +799,7 @@ func (h *Handlers) applyConfigUpdate(w http.ResponseWriter, r *http.Request, sta
 	}
 
 	if err := h.Configs.ReloadConfig(cfg); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error(), "invalid_request_error", "invalid_config")
+		writeConfigReloadError(w, err)
 		return
 	}
 
@@ -865,7 +866,7 @@ func (h *Handlers) rollbackConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.Configs.ReloadConfig(target.Config); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error(), "invalid_request_error", "invalid_config")
+		writeConfigReloadError(w, err)
 		return
 	}
 
@@ -889,6 +890,14 @@ func (h *Handlers) appendConfigHistory(cfg aigateway.Config, rolledBackFrom *int
 		Config:         cfg,
 		RolledBackFrom: rolledBackFrom,
 	})
+}
+
+func writeConfigReloadError(w http.ResponseWriter, err error) {
+	if errors.Is(err, errConfigPersistence) {
+		writeError(w, http.StatusInternalServerError, err.Error(), "server_error", "internal_error")
+		return
+	}
+	writeError(w, http.StatusBadRequest, err.Error(), "invalid_request_error", "invalid_config")
 }
 
 func (h *Handlers) getConfigHistorySnapshot() []ConfigHistoryEntry {
