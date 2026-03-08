@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-03-08
+
+### Added
+
+- **Regression test coverage for reliability fixes**:
+  - `internal/strategies/fallback_test.go`: unsupported-model fallback case now tested explicitly
+  - `gateway_test.go`: event-hook panic recovery behavior now tested
+  - `cmd/ferrogw/completions_test.go`: legacy completions URL normalization and shim-streaming behavior tests
+  - `internal/admin/config_store_test.go`: config persistence failure rollback/classification tests
+  - `internal/admin/handlers_test.go`: admin config persistence failure HTTP status mapping test
+
+### Fixed
+
+- **Fallback unsupported model errors** (`internal/strategies/fallback.go`): when no configured target supports a model, the gateway now returns a clear error (`no provider supports model ...`) instead of malformed `%!w(<nil>)` wrapping.
+
+- **Event hook panic isolation** (`gateway.go`): panics inside async event hooks are now recovered and logged, preventing hook failures from crashing the gateway process.
+
+- **Legacy completions upstream URL construction** (`cmd/ferrogw/completions.go`): `/v1/completions` proxy target generation is now normalized to avoid duplicate `/v1` path segments when provider base URLs already include `/v1`.
+
+- **Legacy completions shim streaming behavior** (`cmd/ferrogw/completions.go`): non-proxy shim path now returns an explicit OpenAI-style `streaming_not_supported` error when `stream=true` is requested, instead of silently downgrading behavior.
+
+- **Runtime config persistence safety** (`internal/admin/config_store.go`): config reload is now rollback-safe on persistence failures, keeping runtime and stored config consistent.
+
+- **Admin config error status mapping** (`internal/admin/handlers.go`): persistence/internal reload failures now return `500` while validation errors remain `400`.
+
 ## [0.6.6] — 2026-03-07
 
 ### Changed
