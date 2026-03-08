@@ -126,7 +126,7 @@ func (m *persistenceFailingConfigManager) GetConfig() aigateway.Config {
 	return m.cfg
 }
 
-func (m *persistenceFailingConfigManager) ReloadConfig(cfg aigateway.Config) error {
+func (m *persistenceFailingConfigManager) ReloadConfig(_ aigateway.Config) error {
 	return fmt.Errorf("%w: write failed", errConfigPersistence)
 }
 

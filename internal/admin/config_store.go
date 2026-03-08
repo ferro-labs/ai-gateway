@@ -213,22 +213,32 @@ func (m *GatewayConfigManager) GetConfig() aigateway.Config {
 
 // ReloadConfig validates/applies config and persists it when a store is configured.
 func (m *GatewayConfigManager) ReloadConfig(cfg aigateway.Config) error {
-	previousCfg := m.gw.GetConfig()
-
-	if err := m.gw.ReloadConfig(cfg); err != nil {
-		return fmt.Errorf("%w: %w", errConfigValidation, err)
+	if err := aigateway.ValidateConfig(cfg); err != nil {
+		return errors.Join(errConfigValidation, err)
 	}
+
+	previousCfg := m.gw.GetConfig()
 
 	if m.store != nil {
 		if err := m.store.Save(cfg); err != nil {
-			// Keep runtime and persisted config in sync: rollback runtime change
-			// when persistence fails.
-			if rollbackErr := m.gw.ReloadConfig(previousCfg); rollbackErr != nil {
-				return fmt.Errorf("%w: save failed: %v; rollback failed: %v", errConfigPersistence, err, rollbackErr)
-			}
-			return fmt.Errorf("%w: %w", errConfigPersistence, err)
+			return errors.Join(errConfigPersistence, err)
 		}
 	}
+
+	if err := m.gw.ReloadConfig(cfg); err != nil {
+		if m.store != nil {
+			// Save happened before apply. If apply fails, attempt to restore
+			// persisted state so runtime and storage remain aligned.
+			if rollbackErr := m.store.Save(previousCfg); rollbackErr != nil {
+				return errors.Join(
+					errConfigPersistence,
+					fmt.Errorf("apply config failed: %v; rollback persisted config failed: %v", err, rollbackErr),
+				)
+			}
+		}
+		return errors.Join(errConfigValidation, err)
+	}
+
 	return nil
 }
 
