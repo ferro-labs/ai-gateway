@@ -106,6 +106,7 @@ func (f *Fallback) Execute(ctx context.Context, req providers.Request) (*provide
 	}
 
 	var lastErr error
+	attemptedCompatibleProvider := false
 	for _, target := range f.targets {
 		p, ok := f.lookup(target.VirtualKey)
 		if !ok {
@@ -116,6 +117,8 @@ func (f *Fallback) Execute(ctx context.Context, req providers.Request) (*provide
 		if !p.SupportsModel(req.Model) {
 			continue
 		}
+
+		attemptedCompatibleProvider = true
 
 		retry := f.resolveRetry(target.VirtualKey)
 
@@ -146,6 +149,14 @@ func (f *Fallback) Execute(ctx context.Context, req providers.Request) (*provide
 				break
 			}
 		}
+	}
+
+	if !attemptedCompatibleProvider && lastErr == nil {
+		return nil, fmt.Errorf("no provider supports model %s", req.Model)
+	}
+
+	if lastErr == nil {
+		return nil, fmt.Errorf("all providers failed")
 	}
 
 	return nil, fmt.Errorf("all providers failed: %w", lastErr)

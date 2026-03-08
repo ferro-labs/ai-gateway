@@ -3,6 +3,7 @@ package strategies
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/ferro-labs/ai-gateway/providers"
@@ -107,6 +108,29 @@ func TestFallback_NoTargets_RetryPolicy(t *testing.T) {
 	_, err := fb.Execute(context.Background(), providers.Request{Model: "gpt-4o"})
 	if err == nil {
 		t.Fatal("expected error for no targets")
+	}
+}
+
+func TestFallback_NoProviderSupportsModel_ReturnsClearError(t *testing.T) {
+	ep := &errProvider{
+		name:   "openai",
+		models: []string{"gpt-4o"},
+		errMsg: "provider error (500): oops",
+	}
+
+	fb := NewFallback([]Target{{VirtualKey: "openai"}}, newLookup(ep))
+	_, err := fb.Execute(context.Background(), providers.Request{Model: "gpt-5"})
+	if err == nil {
+		t.Fatal("expected unsupported-model error")
+	}
+	if !strings.Contains(err.Error(), "no provider supports model gpt-5") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(err.Error(), "%!w(<nil>)") {
+		t.Fatalf("malformed wrapped error should not be returned: %v", err)
+	}
+	if ep.calls != 0 {
+		t.Fatalf("provider should not be called when model is unsupported, got %d calls", ep.calls)
 	}
 }
 
