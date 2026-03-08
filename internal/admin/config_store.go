@@ -231,8 +231,10 @@ func (m *GatewayConfigManager) ReloadConfig(cfg aigateway.Config) error {
 			// persisted state so runtime and storage remain aligned.
 			if rollbackErr := m.store.Save(previousCfg); rollbackErr != nil {
 				return errors.Join(
+					errConfigValidation,
 					errConfigPersistence,
-					fmt.Errorf("apply config failed: %v; rollback persisted config failed: %v", err, rollbackErr),
+					fmt.Errorf("apply config failed: %w", err),
+					fmt.Errorf("rollback persisted config failed: %w", rollbackErr),
 				)
 			}
 		}
