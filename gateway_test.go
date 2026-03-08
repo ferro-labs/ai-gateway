@@ -231,6 +231,38 @@ func TestGateway_Route_ProviderNotFound(t *testing.T) {
 	}
 }
 
+func TestGateway_Route_HookPanicIsRecovered(t *testing.T) {
+	gw, _ := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: "mock"}},
+	})
+	gw.RegisterProvider(&mockProvider{
+		name:   "mock",
+		models: []string{"gpt-4o"},
+		resp:   &providers.Response{ID: "ok", Model: "gpt-4o"},
+	})
+
+	hookCalled := make(chan struct{}, 1)
+	gw.AddHook(func(context.Context, string, map[string]interface{}) {
+		hookCalled <- struct{}{}
+		panic("boom")
+	})
+
+	_, err := gw.Route(context.Background(), providers.Request{
+		Model:    "gpt-4o",
+		Messages: []providers.Message{{Role: "user", Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected route error: %v", err)
+	}
+
+	select {
+	case <-hookCalled:
+	case <-time.After(time.Second):
+		t.Fatal("hook was not called")
+	}
+}
+
 // testPlugin is a mock plugin for gateway tests.
 type testPlugin struct {
 	name   string

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -18,6 +19,10 @@ import (
 type testConfigManager struct {
 	cfg     aigateway.Config
 	initial aigateway.Config
+}
+
+type persistenceFailingConfigManager struct {
+	cfg aigateway.Config
 }
 
 const fallbackConfigBody = `{"strategy":{"mode":"fallback"},"targets":[{"virtual_key":"openai"},{"virtual_key":"anthropic"}]}`
@@ -115,6 +120,26 @@ func (m *testConfigManager) ReloadConfig(cfg aigateway.Config) error {
 func (m *testConfigManager) ResetConfig() error {
 	m.cfg = m.initial
 	return nil
+}
+
+func (m *persistenceFailingConfigManager) GetConfig() aigateway.Config {
+	return m.cfg
+}
+
+func (m *persistenceFailingConfigManager) ReloadConfig(_ aigateway.Config) error {
+	return fmt.Errorf("%w: write failed", errConfigPersistence)
+}
+
+func setupTestRouterWithConfigManager(cm ConfigManager) (*Handlers, chi.Router) {
+	store := NewKeyStore()
+	h := &Handlers{
+		Keys:    store,
+		Configs: cm,
+	}
+	r := chi.NewRouter()
+	r.Use(AuthMiddleware(store))
+	r.Mount("/admin", h.Routes())
+	return h, r
 }
 
 func setupTestRouter() (*Handlers, chi.Router) {
@@ -663,6 +688,25 @@ func TestUpdateConfigInvalidPayload(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestUpdateConfigPersistenceFailureReturnsServerError(t *testing.T) {
+	cm := &persistenceFailingConfigManager{
+		cfg: aigateway.Config{
+			Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeSingle},
+			Targets:  []aigateway.Target{{VirtualKey: "openai"}},
+		},
+	}
+	h, r := setupTestRouterWithConfigManager(cm)
+	adminKey := createAdminKey(t, h)
+
+	req := authedRequest(http.MethodPut, "/admin/config", fallbackConfigBody, adminKey)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
 	}
 }
 

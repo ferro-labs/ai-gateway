@@ -256,7 +256,17 @@ func (g *Gateway) publishEvent(ctx context.Context, subject string, data map[str
 
 	for _, h := range hooks {
 		fn := h
-		go fn(ctx, subject, data)
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					logging.Logger.Error("event hook panicked",
+						"subject", subject,
+						"panic", r,
+					)
+				}
+			}()
+			fn(ctx, subject, data)
+		}()
 	}
 }
 

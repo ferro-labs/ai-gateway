@@ -4,8 +4,11 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strings"
 
 	"github.com/ferro-labs/ai-gateway/providers"
 )
@@ -66,7 +69,11 @@ func completionsHandler(registry *providers.Registry) http.HandlerFunc {
 
 		// --- Path 1: native proxy to provider's /v1/completions ---
 		if pp, canProxy := p.(providers.ProxiableProvider); canProxy {
-			target := pp.BaseURL() + "/v1/completions"
+			target, err := completionsEndpointURL(pp.BaseURL())
+			if err != nil {
+				writeOpenAIError(w, http.StatusInternalServerError, err.Error(), "server_error", "internal_error")
+				return
+			}
 			outReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, target, bytes.NewReader(body))
 			if err != nil {
 				writeOpenAIError(w, http.StatusInternalServerError, "failed to create upstream request: "+err.Error(), "server_error", "internal_error")
@@ -100,6 +107,16 @@ func completionsHandler(registry *providers.Registry) http.HandlerFunc {
 		}
 
 		// --- Path 2: chat-completion shim ---
+		if legacyReq.Stream {
+			writeOpenAIError(w,
+				http.StatusBadRequest,
+				"streaming is not supported for this provider on /v1/completions",
+				"invalid_request_error",
+				"streaming_not_supported",
+			)
+			return
+		}
+
 		// Wrap the prompt as a user message and call through the chat path,
 		// then re-wrap the response in the legacy completions envelope.
 		chatReq := providers.Request{
@@ -154,4 +171,23 @@ func completionsHandler(registry *providers.Registry) http.HandlerFunc {
 		w.Header().Set("X-Gateway-Provider", p.Name())
 		json.NewEncoder(w).Encode(legacy) //nolint:errcheck,gosec
 	}
+}
+
+func completionsEndpointURL(baseURL string) (string, error) {
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid provider base URL %q: %w", baseURL, err)
+	}
+	if u.Scheme == "" || u.Host == "" {
+		return "", fmt.Errorf("invalid provider base URL %q: absolute URL required", baseURL)
+	}
+
+	basePath := strings.TrimRight(u.Path, "/")
+	if strings.HasSuffix(basePath, "/v1") {
+		u.Path = basePath + "/completions"
+	} else {
+		u.Path = basePath + "/v1/completions"
+	}
+
+	return u.String(), nil
 }

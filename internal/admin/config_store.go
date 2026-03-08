@@ -3,6 +3,7 @@ package admin
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -32,6 +33,11 @@ type sqlConfigDialect string
 const (
 	configDialectSQLite   sqlConfigDialect = "sqlite"
 	configDialectPostgres sqlConfigDialect = "postgres"
+)
+
+var (
+	errConfigValidation  = errors.New("config validation failed")
+	errConfigPersistence = errors.New("config persistence failed")
 )
 
 // SQLConfigStore persists config snapshots in SQLite/Postgres.
@@ -207,14 +213,34 @@ func (m *GatewayConfigManager) GetConfig() aigateway.Config {
 
 // ReloadConfig validates/applies config and persists it when a store is configured.
 func (m *GatewayConfigManager) ReloadConfig(cfg aigateway.Config) error {
-	if err := m.gw.ReloadConfig(cfg); err != nil {
-		return err
+	if err := aigateway.ValidateConfig(cfg); err != nil {
+		return errors.Join(errConfigValidation, err)
 	}
+
+	previousCfg := m.gw.GetConfig()
+
 	if m.store != nil {
 		if err := m.store.Save(cfg); err != nil {
-			return err
+			return errors.Join(errConfigPersistence, err)
 		}
 	}
+
+	if err := m.gw.ReloadConfig(cfg); err != nil {
+		if m.store != nil {
+			// Save happened before apply. If apply fails, attempt to restore
+			// persisted state so runtime and storage remain aligned.
+			if rollbackErr := m.store.Save(previousCfg); rollbackErr != nil {
+				return errors.Join(
+					errConfigValidation,
+					errConfigPersistence,
+					fmt.Errorf("apply config failed: %w", err),
+					fmt.Errorf("rollback persisted config failed: %w", rollbackErr),
+				)
+			}
+		}
+		return errors.Join(errConfigValidation, err)
+	}
+
 	return nil
 }
 
