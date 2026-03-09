@@ -18,7 +18,7 @@ type Config struct {
 	// request and executes an agentic loop when the LLM returns tool_calls.
 	// FerroCloud populates this field from the tenant's mcp_servers table at
 	// gateway.New() time — no separate MCPRegistry() public method is exposed.
-	MCPServers []mcp.MCPServerConfig `json:"mcp_servers,omitempty" yaml:"mcp_servers,omitempty"`
+	MCPServers []mcp.ServerConfig `json:"mcp_servers,omitempty" yaml:"mcp_servers,omitempty"`
 }
 
 // StrategyConfig defines the routing strategy.

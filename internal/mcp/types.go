@@ -7,6 +7,13 @@ package mcp
 
 import "encoding/json"
 
+// MCP protocol method names used in JSON-RPC calls.
+const (
+	mcpMethodInitialize = "initialize"
+	mcpMethodToolsList  = "tools/list"
+	mcpMethodToolsCall  = "tools/call"
+)
+
 // ─── JSON-RPC 2.0 ────────────────────────────────────────────────────────────
 
 // JSONRPCRequest is a JSON-RPC 2.0 request envelope.
@@ -86,12 +93,12 @@ type PromptsCapability struct {
 
 // ─── Gateway Config Type ──────────────────────────────────────────────────────
 
-// MCPServerConfig defines how the gateway connects to one external MCP server.
+// ServerConfig defines how the gateway connects to one external MCP server.
 // It lives in gateway.Config.MCPServers and is consumed by the Registry.
 //
 // In FerroCloud, encrypted headers are decrypted from headers_enc using
 // FG_ENCRYPTION_KEY before being placed into the Headers map.
-type MCPServerConfig struct {
+type ServerConfig struct {
 	// Name is a unique human-readable identifier for this MCP server.
 	Name string `json:"name" yaml:"name"`
 	// URL is the Streamable HTTP endpoint (e.g. "https://mcp.example.com/mcp").

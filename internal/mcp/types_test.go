@@ -6,7 +6,7 @@ import (
 )
 
 func TestMCPServerConfigDefaults(t *testing.T) {
-	cfg := MCPServerConfig{
+	cfg := ServerConfig{
 		Name: "test",
 		URL:  "http://localhost:8080",
 	}
@@ -19,7 +19,7 @@ func TestMCPServerConfigDefaults(t *testing.T) {
 }
 
 func TestMCPServerConfigRoundTrip(t *testing.T) {
-	cfg := MCPServerConfig{
+	cfg := ServerConfig{
 		Name:           "myserver",
 		URL:            "http://mcp.example.com",
 		Headers:        map[string]string{"Authorization": "Bearer tok"},
@@ -31,7 +31,7 @@ func TestMCPServerConfigRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	var got MCPServerConfig
+	var got ServerConfig
 	if err := json.Unmarshal(b, &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
@@ -50,7 +50,7 @@ func TestJSONRPCRequestRoundTrip(t *testing.T) {
 	req := JSONRPCRequest{
 		JSONRPC: "2.0",
 		ID:      42,
-		Method:  "tools/list",
+		Method:  mcpMethodToolsList,
 		Params:  nil,
 	}
 	b, _ := json.Marshal(req)
@@ -58,7 +58,7 @@ func TestJSONRPCRequestRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(b, &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if got.Method != "tools/list" {
+	if got.Method != mcpMethodToolsList {
 		t.Errorf("unexpected method: %q", got.Method)
 	}
 	// ID is interface{} so JSON decodes numbers as float64.

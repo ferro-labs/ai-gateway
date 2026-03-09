@@ -17,7 +17,7 @@ type Registry struct {
 
 // serverEntry holds the live state for one registered MCP server.
 type serverEntry struct {
-	config  MCPServerConfig
+	config  ServerConfig
 	client  *Client
 	tools   []Tool
 	ready   bool  // true once Initialize + ListTools have succeeded
@@ -36,7 +36,7 @@ func NewRegistry() *Registry {
 // without making any network calls. Call InitializeAll in a background
 // goroutine after gateway.New() returns so the first LLM request is never
 // blocked by MCP cold-start latency.
-func (r *Registry) RegisterConfig(cfg MCPServerConfig) {
+func (r *Registry) RegisterConfig(cfg ServerConfig) {
 	timeout := time.Duration(cfg.TimeoutSeconds) * time.Second
 	if timeout <= 0 {
 		timeout = 30 * time.Second

@@ -57,7 +57,7 @@ func (c *Client) Initialize(ctx context.Context) (*ServerInfo, error) {
 		},
 	}
 
-	resp, err := c.call(ctx, "initialize", params)
+	resp, err := c.call(ctx, mcpMethodInitialize, params)
 	if err != nil {
 		return nil, fmt.Errorf("mcp initialize: %w", err)
 	}
@@ -76,7 +76,7 @@ func (c *Client) Initialize(ctx context.Context) (*ServerInfo, error) {
 
 // ListTools retrieves the full list of tools from the MCP server.
 func (c *Client) ListTools(ctx context.Context) ([]Tool, error) {
-	resp, err := c.call(ctx, "tools/list", nil)
+	resp, err := c.call(ctx, mcpMethodToolsList, nil)
 	if err != nil {
 		return nil, fmt.Errorf("mcp tools/list: %w", err)
 	}
@@ -98,7 +98,7 @@ func (c *Client) CallTool(ctx context.Context, name string, arguments json.RawMe
 		"arguments": arguments,
 	}
 
-	resp, err := c.call(ctx, "tools/call", params)
+	resp, err := c.call(ctx, mcpMethodToolsCall, params)
 	if err != nil {
 		return nil, fmt.Errorf("mcp tools/call %s: %w", name, err)
 	}
@@ -152,7 +152,7 @@ func (c *Client) call(ctx context.Context, method string, params interface{}) (*
 	if err != nil {
 		return nil, fmt.Errorf("mcp http do: %w", err)
 	}
-	defer httpResp.Body.Close()
+	defer func() { _ = httpResp.Body.Close() }()
 
 	// Persist the session ID returned by the server (set on initialize).
 	c.setSessionID(httpResp.Header.Get("Mcp-Session-Id"))
@@ -218,7 +218,7 @@ func (c *Client) notify(ctx context.Context, method string, params interface{}) 
 	if err != nil {
 		return err
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	return nil
 }
 
