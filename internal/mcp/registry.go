@@ -9,26 +9,34 @@ import (
 
 // Registry manages registered MCP servers and the tools they expose.
 // All methods are safe for concurrent use.
+//
+// Conflict policy: when two servers advertise the same tool name the
+// first-registered server wins. Both toolMap and AllTools honour this policy
+// so that FindToolServer and AllTools always return consistent results.
 type Registry struct {
-	mu      sync.RWMutex
-	servers map[string]*serverEntry // server name => entry
-	toolMap map[string]string       // tool name => server name (O(1) lookup)
+	mu          sync.RWMutex
+	servers     map[string]*serverEntry // server name => entry
+	toolMap     map[string]string       // tool name => server name (O(1) lookup)
+	regOrder    []string                // server names in registration order
+	serverIndex map[string]int          // server name => position in regOrder
 }
 
 // serverEntry holds the live state for one registered MCP server.
 type serverEntry struct {
-	config  ServerConfig
-	client  *Client
-	tools   []Tool
-	ready   bool  // true once Initialize + ListTools have succeeded
-	initErr error // last initialization error; nil when ready
+	config       ServerConfig
+	client       *Client
+	tools        []Tool
+	ready        bool  // true once Initialize + ListTools have succeeded
+	initializing bool  // true while initServer goroutine is running for this entry
+	initErr      error // last initialization error; nil when ready
 }
 
 // NewRegistry creates an empty Registry.
 func NewRegistry() *Registry {
 	return &Registry{
-		servers: make(map[string]*serverEntry),
-		toolMap: make(map[string]string),
+		servers:     make(map[string]*serverEntry),
+		toolMap:     make(map[string]string),
+		serverIndex: make(map[string]int),
 	}
 }
 
@@ -36,6 +44,11 @@ func NewRegistry() *Registry {
 // without making any network calls. Call InitializeAll in a background
 // goroutine after gateway.New() returns so the first LLM request is never
 // blocked by MCP cold-start latency.
+//
+// Re-registering a server with the same Name preserves its original
+// registration order (and therefore its tool-conflict priority). Stale
+// tool→server mappings owned by the old entry are removed immediately so
+// FindToolServer never routes to stale state.
 func (r *Registry) RegisterConfig(cfg ServerConfig) {
 	timeout := time.Duration(cfg.TimeoutSeconds) * time.Second
 	if timeout <= 0 {
@@ -44,6 +57,19 @@ func (r *Registry) RegisterConfig(cfg ServerConfig) {
 	client := NewClient(cfg.URL, cfg.Headers, timeout)
 
 	r.mu.Lock()
+	if old, ok := r.servers[cfg.Name]; ok {
+		// Clean up only the toolMap entries that this server owned.
+		for _, t := range old.tools {
+			if r.toolMap[t.Name] == cfg.Name {
+				delete(r.toolMap, t.Name)
+			}
+		}
+		// Registration order and serverIndex are preserved on re-registration.
+	} else {
+		// First-time registration: assign a position in regOrder.
+		r.serverIndex[cfg.Name] = len(r.regOrder)
+		r.regOrder = append(r.regOrder, cfg.Name)
+	}
 	r.servers[cfg.Name] = &serverEntry{
 		config: cfg,
 		client: client,
@@ -52,27 +78,38 @@ func (r *Registry) RegisterConfig(cfg ServerConfig) {
 }
 
 // InitializeAll performs the MCP handshake and tool discovery for every
-// registered server that is not yet ready. It is idempotent — already-ready
-// servers are skipped. Designed to be called from a background goroutine;
-// errors are reported via logErr (never returned) so the caller can log them.
+// registered server that is not yet ready. It is idempotent and safe to call
+// concurrently: each server is initialized at most once at a time even when
+// multiple goroutines call InitializeAll simultaneously. Errors are reported
+// via logErr (never returned) so the caller can log them without blocking.
 func (r *Registry) InitializeAll(ctx context.Context, logErr func(name string, err error)) {
 	r.mu.RLock()
-	names := make([]string, 0, len(r.servers))
-	for name := range r.servers {
-		names = append(names, name)
-	}
+	names := make([]string, len(r.regOrder))
+	copy(names, r.regOrder)
 	r.mu.RUnlock()
 
 	var wg sync.WaitGroup
 	for _, name := range names {
+		// Fast-path read: skip servers that are already done or in progress.
 		r.mu.RLock()
 		entry, ok := r.servers[name]
-		alreadyReady := ok && entry.ready
+		skip := !ok || entry.ready || entry.initializing
 		r.mu.RUnlock()
-
-		if !ok || alreadyReady {
+		if skip {
 			continue
 		}
+
+		// Slow path: re-check under write lock before setting initializing flag.
+		// This prevents two concurrent InitializeAll callers from both spawning
+		// initServer goroutines for the same server.
+		r.mu.Lock()
+		entry, ok = r.servers[name]
+		if !ok || entry.ready || entry.initializing {
+			r.mu.Unlock()
+			continue
+		}
+		entry.initializing = true
+		r.mu.Unlock()
 
 		wg.Add(1)
 		go func(n string) {
@@ -99,6 +136,7 @@ func (r *Registry) initServer(ctx context.Context, name string) error {
 	if err != nil {
 		r.mu.Lock()
 		entry.initErr = err
+		entry.initializing = false
 		r.mu.Unlock()
 		return fmt.Errorf("mcp init %s: %w", name, err)
 	}
@@ -107,6 +145,7 @@ func (r *Registry) initServer(ctx context.Context, name string) error {
 	if err != nil {
 		r.mu.Lock()
 		entry.initErr = err
+		entry.initializing = false
 		r.mu.Unlock()
 		return fmt.Errorf("mcp list tools %s: %w", name, err)
 	}
@@ -127,11 +166,31 @@ func (r *Registry) initServer(ctx context.Context, name string) error {
 	}
 
 	r.mu.Lock()
+	// Remove stale toolMap entries from any previous indexing of this server.
+	// This handles re-registration — old tool→server mappings that are no
+	// longer valid must not linger in the map.
+	for _, t := range entry.tools {
+		if r.toolMap[t.Name] == name {
+			delete(r.toolMap, t.Name)
+		}
+	}
 	entry.tools = tools
 	entry.ready = true
+	entry.initializing = false
 	entry.initErr = nil
+	// Populate toolMap using a first-registered-wins conflict policy.
+	// If the slot is vacant this server claims it. If another server already
+	// holds the slot we override only when our registration index is lower
+	// (i.e. we were registered earlier and therefore have higher priority).
+	ourIdx := r.serverIndex[name]
 	for _, t := range tools {
-		r.toolMap[t.Name] = name
+		if existing, ok := r.toolMap[t.Name]; !ok {
+			r.toolMap[t.Name] = name
+		} else if existing != name && r.serverIndex[existing] > ourIdx {
+			// We have higher priority; take over the mapping.
+			r.toolMap[t.Name] = name
+		}
+		// else: existing server has equal-or-higher priority; keep it.
 	}
 	r.mu.Unlock()
 
@@ -156,16 +215,19 @@ func (r *Registry) FindToolServer(toolName string) (*Client, bool) {
 }
 
 // AllTools returns the combined list of tools from all ready servers.
-// Tool names are deduplicated: when the same tool name is advertised by
-// multiple servers, only the first encountered definition is included.
+// Tool names are deduplicated using the first-registered-wins policy —
+// when two servers expose the same tool name, the definition from the
+// earlier-registered server is returned. Iteration order is deterministic
+// (registration order) so callers always see consistent results.
 func (r *Registry) AllTools() []Tool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
 	seen := make(map[string]bool, len(r.toolMap))
 	var tools []Tool
-	for _, entry := range r.servers {
-		if !entry.ready {
+	for _, name := range r.regOrder {
+		entry, ok := r.servers[name]
+		if !ok || !entry.ready {
 			continue
 		}
 		for _, t := range entry.tools {
@@ -178,14 +240,12 @@ func (r *Registry) AllTools() []Tool {
 	return tools
 }
 
-// ServerNames returns the names of all registered servers.
+// ServerNames returns the names of all registered servers in registration order.
 func (r *Registry) ServerNames() []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	names := make([]string, 0, len(r.servers))
-	for name := range r.servers {
-		names = append(names, name)
-	}
+	names := make([]string, len(r.regOrder))
+	copy(names, r.regOrder)
 	return names
 }
 

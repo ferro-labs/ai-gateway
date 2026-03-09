@@ -1,6 +1,6 @@
 package aigateway
 
-import "github.com/ferro-labs/ai-gateway/internal/mcp"
+import "github.com/ferro-labs/ai-gateway/mcp"
 
 // Config holds the configuration for the AI Gateway.
 type Config struct {

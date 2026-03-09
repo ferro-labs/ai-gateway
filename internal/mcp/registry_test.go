@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
-	"time"
 )
 
 // newMockServer builds a minimal MCP server exposing the given tools.
@@ -204,9 +203,35 @@ func TestRegistryInitError(t *testing.T) {
 	}
 }
 
-func init() {
-	// Suppress unused variable lint error; time is used in client_test.go via
-	// newMockServer which needs a timeout — reference it here to satisfy the
-	// compiler if this file is compiled alone.
-	_ = time.Second
+func TestRegistryReRegisterRemovesStaleToolMapEntries(t *testing.T) {
+	// First server advertises tools [old_tool, shared_tool].
+	// After re-registration with AllowedTools=["shared_tool"], old_tool must
+	// be removed from toolMap so FindToolServer no longer routes to it.
+	allTools := []Tool{{Name: "old_tool"}, {Name: "shared_tool"}}
+	srv := newMockServer(t, allTools)
+	defer srv.Close()
+
+	reg := NewRegistry()
+	reg.RegisterConfig(ServerConfig{Name: "reregister-srv", URL: srv.URL, TimeoutSeconds: 5})
+	reg.InitializeAll(context.Background(), nil)
+
+	if _, ok := reg.FindToolServer("old_tool"); !ok {
+		t.Fatal("old_tool should be routable before re-registration")
+	}
+
+	// Re-register the same server name but restrict to shared_tool only.
+	reg.RegisterConfig(ServerConfig{
+		Name:           "reregister-srv",
+		URL:            srv.URL,
+		AllowedTools:   []string{"shared_tool"},
+		TimeoutSeconds: 5,
+	})
+	reg.InitializeAll(context.Background(), nil)
+
+	if _, ok := reg.FindToolServer("old_tool"); ok {
+		t.Error("old_tool must not be routable after re-registration with restricted AllowedTools")
+	}
+	if _, ok := reg.FindToolServer("shared_tool"); !ok {
+		t.Error("shared_tool must still be routable after re-registration")
+	}
 }

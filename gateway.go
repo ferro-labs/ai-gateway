@@ -55,6 +55,7 @@ type Gateway struct {
 	// MCP fields — nil when no MCPServers are configured.
 	mcpRegistry *mcp.Registry
 	mcpExecutor *mcp.Executor
+	mcpInitDone chan struct{} // closed when background MCP init goroutine completes
 }
 
 // New creates a new Gateway instance with the given configuration.
@@ -94,9 +95,13 @@ func New(cfg Config) (*Gateway, error) {
 		gw.mcpRegistry = reg
 		gw.mcpExecutor = mcp.NewExecutor(reg, maxDepth)
 
-		// Handshake and tool discovery run in the background so New() returns
-		// immediately. Tools become available once initialization completes.
+		// Handshake and tool discovery run in the background; New() returns
+		// immediately. mcpInitDone is closed once initialization completes so
+		// callers can wait without polling via MCPInitDone().
+		done := make(chan struct{})
+		gw.mcpInitDone = done
 		go func() {
+			defer close(done)
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
 			reg.InitializeAll(ctx, func(name string, initErr error) {
@@ -151,6 +156,28 @@ func (g *Gateway) AddHook(fn EventHookFunc) {
 	g.hooks = append(g.hooks, fn)
 }
 
+// MCPInitDone returns a channel that is closed once the background MCP
+// initialization goroutine has finished (successfully or not). When no MCP
+// servers are configured a pre-closed channel is returned so callers can
+// always safely select on the result.
+//
+//	example:
+//	    select {
+//	    case <-gw.MCPInitDone():
+//	    case <-ctx.Done():
+//	    }
+func (g *Gateway) MCPInitDone() <-chan struct{} {
+	g.mu.RLock()
+	done := g.mcpInitDone
+	g.mu.RUnlock()
+	if done == nil {
+		ch := make(chan struct{})
+		close(ch)
+		return ch
+	}
+	return done
+}
+
 // Route routes a request to the appropriate provider based on the configuration.
 func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.Response, error) {
 	start := time.Now()
@@ -183,7 +210,16 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 		mcpTools = g.mcpRegistry.AllTools()
 	}
 	if len(mcpTools) > 0 {
+		// Build a set of tool names already present in the request so we do not
+		// inject duplicate definitions when the caller has pre-populated Tools.
+		existing := make(map[string]struct{}, len(req.Tools))
+		for _, t := range req.Tools {
+			existing[t.Function.Name] = struct{}{}
+		}
 		for _, t := range mcpTools {
+			if _, dup := existing[t.Name]; dup {
+				continue
+			}
 			req.Tools = append(req.Tools, core.Tool{
 				Type: "function",
 				Function: core.Function{
@@ -393,7 +429,10 @@ func (g *Gateway) ReloadConfig(cfg Config) error {
 		}
 		g.mcpRegistry = reg
 		g.mcpExecutor = mcp.NewExecutor(reg, maxDepth)
+		done := make(chan struct{})
+		g.mcpInitDone = done
 		go func() {
+			defer close(done)
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
 			reg.InitializeAll(ctx, func(name string, initErr error) {
@@ -406,6 +445,7 @@ func (g *Gateway) ReloadConfig(cfg Config) error {
 	} else {
 		g.mcpRegistry = nil
 		g.mcpExecutor = nil
+		g.mcpInitDone = nil
 	}
 
 	return nil

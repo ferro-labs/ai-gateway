@@ -10,6 +10,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/ferro-labs/ai-gateway/internal/version"
 )
 
 // Client communicates with a single MCP server over Streamable HTTP transport.
@@ -53,7 +55,7 @@ func (c *Client) Initialize(ctx context.Context) (*ServerInfo, error) {
 		"capabilities":    map[string]interface{}{},
 		"clientInfo": map[string]string{
 			"name":    "ferro-ai-gateway",
-			"version": "0.8.0",
+			"version": version.Short(),
 		},
 	}
 

@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
@@ -249,5 +248,3 @@ func TestResolvePendingToolCallsServerError(t *testing.T) {
 		t.Error("expected non-empty error content")
 	}
 }
-
-func init() { _ = time.Second } // keep time import used

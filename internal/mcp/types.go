@@ -5,7 +5,11 @@
 // and an agentic tool-call loop executor that integrates with gateway.Route.
 package mcp
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	mcpconfig "github.com/ferro-labs/ai-gateway/mcp"
+)
 
 // MCP protocol method names used in JSON-RPC calls.
 const (
@@ -55,10 +59,21 @@ type ToolCallResult struct {
 }
 
 // ContentBlock is a single piece of content returned by a tool call.
-// The Type field is one of "text", "image", or "resource".
+// Type is one of "text", "image", or "resource" (MCP 2025-11-25 §4.5).
+//
+// Phase 1 only extracts the text payload for conversation messages;
+// non-text fields are decoded and preserved but not converted to prose.
 type ContentBlock struct {
 	Type string `json:"type"`
+	// Text carries the content for type="text" blocks.
 	Text string `json:"text,omitempty"`
+	// Data and MimeType are populated for type="image" blocks.
+	// Data is a base64-encoded payload; MimeType is e.g. "image/png".
+	Data     string `json:"data,omitempty"`
+	MimeType string `json:"mimeType,omitempty"`
+	// Resource holds the embedded resource object for type="resource" blocks.
+	// Stored as raw JSON for forward compatibility with future MCP spec revisions.
+	Resource json.RawMessage `json:"resource,omitempty"`
 }
 
 // ServerInfo describes the MCP server returned during the initialize handshake.
@@ -93,29 +108,7 @@ type PromptsCapability struct {
 
 // ─── Gateway Config Type ──────────────────────────────────────────────────────
 
-// ServerConfig defines how the gateway connects to one external MCP server.
-// It lives in gateway.Config.MCPServers and is consumed by the Registry.
-//
-// In FerroCloud, encrypted headers are decrypted from headers_enc using
-// FG_ENCRYPTION_KEY before being placed into the Headers map.
-type ServerConfig struct {
-	// Name is a unique human-readable identifier for this MCP server.
-	Name string `json:"name" yaml:"name"`
-	// URL is the Streamable HTTP endpoint (e.g. "https://mcp.example.com/mcp").
-	URL string `json:"url" yaml:"url"`
-	// Headers are additional HTTP headers sent with every MCP request
-	// (e.g. authorisation tokens). Values may reference environment variables
-	// via shell-style ${VAR} substitution performed by the caller.
-	Headers map[string]string `json:"headers,omitempty" yaml:"headers,omitempty"`
-	// AllowedTools restricts which tools from this server are exposed to the LLM.
-	// An empty slice means all discovered tools are allowed.
-	AllowedTools []string `json:"allowed_tools,omitempty" yaml:"allowed_tools,omitempty"`
-	// MaxCallDepth limits the agentic tool-calling depth for this server.
-	// The minimum positive value across all configured servers is used;
-	// servers with MaxCallDepth ≤ 0 are excluded from the minimum.
-	// Defaults to 5 when all servers leave MaxCallDepth unset or zero.
-	MaxCallDepth int `json:"max_call_depth,omitempty" yaml:"max_call_depth,omitempty"`
-	// TimeoutSeconds is the per-request timeout for calls to this server.
-	// Defaults to 30 when unset or zero.
-	TimeoutSeconds int `json:"timeout_seconds,omitempty" yaml:"timeout_seconds,omitempty"`
-}
+// ServerConfig is a type alias for [mcpconfig.ServerConfig] so that all code
+// inside internal/mcp can refer to it by the short name ServerConfig while
+// external consumers use the public github.com/ferro-labs/ai-gateway/mcp package.
+type ServerConfig = mcpconfig.ServerConfig

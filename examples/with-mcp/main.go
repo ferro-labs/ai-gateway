@@ -30,7 +30,7 @@ import (
 	"time"
 
 	aigateway "github.com/ferro-labs/ai-gateway"
-	"github.com/ferro-labs/ai-gateway/internal/mcp"
+	"github.com/ferro-labs/ai-gateway/mcp"
 	"github.com/ferro-labs/ai-gateway/providers"
 
 	anthropicpkg "github.com/ferro-labs/ai-gateway/providers/anthropic"
@@ -56,7 +56,9 @@ func main() {
 	fmt.Printf("Provider: %s  Model: %s\n\n", provider.Name(), model)
 
 	// 3. Build the gateway with the MCP server wired in.
-	//    The gateway initialises the server (initialize + tools/list) during New().
+	//    MCP initialization (initialize + tools/list handshake) runs in the
+	//    background after New() returns; tools are available once the init
+	//    goroutine completes.
 	gw, err := aigateway.New(aigateway.Config{
 		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeSingle},
 		Targets:  []aigateway.Target{{VirtualKey: provider.Name()}},
@@ -75,14 +77,25 @@ func main() {
 	}
 	gw.RegisterProvider(provider)
 
+	// Wait for MCP initialization to complete before routing so the gateway has
+	// the tool definitions ready. MCPInitDone() returns a pre-closed channel
+	// when no MCP servers are configured, so this is always safe to call.
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	select {
+	case <-gw.MCPInitDone():
+		// MCP servers are ready (or failed — gateway handles that gracefully).
+	case <-ctx.Done():
+		stopMCP()
+		log.Fatalf("timed out waiting for MCP initialization: %v", ctx.Err()) //nolint:gocritic
+	}
+
 	// 4. Route the request. The gateway:
 	//    a) Injects the get_weather tool definition into the LLM request.
 	//    b) If the LLM responds with tool_calls, resolves each call via the
 	//       MCP server and re-routes with the tool result appended.
 	//    c) Returns the final assistant message once the loop is complete.
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
 	req := providers.Request{
 		Model: model,
 		Messages: []providers.Message{
