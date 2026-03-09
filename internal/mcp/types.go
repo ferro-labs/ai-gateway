@@ -111,8 +111,9 @@ type ServerConfig struct {
 	// An empty slice means all discovered tools are allowed.
 	AllowedTools []string `json:"allowed_tools,omitempty" yaml:"allowed_tools,omitempty"`
 	// MaxCallDepth limits the agentic tool-calling depth for this server.
-	// When multiple servers are registered the lowest positive value wins.
-	// Defaults to 5 when unset or zero.
+	// The minimum positive value across all configured servers is used;
+	// servers with MaxCallDepth ≤ 0 are excluded from the minimum.
+	// Defaults to 5 when all servers leave MaxCallDepth unset or zero.
 	MaxCallDepth int `json:"max_call_depth,omitempty" yaml:"max_call_depth,omitempty"`
 	// TimeoutSeconds is the per-request timeout for calls to this server.
 	// Defaults to 30 when unset or zero.

@@ -84,10 +84,10 @@ func (e *Executor) ResolvePendingToolCalls(ctx context.Context, resp *core.Respo
 			continue
 		}
 
-		// Append the assistant message that triggered the tool calls.
-		assistantMsg := core.Message{
-			Role:      "assistant",
-			ToolCalls: ch.Message.ToolCalls,
+		// Preserve the full assistant message from the LLM (all fields, correct role).
+		assistantMsg := ch.Message
+		if assistantMsg.Role == "" {
+			assistantMsg.Role = core.RoleAssistant
 		}
 		extra = append(extra, assistantMsg)
 
@@ -100,10 +100,13 @@ func (e *Executor) ResolvePendingToolCalls(ctx context.Context, resp *core.Respo
 			if !ok {
 				metricUnknownToolCallsTotal.WithLabelValues(toolName).Inc()
 				// Return a friendly error result so the LLM can report it.
+				notFoundPayload, _ := json.Marshal(map[string]string{
+					"error": "tool " + toolName + " not found in any registered MCP server",
+				})
 				extra = append(extra, core.Message{
 					Role:       core.RoleTool,
 					ToolCallID: tc.ID,
-					Content:    fmt.Sprintf(`{"error":"tool %s not found in any registered MCP server"}`, toolName),
+					Content:    string(notFoundPayload),
 				})
 				continue
 			}
@@ -133,7 +136,8 @@ func (e *Executor) ResolvePendingToolCalls(ctx context.Context, resp *core.Respo
 			// Convert MCP content blocks to a plain string for the LLM.
 			content, err := contentBlocksToString(result.Content)
 			if err != nil {
-				content = fmt.Sprintf(`{"error":"could not marshal tool result: %s"}`, err.Error())
+				errPayload, _ := json.Marshal(map[string]string{"error": "could not marshal tool result: " + err.Error()})
+				content = string(errPayload)
 			}
 
 			extra = append(extra, core.Message{

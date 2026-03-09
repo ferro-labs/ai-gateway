@@ -82,12 +82,12 @@ func New(cfg Config) (*Gateway, error) {
 			reg.RegisterConfig(mcpCfg)
 		}
 
-		// Use the first explicitly set MaxCallDepth; fall back to 5.
-		maxDepth := 5
+		// Use the minimum positive MaxCallDepth across all servers; 0 lets
+		// NewExecutor apply the default of 5.
+		maxDepth := 0
 		for _, mcpCfg := range cfg.MCPServers {
-			if mcpCfg.MaxCallDepth > 0 {
+			if mcpCfg.MaxCallDepth > 0 && (maxDepth == 0 || mcpCfg.MaxCallDepth < maxDepth) {
 				maxDepth = mcpCfg.MaxCallDepth
-				break
 			}
 		}
 
@@ -258,9 +258,8 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 		for g.mcpExecutor.ShouldContinueLoop(resp, depth) {
 			depth++
 
-			// Append the assistant message (contains tool_calls) to history.
-			req.Messages = append(req.Messages, resp.Choices[0].Message)
-
+			// ResolvePendingToolCalls returns the assistant message (with tool_calls)
+			// plus one tool-result message per call — append all at once.
 			toolMsgs, toolErr := g.mcpExecutor.ResolvePendingToolCalls(ctx, resp)
 			if toolErr != nil {
 				return nil, fmt.Errorf("mcp tool execution at depth %d: %w", depth, toolErr)
@@ -386,11 +385,10 @@ func (g *Gateway) ReloadConfig(cfg Config) error {
 		for _, mcpCfg := range cfg.MCPServers {
 			reg.RegisterConfig(mcpCfg)
 		}
-		maxDepth := 5
+		maxDepth := 0
 		for _, mcpCfg := range cfg.MCPServers {
-			if mcpCfg.MaxCallDepth > 0 {
+			if mcpCfg.MaxCallDepth > 0 && (maxDepth == 0 || mcpCfg.MaxCallDepth < maxDepth) {
 				maxDepth = mcpCfg.MaxCallDepth
-				break
 			}
 		}
 		g.mcpRegistry = reg

@@ -63,6 +63,7 @@ func (r *Registry) InitializeAll(ctx context.Context, logErr func(name string, e
 	}
 	r.mu.RUnlock()
 
+	var wg sync.WaitGroup
 	for _, name := range names {
 		r.mu.RLock()
 		entry, ok := r.servers[name]
@@ -73,10 +74,15 @@ func (r *Registry) InitializeAll(ctx context.Context, logErr func(name string, e
 			continue
 		}
 
-		if err := r.initServer(ctx, name); err != nil && logErr != nil {
-			logErr(name, err)
-		}
+		wg.Add(1)
+		go func(n string) {
+			defer wg.Done()
+			if err := r.initServer(ctx, n); err != nil && logErr != nil {
+				logErr(n, err)
+			}
+		}(name)
 	}
+	wg.Wait()
 }
 
 // initServer performs the Initialize + ListTools handshake for a single server
@@ -150,15 +156,23 @@ func (r *Registry) FindToolServer(toolName string) (*Client, bool) {
 }
 
 // AllTools returns the combined list of tools from all ready servers.
-// Only tools from servers that have successfully initialised are included.
+// Tool names are deduplicated: when the same tool name is advertised by
+// multiple servers, only the first encountered definition is included.
 func (r *Registry) AllTools() []Tool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
+	seen := make(map[string]bool, len(r.toolMap))
 	var tools []Tool
 	for _, entry := range r.servers {
-		if entry.ready {
-			tools = append(tools, entry.tools...)
+		if !entry.ready {
+			continue
+		}
+		for _, t := range entry.tools {
+			if !seen[t.Name] {
+				seen[t.Name] = true
+				tools = append(tools, t)
+			}
 		}
 	}
 	return tools
