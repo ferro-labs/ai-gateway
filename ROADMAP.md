@@ -165,6 +165,54 @@
 
 ---
 
+## v0.7.0 — Reliability & Regression Coverage
+
+**Status**: ✅ Released
+**Release Date**: 2026-03-08
+**Theme**: Harden edge cases found in production, lock behaviour with regression tests.
+
+| Feature | Description | Status |
+|---|---|---|
+| **Fallback unsupported-model error** | When no target supports the requested model, return a clear error instead of a malformed `%!w(<nil>)` message | ✅ Done |
+| **Event hook panic isolation** | Panics inside async event hooks are recovered and logged; no longer crash the gateway process | ✅ Done |
+| **Legacy completions URL normalisation** | `/v1/completions` proxy target no longer produces duplicate `/v1` path segments | ✅ Done |
+| **Legacy completions shim streaming** | Explicit `streaming_not_supported` error returned when `stream=true` on the non-proxy shim path | ✅ Done |
+| **Config persistence rollback safety** | `config_store` reload is now rollback-safe on failures; runtime and stored config stay consistent | ✅ Done |
+| **Admin config HTTP status mapping** | Persistence/internal reload failures return `500`; validation errors remain `400` | ✅ Done |
+| **Regression test coverage** | `fallback_test.go`, `gateway_test.go`, `completions_test.go`, `config_store_test.go`, `handlers_test.go` explicitly test all of the above | ✅ Done |
+
+---
+
+## v0.8.0 — MCP Integration (Phase 1)
+
+**Status**: ✅ Released
+**Release Date**: 2026-03-09
+**Theme**: First-class Model Context Protocol support — attach external tool servers and let the LLM drive an agentic loop without changing client code.
+
+| Feature | Description | Status |
+|---|---|---|
+| **`internal/mcp` package** | Types, thread-safe client, concurrent-safe registry, and agentic executor wired into the gateway | ✅ Done |
+| **Streamable HTTP transport** | MCP 2025-11-25 spec — `initialize` handshake, `tools/list` discovery, `tools/call` invocation | ✅ Done |
+| **`mcp_servers` config field** | `gateway.Config.MCPServers []mcp.ServerConfig` — zero-overhead when empty; URL, headers, `allowed_tools`, `max_call_depth`, `timeout_seconds` per server | ✅ Done |
+| **Agentic tool-call loop** | After the LLM responds with `tool_calls`, the gateway resolves them via MCP servers and re-routes up to `max_call_depth` (default 5) iterations before returning the final answer | ✅ Done |
+| **Parallel server init** | `Registry.InitializeAll` runs `initialize` + `tools/list` for all configured servers concurrently at startup | ✅ Done |
+| **`allowed_tools` filter** | Per-server allowlist restricts which tools are exposed to the LLM, limiting blast radius | ✅ Done |
+| **Hot-reload support** | `ReloadConfig` re-initialises the MCP registry and executor when `mcp_servers` changes | ✅ Done |
+| **Config examples** | `config.example.yaml` and `config.example.json` updated with `mcp_servers` examples | ✅ Done |
+| **Unit tests** | 22 tests across `types_test.go`, `client_test.go`, `registry_test.go`, `executor_test.go`; clean with `-race` | ✅ Done |
+
+### What ships
+
+| Category | Features |
+|---|---|
+| **MCP client** | `mcp.Client` — per-server HTTP client with custom headers, timeout, session-ID propagation |
+| **MCP registry** | `mcp.Registry` — thread-safe map of named servers; parallel `InitializeAll`; deduplicated `AllTools` with allowlist filtering |
+| **MCP executor** | `mcp.Executor` — agentic loop controller; dispatches `tool_calls` from LLM responses to the correct server; converts results back into assistant messages |
+| **Config** | `mcp_servers` array in `gateway.Config`; zero cost when empty |
+| **Loop guard** | `max_call_depth` per server (default 5); `ShouldContinueLoop` prevents runaway recursion |
+
+---
+
 ## v1.0.0 — Production Ready
 
 **Status**: 🔮 Future  
