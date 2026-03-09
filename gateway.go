@@ -24,12 +24,14 @@ import (
 	"github.com/ferro-labs/ai-gateway/internal/circuitbreaker"
 	"github.com/ferro-labs/ai-gateway/internal/latency"
 	"github.com/ferro-labs/ai-gateway/internal/logging"
+	"github.com/ferro-labs/ai-gateway/internal/mcp"
 	"github.com/ferro-labs/ai-gateway/internal/metrics"
 	"github.com/ferro-labs/ai-gateway/internal/strategies"
 	"github.com/ferro-labs/ai-gateway/internal/streamwrap"
 	"github.com/ferro-labs/ai-gateway/models"
 	"github.com/ferro-labs/ai-gateway/plugin"
 	"github.com/ferro-labs/ai-gateway/providers"
+	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
 // EventHookFunc is called asynchronously after a gateway event (request
@@ -49,6 +51,10 @@ type Gateway struct {
 	circuitBreakers  map[string]*circuitbreaker.CircuitBreaker
 	discoveredModels map[string][]providers.ModelInfo
 	latencyTracker   *latency.Tracker
+
+	// MCP fields — nil when no MCPServers are configured.
+	mcpRegistry *mcp.Registry
+	mcpExecutor *mcp.Executor
 }
 
 // New creates a new Gateway instance with the given configuration.
@@ -58,7 +64,8 @@ func New(cfg Config) (*Gateway, error) {
 		// Non-fatal: operate without model metadata (no enrichment / cost reporting).
 		catalog = models.Catalog{}
 	}
-	return &Gateway{
+
+	gw := &Gateway{
 		config:           cfg,
 		catalog:          catalog,
 		providers:        make(map[string]providers.Provider),
@@ -66,7 +73,42 @@ func New(cfg Config) (*Gateway, error) {
 		circuitBreakers:  make(map[string]*circuitbreaker.CircuitBreaker),
 		discoveredModels: make(map[string][]providers.ModelInfo),
 		latencyTracker:   latency.New(0), // default window size (100 samples)
-	}, nil
+	}
+
+	// Wire MCP if any servers are configured.
+	if len(cfg.MCPServers) > 0 {
+		reg := mcp.NewRegistry()
+		for _, mcpCfg := range cfg.MCPServers {
+			reg.RegisterConfig(mcpCfg)
+		}
+
+		// Use the first explicitly set MaxCallDepth; fall back to 5.
+		maxDepth := 5
+		for _, mcpCfg := range cfg.MCPServers {
+			if mcpCfg.MaxCallDepth > 0 {
+				maxDepth = mcpCfg.MaxCallDepth
+				break
+			}
+		}
+
+		gw.mcpRegistry = reg
+		gw.mcpExecutor = mcp.NewExecutor(reg, maxDepth)
+
+		// Handshake and tool discovery run in the background so New() returns
+		// immediately. Tools become available once initialization completes.
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+			reg.InitializeAll(ctx, func(name string, initErr error) {
+				slog.Error("mcp: server initialization failed",
+					"server", name,
+					"error", initErr,
+				)
+			})
+		}()
+	}
+
+	return gw, nil
 }
 
 // Catalog returns a shallow copy of the loaded model catalog.
@@ -135,6 +177,33 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 		req = *pctx.Request
 	}
 
+	// Inject MCP tool definitions into the request when servers are ready.
+	var mcpTools []mcp.Tool
+	if g.mcpRegistry != nil {
+		mcpTools = g.mcpRegistry.AllTools()
+	}
+	if len(mcpTools) > 0 {
+		for _, t := range mcpTools {
+			req.Tools = append(req.Tools, core.Tool{
+				Type: "function",
+				Function: core.Function{
+					Name:        t.Name,
+					Description: t.Description,
+					Parameters:  t.InputSchema,
+				},
+			})
+		}
+	}
+
+	// During the agentic loop intermediate calls must be non-streaming so the
+	// full response can be inspected for tool_calls. The client's original
+	// stream preference is restored on the final response (Phase 1: always
+	// returns non-streaming for MCP requests).
+	originalStream := req.Stream
+	if len(mcpTools) > 0 {
+		req.Stream = false
+	}
+
 	// Execute the strategy (provider selection + actual call).
 	resp, err := s.Execute(ctx, req)
 	latency := time.Since(start)
@@ -180,6 +249,36 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	if resp.Provider != "" {
 		g.latencyTracker.Record(resp.Provider, latency)
 	}
+
+	// Agentic MCP tool-call loop. Runs only when MCP is active and the LLM
+	// returned tool_calls. Each iteration executes the tools and re-contacts
+	// the LLM until no more tool_calls are present or the depth limit is hit.
+	if g.mcpExecutor != nil && len(mcpTools) > 0 {
+		depth := 0
+		for g.mcpExecutor.ShouldContinueLoop(resp, depth) {
+			depth++
+
+			// Append the assistant message (contains tool_calls) to history.
+			req.Messages = append(req.Messages, resp.Choices[0].Message)
+
+			toolMsgs, toolErr := g.mcpExecutor.ResolvePendingToolCalls(ctx, resp)
+			if toolErr != nil {
+				return nil, fmt.Errorf("mcp tool execution at depth %d: %w", depth, toolErr)
+			}
+			req.Messages = append(req.Messages, toolMsgs...)
+
+			// Always non-streaming for intermediate calls.
+			req.Stream = false
+
+			resp, err = s.Execute(ctx, req)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	// Phase 1: MCP requests always return non-streaming. originalStream is
+	// preserved here for Phase 1.5 when final-response streaming is added.
+	_ = originalStream
 
 	// Run after-request plugins (logging, caching).
 	if g.plugins.HasPlugins() {
@@ -280,6 +379,37 @@ func (g *Gateway) ReloadConfig(cfg Config) error {
 	g.config = cfg
 	g.strategy = nil // force rebuild on next request
 	g.circuitBreakers = make(map[string]*circuitbreaker.CircuitBreaker)
+
+	// Re-register MCP servers from the new config.
+	if len(cfg.MCPServers) > 0 {
+		reg := mcp.NewRegistry()
+		for _, mcpCfg := range cfg.MCPServers {
+			reg.RegisterConfig(mcpCfg)
+		}
+		maxDepth := 5
+		for _, mcpCfg := range cfg.MCPServers {
+			if mcpCfg.MaxCallDepth > 0 {
+				maxDepth = mcpCfg.MaxCallDepth
+				break
+			}
+		}
+		g.mcpRegistry = reg
+		g.mcpExecutor = mcp.NewExecutor(reg, maxDepth)
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+			reg.InitializeAll(ctx, func(name string, initErr error) {
+				slog.Error("mcp: server initialization failed after reload",
+					"server", name,
+					"error", initErr,
+				)
+			})
+		}()
+	} else {
+		g.mcpRegistry = nil
+		g.mcpExecutor = nil
+	}
+
 	return nil
 }
 

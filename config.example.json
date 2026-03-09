@@ -183,5 +183,29 @@
         "rules": []
       }
     }
+  ],
+  "mcp_servers": [
+    {
+      "name": "filesystem",
+      "url": "http://localhost:3001/mcp",
+      "timeout_seconds": 10,
+      "max_call_depth": 3
+    },
+    {
+      "name": "database",
+      "url": "https://mcp-db.internal/mcp",
+      "headers": {
+        "Authorization": "Bearer ${MCP_DB_TOKEN}"
+      },
+      "allowed_tools": ["query_readonly", "list_tables"],
+      "timeout_seconds": 15,
+      "max_call_depth": 5
+    },
+    {
+      "name": "web-search",
+      "url": "https://mcp-search.example.com/mcp",
+      "allowed_tools": ["web_search", "web_read"],
+      "timeout_seconds": 20
+    }
   ]
 }
