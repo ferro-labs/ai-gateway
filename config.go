@@ -1,5 +1,7 @@
 package aigateway
 
+import "github.com/ferro-labs/ai-gateway/mcp"
+
 // Config holds the configuration for the AI Gateway.
 type Config struct {
 	// Strategy defines how requests are routed (e.g., single, fallback, loadbalance).
@@ -11,6 +13,12 @@ type Config struct {
 	// Aliases maps friendly model names (e.g. "fast", "smart") to concrete model IDs.
 	// Aliases are resolved before routing — they must not reference other aliases.
 	Aliases map[string]string `json:"aliases,omitempty" yaml:"aliases,omitempty"`
+	// MCPServers configures external MCP tool servers for agentic tool calling.
+	// When set, the gateway injects discovered tools into every chat completion
+	// request and executes an agentic loop when the LLM returns tool_calls.
+	// FerroCloud populates this field from the tenant's mcp_servers table at
+	// gateway.New() time — no separate MCPRegistry() public method is exposed.
+	MCPServers []mcp.ServerConfig `json:"mcp_servers,omitempty" yaml:"mcp_servers,omitempty"`
 }
 
 // StrategyConfig defines the routing strategy.

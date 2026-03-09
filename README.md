@@ -32,15 +32,16 @@ It exposes OpenAI-style endpoints (`/v1/chat/completions`, `/v1/models`, `/v1/em
 - **Built-in governance hooks** via plugin lifecycle stages (`before_request`, `after_request`, `on_error`).
 - **Operational visibility** through structured logs, `/metrics`, deep `/health`, admin APIs, and dashboard UI.
 - **Production-friendly storage options** for runtime config, API keys, and request logs (`memory`, `sqlite`, `postgres`).
+- **MCP tool server integration** — attach any MCP 2025-11-25 Streamable HTTP server and let the LLM drive an agentic tool-call loop without changing client code.
 
 ## Current highlights
 
 Recent releases include:
 
+- **MCP integration (v0.8.0)** — attach external MCP 2025-11-25 Streamable HTTP tool servers; the gateway drives an agentic loop over `tool_calls` transparently before returning the final LLM response.
+- Reliability hardening: fallback-strategy error propagation, event hook panic recovery, config persistence rollback safety (v0.7.0).
 - Provider layer refactor into per-provider subpackages and canonical `Name*` constants.
 - Unified provider factory with `ProviderConfig` and `AllProviders()` registry entries.
-- Dashboard history rendering hardening (no script-driven `innerHTML` assignment).
-- CORS middleware warning when wildcard mode is active (unset/empty `CORS_ORIGINS`).
 
 See [CHANGELOG.md](CHANGELOG.md) for full release notes.
 
@@ -114,6 +115,23 @@ Admin scope (`admin` only):
 - `POST /admin/config`, `PUT /admin/config`, `DELETE /admin/config`
 - `POST /admin/config/rollback/{version}`
 - `DELETE /admin/logs`
+
+## MCP tool server integration
+
+Attach any [Model Context Protocol](https://modelcontextprotocol.io) 2025-11-25 Streamable HTTP server. The gateway initialises all configured servers at startup, injects the discovered tools into every LLM request, and drives the agentic `tool_calls` loop automatically up to `max_call_depth` iterations.
+
+```yaml
+mcp_servers:
+  - name: my-tools
+    url: https://mcp.example.com/mcp
+    headers:
+      Authorization: Bearer ${MY_TOOLS_TOKEN}
+    allowed_tools: [search, get_weather]   # omit to allow all
+    max_call_depth: 5
+    timeout_seconds: 30
+```
+
+Multiple servers can be registered. Tools are deduplicated by name across servers.
 
 ## Routing strategy modes
 

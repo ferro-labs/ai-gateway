@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-03-09
+
+### Added
+
+- **MCP (Model Context Protocol) integration — Phase 1** (`internal/mcp/`):
+  - `internal/mcp/types.go` — JSON-RPC 2.0 envelope types, MCP protocol types (`Tool`, `ToolCallResult`, `ContentBlock`, `ServerInfo`, `Capabilities`), and `ServerConfig` gateway config type.
+  - `internal/mcp/client.go` — thread-safe HTTP client that speaks the 2025-11-25 Streamable HTTP transport; handles `initialize` handshake, `tools/list` discovery, and `tools/call` invocation with per-server bearer/custom headers and configurable timeout.
+  - `internal/mcp/registry.go` — concurrent-safe `Registry` that manages multiple `ServerConfig` entries, drives parallel server initialization via `InitializeAll`, and exposes a deduplicated `AllTools` list filtered by `allowed_tools`.
+  - `internal/mcp/executor.go` — `Executor` that drives the LLM agentic tool-call loop; `ShouldContinueLoop` checks max-depth and pending tool calls; `ResolvePendingToolCalls` dispatches each tool call to the correct registered server and converts results back into assistant messages.
+  - `gateway.Config.MCPServers` (`[]mcp.ServerConfig`, `mcp_servers` in YAML/JSON) — zero-config field; the gateway wires up the MCP registry and executor only when at least one server is declared.
+  - Agentic loop wired into `gateway.Route()` — after the first LLM response, if MCP is active and the model returns `tool_calls`, the gateway resolves them via registered MCP servers and re-routes up to `max_call_depth` times before returning the final response.
+  - `ReloadConfig` hot-reload support — MCP registry and executor are re-initialised when `mcp_servers` changes without restarting the gateway.
+  - `config.example.yaml` and `config.example.json` updated with `mcp_servers` examples.
+  - 22 unit tests across all four `internal/mcp` files, passing with `-race`.
+
 ## [0.7.0] — 2026-03-08
 
 ### Added
