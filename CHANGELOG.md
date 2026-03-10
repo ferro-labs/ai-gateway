@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.8.0] — 2026-03-09
+## [0.8.0] — 2026-03-10
 
 ### Added
 
@@ -20,7 +20,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Agentic loop wired into `gateway.Route()` — after the first LLM response, if MCP is active and the model returns `tool_calls`, the gateway resolves them via registered MCP servers and re-routes up to `max_call_depth` times before returning the final response.
   - `ReloadConfig` hot-reload support — MCP registry and executor are re-initialised when `mcp_servers` changes without restarting the gateway.
   - `config.example.yaml` and `config.example.json` updated with `mcp_servers` examples.
-  - 22 unit tests across all four `internal/mcp` files, passing with `-race`.
+  - `mcp/config.go` — public `ServerConfig` type lives in the non-internal `mcp` package so external consumers can import it directly; `internal/mcp` uses a type alias and remains implementation-only.
+  - `Gateway.MCPInitDone() <-chan struct{}` — callers can block until background MCP initialization completes without polling (returns a pre-closed channel when no MCP servers are configured).
+  - `ContentBlock` extended with `Data`, `MimeType`, and `Resource` fields for `image` and `resource` block types (MCP 2025-11-25 §4.5).
+  - `TestGateway_Route_MCPToolInjectionAndLoop` — full end-to-end integration test with a mock HTTP MCP server and stateful provider; verifies tool injection, tool-result message threading, and agentic loop termination.
+  - 29 unit/integration tests across MCP and gateway packages, all passing with `-race`.
+
+### Fixed
+
+- **`client.go` hardcoded version** — MCP `initialize` handshake now sends `version.Short()` (from `internal/version`) instead of the hardcoded string `"0.8.0"`.
+- **`registry.go` non-deterministic tool conflicts** — added `regOrder`/`serverIndex` fields; `AllTools()` and `toolMap` now apply a first-registered-wins conflict policy with deterministic iteration order instead of undefined map traversal order.
+- **`registry.go` concurrent double-init** — `initializing bool` flag plus double-checked locking in `InitializeAll` ensures each server is initialized at most once even when multiple goroutines call `InitializeAll` simultaneously.
+- **`registry.go` stale `toolMap` entries on error** — `initializing` is cleared on both success and error paths so a failed server can be retried and its stale map entries are never left behind.
+- **`gateway.go` duplicate tool injection** — `Route()` builds an `existing` name-set from `req.Tools` before appending MCP tools, preventing duplicate definitions when the caller pre-populates `Tools`.
+- **`examples/with-mcp/main.go` misleading comment** — removed incorrect "during New()" wording; example now calls `MCPInitDone()` to wait for background initialization before routing so the tool definitions are guaranteed to be present.
+- **`mcp/config.go` FerroCloud-internal comment** — removed `headers_enc`/`FG_ENCRYPTION_KEY` reference that has no corresponding field in this OSS codebase.
 
 ## [0.7.0] — 2026-03-08
 
