@@ -131,6 +131,8 @@ func (g *Gateway) Catalog() models.Catalog {
 const (
 	SubjectRequestCompleted = "gateway.request.completed"
 	SubjectRequestFailed    = "gateway.request.failed"
+
+	roleUser = "user"
 )
 
 // RegisterProvider registers a provider with the gateway.
@@ -895,7 +897,7 @@ func streamingContentConditionMatches(cond ContentCondition, req providers.Reque
 	case "prompt_contains":
 		lower := strings.ToLower(cond.Value)
 		for _, msg := range req.Messages {
-			if msg.Role == "user" && strings.Contains(strings.ToLower(msg.Content), lower) {
+			if msg.Role == roleUser && strings.Contains(strings.ToLower(msg.Content), lower) {
 				return true
 			}
 		}
@@ -903,7 +905,7 @@ func streamingContentConditionMatches(cond ContentCondition, req providers.Reque
 	case "prompt_not_contains":
 		lower := strings.ToLower(cond.Value)
 		for _, msg := range req.Messages {
-			if msg.Role == "user" && strings.Contains(strings.ToLower(msg.Content), lower) {
+			if msg.Role == roleUser && strings.Contains(strings.ToLower(msg.Content), lower) {
 				return false
 			}
 		}
@@ -914,7 +916,7 @@ func streamingContentConditionMatches(cond ContentCondition, req providers.Reque
 			return false
 		}
 		for _, msg := range req.Messages {
-			if msg.Role == "user" && re.MatchString(msg.Content) {
+			if msg.Role == roleUser && re.MatchString(msg.Content) {
 				return true
 			}
 		}
