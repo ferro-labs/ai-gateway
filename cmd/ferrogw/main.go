@@ -31,6 +31,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	// Register built-in plugins so they can be loaded from config.
+	_ "github.com/ferro-labs/ai-gateway/internal/plugins/budget"
 	_ "github.com/ferro-labs/ai-gateway/internal/plugins/cache"
 	_ "github.com/ferro-labs/ai-gateway/internal/plugins/logger"
 	_ "github.com/ferro-labs/ai-gateway/internal/plugins/maxtoken"

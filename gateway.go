@@ -5,9 +5,9 @@
 // providers with RegisterProvider, load plugins from config with LoadPlugins,
 // and route requests with Route or RouteStream.
 //
-// Plugins and routing strategies (single, fallback, load-balance, conditional)
-// are configured via [Config] which can be loaded from a YAML or JSON file
-// using [LoadConfig].
+// Plugins and routing strategies (single, fallback, load-balance, conditional,
+// content-based, ab-test) are configured via [Config] which can be loaded
+// from a YAML or JSON file using [LoadConfig].
 package aigateway
 
 import (
@@ -544,12 +544,59 @@ func (g *Gateway) getStrategy() (strategies.Strategy, error) {
 			})
 		}
 		s = strategies.NewConditional(rules, targets[0], lookup)
+	case ModeContentBased:
+		cbs, err := g.buildContentBasedStrategy(targets, lookup)
+		if err != nil {
+			return nil, err
+		}
+		s = cbs
+	case ModeABTest:
+		abt, err := g.buildABTestStrategy(lookup)
+		if err != nil {
+			return nil, err
+		}
+		s = abt
 	default:
 		return nil, fmt.Errorf("unknown strategy mode: %s", g.config.Strategy.Mode)
 	}
 
 	g.strategy = s
 	return s, nil
+}
+
+// buildContentBasedStrategy constructs a ContentBased strategy from the gateway config.
+func (g *Gateway) buildContentBasedStrategy(targets []strategies.Target, lookup strategies.ProviderLookup) (strategies.Strategy, error) {
+	if len(g.config.Strategy.ContentConditions) == 0 {
+		return nil, fmt.Errorf("no content_conditions configured for content-based strategy")
+	}
+	if len(targets) == 0 {
+		return nil, fmt.Errorf("no targets configured for content-based strategy")
+	}
+	var rules []strategies.ContentRule
+	for _, cc := range g.config.Strategy.ContentConditions {
+		rules = append(rules, strategies.ContentRule{
+			Type:   strategies.ContentConditionType(cc.Type),
+			Value:  cc.Value,
+			Target: strategies.Target{VirtualKey: cc.TargetKey},
+		})
+	}
+	return strategies.NewContentBased(rules, targets[0], lookup)
+}
+
+// buildABTestStrategy constructs an ABTest strategy from the gateway config.
+func (g *Gateway) buildABTestStrategy(lookup strategies.ProviderLookup) (strategies.Strategy, error) {
+	if len(g.config.Strategy.ABVariants) == 0 {
+		return nil, fmt.Errorf("no ab_variants configured for ab-test strategy")
+	}
+	var variants []strategies.ABTestVariant
+	for _, v := range g.config.Strategy.ABVariants {
+		variants = append(variants, strategies.ABTestVariant{
+			Target: strategies.Target{VirtualKey: v.TargetKey},
+			Weight: v.Weight,
+			Label:  v.Label,
+		})
+	}
+	return strategies.NewABTest(variants, lookup)
 }
 
 // cbProvider wraps a Provider with a circuit breaker.

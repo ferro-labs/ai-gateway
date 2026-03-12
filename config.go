@@ -25,6 +25,11 @@ type Config struct {
 type StrategyConfig struct {
 	Mode       StrategyMode `json:"mode" yaml:"mode"`
 	Conditions []Condition  `json:"conditions,omitempty" yaml:"conditions,omitempty"` // For conditional routing
+	// ContentConditions defines rules for the content-based routing strategy.
+	// Rules are evaluated in order; the first match wins.
+	ContentConditions []ContentCondition `json:"content_conditions,omitempty" yaml:"content_conditions,omitempty"`
+	// ABVariants defines the weighted variants for the ab-test strategy.
+	ABVariants []ABVariantConfig `json:"ab_variants,omitempty" yaml:"ab_variants,omitempty"`
 }
 
 // StrategyMode represents the routing strategy mode.
@@ -38,6 +43,8 @@ const (
 	ModeConditional   StrategyMode = "conditional"
 	ModeLatency       StrategyMode = "least-latency"
 	ModeCostOptimized StrategyMode = "cost-optimized"
+	ModeContentBased  StrategyMode = "content-based"
+	ModeABTest        StrategyMode = "ab-test"
 )
 
 // Condition represents a condition for conditional routing.
@@ -45,6 +52,35 @@ type Condition struct {
 	Key       string `json:"key" yaml:"key"`
 	Value     string `json:"value" yaml:"value"`
 	TargetKey string `json:"target_key" yaml:"target_key"`
+}
+
+// ContentCondition maps a prompt-content matching rule to a routing target.
+// Used with the "content-based" strategy mode.
+//
+// Supported types:
+//   - "prompt_contains"     — case-insensitive substring match on user messages
+//   - "prompt_not_contains" — true when NO user message contains the value
+//   - "prompt_regex"        — Go regular expression match on user messages
+type ContentCondition struct {
+	// Type is the matching rule type.
+	Type string `json:"type" yaml:"type"`
+	// Value is the substring or regex pattern to match against.
+	Value string `json:"value" yaml:"value"`
+	// TargetKey is the virtual_key of the provider to route to when this rule matches.
+	TargetKey string `json:"target_key" yaml:"target_key"`
+}
+
+// ABVariantConfig defines a single traffic variant for the "ab-test" strategy.
+type ABVariantConfig struct {
+	// TargetKey is the virtual_key of the provider for this variant.
+	TargetKey string `json:"target_key" yaml:"target_key"`
+	// Weight is the relative traffic share for this variant.
+	// All weights are summed; each variant's fraction is Weight/Total.
+	// Zero is treated as 1 (equal distribution).
+	Weight float64 `json:"weight" yaml:"weight"`
+	// Label is a short human-readable identifier (e.g. "control", "challenger").
+	// It is logged with every routed request for observability.
+	Label string `json:"label" yaml:"label"`
 }
 
 // Target represents a specific provider target.
