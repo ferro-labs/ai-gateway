@@ -71,7 +71,7 @@ func (ab *ABTest) Execute(ctx context.Context, req providers.Request) (*provider
 		return nil, err
 	}
 
-	logging.Logger.Info("ab-test variant selected",
+	logging.Logger.Debug("ab-test variant selected",
 		"ab_variant", variant.Label,
 		"target", variant.Target.VirtualKey,
 		"model", req.Model,

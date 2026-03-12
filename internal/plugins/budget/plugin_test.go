@@ -157,3 +157,90 @@ if err == nil {
 t.Fatal("shared store: checker should see spend recorded by recorder")
 }
 }
+
+func TestBudget_MaxKeys_EvictsMinSpend(t *testing.T) {
+// max_keys=2 means at most 2 keys tracked; adding a 3rd evicts the lowest-spend one.
+p := makePlugin(t, map[string]interface{}{
+"store_id":            "test-max-keys",
+"spend_limit_usd":     10.0,
+"input_per_m_tokens":  1.0,
+"output_per_m_tokens": 1.0,
+"max_keys":            2.0,
+})
+
+// Record spend for two keys (equal cost: 1 prompt token = $0.000001).
+recordCost := func(key string, tokens int) {
+pctx := pctxWithKey(key)
+pctx.Response = &providers.Response{
+Usage: providers.Usage{PromptTokens: tokens},
+}
+_ = p.Execute(context.Background(), pctx)
+}
+
+recordCost("low-spend", 1)  // $0.000001
+recordCost("high-spend", 10) // $0.00001 — stays, higher spend
+
+// Adding a third key must evict "low-spend" (min spend).
+recordCost("new-key", 5)
+
+store := getStore("test-max-keys", 2)
+if store.get("low-spend") != 0 {
+t.Error("low-spend key should have been evicted")
+}
+if store.get("high-spend") == 0 {
+t.Error("high-spend key should still be present")
+}
+}
+
+func TestBudget_ResetStoreKey(t *testing.T) {
+p := makePlugin(t, map[string]interface{}{
+"store_id":            "test-reset-key",
+"spend_limit_usd":     0.001,
+"input_per_m_tokens":  3.0,
+"output_per_m_tokens": 15.0,
+})
+apiKey := "key-to-reset"
+
+// Record spend that exceeds limit.
+afterPctx := pctxWithKey(apiKey)
+afterPctx.Response = &providers.Response{
+Usage: providers.Usage{PromptTokens: 100, CompletionTokens: 50},
+}
+_ = p.Execute(context.Background(), afterPctx)
+
+// Confirm over budget.
+if err := p.Execute(context.Background(), pctxWithKey(apiKey)); err == nil {
+t.Fatal("expected budget exceeded before reset")
+}
+
+// Reset the key and confirm budget is clear.
+ResetStoreKey("test-reset-key", apiKey)
+if err := p.Execute(context.Background(), pctxWithKey(apiKey)); err != nil {
+t.Errorf("after ResetStoreKey, request should pass: %v", err)
+}
+}
+
+func TestBudget_ResetStore(t *testing.T) {
+p := makePlugin(t, map[string]interface{}{
+"store_id":            "test-reset-all",
+"spend_limit_usd":     0.001,
+"input_per_m_tokens":  3.0,
+"output_per_m_tokens": 15.0,
+})
+
+for _, k := range []string{"key-a", "key-b"} {
+pctx := pctxWithKey(k)
+pctx.Response = &providers.Response{
+Usage: providers.Usage{PromptTokens: 100, CompletionTokens: 50},
+}
+_ = p.Execute(context.Background(), pctx)
+}
+
+ResetStore("test-reset-all")
+
+for _, k := range []string{"key-a", "key-b"} {
+if err := p.Execute(context.Background(), pctxWithKey(k)); err != nil {
+t.Errorf("after ResetStore, key %q should pass: %v", k, err)
+}
+}
+}

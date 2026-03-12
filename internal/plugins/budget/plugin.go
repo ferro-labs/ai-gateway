@@ -24,13 +24,19 @@
 //	spend_limit_usd: 50.0         # max cumulative spend per API key (USD)
 //	input_per_m_tokens: 3.0       # cost per 1M prompt tokens (USD)
 //	output_per_m_tokens: 15.0     # cost per 1M completion tokens (USD)
+//	max_keys: 10000               # max tracked keys per store; evicts min-spend key at cap
 //
-// # Limits
+// # Memory and retention
 //
 // All spend data is in-memory and does not survive process restarts. This
 // makes the budget plugin suitable for session-scoped soft limits and
 // development quotas. For durable billing enforcement use FerroCloud's
 // server-side budget controls which persist to PostgreSQL.
+//
+// The store caps tracked keys at max_keys (default 10,000). When the cap is
+// reached on a new key insertion, the key with the lowest accumulated spend is
+// evicted to make room. Use [ResetStore] or [ResetStoreKey] for explicit
+// cleanup, e.g. on API key rotation or periodic housekeeping.
 //
 // The API key is read from pctx.Metadata["api_key"]. Requests without a key
 // are not subject to per-key spend tracking (they will not be rejected by
@@ -40,6 +46,7 @@ package budget
 import (
 	"context"
 	"fmt"
+	"math"
 	"sync"
 
 	"github.com/ferro-labs/ai-gateway/plugin"
@@ -51,18 +58,38 @@ func init() {
 	})
 }
 
+// defaultMaxKeys is the default cap on the number of API keys tracked per store.
+const defaultMaxKeys = 10_000
+
 // globalStores is the process-level registry of spend stores, keyed by store_id.
 var globalStores sync.Map // map[string]*spendStore
 
-// spendStore accumulates per-key USD spend.
+// spendStore accumulates per-key USD spend with an optional key count cap.
 type spendStore struct {
-	mu    sync.Mutex
-	spend map[string]float64 // api_key -> accumulated USD
+	mu      sync.Mutex
+	spend   map[string]float64 // api_key -> accumulated USD
+	maxKeys int                // 0 = unlimited
 }
 
+// add records usd worth of spend for key.
+// When a new key would exceed maxKeys, the key with the minimum accumulated
+// spend is evicted first to stay within the cap.
 func (s *spendStore) add(key string, usd float64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	_, exists := s.spend[key]
+	if !exists && s.maxKeys > 0 && len(s.spend) >= s.maxKeys {
+		// Evict the key with the lowest accumulated spend.
+		minKey, minVal := "", math.MaxFloat64
+		for k, v := range s.spend {
+			if v < minVal {
+				minKey, minVal = k, v
+			}
+		}
+		if minKey != "" {
+			delete(s.spend, minKey)
+		}
+	}
 	s.spend[key] += usd
 }
 
@@ -72,9 +99,42 @@ func (s *spendStore) get(key string) float64 {
 	return s.spend[key]
 }
 
-func getStore(id string) *spendStore {
-	v, _ := globalStores.LoadOrStore(id, &spendStore{spend: make(map[string]float64)})
+// reset removes the spend record for a single key.
+func (s *spendStore) reset(key string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.spend, key)
+}
+
+// resetAll clears all spend records in the store.
+func (s *spendStore) resetAll() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.spend = make(map[string]float64)
+}
+
+func getStore(id string, maxKeys int) *spendStore {
+	v, _ := globalStores.LoadOrStore(id, &spendStore{spend: make(map[string]float64), maxKeys: maxKeys})
 	return v.(*spendStore) //nolint:forcetypeassert
+}
+
+// ResetStoreKey removes the accumulated spend for apiKey from the named store.
+// This can be used after API key rotation or for operational housekeeping.
+func ResetStoreKey(storeID, apiKey string) {
+	v, ok := globalStores.Load(storeID)
+	if !ok {
+		return
+	}
+	v.(*spendStore).reset(apiKey) //nolint:forcetypeassert
+}
+
+// ResetStore clears all accumulated spend for every key in the named store.
+func ResetStore(storeID string) {
+	v, ok := globalStores.Load(storeID)
+	if !ok {
+		return
+	}
+	v.(*spendStore).resetAll() //nolint:forcetypeassert
 }
 
 // Plugin enforces per-API-key USD spend limits.
@@ -131,7 +191,19 @@ func (p *Plugin) Init(config map[string]interface{}) error {
 		p.outputPerMTokens = f
 	}
 
-	p.store = getStore(p.storeID)
+	maxKeys := defaultMaxKeys
+	if v, ok := config["max_keys"]; ok {
+		n, err := toFloat64(v)
+		if err != nil {
+			return fmt.Errorf("budget: max_keys: %w", err)
+		}
+		if n < 0 {
+			return fmt.Errorf("budget: max_keys must be >= 0")
+		}
+		maxKeys = int(n)
+	}
+
+	p.store = getStore(p.storeID, maxKeys)
 	return nil
 }
 
