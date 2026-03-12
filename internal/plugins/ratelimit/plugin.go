@@ -22,6 +22,11 @@ import (
 	"github.com/ferro-labs/ai-gateway/plugin"
 )
 
+// defaultMaxKeys is the default maximum number of keys tracked in per-key and
+// per-user rate limiter stores. When the cap is reached the least recently
+// accessed entry is evicted to prevent unbounded memory growth.
+const defaultMaxKeys = 100_000
+
 func init() {
 	plugin.RegisterFactory("rate-limit", func() plugin.Plugin {
 		return &Plugin{}
@@ -76,7 +81,9 @@ func (p *Plugin) Init(config map[string]interface{}) error {
 		if rpm <= 0 {
 			return fmt.Errorf("rate-limit: key_rpm must be > 0")
 		}
-		p.keyStore = internalrl.NewStore(rpm/60.0, rpm/60.0)
+		// burst=rpm lets a key spend up to a full minute's worth of tokens
+		// when idle, matching typical RPM semantics.
+		p.keyStore = internalrl.NewStoreWithMax(rpm/60.0, rpm, defaultMaxKeys)
 	}
 
 	if v, ok := config["user_rpm"]; ok {
@@ -87,7 +94,9 @@ func (p *Plugin) Init(config map[string]interface{}) error {
 		if rpm <= 0 {
 			return fmt.Errorf("rate-limit: user_rpm must be > 0")
 		}
-		p.userStore = internalrl.NewStore(rpm/60.0, rpm/60.0)
+		// burst=rpm lets a user spend up to a full minute's worth of tokens
+		// when idle, matching typical RPM semantics.
+		p.userStore = internalrl.NewStoreWithMax(rpm/60.0, rpm, defaultMaxKeys)
 	}
 
 	return nil

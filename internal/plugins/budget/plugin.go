@@ -203,6 +203,10 @@ func (p *Plugin) Init(config map[string]interface{}) error {
 		maxKeys = int(n)
 	}
 
+	if p.spendLimitUSD > 0 && p.inputPerMTokens == 0 && p.outputPerMTokens == 0 {
+		return fmt.Errorf("budget: spend_limit_usd is set but both input_per_m_tokens and output_per_m_tokens are 0; cost will always be 0 and the budget limit will never be enforced")
+	}
+
 	p.store = getStore(p.storeID, maxKeys)
 	return nil
 }

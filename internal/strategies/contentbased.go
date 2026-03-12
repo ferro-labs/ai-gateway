@@ -82,6 +82,9 @@ func (c *ContentBased) Execute(ctx context.Context, req providers.Request) (*pro
 	if !ok {
 		return nil, fmt.Errorf("content-based routing: provider not found: %s", target.VirtualKey)
 	}
+	if !p.SupportsModel(req.Model) {
+		return nil, fmt.Errorf("content-based routing: provider %s does not support model %q", target.VirtualKey, req.Model)
+	}
 	return p.Complete(ctx, req)
 }
 

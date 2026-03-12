@@ -81,6 +81,9 @@ func (ab *ABTest) Execute(ctx context.Context, req providers.Request) (*provider
 	if !ok {
 		return nil, fmt.Errorf("ab-test: provider not found: %s", variant.Target.VirtualKey)
 	}
+	if !p.SupportsModel(req.Model) {
+		return nil, fmt.Errorf("ab-test: provider %s (variant %q) does not support model %q", variant.Target.VirtualKey, variant.Label, req.Model)
+	}
 	return p.Complete(ctx, req)
 }
 

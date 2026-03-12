@@ -4,9 +4,10 @@ import "fmt"
 
 // RejectionError indicates a plugin intentionally rejected a request/response.
 type RejectionError struct {
-	Plugin string
-	Stage  Stage
-	Reason string
+	Plugin     string
+	PluginType PluginType
+	Stage      Stage
+	Reason     string
 }
 
 // Error implements the error interface.
