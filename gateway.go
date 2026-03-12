@@ -17,6 +17,7 @@ import (
 	"log/slog"
 	"maps"
 	"math/rand"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -801,6 +802,65 @@ func (g *Gateway) streamingTargetOrderLocked(req providers.Request) []string {
 			keys = appendUniqueKey(keys, t.VirtualKey)
 		}
 		return keys
+	case ModeContentBased:
+		// Evaluate content rules in order; first match wins, fallback is targets[0].
+		for _, cond := range g.config.Strategy.ContentConditions {
+			if streamingContentConditionMatches(cond, req) {
+				// Matched target first, then remaining targets as fallback.
+				keys := []string{cond.TargetKey}
+				for _, t := range targets {
+					keys = appendUniqueKey(keys, t.VirtualKey)
+				}
+				return keys
+			}
+		}
+		// No rule matched — use declared target order (targets[0] is the fallback).
+		keys := make([]string, 0, len(targets))
+		for _, t := range targets {
+			keys = append(keys, t.VirtualKey)
+		}
+		return keys
+	case ModeABTest:
+		// Weighted random variant selection mirrors ABTest.selectVariant.
+		total := 0.0
+		for _, v := range g.config.Strategy.ABVariants {
+			w := v.Weight
+			if w <= 0 {
+				w = 1
+			}
+			total += w
+		}
+		if total > 0 {
+			r := rand.Float64() * total //nolint:gosec
+			cumulative := 0.0
+			for _, v := range g.config.Strategy.ABVariants {
+				w := v.Weight
+				if w <= 0 {
+					w = 1
+				}
+				cumulative += w
+				if r < cumulative {
+					keys := []string{v.TargetKey}
+					for _, t := range targets {
+						keys = appendUniqueKey(keys, t.VirtualKey)
+					}
+					return keys
+				}
+			}
+			// Floating-point safety net — use last variant.
+			last := g.config.Strategy.ABVariants[len(g.config.Strategy.ABVariants)-1]
+			keys := []string{last.TargetKey}
+			for _, t := range targets {
+				keys = appendUniqueKey(keys, t.VirtualKey)
+			}
+			return keys
+		}
+		// No variants configured — fall through to raw order.
+		keys := make([]string, 0, len(targets))
+		for _, t := range targets {
+			keys = append(keys, t.VirtualKey)
+		}
+		return keys
 	case ModeLoadBalance:
 		startIdx := weightedStartIndex(targets)
 		keys := make([]string, 0, len(targets))
@@ -823,6 +883,42 @@ func conditionMatches(cond Condition, model string) bool {
 		return model == cond.Value
 	case "model_prefix":
 		return strings.HasPrefix(model, cond.Value)
+	default:
+		return false
+	}
+}
+
+// streamingContentConditionMatches evaluates a single ContentCondition against
+// a request, mirroring the logic in internal/strategies/contentbased.go.
+func streamingContentConditionMatches(cond ContentCondition, req providers.Request) bool {
+	switch cond.Type {
+	case "prompt_contains":
+		lower := strings.ToLower(cond.Value)
+		for _, msg := range req.Messages {
+			if msg.Role == "user" && strings.Contains(strings.ToLower(msg.Content), lower) {
+				return true
+			}
+		}
+		return false
+	case "prompt_not_contains":
+		lower := strings.ToLower(cond.Value)
+		for _, msg := range req.Messages {
+			if msg.Role == "user" && strings.Contains(strings.ToLower(msg.Content), lower) {
+				return false
+			}
+		}
+		return true
+	case "prompt_regex":
+		re, err := regexp.Compile(cond.Value)
+		if err != nil {
+			return false
+		}
+		for _, msg := range req.Messages {
+			if msg.Role == "user" && re.MatchString(msg.Content) {
+				return true
+			}
+		}
+		return false
 	default:
 		return false
 	}
