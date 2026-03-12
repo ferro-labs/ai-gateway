@@ -1,6 +1,26 @@
 {
   "strategy": {
-    "mode": "fallback"
+    "mode": "fallback",
+    "_comment": "mode: single | fallback | loadbalance | conditional | content-based | ab-test | least-latency | cost-optimized"
+  },
+  "_content_based_example": {
+    "strategy": {
+      "mode": "content-based",
+      "content_conditions": [
+        { "type": "prompt_regex",       "value": "(?i)\\b(code|function|class|implement)\\b", "target_key": "deepseek" },
+        { "type": "prompt_contains",    "value": "translate",   "target_key": "gemini" },
+        { "type": "prompt_not_contains","value": "confidential","target_key": "openai" }
+      ]
+    }
+  },
+  "_ab_test_example": {
+    "strategy": {
+      "mode": "ab-test",
+      "ab_variants": [
+        { "target_key": "openai",    "weight": 70, "label": "control" },
+        { "target_key": "anthropic", "weight": 30, "label": "challenger" }
+      ]
+    }
   },
   "targets": [
     {
@@ -181,6 +201,29 @@
       "enabled": false,
       "config": {
         "rules": []
+      }
+    },
+    {
+      "name": "rate-limit",
+      "type": "guardrail",
+      "stage": "before_request",
+      "enabled": false,
+      "config": {
+        "requests_per_second": 100,
+        "key_rpm": 60,
+        "user_rpm": 30
+      }
+    },
+    {
+      "name": "budget",
+      "type": "guardrail",
+      "stage": "before_request",
+      "enabled": false,
+      "config": {
+        "store_id": "default",
+        "spend_limit_usd": 10.0,
+        "input_per_m_tokens": 3.0,
+        "output_per_m_tokens": 15.0
       }
     }
   ],

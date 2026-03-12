@@ -27,7 +27,7 @@ It exposes OpenAI-style endpoints (`/v1/chat/completions`, `/v1/models`, `/v1/em
 ## Why use it
 
 - **OpenAI-compatible API surface** for easier migration and standard client support.
-- **Multi-provider routing** with 6 strategy modes: `single`, `fallback`, `loadbalance`, `conditional`, `least-latency`, `cost-optimized`.
+- **Multi-provider routing** with 8 strategy modes: `single`, `fallback`, `loadbalance`, `conditional`, `least-latency`, `cost-optimized`, `content-based`, `ab-test`.
 - **Built-in resilience** via per-target retry controls and circuit breakers.
 - **Built-in governance hooks** via plugin lifecycle stages (`before_request`, `after_request`, `on_error`).
 - **Operational visibility** through structured logs, `/metrics`, deep `/health`, admin APIs, and dashboard UI.
@@ -38,6 +38,7 @@ It exposes OpenAI-style endpoints (`/v1/chat/completions`, `/v1/models`, `/v1/em
 
 Recent releases include:
 
+- **Content-based routing, A/B testing, and budget controls (v0.8.5)** — route by prompt content with `contains`/`not-contains`/`regex` rules, split traffic with weighted A/B testing, enforce per-key USD spend limits with the `budget` plugin, and rate-limit by API key or user (`key_rpm`, `user_rpm`).
 - **MCP integration (v0.8.0)** — attach external MCP 2025-11-25 Streamable HTTP tool servers; the gateway drives an agentic loop over `tool_calls` transparently before returning the final LLM response.
 - Reliability hardening: fallback-strategy error propagation, event hook panic recovery, config persistence rollback safety (v0.7.0).
 - Provider layer refactor into per-provider subpackages and canonical `Name*` constants.
@@ -140,9 +141,11 @@ Set `strategy.mode` in your config:
 - `single` — fixed provider target.
 - `fallback` — try targets in order, with per-target retry.
 - `loadbalance` — weighted selection across targets.
-- `conditional` — route by request conditions.
+- `conditional` — route by request metadata conditions.
 - `least-latency` — pick lowest observed latency provider.
 - `cost-optimized` — pick cheapest compatible provider from model catalog pricing.
+- `content-based` — route by prompt content using `contains`, `not-contains`, or `regex` rules; first matching rule wins, falls back to the first target.
+- `ab-test` — weighted random traffic split across named variants; zero-weight variants are treated as equal weight.
 
 ## Configuration
 
@@ -220,6 +223,8 @@ Registered plugin set:
 - Guardrails: `word-filter`, `max-token`, `pii-redact`, `secret-scan`, `prompt-shield`, `schema-guard`, `regex-guard`
 - Transform: `response-cache`
 - Logging: `request-logger`
+- Rate limiting: `rate-limit` — global RPM/RPS plus optional `key_rpm` (per-API-key) and `user_rpm` (per-user) limits.
+- Budget control: `budget` — per-API-key USD spend tracking and enforcement with configurable input/output token pricing.
 
 Inspect available plugins with:
 
