@@ -16,8 +16,8 @@ type mockProvider struct {
 	calls  int
 }
 
-func (m *mockProvider) Name() string              { return m.name }
-func (m *mockProvider) SupportedModels() []string  { return m.models }
+func (m *mockProvider) Name() string                  { return m.name }
+func (m *mockProvider) SupportedModels() []string     { return m.models }
 func (m *mockProvider) Models() []providers.ModelInfo { return nil }
 func (m *mockProvider) SupportsModel(model string) bool {
 	for _, mm := range m.models {

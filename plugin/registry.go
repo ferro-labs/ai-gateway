@@ -1,6 +1,7 @@
 package plugin
 
 // PluginFactory creates a new instance of a plugin.
+//
 //nolint:revive // keep for backwards compatibility
 type PluginFactory func() Plugin
 
