@@ -46,3 +46,6 @@ bin/
 
 # Database files
 *.db
+
+#git hooks
+.githooks

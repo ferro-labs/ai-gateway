@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 
 	// Register built-in plugins so they appear in the plugin list.
+	_ "github.com/ferro-labs/ai-gateway/internal/plugins/budget"
 	_ "github.com/ferro-labs/ai-gateway/internal/plugins/cache"
 	_ "github.com/ferro-labs/ai-gateway/internal/plugins/logger"
 	_ "github.com/ferro-labs/ai-gateway/internal/plugins/maxtoken"

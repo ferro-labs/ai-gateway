@@ -7,6 +7,84 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.5] — 2026-03-12
+
+### Added
+
+- **Content-based routing strategy** (`internal/strategies/contentbased.go`):
+  - New `StrategyMode` `"content-based"` selects a provider target based on the
+    textual content of user-role prompt messages.
+  - Three condition types: `prompt_contains` (case-insensitive substring),
+    `prompt_not_contains` (inverted substring), and `prompt_regex` (Go regexp).
+  - Rules are evaluated in declaration order — first match wins. Unmatched
+    requests fall back to the first configured target.
+  - Regex patterns are compiled at gateway startup for zero-cost hot-path
+    matching. Invalid patterns surface as a startup error, not a runtime panic.
+  - Config fields: `strategy.mode: content-based`,
+    `strategy.content_conditions[].type / .value / .target_key`.
+
+- **A/B testing strategy** (`internal/strategies/abtest.go`):
+  - New `StrategyMode` `"ab-test"` splits traffic across two or more named
+    variants using weighted random sampling.
+  - Each variant carries a `label` (e.g. `"control"`, `"challenger"`) that is
+    emitted as the structured log field `ab_variant` on every routed request,
+    enabling variant correlation in Grafana, Datadog, and other log pipelines.
+  - Zero-weight variants participate with weight 1 (equal distribution).
+  - Config fields: `strategy.mode: ab-test`,
+    `strategy.ab_variants[].target_key / .weight / .label`.
+
+- **Per-key and per-user rate limiting** (`internal/plugins/ratelimit/`):
+  - Extended `rate-limit` plugin with two new config keys:
+    - `key_rpm` (requests per minute per API key) — limit is enforced
+      per-key using a `Store` of token buckets. The API key is read from
+      `pctx.Metadata["api_key"]`; requests without a key are skipped.
+    - `user_rpm` (requests per minute per user ID) — limit is enforced
+      per-user using a separate `Store`. The user ID is read from
+      `Request.User`; requests without a user are skipped.
+  - Rate checks execute in order: global → per-key → per-user. The request
+    is rejected at the first exceeded limiter with a distinct reason string.
+
+- **Per-key budget controls plugin** (`internal/plugins/budget/`):
+  - New `budget` plugin tracks cumulative USD spend per API key in an
+    in-memory store and rejects requests once the configured limit is reached.
+  - Register at **both** lifecycle stages for full enforcement:
+    - `before_request` — checks current spend against `spend_limit_usd` and
+      sets `pctx.Reject = true` with reason `"budget exceeded"` if over limit.
+    - `after_request` — calculates request cost from `Response.Usage` token
+      counts and the configured per-token rates; adds cost to the store.
+  - Two plugin instances with the same `store_id` share the same accumulated
+    spend data. Default `store_id` is `"default"`.
+  - `spend_limit_usd: 0` (or unset) means unlimited — the plugin tracks spend
+    without ever rejecting.
+  - Config keys: `store_id`, `spend_limit_usd`, `input_per_m_tokens`,
+    `output_per_m_tokens`.
+  - All spend data is in-memory; it does not survive process restarts.
+
+- **Config types** (`config.go`):
+  - `ModeContentBased StrategyMode = "content-based"`.
+  - `ModeABTest StrategyMode = "ab-test"`.
+  - `ContentCondition` struct (`type`, `value`, `target_key`).
+  - `ABVariantConfig` struct (`target_key`, `weight`, `label`).
+  - `StrategyConfig.ContentConditions []ContentCondition`.
+  - `StrategyConfig.ABVariants []ABVariantConfig`.
+
+- **Budget plugin registered in server binary** (`cmd/ferrogw/main.go`,
+  `cmd/ferrogw-cli/main.go`): blank import added so operators can load the
+  `budget` plugin from YAML/JSON config without code changes.
+
+### Tests
+
+- `internal/strategies/contentbased_test.go` — 8 test cases covering
+  PromptContains, PromptNotContains, PromptRegex, first-rule-wins, case
+  insensitivity, system-message exclusion, invalid regex, and provider-not-found.
+- `internal/strategies/abtest_test.go` — 6 test cases covering no variants,
+  zero weight normalisation, negative weight error, single variant, statistical
+  traffic distribution (90/10 and 50/50 splits over 10,000 iterations), and
+  provider-not-found.
+- `internal/plugins/budget/plugin_test.go` — 7 test cases covering Init
+  defaults, invalid config, no-API-key skip, below-limit pass, record-and-exceed
+  lifecycle, unlimited mode, and shared-store correctness across two instances.
+
 ## [0.8.0] — 2026-03-10
 
 ### Added

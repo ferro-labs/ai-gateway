@@ -413,6 +413,24 @@ func TestRouteErrorDetails_BeforeRequestRejection(t *testing.T) {
 	}
 }
 
+func TestRouteErrorDetails_RateLimitRejection_Returns429(t *testing.T) {
+	err := &plugin.RejectionError{
+		PluginType: plugin.TypeRateLimit,
+		Stage:      plugin.StageBeforeRequest,
+		Reason:     "budget exceeded",
+	}
+	status, errType, code := routeErrorDetails(err)
+	if status != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d", status, http.StatusTooManyRequests)
+	}
+	if errType != "rate_limit_error" {
+		t.Fatalf("errType = %q, want %q", errType, "rate_limit_error")
+	}
+	if code != "rate_limit_exceeded" {
+		t.Fatalf("code = %q, want %q", code, "rate_limit_exceeded")
+	}
+}
+
 func TestRouteErrorDetails_AfterRequestRejection(t *testing.T) {
 	status, errType, code := routeErrorDetails(&plugin.RejectionError{Stage: plugin.StageAfterRequest, Reason: "schema mismatch"})
 	if status != http.StatusBadGateway {

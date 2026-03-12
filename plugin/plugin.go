@@ -24,6 +24,7 @@ type Plugin interface {
 }
 
 // PluginType categorizes plugins.
+//
 //nolint:revive // keep for backwards compatibility
 type PluginType string
 

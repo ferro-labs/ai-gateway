@@ -51,12 +51,16 @@ func (l *Limiter) Allow() bool {
 	return false
 }
 
-// Store maintains per-key Limiter instances.
+// Store maintains per-key Limiter instances with an optional max-size cap.
+// When maxKeys > 0, inserting a new key that would exceed the cap evicts the
+// least recently accessed entry, preventing unbounded memory growth.
 type Store struct {
 	mu       sync.RWMutex
 	limiters map[string]*Limiter
+	lastSeen sync.Map // map[string]time.Time — updated on every access
 	rate     float64
 	burst    float64
+	maxKeys  int // 0 = unlimited
 }
 
 // NewStore creates a Store whose per-key limiters share the same rate/burst.
@@ -68,6 +72,15 @@ func NewStore(ratePerSecond, burst float64) *Store {
 	}
 }
 
+// NewStoreWithMax creates a Store like NewStore but caps the number of tracked
+// keys at maxKeys. When the cap is reached, a new key causes the least recently
+// accessed entry to be evicted. Use maxKeys=0 for unlimited (same as NewStore).
+func NewStoreWithMax(ratePerSecond, burst float64, maxKeys int) *Store {
+	s := NewStore(ratePerSecond, burst)
+	s.maxKeys = maxKeys
+	return s
+}
+
 // Allow checks (and creates if needed) the limiter for key.
 func (s *Store) Allow(key string) bool {
 	// Fast path — limiter already exists.
@@ -75,6 +88,7 @@ func (s *Store) Allow(key string) bool {
 	l, ok := s.limiters[key]
 	s.mu.RUnlock()
 	if ok {
+		s.lastSeen.Store(key, time.Now())
 		return l.Allow()
 	}
 
@@ -83,9 +97,27 @@ func (s *Store) Allow(key string) bool {
 	defer s.mu.Unlock()
 	// Double-check after acquiring write lock.
 	if l, ok = s.limiters[key]; ok {
+		s.lastSeen.Store(key, time.Now())
 		return l.Allow()
+	}
+	// Evict least recently seen entry when at cap.
+	if s.maxKeys > 0 && len(s.limiters) >= s.maxKeys {
+		oldest, oldestTime := "", time.Now()
+		s.lastSeen.Range(func(k, v any) bool {
+			t := v.(time.Time) //nolint:forcetypeassert
+			if t.Before(oldestTime) {
+				oldest = k.(string) //nolint:forcetypeassert
+				oldestTime = t
+			}
+			return true
+		})
+		if oldest != "" {
+			delete(s.limiters, oldest)
+			s.lastSeen.Delete(oldest)
+		}
 	}
 	l = New(s.rate, s.burst)
 	s.limiters[key] = l
+	s.lastSeen.Store(key, time.Now())
 	return l.Allow()
 }

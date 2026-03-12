@@ -5,9 +5,9 @@
 // providers with RegisterProvider, load plugins from config with LoadPlugins,
 // and route requests with Route or RouteStream.
 //
-// Plugins and routing strategies (single, fallback, load-balance, conditional)
-// are configured via [Config] which can be loaded from a YAML or JSON file
-// using [LoadConfig].
+// Plugins and routing strategies (single, fallback, load-balance, conditional,
+// content-based, ab-test) are configured via [Config] which can be loaded
+// from a YAML or JSON file using [LoadConfig].
 package aigateway
 
 import (
@@ -17,6 +17,7 @@ import (
 	"log/slog"
 	"maps"
 	"math/rand"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -130,6 +131,8 @@ func (g *Gateway) Catalog() models.Catalog {
 const (
 	SubjectRequestCompleted = "gateway.request.completed"
 	SubjectRequestFailed    = "gateway.request.failed"
+
+	roleUser = "user"
 )
 
 // RegisterProvider registers a provider with the gateway.
@@ -544,12 +547,59 @@ func (g *Gateway) getStrategy() (strategies.Strategy, error) {
 			})
 		}
 		s = strategies.NewConditional(rules, targets[0], lookup)
+	case ModeContentBased:
+		cbs, err := g.buildContentBasedStrategy(targets, lookup)
+		if err != nil {
+			return nil, err
+		}
+		s = cbs
+	case ModeABTest:
+		abt, err := g.buildABTestStrategy(lookup)
+		if err != nil {
+			return nil, err
+		}
+		s = abt
 	default:
 		return nil, fmt.Errorf("unknown strategy mode: %s", g.config.Strategy.Mode)
 	}
 
 	g.strategy = s
 	return s, nil
+}
+
+// buildContentBasedStrategy constructs a ContentBased strategy from the gateway config.
+func (g *Gateway) buildContentBasedStrategy(targets []strategies.Target, lookup strategies.ProviderLookup) (strategies.Strategy, error) {
+	if len(g.config.Strategy.ContentConditions) == 0 {
+		return nil, fmt.Errorf("no content_conditions configured for content-based strategy")
+	}
+	if len(targets) == 0 {
+		return nil, fmt.Errorf("no targets configured for content-based strategy")
+	}
+	var rules []strategies.ContentRule
+	for _, cc := range g.config.Strategy.ContentConditions {
+		rules = append(rules, strategies.ContentRule{
+			Type:   strategies.ContentConditionType(cc.Type),
+			Value:  cc.Value,
+			Target: strategies.Target{VirtualKey: cc.TargetKey},
+		})
+	}
+	return strategies.NewContentBased(rules, targets[0], lookup)
+}
+
+// buildABTestStrategy constructs an ABTest strategy from the gateway config.
+func (g *Gateway) buildABTestStrategy(lookup strategies.ProviderLookup) (strategies.Strategy, error) {
+	if len(g.config.Strategy.ABVariants) == 0 {
+		return nil, fmt.Errorf("no ab_variants configured for ab-test strategy")
+	}
+	var variants []strategies.ABTestVariant
+	for _, v := range g.config.Strategy.ABVariants {
+		variants = append(variants, strategies.ABTestVariant{
+			Target: strategies.Target{VirtualKey: v.TargetKey},
+			Weight: v.Weight,
+			Label:  v.Label,
+		})
+	}
+	return strategies.NewABTest(variants, lookup)
 }
 
 // cbProvider wraps a Provider with a circuit breaker.
@@ -754,6 +804,65 @@ func (g *Gateway) streamingTargetOrderLocked(req providers.Request) []string {
 			keys = appendUniqueKey(keys, t.VirtualKey)
 		}
 		return keys
+	case ModeContentBased:
+		// Evaluate content rules in order; first match wins, fallback is targets[0].
+		for _, cond := range g.config.Strategy.ContentConditions {
+			if streamingContentConditionMatches(cond, req) {
+				// Matched target first, then remaining targets as fallback.
+				keys := []string{cond.TargetKey}
+				for _, t := range targets {
+					keys = appendUniqueKey(keys, t.VirtualKey)
+				}
+				return keys
+			}
+		}
+		// No rule matched — use declared target order (targets[0] is the fallback).
+		keys := make([]string, 0, len(targets))
+		for _, t := range targets {
+			keys = append(keys, t.VirtualKey)
+		}
+		return keys
+	case ModeABTest:
+		// Weighted random variant selection mirrors ABTest.selectVariant.
+		total := 0.0
+		for _, v := range g.config.Strategy.ABVariants {
+			w := v.Weight
+			if w <= 0 {
+				w = 1
+			}
+			total += w
+		}
+		if total > 0 {
+			r := rand.Float64() * total //nolint:gosec
+			cumulative := 0.0
+			for _, v := range g.config.Strategy.ABVariants {
+				w := v.Weight
+				if w <= 0 {
+					w = 1
+				}
+				cumulative += w
+				if r < cumulative {
+					keys := []string{v.TargetKey}
+					for _, t := range targets {
+						keys = appendUniqueKey(keys, t.VirtualKey)
+					}
+					return keys
+				}
+			}
+			// Floating-point safety net — use last variant.
+			last := g.config.Strategy.ABVariants[len(g.config.Strategy.ABVariants)-1]
+			keys := []string{last.TargetKey}
+			for _, t := range targets {
+				keys = appendUniqueKey(keys, t.VirtualKey)
+			}
+			return keys
+		}
+		// No variants configured — fall through to raw order.
+		keys := make([]string, 0, len(targets))
+		for _, t := range targets {
+			keys = append(keys, t.VirtualKey)
+		}
+		return keys
 	case ModeLoadBalance:
 		startIdx := weightedStartIndex(targets)
 		keys := make([]string, 0, len(targets))
@@ -776,6 +885,42 @@ func conditionMatches(cond Condition, model string) bool {
 		return model == cond.Value
 	case "model_prefix":
 		return strings.HasPrefix(model, cond.Value)
+	default:
+		return false
+	}
+}
+
+// streamingContentConditionMatches evaluates a single ContentCondition against
+// a request, mirroring the logic in internal/strategies/contentbased.go.
+func streamingContentConditionMatches(cond ContentCondition, req providers.Request) bool {
+	switch cond.Type {
+	case "prompt_contains":
+		lower := strings.ToLower(cond.Value)
+		for _, msg := range req.Messages {
+			if msg.Role == roleUser && strings.Contains(strings.ToLower(msg.Content), lower) {
+				return true
+			}
+		}
+		return false
+	case "prompt_not_contains":
+		lower := strings.ToLower(cond.Value)
+		for _, msg := range req.Messages {
+			if msg.Role == roleUser && strings.Contains(strings.ToLower(msg.Content), lower) {
+				return false
+			}
+		}
+		return true
+	case "prompt_regex":
+		re, err := regexp.Compile(cond.Value)
+		if err != nil {
+			return false
+		}
+		for _, msg := range req.Messages {
+			if msg.Role == roleUser && re.MatchString(msg.Content) {
+				return true
+			}
+		}
+		return false
 	default:
 		return false
 	}

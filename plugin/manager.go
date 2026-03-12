@@ -47,7 +47,7 @@ func (m *Manager) RunBefore(ctx context.Context, pctx *Context) error {
 				if reason == "" {
 					reason = err.Error()
 				}
-				return &RejectionError{Plugin: p.Name(), Stage: StageBeforeRequest, Reason: reason}
+				return &RejectionError{Plugin: p.Name(), PluginType: p.Type(), Stage: StageBeforeRequest, Reason: reason}
 			}
 			return fmt.Errorf("plugin %s failed: %w", p.Name(), err)
 		}
@@ -56,7 +56,7 @@ func (m *Manager) RunBefore(ctx context.Context, pctx *Context) error {
 			if reason == "" {
 				reason = defaultRejectionReason
 			}
-			return &RejectionError{Plugin: p.Name(), Stage: StageBeforeRequest, Reason: reason}
+			return &RejectionError{Plugin: p.Name(), PluginType: p.Type(), Stage: StageBeforeRequest, Reason: reason}
 		}
 		if pctx.Skip {
 			break
@@ -78,7 +78,7 @@ func (m *Manager) RunAfter(ctx context.Context, pctx *Context) error {
 					reason = defaultRejectionReason
 				}
 			}
-			return &RejectionError{Plugin: p.Name(), Stage: StageAfterRequest, Reason: reason}
+			return &RejectionError{Plugin: p.Name(), PluginType: p.Type(), Stage: StageAfterRequest, Reason: reason}
 		}
 		if err != nil {
 			logging.Logger.Warn("after-request plugin error", "plugin", p.Name(), "error", err)

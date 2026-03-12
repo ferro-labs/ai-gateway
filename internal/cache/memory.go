@@ -16,11 +16,11 @@ type memoryEntry struct {
 
 // Memory is a thread-safe in-memory LRU cache with TTL expiration.
 type Memory struct {
-	mu         sync.Mutex
-	capacity   int
-	ttl        time.Duration
-	items      map[string]*list.Element
-	evictList  *list.List
+	mu        sync.Mutex
+	capacity  int
+	ttl       time.Duration
+	items     map[string]*list.Element
+	evictList *list.List
 }
 
 // NewMemory creates a new in-memory LRU cache.

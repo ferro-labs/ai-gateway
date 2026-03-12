@@ -45,7 +45,8 @@ func ValidateConfig(cfg Config) error {
 	}
 
 	switch mode {
-	case ModeSingle, ModeFallback, ModeLoadBalance, ModeConditional, ModeLatency, ModeCostOptimized:
+	case ModeSingle, ModeFallback, ModeLoadBalance, ModeConditional, ModeLatency, ModeCostOptimized,
+		ModeContentBased, ModeABTest:
 	default:
 		return fmt.Errorf("unknown strategy mode: %q", cfg.Strategy.Mode)
 	}
@@ -56,6 +57,14 @@ func ValidateConfig(cfg Config) error {
 
 	if mode == ModeConditional && len(cfg.Strategy.Conditions) == 0 {
 		return fmt.Errorf("conditional strategy requires at least one condition")
+	}
+
+	if mode == ModeContentBased && len(cfg.Strategy.ContentConditions) == 0 {
+		return fmt.Errorf("content-based strategy requires at least one content_condition")
+	}
+
+	if mode == ModeABTest && len(cfg.Strategy.ABVariants) == 0 {
+		return fmt.Errorf("ab-test strategy requires at least one ab_variant")
 	}
 
 	if mode == ModeLoadBalance {

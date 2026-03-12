@@ -31,6 +31,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	// Register built-in plugins so they can be loaded from config.
+	_ "github.com/ferro-labs/ai-gateway/internal/plugins/budget"
 	_ "github.com/ferro-labs/ai-gateway/internal/plugins/cache"
 	_ "github.com/ferro-labs/ai-gateway/internal/plugins/logger"
 	_ "github.com/ferro-labs/ai-gateway/internal/plugins/maxtoken"
@@ -632,6 +633,10 @@ func routeErrorDetails(err error) (status int, errType, code string) {
 	if errors.As(err, &rejection) {
 		switch rejection.Stage {
 		case plugin.StageBeforeRequest:
+			// Rate-limit and budget plugins signal throttling — return 429.
+			if rejection.PluginType == plugin.TypeRateLimit {
+				return http.StatusTooManyRequests, "rate_limit_error", "rate_limit_exceeded"
+			}
 			return http.StatusBadRequest, "invalid_request_error", "request_rejected"
 		case plugin.StageAfterRequest:
 			return http.StatusBadGateway, "upstream_error", "response_rejected"

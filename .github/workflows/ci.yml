@@ -40,6 +40,15 @@ jobs:
       - name: Verify modules
         run: go mod verify
 
+      - name: Check formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "The following files are not gofmt-formatted:"
+            echo "$unformatted"
+            exit 1
+          fi
+
       - name: Build
         run: go build ./...
 

@@ -2,7 +2,34 @@
 # Copy to config.yaml and customize.
 
 strategy:
-  mode: fallback  # single | fallback | loadbalance | conditional
+  mode: fallback  # single | fallback | loadbalance | conditional | content-based | ab-test | least-latency | cost-optimized
+
+# --- content-based routing example ---
+# strategy:
+#   mode: content-based
+#   content_conditions:
+#     - type: prompt_regex
+#       value: "(?i)\\b(code|function|class|implement)\\b"
+#       target_key: deepseek
+#     - type: prompt_contains
+#       value: "translate"
+#       target_key: gemini
+#     - type: prompt_not_contains
+#       value: "confidential"
+#       target_key: openai
+# First matching rule wins; falls back to the first target when no rule matches.
+
+# --- A/B testing example ---
+# strategy:
+#   mode: ab-test
+#   ab_variants:
+#     - target_key: openai
+#       weight: 70
+#       label: control
+#     - target_key: anthropic
+#       weight: 30
+#       label: challenger
+# Weights are relative; use 0 for equal distribution across all variants.
 
 targets:
   - virtual_key: openai
@@ -127,6 +154,32 @@ plugins:
     enabled: false
     config:
       rules: []
+
+  - name: rate-limit
+    type: guardrail
+    stage: before_request
+    enabled: false
+    config:
+      # Global request-per-second limit applied to all traffic.
+      requests_per_second: 100
+      # Optional per-API-key limit (requests per minute).
+      key_rpm: 60
+      # Optional per-user limit (requests per minute, keyed on Request.User).
+      user_rpm: 30
+
+  - name: budget
+    type: guardrail
+    stage: before_request
+    enabled: false
+    config:
+      # Shared store identifier — all plugin instances with the same store_id
+      # share the same spend counters. Defaults to "default".
+      store_id: default
+      # Maximum cumulative USD spend allowed per API key. 0 = unlimited.
+      spend_limit_usd: 10.0
+      # Pricing used to calculate cost from token counts in the response.
+      input_per_m_tokens: 3.0    # USD per 1 million prompt tokens
+      output_per_m_tokens: 15.0  # USD per 1 million completion tokens
 
 # MCP (Model Context Protocol) agentic tool servers.
 # When configured, the gateway injects these tools into every chat completion
