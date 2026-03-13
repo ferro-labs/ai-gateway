@@ -7,6 +7,8 @@
 // unexported in internal/mcp.
 package mcp
 
+import "context"
+
 // ServerConfig defines how the gateway connects to one external MCP server.
 // It lives in gateway.Config.MCPServers and is consumed by the internal Registry.
 type ServerConfig struct {
@@ -30,3 +32,27 @@ type ServerConfig struct {
 	// Defaults to 30 when unset or zero.
 	TimeoutSeconds int `json:"timeout_seconds,omitempty" yaml:"timeout_seconds,omitempty"`
 }
+
+// ToolCallAuditEntry contains metadata captured after a single MCP tool
+// invocation. It is passed to [ToolCallAuditFn] on every tool call.
+type ToolCallAuditEntry struct {
+	// ServerName is the name of the MCP server that owns the tool.
+	ServerName string
+	// ToolName is the name of the tool that was called.
+	ToolName string
+	// Status is "ok" on success, "error" on failure.
+	Status string
+	// LatencyMs is the wall-clock time of the CallTool RPC in milliseconds.
+	LatencyMs int
+	// ErrorMessage is non-empty when Status is "error".
+	ErrorMessage string
+}
+
+// ToolCallAuditFn is an optional callback invoked after every MCP tool
+// invocation (success or failure). Implementations must be non-blocking;
+// delegate any I/O to a goroutine.
+//
+// The ctx is the same context used for the Route call — callers may embed
+// per-request values (e.g. trace ID, API key ID) for retrieval inside the hook.
+// Set MCPToolCallAuditFn on aigateway.Config before calling New.
+type ToolCallAuditFn func(ctx context.Context, entry ToolCallAuditEntry)

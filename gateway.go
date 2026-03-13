@@ -29,6 +29,7 @@ import (
 	"github.com/ferro-labs/ai-gateway/internal/metrics"
 	"github.com/ferro-labs/ai-gateway/internal/strategies"
 	"github.com/ferro-labs/ai-gateway/internal/streamwrap"
+	pubmcp "github.com/ferro-labs/ai-gateway/mcp"
 	"github.com/ferro-labs/ai-gateway/models"
 	"github.com/ferro-labs/ai-gateway/plugin"
 	"github.com/ferro-labs/ai-gateway/providers"
@@ -94,7 +95,7 @@ func New(cfg Config) (*Gateway, error) {
 		}
 
 		gw.mcpRegistry = reg
-		gw.mcpExecutor = mcp.NewExecutor(reg, maxDepth)
+		gw.mcpExecutor = mcp.NewExecutor(reg, maxDepth, buildMCPAuditFn(cfg.MCPToolCallAuditFn))
 
 		// Handshake and tool discovery run in the background; New() returns
 		// immediately. mcpInitDone is closed once initialization completes so
@@ -169,6 +170,28 @@ func (g *Gateway) AddHook(fn EventHookFunc) {
 //	    case <-gw.MCPInitDone():
 //	    case <-ctx.Done():
 //	    }
+//
+// buildMCPAuditFn converts the public ToolCallAuditFn into the internal
+// mcp.AuditFn expected by the Executor.  Returns nil when fn is nil so the
+// Executor skips audit logging entirely.
+func buildMCPAuditFn(fn pubmcp.ToolCallAuditFn) mcp.AuditFn {
+	if fn == nil {
+		return nil
+	}
+	return func(ctx context.Context, serverName, toolName, status string, latencyMs int, errMsg string) {
+		fn(ctx, pubmcp.ToolCallAuditEntry{
+			ServerName:   serverName,
+			ToolName:     toolName,
+			Status:       status,
+			LatencyMs:    latencyMs,
+			ErrorMessage: errMsg,
+		})
+	}
+}
+
+// MCPInitDone returns a channel that is closed once all MCP servers have
+// completed their initialization handshake.  The channel is pre-closed when
+// no MCP servers are configured.
 func (g *Gateway) MCPInitDone() <-chan struct{} {
 	g.mu.RLock()
 	done := g.mcpInitDone
@@ -431,7 +454,7 @@ func (g *Gateway) ReloadConfig(cfg Config) error {
 			}
 		}
 		g.mcpRegistry = reg
-		g.mcpExecutor = mcp.NewExecutor(reg, maxDepth)
+		g.mcpExecutor = mcp.NewExecutor(reg, maxDepth, buildMCPAuditFn(cfg.MCPToolCallAuditFn))
 		done := make(chan struct{})
 		g.mcpInitDone = done
 		go func() {

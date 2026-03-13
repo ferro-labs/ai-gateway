@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Ask a question / Discussion
+    url: https://github.com/ferro-labs/ai-gateway/discussions
+    about: Use GitHub Discussions for questions, usage help, and ideas before opening an issue.
+  - name: Security vulnerability
+    url: https://github.com/ferro-labs/ai-gateway/blob/main/SECURITY.md
+    about: Do NOT open a public issue for security vulnerabilities — follow the Security Policy instead.
+  - name: Documentation site
+    url: https://docs.ferrolabs.ai
+    about: Check the official docs first — your question may already be answered.
