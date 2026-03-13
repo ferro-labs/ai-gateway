@@ -61,6 +61,24 @@ func NewExecutor(registry *Registry, maxCallDepth int, auditFn AuditFn) *Executo
 	return &Executor{registry: registry, maxCallDepth: maxCallDepth, auditFn: auditFn}
 }
 
+// callAuditFn dispatches the audit callback asynchronously in its own goroutine
+// so that a slow or panicking user-supplied hook cannot block or crash the
+// tool-call loop.  It is a no-op when auditFn is nil.
+func (e *Executor) callAuditFn(ctx context.Context, serverName, toolName, status string, latencyMs int, errMsg string) {
+	if e.auditFn == nil {
+		return
+	}
+	fn := e.auditFn
+	go func() {
+		defer func() {
+			// Swallow any panic from the user-supplied callback — audit logging
+			// must never crash tool execution.
+			recover() //nolint:errcheck
+		}()
+		fn(ctx, serverName, toolName, status, latencyMs, errMsg)
+	}()
+}
+
 // ShouldContinueLoop reports whether the LLM response contains pending tool
 // calls that should be resolved and the depth limit has not been reached.
 func (e *Executor) ShouldContinueLoop(resp *core.Response, depth int) bool {
@@ -134,9 +152,7 @@ func (e *Executor) ResolvePendingToolCalls(ctx context.Context, resp *core.Respo
 
 			if err != nil {
 				metricToolCallsTotal.WithLabelValues(serverName, toolName, "error").Inc()
-				if e.auditFn != nil {
-					e.auditFn(ctx, serverName, toolName, "error", latencyMs, err.Error())
-				}
+				e.callAuditFn(ctx, serverName, toolName, "error", latencyMs, err.Error())
 				extra = append(extra, core.Message{
 					Role:       core.RoleTool,
 					ToolCallID: tc.ID,
@@ -146,9 +162,7 @@ func (e *Executor) ResolvePendingToolCalls(ctx context.Context, resp *core.Respo
 			}
 
 			metricToolCallsTotal.WithLabelValues(serverName, toolName, "ok").Inc()
-			if e.auditFn != nil {
-				e.auditFn(ctx, serverName, toolName, "ok", latencyMs, "")
-			}
+			e.callAuditFn(ctx, serverName, toolName, "ok", latencyMs, "")
 
 			// Convert MCP content blocks to a plain string for the LLM.
 			content, err := contentBlocksToString(result.Content)

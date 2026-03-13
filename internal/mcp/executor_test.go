@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
@@ -247,4 +248,150 @@ func TestResolvePendingToolCallsServerError(t *testing.T) {
 	if msgs[1].Content == "" {
 		t.Error("expected non-empty error content")
 	}
+}
+
+func TestResolvePendingToolCallsAuditFnCalledOnSuccess(t *testing.T) {
+	type auditCall struct {
+		serverName, toolName, status, errMsg string
+		latencyMs                            int
+	}
+	called := make(chan auditCall, 1)
+	auditFn := AuditFn(func(_ context.Context, sn, tn, st string, lms int, em string) {
+		called <- auditCall{sn, tn, st, em, lms}
+	})
+
+	reg := buildReadyRegistry(t, []string{"do_thing"})
+	exec := NewExecutor(reg, 5, auditFn)
+	resp := &core.Response{
+		Choices: []core.Choice{{
+			Message: core.Message{
+				ToolCalls: []core.ToolCall{{
+					ID:       "c1",
+					Type:     "function",
+					Function: core.FunctionCall{Name: "do_thing", Arguments: "{}"},
+				}},
+			},
+		}},
+	}
+
+	_, err := exec.ResolvePendingToolCalls(context.Background(), resp)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	select {
+	case got := <-called:
+		if got.serverName != "exec-srv" {
+			t.Errorf("serverName = %q, want %q", got.serverName, "exec-srv")
+		}
+		if got.toolName != "do_thing" {
+			t.Errorf("toolName = %q, want %q", got.toolName, "do_thing")
+		}
+		if got.status != "ok" {
+			t.Errorf("status = %q, want %q", got.status, "ok")
+		}
+		if got.errMsg != "" {
+			t.Errorf("errMsg = %q, want empty", got.errMsg)
+		}
+		if got.latencyMs < 0 {
+			t.Errorf("latencyMs = %d, want >= 0", got.latencyMs)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("auditFn was not called within 1s")
+	}
+}
+
+func TestResolvePendingToolCallsAuditFnCalledOnError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req JSONRPCRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "application/json")
+		switch req.Method {
+		case mcpMethodInitialize:
+			w.Header().Set("Mcp-Session-Id", "sid-err2")
+			_ = json.NewEncoder(w).Encode(JSONRPCResponse{
+				JSONRPC: "2.0", ID: req.ID,
+				Result: mustMarshal(ServerInfo{Name: "err2-srv", Version: "1"}),
+			})
+		case mcpMethodToolsList:
+			_ = json.NewEncoder(w).Encode(JSONRPCResponse{
+				JSONRPC: "2.0", ID: req.ID,
+				Result: mustMarshal(map[string]any{"tools": []Tool{{Name: "fail_tool"}}}),
+			})
+		default:
+			http.Error(w, "fail", http.StatusInternalServerError)
+		}
+	}))
+	defer srv.Close()
+
+	type auditCall struct {
+		status, errMsg string
+	}
+	called := make(chan auditCall, 1)
+	auditFn := AuditFn(func(_ context.Context, _, _, st string, _ int, em string) {
+		called <- auditCall{st, em}
+	})
+
+	reg := NewRegistry()
+	reg.RegisterConfig(ServerConfig{Name: "err2-srv", URL: srv.URL, TimeoutSeconds: 5})
+	reg.InitializeAll(context.Background(), nil)
+
+	exec := NewExecutor(reg, 5, auditFn)
+	resp := &core.Response{
+		Choices: []core.Choice{{
+			Message: core.Message{
+				ToolCalls: []core.ToolCall{{
+					ID:       "c2",
+					Type:     "function",
+					Function: core.FunctionCall{Name: "fail_tool", Arguments: "{}"},
+				}},
+			},
+		}},
+	}
+
+	_, err := exec.ResolvePendingToolCalls(context.Background(), resp)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	select {
+	case got := <-called:
+		if got.status != "error" {
+			t.Errorf("status = %q, want %q", got.status, "error")
+		}
+		if got.errMsg == "" {
+			t.Error("errMsg is empty, want non-empty error message")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("auditFn was not called within 1s")
+	}
+}
+
+func TestResolvePendingToolCallsPanicInAuditFnDoesNotCrash(t *testing.T) {
+	auditFn := AuditFn(func(_ context.Context, _, _, _ string, _ int, _ string) {
+		panic("boom — panic from user-supplied auditFn")
+	})
+
+	reg := buildReadyRegistry(t, []string{"do_thing"})
+	exec := NewExecutor(reg, 5, auditFn)
+	resp := &core.Response{
+		Choices: []core.Choice{{
+			Message: core.Message{
+				ToolCalls: []core.ToolCall{{
+					ID:       "c3",
+					Type:     "function",
+					Function: core.FunctionCall{Name: "do_thing", Arguments: "{}"},
+				}},
+			},
+		}},
+	}
+
+	// The call must complete without panicking.
+	_, err := exec.ResolvePendingToolCalls(context.Background(), resp)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Brief pause so the goroutine has a chance to panic (and recover) before
+	// the test exits, catching any race against the panic-guard path.
+	time.Sleep(50 * time.Millisecond)
 }

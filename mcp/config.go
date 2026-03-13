@@ -54,5 +54,5 @@ type ToolCallAuditEntry struct {
 //
 // The ctx is the same context used for the Route call — callers may embed
 // per-request values (e.g. trace ID, API key ID) for retrieval inside the hook.
-// Set this field on [Config.MCPToolCallAuditFn] before calling New.
+// Set MCPToolCallAuditFn on aigateway.Config before calling New.
 type ToolCallAuditFn func(ctx context.Context, entry ToolCallAuditEntry)
