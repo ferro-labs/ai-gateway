@@ -19,6 +19,11 @@ type Config struct {
 	// FerroCloud populates this field from the tenant's mcp_servers table at
 	// gateway.New() time — no separate MCPRegistry() public method is exposed.
 	MCPServers []mcp.ServerConfig `json:"mcp_servers,omitempty" yaml:"mcp_servers,omitempty"`
+	// MCPToolCallAuditFn, if non-nil, is called after every MCP tool invocation.
+	// This field cannot be set via JSON or YAML — set it programmatically before
+	// calling New. FerroCloud uses it to write async audit entries to the
+	// mcp_tool_call_logs table.
+	MCPToolCallAuditFn mcp.ToolCallAuditFn `json:"-" yaml:"-"`
 }
 
 // StrategyConfig defines the routing strategy.

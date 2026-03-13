@@ -63,14 +63,14 @@ func buildReadyRegistry(t *testing.T, toolNames []string) *Registry {
 // ShouldContinueLoop
 
 func TestShouldContinueLoopNilResponse(t *testing.T) {
-	exec := NewExecutor(NewRegistry(), 5)
+	exec := NewExecutor(NewRegistry(), 5, nil)
 	if exec.ShouldContinueLoop(nil, 0) {
 		t.Error("expected false for nil response")
 	}
 }
 
 func TestShouldContinueLoopDepthExceeded(t *testing.T) {
-	exec := NewExecutor(NewRegistry(), 3)
+	exec := NewExecutor(NewRegistry(), 3, nil)
 	resp := &core.Response{
 		Choices: []core.Choice{{
 			Message: core.Message{ToolCalls: []core.ToolCall{{ID: "1"}}},
@@ -82,7 +82,7 @@ func TestShouldContinueLoopDepthExceeded(t *testing.T) {
 }
 
 func TestShouldContinueLoopNoToolCalls(t *testing.T) {
-	exec := NewExecutor(NewRegistry(), 5)
+	exec := NewExecutor(NewRegistry(), 5, nil)
 	resp := &core.Response{
 		Choices: []core.Choice{{
 			Message: core.Message{Content: "just text"},
@@ -94,7 +94,7 @@ func TestShouldContinueLoopNoToolCalls(t *testing.T) {
 }
 
 func TestShouldContinueLoopWithToolCalls(t *testing.T) {
-	exec := NewExecutor(NewRegistry(), 5)
+	exec := NewExecutor(NewRegistry(), 5, nil)
 	resp := &core.Response{
 		Choices: []core.Choice{{
 			Message: core.Message{
@@ -112,7 +112,7 @@ func TestShouldContinueLoopWithToolCalls(t *testing.T) {
 // ResolvePendingToolCalls
 
 func TestResolvePendingToolCallsNilResponse(t *testing.T) {
-	exec := NewExecutor(NewRegistry(), 5)
+	exec := NewExecutor(NewRegistry(), 5, nil)
 	msgs, err := exec.ResolvePendingToolCalls(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -124,7 +124,7 @@ func TestResolvePendingToolCallsNilResponse(t *testing.T) {
 
 func TestResolvePendingToolCallsFoundTool(t *testing.T) {
 	reg := buildReadyRegistry(t, []string{"do_thing"})
-	exec := NewExecutor(reg, 5)
+	exec := NewExecutor(reg, 5, nil)
 
 	resp := &core.Response{
 		Choices: []core.Choice{{
@@ -161,7 +161,7 @@ func TestResolvePendingToolCallsFoundTool(t *testing.T) {
 }
 
 func TestResolvePendingToolCallsUnknownTool(t *testing.T) {
-	exec := NewExecutor(NewRegistry(), 5) // empty registry
+	exec := NewExecutor(NewRegistry(), 5, nil) // empty registry
 
 	resp := &core.Response{
 		Choices: []core.Choice{{
@@ -223,7 +223,7 @@ func TestResolvePendingToolCallsServerError(t *testing.T) {
 	reg.RegisterConfig(ServerConfig{Name: "err-srv", URL: srv.URL, TimeoutSeconds: 5})
 	reg.InitializeAll(context.Background(), nil)
 
-	exec := NewExecutor(reg, 5)
+	exec := NewExecutor(reg, 5, nil)
 	resp := &core.Response{
 		Choices: []core.Choice{{
 			Message: core.Message{

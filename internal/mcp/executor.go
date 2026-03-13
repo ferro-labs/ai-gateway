@@ -4,11 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/ferro-labs/ai-gateway/providers/core"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
+
+// AuditFn is an optional callback invoked after every MCP tool invocation.
+// serverName and toolName identify the call; status is "ok" or "error";
+// latencyMs is the wall-clock time of the CallTool RPC; errMsg is non-empty
+// on failure. Implementations must be non-blocking.
+type AuditFn func(ctx context.Context, serverName, toolName, status string, latencyMs int, errMsg string)
 
 // Prometheus metrics — registered once at program start.
 var (
@@ -40,16 +47,18 @@ var (
 type Executor struct {
 	registry     *Registry
 	maxCallDepth int
+	auditFn      AuditFn // optional; nil disables audit logging
 }
 
 // NewExecutor creates an Executor backed by the given Registry.
 // maxCallDepth caps the number of tool-call iterations per request;
 // a value <= 0 defaults to 5.
-func NewExecutor(registry *Registry, maxCallDepth int) *Executor {
+// auditFn, if non-nil, is called after every tool invocation with timing data.
+func NewExecutor(registry *Registry, maxCallDepth int, auditFn AuditFn) *Executor {
 	if maxCallDepth <= 0 {
 		maxCallDepth = 5
 	}
-	return &Executor{registry: registry, maxCallDepth: maxCallDepth}
+	return &Executor{registry: registry, maxCallDepth: maxCallDepth, auditFn: auditFn}
 }
 
 // ShouldContinueLoop reports whether the LLM response contains pending tool
@@ -117,12 +126,17 @@ func (e *Executor) ResolvePendingToolCalls(ctx context.Context, resp *core.Respo
 				args = json.RawMessage(tc.Function.Arguments)
 			}
 
-			timer := prometheus.NewTimer(metricToolCallDuration.WithLabelValues(serverName, toolName))
+			callStart := time.Now()
 			result, err := client.CallTool(ctx, toolName, args)
-			timer.ObserveDuration()
+			elapsed := time.Since(callStart)
+			metricToolCallDuration.WithLabelValues(serverName, toolName).Observe(elapsed.Seconds())
+			latencyMs := int(elapsed.Milliseconds())
 
 			if err != nil {
 				metricToolCallsTotal.WithLabelValues(serverName, toolName, "error").Inc()
+				if e.auditFn != nil {
+					e.auditFn(ctx, serverName, toolName, "error", latencyMs, err.Error())
+				}
 				extra = append(extra, core.Message{
 					Role:       core.RoleTool,
 					ToolCallID: tc.ID,
@@ -132,6 +146,9 @@ func (e *Executor) ResolvePendingToolCalls(ctx context.Context, resp *core.Respo
 			}
 
 			metricToolCallsTotal.WithLabelValues(serverName, toolName, "ok").Inc()
+			if e.auditFn != nil {
+				e.auditFn(ctx, serverName, toolName, "ok", latencyMs, "")
+			}
 
 			// Convert MCP content blocks to a plain string for the LLM.
 			content, err := contentBlocksToString(result.Content)

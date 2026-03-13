@@ -29,6 +29,7 @@ import (
 	"github.com/ferro-labs/ai-gateway/internal/metrics"
 	"github.com/ferro-labs/ai-gateway/internal/strategies"
 	"github.com/ferro-labs/ai-gateway/internal/streamwrap"
+	pubmcp "github.com/ferro-labs/ai-gateway/mcp"
 	"github.com/ferro-labs/ai-gateway/models"
 	"github.com/ferro-labs/ai-gateway/plugin"
 	"github.com/ferro-labs/ai-gateway/providers"
@@ -94,7 +95,20 @@ func New(cfg Config) (*Gateway, error) {
 		}
 
 		gw.mcpRegistry = reg
-		gw.mcpExecutor = mcp.NewExecutor(reg, maxDepth)
+		var mcpAuditFn mcp.AuditFn
+		if cfg.MCPToolCallAuditFn != nil {
+			publicFn := cfg.MCPToolCallAuditFn
+			mcpAuditFn = func(ctx context.Context, serverName, toolName, status string, latencyMs int, errMsg string) {
+				publicFn(ctx, pubmcp.ToolCallAuditEntry{
+					ServerName:   serverName,
+					ToolName:     toolName,
+					Status:       status,
+					LatencyMs:    latencyMs,
+					ErrorMessage: errMsg,
+				})
+			}
+		}
+		gw.mcpExecutor = mcp.NewExecutor(reg, maxDepth, mcpAuditFn)
 
 		// Handshake and tool discovery run in the background; New() returns
 		// immediately. mcpInitDone is closed once initialization completes so
@@ -431,7 +445,20 @@ func (g *Gateway) ReloadConfig(cfg Config) error {
 			}
 		}
 		g.mcpRegistry = reg
-		g.mcpExecutor = mcp.NewExecutor(reg, maxDepth)
+		var mcpAuditFnReload mcp.AuditFn
+		if cfg.MCPToolCallAuditFn != nil {
+			publicFn := cfg.MCPToolCallAuditFn
+			mcpAuditFnReload = func(ctx context.Context, serverName, toolName, status string, latencyMs int, errMsg string) {
+				publicFn(ctx, pubmcp.ToolCallAuditEntry{
+					ServerName:   serverName,
+					ToolName:     toolName,
+					Status:       status,
+					LatencyMs:    latencyMs,
+					ErrorMessage: errMsg,
+				})
+			}
+		}
+		g.mcpExecutor = mcp.NewExecutor(reg, maxDepth, mcpAuditFnReload)
 		done := make(chan struct{})
 		g.mcpInitDone = done
 		go func() {
