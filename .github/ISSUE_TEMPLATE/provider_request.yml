@@ -1,0 +1,81 @@
+name: New Provider Request
+description: Request support for a new LLM provider
+title: "provider: add <provider-name>"
+labels: ["new-provider", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        All providers live in `providers/<id>/` in the OSS gateway. See [CONTRIBUTING.md](../../CONTRIBUTING.md#adding-a-new-provider) for implementation guidance.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Pre-flight checklist
+      options:
+        - label: I searched existing issues / the providers list — this provider is not already supported.
+          required: true
+        - label: The provider exposes an HTTP API (not a local-only library).
+          required: true
+
+  - type: input
+    id: provider_name
+    attributes:
+      label: Provider name
+      placeholder: "e.g. Cohere, Together AI, Mistral"
+    validations:
+      required: true
+
+  - type: input
+    id: provider_url
+    attributes:
+      label: Provider website / API docs URL
+      placeholder: "https://docs.example.com/api"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: api_compat
+    attributes:
+      label: API compatibility
+      description: Select all that apply.
+      options:
+        - label: The provider has an OpenAI-compatible `/v1/chat/completions` endpoint.
+        - label: The provider has a custom (non-OpenAI) API format.
+        - label: The provider supports streaming (SSE).
+        - label: The provider supports embeddings.
+        - label: The provider supports image generation.
+        - label: The provider supports audio input/output.
+
+  - type: textarea
+    id: models
+    attributes:
+      label: Models offered
+      description: List the main models you'd like to use via the gateway.
+      placeholder: |
+        - provider/model-name-1
+        - provider/model-name-2
+
+  - type: textarea
+    id: auth
+    attributes:
+      label: Authentication method
+      description: How does the provider authenticate requests? (e.g. Bearer token header, query param, custom header)
+    validations:
+      required: true
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Why add this provider?
+      description: Use-case, unique capabilities, or pricing advantages.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Contribution intent
+      options:
+        - label: I am willing to implement this provider and open a PR.
+        - label: I can help test a PR for this provider.

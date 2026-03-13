@@ -1,0 +1,102 @@
+name: Bug Report
+description: Report a reproducible bug in the AI Gateway
+title: "bug: "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report. Please fill out as much detail as possible so we can reproduce and fix it quickly.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Pre-flight checklist
+      options:
+        - label: I searched existing issues and this is not a duplicate.
+          required: true
+        - label: I am using the latest release or the `main` branch.
+          required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Gateway version
+      description: Output of `ferrogw --version` or the Go module version you depend on.
+      placeholder: "e.g. v0.8.6"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      options:
+        - Provider (routing / API call)
+        - Plugin (guardrail / cache / budget / etc.)
+        - Routing strategy
+        - MCP / tool calling
+        - Admin API
+        - Config loading (YAML/JSON)
+        - CLI (ferrogw / ferrogw-cli)
+        - Streaming
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: provider
+    attributes:
+      label: Provider (if applicable)
+      description: Which LLM provider is affected? Leave blank if not provider-specific.
+      placeholder: "e.g. openai, anthropic, gemini"
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: A clear and concise description of the bug.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps or a code snippet that reproduces the issue.
+      placeholder: |
+        1. Configure gateway with ...
+        2. Send request ...
+        3. See error ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant config snippet (YAML/JSON)
+      description: Paste the relevant portion of your config. **Redact all API keys.**
+      render: yaml
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs or error output
+      render: text
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Go version, OS, deployment method (binary / Docker / embedded library).
+      placeholder: |
+        Go: 1.24.x
+        OS: Linux amd64
+        Deploy: Docker

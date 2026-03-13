@@ -1,0 +1,65 @@
+name: Feature Request
+description: Suggest a new feature or improvement
+title: "feat: "
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting an improvement! Please describe what you'd like to see and why.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Pre-flight checklist
+      options:
+        - label: I searched existing issues and this is not already requested.
+          required: true
+        - label: This feature belongs in the OSS gateway, not in a cloud/paid layer.
+          required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Routing strategy (new strategy type)
+        - Plugin (new guardrail / middleware)
+        - Provider enhancement
+        - MCP / tool calling
+        - Admin API / Dashboard
+        - Config / YAML
+        - CLI
+        - Observability / Metrics
+        - Performance
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or motivation
+      description: What problem does this feature solve? Why is it needed?
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: Describe the feature you'd like. Include API design, config shape, or example code if possible.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What other approaches did you consider? Why is the proposed solution better?
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Links, screenshots, related issues, or any other context.
