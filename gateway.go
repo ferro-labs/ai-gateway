@@ -720,22 +720,28 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 			return nil, err
 		}
 		// Convert the completed Response into a buffered single-chunk channel.
+		// Preserve all choices so n>1 requests are handled correctly, and use
+		// the real FinishReason from each choice rather than hardcoding "stop".
 		ch := make(chan providers.StreamChunk, 1)
-		content := ""
-		if len(resp.Choices) > 0 {
-			content = resp.Choices[0].Message.Content
+		streamChoices := make([]providers.StreamChoice, len(resp.Choices))
+		for i, c := range resp.Choices {
+			streamChoices[i] = providers.StreamChoice{
+				Index: c.Index,
+				Delta: providers.MessageDelta{
+					Role:      c.Message.Role,
+					Content:   c.Message.Content,
+					ToolCalls: c.Message.ToolCalls,
+				},
+				FinishReason: c.FinishReason,
+			}
 		}
 		ch <- providers.StreamChunk{
 			ID:      resp.ID,
 			Object:  "chat.completion.chunk",
 			Created: resp.Created,
 			Model:   resp.Model,
-			Choices: []providers.StreamChoice{{
-				Index:        0,
-				Delta:        providers.MessageDelta{Role: "assistant", Content: content},
-				FinishReason: "stop",
-			}},
-			Usage: &resp.Usage,
+			Choices: streamChoices,
+			Usage:   &resp.Usage,
 		}
 		close(ch)
 		_ = start // latency already recorded inside Route()
