@@ -9,17 +9,27 @@ import (
 	azurefoundrypkg "github.com/ferro-labs/ai-gateway/providers/azure_foundry"
 	azureopenaipkg "github.com/ferro-labs/ai-gateway/providers/azure_openai"
 	bedrockpkg "github.com/ferro-labs/ai-gateway/providers/bedrock"
+	cerebraspkg "github.com/ferro-labs/ai-gateway/providers/cerebras"
+	cloudflarepkg "github.com/ferro-labs/ai-gateway/providers/cloudflare"
 	coherepkg "github.com/ferro-labs/ai-gateway/providers/cohere"
+	databrickspkg "github.com/ferro-labs/ai-gateway/providers/databricks"
+	deepinfrapkg "github.com/ferro-labs/ai-gateway/providers/deepinfra"
 	deepseekpkg "github.com/ferro-labs/ai-gateway/providers/deepseek"
 	fireworkspkg "github.com/ferro-labs/ai-gateway/providers/fireworks"
 	geminipkg "github.com/ferro-labs/ai-gateway/providers/gemini"
 	groqpkg "github.com/ferro-labs/ai-gateway/providers/groq"
 	huggingfacepkg "github.com/ferro-labs/ai-gateway/providers/hugging_face"
 	mistralpkg "github.com/ferro-labs/ai-gateway/providers/mistral"
+	moonshotpkg "github.com/ferro-labs/ai-gateway/providers/moonshot"
+	novitapkg "github.com/ferro-labs/ai-gateway/providers/novita"
+	nvidianimpkg "github.com/ferro-labs/ai-gateway/providers/nvidia_nim"
 	ollamapkg "github.com/ferro-labs/ai-gateway/providers/ollama"
 	openaipkg "github.com/ferro-labs/ai-gateway/providers/openai"
+	openrouterpkg "github.com/ferro-labs/ai-gateway/providers/openrouter"
 	perplexitypkg "github.com/ferro-labs/ai-gateway/providers/perplexity"
+	qwenpkg "github.com/ferro-labs/ai-gateway/providers/qwen"
 	replicatepkg "github.com/ferro-labs/ai-gateway/providers/replicate"
+	sambanovapkg "github.com/ferro-labs/ai-gateway/providers/sambanova"
 	togetherpkg "github.com/ferro-labs/ai-gateway/providers/together"
 	vertexaipkg "github.com/ferro-labs/ai-gateway/providers/vertex_ai"
 	xaipkg "github.com/ferro-labs/ai-gateway/providers/xai"
@@ -115,6 +125,29 @@ var allProviders = []ProviderEntry{
 		},
 	},
 	{
+		ID:           NameCerebras,
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityDiscovery, CapabilityProxy},
+		EnvMappings: []EnvMapping{
+			{CfgKeyAPIKey, "CEREBRAS_API_KEY", true},
+			{CfgKeyBaseURL, "CEREBRAS_BASE_URL", false},
+		},
+		Build: func(cfg ProviderConfig) (Provider, error) {
+			return cerebraspkg.New(cfg[CfgKeyAPIKey], cfg[CfgKeyBaseURL])
+		},
+	},
+	{
+		ID:           NameCloudflare,
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityProxy},
+		EnvMappings: []EnvMapping{
+			{CfgKeyAPIKey, "CLOUDFLARE_API_KEY", true},
+			{CfgKeyAccountID, "CLOUDFLARE_ACCOUNT_ID", true},
+			{CfgKeyBaseURL, "CLOUDFLARE_BASE_URL", false},
+		},
+		Build: func(cfg ProviderConfig) (Provider, error) {
+			return cloudflarepkg.New(cfg[CfgKeyAPIKey], cfg[CfgKeyAccountID], cfg[CfgKeyBaseURL])
+		},
+	},
+	{
 		ID:           NameCohere,
 		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityProxy},
 		EnvMappings: []EnvMapping{
@@ -123,6 +156,28 @@ var allProviders = []ProviderEntry{
 		},
 		Build: func(cfg ProviderConfig) (Provider, error) {
 			return coherepkg.New(cfg[CfgKeyAPIKey], cfg[CfgKeyBaseURL])
+		},
+	},
+	{
+		ID:           NameDatabricks,
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityProxy},
+		EnvMappings: []EnvMapping{
+			{CfgKeyAPIKey, "DATABRICKS_TOKEN", true},
+			{CfgKeyBaseURL, "DATABRICKS_HOST", true},
+		},
+		Build: func(cfg ProviderConfig) (Provider, error) {
+			return databrickspkg.New(cfg[CfgKeyAPIKey], cfg[CfgKeyBaseURL])
+		},
+	},
+	{
+		ID:           NameDeepInfra,
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityProxy},
+		EnvMappings: []EnvMapping{
+			{CfgKeyAPIKey, "DEEPINFRA_API_KEY", true},
+			{CfgKeyBaseURL, "DEEPINFRA_BASE_URL", false},
+		},
+		Build: func(cfg ProviderConfig) (Provider, error) {
+			return deepinfrapkg.New(cfg[CfgKeyAPIKey], cfg[CfgKeyBaseURL])
 		},
 	},
 	{
@@ -192,6 +247,39 @@ var allProviders = []ProviderEntry{
 		},
 	},
 	{
+		ID:           NameMoonshot,
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityProxy},
+		EnvMappings: []EnvMapping{
+			{CfgKeyAPIKey, "MOONSHOT_API_KEY", true},
+			{CfgKeyBaseURL, "MOONSHOT_BASE_URL", false},
+		},
+		Build: func(cfg ProviderConfig) (Provider, error) {
+			return moonshotpkg.New(cfg[CfgKeyAPIKey], cfg[CfgKeyBaseURL])
+		},
+	},
+	{
+		ID:           NameNovita,
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityDiscovery, CapabilityProxy},
+		EnvMappings: []EnvMapping{
+			{CfgKeyAPIKey, "NOVITA_API_KEY", true},
+			{CfgKeyBaseURL, "NOVITA_BASE_URL", false},
+		},
+		Build: func(cfg ProviderConfig) (Provider, error) {
+			return novitapkg.New(cfg[CfgKeyAPIKey], cfg[CfgKeyBaseURL])
+		},
+	},
+	{
+		ID:           NameNVIDIANIM,
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityProxy},
+		EnvMappings: []EnvMapping{
+			{CfgKeyAPIKey, "NVIDIA_NIM_API_KEY", true},
+			{CfgKeyBaseURL, "NVIDIA_NIM_BASE_URL", false},
+		},
+		Build: func(cfg ProviderConfig) (Provider, error) {
+			return nvidianimpkg.New(cfg[CfgKeyAPIKey], cfg[CfgKeyBaseURL])
+		},
+	},
+	{
 		ID:           NameOllama,
 		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityProxy},
 		// Ollama has no API key; CfgKeyHost acts as the "configured?" gate.
@@ -219,6 +307,17 @@ var allProviders = []ProviderEntry{
 		},
 	},
 	{
+		ID:           NameOpenRouter,
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityDiscovery, CapabilityProxy},
+		EnvMappings: []EnvMapping{
+			{CfgKeyAPIKey, "OPENROUTER_API_KEY", true},
+			{CfgKeyBaseURL, "OPENROUTER_BASE_URL", false},
+		},
+		Build: func(cfg ProviderConfig) (Provider, error) {
+			return openrouterpkg.New(cfg[CfgKeyAPIKey], cfg[CfgKeyBaseURL])
+		},
+	},
+	{
 		ID:           NamePerplexity,
 		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityDiscovery, CapabilityProxy},
 		EnvMappings: []EnvMapping{
@@ -227,6 +326,17 @@ var allProviders = []ProviderEntry{
 		},
 		Build: func(cfg ProviderConfig) (Provider, error) {
 			return perplexitypkg.New(cfg[CfgKeyAPIKey], cfg[CfgKeyBaseURL])
+		},
+	},
+	{
+		ID:           NameQwen,
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityProxy},
+		EnvMappings: []EnvMapping{
+			{CfgKeyAPIKey, "QWEN_API_KEY", true},
+			{CfgKeyBaseURL, "QWEN_BASE_URL", false},
+		},
+		Build: func(cfg ProviderConfig) (Provider, error) {
+			return qwenpkg.New(cfg[CfgKeyAPIKey], cfg[CfgKeyBaseURL])
 		},
 	},
 	{
@@ -248,6 +358,17 @@ var allProviders = []ProviderEntry{
 				imageModels = strings.Split(m, ",")
 			}
 			return replicatepkg.New(cfg[CfgKeyAPIToken], cfg[CfgKeyBaseURL], textModels, imageModels)
+		},
+	},
+	{
+		ID:           NameSambaNova,
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityProxy},
+		EnvMappings: []EnvMapping{
+			{CfgKeyAPIKey, "SAMBANOVA_API_KEY", true},
+			{CfgKeyBaseURL, "SAMBANOVA_BASE_URL", false},
+		},
+		Build: func(cfg ProviderConfig) (Provider, error) {
+			return sambanovapkg.New(cfg[CfgKeyAPIKey], cfg[CfgKeyBaseURL])
 		},
 	},
 	{

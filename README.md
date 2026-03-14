@@ -10,6 +10,7 @@ Route, govern, and observe LLM traffic across multiple providers through one API
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/go-1.24+-00ADD8.svg)](https://go.dev)
 [![Go Reference](https://pkg.go.dev/badge/github.com/ferro-labs/ai-gateway.svg)](https://pkg.go.dev/github.com/ferro-labs/ai-gateway)
+[![codecov](https://codecov.io/gh/ferro-labs/ai-gateway/branch/main/graph/badge.svg)](https://codecov.io/gh/ferro-labs/ai-gateway)
 [![Code Scanning](https://github.com/ferro-labs/ai-gateway/actions/workflows/code-scanning.yml/badge.svg)](https://github.com/ferro-labs/ai-gateway/actions/workflows/code-scanning.yml)
 [![Discord](https://img.shields.io/badge/Discord-Join%20Us-5865F2?logo=discord&logoColor=white)](https://discord.gg/yCAeYvJeDV)
 
@@ -22,11 +23,12 @@ Route, govern, and observe LLM traffic across multiple providers through one API
 ---
 
 Ferro Labs AI Gateway is a lightweight control plane that sits between your app and model providers.
-It exposes OpenAI-style endpoints (`/v1/chat/completions`, `/v1/models`, `/v1/embeddings`, `/v1/images/generations`) while handling routing, retries, guardrails, logging, admin controls, and provider auth centrally.
+It exposes OpenAI-style endpoints (`/v1/chat/completions`, `/v1/models`, `/v1/embeddings`, `/v1/images/generations`) while handling routing, retries, OSS plugins, logging, admin controls, and provider auth centrally.
 
-## Why use it
+## Why Ferro
 
 - **OpenAI-compatible API surface** for easier migration and standard client support.
+- **29 built-in providers** with one canonical provider registry and OpenAI-style routing surface.
 - **Multi-provider routing** with 8 strategy modes: `single`, `fallback`, `loadbalance`, `conditional`, `least-latency`, `cost-optimized`, `content-based`, `ab-test`.
 - **Built-in resilience** via per-target retry controls and circuit breakers.
 - **Built-in governance hooks** via plugin lifecycle stages (`before_request`, `after_request`, `on_error`).
@@ -34,19 +36,17 @@ It exposes OpenAI-style endpoints (`/v1/chat/completions`, `/v1/models`, `/v1/em
 - **Production-friendly storage options** for runtime config, API keys, and request logs (`memory`, `sqlite`, `postgres`).
 - **MCP tool server integration** — attach any MCP 2025-11-25 Streamable HTTP server and let the LLM drive an agentic tool-call loop without changing client code.
 
-## Current highlights
+## What Ships In `v1.0.0-rc.1`
 
-Recent releases include:
-
-- **Content-based routing, A/B testing, and budget controls (v0.8.5)** — route by prompt content with `contains`/`not-contains`/`regex` rules, split traffic with weighted A/B testing, enforce per-key USD spend limits with the `budget` plugin, and rate-limit by API key or user (`key_rpm`, `user_rpm`).
-- **MCP integration (v0.8.0)** — attach external MCP 2025-11-25 Streamable HTTP tool servers; the gateway drives an agentic loop over `tool_calls` transparently before returning the final LLM response.
-- Reliability hardening: fallback-strategy error propagation, event hook panic recovery, config persistence rollback safety (v0.7.0).
-- Provider layer refactor into per-provider subpackages and canonical `Name*` constants.
-- Unified provider factory with `ProviderConfig` and `AllProviders()` registry entries.
+- **One API across 29 providers** — route OpenAI-compatible traffic to OpenAI, Anthropic, Gemini, Groq, Bedrock, Vertex AI, Hugging Face, OpenRouter, Cloudflare, Qwen, Moonshot, and more.
+- **Smart routing built in** — use fallback, weighted load balancing, latency-aware routing, cost-aware routing, content-based routing, and A/B traffic splits without changing your client API.
+- **Focused OSS plugin surface** — ship guardrails, caching, logging, rate limiting, and budget controls with a small, understandable built-in plugin set.
+- **Operations included** — expose `/health`, `/metrics`, admin APIs, persistent config/key storage, request logs, and a built-in dashboard.
+- **Agent workflows supported** — connect MCP tool servers and let the gateway manage tool discovery and loop execution.
 
 See [CHANGELOG.md](CHANGELOG.md) for full release notes.
 
-## Quick start
+## Quick Start
 
 ### Run with Docker
 
@@ -85,7 +85,7 @@ curl -s http://localhost:8080/v1/chat/completions \
   }' | jq
 ```
 
-## Core endpoints
+## Core Endpoints
 
 ### Public/API routes
 
@@ -190,7 +190,7 @@ plugins:
 
 See [config.example.yaml](config.example.yaml) and [config.example.json](config.example.json) for a full template.
 
-## Built-in providers
+## Built-In Providers
 
 Canonical provider keys used in config (`targets[].virtual_key`):
 
@@ -201,26 +201,36 @@ Canonical provider keys used in config (`targets[].virtual_key`):
 | `azure-foundry` | Azure Foundry | `AZURE_FOUNDRY_API_KEY` + `AZURE_FOUNDRY_ENDPOINT` |
 | `azure-openai` | Azure OpenAI | `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_ENDPOINT` + `AZURE_OPENAI_DEPLOYMENT` |
 | `bedrock` | AWS Bedrock | `AWS_REGION` **or** `AWS_ACCESS_KEY_ID` |
+| `cerebras` | Cerebras | `CEREBRAS_API_KEY` |
+| `cloudflare` | Cloudflare Workers AI | `CLOUDFLARE_API_KEY` + `CLOUDFLARE_ACCOUNT_ID` |
 | `cohere` | Cohere | `COHERE_API_KEY` |
+| `databricks` | Databricks | `DATABRICKS_TOKEN` + `DATABRICKS_HOST` |
+| `deepinfra` | DeepInfra | `DEEPINFRA_API_KEY` |
 | `deepseek` | DeepSeek | `DEEPSEEK_API_KEY` |
 | `fireworks` | Fireworks | `FIREWORKS_API_KEY` |
 | `gemini` | Google Gemini | `GEMINI_API_KEY` |
 | `groq` | Groq | `GROQ_API_KEY` |
 | `hugging-face` | Hugging Face | `HUGGING_FACE_API_KEY` |
 | `mistral` | Mistral | `MISTRAL_API_KEY` |
+| `moonshot` | Moonshot AI / Kimi | `MOONSHOT_API_KEY` |
+| `novita` | Novita AI | `NOVITA_API_KEY` |
+| `nvidia-nim` | NVIDIA NIM | `NVIDIA_NIM_API_KEY` |
 | `ollama` | Ollama | `OLLAMA_HOST` |
 | `openai` | OpenAI | `OPENAI_API_KEY` |
+| `openrouter` | OpenRouter | `OPENROUTER_API_KEY` |
 | `perplexity` | Perplexity | `PERPLEXITY_API_KEY` |
+| `qwen` | Qwen / DashScope | `QWEN_API_KEY` |
 | `replicate` | Replicate | `REPLICATE_API_TOKEN` |
+| `sambanova` | SambaNova | `SAMBANOVA_API_KEY` |
 | `together` | Together AI | `TOGETHER_API_KEY` |
 | `vertex-ai` | Vertex AI | `VERTEX_AI_PROJECT_ID` + `VERTEX_AI_REGION` + (`VERTEX_AI_API_KEY` or `VERTEX_AI_SERVICE_ACCOUNT_JSON`) |
 | `xai` | xAI | `XAI_API_KEY` |
 
-## Built-in plugins
+## Built-In Plugins
 
-Registered plugin set:
+Registered OSS plugin set:
 
-- Guardrails: `word-filter`, `max-token`, `pii-redact`, `secret-scan`, `prompt-shield`, `schema-guard`, `regex-guard`
+- Guardrails: `word-filter`, `max-token`
 - Transform: `response-cache`
 - Logging: `request-logger`
 - Rate limiting: `rate-limit` — global RPM/RPS plus optional `key_rpm` (per-API-key) and `user_rpm` (per-user) limits.
@@ -233,7 +243,7 @@ make build-cli
 ./bin/ferrogw-cli plugins
 ```
 
-## Persistence backends
+## Persistence Backends
 
 Configure state backends with environment variables:
 
@@ -269,7 +279,7 @@ export REQUEST_LOG_STORE_BACKEND=postgres
 export REQUEST_LOG_STORE_DSN='postgresql://user:pass@db:5432/ferrogw?sslmode=require'
 ```
 
-## Security and production notes
+## Production Notes
 
 - **CORS defaults to wildcard** when `CORS_ORIGINS` is unset/empty. Set explicit origins in production.
 - **Bootstrap keys** (`ADMIN_BOOTSTRAP_KEY`, `ADMIN_BOOTSTRAP_READ_ONLY_KEY`) are for first-run setup only.
@@ -324,7 +334,7 @@ make release-check
 make release-dry-run
 ```
 
-## 1-line SDK migration
+## OpenAI SDK Migration
 
 Point existing OpenAI SDK clients to Ferro Gateway by changing only the base URL.
 
@@ -350,9 +360,17 @@ const client = new OpenAI({
 });
 ```
 
+## Examples
+
+Runnable examples now live in the dedicated examples repository:
+[ferro-labs/ai-gateway-examples](https://github.com/ferro-labs/ai-gateway-examples).
+
+Use that repo for migration samples, streaming demos, MCP flows, and
+integration examples.
+
 ## Roadmap
 
-The project roadmap is maintained in [ROADMAP.md](ROADMAP.md).
+The current release roadmap is maintained in [ROADMAP.md](ROADMAP.md).
 
 ## Contributing
 

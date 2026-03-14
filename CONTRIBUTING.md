@@ -57,18 +57,16 @@ internal/
   metrics/          # Prometheus metrics
   strategies/       # Routing strategies (single, fallback, loadbalance, leastlatency, costoptimized, conditional)
   plugins/
+    budget/         # per-key budget controls
     cache/          # response-cache plugin
     logger/         # request-logger plugin
     maxtoken/       # max-token guardrail
-    pii/            # PII detection guardrail
-    promptshield/   # prompt injection detection
     ratelimit/      # rate limiting
-    regexguard/     # regex-based content guardrail
-    schemaguard/    # JSON schema response validation
-    secretscan/     # secret/credential leakage scanner
     wordfilter/     # word-filter guardrail
-examples/           # Runnable examples
 ```
+
+Runnable examples are maintained separately in
+`github.com/ferro-labs/ai-gateway-examples`.
 
 ---
 
@@ -199,7 +197,6 @@ Adding a new provider is a **4-step process**:
    ```
 
 See `internal/plugins/wordfilter/wordfilter.go` for a simple example.
-`internal/plugins/regexguard/` and `internal/plugins/schemaguard/` show more advanced patterns.
 
 ---
 

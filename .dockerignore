@@ -1,0 +1,15 @@
+.git
+.github
+.gitignore
+.env
+.env.*
+*.md
+!README.md
+docs/
+tests/
+*_test.go
+**/*_test.go
+.vscode
+.idea
+tmp/
+vendor/

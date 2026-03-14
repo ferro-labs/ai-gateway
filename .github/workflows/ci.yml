@@ -24,7 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        go: ["1.24.x"]
+        go: ["1.24.x", "1.25.x"]
     steps:
       - uses: actions/checkout@v6
 
@@ -56,9 +56,36 @@ jobs:
         run: go test -v -short -race -timeout 60s ./...
 
       - name: Test coverage
+        if: matrix.go == '1.25.x'
+        id: coverage
         run: |
           go test -short -race -coverprofile=coverage.out -covermode=atomic ./...
-          go tool cover -func=coverage.out | grep total
+          total=$(go tool cover -func=coverage.out | awk '/^total:/ {print $3}')
+          echo "total=$total" >> "$GITHUB_OUTPUT"
+          echo "Total coverage: $total"
+          {
+            echo "## Go Coverage"
+            echo ""
+            echo "Go version: \`${{ matrix.go }}\`"
+            echo "Total coverage: \`$total\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage artifact
+        if: matrix.go == '1.25.x'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-go-${{ matrix.go }}
+          path: coverage.out
+          if-no-files-found: error
+
+      - name: Upload coverage to Codecov
+        if: matrix.go == '1.25.x'
+        uses: codecov/codecov-action@v5
+        with:
+          files: coverage.out
+          flags: unittests
+          name: ai-gateway-go-${{ matrix.go }}
+          fail_ci_if_error: true
 
   lint:
     name: Lint

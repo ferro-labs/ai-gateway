@@ -1,6 +1,6 @@
 # AI Gateway Makefile
 
-.PHONY: help build build-cli run run-example test test-coverage test-integration bench fmt lint clean deps \
+.PHONY: help build build-cli run test test-coverage test-integration bench fmt lint clean deps \
         snapshot release-check release-dry-run
 
 # Version stamping via ldflags (used in dev builds; GoReleaser overrides on release).
@@ -22,7 +22,6 @@ help:
 	@echo ""
 	@echo "Run:"
 	@echo "  make run               Run ferrogw server (requires OPENAI_API_KEY)"
-	@echo "  make run-example       Run basic provider example"
 	@echo ""
 	@echo "Test:"
 	@echo "  make test              Run all unit tests"
@@ -57,11 +56,6 @@ build-cli:
 run: build
 	@if [ -z "$$OPENAI_API_KEY" ]; then echo "OPENAI_API_KEY required"; exit 1; fi
 	./bin/ferrogw
-
-# Run basic example
-run-example:
-	@if [ -z "$$OPENAI_API_KEY" ]; then echo "OPENAI_API_KEY required"; exit 1; fi
-	go run ./examples/basic
 
 # Download dependencies
 deps:

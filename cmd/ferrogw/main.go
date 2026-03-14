@@ -35,12 +35,7 @@ import (
 	_ "github.com/ferro-labs/ai-gateway/internal/plugins/cache"
 	_ "github.com/ferro-labs/ai-gateway/internal/plugins/logger"
 	_ "github.com/ferro-labs/ai-gateway/internal/plugins/maxtoken"
-	_ "github.com/ferro-labs/ai-gateway/internal/plugins/pii"
-	_ "github.com/ferro-labs/ai-gateway/internal/plugins/promptshield"
 	_ "github.com/ferro-labs/ai-gateway/internal/plugins/ratelimit"
-	_ "github.com/ferro-labs/ai-gateway/internal/plugins/regexguard"
-	_ "github.com/ferro-labs/ai-gateway/internal/plugins/schemaguard"
-	_ "github.com/ferro-labs/ai-gateway/internal/plugins/secretscan"
 	_ "github.com/ferro-labs/ai-gateway/internal/plugins/wordfilter"
 )
 

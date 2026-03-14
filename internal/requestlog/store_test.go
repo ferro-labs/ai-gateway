@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -135,6 +136,144 @@ func TestPostgresWriterContract(t *testing.T) {
 	}
 	if result.Total != 1 || len(result.Data) != 1 {
 		t.Fatalf("expected 1 postgres log, total=%d len=%d", result.Total, len(result.Data))
+	}
+}
+
+func TestSQLiteWriter_DefaultDSNAndZeroCreatedAt(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get wd: %v", err)
+	}
+
+	tempDir := t.TempDir()
+	if err := os.Chdir(tempDir); err != nil {
+		t.Fatalf("chdir temp dir: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(wd)
+	})
+
+	w, err := NewSQLiteWriter("   ")
+	if err != nil {
+		t.Fatalf("new sqlite writer with default dsn: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = w.Close()
+	})
+
+	if _, err := os.Stat("ferrogw-requests.db"); err != nil {
+		t.Fatalf("expected default sqlite file to exist: %v", err)
+	}
+
+	if err := w.Write(context.Background(), Entry{
+		TraceID: "trace-default",
+		Stage:   "before_request",
+	}); err != nil {
+		t.Fatalf("write default sqlite log: %v", err)
+	}
+
+	result, err := w.List(context.Background(), Query{Stage: "before_request"})
+	if err != nil {
+		t.Fatalf("list default sqlite logs: %v", err)
+	}
+	if result.Total != 1 || len(result.Data) != 1 {
+		t.Fatalf("expected 1 log, total=%d len=%d", result.Total, len(result.Data))
+	}
+	if result.Data[0].CreatedAt.IsZero() {
+		t.Fatal("expected CreatedAt to be auto-populated")
+	}
+}
+
+func TestSQLiteWriter_ListDefaultsAndSinceFilter(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "requests.db")
+	w, err := NewSQLiteWriter(path)
+	if err != nil {
+		t.Fatalf("new sqlite writer: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = w.Close()
+	})
+
+	base := time.Now().UTC().Add(-10 * time.Minute)
+	entries := []Entry{
+		{
+			TraceID:   "trace-1",
+			Stage:     "before_request",
+			Model:     "gpt-4o-mini",
+			Provider:  "openai",
+			CreatedAt: base,
+		},
+		{
+			TraceID:   "trace-2",
+			Stage:     "after_request",
+			Model:     "claude-3-5-sonnet",
+			Provider:  "anthropic",
+			CreatedAt: base.Add(5 * time.Minute),
+		},
+	}
+
+	for _, entry := range entries {
+		if err := w.Write(context.Background(), entry); err != nil {
+			t.Fatalf("write request log entry: %v", err)
+		}
+	}
+
+	since := base.Add(1 * time.Minute)
+	result, err := w.List(context.Background(), Query{
+		Limit:    999,
+		Offset:   -10,
+		Model:    "claude-3-5-sonnet",
+		Provider: "anthropic",
+		Since:    &since,
+	})
+	if err != nil {
+		t.Fatalf("list filtered logs: %v", err)
+	}
+	if result.Total != 1 || len(result.Data) != 1 {
+		t.Fatalf("expected 1 filtered log, total=%d len=%d", result.Total, len(result.Data))
+	}
+	if result.Data[0].TraceID != "trace-2" {
+		t.Fatalf("unexpected trace id: %s", result.Data[0].TraceID)
+	}
+}
+
+func TestDeleteRequiresBefore(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "requests.db")
+	w, err := NewSQLiteWriter(path)
+	if err != nil {
+		t.Fatalf("new sqlite writer: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = w.Close()
+	})
+
+	_, err = w.Delete(context.Background(), MaintenanceQuery{})
+	if err == nil || !strings.Contains(err.Error(), "before is required") {
+		t.Fatalf("expected before is required error, got %v", err)
+	}
+}
+
+func TestNewPostgresWriterRequiresDSN(t *testing.T) {
+	_, err := NewPostgresWriter("   ")
+	if err == nil || !strings.Contains(err.Error(), "postgres dsn is required") {
+		t.Fatalf("expected postgres dsn required error, got %v", err)
+	}
+}
+
+func TestNoopWriterBindPostgresAndClose(t *testing.T) {
+	if err := (NoopWriter{}).Write(context.Background(), Entry{}); err != nil {
+		t.Fatalf("noop writer returned error: %v", err)
+	}
+
+	got := bindPostgres("SELECT * FROM request_logs WHERE stage = ? AND model = ? LIMIT ? OFFSET ?")
+	want := "SELECT * FROM request_logs WHERE stage = $1 AND model = $2 LIMIT $3 OFFSET $4"
+	if got != want {
+		t.Fatalf("unexpected postgres bind query:\nwant: %s\ngot:  %s", want, got)
+	}
+
+	var w *SQLWriter
+	if err := w.Close(); err != nil {
+		t.Fatalf("nil writer close returned error: %v", err)
 	}
 }
 

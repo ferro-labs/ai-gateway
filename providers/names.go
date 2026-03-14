@@ -6,17 +6,27 @@ import (
 	azurefoundrypkg "github.com/ferro-labs/ai-gateway/providers/azure_foundry"
 	azureopenaipkg "github.com/ferro-labs/ai-gateway/providers/azure_openai"
 	bedrockpkg "github.com/ferro-labs/ai-gateway/providers/bedrock"
+	cerebraspkg "github.com/ferro-labs/ai-gateway/providers/cerebras"
+	cloudflarepkg "github.com/ferro-labs/ai-gateway/providers/cloudflare"
 	coherepkg "github.com/ferro-labs/ai-gateway/providers/cohere"
+	databrickspkg "github.com/ferro-labs/ai-gateway/providers/databricks"
+	deepinfrapkg "github.com/ferro-labs/ai-gateway/providers/deepinfra"
 	deepseekpkg "github.com/ferro-labs/ai-gateway/providers/deepseek"
 	fireworkspkg "github.com/ferro-labs/ai-gateway/providers/fireworks"
 	geminipkg "github.com/ferro-labs/ai-gateway/providers/gemini"
 	groqpkg "github.com/ferro-labs/ai-gateway/providers/groq"
 	huggingfacepkg "github.com/ferro-labs/ai-gateway/providers/hugging_face"
 	mistralpkg "github.com/ferro-labs/ai-gateway/providers/mistral"
+	moonshotpkg "github.com/ferro-labs/ai-gateway/providers/moonshot"
+	novitapkg "github.com/ferro-labs/ai-gateway/providers/novita"
+	nvidianimpkg "github.com/ferro-labs/ai-gateway/providers/nvidia_nim"
 	ollamapkg "github.com/ferro-labs/ai-gateway/providers/ollama"
 	openaipkg "github.com/ferro-labs/ai-gateway/providers/openai"
+	openrouterpkg "github.com/ferro-labs/ai-gateway/providers/openrouter"
 	perplexitypkg "github.com/ferro-labs/ai-gateway/providers/perplexity"
+	qwenpkg "github.com/ferro-labs/ai-gateway/providers/qwen"
 	replicatepkg "github.com/ferro-labs/ai-gateway/providers/replicate"
+	sambanovapkg "github.com/ferro-labs/ai-gateway/providers/sambanova"
 	togetherpkg "github.com/ferro-labs/ai-gateway/providers/together"
 	vertexaipkg "github.com/ferro-labs/ai-gateway/providers/vertex_ai"
 	xaipkg "github.com/ferro-labs/ai-gateway/providers/xai"
@@ -89,11 +99,41 @@ const (
 	// NameBedrock is the canonical name for the AWS Bedrock provider.
 	NameBedrock = bedrockpkg.Name
 
+	// NameCerebras is the canonical name for the Cerebras provider.
+	NameCerebras = cerebraspkg.Name
+
+	// NameCloudflare is the canonical name for the Cloudflare Workers AI provider.
+	NameCloudflare = cloudflarepkg.Name
+
 	// NameOllama is the canonical name for the Ollama (local) provider.
 	NameOllama = ollamapkg.Name
 
+	// NameDatabricks is the canonical name for the Databricks provider.
+	NameDatabricks = databrickspkg.Name
+
+	// NameDeepInfra is the canonical name for the DeepInfra provider.
+	NameDeepInfra = deepinfrapkg.Name
+
+	// NameNovita is the canonical name for the Novita provider.
+	NameNovita = novitapkg.Name
+
+	// NameMoonshot is the canonical name for the Moonshot AI provider.
+	NameMoonshot = moonshotpkg.Name
+
+	// NameNVIDIANIM is the canonical name for the NVIDIA NIM provider.
+	NameNVIDIANIM = nvidianimpkg.Name
+
+	// NameQwen is the canonical name for the Qwen provider.
+	NameQwen = qwenpkg.Name
+
 	// NameReplicate is the canonical name for the Replicate provider.
 	NameReplicate = replicatepkg.Name
+
+	// NameSambaNova is the canonical name for the SambaNova provider.
+	NameSambaNova = sambanovapkg.Name
+
+	// NameOpenRouter is the canonical name for the OpenRouter provider.
+	NameOpenRouter = openrouterpkg.Name
 )
 
 // AllProviderNames returns every registered canonical provider name in a
@@ -106,17 +146,27 @@ func AllProviderNames() []string {
 		NameAzureFoundry,
 		NameAzureOpenAI,
 		NameBedrock,
+		NameCerebras,
+		NameCloudflare,
 		NameCohere,
+		NameDatabricks,
+		NameDeepInfra,
 		NameDeepSeek,
 		NameFireworks,
 		NameGemini,
 		NameGroq,
 		NameHuggingFace,
 		NameMistral,
+		NameMoonshot,
+		NameNovita,
+		NameNVIDIANIM,
 		NameOllama,
 		NameOpenAI,
+		NameOpenRouter,
 		NamePerplexity,
+		NameQwen,
 		NameReplicate,
+		NameSambaNova,
 		NameTogether,
 		NameVertexAI,
 		NameXAI,

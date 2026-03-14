@@ -760,3 +760,103 @@ func TestGateway_Route_MCPToolInjectionAndLoop(t *testing.T) {
 		t.Errorf("tool-result content = %q, want \"42\"", toolMsg.Content)
 	}
 }
+
+// TestGateway_RouteStream_MCPRedirect verifies that when MCP servers are
+// configured, RouteStream routes through Route (running the full agentic loop)
+// and wraps the final non-streaming response into a single-chunk channel.
+func TestGateway_RouteStream_MCPRedirect(t *testing.T) {
+	mcpSrv := newMCPTestServer(t)
+	defer mcpSrv.Close()
+
+	// Provider call 1 — returns a tool_call for "get_answer".
+	// Provider call 2 — returns the final text after seeing the tool result.
+	mp := &multiCallProvider{
+		name:   "mock-mcp-stream",
+		models: []string{"gpt-4o"},
+		responses: []*providers.Response{
+			{
+				ID:    "s1",
+				Model: "gpt-4o",
+				Choices: []providers.Choice{{
+					Message: providers.Message{
+						Role: "assistant",
+						ToolCalls: []providers.ToolCall{{
+							ID:   "tc-stream-1",
+							Type: "function",
+							Function: providers.FunctionCall{
+								Name:      "get_answer",
+								Arguments: `{"q":"test"}`,
+							},
+						}},
+					},
+				}},
+			},
+			{
+				ID:    "s2",
+				Model: "gpt-4o",
+				Choices: []providers.Choice{{
+					Message: providers.Message{
+						Role:    "assistant",
+						Content: "The answer is 42.",
+					},
+					FinishReason: "stop",
+				}},
+			},
+		},
+	}
+
+	gw, err := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: "mock-mcp-stream"}},
+		MCPServers: []mcp.ServerConfig{{
+			Name:           "test-mcp-stream",
+			URL:            mcpSrv.URL,
+			TimeoutSeconds: 10,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	gw.RegisterProvider(mp)
+
+	// Wait for MCP init to complete.
+	select {
+	case <-gw.MCPInitDone():
+	case <-time.After(5 * time.Second):
+		t.Fatal("MCP init timeout")
+	}
+
+	// RouteStream with stream=true — should redirect through Route.
+	ch, err := gw.RouteStream(context.Background(), providers.Request{
+		Model:    "gpt-4o",
+		Stream:   true,
+		Messages: []providers.Message{{Role: "user", Content: "What is the answer?"}},
+	})
+	if err != nil {
+		t.Fatalf("RouteStream error: %v", err)
+	}
+
+	// Drain the channel.
+	var chunks []providers.StreamChunk
+	for chunk := range ch {
+		if chunk.Error != nil {
+			t.Fatalf("stream chunk error: %v", chunk.Error)
+		}
+		chunks = append(chunks, chunk)
+	}
+
+	if len(chunks) != 1 {
+		t.Fatalf("expected 1 chunk (MCP redirect), got %d", len(chunks))
+	}
+	if len(chunks[0].Choices) == 0 {
+		t.Fatal("chunk has no choices")
+	}
+	if chunks[0].Choices[0].Delta.Content != "The answer is 42." {
+		t.Errorf("chunk content = %q, want %q", chunks[0].Choices[0].Delta.Content, "The answer is 42.")
+	}
+
+	// Both provider calls must have fired (tool injection + final answer).
+	if mp.callCount() != 2 {
+		t.Errorf("expected 2 provider calls (agentic loop), got %d", mp.callCount())
+	}
+}
