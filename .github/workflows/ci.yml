@@ -82,6 +82,7 @@ jobs:
         if: matrix.go == '1.25.x'
         uses: codecov/codecov-action@v5
         with:
+          token: ${{ secrets.CODECOV_TOKEN }}
           files: coverage.out
           flags: unittests
           name: ai-gateway-go-${{ matrix.go }}
