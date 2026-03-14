@@ -294,6 +294,7 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 			"error":      err.Error(),
 			"status":     500,
 			"latency_ms": latency.Milliseconds(),
+			"stream":     originalStream,
 			"timestamp":  time.Now(),
 		})
 		return nil, err
@@ -337,9 +338,9 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 			}
 		}
 	}
-	// Phase 1: MCP requests always return non-streaming. originalStream is
-	// preserved here for Phase 1.5 when final-response streaming is added.
-	_ = originalStream
+	// originalStream is included in the completed event so hook consumers
+	// can distinguish streaming vs non-streaming requests (Phase 1.5 note:
+	// when final-response streaming lands, remove the force-to-false above).
 
 	// Run after-request plugins (logging, caching).
 	if g.plugins.HasPlugins() {
@@ -389,6 +390,7 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 		"model":                resp.Model,
 		"status":               200,
 		"latency_ms":           latency.Milliseconds(),
+		"stream":               originalStream,
 		"tokens_in":            resp.Usage.PromptTokens,
 		"tokens_out":           resp.Usage.CompletionTokens,
 		"cost_usd":             cost.TotalUSD,
@@ -714,7 +716,9 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 	hasMCP := g.mcpRegistry != nil && g.mcpRegistry.HasServers()
 	g.mu.RUnlock()
 	if hasMCP {
-		req.Stream = false
+		// Do not force req.Stream = false here: let Route() capture the
+		// original stream flag via its own originalStream variable so that
+		// emitted events correctly reflect stream: true for RouteStream callers.
 		resp, err := g.Route(ctx, req)
 		if err != nil {
 			return nil, err

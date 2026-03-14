@@ -213,6 +213,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 		defer func() { _ = httpResp.Body.Close() }()
 
 		scanner := bufio.NewScanner(httpResp.Body)
+		scanner.Buffer(make([]byte, 64*1024), 1024*1024) // allow up to 1 MB per SSE line
 		for scanner.Scan() {
 			line := scanner.Text()
 			if !strings.HasPrefix(line, "data: ") {
