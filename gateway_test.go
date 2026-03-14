@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -12,12 +14,17 @@ import (
 	"time"
 
 	"github.com/ferro-labs/ai-gateway/internal/circuitbreaker"
+	"github.com/ferro-labs/ai-gateway/internal/logging"
 	"github.com/ferro-labs/ai-gateway/internal/metrics"
 	"github.com/ferro-labs/ai-gateway/mcp"
 	"github.com/ferro-labs/ai-gateway/plugin"
 	"github.com/ferro-labs/ai-gateway/providers"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
+
+	// Register built-in plugins so benchmark helpers can load them via LoadPlugins.
+	_ "github.com/ferro-labs/ai-gateway/internal/plugins/maxtoken"
+	_ "github.com/ferro-labs/ai-gateway/internal/plugins/wordfilter"
 )
 
 // mockProvider is a test double for providers.Provider.
@@ -858,5 +865,140 @@ func TestGateway_RouteStream_MCPRedirect(t *testing.T) {
 	// Both provider calls must have fired (tool injection + final answer).
 	if mp.callCount() != 2 {
 		t.Errorf("expected 2 provider calls (agentic loop), got %d", mp.callCount())
+	}
+}
+
+// mockBenchStreamProvider is a streaming provider that immediately returns a
+// closed, empty channel — used only by benchmarks to avoid blocking drains.
+type mockBenchStreamProvider struct {
+	mockProvider
+}
+
+func (m *mockBenchStreamProvider) CompleteStream(_ context.Context, _ providers.Request) (<-chan providers.StreamChunk, error) {
+	ch := make(chan providers.StreamChunk)
+	close(ch)
+	return ch, nil
+}
+
+// ── Benchmarks ───────────────────────────────────────────────────────────────
+
+// silenceLogs redirects the gateway's package logger to io.Discard for the
+// duration of a benchmark, preventing JSON log lines from corrupting the
+// benchmark output (the gateway logger writes to os.Stdout by design).
+func silenceLogs(b *testing.B) {
+	b.Helper()
+	prev := logging.Logger
+	logging.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	b.Cleanup(func() { logging.Logger = prev })
+}
+
+// BenchmarkRoute measures the overhead of a single Route() call through a
+// single-provider configuration with no plugins.
+func BenchmarkRoute(b *testing.B) {
+	silenceLogs(b)
+	gw, err := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: "bench"}},
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
+	gw.RegisterProvider(&mockProvider{
+		name:   "bench",
+		models: []string{"gpt-4o"},
+		resp: &providers.Response{
+			Choices: []providers.Choice{{Message: providers.Message{Role: "assistant", Content: "ok"}}},
+		},
+	})
+
+	req := providers.Request{
+		Model:    "gpt-4o",
+		Messages: []providers.Message{{Role: "user", Content: "hello"}},
+	}
+	ctx := context.Background()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := gw.Route(ctx, req); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkRouteStream measures the overhead of a RouteStream() call (no MCP,
+// no plugins). The benchmark drains the channel to completion each iteration.
+func BenchmarkRouteStream(b *testing.B) {
+	silenceLogs(b)
+
+	gw, err := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: "bench-stream"}},
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
+	gw.RegisterProvider(&mockBenchStreamProvider{
+		mockProvider: mockProvider{
+			name:   "bench-stream",
+			models: []string{"gpt-4o"},
+		},
+	})
+
+	req := providers.Request{
+		Model:    "gpt-4o",
+		Stream:   true,
+		Messages: []providers.Message{{Role: "user", Content: "hello"}},
+	}
+	ctx := context.Background()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		out, err := gw.RouteStream(ctx, req)
+		if err != nil {
+			b.Fatal(err)
+		}
+		for range out { //nolint:revive
+		}
+	}
+}
+
+// BenchmarkRoute_WithPlugins measures Route() with a two-plugin before_request
+// chain (word-filter + max-token) loaded via LoadPlugins.
+func BenchmarkRoute_WithPlugins(b *testing.B) {
+	silenceLogs(b)
+	cfg := Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: "bench-plugins"}},
+		Plugins: []PluginConfig{
+			{Name: "word-filter", Enabled: true, Stage: "before_request", Config: map[string]interface{}{"blocked_words": []interface{}{}}},
+			{Name: "max-token", Enabled: true, Stage: "before_request", Config: map[string]interface{}{"max_input_tokens": 1000}},
+		},
+	}
+	gw, err := New(cfg)
+	if err != nil {
+		b.Fatal(err)
+	}
+	gw.RegisterProvider(&mockProvider{
+		name:   "bench-plugins",
+		models: []string{"gpt-4o"},
+		resp: &providers.Response{
+			Choices: []providers.Choice{{Message: providers.Message{Role: "assistant", Content: "ok"}}},
+		},
+	})
+	if err := gw.LoadPlugins(); err != nil {
+		b.Fatal(err)
+	}
+
+	req := providers.Request{
+		Model:    "gpt-4o",
+		Messages: []providers.Message{{Role: "user", Content: "hello world"}},
+	}
+	ctx := context.Background()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := gw.Route(ctx, req); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
