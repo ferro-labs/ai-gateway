@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -1549,5 +1550,69 @@ func TestDeleteLogsEndpointNotEnabled(t *testing.T) {
 
 	if w.Code != http.StatusNotImplemented {
 		t.Fatalf("expected 501, got %d", w.Code)
+	}
+}
+
+func TestRotateKey(t *testing.T) {
+	h, r := setupTestRouter()
+	adminKey := createAdminKey(t, h)
+
+	// Create a key to rotate, save its original key string before rotation mutates it.
+	key, err := h.Keys.Create("rotatable-key", []string{ScopeReadOnly}, nil)
+	if err != nil {
+		t.Fatalf("failed to create key: %v", err)
+	}
+	keyID := key.ID
+
+	req := authedRequest(http.MethodPost, "/admin/keys/"+keyID+"/rotate", "", adminKey)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var rotated APIKey
+	if err := json.NewDecoder(w.Body).Decode(&rotated); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if rotated.ID != keyID {
+		t.Errorf("expected rotated key to keep ID %q, got %q", keyID, rotated.ID)
+	}
+	if !strings.HasPrefix(rotated.Key, "gw-") {
+		t.Errorf("expected rotated key to start with gw-, got %q", rotated.Key)
+	}
+}
+
+func TestRotateKeyNotFound(t *testing.T) {
+	h, r := setupTestRouter()
+	adminKey := createAdminKey(t, h)
+
+	req := authedRequest(http.MethodPost, "/admin/keys/nonexistent/rotate", "", adminKey)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", w.Code)
+	}
+}
+
+func TestListProviders_NilRegistry(t *testing.T) {
+	h, r := setupTestRouter()
+	adminKey := createAdminKey(t, h)
+
+	// h.Providers is nil by default in setupTestRouter.
+	req := authedRequest(http.MethodGet, "/admin/providers", "", adminKey)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var result []interface{}
+	if err := json.NewDecoder(w.Body).Decode(&result); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if len(result) != 0 {
+		t.Errorf("expected empty providers list, got %d", len(result))
 	}
 }

@@ -8,15 +8,15 @@
 - **Go version**: 1.24+
 - **License**: Apache 2.0
 
-### Current Development Snapshot (feat/v0.6.5)
+### Current Development Snapshot
 
-- **19 provider subpackages** — each provider lives in `providers/<id>/<id>.go` with its own test file. No root-level constructor shims remain.
-- **Unified factory** — `providers/factory.go` holds types/constants; `providers/providers_list.go` holds all 19 `ProviderEntry` records. Auto-registration via `AllProviders()` means `main.go` never needs editing for new providers.
+- **29 provider subpackages** — each provider lives in `providers/<id>/<id>.go` with its own test file. No root-level constructor shims remain.
+- **Unified factory** — `providers/factory.go` holds types/constants; `providers/providers_list.go` holds all built-in `ProviderEntry` records. Auto-registration via `AllProviders()` means `main.go` never needs editing for new providers.
 - **`providers/core/` split** — interfaces in `contracts.go`; shared types split into `chat.go`, `stream.go`, `embedding.go`, `image.go`, `model.go`, `constants.go`, `errors.go`.
 - **Single source of truth for name constants** — `providers/names.go` re-exports `NameXxx` from each subpackage's `const Name`.
 - **`internal/discovery/`** — shared OpenAI-compatible model discovery helper used by fireworks, hugging_face, perplexity, xai.
-- **New providers** — xAI (Grok), Azure AI Foundry, Hugging Face, Vertex AI (API-key + service-account), AWS Bedrock.
-- **New guardrail plugins** — PII scanner, regex guard, schema guard, secret scanner, prompt shield, rate limit.
+- **Provider coverage** — OpenAI, Anthropic, Gemini, Groq, Bedrock, Vertex AI, Hugging Face, Cerebras, Cloudflare, Databricks, DeepInfra, Moonshot, Novita, NVIDIA NIM, OpenRouter, Qwen, SambaNova, and more.
+- **Built-in OSS plugins** — word filter, max token, response cache, request logger, rate limit, budget.
 - **Admin API** — dashboard, key management, usage stats, request logs, config history/rollback (`internal/admin/handlers.go`).
 - **Metrics** — Prometheus metrics exposed at `/metrics` (`internal/metrics/`).
 - **Circuit breaker** — per-provider circuit breaker in `internal/circuitbreaker/`.
@@ -75,12 +75,9 @@ ai-gateway/
 ├── plugin/               # Public plugin framework (interfaces + manager + registry)
 ├── providers/
 │   ├── core/             # Shared interfaces (contracts.go) and types (chat, stream, embedding, image, model)
-│   ├── <id>/             # One subpackage per provider: ai21, anthropic, azure_foundry,
-│   │                     #   azure_openai, bedrock, cohere, deepseek, fireworks, gemini,
-│   │                     #   groq, hugging_face, mistral, ollama, openai, perplexity,
-│   │                     #   replicate, together, vertex_ai, xai  (19 total)
+│   ├── <id>/             # One subpackage per provider
 │   ├── factory.go        # ProviderConfig, ProviderEntry, CfgKey* & Capability* consts, lookup funcs
-│   ├── providers_list.go # allProviders slice — all 19 ProviderEntry registrations
+│   ├── providers_list.go # allProviders slice — all built-in ProviderEntry registrations
 │   ├── names.go          # NameXxx constants (re-exported from each subpackage)
 │   ├── registry.go       # Registry type for runtime lookup by name
 │   └── facade_aliases.go # Type aliases re-exporting core.* for backwards compatibility
@@ -95,17 +92,11 @@ ai-gateway/
 │   │   ├── cache/        # Request/response caching
 │   │   ├── logger/       # Request/response logging
 │   │   ├── maxtoken/     # Token/message limit guardrail
-│   │   ├── pii/          # PII detection guardrail
-│   │   ├── promptshield/ # Prompt injection detection
 │   │   ├── ratelimit/    # Rate limiting
-│   │   ├── regexguard/   # Regex-based content guardrail
-│   │   ├── schemaguard/  # JSON schema response validation
-│   │   ├── secretscan/   # Secret/credential leakage scanner
 │   │   └── wordfilter/   # Blocked word guardrail
 │   ├── ratelimit/        # Rate limit internals
 │   ├── strategies/       # Routing strategy implementations
 │   └── version/
-├── examples/
 ├── docs/
 ├── gateway.go            # Core Gateway struct and orchestration
 ├── config.go             # Config structs (Config, Strategy, Target, Plugin)
@@ -125,7 +116,7 @@ ai-gateway/
 | `config_load.go` | `LoadConfig()` and `ValidateConfig()` for YAML/JSON |
 | `providers/core/contracts.go` | `Provider`, `StreamProvider`, `EmbeddingProvider`, `ImageProvider`, `DiscoveryProvider`, `ProxiableProvider` interfaces |
 | `providers/factory.go` | `ProviderConfig`, `ProviderEntry`, `CfgKey*` / `Capability*` constants, `AllProviders()`, `GetProviderEntry()` |
-| `providers/providers_list.go` | All 19 `ProviderEntry` registrations with `Build` closures |
+| `providers/providers_list.go` | All built-in `ProviderEntry` registrations with `Build` closures |
 | `providers/names.go` | Canonical `NameXxx` constants (re-exported from subpackages) |
 | `providers/registry.go` | `Registry` — runtime lookup by provider name |
 | `plugin/plugin.go` | `Plugin` interface, `PluginType`, `Stage`, `Context` |

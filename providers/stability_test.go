@@ -6,17 +6,27 @@ import (
 	azurefoundrypkg "github.com/ferro-labs/ai-gateway/providers/azure_foundry"
 	azureopenaipkg "github.com/ferro-labs/ai-gateway/providers/azure_openai"
 	bedrockpkg "github.com/ferro-labs/ai-gateway/providers/bedrock"
+	cerebraspkg "github.com/ferro-labs/ai-gateway/providers/cerebras"
+	cloudflarepkg "github.com/ferro-labs/ai-gateway/providers/cloudflare"
 	coherepkg "github.com/ferro-labs/ai-gateway/providers/cohere"
+	databrickspkg "github.com/ferro-labs/ai-gateway/providers/databricks"
+	deepinfrapkg "github.com/ferro-labs/ai-gateway/providers/deepinfra"
 	deepseekpkg "github.com/ferro-labs/ai-gateway/providers/deepseek"
 	fireworkspkg "github.com/ferro-labs/ai-gateway/providers/fireworks"
 	geminipkg "github.com/ferro-labs/ai-gateway/providers/gemini"
 	groqpkg "github.com/ferro-labs/ai-gateway/providers/groq"
 	huggingfacepkg "github.com/ferro-labs/ai-gateway/providers/hugging_face"
 	mistralpkg "github.com/ferro-labs/ai-gateway/providers/mistral"
+	moonshotpkg "github.com/ferro-labs/ai-gateway/providers/moonshot"
+	novitapkg "github.com/ferro-labs/ai-gateway/providers/novita"
+	nvidianimpkg "github.com/ferro-labs/ai-gateway/providers/nvidia_nim"
 	ollamapkg "github.com/ferro-labs/ai-gateway/providers/ollama"
 	openaipkg "github.com/ferro-labs/ai-gateway/providers/openai"
+	openrouterpkg "github.com/ferro-labs/ai-gateway/providers/openrouter"
 	perplexitypkg "github.com/ferro-labs/ai-gateway/providers/perplexity"
+	qwenpkg "github.com/ferro-labs/ai-gateway/providers/qwen"
 	replicatepkg "github.com/ferro-labs/ai-gateway/providers/replicate"
+	sambanovapkg "github.com/ferro-labs/ai-gateway/providers/sambanova"
 	togetherpkg "github.com/ferro-labs/ai-gateway/providers/together"
 	vertexaipkg "github.com/ferro-labs/ai-gateway/providers/vertex_ai"
 	xaipkg "github.com/ferro-labs/ai-gateway/providers/xai"
@@ -35,11 +45,13 @@ import (
 //
 // If this test fails, you have introduced a breaking change. Fix the Name()
 // implementation, not this test.
-func TestProviderNameStability(t *testing.T) {
-	cases := []struct {
-		wantName string
-		build    func(t *testing.T) Provider
-	}{
+type providerNameStabilityCase struct {
+	wantName string
+	build    func(t *testing.T) Provider
+}
+
+func providerNameStabilityCases() []providerNameStabilityCase {
+	return []providerNameStabilityCase{
 		{
 			wantName: NameAI21,
 			build: func(t *testing.T) Provider {
@@ -96,12 +108,56 @@ func TestProviderNameStability(t *testing.T) {
 			},
 		},
 		{
+			wantName: NameCerebras,
+			build: func(t *testing.T) Provider {
+				t.Helper()
+				p, err := cerebraspkg.New(testAPIKey, "")
+				if err != nil {
+					t.Fatalf("NewCerebras: %v", err)
+				}
+				return p
+			},
+		},
+		{
+			wantName: NameCloudflare,
+			build: func(t *testing.T) Provider {
+				t.Helper()
+				p, err := cloudflarepkg.New(testAPIKey, "acct-123", "")
+				if err != nil {
+					t.Fatalf("NewCloudflare: %v", err)
+				}
+				return p
+			},
+		},
+		{
 			wantName: NameCohere,
 			build: func(t *testing.T) Provider {
 				t.Helper()
 				p, err := coherepkg.New(testAPIKey, "")
 				if err != nil {
 					t.Fatalf("NewCohere: %v", err)
+				}
+				return p
+			},
+		},
+		{
+			wantName: NameDatabricks,
+			build: func(t *testing.T) Provider {
+				t.Helper()
+				p, err := databrickspkg.New(testAPIKey, "https://dbc.example.com")
+				if err != nil {
+					t.Fatalf("NewDatabricks: %v", err)
+				}
+				return p
+			},
+		},
+		{
+			wantName: NameDeepInfra,
+			build: func(t *testing.T) Provider {
+				t.Helper()
+				p, err := deepinfrapkg.New(testAPIKey, "")
+				if err != nil {
+					t.Fatalf("NewDeepInfra: %v", err)
 				}
 				return p
 			},
@@ -173,6 +229,39 @@ func TestProviderNameStability(t *testing.T) {
 			},
 		},
 		{
+			wantName: NameMoonshot,
+			build: func(t *testing.T) Provider {
+				t.Helper()
+				p, err := moonshotpkg.New(testAPIKey, "")
+				if err != nil {
+					t.Fatalf("NewMoonshot: %v", err)
+				}
+				return p
+			},
+		},
+		{
+			wantName: NameNovita,
+			build: func(t *testing.T) Provider {
+				t.Helper()
+				p, err := novitapkg.New(testAPIKey, "")
+				if err != nil {
+					t.Fatalf("NewNovita: %v", err)
+				}
+				return p
+			},
+		},
+		{
+			wantName: NameNVIDIANIM,
+			build: func(t *testing.T) Provider {
+				t.Helper()
+				p, err := nvidianimpkg.New(testAPIKey, "")
+				if err != nil {
+					t.Fatalf("NewNVIDIANIM: %v", err)
+				}
+				return p
+			},
+		},
+		{
 			wantName: NameOllama,
 			build: func(t *testing.T) Provider {
 				t.Helper()
@@ -195,6 +284,17 @@ func TestProviderNameStability(t *testing.T) {
 			},
 		},
 		{
+			wantName: NameOpenRouter,
+			build: func(t *testing.T) Provider {
+				t.Helper()
+				p, err := openrouterpkg.New(testAPIKey, "")
+				if err != nil {
+					t.Fatalf("NewOpenRouter: %v", err)
+				}
+				return p
+			},
+		},
+		{
 			wantName: NamePerplexity,
 			build: func(t *testing.T) Provider {
 				t.Helper()
@@ -206,12 +306,34 @@ func TestProviderNameStability(t *testing.T) {
 			},
 		},
 		{
+			wantName: NameQwen,
+			build: func(t *testing.T) Provider {
+				t.Helper()
+				p, err := qwenpkg.New(testAPIKey, "")
+				if err != nil {
+					t.Fatalf("NewQwen: %v", err)
+				}
+				return p
+			},
+		},
+		{
 			wantName: NameReplicate,
 			build: func(t *testing.T) Provider {
 				t.Helper()
 				p, err := replicatepkg.New(testAPIKey, "", nil, nil)
 				if err != nil {
 					t.Fatalf("NewReplicate: %v", err)
+				}
+				return p
+			},
+		},
+		{
+			wantName: NameSambaNova,
+			build: func(t *testing.T) Provider {
+				t.Helper()
+				p, err := sambanovapkg.New(testAPIKey, "")
+				if err != nil {
+					t.Fatalf("NewSambaNova: %v", err)
 				}
 				return p
 			},
@@ -254,6 +376,10 @@ func TestProviderNameStability(t *testing.T) {
 			},
 		},
 	}
+}
+
+func TestProviderNameStability(t *testing.T) {
+	cases := providerNameStabilityCases()
 
 	if len(cases) != len(AllProviderNames()) {
 		t.Errorf("stability test has %d cases but AllProviderNames() returns %d — add the missing provider to both", len(cases), len(AllProviderNames()))

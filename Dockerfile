@@ -13,9 +13,16 @@ RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /bin/ferrogw ./cmd/fer
 # Runtime stage
 FROM alpine:3.20
 
-RUN apk add --no-cache ca-certificates
-COPY --from=builder /bin/ferrogw /bin/ferrogw
+RUN apk add --no-cache ca-certificates && \
+    addgroup -S ferro && adduser -S ferro -G ferro && \
+    mkdir -p /app && chown ferro:ferro /app
+
+COPY --from=builder --chown=ferro:ferro /bin/ferrogw /bin/ferrogw
+
+WORKDIR /app
 
 EXPOSE 8080
+
+USER ferro
 
 ENTRYPOINT ["/bin/ferrogw"]

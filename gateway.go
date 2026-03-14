@@ -695,12 +695,58 @@ func (g *Gateway) LoadPlugins() error {
 // then falls back to any registered provider that supports the requested model
 // and streaming. Prometheus metrics and event hooks are emitted when the
 // returned channel drains (matching the behaviour of Route for non-streaming).
+//
+// When MCP servers are configured the request is routed through Route instead
+// so that the full agentic tool-call loop can run. The final response is
+// wrapped into a single-chunk stream and returned to the caller (Phase 1
+// behaviour — true final-response streaming is Phase 1.5).
 func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-chan providers.StreamChunk, error) {
 	start := time.Now()
 	log := logging.FromContext(ctx)
 
 	// Resolve model alias before routing.
 	req = g.resolveAlias(req)
+
+	// MCP redirect: when tool servers are registered, the agentic loop must
+	// run to completion before any response is sent. Route() handles this
+	// entirely; we wrap its non-streaming result into a channel here.
+	g.mu.RLock()
+	hasMCP := g.mcpRegistry != nil && g.mcpRegistry.HasServers()
+	g.mu.RUnlock()
+	if hasMCP {
+		req.Stream = false
+		resp, err := g.Route(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+		// Convert the completed Response into a buffered single-chunk channel.
+		// Preserve all choices so n>1 requests are handled correctly, and use
+		// the real FinishReason from each choice rather than hardcoding "stop".
+		ch := make(chan providers.StreamChunk, 1)
+		streamChoices := make([]providers.StreamChoice, len(resp.Choices))
+		for i, c := range resp.Choices {
+			streamChoices[i] = providers.StreamChoice{
+				Index: c.Index,
+				Delta: providers.MessageDelta{
+					Role:      c.Message.Role,
+					Content:   c.Message.Content,
+					ToolCalls: c.Message.ToolCalls,
+				},
+				FinishReason: c.FinishReason,
+			}
+		}
+		ch <- providers.StreamChunk{
+			ID:      resp.ID,
+			Object:  "chat.completion.chunk",
+			Created: resp.Created,
+			Model:   resp.Model,
+			Choices: streamChoices,
+			Usage:   &resp.Usage,
+		}
+		close(ch)
+		_ = start // latency already recorded inside Route()
+		return ch, nil
+	}
 
 	// Run before-request plugins (word-filter, max-token, rate-limit, etc.).
 	pctx := plugin.NewContext(&req)

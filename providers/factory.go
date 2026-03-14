@@ -52,6 +52,7 @@ const (
 	CfgKeyAPIKey     = "api_key"     // primary API key / token
 	CfgKeyBaseURL    = "base_url"    // optional base URL override
 	CfgKeyAPIVersion = "api_version" // optional API version string
+	CfgKeyAccountID  = "account_id"  // provider account / tenant identifier when required
 
 	// Azure OpenAI
 	CfgKeyDeployment = "deployment" // deployment / model name for Azure OpenAI
