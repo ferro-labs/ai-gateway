@@ -18,11 +18,14 @@ import (
 	"maps"
 	"math/rand"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ferro-labs/ai-gateway/internal/circuitbreaker"
+	"github.com/ferro-labs/ai-gateway/internal/events"
 	"github.com/ferro-labs/ai-gateway/internal/latency"
 	"github.com/ferro-labs/ai-gateway/internal/logging"
 	"github.com/ferro-labs/ai-gateway/internal/mcp"
@@ -47,18 +50,46 @@ type Gateway struct {
 	config           Config
 	catalog          models.Catalog
 	providers        map[string]providers.Provider
+	providerNames    []string
 	strategy         strategies.Strategy
 	plugins          *plugin.Manager
 	hooks            []EventHookFunc
+	hookSnapshot     atomic.Value
+	hookDispatchQ    chan hookDispatch
 	circuitBreakers  map[string]*circuitbreaker.CircuitBreaker
 	discoveredModels map[string][]providers.ModelInfo
 	latencyTracker   *latency.Tracker
+	modelIndex       modelLookupIndex
 
 	// MCP fields — nil when no MCPServers are configured.
 	mcpRegistry *mcp.Registry
 	mcpExecutor *mcp.Executor
 	mcpInitDone chan struct{} // closed when background MCP init goroutine completes
 }
+
+type namedProviderMatch struct {
+	name  string
+	found bool
+}
+
+type modelLookupIndex struct {
+	exactProviders         map[string][]string
+	exactStreamProviders   map[string][]string
+	exactEmbedProviders    map[string][]string
+	exactImageProviders    map[string][]string
+	providerCache          map[string]namedProviderMatch
+	streamProviderCache    map[string]namedProviderMatch
+	embeddingProviderCache map[string]namedProviderMatch
+	imageProviderCache     map[string]namedProviderMatch
+}
+
+type hookDispatch struct {
+	ctx   context.Context
+	event events.HookEvent
+	hooks []EventHookFunc
+}
+
+const hookDispatchQueueSize = 256
 
 // New creates a new Gateway instance with the given configuration.
 func New(cfg Config) (*Gateway, error) {
@@ -76,7 +107,20 @@ func New(cfg Config) (*Gateway, error) {
 		circuitBreakers:  make(map[string]*circuitbreaker.CircuitBreaker),
 		discoveredModels: make(map[string][]providers.ModelInfo),
 		latencyTracker:   latency.New(0), // default window size (100 samples)
+		modelIndex: modelLookupIndex{
+			exactProviders:         make(map[string][]string),
+			exactStreamProviders:   make(map[string][]string),
+			exactEmbedProviders:    make(map[string][]string),
+			exactImageProviders:    make(map[string][]string),
+			providerCache:          make(map[string]namedProviderMatch),
+			streamProviderCache:    make(map[string]namedProviderMatch),
+			embeddingProviderCache: make(map[string]namedProviderMatch),
+			imageProviderCache:     make(map[string]namedProviderMatch),
+		},
+		hookDispatchQ: make(chan hookDispatch, hookDispatchQueueSize),
 	}
+	gw.hookSnapshot.Store([]EventHookFunc{})
+	gw.startHookWorkers()
 
 	// Wire MCP if any servers are configured.
 	if len(cfg.MCPServers) > 0 {
@@ -140,7 +184,11 @@ const (
 func (g *Gateway) RegisterProvider(p providers.Provider) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if _, exists := g.providers[p.Name()]; !exists {
+		g.providerNames = append(g.providerNames, p.Name())
+	}
 	g.providers[p.Name()] = p
+	g.rebuildModelIndexesLocked()
 	g.strategy = nil // force strategy rebuild
 }
 
@@ -158,6 +206,11 @@ func (g *Gateway) AddHook(fn EventHookFunc) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.hooks = append(g.hooks, fn)
+	g.hookSnapshot.Store(append([]EventHookFunc(nil), g.hooks...))
+}
+
+func (g *Gateway) hasHooks() bool {
+	return len(g.currentHooks()) > 0
 }
 
 // MCPInitDone returns a channel that is closed once the background MCP
@@ -207,7 +260,7 @@ func (g *Gateway) MCPInitDone() <-chan struct{} {
 // Route routes a request to the appropriate provider based on the configuration.
 func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.Response, error) {
 	start := time.Now()
-	log := logging.FromContext(ctx)
+	hooksEnabled := g.hasHooks()
 
 	// Resolve model alias before routing.
 	req = g.resolveAlias(req)
@@ -221,7 +274,7 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	pctx := plugin.NewContext(&req)
 	if g.plugins.HasPlugins() {
 		if err := g.plugins.RunBefore(ctx, pctx); err != nil {
-			metrics.RequestsTotal.WithLabelValues("", req.Model, "rejected").Inc()
+			metrics.ForRequest("", req.Model).Rejected.Inc()
 			return nil, err
 		}
 	}
@@ -269,6 +322,7 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	// Execute the strategy (provider selection + actual call).
 	resp, err := s.Execute(ctx, req)
 	latency := time.Since(start)
+	requestMetrics := metrics.ForRequest("", req.Model)
 
 	if err != nil {
 		pctx.Error = err
@@ -279,24 +333,25 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 		if errors.Is(err, circuitbreaker.ErrCircuitOpen) {
 			errType = "circuit_open"
 		}
-		metrics.RequestsTotal.WithLabelValues(provider, req.Model, "error").Inc()
-		metrics.ProviderErrors.WithLabelValues(provider, errType).Inc()
+		requestMetrics.Error.Inc()
+		metrics.ForProviderError(provider, errType).Inc()
 
-		log.Error("request failed",
+		logging.FromContext(ctx).Error("request failed",
 			"model", req.Model,
 			"latency_ms", latency.Milliseconds(),
 			"error", err.Error(),
 		)
 
-		g.publishEvent(ctx, SubjectRequestFailed, map[string]interface{}{
-			"trace_id":   logging.TraceIDFromContext(ctx),
-			"model":      req.Model,
-			"error":      err.Error(),
-			"status":     500,
-			"latency_ms": latency.Milliseconds(),
-			"stream":     originalStream,
-			"timestamp":  time.Now(),
-		})
+		if hooksEnabled {
+			g.publishEvent(ctx, failedEventData(
+				logging.TraceIDFromContext(ctx),
+				"",
+				req.Model,
+				err.Error(),
+				latency,
+				originalStream,
+			))
+		}
 		return nil, err
 	}
 
@@ -346,7 +401,7 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	if g.plugins.HasPlugins() {
 		pctx.Response = resp
 		if err := g.plugins.RunAfter(ctx, pctx); err != nil {
-			metrics.RequestsTotal.WithLabelValues(resp.Provider, resp.Model, "rejected").Inc()
+			metrics.ForRequest(resp.Provider, resp.Model).Rejected.Inc()
 			return nil, err
 		}
 		if pctx.Response != nil {
@@ -355,10 +410,11 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	}
 
 	// Emit Prometheus metrics.
-	metrics.RequestDuration.WithLabelValues(resp.Provider, resp.Model).Observe(latency.Seconds())
-	metrics.RequestsTotal.WithLabelValues(resp.Provider, resp.Model, "success").Inc()
-	metrics.TokensInput.WithLabelValues(resp.Provider, resp.Model).Add(float64(resp.Usage.PromptTokens))
-	metrics.TokensOutput.WithLabelValues(resp.Provider, resp.Model).Add(float64(resp.Usage.CompletionTokens))
+	requestMetrics = metrics.ForRequest(resp.Provider, resp.Model)
+	requestMetrics.Duration.Observe(latency.Seconds())
+	requestMetrics.Success.Inc()
+	requestMetrics.TokensIn.Add(float64(resp.Usage.PromptTokens))
+	requestMetrics.TokensOut.Add(float64(resp.Usage.CompletionTokens))
 
 	// Emit cost metrics using the model catalog.
 	g.mu.RLock()
@@ -372,64 +428,102 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 		CacheWriteTokens: resp.Usage.CacheWriteTokens,
 	})
 	if cost.TotalUSD > 0 {
-		metrics.RequestCostUSD.WithLabelValues(resp.Provider, resp.Model).Add(cost.TotalUSD)
+		requestMetrics.CostUSD.Add(cost.TotalUSD)
 	}
 
-	log.Info("request completed",
-		"model", resp.Model,
-		"provider", resp.Provider,
-		"latency_ms", latency.Milliseconds(),
-		"tokens_in", resp.Usage.PromptTokens,
-		"tokens_out", resp.Usage.CompletionTokens,
-		"cost_usd", cost.TotalUSD,
-	)
+	if logging.Enabled(ctx, slog.LevelDebug) {
+		logging.FromContext(ctx).Debug("request completed",
+			"model", resp.Model,
+			"provider", resp.Provider,
+			"latency_ms", latency.Milliseconds(),
+			"tokens_in", resp.Usage.PromptTokens,
+			"tokens_out", resp.Usage.CompletionTokens,
+			"cost_usd", cost.TotalUSD,
+		)
+	}
 
-	g.publishEvent(ctx, SubjectRequestCompleted, map[string]interface{}{
-		"trace_id":             resp.ID,
-		"provider":             resp.Provider,
-		"model":                resp.Model,
-		"status":               200,
-		"latency_ms":           latency.Milliseconds(),
-		"stream":               originalStream,
-		"tokens_in":            resp.Usage.PromptTokens,
-		"tokens_out":           resp.Usage.CompletionTokens,
-		"cost_usd":             cost.TotalUSD,
-		"cost_input_usd":       cost.InputUSD,
-		"cost_output_usd":      cost.OutputUSD,
-		"cost_cache_read_usd":  cost.CacheReadUSD,
-		"cost_cache_write_usd": cost.CacheWriteUSD,
-		"cost_reasoning_usd":   cost.ReasoningUSD,
-		"cost_image_usd":       cost.ImageUSD,
-		"cost_audio_usd":       cost.AudioUSD,
-		"cost_embedding_usd":   cost.EmbeddingUSD,
-		"cost_model_found":     cost.ModelFound,
-		"timestamp":            time.Now(),
-	})
+	if hooksEnabled {
+		g.publishEvent(ctx, completedEventData(
+			resp.ID,
+			resp.Provider,
+			resp.Model,
+			latency,
+			originalStream,
+			resp.Usage.PromptTokens,
+			resp.Usage.CompletionTokens,
+			cost,
+		))
+	}
 
 	return resp, nil
 }
 
 // publishEvent calls all registered hooks asynchronously.
-func (g *Gateway) publishEvent(ctx context.Context, subject string, data map[string]interface{}) {
-	g.mu.RLock()
-	hooks := make([]EventHookFunc, len(g.hooks))
-	copy(hooks, g.hooks)
-	g.mu.RUnlock()
+func (g *Gateway) publishEvent(ctx context.Context, event events.HookEvent) {
+	hooks := g.currentHooks()
+	if len(hooks) == 0 {
+		return
+	}
 
-	for _, h := range hooks {
-		fn := h
+	dispatch := hookDispatch{
+		ctx:   ctx,
+		event: event,
+		hooks: hooks,
+	}
+
+	select {
+	case g.hookDispatchQ <- dispatch:
+	default:
+		go runHookDispatch(dispatch)
+	}
+}
+
+func (g *Gateway) currentHooks() []EventHookFunc {
+	hooks, _ := g.hookSnapshot.Load().([]EventHookFunc)
+	return hooks
+}
+
+func (g *Gateway) startHookWorkers() {
+	workerCount := runtime.GOMAXPROCS(0)
+	if workerCount < 1 {
+		workerCount = 1
+	}
+	if workerCount > 4 {
+		workerCount = 4
+	}
+
+	for range workerCount {
 		go func() {
+			for dispatch := range g.hookDispatchQ {
+				runHookDispatch(dispatch)
+			}
+		}()
+	}
+}
+
+func runHookDispatch(dispatch hookDispatch) {
+	data := dispatch.event.Map()
+	for _, hook := range dispatch.hooks {
+		func(fn EventHookFunc) {
 			defer func() {
 				if r := recover(); r != nil {
 					logging.Logger.Error("event hook panicked",
-						"subject", subject,
+						"subject", dispatch.event.Subject,
 						"panic", r,
 					)
 				}
 			}()
-			fn(ctx, subject, data)
-		}()
+			fn(dispatch.ctx, dispatch.event.Subject, data)
+		}(hook)
 	}
+}
+
+func failedEventData(traceID, provider, model, errMsg string, latency time.Duration, stream bool) events.HookEvent {
+	return events.FailedRequest(traceID, provider, model, errMsg, latency, stream)
+}
+
+func completedEventData(traceID, provider, model string, latency time.Duration, stream bool, tokensIn, tokensOut int, cost models.CostResult) events.HookEvent {
+	return events.CompletedRequest(traceID, provider, model, latency, stream, tokensIn, tokensOut, cost, true)
 }
 
 // ReloadConfig validates and applies a new configuration, forcing strategy rebuild on next request.
@@ -704,7 +798,7 @@ func (g *Gateway) LoadPlugins() error {
 // behaviour — true final-response streaming is Phase 1.5).
 func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-chan providers.StreamChunk, error) {
 	start := time.Now()
-	log := logging.FromContext(ctx)
+	hooksEnabled := g.hasHooks()
 
 	// Resolve model alias before routing.
 	req = g.resolveAlias(req)
@@ -756,11 +850,11 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 	pctx := plugin.NewContext(&req)
 	if g.plugins.HasPlugins() {
 		if err := g.plugins.RunBefore(ctx, pctx); err != nil {
-			metrics.RequestsTotal.WithLabelValues("", req.Model, "rejected").Inc()
+			metrics.ForRequest("", req.Model).Rejected.Inc()
 			return nil, err
 		}
 		if pctx.Reject {
-			metrics.RequestsTotal.WithLabelValues("", req.Model, "rejected").Inc()
+			metrics.ForRequest("", req.Model).Rejected.Inc()
 			return nil, fmt.Errorf("request rejected by plugin: %s", pctx.Reason)
 		}
 	}
@@ -790,17 +884,10 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 	}
 	// Fallback: any registered provider that supports this model and streaming.
 	if sp == nil {
-		for key, p := range g.providers {
-			if !p.SupportsModel(req.Model) {
-				continue
-			}
-			candidate := p
-			if cb, hasCB := g.circuitBreakers[key]; hasCB {
-				candidate = &cbProvider{Provider: p, cb: cb, name: key}
-			}
-			if casted, ok := candidate.(providers.StreamProvider); ok {
-				sp = casted
-				break
+		if name, fallback, ok := g.findStreamingProviderMatchByModelLocked(req.Model); ok {
+			sp = fallback
+			if cb, hasCB := g.circuitBreakers[name]; hasCB {
+				sp = &cbProvider{Provider: g.providers[name], cb: cb, name: name}
 			}
 		}
 	}
@@ -811,7 +898,9 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 	}
 
 	providerName := sp.Name()
-	log.Info("stream request started", "model", req.Model, "provider", providerName)
+	if logging.Enabled(ctx, slog.LevelDebug) {
+		logging.FromContext(ctx).Debug("stream request started", "model", req.Model, "provider", providerName)
+	}
 
 	rawCh, err := sp.CompleteStream(ctx, req)
 	if err != nil {
@@ -819,18 +908,18 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 		if errors.Is(err, circuitbreaker.ErrCircuitOpen) {
 			errType = "circuit_open"
 		}
-		metrics.RequestsTotal.WithLabelValues(providerName, req.Model, "error").Inc()
-		metrics.ProviderErrors.WithLabelValues(providerName, errType).Inc()
-		g.publishEvent(ctx, SubjectRequestFailed, map[string]interface{}{
-			"trace_id":   logging.TraceIDFromContext(ctx),
-			"provider":   providerName,
-			"model":      req.Model,
-			"error":      err.Error(),
-			"status":     500,
-			"latency_ms": time.Since(start).Milliseconds(),
-			"stream":     true,
-			"timestamp":  time.Now(),
-		})
+		metrics.ForRequest(providerName, req.Model).Error.Inc()
+		metrics.ForProviderError(providerName, errType).Inc()
+		if hooksEnabled {
+			g.publishEvent(ctx, failedEventData(
+				logging.TraceIDFromContext(ctx),
+				providerName,
+				req.Model,
+				err.Error(),
+				time.Since(start),
+				true,
+			))
+		}
 		return nil, err
 	}
 
@@ -841,11 +930,13 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 	g.mu.RUnlock()
 
 	meta := streamwrap.MeterMeta{
-		Provider:  providerName,
-		Model:     req.Model,
-		Catalog:   catalog,
-		PublishFn: g.publishEvent,
-		TraceID:   logging.TraceIDFromContext(ctx),
+		Provider: providerName,
+		Model:    req.Model,
+		Catalog:  catalog,
+		TraceID:  logging.TraceIDFromContext(ctx),
+	}
+	if hooksEnabled {
+		meta.PublishFn = g.publishEvent
 	}
 	return streamwrap.Meter(ctx, rawCh, start, meta), nil
 }
@@ -952,6 +1043,183 @@ func (g *Gateway) streamingTargetOrderLocked(req providers.Request) []string {
 	}
 }
 
+func (g *Gateway) rebuildModelIndexesLocked() {
+	g.modelIndex.exactProviders = make(map[string][]string)
+	g.modelIndex.exactStreamProviders = make(map[string][]string)
+	g.modelIndex.exactEmbedProviders = make(map[string][]string)
+	g.modelIndex.exactImageProviders = make(map[string][]string)
+	g.modelIndex.providerCache = make(map[string]namedProviderMatch)
+	g.modelIndex.streamProviderCache = make(map[string]namedProviderMatch)
+	g.modelIndex.embeddingProviderCache = make(map[string]namedProviderMatch)
+	g.modelIndex.imageProviderCache = make(map[string]namedProviderMatch)
+
+	for _, name := range g.providerNames {
+		p, ok := g.providers[name]
+		if !ok {
+			continue
+		}
+		models := p.SupportedModels()
+		for _, model := range models {
+			g.modelIndex.exactProviders[model] = append(g.modelIndex.exactProviders[model], name)
+		}
+		if _, ok := p.(providers.StreamProvider); ok {
+			for _, model := range models {
+				g.modelIndex.exactStreamProviders[model] = append(g.modelIndex.exactStreamProviders[model], name)
+			}
+		}
+		if _, ok := p.(providers.EmbeddingProvider); ok {
+			for _, model := range models {
+				g.modelIndex.exactEmbedProviders[model] = append(g.modelIndex.exactEmbedProviders[model], name)
+			}
+		}
+		if _, ok := p.(providers.ImageProvider); ok {
+			for _, model := range models {
+				g.modelIndex.exactImageProviders[model] = append(g.modelIndex.exactImageProviders[model], name)
+			}
+		}
+	}
+}
+
+func (g *Gateway) findProviderByModelLocked(model string) (providers.Provider, bool) {
+	if cached, ok := g.modelIndex.providerCache[model]; ok {
+		if !cached.found {
+			return nil, false
+		}
+		p, ok := g.providers[cached.name]
+		return p, ok
+	}
+
+	if exact := g.modelIndex.exactProviders[model]; len(exact) > 0 {
+		name := exact[0]
+		g.modelIndex.providerCache[model] = namedProviderMatch{name: name, found: true}
+		return g.providers[name], true
+	}
+
+	for _, name := range g.providerNames {
+		p, ok := g.providers[name]
+		if ok && p.SupportsModel(model) {
+			g.modelIndex.providerCache[model] = namedProviderMatch{name: name, found: true}
+			return p, true
+		}
+	}
+
+	g.modelIndex.providerCache[model] = namedProviderMatch{}
+	return nil, false
+}
+
+func (g *Gateway) findStreamingProviderMatchByModelLocked(model string) (string, providers.StreamProvider, bool) {
+	if cached, ok := g.modelIndex.streamProviderCache[model]; ok {
+		if !cached.found {
+			return "", nil, false
+		}
+		p, ok := g.providers[cached.name]
+		if !ok {
+			return "", nil, false
+		}
+		sp, ok := p.(providers.StreamProvider)
+		return cached.name, sp, ok
+	}
+
+	if exact := g.modelIndex.exactStreamProviders[model]; len(exact) > 0 {
+		name := exact[0]
+		g.modelIndex.streamProviderCache[model] = namedProviderMatch{name: name, found: true}
+		sp, _ := g.providers[name].(providers.StreamProvider)
+		return name, sp, true
+	}
+
+	for _, name := range g.providerNames {
+		p, ok := g.providers[name]
+		if !ok || !p.SupportsModel(model) {
+			continue
+		}
+		sp, ok := p.(providers.StreamProvider)
+		if ok {
+			g.modelIndex.streamProviderCache[model] = namedProviderMatch{name: name, found: true}
+			return name, sp, true
+		}
+	}
+
+	g.modelIndex.streamProviderCache[model] = namedProviderMatch{}
+	return "", nil, false
+}
+
+func (g *Gateway) findStreamingProviderByModelLocked(model string) (providers.StreamProvider, bool) {
+	_, sp, ok := g.findStreamingProviderMatchByModelLocked(model)
+	return sp, ok
+}
+
+func (g *Gateway) findEmbeddingProviderByModelLocked(model string) (providers.EmbeddingProvider, bool) {
+	if cached, ok := g.modelIndex.embeddingProviderCache[model]; ok {
+		if !cached.found {
+			return nil, false
+		}
+		p, ok := g.providers[cached.name]
+		if !ok {
+			return nil, false
+		}
+		ep, ok := p.(providers.EmbeddingProvider)
+		return ep, ok
+	}
+
+	if exact := g.modelIndex.exactEmbedProviders[model]; len(exact) > 0 {
+		name := exact[0]
+		g.modelIndex.embeddingProviderCache[model] = namedProviderMatch{name: name, found: true}
+		ep, _ := g.providers[name].(providers.EmbeddingProvider)
+		return ep, true
+	}
+
+	for _, name := range g.providerNames {
+		p, ok := g.providers[name]
+		if !ok || !p.SupportsModel(model) {
+			continue
+		}
+		ep, ok := p.(providers.EmbeddingProvider)
+		if ok {
+			g.modelIndex.embeddingProviderCache[model] = namedProviderMatch{name: name, found: true}
+			return ep, true
+		}
+	}
+
+	g.modelIndex.embeddingProviderCache[model] = namedProviderMatch{}
+	return nil, false
+}
+
+func (g *Gateway) findImageProviderByModelLocked(model string) (providers.ImageProvider, bool) {
+	if cached, ok := g.modelIndex.imageProviderCache[model]; ok {
+		if !cached.found {
+			return nil, false
+		}
+		p, ok := g.providers[cached.name]
+		if !ok {
+			return nil, false
+		}
+		ip, ok := p.(providers.ImageProvider)
+		return ip, ok
+	}
+
+	if exact := g.modelIndex.exactImageProviders[model]; len(exact) > 0 {
+		name := exact[0]
+		g.modelIndex.imageProviderCache[model] = namedProviderMatch{name: name, found: true}
+		ip, _ := g.providers[name].(providers.ImageProvider)
+		return ip, true
+	}
+
+	for _, name := range g.providerNames {
+		p, ok := g.providers[name]
+		if !ok || !p.SupportsModel(model) {
+			continue
+		}
+		ip, ok := p.(providers.ImageProvider)
+		if ok {
+			g.modelIndex.imageProviderCache[model] = namedProviderMatch{name: name, found: true}
+			return ip, true
+		}
+	}
+
+	g.modelIndex.imageProviderCache[model] = namedProviderMatch{}
+	return nil, false
+}
+
 func conditionMatches(cond Condition, model string) bool {
 	switch cond.Key {
 	case "model":
@@ -1056,7 +1324,11 @@ func (g *Gateway) AllModels() []providers.ModelInfo {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 	var models []providers.ModelInfo
-	for name, p := range g.providers {
+	for _, name := range g.providerNames {
+		p, ok := g.providers[name]
+		if !ok {
+			continue
+		}
 		if discovered, ok := g.discoveredModels[name]; ok && len(discovered) > 0 {
 			models = append(models, discovered...)
 		} else {
@@ -1083,10 +1355,8 @@ func (g *Gateway) Get(name string) (providers.Provider, bool) {
 func (g *Gateway) ListProviders() []string {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
-	names := make([]string, 0, len(g.providers))
-	for name := range g.providers {
-		names = append(names, name)
-	}
+	names := make([]string, len(g.providerNames))
+	copy(names, g.providerNames)
 	return names
 }
 
@@ -1099,12 +1369,15 @@ func (g *Gateway) List() []string {
 func (g *Gateway) FindByModel(model string) (providers.Provider, bool) {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
-	for _, p := range g.providers {
-		if p.SupportsModel(model) {
-			return p, true
-		}
-	}
-	return nil, false
+	return g.findProviderByModelLocked(model)
+}
+
+// FindStreamingByModel returns the first registered streaming-capable provider
+// that supports the given model.
+func (g *Gateway) FindStreamingByModel(model string) (providers.StreamProvider, bool) {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.findStreamingProviderByModelLocked(model)
 }
 
 // Close cleans up resources.
@@ -1142,16 +1415,10 @@ func (g *Gateway) Embed(ctx context.Context, req providers.EmbeddingRequest) (*p
 	req.Model = g.resolveModelAlias(req.Model)
 
 	g.mu.RLock()
-	var ep providers.EmbeddingProvider
-	for _, p := range g.providers {
-		if ep2, ok := p.(providers.EmbeddingProvider); ok && p.SupportsModel(req.Model) {
-			ep = ep2
-			break
-		}
-	}
+	ep, ok := g.findEmbeddingProviderByModelLocked(req.Model)
 	g.mu.RUnlock()
 
-	if ep == nil {
+	if !ok {
 		return nil, fmt.Errorf("no embedding provider found for model: %s", req.Model)
 	}
 
@@ -1174,16 +1441,10 @@ func (g *Gateway) GenerateImage(ctx context.Context, req providers.ImageRequest)
 	req.Model = g.resolveModelAlias(req.Model)
 
 	g.mu.RLock()
-	var ip providers.ImageProvider
-	for _, p := range g.providers {
-		if ip2, ok := p.(providers.ImageProvider); ok && p.SupportsModel(req.Model) {
-			ip = ip2
-			break
-		}
-	}
+	ip, ok := g.findImageProviderByModelLocked(req.Model)
 	g.mu.RUnlock()
 
-	if ip == nil {
+	if !ok {
 		return nil, fmt.Errorf("no image generation provider found for model: %s", req.Model)
 	}
 

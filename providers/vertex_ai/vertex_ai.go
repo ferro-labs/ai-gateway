@@ -14,6 +14,7 @@ import (
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 
+	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
@@ -76,7 +77,7 @@ func New(opts Options) (*Provider, error) {
 		name:        Name,
 		apiKey:      apiKey,
 		baseURL:     baseURL,
-		httpClient:  &http.Client{},
+		httpClient:  providerhttp.Shared(),
 		tokenSource: tokenSource,
 	}, nil
 }

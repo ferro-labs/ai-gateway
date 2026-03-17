@@ -85,7 +85,11 @@ func (c *ContentBased) Execute(ctx context.Context, req providers.Request) (*pro
 	if !p.SupportsModel(req.Model) {
 		return nil, fmt.Errorf("content-based routing: provider %s does not support model %q", target.VirtualKey, req.Model)
 	}
-	return p.Complete(ctx, req)
+	resp, err := p.Complete(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return responseWithProvider(resp, target.VirtualKey), nil
 }
 
 func (c *ContentBased) matchTarget(req providers.Request) Target {

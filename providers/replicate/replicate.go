@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
@@ -68,7 +69,7 @@ func New(apiToken, baseURL string, textModels, imageModels []string) (*Provider,
 		name:        Name,
 		apiKey:      apiToken,
 		baseURL:     baseURL,
-		httpClient:  &http.Client{},
+		httpClient:  providerhttp.Shared(),
 		textModels:  textModels,
 		imageModels: imageModels,
 	}, nil

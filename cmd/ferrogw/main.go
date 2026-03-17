@@ -1,13 +1,16 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"html/template"
+	"io"
 	"io/fs"
 	"net/http"
+	httppprof "net/http/pprof"
 	"os"
 	"os/signal"
 	"strconv"
@@ -472,6 +475,7 @@ func newRouter(
 
 	// Prometheus metrics endpoint.
 	r.Handle("/metrics", promhttp.Handler())
+	mountPprofRoutes(r)
 
 	// Minimal built-in admin dashboard UI.
 	r.Get("/dashboard", func(w http.ResponseWriter, _ *http.Request) {
@@ -518,8 +522,8 @@ func newRouter(
 	})
 
 	r.Post("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
-		var req providers.Request
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		req, err := decodeChatCompletionRequest(r.Body)
+		if err != nil {
 			writeOpenAIError(w, http.StatusBadRequest, err.Error(), "invalid_request_error", "invalid_request")
 			return
 		}
@@ -534,7 +538,7 @@ func newRouter(
 				writeOpenAIError(w, http.StatusBadRequest, "no provider supports model: "+req.Model, "invalid_request_error", "model_not_found")
 				return
 			}
-			if !hasStreamingProviderForModel(gw, req.Model) {
+			if _, ok := gw.FindStreamingByModel(req.Model); !ok {
 				writeOpenAIError(w, http.StatusBadRequest, "provider does not support streaming", "invalid_request_error", "streaming_not_supported")
 				return
 			}
@@ -581,9 +585,145 @@ func newRouter(
 	return r
 }
 
+type routeChatCompletionRequest struct {
+	Model               string                    `json:"model"`
+	Messages            []routeChatMessage        `json:"messages"`
+	Temperature         *float64                  `json:"temperature,omitempty"`
+	TopP                *float64                  `json:"top_p,omitempty"`
+	N                   *int                      `json:"n,omitempty"`
+	Seed                *int64                    `json:"seed,omitempty"`
+	MaxTokens           *int                      `json:"max_tokens,omitempty"`
+	MaxCompletionTokens *int                      `json:"max_completion_tokens,omitempty"`
+	PresencePenalty     *float64                  `json:"presence_penalty,omitempty"`
+	FrequencyPenalty    *float64                  `json:"frequency_penalty,omitempty"`
+	Stop                []string                  `json:"stop,omitempty"`
+	Tools               []providers.Tool          `json:"tools,omitempty"`
+	ToolChoice          json.RawMessage           `json:"tool_choice,omitempty"`
+	ResponseFormat      *providers.ResponseFormat `json:"response_format,omitempty"`
+	LogProbs            bool                      `json:"logprobs,omitempty"`
+	TopLogProbs         *int                      `json:"top_logprobs,omitempty"`
+	Stream              bool                      `json:"stream,omitempty"`
+	User                string                    `json:"user,omitempty"`
+	LogitBias           map[string]float64        `json:"logit_bias,omitempty"`
+}
+
+type routeChatMessage struct {
+	Role       string               `json:"role"`
+	Content    json.RawMessage      `json:"content"`
+	Name       string               `json:"name,omitempty"`
+	ToolCalls  []providers.ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string               `json:"tool_call_id,omitempty"`
+}
+
+func decodeChatCompletionRequest(r io.Reader) (providers.Request, error) {
+	var wire routeChatCompletionRequest
+	if err := json.NewDecoder(r).Decode(&wire); err != nil {
+		return providers.Request{}, err
+	}
+
+	messages := make([]providers.Message, len(wire.Messages))
+	for i, msg := range wire.Messages {
+		decoded, err := msg.toProviderMessage()
+		if err != nil {
+			return providers.Request{}, fmt.Errorf("messages[%d]: %w", i, err)
+		}
+		messages[i] = decoded
+	}
+
+	var toolChoice interface{}
+	if len(wire.ToolChoice) > 0 && !rawJSONNull(wire.ToolChoice) {
+		if err := json.Unmarshal(wire.ToolChoice, &toolChoice); err != nil {
+			return providers.Request{}, fmt.Errorf("tool_choice: %w", err)
+		}
+	}
+
+	return providers.Request{
+		Model:               wire.Model,
+		Messages:            messages,
+		Temperature:         wire.Temperature,
+		TopP:                wire.TopP,
+		N:                   wire.N,
+		Seed:                wire.Seed,
+		MaxTokens:           wire.MaxTokens,
+		MaxCompletionTokens: wire.MaxCompletionTokens,
+		PresencePenalty:     wire.PresencePenalty,
+		FrequencyPenalty:    wire.FrequencyPenalty,
+		Stop:                wire.Stop,
+		Tools:               wire.Tools,
+		ToolChoice:          toolChoice,
+		ResponseFormat:      wire.ResponseFormat,
+		LogProbs:            wire.LogProbs,
+		TopLogProbs:         wire.TopLogProbs,
+		Stream:              wire.Stream,
+		User:                wire.User,
+		LogitBias:           wire.LogitBias,
+	}, nil
+}
+
+func (m routeChatMessage) toProviderMessage() (providers.Message, error) {
+	msg := providers.Message{
+		Role:       m.Role,
+		Name:       m.Name,
+		ToolCalls:  m.ToolCalls,
+		ToolCallID: m.ToolCallID,
+	}
+	if len(m.Content) == 0 || rawJSONNull(m.Content) {
+		return msg, nil
+	}
+
+	if m.Content[0] == '"' {
+		if err := json.Unmarshal(m.Content, &msg.Content); err != nil {
+			return providers.Message{}, err
+		}
+		return msg, nil
+	}
+
+	var parts []providers.ContentPart
+	if err := json.Unmarshal(m.Content, &parts); err != nil {
+		return providers.Message{}, err
+	}
+	msg.ContentParts = parts
+	for _, part := range parts {
+		if part.Type == providers.ContentTypeText {
+			msg.Content += part.Text
+		}
+	}
+	return msg, nil
+}
+
+func rawJSONNull(raw []byte) bool {
+	return len(raw) == 4 && raw[0] == 'n' && raw[1] == 'u' && raw[2] == 'l' && raw[3] == 'l'
+}
+
 func renderWebTemplate(w http.ResponseWriter, templateName string, data interface{}) error {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	return webTemplates.ExecuteTemplate(w, templateName, data)
+}
+
+func mountPprofRoutes(r chi.Router) {
+	if !pprofEnabled() {
+		return
+	}
+
+	r.Route("/debug/pprof", func(r chi.Router) {
+		r.Get("/", httppprof.Index)
+		r.Get("/cmdline", httppprof.Cmdline)
+		r.Get("/profile", httppprof.Profile)
+		r.Post("/symbol", httppprof.Symbol)
+		r.Get("/symbol", httppprof.Symbol)
+		r.Get("/trace", httppprof.Trace)
+		r.Get("/allocs", httppprof.Handler("allocs").ServeHTTP)
+		r.Get("/block", httppprof.Handler("block").ServeHTTP)
+		r.Get("/goroutine", httppprof.Handler("goroutine").ServeHTTP)
+		r.Get("/heap", httppprof.Handler("heap").ServeHTTP)
+		r.Get("/mutex", httppprof.Handler("mutex").ServeHTTP)
+		r.Get("/threadcreate", httppprof.Handler("threadcreate").ServeHTTP)
+	})
+}
+
+func pprofEnabled() bool {
+	v := strings.TrimSpace(strings.ToLower(os.Getenv("ENABLE_PPROF")))
+	return v == "1" || v == "true" || v == "yes"
 }
 
 // rateLimitMiddleware rejects requests that exceed the per-IP token-bucket limit.
@@ -649,14 +789,20 @@ func writeSSE(w http.ResponseWriter, ch <-chan providers.StreamChunk) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	flusher, _ := w.(http.Flusher)
+	bw := bufio.NewWriterSize(w, 4096)
+	enc := json.NewEncoder(bw)
 	now := time.Now().Unix()
 	for chunk := range ch {
 		if chunk.Error != nil {
-			errData := fmt.Sprintf(`{"error":{"message":%q,"type":"stream_error","code":"stream_error"}}`, chunk.Error.Error())
-			_, _ = fmt.Fprintf(w, "data: %s\n\n", errData)
-			if flusher != nil {
-				flusher.Flush()
-			}
+			_ = writeSSEEvent(bw, enc, map[string]any{
+				"error": map[string]string{
+					"message": chunk.Error.Error(),
+					"type":    "stream_error",
+					"code":    "stream_error",
+				},
+			})
+			_ = bw.Flush()
+			flushSSE(flusher)
 			return
 		}
 		if chunk.Object == "" {
@@ -665,27 +811,30 @@ func writeSSE(w http.ResponseWriter, ch <-chan providers.StreamChunk) {
 		if chunk.Created == 0 {
 			chunk.Created = now
 		}
-		data, _ := json.Marshal(chunk)
-		_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
-		if flusher != nil {
-			flusher.Flush()
-		}
+		_ = writeSSEEvent(bw, enc, chunk)
+		_ = bw.Flush()
+		flushSSE(flusher)
 	}
-	_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
+	_, _ = bw.WriteString("data: [DONE]\n\n")
+	_ = bw.Flush()
+	flushSSE(flusher)
+}
+
+func writeSSEEvent(bw *bufio.Writer, enc *json.Encoder, payload any) error {
+	if _, err := bw.WriteString("data: "); err != nil {
+		return err
+	}
+	if err := enc.Encode(payload); err != nil {
+		return err
+	}
+	if err := bw.WriteByte('\n'); err != nil {
+		return err
+	}
+	return nil
+}
+
+func flushSSE(flusher http.Flusher) {
 	if flusher != nil {
 		flusher.Flush()
 	}
-}
-
-func hasStreamingProviderForModel(src providers.ProviderSource, model string) bool {
-	for _, name := range src.List() {
-		p, ok := src.Get(name)
-		if !ok || !p.SupportsModel(model) {
-			continue
-		}
-		if _, ok := p.(providers.StreamProvider); ok {
-			return true
-		}
-	}
-	return false
 }

@@ -136,7 +136,7 @@ func (f *Fallback) Execute(ctx context.Context, req providers.Request) (*provide
 
 			resp, err := p.Complete(ctx, req)
 			if err == nil {
-				return resp, nil
+				return responseWithProvider(resp, target.VirtualKey), nil
 			}
 			lastErr = fmt.Errorf("provider %s attempt %d: %w", target.VirtualKey, attempt+1, err)
 

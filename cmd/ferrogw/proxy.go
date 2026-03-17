@@ -1,12 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
-	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strconv"
 
 	"github.com/ferro-labs/ai-gateway/providers"
 )
@@ -105,19 +106,226 @@ func resolveProvider(r *http.Request, registry *providers.Registry) (providers.P
 		return nil, false
 	}
 
-	body, err := io.ReadAll(r.Body)
-	if err != nil || len(body) == 0 {
+	model, err := extractTopLevelModel(r)
+	if err != nil || model == "" {
 		return nil, false
 	}
-	// Restore the body so the proxy can forward it unchanged.
-	r.Body = io.NopCloser(bytes.NewReader(body))
+	return registry.FindByModel(model)
+}
 
-	var partial struct {
-		Model string `json:"model"`
-	}
-	if err := json.Unmarshal(body, &partial); err != nil || partial.Model == "" {
-		return nil, false
+func extractTopLevelModel(r *http.Request) (string, error) {
+	if r.Body == nil {
+		return "", io.EOF
 	}
 
-	return registry.FindByModel(partial.Model)
+	scanner := newTopLevelModelScanner(r.Body)
+	model, err := scanner.extract()
+	r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(scanner.captured.Bytes()), r.Body))
+	if err != nil {
+		return "", err
+	}
+	return model, nil
+}
+
+type topLevelModelScanner struct {
+	reader   *bufio.Reader
+	captured bytes.Buffer
+}
+
+func newTopLevelModelScanner(r io.Reader) *topLevelModelScanner {
+	s := &topLevelModelScanner{}
+	s.reader = bufio.NewReaderSize(io.TeeReader(r, &s.captured), 4096)
+	return s
+}
+
+func (s *topLevelModelScanner) extract() (string, error) {
+	tok, err := s.nextNonSpaceByte()
+	if err != nil {
+		return "", err
+	}
+	if tok != '{' {
+		return "", nil
+	}
+
+	for {
+		tok, err = s.nextNonSpaceByte()
+		if err != nil {
+			if err == io.EOF {
+				return "", nil
+			}
+			return "", err
+		}
+		if tok == '}' {
+			return "", nil
+		}
+		if tok != '"' {
+			return "", nil
+		}
+
+		key, err := s.readJSONString()
+		if err != nil {
+			return "", err
+		}
+		tok, err = s.nextNonSpaceByte()
+		if err != nil {
+			return "", err
+		}
+		if tok != ':' {
+			return "", nil
+		}
+
+		if key == "model" {
+			tok, err := s.nextNonSpaceByte()
+			if err != nil {
+				return "", err
+			}
+			if tok != '"' {
+				if err := s.skipJSONValue(tok); err != nil {
+					return "", err
+				}
+				return "", nil
+			}
+			return s.readJSONString()
+		}
+
+		tok, err = s.nextNonSpaceByte()
+		if err != nil {
+			return "", err
+		}
+		if err := s.skipJSONValue(tok); err != nil {
+			return "", err
+		}
+
+		tok, err = s.nextNonSpaceByte()
+		if err != nil {
+			if err == io.EOF {
+				return "", nil
+			}
+			return "", err
+		}
+		switch tok {
+		case ',':
+			continue
+		case '}':
+			return "", nil
+		default:
+			return "", nil
+		}
+	}
+}
+
+func (s *topLevelModelScanner) nextNonSpaceByte() (byte, error) {
+	for {
+		b, err := s.reader.ReadByte()
+		if err != nil {
+			return 0, err
+		}
+		switch b {
+		case ' ', '\n', '\r', '\t':
+			continue
+		default:
+			return b, nil
+		}
+	}
+}
+
+func (s *topLevelModelScanner) readJSONString() (string, error) {
+	buf := make([]byte, 0, 32)
+	escaped := false
+	for {
+		b, err := s.reader.ReadByte()
+		if err != nil {
+			return "", err
+		}
+		if escaped {
+			buf = append(buf, '\\', b)
+			escaped = false
+			continue
+		}
+		switch b {
+		case '\\':
+			escaped = true
+		case '"':
+			if bytes.IndexByte(buf, '\\') == -1 {
+				return string(buf), nil
+			}
+			return strconv.Unquote(`"` + string(buf) + `"`)
+		default:
+			buf = append(buf, b)
+		}
+	}
+}
+
+func (s *topLevelModelScanner) skipJSONValue(first byte) error {
+	switch first {
+	case '"':
+		_, err := s.readJSONString()
+		return err
+	case '{', '[':
+		return s.skipComposite(first)
+	default:
+		return s.skipScalar()
+	}
+}
+
+func (s *topLevelModelScanner) skipComposite(open byte) error {
+	var closeCh byte
+	switch open {
+	case '{':
+		closeCh = '}'
+	case '[':
+		closeCh = ']'
+	default:
+		return nil
+	}
+
+	depth := 1
+	for depth > 0 {
+		b, err := s.reader.ReadByte()
+		if err != nil {
+			return err
+		}
+		switch b {
+		case '"':
+			if _, err := s.readJSONString(); err != nil {
+				return err
+			}
+		case open:
+			depth++
+		case closeCh:
+			depth--
+		case '{':
+			if open != '{' {
+				if err := s.skipComposite(b); err != nil {
+					return err
+				}
+			}
+		case '[':
+			if open != '[' {
+				if err := s.skipComposite(b); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func (s *topLevelModelScanner) skipScalar() error {
+	for {
+		b, err := s.reader.ReadByte()
+		if err != nil {
+			if err == io.EOF {
+				return nil
+			}
+			return err
+		}
+		switch b {
+		case ',', '}', ']', ' ', '\n', '\r', '\t':
+			if err := s.reader.UnreadByte(); err != nil {
+				return err
+			}
+			return nil
+		}
+	}
 }

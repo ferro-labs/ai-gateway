@@ -84,7 +84,11 @@ func (ab *ABTest) Execute(ctx context.Context, req providers.Request) (*provider
 	if !p.SupportsModel(req.Model) {
 		return nil, fmt.Errorf("ab-test: provider %s (variant %q) does not support model %q", variant.Target.VirtualKey, variant.Label, req.Model)
 	}
-	return p.Complete(ctx, req)
+	resp, err := p.Complete(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return responseWithProvider(resp, variant.Target.VirtualKey), nil
 }
 
 // selectVariant picks a variant using weighted random sampling.

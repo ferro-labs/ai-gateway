@@ -81,5 +81,9 @@ func (c *CostOptimized) Execute(ctx context.Context, req providers.Request) (*pr
 	}
 
 	p, _ := c.lookup(best.target.VirtualKey)
-	return p.Complete(ctx, req)
+	resp, err := p.Complete(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return responseWithProvider(resp, best.target.VirtualKey), nil
 }

@@ -44,6 +44,22 @@ It exposes OpenAI-style endpoints (`/v1/chat/completions`, `/v1/models`, `/v1/em
 - **Operations included** — expose `/health`, `/metrics`, admin APIs, persistent config/key storage, request logs, and a built-in dashboard.
 - **Agent workflows supported** — connect MCP tool servers and let the gateway manage tool discovery and loop execution.
 
+## Performance work
+
+Recent gateway-overhead work has focused on making the Go implementation pay
+off in the real hot path, not just in theory. The current optimization passes
+include shared transport reuse, precomputed model/provider indexes, faster
+proxy model extraction, lower-allocation events/SSE writes, local `pprof`
+profiling support, and a lighter non-stream OpenAI completion path.
+
+The benchmarking repo in
+[`ai-gateway-performance-benchmarks`](https://github.com/ferro-labs/ai-gateway-performance-benchmarks)
+now supports rebuilding FerroGateway from the local workspace for iterative
+profiling. Recent isolated local runs improved the short baseline scenario from
+roughly `10.6k rps` to about `14.8k rps` after profile-guided fixes. Final
+cross-gateway publication numbers should still come from identical gateway-in-path
+comparison runs, not from these local optimization snapshots.
+
 See [CHANGELOG.md](CHANGELOG.md) for full release notes.
 
 ## Quick Start

@@ -2,14 +2,18 @@
 package openai
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"strings"
 
 	oai "github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
 
+	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
@@ -20,10 +24,11 @@ const defaultBaseURL = "https://api.openai.com"
 
 // Provider implements the OpenAI API client using the official Go SDK.
 type Provider struct {
-	name    string
-	apiKey  string
-	baseURL string
-	client  oai.Client
+	name       string
+	apiKey     string
+	baseURL    string
+	httpClient *http.Client
+	client     oai.Client
 }
 
 // Compile-time interface assertions.
@@ -40,6 +45,7 @@ var (
 func New(apiKey, baseURL string) (*Provider, error) {
 	opts := []option.RequestOption{
 		option.WithAPIKey(apiKey),
+		option.WithHTTPClient(providerhttp.Shared()),
 	}
 	resolvedBase := defaultBaseURL
 	if baseURL != "" {
@@ -48,10 +54,11 @@ func New(apiKey, baseURL string) (*Provider, error) {
 	}
 	client := oai.NewClient(opts...)
 	return &Provider{
-		name:    Name,
-		apiKey:  apiKey,
-		baseURL: resolvedBase,
-		client:  client,
+		name:       Name,
+		apiKey:     apiKey,
+		baseURL:    strings.TrimRight(resolvedBase, "/"),
+		httpClient: providerhttp.Shared(),
+		client:     client,
 	}, nil
 }
 
@@ -217,50 +224,57 @@ func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*c
 
 // Complete sends a chat completion request to OpenAI.
 func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
-	params := oai.ChatCompletionNewParams{
-		Messages: buildMessages(req.Messages),
-		Model:    req.Model,
-	}
-	applyParams(&params, req)
-
-	completion, err := p.client.Chat.Completions.New(ctx, params)
+	body, err := json.Marshal(req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	resp := &core.Response{
-		ID:    completion.ID,
-		Model: completion.Model,
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.chatCompletionsEndpoint(), bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	httpResp, err := p.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer func() { _ = httpResp.Body.Close() }()
+
+	respBody, err := io.ReadAll(httpResp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if httpResp.StatusCode != http.StatusOK {
+		var errResp openAIErrorResponse
+		if json.Unmarshal(respBody, &errResp) == nil && errResp.Error.Message != "" {
+			return nil, fmt.Errorf("openai API error (%d): %s", httpResp.StatusCode, errResp.Error.Message)
+		}
+		return nil, fmt.Errorf("openai API error (%d): %s", httpResp.StatusCode, string(respBody))
+	}
+
+	var completion openAIChatCompletionResponse
+	if err := json.Unmarshal(respBody, &completion); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+
+	return &core.Response{
+		ID:       completion.ID,
+		Object:   completion.Object,
+		Created:  completion.Created,
+		Model:    completion.Model,
+		Provider: p.name,
+		Choices:  completion.Choices,
 		Usage: core.Usage{
-			PromptTokens:     int(completion.Usage.PromptTokens),
-			CompletionTokens: int(completion.Usage.CompletionTokens),
-			TotalTokens:      int(completion.Usage.TotalTokens),
-			ReasoningTokens:  int(completion.Usage.CompletionTokensDetails.ReasoningTokens),
-			CacheReadTokens:  int(completion.Usage.PromptTokensDetails.CachedTokens),
+			PromptTokens:     completion.Usage.PromptTokens,
+			CompletionTokens: completion.Usage.CompletionTokens,
+			TotalTokens:      completion.Usage.TotalTokens,
+			ReasoningTokens:  completion.Usage.CompletionTokensDetails.ReasoningTokens,
+			CacheReadTokens:  completion.Usage.PromptTokensDetails.CachedTokens,
 		},
-	}
-	for i, choice := range completion.Choices {
-		msg := core.Message{
-			Role:    string(choice.Message.Role),
-			Content: choice.Message.Content,
-		}
-		for _, tc := range choice.Message.ToolCalls {
-			msg.ToolCalls = append(msg.ToolCalls, core.ToolCall{
-				ID:   tc.ID,
-				Type: string(tc.Type),
-				Function: core.FunctionCall{
-					Name:      tc.Function.Name,
-					Arguments: tc.Function.Arguments,
-				},
-			})
-		}
-		resp.Choices = append(resp.Choices, core.Choice{
-			Index:        i,
-			Message:      msg,
-			FinishReason: string(choice.FinishReason),
-		})
-	}
-	return resp, nil
+	}, nil
 }
 
 // CompleteStream sends a streaming chat completion request to OpenAI.
@@ -319,6 +333,39 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 	}()
 
 	return ch, nil
+}
+
+type openAIErrorResponse struct {
+	Error struct {
+		Message string `json:"message"`
+		Type    string `json:"type"`
+	} `json:"error"`
+}
+
+type openAIChatCompletionResponse struct {
+	ID      string        `json:"id"`
+	Object  string        `json:"object"`
+	Created int64         `json:"created"`
+	Model   string        `json:"model"`
+	Choices []core.Choice `json:"choices"`
+	Usage   struct {
+		PromptTokens        int `json:"prompt_tokens"`
+		CompletionTokens    int `json:"completion_tokens"`
+		TotalTokens         int `json:"total_tokens"`
+		PromptTokensDetails struct {
+			CachedTokens int `json:"cached_tokens"`
+		} `json:"prompt_tokens_details"`
+		CompletionTokensDetails struct {
+			ReasoningTokens int `json:"reasoning_tokens"`
+		} `json:"completion_tokens_details"`
+	} `json:"usage"`
+}
+
+func (p *Provider) chatCompletionsEndpoint() string {
+	if strings.HasSuffix(p.baseURL, "/v1") {
+		return p.baseURL + "/chat/completions"
+	}
+	return p.baseURL + "/v1/chat/completions"
 }
 
 // buildMessages converts gateway Messages to the openai-go SDK union type.

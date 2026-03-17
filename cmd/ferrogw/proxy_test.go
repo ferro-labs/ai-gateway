@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -87,6 +89,53 @@ func TestResolveProvider_BodyRestoredAfterRead(t *testing.T) {
 	resolveProvider(req, reg) //nolint:errcheck
 
 	// Body should be restored and readable again.
+	data, err := io.ReadAll(req.Body)
+	if err != nil {
+		t.Fatalf("failed to read body after resolveProvider: %v", err)
+	}
+	if string(data) != body {
+		t.Errorf("body after resolveProvider = %q, want %q", string(data), body)
+	}
+}
+
+func TestResolveProvider_ModelAfterLargeNestedField(t *testing.T) {
+	reg := buildTestRegistry("http://localhost")
+
+	body := `{"messages":[{"role":"user","content":"hello"},{"role":"assistant","content":"world"}],"metadata":{"nested":{"a":[1,2,3],"b":{"c":"d"}}},"model":"gpt-4o","stream":true}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.ContentLength = int64(len(body))
+
+	p, ok := resolveProvider(req, reg)
+	if !ok {
+		t.Fatal("resolveProvider() returned false, want true")
+	}
+	if p.Name() != providerOpenAI {
+		t.Errorf("provider name = %q, want openai", p.Name())
+	}
+
+	data, err := io.ReadAll(req.Body)
+	if err != nil {
+		t.Fatalf("failed to read body after resolveProvider: %v", err)
+	}
+	if string(data) != body {
+		t.Errorf("body after resolveProvider = %q, want %q", string(data), body)
+	}
+}
+
+func TestResolveProvider_IgnoresNestedModelField(t *testing.T) {
+	reg := buildTestRegistry("http://localhost")
+
+	body := `{"input":{"model":"gpt-4o"},"messages":[]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.ContentLength = int64(len(body))
+
+	_, ok := resolveProvider(req, reg)
+	if ok {
+		t.Fatal("resolveProvider() returned true for nested model field, want false")
+	}
+
 	data, err := io.ReadAll(req.Body)
 	if err != nil {
 		t.Fatalf("failed to read body after resolveProvider: %v", err)
@@ -227,5 +276,75 @@ func TestProxyHandler_NoProvider_Returns400(t *testing.T) {
 	_ = json.NewDecoder(w.Body).Decode(&body)
 	if _, ok := body["error"]; !ok {
 		t.Error("expected error field in response body")
+	}
+}
+
+func BenchmarkExtractTopLevelModel(b *testing.B) {
+	body := []byte(`{
+		"messages":[
+			{"role":"system","content":"You are a routing benchmark."},
+			{"role":"user","content":"Find the best provider for this request."}
+		],
+		"metadata":{
+			"tenant":"bench",
+			"tags":["proxy","model-scan"],
+			"nested":{"a":[1,2,3],"b":{"c":"d","e":["x","y","z"]}}
+		},
+		"tools":[
+			{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}
+		],
+		"model":"gpt-4o",
+		"stream":true
+	}`)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		req := &http.Request{
+			Method:        http.MethodPost,
+			URL:           &url.URL{Path: "/v1/chat/completions"},
+			Header:        make(http.Header),
+			Body:          io.NopCloser(bytes.NewReader(body)),
+			ContentLength: int64(len(body)),
+		}
+		model, err := extractTopLevelModel(req)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if model != "gpt-4o" {
+			b.Fatalf("model = %q, want gpt-4o", model)
+		}
+	}
+}
+
+func BenchmarkResolveProvider_ModelInBody(b *testing.B) {
+	reg := buildTestRegistry("http://localhost")
+	body := []byte(`{
+		"messages":[
+			{"role":"user","content":"hello"},
+			{"role":"assistant","content":"world"}
+		],
+		"metadata":{"tenant":"bench","trace_id":"trace-123"},
+		"model":"gpt-4o",
+		"stream":false
+	}`)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		req := &http.Request{
+			Method:        http.MethodPost,
+			URL:           &url.URL{Path: "/v1/files"},
+			Header:        make(http.Header),
+			Body:          io.NopCloser(bytes.NewReader(body)),
+			ContentLength: int64(len(body)),
+		}
+		p, ok := resolveProvider(req, reg)
+		if !ok {
+			b.Fatal("resolveProvider() returned false")
+		}
+		if p.Name() != providerOpenAI {
+			b.Fatalf("provider = %q, want %q", p.Name(), providerOpenAI)
+		}
 	}
 }

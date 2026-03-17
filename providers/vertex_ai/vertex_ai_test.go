@@ -6,7 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	core "github.com/ferro-labs/ai-gateway/providers/core"
+	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
 func TestNewVertexAI_APIKeyMode(t *testing.T) {

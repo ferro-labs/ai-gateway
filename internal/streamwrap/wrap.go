@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ferro-labs/ai-gateway/internal/circuitbreaker"
+	"github.com/ferro-labs/ai-gateway/internal/events"
 	"github.com/ferro-labs/ai-gateway/internal/metrics"
 	"github.com/ferro-labs/ai-gateway/models"
 	"github.com/ferro-labs/ai-gateway/providers"
@@ -29,7 +30,7 @@ type MeterMeta struct {
 	Catalog models.Catalog
 	// PublishFn is the gateway's event-hook dispatcher. Called asynchronously on
 	// stream completion or error.
-	PublishFn func(ctx context.Context, subject string, data map[string]interface{})
+	PublishFn func(ctx context.Context, event events.HookEvent)
 	// TraceID is the per-request trace identifier, forwarded into events.
 	TraceID string
 }
@@ -77,32 +78,32 @@ func Meter(ctx context.Context, src <-chan providers.StreamChunk, start time.Tim
 			if errors.Is(streamErr, circuitbreaker.ErrCircuitOpen) {
 				errType = "circuit_open"
 			}
-			metrics.RequestsTotal.WithLabelValues(meta.Provider, meta.Model, "error").Inc()
-			metrics.ProviderErrors.WithLabelValues(meta.Provider, errType).Inc()
+			requestMetrics := metrics.ForRequest(meta.Provider, meta.Model)
+			requestMetrics.Error.Inc()
+			metrics.ForProviderError(meta.Provider, errType).Inc()
 			if meta.PublishFn != nil {
-				meta.PublishFn(ctx, "gateway.request.failed", map[string]interface{}{
-					"trace_id":   meta.TraceID,
-					"provider":   meta.Provider,
-					"model":      meta.Model,
-					"error":      streamErr.Error(),
-					"status":     500,
-					"latency_ms": latency.Milliseconds(),
-					"stream":     true,
-					"timestamp":  time.Now(),
-				})
+				meta.PublishFn(ctx, events.FailedRequest(
+					meta.TraceID,
+					meta.Provider,
+					meta.Model,
+					streamErr.Error(),
+					latency,
+					true,
+				))
 			}
 			return
 		}
 
 		// Success path: emit the same metrics as Gateway.Route().
-		metrics.RequestDuration.WithLabelValues(meta.Provider, meta.Model).Observe(latency.Seconds())
-		metrics.RequestsTotal.WithLabelValues(meta.Provider, meta.Model, "success").Inc()
+		requestMetrics := metrics.ForRequest(meta.Provider, meta.Model)
+		requestMetrics.Duration.Observe(latency.Seconds())
+		requestMetrics.Success.Inc()
 
 		if usage.PromptTokens > 0 {
-			metrics.TokensInput.WithLabelValues(meta.Provider, meta.Model).Add(float64(usage.PromptTokens))
+			requestMetrics.TokensIn.Add(float64(usage.PromptTokens))
 		}
 		if usage.CompletionTokens > 0 {
-			metrics.TokensOutput.WithLabelValues(meta.Provider, meta.Model).Add(float64(usage.CompletionTokens))
+			requestMetrics.TokensOut.Add(float64(usage.CompletionTokens))
 		}
 
 		// Compute and emit cost.
@@ -114,28 +115,21 @@ func Meter(ctx context.Context, src <-chan providers.StreamChunk, start time.Tim
 			CacheWriteTokens: usage.CacheWriteTokens,
 		})
 		if cost.TotalUSD > 0 {
-			metrics.RequestCostUSD.WithLabelValues(meta.Provider, meta.Model).Add(cost.TotalUSD)
+			requestMetrics.CostUSD.Add(cost.TotalUSD)
 		}
 
 		if meta.PublishFn != nil {
-			meta.PublishFn(ctx, "gateway.request.completed", map[string]interface{}{
-				"trace_id":             meta.TraceID,
-				"provider":             meta.Provider,
-				"model":                meta.Model,
-				"status":               200,
-				"latency_ms":           latency.Milliseconds(),
-				"stream":               true,
-				"tokens_in":            usage.PromptTokens,
-				"tokens_out":           usage.CompletionTokens,
-				"cost_usd":             cost.TotalUSD,
-				"cost_input_usd":       cost.InputUSD,
-				"cost_output_usd":      cost.OutputUSD,
-				"cost_cache_read_usd":  cost.CacheReadUSD,
-				"cost_cache_write_usd": cost.CacheWriteUSD,
-				"cost_reasoning_usd":   cost.ReasoningUSD,
-				"cost_model_found":     cost.ModelFound,
-				"timestamp":            time.Now(),
-			})
+			meta.PublishFn(ctx, events.CompletedRequest(
+				meta.TraceID,
+				meta.Provider,
+				meta.Model,
+				latency,
+				true,
+				usage.PromptTokens,
+				usage.CompletionTokens,
+				cost,
+				false,
+			))
 		}
 	}()
 

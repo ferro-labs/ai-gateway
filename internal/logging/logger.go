@@ -76,6 +76,11 @@ func FromContext(ctx context.Context) *slog.Logger {
 	return Logger
 }
 
+// Enabled reports whether the package logger is enabled for the given level.
+func Enabled(ctx context.Context, level slog.Level) bool {
+	return Logger.Enabled(ctx, level)
+}
+
 // Middleware injects a trace ID into every request context and echoes it in
 // the X-Request-ID response header. Uses the incoming X-Request-ID header if
 // present, otherwise generates a new one.

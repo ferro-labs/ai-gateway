@@ -33,5 +33,9 @@ func (s *Single) Execute(ctx context.Context, req providers.Request) (*providers
 	if !p.SupportsModel(req.Model) {
 		return nil, fmt.Errorf("provider %s does not support model %s", s.target.VirtualKey, req.Model)
 	}
-	return p.Complete(ctx, req)
+	resp, err := p.Complete(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return responseWithProvider(resp, s.target.VirtualKey), nil
 }

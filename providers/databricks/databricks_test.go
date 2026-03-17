@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	core "github.com/ferro-labs/ai-gateway/providers/core"
+	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
 const testBearerAPIKey = "Bearer test-key"

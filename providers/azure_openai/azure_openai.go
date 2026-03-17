@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strings"
 
+	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
@@ -48,7 +49,7 @@ func New(apiKey, baseURL, deploymentName, apiVersion string) (*Provider, error) 
 		baseURL:        baseURL,
 		deploymentName: deploymentName,
 		apiVersion:     apiVersion,
-		httpClient:     &http.Client{},
+		httpClient:     providerhttp.Shared(),
 	}, nil
 }
 

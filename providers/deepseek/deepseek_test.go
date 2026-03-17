@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	core "github.com/ferro-labs/ai-gateway/providers/core"
+	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
 func TestNewDeepSeek(t *testing.T) {
