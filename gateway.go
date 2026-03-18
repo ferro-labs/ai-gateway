@@ -67,20 +67,11 @@ type Gateway struct {
 	mcpInitDone chan struct{} // closed when background MCP init goroutine completes
 }
 
-type namedProviderMatch struct {
-	name  string
-	found bool
-}
-
 type modelLookupIndex struct {
-	exactProviders         map[string][]string
-	exactStreamProviders   map[string][]string
-	exactEmbedProviders    map[string][]string
-	exactImageProviders    map[string][]string
-	providerCache          map[string]namedProviderMatch
-	streamProviderCache    map[string]namedProviderMatch
-	embeddingProviderCache map[string]namedProviderMatch
-	imageProviderCache     map[string]namedProviderMatch
+	exactProviders       map[string][]string
+	exactStreamProviders map[string][]string
+	exactEmbedProviders  map[string][]string
+	exactImageProviders  map[string][]string
 }
 
 type hookDispatch struct {
@@ -108,14 +99,10 @@ func New(cfg Config) (*Gateway, error) {
 		discoveredModels: make(map[string][]providers.ModelInfo),
 		latencyTracker:   latency.New(0), // default window size (100 samples)
 		modelIndex: modelLookupIndex{
-			exactProviders:         make(map[string][]string),
-			exactStreamProviders:   make(map[string][]string),
-			exactEmbedProviders:    make(map[string][]string),
-			exactImageProviders:    make(map[string][]string),
-			providerCache:          make(map[string]namedProviderMatch),
-			streamProviderCache:    make(map[string]namedProviderMatch),
-			embeddingProviderCache: make(map[string]namedProviderMatch),
-			imageProviderCache:     make(map[string]namedProviderMatch),
+			exactProviders:       make(map[string][]string),
+			exactStreamProviders: make(map[string][]string),
+			exactEmbedProviders:  make(map[string][]string),
+			exactImageProviders:  make(map[string][]string),
 		},
 		hookDispatchQ: make(chan hookDispatch, hookDispatchQueueSize),
 	}
@@ -322,18 +309,19 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	// Execute the strategy (provider selection + actual call).
 	resp, err := s.Execute(ctx, req)
 	latency := time.Since(start)
-	requestMetrics := metrics.ForRequest("", req.Model)
 
 	if err != nil {
-		pctx.Error = err
-		g.plugins.RunOnError(ctx, pctx)
+		if pctx != nil {
+			pctx.Error = err
+			g.plugins.RunOnError(ctx, pctx)
+		}
 
 		provider := ""
 		errType := "provider_error"
 		if errors.Is(err, circuitbreaker.ErrCircuitOpen) {
 			errType = "circuit_open"
 		}
-		requestMetrics.Error.Inc()
+		metrics.ForRequest("", req.Model).Error.Inc()
 		metrics.ForProviderError(provider, errType).Inc()
 
 		logging.FromContext(ctx).Error("request failed",
@@ -410,7 +398,7 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	}
 
 	// Emit Prometheus metrics.
-	requestMetrics = metrics.ForRequest(resp.Provider, resp.Model)
+	requestMetrics := metrics.ForRequest(resp.Provider, resp.Model)
 	requestMetrics.Duration.Observe(latency.Seconds())
 	requestMetrics.Success.Inc()
 	requestMetrics.TokensIn.Add(float64(resp.Usage.PromptTokens))
@@ -444,7 +432,7 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 
 	if hooksEnabled {
 		g.publishEvent(ctx, completedEventData(
-			resp.ID,
+			logging.TraceIDFromContext(ctx),
 			resp.Provider,
 			resp.Model,
 			latency,
@@ -474,7 +462,7 @@ func (g *Gateway) publishEvent(ctx context.Context, event events.HookEvent) {
 	select {
 	case g.hookDispatchQ <- dispatch:
 	default:
-		go runHookDispatch(dispatch)
+		// Queue full — drop event to avoid unbounded goroutine creation.
 	}
 }
 
@@ -1048,10 +1036,6 @@ func (g *Gateway) rebuildModelIndexesLocked() {
 	g.modelIndex.exactStreamProviders = make(map[string][]string)
 	g.modelIndex.exactEmbedProviders = make(map[string][]string)
 	g.modelIndex.exactImageProviders = make(map[string][]string)
-	g.modelIndex.providerCache = make(map[string]namedProviderMatch)
-	g.modelIndex.streamProviderCache = make(map[string]namedProviderMatch)
-	g.modelIndex.embeddingProviderCache = make(map[string]namedProviderMatch)
-	g.modelIndex.imageProviderCache = make(map[string]namedProviderMatch)
 
 	for _, name := range g.providerNames {
 		p, ok := g.providers[name]
@@ -1081,48 +1065,23 @@ func (g *Gateway) rebuildModelIndexesLocked() {
 }
 
 func (g *Gateway) findProviderByModelLocked(model string) (providers.Provider, bool) {
-	if cached, ok := g.modelIndex.providerCache[model]; ok {
-		if !cached.found {
-			return nil, false
-		}
-		p, ok := g.providers[cached.name]
-		return p, ok
-	}
-
 	if exact := g.modelIndex.exactProviders[model]; len(exact) > 0 {
-		name := exact[0]
-		g.modelIndex.providerCache[model] = namedProviderMatch{name: name, found: true}
-		return g.providers[name], true
+		return g.providers[exact[0]], true
 	}
 
 	for _, name := range g.providerNames {
 		p, ok := g.providers[name]
 		if ok && p.SupportsModel(model) {
-			g.modelIndex.providerCache[model] = namedProviderMatch{name: name, found: true}
 			return p, true
 		}
 	}
 
-	g.modelIndex.providerCache[model] = namedProviderMatch{}
 	return nil, false
 }
 
 func (g *Gateway) findStreamingProviderMatchByModelLocked(model string) (string, providers.StreamProvider, bool) {
-	if cached, ok := g.modelIndex.streamProviderCache[model]; ok {
-		if !cached.found {
-			return "", nil, false
-		}
-		p, ok := g.providers[cached.name]
-		if !ok {
-			return "", nil, false
-		}
-		sp, ok := p.(providers.StreamProvider)
-		return cached.name, sp, ok
-	}
-
 	if exact := g.modelIndex.exactStreamProviders[model]; len(exact) > 0 {
 		name := exact[0]
-		g.modelIndex.streamProviderCache[model] = namedProviderMatch{name: name, found: true}
 		sp, _ := g.providers[name].(providers.StreamProvider)
 		return name, sp, true
 	}
@@ -1134,12 +1093,10 @@ func (g *Gateway) findStreamingProviderMatchByModelLocked(model string) (string,
 		}
 		sp, ok := p.(providers.StreamProvider)
 		if ok {
-			g.modelIndex.streamProviderCache[model] = namedProviderMatch{name: name, found: true}
 			return name, sp, true
 		}
 	}
 
-	g.modelIndex.streamProviderCache[model] = namedProviderMatch{}
 	return "", nil, false
 }
 
@@ -1149,22 +1106,8 @@ func (g *Gateway) findStreamingProviderByModelLocked(model string) (providers.St
 }
 
 func (g *Gateway) findEmbeddingProviderByModelLocked(model string) (providers.EmbeddingProvider, bool) {
-	if cached, ok := g.modelIndex.embeddingProviderCache[model]; ok {
-		if !cached.found {
-			return nil, false
-		}
-		p, ok := g.providers[cached.name]
-		if !ok {
-			return nil, false
-		}
-		ep, ok := p.(providers.EmbeddingProvider)
-		return ep, ok
-	}
-
 	if exact := g.modelIndex.exactEmbedProviders[model]; len(exact) > 0 {
-		name := exact[0]
-		g.modelIndex.embeddingProviderCache[model] = namedProviderMatch{name: name, found: true}
-		ep, _ := g.providers[name].(providers.EmbeddingProvider)
+		ep, _ := g.providers[exact[0]].(providers.EmbeddingProvider)
 		return ep, true
 	}
 
@@ -1175,32 +1118,16 @@ func (g *Gateway) findEmbeddingProviderByModelLocked(model string) (providers.Em
 		}
 		ep, ok := p.(providers.EmbeddingProvider)
 		if ok {
-			g.modelIndex.embeddingProviderCache[model] = namedProviderMatch{name: name, found: true}
 			return ep, true
 		}
 	}
 
-	g.modelIndex.embeddingProviderCache[model] = namedProviderMatch{}
 	return nil, false
 }
 
 func (g *Gateway) findImageProviderByModelLocked(model string) (providers.ImageProvider, bool) {
-	if cached, ok := g.modelIndex.imageProviderCache[model]; ok {
-		if !cached.found {
-			return nil, false
-		}
-		p, ok := g.providers[cached.name]
-		if !ok {
-			return nil, false
-		}
-		ip, ok := p.(providers.ImageProvider)
-		return ip, ok
-	}
-
 	if exact := g.modelIndex.exactImageProviders[model]; len(exact) > 0 {
-		name := exact[0]
-		g.modelIndex.imageProviderCache[model] = namedProviderMatch{name: name, found: true}
-		ip, _ := g.providers[name].(providers.ImageProvider)
+		ip, _ := g.providers[exact[0]].(providers.ImageProvider)
 		return ip, true
 	}
 
@@ -1211,12 +1138,10 @@ func (g *Gateway) findImageProviderByModelLocked(model string) (providers.ImageP
 		}
 		ip, ok := p.(providers.ImageProvider)
 		if ok {
-			g.modelIndex.imageProviderCache[model] = namedProviderMatch{name: name, found: true}
 			return ip, true
 		}
 	}
 
-	g.modelIndex.imageProviderCache[model] = namedProviderMatch{}
 	return nil, false
 }
 
@@ -1382,6 +1307,7 @@ func (g *Gateway) FindStreamingByModel(model string) (providers.StreamProvider, 
 
 // Close cleans up resources.
 func (g *Gateway) Close() error {
+	close(g.hookDispatchQ)
 	return nil
 }
 

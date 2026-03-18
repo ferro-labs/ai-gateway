@@ -75,7 +75,7 @@ func (e HookEvent) Map() map[string]interface{} {
 		}
 	}
 
-	size := 13
+	size := 16
 	if e.IncludeExtendedCostKeys {
 		size += 3
 	}

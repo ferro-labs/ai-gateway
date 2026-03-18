@@ -187,7 +187,8 @@ func TestOpenAIProvider_Complete_MockHTTP(t *testing.T) {
 	}
 
 	req := core.Request{
-		Model: "gpt-4o-mini",
+		Model:  "gpt-4o-mini",
+		Stream: true,
 		Messages: []core.Message{
 			{Role: "user", Content: "hi"},
 		},
@@ -207,6 +208,9 @@ func TestOpenAIProvider_Complete_MockHTTP(t *testing.T) {
 	}
 	if gotReq.Model != req.Model {
 		t.Fatalf("request model = %q, want %q", gotReq.Model, req.Model)
+	}
+	if gotReq.Stream {
+		t.Fatal("request stream = true, want false")
 	}
 	if resp.Provider != "openai" {
 		t.Fatalf("provider = %q, want openai", resp.Provider)

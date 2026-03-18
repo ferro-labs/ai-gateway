@@ -224,6 +224,8 @@ func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*c
 
 // Complete sends a chat completion request to OpenAI.
 func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
+	req.Stream = false
+
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
@@ -242,12 +244,12 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 	}
 	defer func() { _ = httpResp.Body.Close() }()
 
-	respBody, err := io.ReadAll(httpResp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
-
 	if httpResp.StatusCode != http.StatusOK {
+		respBody, err := io.ReadAll(httpResp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read response: %w", err)
+		}
+
 		var errResp openAIErrorResponse
 		if json.Unmarshal(respBody, &errResp) == nil && errResp.Error.Message != "" {
 			return nil, fmt.Errorf("openai API error (%d): %s", httpResp.StatusCode, errResp.Error.Message)
@@ -256,8 +258,8 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 	}
 
 	var completion openAIChatCompletionResponse
-	if err := json.Unmarshal(respBody, &completion); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	if err := json.NewDecoder(httpResp.Body).Decode(&completion); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
 	return &core.Response{
