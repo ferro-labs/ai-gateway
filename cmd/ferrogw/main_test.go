@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -105,6 +107,49 @@ func TestModels(t *testing.T) {
 	}
 }
 
+func TestPprofDisabledByDefault(t *testing.T) {
+	ks := testKeyStore()
+	r := newRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest("GET", "/debug/pprof/", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", w.Code)
+	}
+}
+
+func TestPprofEnabled(t *testing.T) {
+	t.Setenv("ENABLE_PPROF", "true")
+	ks := testKeyStore()
+	r := newRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest("GET", "/debug/pprof/", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body = %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "profile") {
+		t.Fatalf("expected pprof index response, got: %s", w.Body.String())
+	}
+}
+
+func TestDebugVarsEnabled(t *testing.T) {
+	ks := testKeyStore()
+	r := newRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest("GET", "/debug/vars", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "\"memstats\"") {
+		t.Fatalf("expected expvar memstats output, got: %s", w.Body.String())
+	}
+}
+
 func TestDashboardUIPage(t *testing.T) {
 	ks := testKeyStore()
 	r := newRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil)
@@ -149,6 +194,48 @@ func TestChatCompletions(t *testing.T) {
 	_ = json.NewDecoder(w.Body).Decode(&resp)
 	if resp.ID != "fake-id" {
 		t.Errorf("got ID %q", resp.ID)
+	}
+}
+
+func TestDecodeChatCompletionRequest_MultipartContent(t *testing.T) {
+	req, err := decodeChatCompletionRequest(strings.NewReader(`{
+		"model":"test-model",
+		"messages":[
+			{
+				"role":"user",
+				"content":[
+					{"type":"text","text":"hello "},
+					{"type":"image_url","image_url":{"url":"https://example.com/image.png"}},
+					{"type":"text","text":"world"}
+				]
+			}
+		]
+	}`))
+	if err != nil {
+		t.Fatalf("decodeChatCompletionRequest: %v", err)
+	}
+	if got := len(req.Messages); got != 1 {
+		t.Fatalf("messages = %d, want 1", got)
+	}
+	if req.Messages[0].Content != "hello world" {
+		t.Fatalf("content = %q, want %q", req.Messages[0].Content, "hello world")
+	}
+	if got := len(req.Messages[0].ContentParts); got != 3 {
+		t.Fatalf("content parts = %d, want 3", got)
+	}
+}
+
+func TestDecodeChatCompletionRequest_ToolChoiceString(t *testing.T) {
+	req, err := decodeChatCompletionRequest(strings.NewReader(`{
+		"model":"test-model",
+		"messages":[{"role":"user","content":"hi"}],
+		"tool_choice":"auto"
+	}`))
+	if err != nil {
+		t.Fatalf("decodeChatCompletionRequest: %v", err)
+	}
+	if req.ToolChoice != "auto" {
+		t.Fatalf("tool_choice = %#v, want %q", req.ToolChoice, "auto")
 	}
 }
 
@@ -238,6 +325,23 @@ func TestChatCompletions_Stream(t *testing.T) {
 	}
 }
 
+func TestWriteSSE_StreamError(t *testing.T) {
+	ch := make(chan providers.StreamChunk, 1)
+	ch <- providers.StreamChunk{Error: errors.New("boom")}
+	close(ch)
+
+	w := httptest.NewRecorder()
+	writeSSE(context.Background(), w, ch)
+
+	body := w.Body.String()
+	if !strings.Contains(body, `"type":"stream_error"`) {
+		t.Fatalf("expected stream_error payload, got: %s", body)
+	}
+	if strings.Contains(body, "data: [DONE]") {
+		t.Fatalf("did not expect [DONE] after stream error, got: %s", body)
+	}
+}
+
 func TestChatCompletions_StreamUnsupported(t *testing.T) {
 	ks := testKeyStore()
 	r := newRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil)
@@ -265,6 +369,109 @@ func TestCreateKeyStoreFromEnv_DefaultMemory(t *testing.T) {
 	}
 	if _, ok := store.(*admin.KeyStore); !ok {
 		t.Fatalf("expected memory KeyStore type")
+	}
+}
+
+func BenchmarkWriteSSE(b *testing.B) {
+	chunk := providers.StreamChunk{
+		ID:    "stream-1",
+		Model: "test-stream-model",
+		Choices: []providers.StreamChoice{{
+			Index: 0,
+			Delta: providers.MessageDelta{Role: "assistant", Content: "hello"},
+		}},
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ch := make(chan providers.StreamChunk, 1)
+		ch <- chunk
+		close(ch)
+
+		w := httptest.NewRecorder()
+		writeSSE(context.Background(), w, ch)
+	}
+}
+
+func BenchmarkDecodeChatCompletionRequest(b *testing.B) {
+	payload := []byte(`{
+		"model":"test-model",
+		"messages":[
+			{"role":"system","content":"You are a helpful assistant."},
+			{"role":"user","content":"Summarize the latest deploy and highlight errors."},
+			{"role":"user","content":[
+				{"type":"text","text":"Also mention latency regressions."}
+			]}
+		],
+		"temperature":0.2,
+		"max_tokens":512,
+		"stream":false,
+		"tools":[
+			{
+				"type":"function",
+				"function":{
+					"name":"get_release_status",
+					"description":"Fetch release status",
+					"parameters":{
+						"type":"object",
+						"properties":{"environment":{"type":"string"}},
+						"required":["environment"]
+					}
+				}
+			}
+		],
+		"metadata":{"tenant":"bench","request_id":"req-123"}
+	}`)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := decodeChatCompletionRequest(bytes.NewReader(payload)); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkEncodeChatCompletionResponse(b *testing.B) {
+	resp := providers.Response{
+		ID:       "chatcmpl-bench",
+		Object:   "chat.completion",
+		Created:  1710000000,
+		Model:    "test-model",
+		Provider: "test",
+		Choices: []providers.Choice{{
+			Index: 0,
+			Message: providers.Message{
+				Role:    "assistant",
+				Content: "Deployment completed successfully. One provider showed elevated p95 latency, but error rate remained stable.",
+			},
+			FinishReason: "stop",
+		}},
+		Usage: providers.Usage{
+			PromptTokens:     128,
+			CompletionTokens: 32,
+			TotalTokens:      160,
+		},
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		buf := bytes.NewBuffer(make([]byte, 0, 512))
+		if err := json.NewEncoder(buf).Encode(resp); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkWriteOpenAIError(b *testing.B) {
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		w := httptest.NewRecorder()
+		writeOpenAIError(w, http.StatusBadRequest, "invalid request", "invalid_request_error", "invalid_request")
+		_, _ = io.Copy(io.Discard, w.Result().Body)
 	}
 }
 
@@ -400,6 +607,41 @@ func TestCreateConfigManagerFromEnv_PostgresMissingDSN(t *testing.T) {
 	}
 }
 
+func TestNewHTTPServer_SetsHardeningTimeouts(t *testing.T) {
+	srv := newHTTPServer(":8080", http.NewServeMux())
+	if srv.ReadTimeout != serverReadTimeout {
+		t.Fatalf("ReadTimeout = %v, want %v", srv.ReadTimeout, serverReadTimeout)
+	}
+	if srv.ReadHeaderTimeout != serverReadHeaderTimeout {
+		t.Fatalf("ReadHeaderTimeout = %v, want %v", srv.ReadHeaderTimeout, serverReadHeaderTimeout)
+	}
+	if srv.WriteTimeout != serverWriteTimeout {
+		t.Fatalf("WriteTimeout = %v, want %v", srv.WriteTimeout, serverWriteTimeout)
+	}
+	if srv.IdleTimeout != serverIdleTimeout {
+		t.Fatalf("IdleTimeout = %v, want %v", srv.IdleTimeout, serverIdleTimeout)
+	}
+	if srv.MaxHeaderBytes != serverMaxHeaderBytes {
+		t.Fatalf("MaxHeaderBytes = %d, want %d", srv.MaxHeaderBytes, serverMaxHeaderBytes)
+	}
+}
+
+func TestCloseResources_AggregatesCloserErrors(t *testing.T) {
+	err := closeResources(
+		namedResource{name: "first", value: testCloser{err: errors.New("boom one")}},
+		namedResource{name: "second", value: testCloser{err: errors.New("boom two")}},
+	)
+	if err == nil {
+		t.Fatal("expected aggregated close error")
+	}
+	if !strings.Contains(err.Error(), "close first: boom one") {
+		t.Fatalf("missing first close error: %v", err)
+	}
+	if !strings.Contains(err.Error(), "close second: boom two") {
+		t.Fatalf("missing second close error: %v", err)
+	}
+}
+
 func TestRouteErrorDetails_BeforeRequestRejection(t *testing.T) {
 	status, errType, code := routeErrorDetails(&plugin.RejectionError{Stage: plugin.StageBeforeRequest, Reason: "blocked"})
 	if status != http.StatusBadRequest {
@@ -477,4 +719,12 @@ func newTestGateway(t *testing.T, cfg aigateway.Config) *aigateway.Gateway {
 		t.Fatalf("new gateway: %v", err)
 	}
 	return gw
+}
+
+type testCloser struct {
+	err error
+}
+
+func (c testCloser) Close() error {
+	return c.err
 }

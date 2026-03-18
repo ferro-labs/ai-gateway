@@ -10,13 +10,16 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/ferro-labs/ai-gateway/internal/circuitbreaker"
+	"github.com/ferro-labs/ai-gateway/internal/events"
 	"github.com/ferro-labs/ai-gateway/internal/logging"
 	"github.com/ferro-labs/ai-gateway/internal/metrics"
 	"github.com/ferro-labs/ai-gateway/mcp"
+	"github.com/ferro-labs/ai-gateway/models"
 	"github.com/ferro-labs/ai-gateway/plugin"
 	"github.com/ferro-labs/ai-gateway/providers"
 	"github.com/prometheus/client_golang/prometheus"
@@ -228,6 +231,19 @@ func TestGateway_RouteStream_BeforePluginCanSetNilRequest(t *testing.T) {
 	}
 }
 
+func TestGatewayClose_IsIdempotent(t *testing.T) {
+	gw, err := New(Config{})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatalf("first Close: %v", err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+}
+
 func TestGateway_Route_ProviderNotFound(t *testing.T) {
 	gw, _ := New(Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
@@ -272,6 +288,98 @@ func TestGateway_Route_HookPanicIsRecovered(t *testing.T) {
 	case <-hookCalled:
 	case <-time.After(time.Second):
 		t.Fatal("hook was not called")
+	}
+}
+
+func TestGateway_PublishEvent_CallsAllHooks(t *testing.T) {
+	gw, _ := New(Config{})
+
+	called := make(chan string, 2)
+	gw.AddHook(func(context.Context, string, map[string]interface{}) {
+		called <- "first"
+	})
+	gw.AddHook(func(context.Context, string, map[string]interface{}) {
+		called <- "second"
+	})
+
+	gw.publishEvent(context.Background(), events.CompletedRequest(
+		"trace-123",
+		"mock",
+		"gpt-4o",
+		time.Millisecond,
+		false,
+		1,
+		1,
+		models.CostResult{},
+		true,
+	))
+
+	got := map[string]bool{}
+	timeout := time.After(time.Second)
+	for len(got) < 2 {
+		select {
+		case name := <-called:
+			got[name] = true
+		case <-timeout:
+			t.Fatalf("timed out waiting for hooks, got %v", got)
+		}
+	}
+}
+
+func TestGateway_PublishEvent_EnqueuesEachHookIndependently(t *testing.T) {
+	gw := &Gateway{
+		hookDispatchQ: make(chan hookDispatch, 2),
+	}
+
+	gw.hookSnapshot.Store([]EventHookFunc{
+		func(context.Context, string, map[string]interface{}) {},
+		func(context.Context, string, map[string]interface{}) {},
+	})
+
+	gw.publishEvent(context.Background(), events.CompletedRequest(
+		"trace-123",
+		"mock",
+		"gpt-4o",
+		time.Millisecond,
+		false,
+		1,
+		1,
+		models.CostResult{},
+		true,
+	))
+
+	if got := len(gw.hookDispatchQ); got != 2 {
+		t.Fatalf("queued hook dispatches = %d, want 2", got)
+	}
+}
+
+func TestGateway_PublishEvent_IncrementsDropMetricWhenQueueFull(t *testing.T) {
+	counter := metrics.HookEventsDroppedTotal.WithLabelValues(SubjectRequestCompleted)
+	before := counterValue(t, counter)
+
+	gw := &Gateway{
+		hookDispatchQ: make(chan hookDispatch, 1),
+	}
+	gw.hookSnapshot.Store([]EventHookFunc{
+		func(context.Context, string, map[string]interface{}) {},
+		func(context.Context, string, map[string]interface{}) {},
+	})
+
+	gw.publishEvent(context.Background(), events.CompletedRequest(
+		"trace-123",
+		"mock",
+		"gpt-4o",
+		time.Millisecond,
+		false,
+		1,
+		1,
+		models.CostResult{},
+		true,
+	))
+
+	after := counterValue(t, counter)
+	if delta := after - before; delta != 1 {
+		t.Fatalf("dropped hook metric delta = %v, want 1", delta)
 	}
 }
 
@@ -1000,5 +1108,125 @@ func BenchmarkRoute_WithPlugins(b *testing.B) {
 		if _, err := gw.Route(ctx, req); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+func BenchmarkRoute_WithHook(b *testing.B) {
+	silenceLogs(b)
+	gw, err := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: "bench-hook"}},
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
+	gw.RegisterProvider(&mockProvider{
+		name:   "bench-hook",
+		models: []string{"gpt-4o"},
+		resp: &providers.Response{
+			Choices: []providers.Choice{{Message: providers.Message{Role: "assistant", Content: "ok"}}},
+		},
+	})
+
+	var calls atomic.Int64
+	gw.AddHook(func(context.Context, string, map[string]interface{}) {
+		calls.Add(1)
+	})
+
+	req := providers.Request{
+		Model:    "gpt-4o",
+		Messages: []providers.Message{{Role: "user", Content: "hello"}},
+	}
+	ctx := context.Background()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := gw.Route(ctx, req); err != nil {
+			b.Fatal(err)
+		}
+	}
+	b.StopTimer()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for calls.Load() < int64(b.N) {
+		if time.Now().After(deadline) {
+			b.Fatalf("timed out waiting for hook dispatch: completed=%d want=%d", calls.Load(), b.N)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// BenchmarkFindByModel measures repeated model lookup after the gateway has
+// built its lookup indexes and per-model cache.
+func BenchmarkFindByModel(b *testing.B) {
+	silenceLogs(b)
+	gw, err := New(Config{})
+	if err != nil {
+		b.Fatal(err)
+	}
+	gw.RegisterProvider(&mockProvider{
+		name:   "bench-find",
+		models: []string{"gpt-4o"},
+		resp: &providers.Response{
+			Choices: []providers.Choice{{Message: providers.Message{Role: "assistant", Content: "ok"}}},
+		},
+	})
+
+	if _, ok := gw.FindByModel("gpt-4o"); !ok {
+		b.Fatal("expected model lookup to succeed")
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, ok := gw.FindByModel("gpt-4o"); !ok {
+			b.Fatal("expected model lookup to succeed")
+		}
+	}
+}
+
+func BenchmarkPublishEvent(b *testing.B) {
+	silenceLogs(b)
+	gw, err := New(Config{})
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	var calls atomic.Int64
+	var wg sync.WaitGroup
+	wg.Add(b.N)
+	gw.AddHook(func(context.Context, string, map[string]interface{}) {
+		calls.Add(1)
+		wg.Done()
+	})
+
+	event := events.CompletedRequest(
+		"trace-bench",
+		"bench",
+		"gpt-4o",
+		time.Millisecond,
+		false,
+		1,
+		1,
+		models.CostResult{},
+		true,
+	)
+	ctx := context.Background()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		gw.publishEvent(ctx, event)
+	}
+	b.StopTimer()
+
+	waitDone := make(chan struct{})
+	go func() {
+		defer close(waitDone)
+		wg.Wait()
+	}()
+
+	select {
+	case <-waitDone:
+	case <-time.After(5 * time.Second):
+		b.Fatalf("timed out waiting for hook dispatch: completed=%d want=%d", calls.Load(), b.N)
 	}
 }

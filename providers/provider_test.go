@@ -165,6 +165,59 @@ func TestMessage(t *testing.T) {
 	}
 }
 
+func TestMessage_UnmarshalJSONStringContent(t *testing.T) {
+	var msg Message
+	err := json.Unmarshal([]byte(`{"role":"user","content":"hello","name":"alice"}`), &msg)
+	if err != nil {
+		t.Fatalf("unmarshal message: %v", err)
+	}
+	if msg.Role != "user" {
+		t.Fatalf("role = %q, want user", msg.Role)
+	}
+	if msg.Content != "hello" {
+		t.Fatalf("content = %q, want hello", msg.Content)
+	}
+	if msg.Name != "alice" {
+		t.Fatalf("name = %q, want alice", msg.Name)
+	}
+}
+
+func TestMessage_UnmarshalMultipartContent(t *testing.T) {
+	var msg Message
+	err := json.Unmarshal([]byte(`{
+		"role":"user",
+		"content":[
+			{"type":"text","text":"hello "},
+			{"type":"image_url","image_url":{"url":"https://example.com/image.png"}},
+			{"type":"text","text":"world"}
+		]
+	}`), &msg)
+	if err != nil {
+		t.Fatalf("unmarshal message: %v", err)
+	}
+	if got := len(msg.ContentParts); got != 3 {
+		t.Fatalf("content parts = %d, want 3", got)
+	}
+	if msg.Content != "hello world" {
+		t.Fatalf("content = %q, want %q", msg.Content, "hello world")
+	}
+}
+
+func TestMessage_UnmarshalIgnoresUnknownFields(t *testing.T) {
+	var msg Message
+	err := json.Unmarshal([]byte(`{
+		"role":"assistant",
+		"content":"ok",
+		"metadata":{"trace_id":"abc","nested":{"a":[1,2,3]}}
+	}`), &msg)
+	if err != nil {
+		t.Fatalf("unmarshal message: %v", err)
+	}
+	if msg.Role != "assistant" || msg.Content != "ok" {
+		t.Fatalf("unexpected message: %+v", msg)
+	}
+}
+
 func TestUsage(t *testing.T) {
 	usage := Usage{
 		PromptTokens:     100,
@@ -299,6 +352,24 @@ func TestParseStatusCode(t *testing.T) {
 				t.Errorf("ParseStatusCode(%v) = %d, want %d", tt.err, got, tt.want)
 			}
 		})
+	}
+}
+
+func BenchmarkMessageUnmarshalStringContent(b *testing.B) {
+	payload := []byte(`{
+		"role":"user",
+		"content":"Summarize the latest deployment status.",
+		"name":"alice",
+		"metadata":{"tenant":"bench","request_id":"req-123"}
+	}`)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		var msg Message
+		if err := json.Unmarshal(payload, &msg); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
 

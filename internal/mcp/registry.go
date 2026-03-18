@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"runtime/trace"
 	"sync"
 	"time"
 )
@@ -83,6 +84,9 @@ func (r *Registry) RegisterConfig(cfg ServerConfig) {
 // multiple goroutines call InitializeAll simultaneously. Errors are reported
 // via logErr (never returned) so the caller can log them without blocking.
 func (r *Registry) InitializeAll(ctx context.Context, logErr func(name string, err error)) {
+	ctx, task := trace.NewTask(ctx, "mcp.initialize_all")
+	defer task.End()
+
 	r.mu.RLock()
 	names := make([]string, len(r.regOrder))
 	copy(names, r.regOrder)
@@ -132,7 +136,10 @@ func (r *Registry) initServer(ctx context.Context, name string) error {
 		return fmt.Errorf("mcp: server %q not registered", name)
 	}
 
-	_, err := entry.client.Initialize(ctx)
+	var err error
+	trace.WithRegion(ctx, "mcp.init_server.initialize", func() {
+		_, err = entry.client.Initialize(ctx)
+	})
 	if err != nil {
 		r.mu.Lock()
 		entry.initErr = err
@@ -141,7 +148,10 @@ func (r *Registry) initServer(ctx context.Context, name string) error {
 		return fmt.Errorf("mcp init %s: %w", name, err)
 	}
 
-	tools, err := entry.client.ListTools(ctx)
+	var tools []Tool
+	trace.WithRegion(ctx, "mcp.init_server.list_tools", func() {
+		tools, err = entry.client.ListTools(ctx)
+	})
 	if err != nil {
 		r.mu.Lock()
 		entry.initErr = err

@@ -9,6 +9,7 @@ Thank you for your interest in contributing! This document covers everything you
 - [Making Changes](#making-changes)
 - [Testing](#testing)
 - [Submitting a Pull Request](#submitting-a-pull-request)
+- [Architecture Rules](#architecture-rules)
 - [Adding a New Provider](#adding-a-new-provider)
 - [Writing a Plugin](#writing-a-plugin)
 - [Code Style](#code-style)
@@ -46,7 +47,7 @@ providers/
   facade_aliases.go # Type aliases for backwards compatibility
 plugin/             # Public: Plugin interface, Stage constants, Context
 cmd/
-  ferrogw/          # Server binary (main.go, cors.go, proxy.go, completions.go)
+  ferrogw/          # Server binary (bootstrap, router, proxy, SSE, request decoding)
   ferrogw-cli/      # CLI helper
 internal/
   admin/            # HTTP admin API (key management, dashboard, usage, logs, config history)
@@ -114,6 +115,48 @@ Provider integration tests require real API keys and are gated behind the `-shor
 - Update `CHANGELOG.md` under `[Unreleased]`.
 - All CI checks must be green before a PR will be reviewed.
 - PRs that drop test coverage will not be merged.
+
+---
+
+## Architecture Rules
+
+These rules keep the gateway mature, dependency-light, and readable without
+turning the codebase into abstraction theater.
+
+### Core design rules
+
+- Prefer the Go standard library first.
+- Keep core routing, plugin, and strategy logic independent of HTTP router, SQL driver, and provider SDK types.
+- Add interfaces only when there is a real consumer-side boundary, not just to make mocking easier.
+- Split files by responsibility pressure, not by line count alone.
+- Prefer explicit lifecycle, transport, and context handling over framework-style indirection.
+
+### Dependency policy
+
+Every new non-stdlib dependency should answer:
+
+- Why the standard library is not enough here.
+- Which package owns the dependency.
+- Whether it belongs at the core, adapter, operational, or provider edge.
+- What would trigger a future review or removal.
+
+Use this dependency posture when contributing:
+
+| Class | Meaning | Current examples |
+|---|---|---|
+| `adapter-only` | Edge dependency used for transport, CLI, config, or storage glue | `chi`, `cobra`, `yaml.v3`, `lib/pq`, `modernc.org/sqlite` |
+| `operational` | Observability or runtime operations dependency | `prometheus/client_golang` |
+| `provider protocol dependency` | Dependency justified by a provider-specific auth or protocol surface | AWS SDK v2, `golang.org/x/oauth2`, `openai-go` |
+| `review-later` | Allowed for now, but should be periodically re-evaluated against direct stdlib HTTP | `prometheus/client_model` in tests |
+
+Rules of thumb:
+
+- Do not add DI frameworks, ORM frameworks, or generic middleware frameworks.
+- Do not hide `context`, `http.Client`, `http.Transport`, `errors.Join`, or `slog` behind custom framework layers.
+- Keep provider SDK usage isolated to provider packages.
+- Keep SQL drivers isolated to storage packages.
+- Keep entrypoint and transport packages split by responsibility when pressure appears, not preemptively.
+- If a dependency only helps in tests, keep it out of production code paths.
 
 ---
 

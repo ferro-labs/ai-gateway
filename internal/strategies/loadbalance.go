@@ -49,7 +49,11 @@ func (lb *LoadBalance) Execute(ctx context.Context, req providers.Request) (*pro
 	}
 
 	p, _ := lb.lookup(target.VirtualKey)
-	return p.Complete(ctx, req)
+	resp, err := p.Complete(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return responseWithProvider(resp, target.VirtualKey), nil
 }
 
 // selectFromTargets picks a target from the given slice using weighted random selection.

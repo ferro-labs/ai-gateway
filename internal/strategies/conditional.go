@@ -41,7 +41,11 @@ func (c *Conditional) Execute(ctx context.Context, req providers.Request) (*prov
 	if !ok {
 		return nil, fmt.Errorf("provider not found: %s", target.VirtualKey)
 	}
-	return p.Complete(ctx, req)
+	resp, err := p.Complete(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return responseWithProvider(resp, target.VirtualKey), nil
 }
 
 func (c *Conditional) matchTarget(req providers.Request) Target {

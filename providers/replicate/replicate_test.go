@@ -3,7 +3,7 @@ package replicate
 import (
 	"context"
 	"encoding/json"
-	core "github.com/ferro-labs/ai-gateway/providers/core"
+	"github.com/ferro-labs/ai-gateway/providers/core"
 	"net/http"
 	"net/http/httptest"
 	"strings"

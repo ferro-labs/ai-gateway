@@ -23,3 +23,11 @@ type Strategy interface {
 
 // ProviderLookup resolves a provider name to a Provider instance.
 type ProviderLookup func(name string) (providers.Provider, bool)
+
+func responseWithProvider(resp *providers.Response, provider string) *providers.Response {
+	if resp == nil || resp.Provider != "" {
+		return resp
+	}
+	resp.Provider = provider
+	return resp
+}

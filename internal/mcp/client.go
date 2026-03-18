@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ferro-labs/ai-gateway/internal/httpclient"
 	"github.com/ferro-labs/ai-gateway/internal/version"
 )
 
@@ -38,11 +39,9 @@ func NewClient(endpoint string, headers map[string]string, timeout time.Duration
 		timeout = 30 * time.Second
 	}
 	return &Client{
-		endpoint: endpoint,
-		headers:  headers,
-		httpClient: &http.Client{
-			Timeout: timeout,
-		},
+		endpoint:   endpoint,
+		headers:    headers,
+		httpClient: httpclient.New(timeout),
 	}
 }
 

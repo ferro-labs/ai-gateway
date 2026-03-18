@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"runtime/trace"
 	"time"
 
 	"github.com/ferro-labs/ai-gateway/providers/core"
@@ -100,6 +101,9 @@ func (e *Executor) ShouldContinueLoop(resp *core.Response, depth int) bool {
 // returning the new messages (one assistant message + one tool message per
 // call) to append to the conversation before the next LLM turn.
 func (e *Executor) ResolvePendingToolCalls(ctx context.Context, resp *core.Response) ([]core.Message, error) {
+	ctx, task := trace.NewTask(ctx, "mcp.resolve_tool_calls")
+	defer task.End()
+
 	if resp == nil || len(resp.Choices) == 0 {
 		return nil, nil
 	}
@@ -145,7 +149,11 @@ func (e *Executor) ResolvePendingToolCalls(ctx context.Context, resp *core.Respo
 			}
 
 			callStart := time.Now()
-			result, err := client.CallTool(ctx, toolName, args)
+			var result *ToolCallResult
+			var err error
+			trace.WithRegion(ctx, "mcp.call_tool", func() {
+				result, err = client.CallTool(ctx, toolName, args)
+			})
 			elapsed := time.Since(callStart)
 			metricToolCallDuration.WithLabelValues(serverName, toolName).Observe(elapsed.Seconds())
 			latencyMs := int(elapsed.Milliseconds())

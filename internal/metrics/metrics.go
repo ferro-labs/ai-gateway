@@ -4,6 +4,8 @@
 package metrics
 
 import (
+	"sync"
+
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
@@ -88,4 +90,93 @@ var (
 		},
 		[]string{"provider", "model"},
 	)
+
+	ServerConnectionsCurrent = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "gateway_server_connections_current",
+			Help: "Current inbound HTTP connections by state.",
+		},
+		[]string{"state"},
+	)
+
+	ServerConnectionTransitionsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "gateway_server_connection_transitions_total",
+			Help: "Total inbound HTTP connection state transitions.",
+		},
+		[]string{"state"},
+	)
+
+	HookEventsDroppedTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "gateway_hook_events_dropped_total",
+			Help: "Total hook dispatches dropped because the hook worker queue was full.",
+		},
+		[]string{"subject"},
+	)
 )
+
+// RequestMetricHandles stores cached Prometheus handles for a provider/model
+// pair so hot-path metric updates avoid repeated vector lookups.
+type RequestMetricHandles struct {
+	Success   prometheus.Counter
+	Error     prometheus.Counter
+	Rejected  prometheus.Counter
+	Duration  prometheus.Observer
+	TokensIn  prometheus.Counter
+	TokensOut prometheus.Counter
+	CostUSD   prometheus.Counter
+}
+
+var (
+	requestMetricCache sync.Map
+	providerErrorCache sync.Map
+)
+
+// ForRequest returns cached metric handles for a provider/model pair.
+func ForRequest(provider, model string) *RequestMetricHandles {
+	key := provider + "\x00" + model
+	if cached, ok := requestMetricCache.Load(key); ok {
+		return cached.(*RequestMetricHandles)
+	}
+
+	handles := &RequestMetricHandles{
+		Success:   mustGetCounter(RequestsTotal, provider, model, "success"),
+		Error:     mustGetCounter(RequestsTotal, provider, model, "error"),
+		Rejected:  mustGetCounter(RequestsTotal, provider, model, "rejected"),
+		Duration:  mustGetObserver(RequestDuration, provider, model),
+		TokensIn:  mustGetCounter(TokensInput, provider, model),
+		TokensOut: mustGetCounter(TokensOutput, provider, model),
+		CostUSD:   mustGetCounter(RequestCostUSD, provider, model),
+	}
+	actual, _ := requestMetricCache.LoadOrStore(key, handles)
+	return actual.(*RequestMetricHandles)
+}
+
+// ForProviderError returns a cached metric handle for a provider/error-type pair.
+func ForProviderError(provider, errType string) prometheus.Counter {
+	key := provider + "\x00" + errType
+	if cached, ok := providerErrorCache.Load(key); ok {
+		return cached.(prometheus.Counter)
+	}
+
+	counter := mustGetCounter(ProviderErrors, provider, errType)
+	actual, _ := providerErrorCache.LoadOrStore(key, counter)
+	return actual.(prometheus.Counter)
+}
+
+func mustGetCounter(vec *prometheus.CounterVec, labels ...string) prometheus.Counter {
+	counter, err := vec.GetMetricWithLabelValues(labels...)
+	if err != nil {
+		panic(err)
+	}
+	return counter
+}
+
+func mustGetObserver(vec *prometheus.HistogramVec, labels ...string) prometheus.Observer {
+	observer, err := vec.GetMetricWithLabelValues(labels...)
+	if err != nil {
+		panic(err)
+	}
+	return observer
+}

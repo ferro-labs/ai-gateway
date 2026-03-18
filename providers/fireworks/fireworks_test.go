@@ -2,7 +2,7 @@ package fireworks
 
 import (
 	"context"
-	core "github.com/ferro-labs/ai-gateway/providers/core"
+	"github.com/ferro-labs/ai-gateway/providers/core"
 	"net/http"
 	"net/http/httptest"
 	"testing"

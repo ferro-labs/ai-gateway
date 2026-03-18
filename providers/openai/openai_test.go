@@ -3,13 +3,14 @@ package openai
 import (
 	"context"
 	"encoding/json"
-	core "github.com/ferro-labs/ai-gateway/providers/core"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
 	"time"
+
+	core "github.com/ferro-labs/ai-gateway/providers/core"
 )
 
 // TestNewOpenAI tests the OpenAI provider constructor.
@@ -21,7 +22,7 @@ func TestNewOpenAI(t *testing.T) {
 	if provider == nil {
 		t.Fatal("New() returned nil provider")
 	}
-	if provider.Name() != "openai" {
+	if provider.Name() != Name {
 		t.Errorf("New() provider name = %v, want openai", provider.Name())
 	}
 }
@@ -133,6 +134,120 @@ func TestOpenAIProvider_Complete_Integration(t *testing.T) {
 	}
 
 	t.Logf("Response: %+v", resp)
+}
+
+func TestOpenAIProvider_Complete_MockHTTP(t *testing.T) {
+	var gotPath string
+	var gotAuth string
+	var gotReq core.Request
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		if err := json.NewDecoder(r.Body).Decode(&gotReq); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"chatcmpl-1",
+			"object":"chat.completion",
+			"created":1234567890,
+			"model":"gpt-4o-mini",
+			"choices":[
+				{
+					"index":0,
+					"message":{
+						"role":"assistant",
+						"content":"hello",
+						"tool_calls":[
+							{
+								"id":"call-1",
+								"type":"function",
+								"function":{"name":"lookup","arguments":"{\"q\":\"x\"}"}
+							}
+						]
+					},
+					"finish_reason":"stop"
+				}
+			],
+			"usage":{
+				"prompt_tokens":12,
+				"completion_tokens":7,
+				"total_tokens":19,
+				"prompt_tokens_details":{"cached_tokens":3},
+				"completion_tokens_details":{"reasoning_tokens":2}
+			}
+		}`))
+	}))
+	defer srv.Close()
+
+	provider, err := New("sk-test-key", srv.URL)
+	if err != nil {
+		t.Fatalf("New() returned error: %v", err)
+	}
+
+	req := core.Request{
+		Model:  "gpt-4o-mini",
+		Stream: true,
+		Messages: []core.Message{
+			{Role: "user", Content: "hi"},
+		},
+		MaxTokens: intPtr(16),
+	}
+
+	resp, err := provider.Complete(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Complete() error: %v", err)
+	}
+
+	if gotPath != "/v1/chat/completions" {
+		t.Fatalf("path = %q, want /v1/chat/completions", gotPath)
+	}
+	if gotAuth != "Bearer sk-test-key" {
+		t.Fatalf("authorization = %q", gotAuth)
+	}
+	if gotReq.Model != req.Model {
+		t.Fatalf("request model = %q, want %q", gotReq.Model, req.Model)
+	}
+	if gotReq.Stream {
+		t.Fatal("request stream = true, want false")
+	}
+	if resp.Provider != "openai" {
+		t.Fatalf("provider = %q, want openai", resp.Provider)
+	}
+	if resp.Usage.CacheReadTokens != 3 {
+		t.Fatalf("cache_read_tokens = %d, want 3", resp.Usage.CacheReadTokens)
+	}
+	if resp.Usage.ReasoningTokens != 2 {
+		t.Fatalf("reasoning_tokens = %d, want 2", resp.Usage.ReasoningTokens)
+	}
+	if len(resp.Choices) != 1 || len(resp.Choices[0].Message.ToolCalls) != 1 {
+		t.Fatalf("tool calls were not decoded correctly: %+v", resp.Choices)
+	}
+}
+
+func TestOpenAIProvider_Complete_MockHTTPError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"rate limited","type":"rate_limit"}}`))
+	}))
+	defer srv.Close()
+
+	provider, err := New("sk-test-key", srv.URL)
+	if err != nil {
+		t.Fatalf("New() returned error: %v", err)
+	}
+
+	_, err = provider.Complete(context.Background(), core.Request{
+		Model:    "gpt-4o-mini",
+		Messages: []core.Message{{Role: "user", Content: "hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "openai API error (429): rate limited") {
+		t.Fatalf("unexpected error: %v", err)
+	}
 }
 
 // TestOpenAIProvider_CompleteStream_Interface verifies the interface compliance.

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ferro-labs/ai-gateway/internal/circuitbreaker"
+	"github.com/ferro-labs/ai-gateway/internal/events"
 	"github.com/ferro-labs/ai-gateway/internal/metrics"
 	"github.com/ferro-labs/ai-gateway/models"
 	"github.com/ferro-labs/ai-gateway/providers"
@@ -61,9 +62,9 @@ func TestMeter_CallsPublishFn_OnSuccess(t *testing.T) {
 	var mu sync.Mutex
 	var published []map[string]interface{}
 
-	publishFn := func(_ context.Context, _ string, data map[string]interface{}) {
+	publishFn := func(_ context.Context, event events.HookEvent) {
 		mu.Lock()
-		published = append(published, data)
+		published = append(published, event.Map())
 		mu.Unlock()
 	}
 
@@ -113,9 +114,9 @@ func TestMeter_CallsPublishFn_OnError(t *testing.T) {
 	var mu sync.Mutex
 	var subjects []string
 
-	publishFn := func(_ context.Context, subject string, _ map[string]interface{}) {
+	publishFn := func(_ context.Context, event events.HookEvent) {
 		mu.Lock()
-		subjects = append(subjects, subject)
+		subjects = append(subjects, event.Subject)
 		mu.Unlock()
 	}
 

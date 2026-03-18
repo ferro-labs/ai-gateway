@@ -2,11 +2,7 @@ package main
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
-	"fmt"
 	"html/template"
-	"io/fs"
 	"net/http"
 	"os"
 	"os/signal"
@@ -18,17 +14,11 @@ import (
 	aigateway "github.com/ferro-labs/ai-gateway"
 	"github.com/ferro-labs/ai-gateway/internal/admin"
 	"github.com/ferro-labs/ai-gateway/internal/logging"
-	"github.com/ferro-labs/ai-gateway/internal/metrics"
 	"github.com/ferro-labs/ai-gateway/internal/ratelimit"
-	"github.com/ferro-labs/ai-gateway/internal/requestlog"
 	"github.com/ferro-labs/ai-gateway/internal/version"
-	"github.com/ferro-labs/ai-gateway/plugin"
 	"github.com/ferro-labs/ai-gateway/providers"
 	bedrockpkg "github.com/ferro-labs/ai-gateway/providers/bedrock"
 	webassets "github.com/ferro-labs/ai-gateway/web"
-	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	// Register built-in plugins so they can be loaded from config.
 	_ "github.com/ferro-labs/ai-gateway/internal/plugins/budget"
@@ -40,13 +30,6 @@ import (
 )
 
 var webTemplates = template.Must(template.ParseFS(webassets.Assets, "*.html"))
-
-const (
-	backendMemory      = "memory"
-	backendSQLite      = "sqlite"
-	backendPostgres    = "postgres"
-	backendPostgresSQL = "postgresql"
-)
 
 func main() {
 	// Initialise structured logging before anything else.
@@ -92,13 +75,7 @@ func main() {
 	if p := os.Getenv("PORT"); p != "" {
 		addr = ":" + p
 	}
-	srv := &http.Server{
-		Addr:         addr,
-		Handler:      r,
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 120 * time.Second,
-		IdleTimeout:  60 * time.Second,
-	}
+	srv := newHTTPServer(addr, r)
 
 	// Graceful shutdown on SIGINT / SIGTERM.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -122,106 +99,25 @@ func main() {
 		"api_key_store", keyStoreBackend,
 		"request_log_store", logReaderBackend,
 	)
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+	serveErr := srv.ListenAndServe()
+	if serveErr != nil && serveErr != http.ErrServerClosed {
 		stop()
-		logging.Logger.Error("server error", "error", err)
+		logging.Logger.Error("server error", "error", serveErr)
+	}
+
+	if err := closeResources(
+		namedResource{name: "gateway", value: gw},
+		namedResource{name: "config manager", value: cfgManager},
+		namedResource{name: "api key store", value: keyStore},
+		namedResource{name: "request log store", value: logReader},
+	); err != nil {
+		logging.Logger.Error("shutdown cleanup error", "error", err)
+	}
+
+	if serveErr != nil && serveErr != http.ErrServerClosed {
 		os.Exit(1) //nolint:gocritic
 	}
 	logging.Logger.Info("server stopped")
-}
-
-func createKeyStoreFromEnv() (admin.Store, string, error) {
-	backend := strings.ToLower(strings.TrimSpace(os.Getenv("API_KEY_STORE_BACKEND")))
-	if backend == "" {
-		backend = backendMemory
-	}
-
-	storeDSN := strings.TrimSpace(os.Getenv("API_KEY_STORE_DSN"))
-
-	switch backend {
-	case backendMemory, "in-memory", "inmemory":
-		return admin.NewKeyStore(), backendMemory, nil
-	case backendSQLite:
-		store, err := admin.NewSQLiteStore(storeDSN)
-		if err != nil {
-			return nil, "", err
-		}
-		return store, backendSQLite, nil
-	case backendPostgres, backendPostgresSQL:
-		store, err := admin.NewPostgresStore(storeDSN)
-		if err != nil {
-			return nil, "", err
-		}
-		return store, backendPostgres, nil
-	default:
-		return nil, "", fmt.Errorf("unsupported API key store backend %q", backend)
-	}
-}
-
-func createRequestLogReaderFromEnv() (requestlog.Reader, requestlog.Maintainer, string, error) {
-	backend := strings.ToLower(strings.TrimSpace(os.Getenv("REQUEST_LOG_STORE_BACKEND")))
-	if backend == "" {
-		return nil, nil, "disabled", nil
-	}
-
-	dsn := strings.TrimSpace(os.Getenv("REQUEST_LOG_STORE_DSN"))
-
-	switch backend {
-	case backendSQLite:
-		reader, err := requestlog.NewSQLiteWriter(dsn)
-		if err != nil {
-			return nil, nil, "", err
-		}
-		return reader, reader, backendSQLite, nil
-	case backendPostgres, backendPostgresSQL:
-		reader, err := requestlog.NewPostgresWriter(dsn)
-		if err != nil {
-			return nil, nil, "", err
-		}
-		return reader, reader, backendPostgres, nil
-	default:
-		return nil, nil, "", fmt.Errorf("unsupported request log store backend %q", backend)
-	}
-}
-
-func createConfigManagerFromEnv(gw *aigateway.Gateway) (admin.ConfigManager, string, error) {
-	backend := strings.ToLower(strings.TrimSpace(os.Getenv("CONFIG_STORE_BACKEND")))
-	if backend == "" {
-		backend = backendMemory
-	}
-
-	dsn := strings.TrimSpace(os.Getenv("CONFIG_STORE_DSN"))
-
-	switch backend {
-	case backendMemory, "in-memory", "inmemory":
-		manager, err := admin.NewGatewayConfigManager(gw, nil)
-		if err != nil {
-			return nil, "", err
-		}
-		return manager, backendMemory, nil
-	case backendSQLite:
-		store, err := admin.NewSQLiteConfigStore(dsn)
-		if err != nil {
-			return nil, "", err
-		}
-		manager, err := admin.NewGatewayConfigManager(gw, store)
-		if err != nil {
-			return nil, "", err
-		}
-		return manager, backendSQLite, nil
-	case backendPostgres, backendPostgresSQL:
-		store, err := admin.NewPostgresConfigStore(dsn)
-		if err != nil {
-			return nil, "", err
-		}
-		manager, err := admin.NewGatewayConfigManager(gw, store)
-		if err != nil {
-			return nil, "", err
-		}
-		return manager, backendPostgres, nil
-	default:
-		return nil, "", fmt.Errorf("unsupported config store backend %q", backend)
-	}
 }
 
 func logBootstrapConfigurationWarnings(keyStore admin.Store) {
@@ -391,301 +287,4 @@ func newRateLimitStore() *ratelimit.Store {
 	store := ratelimit.NewStore(rps, burst)
 	logging.Logger.Info("rate limiting enabled", "rps", rps, "burst", burst)
 	return store
-}
-
-// newRouter builds the HTTP router.
-func newRouter(
-	registry *providers.Registry,
-	keyStore admin.Store,
-	corsOrigins []string,
-	gw *aigateway.Gateway,
-	cfgManager admin.ConfigManager,
-	rlStore *ratelimit.Store,
-	logReader requestlog.Reader,
-	logMaintainer requestlog.Maintainer,
-) http.Handler {
-	if gw == nil {
-		defaultTargets := make([]aigateway.Target, 0, len(registry.List()))
-		for _, name := range registry.List() {
-			defaultTargets = append(defaultTargets, aigateway.Target{VirtualKey: name})
-		}
-		cfg := aigateway.Config{
-			Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeFallback},
-			Targets:  defaultTargets,
-		}
-		created, err := aigateway.New(cfg)
-		if err == nil {
-			for _, name := range registry.List() {
-				if p, ok := registry.Get(name); ok {
-					created.RegisterProvider(p)
-				}
-			}
-			gw = created
-		}
-	}
-
-	r := chi.NewRouter()
-
-	// Core middleware stack.
-	r.Use(logging.Middleware) // inject trace ID + X-Request-ID header
-	r.Use(middleware.Recoverer)
-	r.Use(middleware.RealIP)
-	r.Use(corsMiddleware(corsOrigins...))
-
-	// Optional per-IP rate limiting middleware.
-	if rlStore != nil {
-		r.Use(rateLimitMiddleware(rlStore))
-	}
-
-	// Health check — deep: lists registered providers and their model counts.
-	r.Get("/health", func(w http.ResponseWriter, _ *http.Request) {
-		type providerHealth struct {
-			Name   string `json:"name"`
-			Status string `json:"status"`
-			Models int    `json:"models"`
-		}
-		var providerStatuses []providerHealth
-		for _, name := range gw.ListProviders() {
-			p, ok := gw.GetProvider(name)
-			if !ok {
-				continue
-			}
-			providerStatuses = append(providerStatuses, providerHealth{
-				Name:   name,
-				Status: "available",
-				Models: len(p.Models()),
-			})
-		}
-		if providerStatuses == nil {
-			providerStatuses = []providerHealth{}
-		}
-		status := "ok"
-		if len(providerStatuses) == 0 {
-			status = "no_providers"
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"status":    status,
-			"providers": providerStatuses,
-		})
-	})
-
-	// Prometheus metrics endpoint.
-	r.Handle("/metrics", promhttp.Handler())
-
-	// Minimal built-in admin dashboard UI.
-	r.Get("/dashboard", func(w http.ResponseWriter, _ *http.Request) {
-		if err := renderWebTemplate(w, "dashboard.html", nil); err != nil {
-			writeOpenAIError(w, http.StatusInternalServerError, "failed to render dashboard", "server_error", "internal_error")
-			return
-		}
-	})
-	r.Get("/logo.png", func(w http.ResponseWriter, _ *http.Request) {
-		data, err := fs.ReadFile(webassets.Assets, "logo.png")
-		if err != nil {
-			writeOpenAIError(w, http.StatusNotFound, "logo not found", "not_found_error", "resource_not_found")
-			return
-		}
-		w.Header().Set("Content-Type", "image/png")
-		_, _ = w.Write(data)
-	})
-
-	r.Get("/v1/models", func(w http.ResponseWriter, _ *http.Request) {
-		catalog := gw.Catalog()
-		raw := gw.AllModels()
-		enriched := make([]EnrichedModelInfo, 0, len(raw))
-		for _, m := range raw {
-			enriched = append(enriched, enrichFromCatalog(catalog, m.OwnedBy, m.ID))
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"object": "list",
-			"data":   enriched,
-		})
-	})
-
-	// Admin routes — pass the gateway as the ProviderSource.
-	adminHandlers := &admin.Handlers{
-		Keys:      keyStore,
-		Providers: gw,
-		Configs:   cfgManager,
-		Logs:      logReader,
-		LogAdmin:  logMaintainer,
-	}
-	r.Route("/admin", func(r chi.Router) {
-		r.Use(admin.AuthMiddleware(keyStore))
-		r.Mount("/", adminHandlers.Routes())
-	})
-
-	r.Post("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
-		var req providers.Request
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeOpenAIError(w, http.StatusBadRequest, err.Error(), "invalid_request_error", "invalid_request")
-			return
-		}
-		if err := req.Validate(); err != nil {
-			writeOpenAIError(w, http.StatusBadRequest, err.Error(), "invalid_request_error", "invalid_request")
-			return
-		}
-
-		// --- Streaming path ---
-		if req.Stream {
-			if _, ok := gw.FindByModel(req.Model); !ok {
-				writeOpenAIError(w, http.StatusBadRequest, "no provider supports model: "+req.Model, "invalid_request_error", "model_not_found")
-				return
-			}
-			if !hasStreamingProviderForModel(gw, req.Model) {
-				writeOpenAIError(w, http.StatusBadRequest, "provider does not support streaming", "invalid_request_error", "streaming_not_supported")
-				return
-			}
-
-			ch, err := gw.RouteStream(r.Context(), req)
-			if err != nil {
-				status, errType, code := routeErrorDetails(err)
-				writeOpenAIError(w, status, err.Error(), errType, code)
-				return
-			}
-			writeSSE(w, ch)
-			return
-		}
-
-		// --- Non-streaming path ---
-		if _, ok := gw.FindByModel(req.Model); !ok {
-			writeOpenAIError(w, http.StatusBadRequest, "no provider supports model: "+req.Model, "invalid_request_error", "model_not_found")
-			return
-		}
-
-		resp, err := gw.Route(r.Context(), req)
-		if err != nil {
-			status, errType, code := routeErrorDetails(err)
-			writeOpenAIError(w, status, err.Error(), errType, code)
-			return
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
-	})
-
-	// Legacy text completions.
-	r.Post("/v1/completions", completionsHandler(registry))
-
-	// Embeddings endpoint.
-	r.Post("/v1/embeddings", embeddingsHandler(gw))
-
-	// Image generation endpoint.
-	r.Post("/v1/images/generations", imagesHandler(gw))
-
-	// Proxy pass-through for unhandled /v1/* endpoints.
-	r.HandleFunc("/v1/*", proxyHandler(registry))
-
-	return r
-}
-
-func renderWebTemplate(w http.ResponseWriter, templateName string, data interface{}) error {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	return webTemplates.ExecuteTemplate(w, templateName, data)
-}
-
-// rateLimitMiddleware rejects requests that exceed the per-IP token-bucket limit.
-func rateLimitMiddleware(store *ratelimit.Store) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ip := r.RemoteAddr
-			if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-				parts := strings.SplitN(xff, ",", 2)
-				ip = strings.TrimSpace(parts[0])
-			}
-			if !store.Allow(ip) {
-				metrics.RateLimitRejections.WithLabelValues("ip").Inc()
-				writeOpenAIError(w, http.StatusTooManyRequests,
-					"rate limit exceeded", "rate_limit_error", "rate_limit_exceeded")
-				return
-			}
-			next.ServeHTTP(w, r)
-		})
-	}
-}
-
-// writeOpenAIError writes a unified OpenAI-compatible JSON error response.
-func writeOpenAIError(w http.ResponseWriter, status int, message, errType, code string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
-		"error": map[string]string{
-			"message": message,
-			"type":    errType,
-			"code":    code,
-		},
-	})
-}
-
-func routeErrorDetails(err error) (status int, errType, code string) {
-	status = http.StatusInternalServerError
-	errType = "server_error"
-	code = "routing_error"
-
-	var rejection *plugin.RejectionError
-	if errors.As(err, &rejection) {
-		switch rejection.Stage {
-		case plugin.StageBeforeRequest:
-			// Rate-limit and budget plugins signal throttling — return 429.
-			if rejection.PluginType == plugin.TypeRateLimit {
-				return http.StatusTooManyRequests, "rate_limit_error", "rate_limit_exceeded"
-			}
-			return http.StatusBadRequest, "invalid_request_error", "request_rejected"
-		case plugin.StageAfterRequest:
-			return http.StatusBadGateway, "upstream_error", "response_rejected"
-		default:
-			return http.StatusInternalServerError, "server_error", "request_rejected"
-		}
-	}
-
-	return status, errType, code
-}
-
-// writeSSE streams SSE chunks from ch to the response writer.
-func writeSSE(w http.ResponseWriter, ch <-chan providers.StreamChunk) {
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	flusher, _ := w.(http.Flusher)
-	now := time.Now().Unix()
-	for chunk := range ch {
-		if chunk.Error != nil {
-			errData := fmt.Sprintf(`{"error":{"message":%q,"type":"stream_error","code":"stream_error"}}`, chunk.Error.Error())
-			_, _ = fmt.Fprintf(w, "data: %s\n\n", errData)
-			if flusher != nil {
-				flusher.Flush()
-			}
-			return
-		}
-		if chunk.Object == "" {
-			chunk.Object = "chat.completion.chunk"
-		}
-		if chunk.Created == 0 {
-			chunk.Created = now
-		}
-		data, _ := json.Marshal(chunk)
-		_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
-		if flusher != nil {
-			flusher.Flush()
-		}
-	}
-	_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
-	if flusher != nil {
-		flusher.Flush()
-	}
-}
-
-func hasStreamingProviderForModel(src providers.ProviderSource, model string) bool {
-	for _, name := range src.List() {
-		p, ok := src.Get(name)
-		if !ok || !p.SupportsModel(model) {
-			continue
-		}
-		if _, ok := p.(providers.StreamProvider); ok {
-			return true
-		}
-	}
-	return false
 }

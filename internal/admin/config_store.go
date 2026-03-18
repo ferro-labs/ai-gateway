@@ -56,6 +56,7 @@ func NewSQLiteConfigStore(dsn string) (*SQLConfigStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite config store: %w", err)
 	}
+	tuneDBPool(db, string(configDialectSQLite))
 	s := &SQLConfigStore{db: db, dialect: configDialectSQLite}
 	if err := s.init(); err != nil {
 		_ = db.Close()
@@ -74,6 +75,7 @@ func NewPostgresConfigStore(dsn string) (*SQLConfigStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open postgres config store: %w", err)
 	}
+	tuneDBPool(db, string(configDialectPostgres))
 	s := &SQLConfigStore{db: db, dialect: configDialectPostgres}
 	if err := s.init(); err != nil {
 		_ = db.Close()
@@ -259,4 +261,16 @@ func (m *GatewayConfigManager) ResetConfig() error {
 		}
 	}
 	return nil
+}
+
+// Close closes any underlying persistent config store.
+func (m *GatewayConfigManager) Close() error {
+	if m == nil || m.store == nil {
+		return nil
+	}
+	closer, ok := m.store.(interface{ Close() error })
+	if !ok {
+		return nil
+	}
+	return closer.Close()
 }
