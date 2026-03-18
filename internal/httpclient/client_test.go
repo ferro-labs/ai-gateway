@@ -1,6 +1,7 @@
 package httpclient
 
 import (
+	"errors"
 	"testing"
 	"time"
 )
@@ -26,11 +27,29 @@ func TestSharedTransportPolicy(t *testing.T) {
 	if transport.MaxConnsPerHost != defaultMaxConnsPerHost {
 		t.Fatalf("MaxConnsPerHost = %d, want %d", transport.MaxConnsPerHost, defaultMaxConnsPerHost)
 	}
-	if transport.ResponseHeaderTimeout != defaultResponseHeaderTimout {
-		t.Fatalf("ResponseHeaderTimeout = %v, want %v", transport.ResponseHeaderTimeout, defaultResponseHeaderTimout)
+	if transport.ResponseHeaderTimeout != defaultResponseHeaderTimeout {
+		t.Fatalf("ResponseHeaderTimeout = %v, want %v", transport.ResponseHeaderTimeout, defaultResponseHeaderTimeout)
 	}
-	if transport.MaxResponseHeaderBytes != defaultMaxResponseHeaderB {
-		t.Fatalf("MaxResponseHeaderBytes = %d, want %d", transport.MaxResponseHeaderBytes, defaultMaxResponseHeaderB)
+	if transport.ExpectContinueTimeout != defaultExpectContinueTimeout {
+		t.Fatalf("ExpectContinueTimeout = %v, want %v", transport.ExpectContinueTimeout, defaultExpectContinueTimeout)
+	}
+	if transport.MaxResponseHeaderBytes != defaultMaxResponseHeaderBytes {
+		t.Fatalf("MaxResponseHeaderBytes = %d, want %d", transport.MaxResponseHeaderBytes, defaultMaxResponseHeaderBytes)
+	}
+}
+
+func TestTracingTransport_RoundTripNilRequest(t *testing.T) {
+	resp, err := newTracingTransport(SharedTransport()).RoundTrip(nil)
+	if resp != nil && resp.Body != nil {
+		defer func() {
+			_ = resp.Body.Close()
+		}()
+	}
+	if !errors.Is(err, errNilRequest) {
+		t.Fatalf("RoundTrip(nil) error = %v, want %v", err, errNilRequest)
+	}
+	if resp != nil {
+		t.Fatalf("RoundTrip(nil) response = %#v, want nil", resp)
 	}
 }
 

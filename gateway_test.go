@@ -326,6 +326,63 @@ func TestGateway_PublishEvent_CallsAllHooks(t *testing.T) {
 	}
 }
 
+func TestGateway_PublishEvent_EnqueuesEachHookIndependently(t *testing.T) {
+	gw := &Gateway{
+		hookDispatchQ: make(chan hookDispatch, 2),
+	}
+
+	gw.hookSnapshot.Store([]EventHookFunc{
+		func(context.Context, string, map[string]interface{}) {},
+		func(context.Context, string, map[string]interface{}) {},
+	})
+
+	gw.publishEvent(context.Background(), events.CompletedRequest(
+		"trace-123",
+		"mock",
+		"gpt-4o",
+		time.Millisecond,
+		false,
+		1,
+		1,
+		models.CostResult{},
+		true,
+	))
+
+	if got := len(gw.hookDispatchQ); got != 2 {
+		t.Fatalf("queued hook dispatches = %d, want 2", got)
+	}
+}
+
+func TestGateway_PublishEvent_IncrementsDropMetricWhenQueueFull(t *testing.T) {
+	counter := metrics.HookEventsDroppedTotal.WithLabelValues(SubjectRequestCompleted)
+	before := counterValue(t, counter)
+
+	gw := &Gateway{
+		hookDispatchQ: make(chan hookDispatch, 1),
+	}
+	gw.hookSnapshot.Store([]EventHookFunc{
+		func(context.Context, string, map[string]interface{}) {},
+		func(context.Context, string, map[string]interface{}) {},
+	})
+
+	gw.publishEvent(context.Background(), events.CompletedRequest(
+		"trace-123",
+		"mock",
+		"gpt-4o",
+		time.Millisecond,
+		false,
+		1,
+		1,
+		models.CostResult{},
+		true,
+	))
+
+	after := counterValue(t, counter)
+	if delta := after - before; delta != 1 {
+		t.Fatalf("dropped hook metric delta = %v, want 1", delta)
+	}
+}
+
 // testPlugin is a mock plugin for gateway tests.
 type testPlugin struct {
 	name   string

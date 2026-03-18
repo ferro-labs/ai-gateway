@@ -2,6 +2,7 @@ package httpclient
 
 import (
 	"crypto/tls"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptrace"
@@ -13,6 +14,8 @@ import (
 type tracingTransport struct {
 	base http.RoundTripper
 }
+
+var errNilRequest = errors.New("httpclient: nil request")
 
 type outboundTrace struct {
 	start time.Time
@@ -46,7 +49,10 @@ func UsesSharedTransport(rt http.RoundTripper) bool {
 }
 
 func (t tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	if req == nil || !logging.Enabled(req.Context(), slog.LevelDebug) {
+	if req == nil {
+		return nil, errNilRequest
+	}
+	if !logging.Enabled(req.Context(), slog.LevelDebug) {
 		return t.base.RoundTrip(req)
 	}
 

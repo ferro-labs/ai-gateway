@@ -79,7 +79,7 @@ type modelLookupIndex struct {
 type hookDispatch struct {
 	ctx   context.Context
 	event events.HookEvent
-	hooks []EventHookFunc
+	hook  EventHookFunc
 }
 
 const hookDispatchQueueSize = 256
@@ -190,7 +190,8 @@ func (g *Gateway) RegisterPlugin(stage plugin.Stage, p plugin.Plugin) error {
 
 // AddHook registers an EventHookFunc that is called asynchronously on each
 // completed or failed request. Multiple hooks may be registered; all are
-// invoked for every event.
+// invoked for every event on the shared bounded hook worker pool, so hook
+// implementations should return promptly and avoid indefinite blocking.
 func (g *Gateway) AddHook(fn EventHookFunc) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -478,13 +479,18 @@ func (g *Gateway) publishEvent(ctx context.Context, event events.HookEvent) {
 	dispatch := hookDispatch{
 		ctx:   ctx,
 		event: event,
-		hooks: hooks,
 	}
 
-	select {
-	case g.hookDispatchQ <- dispatch:
-	default:
-		// Queue full — drop event to avoid unbounded goroutine creation.
+	for _, hook := range hooks {
+		dispatch.hook = hook
+		select {
+		case g.hookDispatchQ <- dispatch:
+		default:
+			metrics.HookEventsDroppedTotal.WithLabelValues(event.Subject).Inc()
+			logging.Logger.Debug("dropping event hook dispatch due to full queue",
+				"subject", event.Subject,
+			)
+		}
 	}
 }
 
@@ -512,20 +518,16 @@ func (g *Gateway) startHookWorkers() {
 }
 
 func runHookDispatch(dispatch hookDispatch) {
-	data := dispatch.event.Map()
-	for _, hook := range dispatch.hooks {
-		func(fn EventHookFunc) {
-			defer func() {
-				if r := recover(); r != nil {
-					logging.Logger.Error("event hook panicked",
-						"subject", dispatch.event.Subject,
-						"panic", r,
-					)
-				}
-			}()
-			fn(dispatch.ctx, dispatch.event.Subject, data)
-		}(hook)
-	}
+	defer func() {
+		if r := recover(); r != nil {
+			logging.Logger.Error("event hook panicked",
+				"subject", dispatch.event.Subject,
+				"panic", r,
+			)
+		}
+	}()
+
+	dispatch.hook(dispatch.ctx, dispatch.event.Subject, dispatch.event.Map())
 }
 
 func failedEventData(traceID, provider, model, errMsg string, latency time.Duration, stream bool) events.HookEvent {

@@ -9,16 +9,16 @@ import (
 )
 
 const (
-	defaultDialTimeout          = 30 * time.Second
-	defaultKeepAlive            = 30 * time.Second
-	defaultMaxIdleConns         = 512
-	defaultMaxConnsPerHost      = 256
-	defaultMaxIdleConnsPerHost  = 128
-	defaultIdleConnTimeout      = 90 * time.Second
-	defaultTLSHandshakeTimeout  = 10 * time.Second
-	defaultResponseHeaderTimout = 90 * time.Second
-	defaultExpectContinueTimout = 1 * time.Second
-	defaultMaxResponseHeaderB   = 1 << 20 // 1 MiB
+	defaultDialTimeout            = 30 * time.Second
+	defaultKeepAlive              = 30 * time.Second
+	defaultMaxIdleConns           = 512
+	defaultMaxConnsPerHost        = 256
+	defaultMaxIdleConnsPerHost    = 128
+	defaultIdleConnTimeout        = 90 * time.Second
+	defaultTLSHandshakeTimeout    = 10 * time.Second
+	defaultResponseHeaderTimeout  = 90 * time.Second
+	defaultExpectContinueTimeout  = 1 * time.Second
+	defaultMaxResponseHeaderBytes = 1 << 20 // 1 MiB
 )
 
 var sharedTransport = &http.Transport{
@@ -33,9 +33,9 @@ var sharedTransport = &http.Transport{
 	MaxIdleConnsPerHost:    defaultMaxIdleConnsPerHost,
 	IdleConnTimeout:        defaultIdleConnTimeout,
 	TLSHandshakeTimeout:    defaultTLSHandshakeTimeout,
-	ResponseHeaderTimeout:  defaultResponseHeaderTimout,
-	ExpectContinueTimeout:  defaultExpectContinueTimout,
-	MaxResponseHeaderBytes: defaultMaxResponseHeaderB,
+	ResponseHeaderTimeout:  defaultResponseHeaderTimeout,
+	ExpectContinueTimeout:  defaultExpectContinueTimeout,
+	MaxResponseHeaderBytes: defaultMaxResponseHeaderBytes,
 }
 
 var sharedRoundTripper = newTracingTransport(sharedTransport)

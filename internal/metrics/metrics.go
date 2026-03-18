@@ -106,6 +106,14 @@ var (
 		},
 		[]string{"state"},
 	)
+
+	HookEventsDroppedTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "gateway_hook_events_dropped_total",
+			Help: "Total hook dispatches dropped because the hook worker queue was full.",
+		},
+		[]string{"subject"},
+	)
 )
 
 // RequestMetricHandles stores cached Prometheus handles for a provider/model
