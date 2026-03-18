@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/ferro-labs/ai-gateway/internal/httpclient"
 )
 
 // buildMockMCPServer creates an httptest.Server that speaks a minimal MCP
@@ -206,4 +208,14 @@ func TestClientConcurrentSafety(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+func TestNewClient_UsesSharedTransport(t *testing.T) {
+	c := NewClient("http://example.com", nil, 5*time.Second)
+	if !httpclient.UsesSharedTransport(c.httpClient.Transport) {
+		t.Fatalf("transport %T does not use shared transport", c.httpClient.Transport)
+	}
+	if c.httpClient.Timeout != 5*time.Second {
+		t.Fatalf("timeout = %v, want %v", c.httpClient.Timeout, 5*time.Second)
+	}
 }

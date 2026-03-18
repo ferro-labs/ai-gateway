@@ -19,6 +19,7 @@ import (
 	"math/rand"
 	"regexp"
 	"runtime"
+	"runtime/trace"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -53,6 +54,7 @@ type Gateway struct {
 	providerNames    []string
 	strategy         strategies.Strategy
 	plugins          *plugin.Manager
+	closeOnce        sync.Once
 	hooks            []EventHookFunc
 	hookSnapshot     atomic.Value
 	hookDispatchQ    chan hookDispatch
@@ -246,11 +248,16 @@ func (g *Gateway) MCPInitDone() <-chan struct{} {
 
 // Route routes a request to the appropriate provider based on the configuration.
 func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.Response, error) {
+	ctx, task := trace.NewTask(ctx, "gateway.route")
+	defer task.End()
+
 	start := time.Now()
 	hooksEnabled := g.hasHooks()
 
 	// Resolve model alias before routing.
-	req = g.resolveAlias(req)
+	trace.WithRegion(ctx, "gateway.route.resolve_alias", func() {
+		req = g.resolveAlias(req)
+	})
 
 	s, err := g.getStrategy()
 	if err != nil {
@@ -260,7 +267,10 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	// Run before-request plugins (guardrails, transforms, rate-limit).
 	pctx := plugin.NewContext(&req)
 	if g.plugins.HasPlugins() {
-		if err := g.plugins.RunBefore(ctx, pctx); err != nil {
+		trace.WithRegion(ctx, "gateway.route.plugins.before", func() {
+			err = g.plugins.RunBefore(ctx, pctx)
+		})
+		if err != nil {
 			metrics.ForRequest("", req.Model).Rejected.Inc()
 			return nil, err
 		}
@@ -307,7 +317,10 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	}
 
 	// Execute the strategy (provider selection + actual call).
-	resp, err := s.Execute(ctx, req)
+	var resp *providers.Response
+	trace.WithRegion(ctx, "gateway.route.provider.execute", func() {
+		resp, err = s.Execute(ctx, req)
+	})
 	latency := time.Since(start)
 
 	if err != nil {
@@ -361,24 +374,30 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	// the LLM until no more tool_calls are present or the depth limit is hit.
 	if g.mcpExecutor != nil && len(mcpTools) > 0 {
 		depth := 0
-		for g.mcpExecutor.ShouldContinueLoop(resp, depth) {
-			depth++
+		trace.WithRegion(ctx, "gateway.route.mcp.loop", func() {
+			for g.mcpExecutor.ShouldContinueLoop(resp, depth) {
+				depth++
 
-			// ResolvePendingToolCalls returns the assistant message (with tool_calls)
-			// plus one tool-result message per call — append all at once.
-			toolMsgs, toolErr := g.mcpExecutor.ResolvePendingToolCalls(ctx, resp)
-			if toolErr != nil {
-				return nil, fmt.Errorf("mcp tool execution at depth %d: %w", depth, toolErr)
+				// ResolvePendingToolCalls returns the assistant message (with tool_calls)
+				// plus one tool-result message per call — append all at once.
+				toolMsgs, toolErr := g.mcpExecutor.ResolvePendingToolCalls(ctx, resp)
+				if toolErr != nil {
+					err = fmt.Errorf("mcp tool execution at depth %d: %w", depth, toolErr)
+					return
+				}
+				req.Messages = append(req.Messages, toolMsgs...)
+
+				// Always non-streaming for intermediate calls.
+				req.Stream = false
+
+				resp, err = s.Execute(ctx, req)
+				if err != nil {
+					return
+				}
 			}
-			req.Messages = append(req.Messages, toolMsgs...)
-
-			// Always non-streaming for intermediate calls.
-			req.Stream = false
-
-			resp, err = s.Execute(ctx, req)
-			if err != nil {
-				return nil, err
-			}
+		})
+		if err != nil {
+			return nil, err
 		}
 	}
 	// originalStream is included in the completed event so hook consumers
@@ -388,7 +407,10 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	// Run after-request plugins (logging, caching).
 	if g.plugins.HasPlugins() {
 		pctx.Response = resp
-		if err := g.plugins.RunAfter(ctx, pctx); err != nil {
+		trace.WithRegion(ctx, "gateway.route.plugins.after", func() {
+			err = g.plugins.RunAfter(ctx, pctx)
+		})
+		if err != nil {
 			metrics.ForRequest(resp.Provider, resp.Model).Rejected.Inc()
 			return nil, err
 		}
@@ -785,11 +807,17 @@ func (g *Gateway) LoadPlugins() error {
 // wrapped into a single-chunk stream and returned to the caller (Phase 1
 // behaviour — true final-response streaming is Phase 1.5).
 func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-chan providers.StreamChunk, error) {
+	ctx, task := trace.NewTask(ctx, "gateway.route_stream")
+	defer task.End()
+
 	start := time.Now()
 	hooksEnabled := g.hasHooks()
+	var err error
 
 	// Resolve model alias before routing.
-	req = g.resolveAlias(req)
+	trace.WithRegion(ctx, "gateway.route_stream.resolve_alias", func() {
+		req = g.resolveAlias(req)
+	})
 
 	// MCP redirect: when tool servers are registered, the agentic loop must
 	// run to completion before any response is sent. Route() handles this
@@ -837,7 +865,10 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 	// Run before-request plugins (word-filter, max-token, rate-limit, etc.).
 	pctx := plugin.NewContext(&req)
 	if g.plugins.HasPlugins() {
-		if err := g.plugins.RunBefore(ctx, pctx); err != nil {
+		trace.WithRegion(ctx, "gateway.route_stream.plugins.before", func() {
+			err = g.plugins.RunBefore(ctx, pctx)
+		})
+		if err != nil {
 			metrics.ForRequest("", req.Model).Rejected.Inc()
 			return nil, err
 		}
@@ -890,7 +921,10 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 		logging.FromContext(ctx).Debug("stream request started", "model", req.Model, "provider", providerName)
 	}
 
-	rawCh, err := sp.CompleteStream(ctx, req)
+	var rawCh <-chan providers.StreamChunk
+	trace.WithRegion(ctx, "gateway.route_stream.provider.start", func() {
+		rawCh, err = sp.CompleteStream(ctx, req)
+	})
 	if err != nil {
 		errType := "provider_error"
 		if errors.Is(err, circuitbreaker.ErrCircuitOpen) {
@@ -1307,7 +1341,9 @@ func (g *Gateway) FindStreamingByModel(model string) (providers.StreamProvider, 
 
 // Close cleans up resources.
 func (g *Gateway) Close() error {
-	close(g.hookDispatchQ)
+	g.closeOnce.Do(func() {
+		close(g.hookDispatchQ)
+	})
 	return nil
 }
 

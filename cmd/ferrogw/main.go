@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"expvar"
 	"fmt"
 	"html/template"
 	"io"
@@ -20,6 +21,7 @@ import (
 
 	aigateway "github.com/ferro-labs/ai-gateway"
 	"github.com/ferro-labs/ai-gateway/internal/admin"
+	"github.com/ferro-labs/ai-gateway/internal/httpclient"
 	"github.com/ferro-labs/ai-gateway/internal/logging"
 	"github.com/ferro-labs/ai-gateway/internal/metrics"
 	"github.com/ferro-labs/ai-gateway/internal/ratelimit"
@@ -49,7 +51,18 @@ const (
 	backendSQLite      = "sqlite"
 	backendPostgres    = "postgres"
 	backendPostgresSQL = "postgresql"
+
+	serverReadTimeout       = 30 * time.Second
+	serverReadHeaderTimeout = 10 * time.Second
+	serverWriteTimeout      = 120 * time.Second
+	serverIdleTimeout       = 60 * time.Second
+	serverMaxHeaderBytes    = 1 << 20 // 1 MiB
 )
+
+type namedResource struct {
+	name  string
+	value any
+}
 
 func main() {
 	// Initialise structured logging before anything else.
@@ -95,13 +108,7 @@ func main() {
 	if p := os.Getenv("PORT"); p != "" {
 		addr = ":" + p
 	}
-	srv := &http.Server{
-		Addr:         addr,
-		Handler:      r,
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 120 * time.Second,
-		IdleTimeout:  60 * time.Second,
-	}
+	srv := newHTTPServer(addr, r)
 
 	// Graceful shutdown on SIGINT / SIGTERM.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -125,12 +132,55 @@ func main() {
 		"api_key_store", keyStoreBackend,
 		"request_log_store", logReaderBackend,
 	)
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+	serveErr := srv.ListenAndServe()
+	if serveErr != nil && serveErr != http.ErrServerClosed {
 		stop()
-		logging.Logger.Error("server error", "error", err)
+		logging.Logger.Error("server error", "error", serveErr)
+	}
+
+	if err := closeResources(
+		namedResource{name: "gateway", value: gw},
+		namedResource{name: "config manager", value: cfgManager},
+		namedResource{name: "api key store", value: keyStore},
+		namedResource{name: "request log store", value: logReader},
+	); err != nil {
+		logging.Logger.Error("shutdown cleanup error", "error", err)
+	}
+
+	if serveErr != nil && serveErr != http.ErrServerClosed {
 		os.Exit(1) //nolint:gocritic
 	}
 	logging.Logger.Info("server stopped")
+}
+
+func newHTTPServer(addr string, handler http.Handler) *http.Server {
+	tracker := newServerConnTracker()
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ConnContext:       tracker.ConnContext,
+		ConnState:         tracker.ConnState,
+		ReadTimeout:       serverReadTimeout,
+		ReadHeaderTimeout: serverReadHeaderTimeout,
+		WriteTimeout:      serverWriteTimeout,
+		IdleTimeout:       serverIdleTimeout,
+		MaxHeaderBytes:    serverMaxHeaderBytes,
+	}
+}
+
+func closeResources(resources ...namedResource) error {
+	var err error
+	for _, resource := range resources {
+		closer, ok := resource.value.(interface{ Close() error })
+		if !ok {
+			continue
+		}
+		if closeErr := closer.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("close %s: %w", resource.name, closeErr))
+		}
+	}
+	httpclient.CloseIdleConnections()
+	return err
 }
 
 func createKeyStoreFromEnv() (admin.Store, string, error) {
@@ -209,6 +259,7 @@ func createConfigManagerFromEnv(gw *aigateway.Gateway) (admin.ConfigManager, str
 		}
 		manager, err := admin.NewGatewayConfigManager(gw, store)
 		if err != nil {
+			_ = store.Close()
 			return nil, "", err
 		}
 		return manager, backendSQLite, nil
@@ -219,6 +270,7 @@ func createConfigManagerFromEnv(gw *aigateway.Gateway) (admin.ConfigManager, str
 		}
 		manager, err := admin.NewGatewayConfigManager(gw, store)
 		if err != nil {
+			_ = store.Close()
 			return nil, "", err
 		}
 		return manager, backendPostgres, nil
@@ -475,6 +527,7 @@ func newRouter(
 
 	// Prometheus metrics endpoint.
 	r.Handle("/metrics", promhttp.Handler())
+	r.Handle("/debug/vars", expvar.Handler())
 	mountPprofRoutes(r)
 
 	// Minimal built-in admin dashboard UI.

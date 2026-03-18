@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strconv"
 
+	"github.com/ferro-labs/ai-gateway/internal/httpclient"
 	"github.com/ferro-labs/ai-gateway/providers"
 )
 
@@ -56,36 +57,24 @@ func proxyHandler(registry *providers.Registry) http.HandlerFunc {
 		authHeaders := pp.AuthHeaders()
 		providerName := p.Name()
 
-		proxy := httputil.NewSingleHostReverseProxy(target)
-
-		// Director rewrites the outgoing request URL and injects auth.
-		proxy.Director = func(req *http.Request) {
-			req.URL.Scheme = target.Scheme
-			req.URL.Host = target.Host
-			req.Host = target.Host
-
-			// Remove gateway-internal headers before forwarding.
-			req.Header.Del("X-Provider")
-			req.Header.Del("Authorization")
-
-			// Inject provider auth headers.
-			for k, v := range authHeaders {
-				req.Header.Set(k, v)
-			}
-
-			// Ensure the target receives the correct Host.
-			if req.Header.Get("X-Forwarded-Host") == "" {
-				req.Header.Set("X-Forwarded-Host", req.Host)
-			}
-		}
-
-		proxy.ModifyResponse = func(resp *http.Response) error {
-			resp.Header.Set("X-Gateway-Provider", providerName)
-			return nil
-		}
-
-		proxy.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, err error) {
-			http.Error(w, "proxy error: "+err.Error(), http.StatusBadGateway)
+		proxy := &httputil.ReverseProxy{
+			Transport: httpclient.SharedTransport(),
+			Rewrite: func(pr *httputil.ProxyRequest) {
+				pr.SetURL(target)
+				pr.Out.Header.Del("X-Provider")
+				pr.Out.Header.Del("Authorization")
+				for k, v := range authHeaders {
+					pr.Out.Header.Set(k, v)
+				}
+				pr.SetXForwarded()
+			},
+			ModifyResponse: func(resp *http.Response) error {
+				resp.Header.Set("X-Gateway-Provider", providerName)
+				return nil
+			},
+			ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
+				http.Error(w, "proxy error: "+err.Error(), http.StatusBadGateway)
+			},
 		}
 
 		proxy.ServeHTTP(w, r)

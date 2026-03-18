@@ -135,6 +135,21 @@ func TestPprofEnabled(t *testing.T) {
 	}
 }
 
+func TestDebugVarsEnabled(t *testing.T) {
+	ks := testKeyStore()
+	r := newRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest("GET", "/debug/vars", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "\"memstats\"") {
+		t.Fatalf("expected expvar memstats output, got: %s", w.Body.String())
+	}
+}
+
 func TestDashboardUIPage(t *testing.T) {
 	ks := testKeyStore()
 	r := newRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil)
@@ -592,6 +607,41 @@ func TestCreateConfigManagerFromEnv_PostgresMissingDSN(t *testing.T) {
 	}
 }
 
+func TestNewHTTPServer_SetsHardeningTimeouts(t *testing.T) {
+	srv := newHTTPServer(":8080", http.NewServeMux())
+	if srv.ReadTimeout != serverReadTimeout {
+		t.Fatalf("ReadTimeout = %v, want %v", srv.ReadTimeout, serverReadTimeout)
+	}
+	if srv.ReadHeaderTimeout != serverReadHeaderTimeout {
+		t.Fatalf("ReadHeaderTimeout = %v, want %v", srv.ReadHeaderTimeout, serverReadHeaderTimeout)
+	}
+	if srv.WriteTimeout != serverWriteTimeout {
+		t.Fatalf("WriteTimeout = %v, want %v", srv.WriteTimeout, serverWriteTimeout)
+	}
+	if srv.IdleTimeout != serverIdleTimeout {
+		t.Fatalf("IdleTimeout = %v, want %v", srv.IdleTimeout, serverIdleTimeout)
+	}
+	if srv.MaxHeaderBytes != serverMaxHeaderBytes {
+		t.Fatalf("MaxHeaderBytes = %d, want %d", srv.MaxHeaderBytes, serverMaxHeaderBytes)
+	}
+}
+
+func TestCloseResources_AggregatesCloserErrors(t *testing.T) {
+	err := closeResources(
+		namedResource{name: "first", value: testCloser{err: errors.New("boom one")}},
+		namedResource{name: "second", value: testCloser{err: errors.New("boom two")}},
+	)
+	if err == nil {
+		t.Fatal("expected aggregated close error")
+	}
+	if !strings.Contains(err.Error(), "close first: boom one") {
+		t.Fatalf("missing first close error: %v", err)
+	}
+	if !strings.Contains(err.Error(), "close second: boom two") {
+		t.Fatalf("missing second close error: %v", err)
+	}
+}
+
 func TestRouteErrorDetails_BeforeRequestRejection(t *testing.T) {
 	status, errType, code := routeErrorDetails(&plugin.RejectionError{Stage: plugin.StageBeforeRequest, Reason: "blocked"})
 	if status != http.StatusBadRequest {
@@ -669,4 +719,12 @@ func newTestGateway(t *testing.T, cfg aigateway.Config) *aigateway.Gateway {
 		t.Fatalf("new gateway: %v", err)
 	}
 	return gw
+}
+
+type testCloser struct {
+	err error
+}
+
+func (c testCloser) Close() error {
+	return c.err
 }

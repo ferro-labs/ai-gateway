@@ -90,6 +90,22 @@ var (
 		},
 		[]string{"provider", "model"},
 	)
+
+	ServerConnectionsCurrent = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "gateway_server_connections_current",
+			Help: "Current inbound HTTP connections by state.",
+		},
+		[]string{"state"},
+	)
+
+	ServerConnectionTransitionsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "gateway_server_connection_transitions_total",
+			Help: "Total inbound HTTP connection state transitions.",
+		},
+		[]string{"state"},
+	)
 )
 
 // RequestMetricHandles stores cached Prometheus handles for a provider/model

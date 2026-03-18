@@ -39,6 +39,7 @@ func NewSQLiteStore(dsn string) (*SQLStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite store: %w", err)
 	}
+	tuneDBPool(db, string(dialectSQLite))
 	store := &SQLStore{db: db, dialect: dialectSQLite}
 	if err := store.init(); err != nil {
 		_ = db.Close()
@@ -57,6 +58,7 @@ func NewPostgresStore(dsn string) (*SQLStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open postgres store: %w", err)
 	}
+	tuneDBPool(db, string(dialectPostgres))
 	store := &SQLStore{db: db, dialect: dialectPostgres}
 	if err := store.init(); err != nil {
 		_ = db.Close()
@@ -132,6 +134,14 @@ func (s *SQLStore) ensureUsageColumns() error {
 		}
 	}
 	return nil
+}
+
+// Close closes the underlying SQL connection.
+func (s *SQLStore) Close() error {
+	if s == nil || s.db == nil {
+		return nil
+	}
+	return s.db.Close()
 }
 
 // Create inserts a new API key in the SQL store.

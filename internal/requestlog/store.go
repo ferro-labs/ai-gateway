@@ -92,6 +92,7 @@ func NewSQLiteWriter(dsn string) (*SQLWriter, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite request log writer: %w", err)
 	}
+	tuneDBPool(db, requestLogDialectSQLite)
 	w := &SQLWriter{db: db, dialect: requestLogDialectSQLite}
 	if err := w.init(); err != nil {
 		_ = db.Close()
@@ -110,6 +111,7 @@ func NewPostgresWriter(dsn string) (*SQLWriter, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open postgres request log writer: %w", err)
 	}
+	tuneDBPool(db, requestLogDialectPostgres)
 	w := &SQLWriter{db: db, dialect: requestLogDialectPostgres}
 	if err := w.init(); err != nil {
 		_ = db.Close()

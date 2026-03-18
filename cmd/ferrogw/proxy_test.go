@@ -237,6 +237,34 @@ func TestProxyHandler_AddsGatewayProviderHeader(t *testing.T) {
 	}
 }
 
+func TestProxyHandler_RebuildsForwardedHeaders(t *testing.T) {
+	var receivedXFF string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedXFF = r.Header.Get("X-Forwarded-For")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer upstream.Close()
+
+	reg := buildTestRegistry(upstream.URL)
+	handler := proxyHandler(reg)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/files", nil)
+	req.RemoteAddr = "203.0.113.10:1234"
+	req.Header.Set("X-Provider", providerOpenAI)
+	req.Header.Set("X-Forwarded-For", "1.2.3.4")
+	w := httptest.NewRecorder()
+
+	handler(w, req)
+
+	if strings.Contains(receivedXFF, "1.2.3.4") {
+		t.Fatalf("spoofed X-Forwarded-For leaked upstream: %q", receivedXFF)
+	}
+	if !strings.Contains(receivedXFF, "203.0.113.10") {
+		t.Fatalf("rebuilt X-Forwarded-For = %q, want client IP", receivedXFF)
+	}
+}
+
 func TestProxyHandler_PassthroughNon200(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

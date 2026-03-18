@@ -231,6 +231,19 @@ func TestGateway_RouteStream_BeforePluginCanSetNilRequest(t *testing.T) {
 	}
 }
 
+func TestGatewayClose_IsIdempotent(t *testing.T) {
+	gw, err := New(Config{})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatalf("first Close: %v", err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+}
+
 func TestGateway_Route_ProviderNotFound(t *testing.T) {
 	gw, _ := New(Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
