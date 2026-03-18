@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
-	"expvar"
 	"html/template"
 	"net/http"
 	"os"
@@ -17,14 +15,10 @@ import (
 	"github.com/ferro-labs/ai-gateway/internal/admin"
 	"github.com/ferro-labs/ai-gateway/internal/logging"
 	"github.com/ferro-labs/ai-gateway/internal/ratelimit"
-	"github.com/ferro-labs/ai-gateway/internal/requestlog"
 	"github.com/ferro-labs/ai-gateway/internal/version"
 	"github.com/ferro-labs/ai-gateway/providers"
 	bedrockpkg "github.com/ferro-labs/ai-gateway/providers/bedrock"
 	webassets "github.com/ferro-labs/ai-gateway/web"
-	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	// Register built-in plugins so they can be loaded from config.
 	_ "github.com/ferro-labs/ai-gateway/internal/plugins/budget"
@@ -293,188 +287,4 @@ func newRateLimitStore() *ratelimit.Store {
 	store := ratelimit.NewStore(rps, burst)
 	logging.Logger.Info("rate limiting enabled", "rps", rps, "burst", burst)
 	return store
-}
-
-// newRouter builds the HTTP router.
-func newRouter(
-	registry *providers.Registry,
-	keyStore admin.Store,
-	corsOrigins []string,
-	gw *aigateway.Gateway,
-	cfgManager admin.ConfigManager,
-	rlStore *ratelimit.Store,
-	logReader requestlog.Reader,
-	logMaintainer requestlog.Maintainer,
-) http.Handler {
-	if gw == nil {
-		defaultTargets := make([]aigateway.Target, 0, len(registry.List()))
-		for _, name := range registry.List() {
-			defaultTargets = append(defaultTargets, aigateway.Target{VirtualKey: name})
-		}
-		cfg := aigateway.Config{
-			Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeFallback},
-			Targets:  defaultTargets,
-		}
-		created, err := aigateway.New(cfg)
-		if err == nil {
-			for _, name := range registry.List() {
-				if p, ok := registry.Get(name); ok {
-					created.RegisterProvider(p)
-				}
-			}
-			gw = created
-		}
-	}
-
-	r := chi.NewRouter()
-
-	// Core middleware stack.
-	r.Use(logging.Middleware) // inject trace ID + X-Request-ID header
-	r.Use(middleware.Recoverer)
-	r.Use(middleware.RealIP)
-	r.Use(corsMiddleware(corsOrigins...))
-
-	// Optional per-IP rate limiting middleware.
-	if rlStore != nil {
-		r.Use(rateLimitMiddleware(rlStore))
-	}
-
-	// Health check — deep: lists registered providers and their model counts.
-	r.Get("/health", func(w http.ResponseWriter, _ *http.Request) {
-		type providerHealth struct {
-			Name   string `json:"name"`
-			Status string `json:"status"`
-			Models int    `json:"models"`
-		}
-		var providerStatuses []providerHealth
-		for _, name := range gw.ListProviders() {
-			p, ok := gw.GetProvider(name)
-			if !ok {
-				continue
-			}
-			providerStatuses = append(providerStatuses, providerHealth{
-				Name:   name,
-				Status: "available",
-				Models: len(p.Models()),
-			})
-		}
-		if providerStatuses == nil {
-			providerStatuses = []providerHealth{}
-		}
-		status := "ok"
-		if len(providerStatuses) == 0 {
-			status = "no_providers"
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"status":    status,
-			"providers": providerStatuses,
-		})
-	})
-
-	// Prometheus metrics endpoint.
-	r.Handle("/metrics", promhttp.Handler())
-	r.Handle("/debug/vars", expvar.Handler())
-	mountPprofRoutes(r)
-
-	// Minimal built-in admin dashboard UI.
-	r.Get("/dashboard", func(w http.ResponseWriter, _ *http.Request) {
-		if err := renderWebTemplate(w, "dashboard.html", nil); err != nil {
-			writeOpenAIError(w, http.StatusInternalServerError, "failed to render dashboard", "server_error", "internal_error")
-			return
-		}
-	})
-	r.Get("/logo.png", func(w http.ResponseWriter, _ *http.Request) {
-		serveLogo(w)
-	})
-
-	r.Get("/v1/models", func(w http.ResponseWriter, _ *http.Request) {
-		catalog := gw.Catalog()
-		raw := gw.AllModels()
-		enriched := make([]EnrichedModelInfo, 0, len(raw))
-		for _, m := range raw {
-			enriched = append(enriched, enrichFromCatalog(catalog, m.OwnedBy, m.ID))
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"object": "list",
-			"data":   enriched,
-		})
-	})
-
-	// Admin routes — pass the gateway as the ProviderSource.
-	adminHandlers := &admin.Handlers{
-		Keys:      keyStore,
-		Providers: gw,
-		Configs:   cfgManager,
-		Logs:      logReader,
-		LogAdmin:  logMaintainer,
-	}
-	r.Route("/admin", func(r chi.Router) {
-		r.Use(admin.AuthMiddleware(keyStore))
-		r.Mount("/", adminHandlers.Routes())
-	})
-
-	r.Post("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
-		req, err := decodeChatCompletionRequest(r.Body)
-		if err != nil {
-			writeOpenAIError(w, http.StatusBadRequest, err.Error(), "invalid_request_error", "invalid_request")
-			return
-		}
-		if err := req.Validate(); err != nil {
-			writeOpenAIError(w, http.StatusBadRequest, err.Error(), "invalid_request_error", "invalid_request")
-			return
-		}
-
-		// --- Streaming path ---
-		if req.Stream {
-			if _, ok := gw.FindByModel(req.Model); !ok {
-				writeOpenAIError(w, http.StatusBadRequest, "no provider supports model: "+req.Model, "invalid_request_error", "model_not_found")
-				return
-			}
-			if _, ok := gw.FindStreamingByModel(req.Model); !ok {
-				writeOpenAIError(w, http.StatusBadRequest, "provider does not support streaming", "invalid_request_error", "streaming_not_supported")
-				return
-			}
-
-			ch, err := gw.RouteStream(r.Context(), req)
-			if err != nil {
-				status, errType, code := routeErrorDetails(err)
-				writeOpenAIError(w, status, err.Error(), errType, code)
-				return
-			}
-			writeSSE(r.Context(), w, ch)
-			return
-		}
-
-		// --- Non-streaming path ---
-		if _, ok := gw.FindByModel(req.Model); !ok {
-			writeOpenAIError(w, http.StatusBadRequest, "no provider supports model: "+req.Model, "invalid_request_error", "model_not_found")
-			return
-		}
-
-		resp, err := gw.Route(r.Context(), req)
-		if err != nil {
-			status, errType, code := routeErrorDetails(err)
-			writeOpenAIError(w, status, err.Error(), errType, code)
-			return
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
-	})
-
-	// Legacy text completions.
-	r.Post("/v1/completions", completionsHandler(registry))
-
-	// Embeddings endpoint.
-	r.Post("/v1/embeddings", embeddingsHandler(gw))
-
-	// Image generation endpoint.
-	r.Post("/v1/images/generations", imagesHandler(gw))
-
-	// Proxy pass-through for unhandled /v1/* endpoints.
-	r.HandleFunc("/v1/*", proxyHandler(registry))
-
-	return r
 }

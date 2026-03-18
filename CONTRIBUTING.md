@@ -47,7 +47,7 @@ providers/
   facade_aliases.go # Type aliases for backwards compatibility
 plugin/             # Public: Plugin interface, Stage constants, Context
 cmd/
-  ferrogw/          # Server binary (main.go, cors.go, proxy.go, completions.go)
+  ferrogw/          # Server binary (bootstrap, router, proxy, SSE, request decoding)
   ferrogw-cli/      # CLI helper
 internal/
   admin/            # HTTP admin API (key management, dashboard, usage, logs, config history)
@@ -146,8 +146,8 @@ Use this dependency posture when contributing:
 |---|---|---|
 | `adapter-only` | Edge dependency used for transport, CLI, config, or storage glue | `chi`, `cobra`, `yaml.v3`, `lib/pq`, `modernc.org/sqlite` |
 | `operational` | Observability or runtime operations dependency | `prometheus/client_golang` |
-| `provider protocol dependency` | Dependency justified by a provider-specific auth or protocol surface | AWS SDK v2, `golang.org/x/oauth2` |
-| `review-later` | Allowed for now, but should be periodically re-evaluated against direct stdlib HTTP | `openai-go`, `prometheus/client_model` in tests |
+| `provider protocol dependency` | Dependency justified by a provider-specific auth or protocol surface | AWS SDK v2, `golang.org/x/oauth2`, `openai-go` |
+| `review-later` | Allowed for now, but should be periodically re-evaluated against direct stdlib HTTP | `prometheus/client_model` in tests |
 
 Rules of thumb:
 
@@ -155,6 +155,7 @@ Rules of thumb:
 - Do not hide `context`, `http.Client`, `http.Transport`, `errors.Join`, or `slog` behind custom framework layers.
 - Keep provider SDK usage isolated to provider packages.
 - Keep SQL drivers isolated to storage packages.
+- Keep entrypoint and transport packages split by responsibility when pressure appears, not preemptively.
 - If a dependency only helps in tests, keep it out of production code paths.
 
 ---
