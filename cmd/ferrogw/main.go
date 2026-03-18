@@ -20,7 +20,6 @@ import (
 
 	aigateway "github.com/ferro-labs/ai-gateway"
 	"github.com/ferro-labs/ai-gateway/internal/admin"
-	"github.com/ferro-labs/ai-gateway/internal/httpclient"
 	"github.com/ferro-labs/ai-gateway/internal/logging"
 	"github.com/ferro-labs/ai-gateway/internal/metrics"
 	"github.com/ferro-labs/ai-gateway/internal/ratelimit"
@@ -44,24 +43,6 @@ import (
 )
 
 var webTemplates = template.Must(template.ParseFS(webassets.Assets, "*.html"))
-
-const (
-	backendMemory      = "memory"
-	backendSQLite      = "sqlite"
-	backendPostgres    = "postgres"
-	backendPostgresSQL = "postgresql"
-
-	serverReadTimeout       = 30 * time.Second
-	serverReadHeaderTimeout = 10 * time.Second
-	serverWriteTimeout      = 120 * time.Second
-	serverIdleTimeout       = 60 * time.Second
-	serverMaxHeaderBytes    = 1 << 20 // 1 MiB
-)
-
-type namedResource struct {
-	name  string
-	value any
-}
 
 func main() {
 	// Initialise structured logging before anything else.
@@ -150,132 +131,6 @@ func main() {
 		os.Exit(1) //nolint:gocritic
 	}
 	logging.Logger.Info("server stopped")
-}
-
-func newHTTPServer(addr string, handler http.Handler) *http.Server {
-	tracker := newServerConnTracker()
-	return &http.Server{
-		Addr:              addr,
-		Handler:           handler,
-		ConnContext:       tracker.ConnContext,
-		ConnState:         tracker.ConnState,
-		ReadTimeout:       serverReadTimeout,
-		ReadHeaderTimeout: serverReadHeaderTimeout,
-		WriteTimeout:      serverWriteTimeout,
-		IdleTimeout:       serverIdleTimeout,
-		MaxHeaderBytes:    serverMaxHeaderBytes,
-	}
-}
-
-func closeResources(resources ...namedResource) error {
-	var err error
-	for _, resource := range resources {
-		closer, ok := resource.value.(interface{ Close() error })
-		if !ok {
-			continue
-		}
-		if closeErr := closer.Close(); closeErr != nil {
-			err = errors.Join(err, fmt.Errorf("close %s: %w", resource.name, closeErr))
-		}
-	}
-	httpclient.CloseIdleConnections()
-	return err
-}
-
-func createKeyStoreFromEnv() (admin.Store, string, error) {
-	backend := strings.ToLower(strings.TrimSpace(os.Getenv("API_KEY_STORE_BACKEND")))
-	if backend == "" {
-		backend = backendMemory
-	}
-
-	storeDSN := strings.TrimSpace(os.Getenv("API_KEY_STORE_DSN"))
-
-	switch backend {
-	case backendMemory, "in-memory", "inmemory":
-		return admin.NewKeyStore(), backendMemory, nil
-	case backendSQLite:
-		store, err := admin.NewSQLiteStore(storeDSN)
-		if err != nil {
-			return nil, "", err
-		}
-		return store, backendSQLite, nil
-	case backendPostgres, backendPostgresSQL:
-		store, err := admin.NewPostgresStore(storeDSN)
-		if err != nil {
-			return nil, "", err
-		}
-		return store, backendPostgres, nil
-	default:
-		return nil, "", fmt.Errorf("unsupported API key store backend %q", backend)
-	}
-}
-
-func createRequestLogReaderFromEnv() (requestlog.Reader, requestlog.Maintainer, string, error) {
-	backend := strings.ToLower(strings.TrimSpace(os.Getenv("REQUEST_LOG_STORE_BACKEND")))
-	if backend == "" {
-		return nil, nil, "disabled", nil
-	}
-
-	dsn := strings.TrimSpace(os.Getenv("REQUEST_LOG_STORE_DSN"))
-
-	switch backend {
-	case backendSQLite:
-		reader, err := requestlog.NewSQLiteWriter(dsn)
-		if err != nil {
-			return nil, nil, "", err
-		}
-		return reader, reader, backendSQLite, nil
-	case backendPostgres, backendPostgresSQL:
-		reader, err := requestlog.NewPostgresWriter(dsn)
-		if err != nil {
-			return nil, nil, "", err
-		}
-		return reader, reader, backendPostgres, nil
-	default:
-		return nil, nil, "", fmt.Errorf("unsupported request log store backend %q", backend)
-	}
-}
-
-func createConfigManagerFromEnv(gw *aigateway.Gateway) (admin.ConfigManager, string, error) {
-	backend := strings.ToLower(strings.TrimSpace(os.Getenv("CONFIG_STORE_BACKEND")))
-	if backend == "" {
-		backend = backendMemory
-	}
-
-	dsn := strings.TrimSpace(os.Getenv("CONFIG_STORE_DSN"))
-
-	switch backend {
-	case backendMemory, "in-memory", "inmemory":
-		manager, err := admin.NewGatewayConfigManager(gw, nil)
-		if err != nil {
-			return nil, "", err
-		}
-		return manager, backendMemory, nil
-	case backendSQLite:
-		store, err := admin.NewSQLiteConfigStore(dsn)
-		if err != nil {
-			return nil, "", err
-		}
-		manager, err := admin.NewGatewayConfigManager(gw, store)
-		if err != nil {
-			_ = store.Close()
-			return nil, "", err
-		}
-		return manager, backendSQLite, nil
-	case backendPostgres, backendPostgresSQL:
-		store, err := admin.NewPostgresConfigStore(dsn)
-		if err != nil {
-			return nil, "", err
-		}
-		manager, err := admin.NewGatewayConfigManager(gw, store)
-		if err != nil {
-			_ = store.Close()
-			return nil, "", err
-		}
-		return manager, backendPostgres, nil
-	default:
-		return nil, "", fmt.Errorf("unsupported config store backend %q", backend)
-	}
 }
 
 func logBootstrapConfigurationWarnings(keyStore admin.Store) {
