@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -602,7 +601,7 @@ func newRouter(
 				writeOpenAIError(w, status, err.Error(), errType, code)
 				return
 			}
-			writeSSE(w, ch)
+			writeSSE(r.Context(), w, ch)
 			return
 		}
 
@@ -834,60 +833,4 @@ func routeErrorDetails(err error) (status int, errType, code string) {
 	}
 
 	return status, errType, code
-}
-
-// writeSSE streams SSE chunks from ch to the response writer.
-func writeSSE(w http.ResponseWriter, ch <-chan providers.StreamChunk) {
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	flusher, _ := w.(http.Flusher)
-	bw := bufio.NewWriterSize(w, 4096)
-	enc := json.NewEncoder(bw)
-	now := time.Now().Unix()
-	for chunk := range ch {
-		if chunk.Error != nil {
-			_ = writeSSEEvent(bw, enc, map[string]any{
-				"error": map[string]string{
-					"message": chunk.Error.Error(),
-					"type":    "stream_error",
-					"code":    "stream_error",
-				},
-			})
-			_ = bw.Flush()
-			flushSSE(flusher)
-			return
-		}
-		if chunk.Object == "" {
-			chunk.Object = "chat.completion.chunk"
-		}
-		if chunk.Created == 0 {
-			chunk.Created = now
-		}
-		_ = writeSSEEvent(bw, enc, chunk)
-		_ = bw.Flush()
-		flushSSE(flusher)
-	}
-	_, _ = bw.WriteString("data: [DONE]\n\n")
-	_ = bw.Flush()
-	flushSSE(flusher)
-}
-
-func writeSSEEvent(bw *bufio.Writer, enc *json.Encoder, payload any) error {
-	if _, err := bw.WriteString("data: "); err != nil {
-		return err
-	}
-	if err := enc.Encode(payload); err != nil {
-		return err
-	}
-	if err := bw.WriteByte('\n'); err != nil {
-		return err
-	}
-	return nil
-}
-
-func flushSSE(flusher http.Flusher) {
-	if flusher != nil {
-		flusher.Flush()
-	}
 }

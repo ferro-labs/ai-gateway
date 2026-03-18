@@ -331,7 +331,7 @@ func TestWriteSSE_StreamError(t *testing.T) {
 	close(ch)
 
 	w := httptest.NewRecorder()
-	writeSSE(w, ch)
+	writeSSE(context.Background(), w, ch)
 
 	body := w.Body.String()
 	if !strings.Contains(body, `"type":"stream_error"`) {
@@ -390,7 +390,7 @@ func BenchmarkWriteSSE(b *testing.B) {
 		close(ch)
 
 		w := httptest.NewRecorder()
-		writeSSE(w, ch)
+		writeSSE(context.Background(), w, ch)
 	}
 }
 
