@@ -136,6 +136,40 @@ func TestCachePlugin_DifferentKeys(t *testing.T) {
 	}
 }
 
+func TestCachePlugin_MessageOrderAffectsCacheKey(t *testing.T) {
+	c := initCache(t, map[string]interface{}{})
+	resp := testResponse()
+
+	reqA := &providers.Request{
+		Model: "gpt-4",
+		Messages: []providers.Message{
+			{Role: "system", Content: "You are concise."},
+			{Role: "user", Content: "Explain TLS in one sentence."},
+		},
+	}
+	reqB := &providers.Request{
+		Model: "gpt-4",
+		Messages: []providers.Message{
+			{Role: "user", Content: "Explain TLS in one sentence."},
+			{Role: "system", Content: "You are concise."},
+		},
+	}
+
+	storePctx := plugin.NewContext(reqA)
+	storePctx.Response = resp
+	if err := c.Execute(context.Background(), storePctx); err != nil {
+		t.Fatalf("Execute (store) error: %v", err)
+	}
+
+	lookupPctx := plugin.NewContext(reqB)
+	if err := c.Execute(context.Background(), lookupPctx); err != nil {
+		t.Fatalf("Execute (lookup) error: %v", err)
+	}
+	if lookupPctx.Skip {
+		t.Error("expected cache miss for same messages in different order")
+	}
+}
+
 func TestCachePlugin_Expiration(t *testing.T) {
 	c := initCache(t, map[string]interface{}{"max_age": 300})
 	req := testRequest("gpt-4", "hello")

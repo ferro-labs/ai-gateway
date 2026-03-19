@@ -10,7 +10,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"sort"
 	"sync"
 	"time"
 
@@ -114,13 +113,10 @@ func (c *ResponseCache) Execute(_ context.Context, pctx *plugin.Context) error {
 }
 
 func cacheKey(req *providers.Request) string {
-	msgs := make([]string, len(req.Messages))
-	for i, m := range req.Messages {
-		msgs[i] = fmt.Sprintf("%s:%s:%s", m.Role, m.Name, m.Content)
+	h := sha256.New()
+	fmt.Fprintf(h, "%s\n", req.Model)
+	for _, m := range req.Messages {
+		fmt.Fprintf(h, "%s\x00%s\x00%s\n", m.Role, m.Name, m.Content)
 	}
-	sort.Strings(msgs)
-
-	raw := req.Model + "\n" + fmt.Sprintf("%v", msgs)
-	h := sha256.Sum256([]byte(raw))
-	return hex.EncodeToString(h[:])
+	return hex.EncodeToString(h.Sum(nil))
 }
