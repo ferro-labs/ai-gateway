@@ -326,7 +326,7 @@ func TestGateway_PublishEvent_CallsAllHooks(t *testing.T) {
 	}
 }
 
-func TestGateway_PublishEvent_EnqueuesEachHookIndependently(t *testing.T) {
+func TestGateway_PublishEvent_EnqueuesAllHooksAsOneDispatch(t *testing.T) {
 	gw := &Gateway{
 		hookDispatchQ: make(chan hookDispatch, 2),
 	}
@@ -348,8 +348,8 @@ func TestGateway_PublishEvent_EnqueuesEachHookIndependently(t *testing.T) {
 		true,
 	))
 
-	if got := len(gw.hookDispatchQ); got != 2 {
-		t.Fatalf("queued hook dispatches = %d, want 2", got)
+	if got := len(gw.hookDispatchQ); got != 1 {
+		t.Fatalf("queued hook dispatches = %d, want 1 (all hooks in one dispatch)", got)
 	}
 }
 
@@ -362,19 +362,15 @@ func TestGateway_PublishEvent_IncrementsDropMetricWhenQueueFull(t *testing.T) {
 	}
 	gw.hookSnapshot.Store([]EventHookFunc{
 		func(context.Context, string, map[string]interface{}) {},
-		func(context.Context, string, map[string]interface{}) {},
 	})
 
+	// Fill the queue.
 	gw.publishEvent(context.Background(), events.CompletedRequest(
-		"trace-123",
-		"mock",
-		"gpt-4o",
-		time.Millisecond,
-		false,
-		1,
-		1,
-		models.CostResult{},
-		true,
+		"trace-fill", "mock", "gpt-4o", time.Millisecond, false, 1, 1, models.CostResult{}, true,
+	))
+	// This one should be dropped.
+	gw.publishEvent(context.Background(), events.CompletedRequest(
+		"trace-drop", "mock", "gpt-4o", time.Millisecond, false, 1, 1, models.CostResult{}, true,
 	))
 
 	after := counterValue(t, counter)

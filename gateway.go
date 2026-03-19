@@ -79,7 +79,7 @@ type modelLookupIndex struct {
 type hookDispatch struct {
 	ctx   context.Context
 	event events.HookEvent
-	hook  EventHookFunc
+	hooks []EventHookFunc
 }
 
 const hookDispatchQueueSize = 256
@@ -266,8 +266,9 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	}
 
 	// Run before-request plugins (guardrails, transforms, rate-limit).
-	pctx := plugin.NewContext(&req)
+	var pctx *plugin.Context
 	if g.plugins.HasPlugins() {
+		pctx = plugin.NewContext(&req)
 		trace.WithRegion(ctx, "gateway.route.plugins.before", func() {
 			err = g.plugins.RunBefore(ctx, pctx)
 		})
@@ -275,10 +276,10 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 			metrics.ForRequest("", req.Model).Rejected.Inc()
 			return nil, err
 		}
-	}
-	// Propagate any request mutations made by before-request plugins.
-	if pctx.Request != nil {
-		req = *pctx.Request
+		// Propagate any request mutations made by before-request plugins.
+		if pctx.Request != nil {
+			req = *pctx.Request
+		}
 	}
 
 	// Inject MCP tool definitions into the request when servers are ready.
@@ -406,7 +407,7 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	// when final-response streaming lands, remove the force-to-false above).
 
 	// Run after-request plugins (logging, caching).
-	if g.plugins.HasPlugins() {
+	if pctx != nil {
 		pctx.Response = resp
 		trace.WithRegion(ctx, "gateway.route.plugins.after", func() {
 			err = g.plugins.RunAfter(ctx, pctx)
@@ -481,16 +482,12 @@ func (g *Gateway) publishEvent(ctx context.Context, event events.HookEvent) {
 		event: event,
 	}
 
-	for _, hook := range hooks {
-		dispatch.hook = hook
-		select {
-		case g.hookDispatchQ <- dispatch:
-		default:
-			metrics.HookEventsDroppedTotal.WithLabelValues(event.Subject).Inc()
-			logging.Logger.Debug("dropping event hook dispatch due to full queue",
-				"subject", event.Subject,
-			)
-		}
+	dispatch.hooks = hooks
+	select {
+	case g.hookDispatchQ <- dispatch:
+	default:
+		// Queue full — drop event to avoid unbounded goroutine creation.
+		metrics.HookEventsDroppedTotal.WithLabelValues(event.Subject).Inc()
 	}
 }
 
@@ -518,16 +515,20 @@ func (g *Gateway) startHookWorkers() {
 }
 
 func runHookDispatch(dispatch hookDispatch) {
-	defer func() {
-		if r := recover(); r != nil {
-			logging.Logger.Error("event hook panicked",
-				"subject", dispatch.event.Subject,
-				"panic", r,
-			)
-		}
-	}()
-
-	dispatch.hook(dispatch.ctx, dispatch.event.Subject, dispatch.event.Map())
+	data := dispatch.event.Map()
+	for _, hook := range dispatch.hooks {
+		func(fn EventHookFunc) {
+			defer func() {
+				if r := recover(); r != nil {
+					logging.Logger.Error("event hook panicked",
+						"subject", dispatch.event.Subject,
+						"panic", r,
+					)
+				}
+			}()
+			fn(dispatch.ctx, dispatch.event.Subject, data)
+		}(hook)
+	}
 }
 
 func failedEventData(traceID, provider, model, errMsg string, latency time.Duration, stream bool) events.HookEvent {
