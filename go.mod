@@ -3,7 +3,7 @@ module github.com/ferro-labs/ai-gateway
 go 1.24.0
 
 require (
-	github.com/aws/aws-sdk-go-v2 v1.41.3
+	github.com/aws/aws-sdk-go-v2 v1.41.4
 	github.com/aws/aws-sdk-go-v2/config v1.32.11
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.11
 	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.50.1
