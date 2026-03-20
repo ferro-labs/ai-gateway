@@ -170,6 +170,42 @@ func TestCachePlugin_MessageOrderAffectsCacheKey(t *testing.T) {
 	}
 }
 
+func TestCachePlugin_DelimiterCharactersDoNotCollide(t *testing.T) {
+	c := initCache(t, map[string]interface{}{})
+	resp := testResponse()
+
+	reqA := &providers.Request{
+		Model: "gpt-4",
+		Messages: []providers.Message{
+			{Role: "user", Name: "", Content: "alpha\x00beta\ngamma"},
+		},
+	}
+	reqB := &providers.Request{
+		Model: "gpt-4",
+		Messages: []providers.Message{
+			{Role: "user", Name: "\x00alpha", Content: "beta\ngamma"},
+		},
+	}
+
+	if cacheKey(reqA) == cacheKey(reqB) {
+		t.Fatal("expected distinct cache keys for messages containing delimiter characters")
+	}
+
+	storePctx := plugin.NewContext(reqA)
+	storePctx.Response = resp
+	if err := c.Execute(context.Background(), storePctx); err != nil {
+		t.Fatalf("Execute (store) error: %v", err)
+	}
+
+	lookupPctx := plugin.NewContext(reqB)
+	if err := c.Execute(context.Background(), lookupPctx); err != nil {
+		t.Fatalf("Execute (lookup) error: %v", err)
+	}
+	if lookupPctx.Skip {
+		t.Error("expected cache miss for distinct requests with embedded delimiters")
+	}
+}
+
 func TestCachePlugin_Expiration(t *testing.T) {
 	c := initCache(t, map[string]interface{}{"max_age": 300})
 	req := testRequest("gpt-4", "hello")
