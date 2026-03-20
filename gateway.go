@@ -79,7 +79,7 @@ type modelLookupIndex struct {
 type hookDispatch struct {
 	ctx   context.Context
 	event events.HookEvent
-	hooks []EventHookFunc
+	hook  EventHookFunc
 }
 
 const hookDispatchQueueSize = 256
@@ -477,17 +477,19 @@ func (g *Gateway) publishEvent(ctx context.Context, event events.HookEvent) {
 		return
 	}
 
-	dispatch := hookDispatch{
-		ctx:   ctx,
-		event: event,
-	}
+	for _, hook := range hooks {
+		dispatch := hookDispatch{
+			ctx:   ctx,
+			event: event,
+			hook:  hook,
+		}
 
-	dispatch.hooks = hooks
-	select {
-	case g.hookDispatchQ <- dispatch:
-	default:
-		// Queue full — drop event to avoid unbounded goroutine creation.
-		metrics.HookEventsDroppedTotal.WithLabelValues(event.Subject).Inc()
+		select {
+		case g.hookDispatchQ <- dispatch:
+		default:
+			// Queue full — drop hook dispatches to avoid unbounded goroutine creation.
+			metrics.HookEventsDroppedTotal.WithLabelValues(event.Subject).Inc()
+		}
 	}
 }
 
@@ -516,19 +518,15 @@ func (g *Gateway) startHookWorkers() {
 
 func runHookDispatch(dispatch hookDispatch) {
 	data := dispatch.event.Map()
-	for _, hook := range dispatch.hooks {
-		func(fn EventHookFunc) {
-			defer func() {
-				if r := recover(); r != nil {
-					logging.Logger.Error("event hook panicked",
-						"subject", dispatch.event.Subject,
-						"panic", r,
-					)
-				}
-			}()
-			fn(dispatch.ctx, dispatch.event.Subject, data)
-		}(hook)
-	}
+	defer func() {
+		if r := recover(); r != nil {
+			logging.Logger.Error("event hook panicked",
+				"subject", dispatch.event.Subject,
+				"panic", r,
+			)
+		}
+	}()
+	dispatch.hook(dispatch.ctx, dispatch.event.Subject, data)
 }
 
 func failedEventData(traceID, provider, model, errMsg string, latency time.Duration, stream bool) events.HookEvent {

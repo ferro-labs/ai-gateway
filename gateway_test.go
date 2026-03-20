@@ -326,7 +326,7 @@ func TestGateway_PublishEvent_CallsAllHooks(t *testing.T) {
 	}
 }
 
-func TestGateway_PublishEvent_EnqueuesAllHooksAsOneDispatch(t *testing.T) {
+func TestGateway_PublishEvent_EnqueuesEachHookIndividually(t *testing.T) {
 	gw := &Gateway{
 		hookDispatchQ: make(chan hookDispatch, 2),
 	}
@@ -348,8 +348,48 @@ func TestGateway_PublishEvent_EnqueuesAllHooksAsOneDispatch(t *testing.T) {
 		true,
 	))
 
-	if got := len(gw.hookDispatchQ); got != 1 {
-		t.Fatalf("queued hook dispatches = %d, want 1 (all hooks in one dispatch)", got)
+	if got := len(gw.hookDispatchQ); got != 2 {
+		t.Fatalf("queued hook dispatches = %d, want 2 (one per hook)", got)
+	}
+}
+
+func TestRunHookDispatch_CreatesFreshPayloadMapPerHook(t *testing.T) {
+	event := events.CompletedRequest(
+		"trace-123",
+		"mock",
+		"gpt-4o",
+		time.Millisecond,
+		false,
+		1,
+		1,
+		models.CostResult{},
+		true,
+	)
+
+	var firstData map[string]interface{}
+	runHookDispatch(hookDispatch{
+		ctx:   context.Background(),
+		event: event,
+		hook: func(_ context.Context, _ string, data map[string]interface{}) {
+			firstData = data
+			data["provider"] = "mutated"
+		},
+	})
+
+	var secondProvider string
+	runHookDispatch(hookDispatch{
+		ctx:   context.Background(),
+		event: event,
+		hook: func(_ context.Context, _ string, data map[string]interface{}) {
+			secondProvider, _ = data["provider"].(string)
+		},
+	})
+
+	if got := firstData["provider"]; got != "mutated" {
+		t.Fatalf("first hook provider = %v, want mutated", got)
+	}
+	if secondProvider != "mock" {
+		t.Fatalf("second hook provider = %q, want mock", secondProvider)
 	}
 }
 
