@@ -8,9 +8,9 @@ package cache
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
-	"fmt"
-	"sort"
+	"hash"
 	"sync"
 	"time"
 
@@ -114,13 +114,19 @@ func (c *ResponseCache) Execute(_ context.Context, pctx *plugin.Context) error {
 }
 
 func cacheKey(req *providers.Request) string {
-	msgs := make([]string, len(req.Messages))
-	for i, m := range req.Messages {
-		msgs[i] = fmt.Sprintf("%s:%s:%s", m.Role, m.Name, m.Content)
+	h := sha256.New()
+	writeCacheKeyString(h, req.Model)
+	for _, m := range req.Messages {
+		writeCacheKeyString(h, m.Role)
+		writeCacheKeyString(h, m.Name)
+		writeCacheKeyString(h, m.Content)
 	}
-	sort.Strings(msgs)
+	return hex.EncodeToString(h.Sum(nil))
+}
 
-	raw := req.Model + "\n" + fmt.Sprintf("%v", msgs)
-	h := sha256.Sum256([]byte(raw))
-	return hex.EncodeToString(h[:])
+func writeCacheKeyString(h hash.Hash, s string) {
+	var lenBuf [8]byte
+	binary.BigEndian.PutUint64(lenBuf[:], uint64(len(s)))
+	_, _ = h.Write(lenBuf[:])
+	_, _ = h.Write([]byte(s))
 }
