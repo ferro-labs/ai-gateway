@@ -326,7 +326,7 @@ func TestGateway_PublishEvent_CallsAllHooks(t *testing.T) {
 	}
 }
 
-func TestGateway_PublishEvent_EnqueuesEachHookIndependently(t *testing.T) {
+func TestGateway_PublishEvent_EnqueuesEachHookIndividually(t *testing.T) {
 	gw := &Gateway{
 		hookDispatchQ: make(chan hookDispatch, 2),
 	}
@@ -349,7 +349,47 @@ func TestGateway_PublishEvent_EnqueuesEachHookIndependently(t *testing.T) {
 	))
 
 	if got := len(gw.hookDispatchQ); got != 2 {
-		t.Fatalf("queued hook dispatches = %d, want 2", got)
+		t.Fatalf("queued hook dispatches = %d, want 2 (one per hook)", got)
+	}
+}
+
+func TestRunHookDispatch_CreatesFreshPayloadMapPerHook(t *testing.T) {
+	event := events.CompletedRequest(
+		"trace-123",
+		"mock",
+		"gpt-4o",
+		time.Millisecond,
+		false,
+		1,
+		1,
+		models.CostResult{},
+		true,
+	)
+
+	var firstData map[string]interface{}
+	runHookDispatch(hookDispatch{
+		ctx:   context.Background(),
+		event: event,
+		hook: func(_ context.Context, _ string, data map[string]interface{}) {
+			firstData = data
+			data["provider"] = "mutated"
+		},
+	})
+
+	var secondProvider string
+	runHookDispatch(hookDispatch{
+		ctx:   context.Background(),
+		event: event,
+		hook: func(_ context.Context, _ string, data map[string]interface{}) {
+			secondProvider, _ = data["provider"].(string)
+		},
+	})
+
+	if got := firstData["provider"]; got != "mutated" {
+		t.Fatalf("first hook provider = %v, want mutated", got)
+	}
+	if secondProvider != "mock" {
+		t.Fatalf("second hook provider = %q, want mock", secondProvider)
 	}
 }
 
@@ -362,19 +402,15 @@ func TestGateway_PublishEvent_IncrementsDropMetricWhenQueueFull(t *testing.T) {
 	}
 	gw.hookSnapshot.Store([]EventHookFunc{
 		func(context.Context, string, map[string]interface{}) {},
-		func(context.Context, string, map[string]interface{}) {},
 	})
 
+	// Fill the queue.
 	gw.publishEvent(context.Background(), events.CompletedRequest(
-		"trace-123",
-		"mock",
-		"gpt-4o",
-		time.Millisecond,
-		false,
-		1,
-		1,
-		models.CostResult{},
-		true,
+		"trace-fill", "mock", "gpt-4o", time.Millisecond, false, 1, 1, models.CostResult{}, true,
+	))
+	// This one should be dropped.
+	gw.publishEvent(context.Background(), events.CompletedRequest(
+		"trace-drop", "mock", "gpt-4o", time.Millisecond, false, 1, 1, models.CostResult{}, true,
 	))
 
 	after := counterValue(t, counter)

@@ -266,8 +266,9 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	}
 
 	// Run before-request plugins (guardrails, transforms, rate-limit).
-	pctx := plugin.NewContext(&req)
+	var pctx *plugin.Context
 	if g.plugins.HasPlugins() {
+		pctx = plugin.NewContext(&req)
 		trace.WithRegion(ctx, "gateway.route.plugins.before", func() {
 			err = g.plugins.RunBefore(ctx, pctx)
 		})
@@ -275,10 +276,10 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 			metrics.ForRequest("", req.Model).Rejected.Inc()
 			return nil, err
 		}
-	}
-	// Propagate any request mutations made by before-request plugins.
-	if pctx.Request != nil {
-		req = *pctx.Request
+		// Propagate any request mutations made by before-request plugins.
+		if pctx.Request != nil {
+			req = *pctx.Request
+		}
 	}
 
 	// Inject MCP tool definitions into the request when servers are ready.
@@ -406,7 +407,7 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	// when final-response streaming lands, remove the force-to-false above).
 
 	// Run after-request plugins (logging, caching).
-	if g.plugins.HasPlugins() {
+	if pctx != nil {
 		pctx.Response = resp
 		trace.WithRegion(ctx, "gateway.route.plugins.after", func() {
 			err = g.plugins.RunAfter(ctx, pctx)
@@ -476,20 +477,18 @@ func (g *Gateway) publishEvent(ctx context.Context, event events.HookEvent) {
 		return
 	}
 
-	dispatch := hookDispatch{
-		ctx:   ctx,
-		event: event,
-	}
-
 	for _, hook := range hooks {
-		dispatch.hook = hook
+		dispatch := hookDispatch{
+			ctx:   ctx,
+			event: event,
+			hook:  hook,
+		}
+
 		select {
 		case g.hookDispatchQ <- dispatch:
 		default:
+			// Queue full — drop hook dispatches to avoid unbounded goroutine creation.
 			metrics.HookEventsDroppedTotal.WithLabelValues(event.Subject).Inc()
-			logging.Logger.Debug("dropping event hook dispatch due to full queue",
-				"subject", event.Subject,
-			)
 		}
 	}
 }
@@ -518,6 +517,7 @@ func (g *Gateway) startHookWorkers() {
 }
 
 func runHookDispatch(dispatch hookDispatch) {
+	data := dispatch.event.Map()
 	defer func() {
 		if r := recover(); r != nil {
 			logging.Logger.Error("event hook panicked",
@@ -526,8 +526,7 @@ func runHookDispatch(dispatch hookDispatch) {
 			)
 		}
 	}()
-
-	dispatch.hook(dispatch.ctx, dispatch.event.Subject, dispatch.event.Map())
+	dispatch.hook(dispatch.ctx, dispatch.event.Subject, data)
 }
 
 func failedEventData(traceID, provider, model, errMsg string, latency time.Duration, stream bool) events.HookEvent {
