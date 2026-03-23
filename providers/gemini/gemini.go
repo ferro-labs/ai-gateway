@@ -3,7 +3,6 @@ package gemini
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -45,7 +44,7 @@ func New(apiKey, baseURL string) (*Provider, error) {
 		name:       Name,
 		apiKey:     apiKey,
 		baseURL:    baseURL,
-		httpClient: providerhttp.Shared(),
+		httpClient: providerhttp.ForProvider(Name),
 	}, nil
 }
 
@@ -206,13 +205,14 @@ func buildRequest(req core.Request) (geminiRequest, error) {
 func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
 	geminiReq, _ := buildRequest(req)
 
-	body, err := json.Marshal(geminiReq)
+	bodyReader, _, release, err := core.JSONBodyReader(geminiReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
+	defer release()
 
 	url := fmt.Sprintf("%s/v1beta/models/%s:generateContent?key=%s", p.baseURL, req.Model, p.apiKey)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bodyReader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -274,13 +274,14 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan core.StreamChunk, error) {
 	geminiReq, _ := buildRequest(req)
 
-	body, err := json.Marshal(geminiReq)
+	bodyReader, _, release, err := core.JSONBodyReader(geminiReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
+	defer release()
 
 	url := fmt.Sprintf("%s/v1beta/models/%s:streamGenerateContent?key=%s&alt=sse", p.baseURL, req.Model, p.apiKey)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bodyReader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}

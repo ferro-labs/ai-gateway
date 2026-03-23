@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sync"
 
 	"github.com/ferro-labs/ai-gateway/providers"
 )
@@ -38,9 +39,53 @@ type routeChatMessage struct {
 	ToolCallID string               `json:"tool_call_id,omitempty"`
 }
 
+// chatRequestPool recycles routeChatCompletionRequest objects to reduce GC
+// pressure. Every chat completion request through the gateway allocates one
+// of these — pooling eliminates that allocation from the hot path entirely.
+var chatRequestPool = sync.Pool{
+	New: func() interface{} {
+		return &routeChatCompletionRequest{}
+	},
+}
+
+func getRouteChatCompletionRequest() *routeChatCompletionRequest {
+	return chatRequestPool.Get().(*routeChatCompletionRequest)
+}
+
+func putRouteChatCompletionRequest(r *routeChatCompletionRequest) {
+	r.reset()
+	chatRequestPool.Put(r)
+}
+
+// reset clears all 19 fields before returning to the pool.
+// SECURITY: every field must be listed explicitly. Missing a field
+// leaks one tenant's data to another in the multi-tenant gateway.
+func (r *routeChatCompletionRequest) reset() {
+	r.Model = ""                // field 1:  string
+	r.Messages = nil            // field 2:  []routeChatMessage
+	r.Temperature = nil         // field 3:  *float64
+	r.TopP = nil                // field 4:  *float64
+	r.N = nil                   // field 5:  *int
+	r.Seed = nil                // field 6:  *int64
+	r.MaxTokens = nil           // field 7:  *int
+	r.MaxCompletionTokens = nil // field 8:  *int
+	r.PresencePenalty = nil     // field 9:  *float64
+	r.FrequencyPenalty = nil    // field 10: *float64
+	r.Stop = nil                // field 11: []string
+	r.Tools = nil               // field 12: []providers.Tool
+	r.ToolChoice = nil          // field 13: json.RawMessage ([]byte)
+	r.ResponseFormat = nil      // field 14: *providers.ResponseFormat
+	r.LogProbs = false          // field 15: bool
+	r.TopLogProbs = nil         // field 16: *int
+	r.Stream = false            // field 17: bool
+	r.User = ""                 // field 18: string
+	r.LogitBias = nil           // field 19: map[string]float64
+}
+
 func decodeChatCompletionRequest(r io.Reader) (providers.Request, error) {
-	var wire routeChatCompletionRequest
-	if err := json.NewDecoder(r).Decode(&wire); err != nil {
+	wire := getRouteChatCompletionRequest()
+	defer putRouteChatCompletionRequest(wire)
+	if err := json.NewDecoder(r).Decode(wire); err != nil {
 		return providers.Request{}, err
 	}
 

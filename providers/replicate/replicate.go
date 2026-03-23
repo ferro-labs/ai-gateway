@@ -2,7 +2,6 @@
 package replicate
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -69,7 +68,7 @@ func New(apiToken, baseURL string, textModels, imageModels []string) (*Provider,
 		name:        Name,
 		apiKey:      apiToken,
 		baseURL:     baseURL,
-		httpClient:  providerhttp.Shared(),
+		httpClient:  providerhttp.ForProvider(Name),
 		textModels:  textModels,
 		imageModels: imageModels,
 	}, nil
@@ -182,10 +181,6 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 	}
 
 	predReq := replicatePredictionRequest{Input: input}
-	body, err := json.Marshal(predReq)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
-	}
 
 	modelPath := req.Model
 	for _, m := range p.textModels {
@@ -198,15 +193,18 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 	var url string
 	if v := ModelVersion(modelPath); v != "" {
 		predReq.Version = v
-		body, err = json.Marshal(predReq)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal versioned request: %w", err)
-		}
 		url = fmt.Sprintf("%s/predictions", p.baseURL)
 	} else {
 		url = fmt.Sprintf("%s/models/%s/predictions", p.baseURL, ModelBaseName(modelPath))
 	}
-	pred, err := p.submitAndPoll(ctx, url, body)
+
+	bodyReader, _, release, err := core.JSONBodyReader(predReq)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+	defer release()
+
+	pred, err := p.submitAndPoll(ctx, url, bodyReader)
 	if err != nil {
 		return nil, err
 	}
@@ -253,10 +251,6 @@ func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*c
 	}
 
 	imgReq := replicateImageRequest{Input: input}
-	body, err := json.Marshal(imgReq)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
-	}
 
 	modelPath := req.Model
 	for _, m := range p.imageModels {
@@ -269,15 +263,18 @@ func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*c
 	var url string
 	if v := ModelVersion(modelPath); v != "" {
 		imgReq.Version = v
-		body, err = json.Marshal(imgReq)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal versioned request: %w", err)
-		}
 		url = fmt.Sprintf("%s/predictions", p.baseURL)
 	} else {
 		url = fmt.Sprintf("%s/models/%s/predictions", p.baseURL, ModelBaseName(modelPath))
 	}
-	pred, err := p.submitAndPoll(ctx, url, body)
+
+	bodyReader, _, release, err := core.JSONBodyReader(imgReq)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+	defer release()
+
+	pred, err := p.submitAndPoll(ctx, url, bodyReader)
 	if err != nil {
 		return nil, err
 	}
@@ -301,8 +298,8 @@ func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*c
 }
 
 // submitAndPoll submits a prediction and polls until it completes.
-func (p *Provider) submitAndPoll(ctx context.Context, url string, body []byte) (*Prediction, error) {
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+func (p *Provider) submitAndPoll(ctx context.Context, url string, body io.Reader) (*Prediction, error) {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
