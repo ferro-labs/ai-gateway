@@ -1069,6 +1069,41 @@ func BenchmarkRoute(b *testing.B) {
 	}
 }
 
+// BenchmarkRouteParallel measures Route() under concurrent load to exercise
+// lock contention on the strategy read path.
+func BenchmarkRouteParallel(b *testing.B) {
+	silenceLogs(b)
+	gw, err := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: "bench"}},
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
+	gw.RegisterProvider(&mockProvider{
+		name:   "bench",
+		models: []string{"gpt-4o"},
+		resp: &providers.Response{
+			Choices: []providers.Choice{{Message: providers.Message{Role: "assistant", Content: "ok"}}},
+		},
+	})
+
+	req := providers.Request{
+		Model:    "gpt-4o",
+		Messages: []providers.Message{{Role: "user", Content: "hello"}},
+	}
+
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		ctx := context.Background()
+		for pb.Next() {
+			if _, err := gw.Route(ctx, req); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
 // BenchmarkRouteStream measures the overhead of a RouteStream() call (no MCP,
 // no plugins). The benchmark drains the channel to completion each iteration.
 func BenchmarkRouteStream(b *testing.B) {

@@ -3,7 +3,6 @@ package anthropic
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -45,7 +44,7 @@ func New(apiKey, baseURL string) (*Provider, error) {
 		name:       Name,
 		apiKey:     apiKey,
 		baseURL:    baseURL,
-		httpClient: providerhttp.Shared(),
+		httpClient: providerhttp.ForProvider(Name),
 	}, nil
 }
 
@@ -161,12 +160,13 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 		System:      system,
 	}
 
-	body, err := json.Marshal(aReq)
+	bodyReader, _, release, err := core.JSONBodyReader(aReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
+	defer release()
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/v1/messages", bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/v1/messages", bodyReader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -266,12 +266,13 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 		Stream:      true,
 	}
 
-	body, err := json.Marshal(aReq)
+	bodyReader, _, release, err := core.JSONBodyReader(aReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
+	defer release()
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/v1/messages", bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/v1/messages", bodyReader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}

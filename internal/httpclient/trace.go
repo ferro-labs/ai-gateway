@@ -11,10 +11,6 @@ import (
 	"github.com/ferro-labs/ai-gateway/internal/logging"
 )
 
-type tracingTransport struct {
-	base http.RoundTripper
-}
-
 var errNilRequest = errors.New("httpclient: nil request")
 
 type outboundTrace struct {
@@ -34,6 +30,12 @@ type outboundTrace struct {
 	idleTime   time.Duration
 }
 
+// tracingTransport wraps a base RoundTripper with debug-level connection tracing.
+// Only allocates trace state when debug logging is enabled.
+type tracingTransport struct {
+	base http.RoundTripper
+}
+
 func newTracingTransport(base http.RoundTripper) http.RoundTripper {
 	return tracingTransport{base: base}
 }
@@ -41,11 +43,12 @@ func newTracingTransport(base http.RoundTripper) http.RoundTripper {
 // UsesSharedTransport reports whether rt is wired to the package's shared
 // transport policy, either directly or through the tracing wrapper.
 func UsesSharedTransport(rt http.RoundTripper) bool {
-	if rt == sharedTransport {
+	shared := manager.DefaultTransport()
+	if rt == shared {
 		return true
 	}
 	tracingRT, ok := rt.(tracingTransport)
-	return ok && tracingRT.base == sharedTransport
+	return ok && tracingRT.base == shared
 }
 
 func (t tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) {

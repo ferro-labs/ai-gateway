@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/ferro-labs/ai-gateway/internal/httpclient"
 	"github.com/ferro-labs/ai-gateway/providers"
 )
 
@@ -87,7 +88,11 @@ func completionsHandler(registry *providers.Registry) http.HandlerFunc {
 				outReq.Header.Set("Accept", "text/event-stream")
 			}
 
-			resp, err := http.DefaultClient.Do(outReq)
+			client := httpclient.ForProvider(p.Name())
+			if legacyReq.Stream {
+				client = httpclient.SharedStreaming()
+			}
+			resp, err := client.Do(outReq)
 			if err != nil {
 				writeOpenAIError(w, http.StatusBadGateway, "upstream request failed: "+err.Error(), "server_error", "upstream_error")
 				return

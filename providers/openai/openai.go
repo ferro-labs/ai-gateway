@@ -45,7 +45,7 @@ var (
 func New(apiKey, baseURL string) (*Provider, error) {
 	opts := []option.RequestOption{
 		option.WithAPIKey(apiKey),
-		option.WithHTTPClient(providerhttp.Shared()),
+		option.WithHTTPClient(providerhttp.ForProvider(Name)),
 	}
 	resolvedBase := defaultBaseURL
 	if baseURL != "" {
@@ -57,7 +57,7 @@ func New(apiKey, baseURL string) (*Provider, error) {
 		name:       Name,
 		apiKey:     apiKey,
 		baseURL:    strings.TrimRight(resolvedBase, "/"),
-		httpClient: providerhttp.Shared(),
+		httpClient: providerhttp.ForProvider(Name),
 		client:     client,
 	}, nil
 }

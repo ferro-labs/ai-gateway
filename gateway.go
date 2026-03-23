@@ -269,6 +269,7 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	var pctx *plugin.Context
 	if g.plugins.HasPlugins() {
 		pctx = plugin.NewContext(&req)
+		defer plugin.PutContext(pctx)
 		trace.WithRegion(ctx, "gateway.route.plugins.before", func() {
 			err = g.plugins.RunBefore(ctx, pctx)
 		})
@@ -864,23 +865,27 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 	}
 
 	// Run before-request plugins (word-filter, max-token, rate-limit, etc.).
-	pctx := plugin.NewContext(&req)
 	if g.plugins.HasPlugins() {
+		pctx := plugin.NewContext(&req)
 		trace.WithRegion(ctx, "gateway.route_stream.plugins.before", func() {
 			err = g.plugins.RunBefore(ctx, pctx)
 		})
 		if err != nil {
+			plugin.PutContext(pctx)
 			metrics.ForRequest("", req.Model).Rejected.Inc()
 			return nil, err
 		}
 		if pctx.Reject {
+			reason := pctx.Reason
+			plugin.PutContext(pctx)
 			metrics.ForRequest("", req.Model).Rejected.Inc()
-			return nil, fmt.Errorf("request rejected by plugin: %s", pctx.Reason)
+			return nil, fmt.Errorf("request rejected by plugin: %s", reason)
 		}
-	}
-	// Propagate any modifications made by plugins (e.g., capped max_tokens).
-	if pctx.Request != nil {
-		req = *pctx.Request
+		// Propagate any modifications made by plugins (e.g., capped max_tokens).
+		if pctx.Request != nil {
+			req = *pctx.Request
+		}
+		plugin.PutContext(pctx)
 	}
 
 	// Resolve provider according to strategy mode.

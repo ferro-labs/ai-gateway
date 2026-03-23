@@ -232,7 +232,7 @@ func (p *Provider) completeAnthropic(ctx context.Context, req core.Request) (*co
 		System:           system,
 	}
 
-	body, err := json.Marshal(anthropicReq)
+	body, err := core.MarshalJSON(anthropicReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
@@ -292,7 +292,7 @@ func (p *Provider) completeTitan(ctx context.Context, req core.Request) (*core.R
 	titanReq.TextGenerationConfig.TopP = req.TopP
 	titanReq.TextGenerationConfig.StopSequences = req.Stop
 
-	body, err := json.Marshal(titanReq)
+	body, err := core.MarshalJSON(titanReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
@@ -353,7 +353,7 @@ func (p *Provider) completeLlama(ctx context.Context, req core.Request) (*core.R
 		llamaReq.MaxGenLen = *req.MaxTokens
 	}
 
-	body, err := json.Marshal(llamaReq)
+	body, err := core.MarshalJSON(llamaReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
@@ -420,7 +420,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 		System:           system,
 	}
 
-	body, err := json.Marshal(anthropicReq)
+	body, err := core.MarshalJSON(anthropicReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}

@@ -11,6 +11,7 @@ package plugin
 
 import (
 	"context"
+	"sync"
 
 	"github.com/ferro-labs/ai-gateway/providers"
 )
@@ -59,10 +60,44 @@ type Context struct {
 	Reason   string
 }
 
-// NewContext creates a new plugin context for a request.
+// pluginContextPool recycles Context objects to reduce GC pressure.
+// Every request through the gateway that has plugins registered allocates
+// one of these — pooling eliminates that allocation from the hot path.
+var pluginContextPool = sync.Pool{
+	New: func() interface{} {
+		return &Context{
+			Metadata: make(map[string]interface{}, 8),
+		}
+	},
+}
+
+// NewContext retrieves a plugin context from the pool and sets the request.
+// Caller MUST call PutContext when the request is complete.
 func NewContext(req *providers.Request) *Context {
-	return &Context{
-		Request:  req,
-		Metadata: make(map[string]interface{}),
+	c := pluginContextPool.Get().(*Context)
+	c.Request = req
+	return c
+}
+
+// PutContext returns a plugin context to the pool after resetting all fields.
+func PutContext(c *Context) {
+	if c == nil {
+		return
 	}
+	c.reset()
+	pluginContextPool.Put(c)
+}
+
+// reset clears all 7 fields before returning to the pool.
+// Metadata map entries are deleted but the map itself is kept
+// to preserve its bucket array capacity for the next request.
+// SECURITY: every field must be listed explicitly.
+func (c *Context) reset() {
+	c.Request = nil   // field 1: *providers.Request
+	c.Response = nil  // field 2: *providers.Response
+	clear(c.Metadata) // field 3: map[string]interface{} — clear entries, keep capacity
+	c.Error = nil     // field 4: error
+	c.Skip = false    // field 5: bool
+	c.Reject = false  // field 6: bool
+	c.Reason = ""     // field 7: string
 }

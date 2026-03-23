@@ -3,7 +3,6 @@ package huggingface
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -50,7 +49,7 @@ func New(apiKey, baseURL string) (*Provider, error) {
 		name:       Name,
 		apiKey:     apiKey,
 		baseURL:    baseURL,
-		httpClient: providerhttp.Shared(),
+		httpClient: providerhttp.ForProvider(Name),
 	}, nil
 }
 
@@ -118,12 +117,13 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 		MaxTokens:   req.MaxTokens,
 	}
 
-	body, err := json.Marshal(hfReq)
+	bodyReader, _, release, err := core.JSONBodyReader(hfReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
+	defer release()
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/chat/completions", bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/chat/completions", bodyReader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -186,12 +186,13 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 		Stream:      true,
 	}
 
-	body, err := json.Marshal(hfReq)
+	bodyReader, _, release, err := core.JSONBodyReader(hfReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
+	defer release()
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/chat/completions", bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/chat/completions", bodyReader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -257,12 +258,13 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 
 // Embed sends an embedding request to Hugging Face.
 func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.EmbeddingResponse, error) {
-	body, err := json.Marshal(req)
+	bodyReader, _, release, err := core.JSONBodyReader(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal embedding request: %w", err)
 	}
+	defer release()
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/embeddings", bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/embeddings", bodyReader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -293,12 +295,13 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 
 // GenerateImage sends an image generation request to Hugging Face.
 func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*core.ImageResponse, error) {
-	body, err := json.Marshal(req)
+	bodyReader, _, release, err := core.JSONBodyReader(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal image request: %w", err)
 	}
+	defer release()
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/images/generations", bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/images/generations", bodyReader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}

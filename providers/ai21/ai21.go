@@ -3,7 +3,6 @@ package ai21
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -47,7 +46,7 @@ func New(apiKey, baseURL string) (*Provider, error) {
 		name:       Name,
 		apiKey:     apiKey,
 		baseURL:    baseURL,
-		httpClient: providerhttp.Shared(),
+		httpClient: providerhttp.ForProvider(Name),
 	}, nil
 }
 
@@ -152,12 +151,13 @@ func (p *Provider) completeJamba(ctx context.Context, req core.Request) (*core.R
 		MaxTokens:   req.MaxTokens,
 	}
 
-	body, err := json.Marshal(chatReq)
+	bodyReader, _, release, err := core.JSONBodyReader(chatReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
+	defer release()
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/chat/completions", bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/chat/completions", bodyReader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -213,13 +213,14 @@ func (p *Provider) completeJurassic(ctx context.Context, req core.Request) (*cor
 		StopSequences: req.Stop,
 	}
 
-	body, err := json.Marshal(completeReq)
+	bodyReader, _, release, err := core.JSONBodyReader(completeReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
+	defer release()
 
 	url := fmt.Sprintf("%s/%s/complete", p.baseURL, req.Model)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bodyReader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -298,12 +299,13 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 		Stream:      true,
 	}
 
-	body, err := json.Marshal(chatReq)
+	bodyReader, _, release, err := core.JSONBodyReader(chatReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
+	defer release()
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/chat/completions", bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/chat/completions", bodyReader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}

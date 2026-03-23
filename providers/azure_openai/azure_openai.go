@@ -3,7 +3,6 @@ package azureopenai
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -49,7 +48,7 @@ func New(apiKey, baseURL, deploymentName, apiVersion string) (*Provider, error) 
 		baseURL:        baseURL,
 		deploymentName: deploymentName,
 		apiVersion:     apiVersion,
-		httpClient:     providerhttp.Shared(),
+		httpClient:     providerhttp.ForProvider(Name),
 	}, nil
 }
 
@@ -124,12 +123,13 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 		MaxTokens:   req.MaxTokens,
 	}
 
-	body, err := json.Marshal(azureReq)
+	bodyReader, _, release, err := core.JSONBodyReader(azureReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
+	defer release()
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.endpoint(), bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.endpoint(), bodyReader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -191,12 +191,13 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 		Stream:      true,
 	}
 
-	body, err := json.Marshal(azureReq)
+	bodyReader, _, release, err := core.JSONBodyReader(azureReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
+	defer release()
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.endpoint(), bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.endpoint(), bodyReader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
