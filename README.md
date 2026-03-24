@@ -6,7 +6,7 @@
 
 **Production-grade AI gateway in Go. Route LLM requests across 29 providers via a single OpenAI-compatible API.**
 
-[![GitHub Release](https://img.shields.io/github/v/release/ferro-labs/ai-gateway?label=v1.0.0&color=00ADD8)](https://github.com/ferro-labs/ai-gateway/releases/tag/v1.0.0)
+[![v1.0.0](https://img.shields.io/badge/release-v1.0.0-00ADD8)](https://github.com/ferro-labs/ai-gateway/releases/tag/v1.0.0)
 [![Go](https://img.shields.io/badge/go-1.24+-00ADD8.svg)](https://go.dev)
 [![Go Reference](https://pkg.go.dev/badge/github.com/ferro-labs/ai-gateway.svg)](https://pkg.go.dev/github.com/ferro-labs/ai-gateway)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
@@ -15,13 +15,9 @@
 [![Code Scanning](https://github.com/ferro-labs/ai-gateway/actions/workflows/code-scanning.yml/badge.svg)](https://github.com/ferro-labs/ai-gateway/actions/workflows/code-scanning.yml)
 [![Discord](https://img.shields.io/badge/Discord-Join%20Us-5865F2?logo=discord&logoColor=white)](https://discord.gg/yCAeYvJeDV)
 
-<br/>
-
 🔀 **29 providers, 2,500+ models — one API**<br/>
 ⚡ **13,925 RPS at 1,000 concurrent users**<br/>
 📦 **Single binary, zero dependencies, 32 MB base memory**
-
-<br/>
 
 <img src="docs/architecture.svg" alt="Ferro Labs AI Gateway Architecture" width="100%" />
 
