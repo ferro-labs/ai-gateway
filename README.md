@@ -17,9 +17,9 @@
 
 <br/>
 
-- **29 providers, 2,500+ models — one API**
-- **13,925 RPS at 1,000 concurrent users**
-- **Single binary, zero dependencies, 32 MB base memory**
+🔀 **29 providers, 2,500+ models — one API**<br/>
+⚡ **13,925 RPS at 1,000 concurrent users**<br/>
+📦 **Single binary, zero dependencies, 32 MB base memory**
 
 <br/>
 
@@ -101,7 +101,7 @@ Most AI gateways are Python proxies that crack under load or JavaScript services
 | Single binary    | ✅          | ❌      | ✅         | ❌          |
 | Providers        | 29          | 100+    | 20+        | 10+         |
 | MCP support      | ✅          | ❌      | ✅         | ❌          |
-| Semantic cache   | ✅          | ✅      | ✅         | ❌ (paid)   |
+| Response cache   | ✅          | ✅      | ✅         | ❌ (paid)   |
 | Guardrails       | ✅          | ✅      | ❌         | ❌ (paid)   |
 | OSS license      | Apache 2.0  | MIT     | Apache 2.0 | Apache 2.0  |
 | Managed cloud    | Coming Soon | ✅      | ✅         | ✅          |
@@ -150,7 +150,7 @@ make setup && make bench
 
 ### 🔀 Routing
 
-- **8 routing strategies:** single, fallback, load balance, least latency, cost-optimized, content-based, A/B test, random weighted
+- **8 routing strategies:** single, fallback, load balance, least latency, cost-optimized, content-based, A/B test, conditional
 - Provider failover with configurable retry policies and status code filters
 - Per-request model aliases (`fast → gpt-4o-mini`, `smart → claude-3-5-sonnet`)
 
@@ -182,8 +182,8 @@ make setup && make bench
 ### ⚡ Performance
 
 - Per-provider HTTP connection pools with production-tuned settings
-- `sync.Pool` for request structs and JSON marshaling buffers
-- Zero-allocation stream detection, batched lock acquisition
+- `sync.Pool` for JSON marshaling buffers and streaming I/O
+- Zero-allocation stream detection, async hook dispatch batching
 - Single binary, ~32 MB base memory, linear scaling to 1,000+ VUs
 
 ### 🤖 MCP (Model Context Protocol)
@@ -200,6 +200,7 @@ make setup && make bench
 - Structured JSON request logging with SQLite/PostgreSQL persistence
 - Admin API with usage stats, request logs, and config history/rollback
 - Built-in dashboard UI at `/dashboard`
+- HTTP-level connection tracing with DNS, TLS, and first-byte latency
 
 ---
 
@@ -352,6 +353,140 @@ helm install ferro-gw ferro-labs/ai-gateway \
 ```
 
 Helm charts: [github.com/ferro-labs/helm-charts](https://github.com/ferro-labs/helm-charts)
+
+---
+
+## Migrate to Ferro Labs AI Gateway
+
+### From LiteLLM
+
+LiteLLM users can migrate in one step. Ferro Labs AI Gateway is OpenAI-compatible — change one line in your code:
+
+**Python (before — LiteLLM):**
+
+```python
+from litellm import completion
+
+response = completion(
+    model="gpt-4o",
+    messages=[{"role": "user", "content": "Hello"}]
+)
+```
+
+**Python (after — Ferro Labs AI Gateway):**
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://localhost:8080/v1",
+    api_key="your-ferro-api-key",
+)
+
+response = client.chat.completions.create(
+    model="gpt-4o",
+    messages=[{"role": "user", "content": "Hello"}],
+)
+```
+
+**Node.js (after — Ferro Labs AI Gateway):**
+
+```typescript
+import OpenAI from "openai";
+
+const client = new OpenAI({
+  baseURL: "http://localhost:8080/v1",
+  apiKey: "your-ferro-api-key",
+});
+
+const response = await client.chat.completions.create({
+  model: "gpt-4o",
+  messages: [{ role: "user", content: "Hello" }],
+});
+```
+
+**Why migrate from LiteLLM:**
+
+- 14x higher throughput at 150 concurrent users (2,447 vs 175 RPS)
+- 23x less memory at peak load (47 MB vs 1,124 MB under streaming)
+- Single binary — no Python environment, no pip, no virtualenv
+- Predictable latency — p99 stays under 65 ms at 150 VU vs LiteLLM's timeouts at the same concurrency
+
+**Config migration:**
+
+```
+# LiteLLM config.yaml               # Ferro Labs config.yaml
+model_list:                          strategy:
+  - model_name: gpt-4o                mode: fallback
+    litellm_params:
+      model: gpt-4o                  targets:
+      api_key: sk-...                  - virtual_key: openai
+  - model_name: claude-3-5-sonnet     - virtual_key: anthropic
+    litellm_params:
+      model: claude-3-5-sonnet       aliases:
+      api_key: sk-ant-...              fast: gpt-4o
+                                       smart: claude-3-5-sonnet-20241022
+```
+
+Provider API keys are set via environment variables (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, etc.) — not in the config file.
+
+### From Portkey
+
+Portkey users: Ferro Labs AI Gateway uses the standard OpenAI SDK — no custom headers required in self-hosted mode.
+
+**Before (Portkey hosted):**
+
+```python
+from portkey_ai import Portkey
+
+client = Portkey(api_key="portkey-key")
+response = client.chat.completions.create(
+    model="gpt-4o",
+    messages=[{"role": "user", "content": "Hello"}],
+)
+```
+
+**After (Ferro Labs AI Gateway self-hosted):**
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://localhost:8080/v1",
+    api_key="your-ferro-api-key",
+)
+
+response = client.chat.completions.create(
+    model="gpt-4o",
+    messages=[{"role": "user", "content": "Hello"}],
+)
+```
+
+**Why migrate from Portkey:**
+
+- Fully open source — no per-request pricing, no log limits
+- Self-hosted — your data never leaves your infrastructure
+- No vendor lock-in — Apache 2.0 license
+- MCP support — Portkey self-hosted lacks native MCP
+- FerroCloud (coming soon) for teams that want a managed service
+
+### From OpenAI SDK directly
+
+No gateway yet? Add Ferro Labs AI Gateway in front of your existing code with a single `base_url` change. No other code changes required.
+
+```python
+# Before — calling OpenAI directly
+client = OpenAI(api_key="sk-...")
+
+# After — routing through Ferro Labs AI Gateway
+# Gains: failover, caching, rate limiting, cost tracking
+client = OpenAI(
+    base_url="http://localhost:8080/v1",
+    api_key="your-ferro-api-key",
+)
+```
+
+Ferro Labs AI Gateway handles provider failover automatically — if OpenAI is down, your requests fall through to Anthropic or Gemini with zero application code changes.
 
 ---
 
