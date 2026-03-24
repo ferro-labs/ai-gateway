@@ -1,53 +1,48 @@
 # Ferro Labs AI Gateway Roadmap
 
-This roadmap tracks the path from `v1.0.0-rc.1` to `v1.0.0` and the priorities
-immediately after the stable release.
+## v1.0.0 — Stable Release
 
-## v1.0.0-rc.1
+Status: **Shipped** (2026-03-24)
 
-Status: In progress
-
-### What ships in the release candidate
+### What shipped
 
 - 29 built-in providers behind a single OpenAI-compatible gateway surface
-- 8 routing strategies for reliability, cost, latency, and experimentation
-- 6 built-in OSS plugins for guardrails, caching, logging, rate limiting, and
-  budget controls
-- Admin APIs, dashboard UI, health checks, metrics, and request logging
-- MCP integration for external tool servers and agentic loops
+- 8 routing strategies: single, fallback, load balance, least latency, cost-optimized, content-based, A/B test, conditional
+- 6 built-in OSS plugins: word-filter, max-token, response-cache, request-logger, rate-limit, budget
+- Admin API with key management, usage stats, request logs, config history/rollback, and dashboard UI
+- MCP tool server integration with agentic tool-call loops
+- Persistence backends: memory, SQLite, PostgreSQL
+- Per-provider HTTP connection pools, sync.Pool optimizations, zero-alloc stream detection
+- 13,925 RPS at 1,000 concurrent users, 32 MB base memory
+- Migration guides from LiteLLM, Portkey, and direct OpenAI SDK usage
+- Helm chart support, Docker multi-arch images, GoReleaser packaging
 
-### What remains before stable
+## v1.1.0
 
-- Final release-candidate validation
-- Final docs polish across quick start, providers, routing, and plugins
-- Release packaging, tagging, and announcement work
-
-## v1.0.0
-
-Status: Planned
-
-### Goals
-
-- ship a stable OSS gateway with a clear and durable feature boundary
-- make onboarding fast for new adopters
-- tighten documentation and deployment guidance for production usage
+Status: Planning
 
 ### Priorities
 
-- Documentation:
-  quick start, provider reference, routing cookbook, plugin reference, MCP
-  guide, migration guides
-- Deployment:
-  release validation, container polish, Kubernetes and Helm guidance
-- Examples:
-  expand the dedicated `ferro-labs/ai-gateway-examples` repo with migration,
-  streaming, MCP, and routing examples
-- Quality:
-  stronger coverage, race-test confidence, benchmark publication, API docs
+- **OpenTelemetry integration** — distributed tracing with OTLP export
+- **Semantic caching** — PostgreSQL + pgvector/HNSW for similarity-based response cache
+- **Redis support** — auth caching and rate limit state for multi-instance deployments
+- **Streaming improvements** — SSE backpressure handling, chunked transfer optimizations
+- **Provider expansion** — additional providers based on community requests
 
-## After v1.0.0
+## v1.2.0
 
-- continue expanding provider coverage
-- ship SDKs and stronger example coverage
-- improve benchmark reporting and production guidance
-- deepen ecosystem support around deployment and integrations
+Status: Planning
+
+### Priorities
+
+- **SDK packages** — official Go, Python, and TypeScript client libraries
+- **Webhook notifications** — configurable alerts for budget limits, error spikes, circuit breaker events
+- **Plugin SDK** — external plugin loading for custom guardrails and transforms
+- **Enhanced A/B testing** — metrics collection and winner determination for variant experiments
+
+## Future
+
+- Continue expanding provider coverage based on community demand
+- Deepen production deployment guidance (Kubernetes operators, Terraform modules)
+- Expand the [ai-gateway-examples](https://github.com/ferro-labs/ai-gateway-examples) repo
+- Strengthen benchmark reporting and cross-gateway comparisons
