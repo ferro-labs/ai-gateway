@@ -5,7 +5,28 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.0-rc.3] - 2026-03-23
+## [1.0.0] - 2026-03-24
+
+The first stable release of Ferro Labs AI Gateway — a production-grade, OpenAI-compatible AI gateway written in Go.
+
+### What's in v1.0.0
+
+- **29 built-in providers** — OpenAI, Anthropic, Gemini, Groq, Bedrock, Vertex AI, Hugging Face, OpenRouter, Cloudflare, Azure OpenAI, Azure Foundry, DeepSeek, Mistral, xAI, Cohere, Together AI, Fireworks, Replicate, Ollama, Databricks, DeepInfra, Moonshot, Novita, NVIDIA NIM, Cerebras, Perplexity, Qwen, SambaNova, and AI21.
+- **8 routing strategies** — single, fallback, load balance, least latency, cost-optimized, content-based, A/B test, and conditional.
+- **6 built-in OSS plugins** — word-filter, max-token, response-cache, request-logger, rate-limit, and budget.
+- **MCP tool server integration** — agentic tool-call loops with Streamable HTTP transport, tool filtering, and bounded call depth.
+- **Admin API and dashboard** — API key management, usage stats, request logs, config history with rollback, and a built-in dashboard UI.
+- **Persistence backends** — memory, SQLite, and PostgreSQL for runtime config, API keys, and request logs.
+- **Performance** — 13,925 RPS at 1,000 concurrent users, 32 MB base memory, per-provider HTTP connection pools, sync.Pool for request structs and JSON buffers, zero-allocation stream detection.
+
+### Upgrading from rc.3
+
+No breaking changes from `1.0.0-rc.3`. Updated README and CONTRIBUTING docs for stable release.
+
+---
+
+<details>
+<summary><strong>1.0.0-rc.3</strong> — 2026-03-23</summary>
 
 ### Highlights
 
@@ -53,7 +74,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Zero-alloc `IsStreamingRequest`**: Byte-scanning `"stream":true`
   detection with no JSON parsing and 0 allocations.
 
-## [1.0.0-rc.2] - 2026-03-18
+</details>
+
+<details>
+<summary><strong>1.0.0-rc.2</strong> — 2026-03-18</summary>
 
 ### Highlights
 
@@ -84,7 +108,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Benchmarking remains focused on normalized gateway-overhead comparisons before
   the final `v1.0.0` release.
 
-## [1.0.0-rc.1] - 2026-03-14
+</details>
+
+<details>
+<summary><strong>1.0.0-rc.1</strong> — 2026-03-14</summary>
 
 ### Highlights
 
@@ -129,3 +156,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   presents a consistent first-release story.
 - Runnable examples now live in the dedicated
   `ferro-labs/ai-gateway-examples` repository.
+
+</details>
