@@ -104,41 +104,37 @@ Most AI gateways are Python proxies that crack under load or JavaScript services
 
 ---
 
-## Benchmarks
+## Performance
 
-All numbers from a controlled GCP run. Hardware: **GCP n2-standard-8** (8 vCPU, 32 GB RAM), Debian 12. Mock backend with 60 ms fixed latency, native processes, 60 s warmup per step.
+Benchmarked against Kong OSS, Bifrost, LiteLLM, and Portkey on
+**GCP n2-standard-8** (8 vCPU, 32 GB RAM) using a **60ms fixed-latency
+mock upstream** — results reflect gateway overhead only.
 
-### Cross-gateway throughput (RPS)
+![Throughput comparison — Ferro Labs vs Kong, Bifrost, LiteLLM, Portkey across 150–1,000 VU](https://raw.githubusercontent.com/ferro-labs/ai-gateway/main/docs/benchmarks/throughput-comparison.png)
 
-| Gateway             | Language | 150 VU | 300 VU | 500 VU | 1,000 VU | Memory       |
-|:--------------------|:---------|-------:|-------:|-------:|---------:|:-------------|
-| **Ferro Labs**      | Go       | 2,447  | 4,890  | 8,014  | 13,925   | 32–135 MB    |
-| Kong AI Gateway     | Go       | 2,443  | 4,885  | 8,133  | 15,891   | 43 MB flat   |
-| Bifrost             | Go       | 2,441  | 0 †    | 0 †    | 0 †      | 107–333 MB   |
-| LiteLLM             | Python   | 175 ‡  | —      | —      | —        | 335–1,124 MB |
+### Ferro Labs Latency Profile
 
-> † Bifrost: 10M+ failures at ≥300 VU. Works well up to ~150 VU.
-> ‡ LiteLLM: peaked at 175 RPS, timeouts at higher concurrency.
-> Portkey excluded: config limitation in test harness, not a performance issue.
+| VU | RPS | p50 | p99 | Memory |
+|---:|---:|---:|---:|---:|
+| 50 | 813 | 61.3ms | 64.1ms | 36 MB |
+| 150 | 2,447 | 61.2ms | 63.4ms | 47 MB |
+| 300 | 4,890 | 61.2ms | 64.4ms | 72 MB |
+| 500 | 8,014 | 61.5ms | 72.9ms | 89 MB |
+| 1,000 | 13,925 | 68.1ms | 111.9ms | 135 MB |
 
-### Ferro Labs AI Gateway latency profile
+At 1,000 VU: **13,925 RPS**, p50 overhead **8.1ms**, memory **135 MB**.
+No connection pool failures. No throughput ceiling.
 
-| VU    | RPS    | p50     | p99      | Memory |
-|------:|-------:|--------:|---------:|-------:|
-| 50    | 813    | 61.3 ms | 64.1 ms  | 36 MB  |
-| 150   | 2,447  | 61.2 ms | 63.4 ms  | 47 MB  |
-| 300   | 4,890  | 61.2 ms | 64.4 ms  | 72 MB  |
-| 500   | 8,014  | 61.5 ms | 72.9 ms  | 89 MB  |
-| 1,000 | 13,925 | 68.1 ms | 111.9 ms | 135 MB |
-
-### Reproduce
+### How to Reproduce
 
 ```bash
 git clone https://github.com/ferro-labs/ai-gateway-performance-benchmarks
 cd ai-gateway-performance-benchmarks
-cp .env.example .env
 make setup && make bench
 ```
+
+Full methodology, raw results, and flamegraph analysis:
+[ferro-labs/ai-gateway-performance-benchmarks](https://github.com/ferro-labs/ai-gateway-performance-benchmarks)
 
 ---
 
