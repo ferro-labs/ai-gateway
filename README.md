@@ -110,7 +110,7 @@ Benchmarked against Kong OSS, Bifrost, LiteLLM, and Portkey on
 **GCP n2-standard-8** (8 vCPU, 32 GB RAM) using a **60ms fixed-latency
 mock upstream** — results reflect gateway overhead only.
 
-![Throughput comparison — Ferro Labs vs Kong, Bifrost, LiteLLM, Portkey across 150–1,000 VU](https://raw.githubusercontent.com/ferro-labs/ai-gateway/main/docs/benchmarks/throughput-comparison.png)
+![Throughput comparison — Ferro Labs vs Kong, Bifrost, LiteLLM, Portkey across 150–1,000 VU](docs/benchmarks/throughput-comparison.png)
 
 ### Ferro Labs Latency Profile
 
