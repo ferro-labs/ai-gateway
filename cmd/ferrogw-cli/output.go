@@ -20,6 +20,34 @@ const (
 	formatYAML  outputFormat = "yaml"
 )
 
+// ── ANSI colours ─────────────────────────────────────────────────────────────
+
+const (
+	colorCyan   = "\033[96m"
+	colorBold   = "\033[1m"
+	colorDim    = "\033[2m"
+	colorYellow = "\033[93m"
+	colorGreen  = "\033[92m"
+	colorRed    = "\033[91m"
+	colorWhite  = "\033[97m"
+	colorOrange = "\033[38;5;208m"
+	colorReset  = "\033[0m"
+)
+
+// noColor returns true when colour output should be suppressed.
+// Respects the NO_COLOR environment variable (https://no-color.org/).
+var noColor = func() bool {
+	return os.Getenv("NO_COLOR") != ""
+}
+
+// clr wraps s in the given ANSI colour code unless colour is disabled.
+func clr(code, s string) string {
+	if noColor() {
+		return s
+	}
+	return code + s + colorReset
+}
+
 // printer handles structured output across all CLI commands.
 type printer struct {
 	format outputFormat
@@ -82,5 +110,5 @@ func (p *printer) printTable(td TableData) error {
 
 // printSuccess prints a simple success message to stdout.
 func printSuccess(msg string) {
-	fmt.Println(msg)
+	fmt.Println(clr(colorGreen, "✓ "+msg))
 }

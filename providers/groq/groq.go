@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
 	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
@@ -42,6 +43,10 @@ func New(apiKey, baseURL string) (*Provider, error) {
 		baseURL = defaultBaseURL
 	}
 	baseURL = strings.TrimRight(baseURL, "/")
+	u, err := url.Parse(baseURL)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return nil, fmt.Errorf("groq: invalid base URL %q: must be http or https with a host", baseURL)
+	}
 	return &Provider{
 		name:       Name,
 		apiKey:     apiKey,
@@ -135,14 +140,14 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 	}
 	defer release()
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/v1/chat/completions", bodyReader)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/v1/chat/completions", bodyReader) //nolint:gosec // baseURL validated in New()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	httpResp, err := p.httpClient.Do(httpReq)
+	httpResp, err := p.httpClient.Do(httpReq) //nolint:gosec // baseURL validated in New()
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
@@ -191,14 +196,14 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 	}
 	defer release()
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/v1/chat/completions", bodyReader)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/v1/chat/completions", bodyReader) //nolint:gosec // baseURL validated in New()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	httpResp, err := p.httpClient.Do(httpReq)
+	httpResp, err := p.httpClient.Do(httpReq) //nolint:gosec // baseURL validated in New()
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}

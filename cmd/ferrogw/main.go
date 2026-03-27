@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"html/template"
 	"net/http"
 	"os"
@@ -90,6 +91,8 @@ func main() {
 			logging.Logger.Error("shutdown error", "error", err)
 		}
 	}()
+
+	printStartupBanner(addr, len(registry.List()), cfg)
 
 	logging.Logger.Info("ferrogw started",
 		"version", version.Short(),
@@ -287,4 +290,43 @@ func newRateLimitStore() *ratelimit.Store {
 	store := ratelimit.NewStore(rps, burst)
 	logging.Logger.Info("rate limiting enabled", "rps", rps, "burst", burst)
 	return store
+}
+
+// printStartupBanner prints a branded banner to stderr on server start.
+//
+// Mark: iron-lattice glyph (ferro = iron) doubling as a gateway grid.
+//
+//	╔╦╗  FERRO LABS  AI GATEWAY  v0.x.x
+//	╠╫╣  → :8080
+//	╚╩╝  · N providers  ·  strategy  ·  N plugins
+func printStartupBanner(addr string, providerCount int, cfg *aigateway.Config) {
+	const (
+		orange = "\033[38;5;208m"
+		bold   = "\033[1m"
+		white  = "\033[97m"
+		dim    = "\033[2m"
+		reset  = "\033[0m"
+	)
+
+	strategy := "fallback"
+	pluginCount := 0
+	if cfg != nil {
+		strategy = string(cfg.Strategy.Mode)
+		pluginCount = len(cfg.Plugins)
+	}
+
+	mark := [3]string{
+		bold + orange + "╔╦╗" + reset,
+		bold + orange + "╠╫╣" + reset,
+		bold + orange + "╚╩╝" + reset,
+	}
+
+	fmt.Fprintf(os.Stderr, "\n")
+	fmt.Fprintf(os.Stderr, "  %s  %sFERRO LABS%s  AI GATEWAY  %s%s%s\n",
+		mark[0], bold+white, reset, dim, version.Short(), reset)
+	fmt.Fprintf(os.Stderr, "  %s  %s→%s  %s\n",
+		mark[1], orange, reset, addr)
+	fmt.Fprintf(os.Stderr, "  %s  %s%d providers  ·  %s  ·  %d plugins%s\n",
+		mark[2], dim, providerCount, strategy, pluginCount, reset)
+	fmt.Fprintf(os.Stderr, "\n")
 }

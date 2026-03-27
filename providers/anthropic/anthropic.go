@@ -8,11 +8,20 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
 	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
+
+func validateBaseURL(name, rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return fmt.Errorf("%s: invalid base URL %q: must be http or https with a host", name, rawURL)
+	}
+	return nil
+}
 
 // Name is the canonical provider identifier.
 const Name = "anthropic"
@@ -40,6 +49,9 @@ func New(apiKey, baseURL string) (*Provider, error) {
 		baseURL = defaultBaseURL
 	}
 	baseURL = strings.TrimRight(baseURL, "/")
+	if err := validateBaseURL(Name, baseURL); err != nil {
+		return nil, err
+	}
 	return &Provider{
 		name:       Name,
 		apiKey:     apiKey,
@@ -166,7 +178,7 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 	}
 	defer release()
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/v1/messages", bodyReader)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/v1/messages", bodyReader) //nolint:gosec // baseURL validated in New()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -174,7 +186,7 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 	httpReq.Header.Set("anthropic-version", "2023-06-01")
 	httpReq.Header.Set("content-type", "application/json")
 
-	httpResp, err := p.httpClient.Do(httpReq)
+	httpResp, err := p.httpClient.Do(httpReq) //nolint:gosec // baseURL validated in New()
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
@@ -272,7 +284,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 	}
 	defer release()
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/v1/messages", bodyReader)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/v1/messages", bodyReader) //nolint:gosec // baseURL validated in New()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -280,7 +292,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 	httpReq.Header.Set("anthropic-version", "2023-06-01")
 	httpReq.Header.Set("content-type", "application/json")
 
-	httpResp, err := p.httpClient.Do(httpReq)
+	httpResp, err := p.httpClient.Do(httpReq) //nolint:gosec // baseURL validated in New()
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
