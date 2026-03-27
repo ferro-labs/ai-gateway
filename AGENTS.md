@@ -265,6 +265,8 @@ Minimal by design — no heavy logging framework, no ORM.
    ```
 3. Add a `ProviderEntry` to the `allProviders` slice in `providers/providers_list.go` — fill in `ID`, `Capabilities`, `EnvMappings`, and `Build`.
 4. Add `providers/<id>/<id>_test.go` — the stability tests in `providers/stability_test.go` automatically catch name drift and missing capabilities.
+5. Add a `{ "virtual_key": "<id>" }` entry to `config.example.json` and a `- virtual_key: <id>` line to `config.example.yaml`.
+6. Add the provider's env var(s) (commented out) to `docker-compose.yml`.
 
 ## Adding a New Plugin
 
@@ -297,7 +299,6 @@ Minimal by design — no heavy logging framework, no ORM.
 
 - Unit tests live alongside implementation as `*_test.go`
 - Integration tests require real provider API keys; run with `make test-integration`
-- Use `make precommit` (fmt + test) before committing
 - Benchmarks with `make bench`
 
 ### Additional checks for this branch

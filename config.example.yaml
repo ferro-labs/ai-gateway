@@ -4,6 +4,18 @@
 strategy:
   mode: fallback  # single | fallback | loadbalance | conditional | content-based | ab-test | least-latency | cost-optimized
 
+# --- conditional routing example ---
+# strategy:
+#   mode: conditional
+#   conditions:
+#     - key: model
+#       value: gpt-4o
+#       target_key: openai
+#     - key: model
+#       value: claude-3-5-sonnet-20241022
+#       target_key: anthropic
+# Routes based on the value of a request field (e.g. "model").
+
 # --- content-based routing example ---
 # strategy:
 #   mode: content-based
@@ -35,7 +47,16 @@ targets:
   - virtual_key: openai
     retry:
       attempts: 3
+      # Only retry on these HTTP status codes (omit to retry on any error).
+      on_status_codes: [429, 502, 503]
+      # Base backoff in ms for exponential back-off: delay = initial_backoff_ms * 2^(attempt-1).
+      initial_backoff_ms: 100
   - virtual_key: anthropic
+    # Optional per-target circuit breaker.
+    circuit_breaker:
+      failure_threshold: 5   # consecutive failures before opening
+      success_threshold: 1   # successes in half-open state to close
+      timeout: 30s           # duration the circuit stays open
   - virtual_key: xai
   - virtual_key: gemini
   - virtual_key: mistral
@@ -53,6 +74,16 @@ targets:
   - virtual_key: vertex-ai
   - virtual_key: hugging-face
   - virtual_key: ollama
+  - virtual_key: cerebras
+  - virtual_key: cloudflare
+  - virtual_key: databricks
+  - virtual_key: deepinfra
+  - virtual_key: moonshot
+  - virtual_key: novita
+  - virtual_key: nvidia-nim
+  - virtual_key: openrouter
+  - virtual_key: qwen
+  - virtual_key: sambanova
 
 # Model aliases: map friendly names to actual model IDs.
 # Aliases are resolved before routing and plugin execution.
@@ -79,6 +110,8 @@ plugins:
     config:
       max_tokens: 4096
       max_messages: 50
+      # Optional: reject if total character length of all messages exceeds this. 0 = no limit.
+      max_input_length: 0
 
   - name: response-cache
     type: transform
@@ -112,6 +145,8 @@ plugins:
     config:
       # Global request-per-second limit applied to all traffic.
       requests_per_second: 100
+      # Global burst capacity (defaults to requests_per_second when unset).
+      burst: 100
       # Optional per-API-key limit (requests per minute).
       key_rpm: 60
       # Optional per-user limit (requests per minute, keyed on Request.User).
@@ -130,6 +165,8 @@ plugins:
       # Pricing used to calculate cost from token counts in the response.
       input_per_m_tokens: 3.0    # USD per 1 million prompt tokens
       output_per_m_tokens: 15.0  # USD per 1 million completion tokens
+      # Maximum number of API keys tracked in memory. Evicts lowest-spend key at cap.
+      max_keys: 10000
 
 # MCP (Model Context Protocol) agentic tool servers.
 # When configured, the gateway injects these tools into every chat completion

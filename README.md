@@ -300,6 +300,33 @@ export GATEWAY_CONFIG=./config.yaml
 make build && ./bin/ferrogw
 ```
 
+### Option D — Docker Compose (dev & prod)
+
+The repo ships three Compose files that follow the standard override pattern:
+
+| File | Purpose |
+|---|---|
+| `docker-compose.yml` | Base — shared image, port mapping, all provider env var stubs |
+| `docker-compose.dev.yml` | Dev — builds from source, debug logging, live config mount, Ollama host access |
+| `docker-compose.prod.yml` | Prod — pinned image tag, restart policy, health check, resource limits, log rotation |
+
+**Dev** (builds from source):
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+```
+
+**Prod** (pin to a release tag — never use `latest` in production):
+
+```bash
+IMAGE_TAG=v1.0.1 CORS_ORIGINS=https://your-domain.com \
+  docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+```
+
+Provider API keys are commented out in `docker-compose.yml`. Uncomment and set the ones you need, or supply them via a `.env` file in the same directory.
+
+---
+
 ### Docker Compose (with PostgreSQL)
 
 ```yaml
