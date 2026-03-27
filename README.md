@@ -125,6 +125,21 @@ mock upstream** — results reflect gateway overhead only.
 At 1,000 VU: **13,925 RPS**, p50 overhead **8.1ms**, memory **135 MB**.
 No connection pool failures. No throughput ceiling.
 
+### Live Upstream Overhead (OpenAI API)
+
+Measured against **live OpenAI API** (gpt-4o-mini) using two independent methods:
+the gateway's `X-Gateway-Overhead-Ms` response header (precise internal timing)
+and paired direct-vs-gateway requests (external black-box validation).
+
+| Configuration | Overhead p50 | Overhead p99 |
+|:---|---:|---:|
+| No plugins (bare proxy) | **0.002ms** (2 microseconds) | 0.03ms |
+| With plugins (word-filter, max-token, logger, rate-limit) | **0.025ms** (25 microseconds) | 0.074ms |
+
+The gateway adds **25 microseconds** of processing overhead per request in a typical
+production configuration. LLM API calls take 500ms-2s — the gateway is 20,000x faster
+than the provider it proxies.
+
 ### How to Reproduce
 
 ```bash

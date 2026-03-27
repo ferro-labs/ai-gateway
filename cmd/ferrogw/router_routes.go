@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"expvar"
+	"fmt"
 	"net/http"
 
 	aigateway "github.com/ferro-labs/ai-gateway"
@@ -170,6 +171,9 @@ func chatCompletionsHandler(gw *aigateway.Gateway) http.HandlerFunc {
 			return
 		}
 
+		if resp.OverheadMs > 0 {
+			w.Header().Set("X-Gateway-Overhead-Ms", fmt.Sprintf("%.3f", resp.OverheadMs))
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(resp)
 	}
