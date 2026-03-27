@@ -7,8 +7,8 @@ package main
 import (
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
-	"unicode/utf8"
 
 	aigateway "github.com/ferro-labs/ai-gateway"
 	"github.com/ferro-labs/ai-gateway/internal/version"
@@ -30,81 +30,53 @@ func main() {
 }
 
 // banner returns the ASCII art header printed on bare invocation.
+//
+// Figlet "doom" font — FERRO in bold orange, LABS in dim white, side by side:
+//
+//	______ _________________ _____    _       ___  ______  _____
+//	|  ___|  ___| ___ \ ___ \  _  |  | |     / _ \ | ___ \/  ___|
+//	| |_  | |__ | |_/ / |_/ / | | |  | |    / /_\ \| |_/ /\ `--.
+//	|  _| |  __||    /|    /| | | |  | |    |  _  || ___ \ `--.
+//	| |   | |___| |\ \| |\ \\ \_/ /  | |____| | | || |_/ //\__/ /
+//	\_|   \____/\_| \_\_| \_|\___/   \_____/\_| |_/\____/ \____/
+//
+//	  AI Gateway
+//	  ─────────────────────────────────────────────  v1.0.0
 func banner() string {
-	const (
-		cyan   = "\033[96m"
-		bold   = "\033[1m"
-		dim    = "\033[2m"
-		yellow = "\033[93m"
-		white  = "\033[97m"
-		reset  = "\033[0m"
-	)
-
-	// Compact "F" faithful to the Ferro Labs negative-space block design:
-	//  - full-width top/middle/bottom bands
-	//  - upper/lower taper sections (gap right)
-	//  - arm sections (gap left, arm fills right)
-	art := []string{
-		"██████████████████████",
-		"██████████████████████",
-		"██████████   █████████",
-		"██████   █████████████",
-		"██████   █████████████",
-		"██████████████████████",
-		"█████████     ████████",
-		"██████   █████████████",
-		"██████   █████████████",
-		"██████████████████████",
-		"██████████████████████",
+	// FERRO — figlet "doom", bold orange
+	ferro := [6]string{
+		"______ _________________ _____ ",
+		"|  ___|  ___| ___ \\ ___ \\  _  |",
+		"| |_  | |__ | |_/ / |_/ / | | |",
+		"|  _| |  __||    /|    /| | | |",
+		"| |   | |___| |\\ \\| |\\ \\\\ \\_/ /",
+		"\\_|   \\____/\\_| \\_\\_| \\_|\\___/ ",
+	}
+	// LABS — figlet "doom", dim white (visually lighter)
+	labs := [6]string{
+		" _       ___  ______  _____ ",
+		"| |     / _ \\ | ___ \\/  ___|",
+		"| |    / /_\\ \\| |_/ /\\ `--. ",
+		"| |    |  _  || ___ \\ `--. \\",
+		"| |____| | | || |_/ //\\__/ /",
+		"\\_____/\\_| |_/\\____/ \\____/ ",
 	}
 
-	text := []string{
-		bold + white + "FERRO LABS  ·  AI GATEWAY" + reset,
-		dim + "─────────────────────────────────────" + reset,
-		"Version · " + yellow + version.Short() + reset,
-		"",
-		"AI Infrastructure Management CLI",
-		"",
-		"Validate configs · Inspect plugins",
-		"Manage gateway via Admin API",
-	}
-
-	leftWidth := 0
-	for _, line := range art {
-		if w := utf8.RuneCountInString(line); w > leftWidth {
-			leftWidth = w
-		}
-	}
-
-	maxLines := len(art)
-	if len(text) > maxLines {
-		maxLines = len(text)
-	}
-	textStart := 0
-	if len(art) > len(text) {
-		textStart = (len(art) - len(text)) / 2
-	}
+	// Single centered line: dot · ＡＩ ＧＡＴＥＷＡＹ  v1.0.0
+	// Visual width = 30 cols, centered under FERRO LABS block (63 cols): pad = 16.
+	const subPad = "                " // 16 spaces
 
 	var b strings.Builder
-	for i := 0; i < maxLines; i++ {
-		leftRunes := 0
-		if i < len(art) {
-			left := art[i]
-			leftRunes = utf8.RuneCountInString(left)
-			b.WriteString(cyan)
-			b.WriteString(left)
-			b.WriteString(reset)
-		}
-		b.WriteString(strings.Repeat(" ", leftWidth-leftRunes))
-		b.WriteString("  ")
-		b.WriteString(dim + "│" + reset)
-		b.WriteString("  ")
-		textIndex := i - textStart
-		if textIndex >= 0 && textIndex < len(text) {
-			b.WriteString(text[textIndex])
-		}
-		b.WriteByte('\n')
+	b.WriteByte('\n')
+	for i := range ferro {
+		fmt.Fprintf(&b, "  %s  %s\n",
+			clr(colorBold+colorOrange, ferro[i]),
+			clr(colorDim+colorWhite, labs[i]))
 	}
+	fmt.Fprintf(&b, "\n  %sＡＩ ＧＡＴＥＷＡＹ  %s  %s\n",
+		subPad,
+		clr(colorOrange, "·"),
+		clr(colorBold+colorOrange, version.Short()))
 	b.WriteByte('\n')
 	return b.String()
 }
@@ -124,6 +96,20 @@ a running gateway instance via its Admin API.`,
 	},
 }
 
+// customHelpTemplate groups commands for a cleaner overview.
+const customHelpTemplate = `{{.Long}}
+
+{{if .HasAvailableSubCommands}}` + "\033[1m" + `Commands:` + "\033[0m" + `{{range .Commands}}{{if (and .IsAvailableCommand (not (eq .Name "admin")))}}
+  {{rpad .Name .NamePadding}}  {{.Short}}{{end}}{{end}}
+
+` + "\033[1m" + `Admin API:` + "\033[0m" + `{{range .Commands}}{{if (eq .Name "admin")}}{{range .Commands}}
+  admin {{rpad .Name 12}}  {{.Short}}{{end}}{{end}}{{end}}
+{{end}}
+` + "\033[1m" + `Flags:` + "\033[0m" + `
+{{.Flags.FlagUsages}}
+  Learn more: https://docs.ferrolabs.ai
+`
+
 func init() {
 	// Persistent flags available on every sub-command.
 	rootCmd.PersistentFlags().String("gateway-url", "",
@@ -132,12 +118,29 @@ func init() {
 		"Admin API key (env: FERROGW_API_KEY)")
 	rootCmd.PersistentFlags().String("format", "table",
 		"Output format: table, json, or yaml")
+	rootCmd.PersistentFlags().Bool("no-color", false,
+		"Disable colored output (env: NO_COLOR)")
+
+	// Wire --no-color flag into the noColor detection.
+	origNoColor := noColor
+	rootCmd.PersistentPreRun = func(cmd *cobra.Command, _ []string) {
+		flagVal, _ := cmd.Root().PersistentFlags().GetBool("no-color")
+		if flagVal {
+			noColor = func() bool { return true }
+		} else {
+			noColor = origNoColor
+		}
+	}
+
+	rootCmd.SetHelpTemplate(customHelpTemplate)
 
 	// Top-level commands.
 	rootCmd.AddCommand(validateCmd)
 	rootCmd.AddCommand(pluginsCmd)
 	rootCmd.AddCommand(versionCmd)
-	rootCmd.AddCommand(adminCmd) // defined in admin.go
+	rootCmd.AddCommand(statusCmd) // defined in status.go
+	rootCmd.AddCommand(doctorCmd) // defined in doctor.go
+	rootCmd.AddCommand(adminCmd)  // defined in admin.go
 }
 
 // ── validate ──────────────────────────────────────────────────────────────────
@@ -238,11 +241,24 @@ var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Print version information",
 	RunE: func(cmd *cobra.Command, _ []string) error {
+		info := map[string]string{
+			"version": version.Version,
+			"commit":  version.Commit,
+			"built":   version.Date,
+			"go":      runtime.Version(),
+			"os_arch": runtime.GOOS + "/" + runtime.GOARCH,
+		}
+
 		pr := newPrinter(formatFlag(cmd))
 		if pr.format != formatTable {
-			return pr.Print(map[string]string{"version": version.String()})
+			return pr.Print(info)
 		}
-		fmt.Printf("ferrogw-cli %s\n", version.String())
+
+		fmt.Printf("  %-12s %s\n", clr(colorBold, "Version"), clr(colorYellow, version.Version))
+		fmt.Printf("  %-12s %s\n", clr(colorBold, "Commit"), version.Commit)
+		fmt.Printf("  %-12s %s\n", clr(colorBold, "Built"), version.Date)
+		fmt.Printf("  %-12s %s\n", clr(colorBold, "Go"), runtime.Version())
+		fmt.Printf("  %-12s %s\n", clr(colorBold, "OS/Arch"), runtime.GOOS+"/"+runtime.GOARCH)
 		return nil
 	},
 }

@@ -340,7 +340,7 @@ func (p *Provider) completeLlama(ctx context.Context, req core.Request) (*core.R
 	var sb strings.Builder
 	sb.WriteString("<|begin_of_text|>")
 	for _, msg := range req.Messages {
-		sb.WriteString(fmt.Sprintf("<|start_header_id|>%s<|end_header_id|>\n\n%s<|eot_id|>\n", msg.Role, msg.Content))
+		fmt.Fprintf(&sb, "<|start_header_id|>%s<|end_header_id|>\n\n%s<|eot_id|>\n", msg.Role, msg.Content)
 	}
 	sb.WriteString("<|start_header_id|>assistant<|end_header_id|>\n\n")
 

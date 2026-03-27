@@ -1,6 +1,6 @@
 # AI Gateway Makefile
 
-.PHONY: help build build-cli run test test-coverage test-integration bench fmt lint clean deps \
+.PHONY: help build build-cli run test test-coverage test-integration bench fmt vet lint clean deps \
         snapshot release-check release-dry-run
 
 # Version stamping via ldflags (used in dev builds; GoReleaser overrides on release).
@@ -31,8 +31,8 @@ help:
 	@echo ""
 	@echo "Quality:"
 	@echo "  make fmt               Format code"
+	@echo "  make vet               Vet code"
 	@echo "  make lint              Lint code (requires golangci-lint)"
-	@echo "  make precommit         fmt + test"
 	@echo ""
 	@echo "Release:"
 	@echo "  make snapshot          Build a local snapshot (no publish)"
@@ -97,6 +97,11 @@ fmt:
 	go fmt ./...
 	@which gofmt > /dev/null && gofmt -s -w . || echo "gofmt not available"
 
+# Vet code
+vet:
+	@echo "Vetting code..."
+	go vet ./...
+
 # Lint code (requires golangci-lint)
 lint:
 	@echo "Linting code..."
@@ -109,10 +114,6 @@ clean:
 	rm -rf bin coverage.out coverage.html
 	go clean -testcache
 	go clean -cache
-
-# Run a quick check before committing
-precommit: fmt test
-	@echo "✅ Pre-commit checks passed!"
 
 # ─── Release targets (require goreleaser: https://goreleaser.com/install) ────
 

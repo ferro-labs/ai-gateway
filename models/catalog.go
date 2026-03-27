@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"time"
 )
@@ -117,9 +118,13 @@ func Load() (Catalog, error) {
 	return parse(bundledCatalog)
 }
 
-func fetchRemote(url string) ([]byte, error) {
+func fetchRemote(rawURL string) ([]byte, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return nil, fmt.Errorf("invalid catalog URL %q: must be http or https with a host", rawURL)
+	}
 	client := &http.Client{Timeout: time.Second}
-	resp, err := client.Get(url)
+	resp, err := client.Get(rawURL) //nolint:gosec // URL scheme and host validated above
 	if err != nil {
 		return nil, err
 	}

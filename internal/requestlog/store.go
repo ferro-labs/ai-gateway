@@ -336,7 +336,7 @@ func bindPostgres(query string) string {
 	)
 	for i := 0; i < len(query); i++ {
 		if query[i] == '?' {
-			builder.WriteString(fmt.Sprintf("$%d", index))
+			fmt.Fprintf(&builder, "$%d", index)
 			index++
 			continue
 		}

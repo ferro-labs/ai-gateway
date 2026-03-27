@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
 	oai "github.com/openai/openai-go"
@@ -49,6 +50,10 @@ func New(apiKey, baseURL string) (*Provider, error) {
 	}
 	resolvedBase := defaultBaseURL
 	if baseURL != "" {
+		u, err := url.Parse(baseURL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return nil, fmt.Errorf("openai: invalid base URL %q: must be http or https with a host", baseURL)
+		}
 		opts = append(opts, option.WithBaseURL(baseURL))
 		resolvedBase = baseURL
 	}
@@ -231,14 +236,14 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.chatCompletionsEndpoint(), bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.chatCompletionsEndpoint(), bytes.NewReader(body)) //nolint:gosec // baseURL validated in New()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	httpResp, err := p.httpClient.Do(httpReq)
+	httpResp, err := p.httpClient.Do(httpReq) //nolint:gosec // baseURL validated in New()
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}

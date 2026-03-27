@@ -24,8 +24,16 @@ const (
 
 // SQLStore persists API keys in SQL backends (SQLite or Postgres).
 type SQLStore struct {
-	db      *sql.DB
-	dialect sqlDialect
+	db            *sql.DB
+	dialect       sqlDialect
+	stmtGetByID   *sql.Stmt
+	stmtGetByKey  *sql.Stmt
+	stmtRevoke    *sql.Stmt
+	stmtUpdate    *sql.Stmt
+	stmtSetExpiry *sql.Stmt
+	stmtDelete    *sql.Stmt
+	stmtUsage     *sql.Stmt
+	stmtRotate    *sql.Stmt
 }
 
 // NewSQLiteStore creates a SQLite-backed key store.
@@ -110,6 +118,30 @@ CREATE INDEX IF NOT EXISTS idx_api_keys_key ON api_keys(key);`
 	if err := s.ensureUsageColumns(); err != nil {
 		return err
 	}
+	return s.prepareStmts()
+}
+
+func (s *SQLStore) prepareStmts() error {
+	stmts := []struct {
+		dest  **sql.Stmt
+		query string
+	}{
+		{&s.stmtGetByID, `SELECT id, key, name, scopes, created_at, revoked_at, expires_at, rotated_at, last_used_at, usage_count, active FROM api_keys WHERE id = ?`},
+		{&s.stmtGetByKey, `SELECT id, key, name, scopes, created_at, revoked_at, expires_at, rotated_at, last_used_at, usage_count, active FROM api_keys WHERE key = ?`},
+		{&s.stmtRevoke, `UPDATE api_keys SET revoked_at = ?, active = ? WHERE id = ?`},
+		{&s.stmtUpdate, `UPDATE api_keys SET name = ?, scopes = ? WHERE id = ?`},
+		{&s.stmtSetExpiry, `UPDATE api_keys SET expires_at = ? WHERE id = ?`},
+		{&s.stmtDelete, `DELETE FROM api_keys WHERE id = ?`},
+		{&s.stmtUsage, `UPDATE api_keys SET usage_count = usage_count + 1, last_used_at = ? WHERE id = ?`},
+		{&s.stmtRotate, `UPDATE api_keys SET key = ?, rotated_at = ? WHERE id = ?`},
+	}
+	for _, s2 := range stmts {
+		stmt, err := s.db.Prepare(s.bind(s2.query))
+		if err != nil {
+			return fmt.Errorf("prepare statement: %w", err)
+		}
+		*s2.dest = stmt
+	}
 	return nil
 }
 
@@ -140,6 +172,11 @@ func (s *SQLStore) ensureUsageColumns() error {
 func (s *SQLStore) Close() error {
 	if s == nil || s.db == nil {
 		return nil
+	}
+	for _, stmt := range []*sql.Stmt{s.stmtGetByID, s.stmtGetByKey, s.stmtRevoke, s.stmtUpdate, s.stmtSetExpiry, s.stmtDelete, s.stmtUsage, s.stmtRotate} {
+		if stmt != nil {
+			_ = stmt.Close()
+		}
 	}
 	return s.db.Close()
 }
@@ -191,12 +228,7 @@ VALUES(?, ?, ?, ?, ?, NULL, ?, NULL, ?, ?, NULL)`)
 
 // Get retrieves an API key by ID from the SQL store.
 func (s *SQLStore) Get(id string) (*APIKey, bool) {
-	q := s.bind(`
-SELECT id, key, name, scopes, created_at, revoked_at, expires_at, rotated_at, last_used_at, usage_count, active
-FROM api_keys
-WHERE id = ?`)
-
-	key, err := s.scanOne(q, id)
+	key, err := s.scanOne(s.stmtGetByID, id)
 	if err == sql.ErrNoRows {
 		return nil, false
 	}
@@ -238,8 +270,7 @@ FROM api_keys`
 // Revoke marks an API key as inactive and records the revocation timestamp.
 func (s *SQLStore) Revoke(id string) error {
 	now := time.Now().UTC()
-	q := s.bind(`UPDATE api_keys SET revoked_at = ?, active = ? WHERE id = ?`)
-	res, err := s.db.Exec(q, now, false, id)
+	res, err := s.stmtRevoke.Exec(now, false, id)
 	if err != nil {
 		return fmt.Errorf("revoke key: %w", err)
 	}
@@ -269,8 +300,7 @@ func (s *SQLStore) Update(id string, name string, scopes []string) (*APIKey, err
 		return nil, fmt.Errorf("encode scopes: %w", err)
 	}
 
-	q := s.bind(`UPDATE api_keys SET name = ?, scopes = ? WHERE id = ?`)
-	if _, err := s.db.Exec(q, current.Name, string(scopesJSON), id); err != nil {
+	if _, err := s.stmtUpdate.Exec(current.Name, string(scopesJSON), id); err != nil {
 		return nil, fmt.Errorf("update key: %w", err)
 	}
 
@@ -288,8 +318,7 @@ func (s *SQLStore) SetExpiration(id string, expiresAt *time.Time) error {
 		expiresAt = &t
 	}
 
-	q := s.bind(`UPDATE api_keys SET expires_at = ? WHERE id = ?`)
-	res, err := s.db.Exec(q, expiresAt, id)
+	res, err := s.stmtSetExpiry.Exec(expiresAt, id)
 	if err != nil {
 		return fmt.Errorf("set key expiration: %w", err)
 	}
@@ -302,8 +331,7 @@ func (s *SQLStore) SetExpiration(id string, expiresAt *time.Time) error {
 
 // Delete removes an API key by ID.
 func (s *SQLStore) Delete(id string) error {
-	q := s.bind(`DELETE FROM api_keys WHERE id = ?`)
-	res, err := s.db.Exec(q, id)
+	res, err := s.stmtDelete.Exec(id)
 	if err != nil {
 		return fmt.Errorf("delete key: %w", err)
 	}
@@ -316,12 +344,7 @@ func (s *SQLStore) Delete(id string) error {
 
 // ValidateKey validates a full API key value and updates usage counters.
 func (s *SQLStore) ValidateKey(key string) (*APIKey, bool) {
-	q := s.bind(`
-SELECT id, key, name, scopes, created_at, revoked_at, expires_at, rotated_at, last_used_at, usage_count, active
-FROM api_keys
-WHERE key = ?`)
-
-	apiKey, err := s.scanOne(q, key)
+	apiKey, err := s.scanOne(s.stmtGetByKey, key)
 	if err == sql.ErrNoRows {
 		return nil, false
 	}
@@ -335,8 +358,7 @@ WHERE key = ?`)
 		return nil, false
 	}
 	now := time.Now().UTC()
-	updateUsageQuery := s.bind(`UPDATE api_keys SET usage_count = usage_count + 1, last_used_at = ? WHERE id = ?`)
-	if _, err := s.db.Exec(updateUsageQuery, now, apiKey.ID); err != nil {
+	if _, err := s.stmtUsage.Exec(now, apiKey.ID); err != nil {
 		return nil, false
 	}
 	apiKey.UsageCount++
@@ -352,8 +374,7 @@ func (s *SQLStore) RotateKey(id string) (*APIKey, error) {
 	}
 	now := time.Now().UTC()
 
-	q := s.bind(`UPDATE api_keys SET key = ?, rotated_at = ? WHERE id = ?`)
-	res, err := s.db.Exec(q, newKey, now, id)
+	res, err := s.stmtRotate.Exec(newKey, now, id)
 	if err != nil {
 		return nil, fmt.Errorf("rotate key: %w", err)
 	}
@@ -369,9 +390,8 @@ func (s *SQLStore) RotateKey(id string) (*APIKey, error) {
 	return updated, nil
 }
 
-func (s *SQLStore) scanOne(query string, arg interface{}) (*APIKey, error) {
-	row := s.db.QueryRow(query, arg)
-	return scanAPIKey(row)
+func (s *SQLStore) scanOne(stmt *sql.Stmt, arg any) (*APIKey, error) {
+	return scanAPIKey(stmt.QueryRow(arg))
 }
 
 func scanAPIKey(scanner interface {
@@ -444,7 +464,7 @@ func (s *SQLStore) bind(query string) string {
 	)
 	for i := 0; i < len(query); i++ {
 		if query[i] == '?' {
-			b.WriteString(fmt.Sprintf("$%d", argNum))
+			fmt.Fprintf(&b, "$%d", argNum)
 			argNum++
 			continue
 		}
