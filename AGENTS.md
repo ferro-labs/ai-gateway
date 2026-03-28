@@ -280,19 +280,6 @@ Minimal by design — no heavy logging framework, no ORM.
 2. Handle the new `StrategyMode` constant in `gateway.go`'s strategy selection logic.
 3. Add tests in `internal/strategies/<name>_test.go`.
 
-## Adding a New Plugin
-
-1. Create `internal/plugins/<name>/plugin.go` implementing `plugin.Plugin`
-2. Register via `plugin.Register(...)` in `init()`
-3. Add blank import in `cmd/ferrogw/main.go`: `_ "github.com/ferro-labs/ai-gateway/internal/plugins/<name>"`
-4. Plugin config is passed as `map[string]interface{}` to `Init()`
-
-## Adding a New Strategy
-
-1. Create `internal/strategies/<name>.go` implementing `strategies.Strategy`
-2. Handle the new `StrategyMode` constant in `gateway.go`'s strategy selection logic
-3. Add tests in `internal/strategies/<name>_test.go`
-
 ---
 
 ## Testing Conventions

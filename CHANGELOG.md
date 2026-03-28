@@ -5,6 +5,22 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.2] — 2026-03-30
+
+### Added
+
+- **`X-Gateway-Overhead-Ms` response header**: Every response now includes gateway processing overhead in milliseconds, letting clients isolate gateway latency from provider latency.
+- **Live upstream benchmark in README**: Measured overhead against live OpenAI API — **0.002 ms** bare proxy, **0.025 ms** with plugins enabled.
+- **Docker Compose dev/prod split**: New `docker-compose.dev.yml` (build from source, debug logging, Ollama host access) and `docker-compose.prod.yml` (pinned image, restart policy, health check, resource limits, log rotation).
+
+### Changed
+
+- **Config examples**: Added all 29 providers as targets, conditional routing examples, retry/circuit-breaker config, and previously undocumented plugin fields (`max_input_length`, `burst`, `max_keys`).
+- **`docker-compose.yml`**: Refactored to shared base config with commented env var stubs for all 29 providers.
+- **AGENTS.md / CONTRIBUTING.md**: Updated "Adding a New Provider" checklist with config example and docker-compose steps; removed duplicate sections.
+
+---
+
 ## [1.0.1] — 2026-03-27
 
 ### Security
