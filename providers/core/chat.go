@@ -226,6 +226,11 @@ type Response struct {
 	Provider string   `json:"provider,omitempty"`
 	Choices  []Choice `json:"choices"`
 	Usage    Usage    `json:"usage"`
+
+	// OverheadMs is the gateway processing overhead in milliseconds
+	// (total latency minus provider call duration). Excluded from JSON
+	// responses; exposed via the X-Gateway-Overhead-Ms response header.
+	OverheadMs float64 `json:"-"`
 }
 
 // Choice represents a single completion choice in the response.
