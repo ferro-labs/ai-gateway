@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"html/template"
 	"io/fs"
 	"net/http"
 	httppprof "net/http/pprof"
@@ -16,9 +17,13 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-func renderWebTemplate(w http.ResponseWriter, templateName string, data interface{}) error {
+func renderWebTemplate(w http.ResponseWriter, pageName string, data interface{}) error {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	return webTemplates.ExecuteTemplate(w, templateName, data)
+	tmpl, err := template.ParseFS(webassets.Assets, "templates/layout.html", "templates/pages/"+pageName+".html")
+	if err != nil {
+		return err
+	}
+	return tmpl.ExecuteTemplate(w, "layout.html", data)
 }
 
 func mountPprofRoutes(r chi.Router) {

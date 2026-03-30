@@ -4,12 +4,16 @@ import (
 	"encoding/json"
 	"expvar"
 	"fmt"
+	"html/template"
+	"io/fs"
 	"net/http"
 
 	aigateway "github.com/ferro-labs/ai-gateway"
 	"github.com/ferro-labs/ai-gateway/internal/admin"
 	"github.com/ferro-labs/ai-gateway/internal/requestlog"
+	"github.com/ferro-labs/ai-gateway/internal/version"
 	"github.com/ferro-labs/ai-gateway/providers"
+	webassets "github.com/ferro-labs/ai-gateway/web"
 	"github.com/go-chi/chi/v5"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
@@ -21,20 +25,62 @@ func mountOperationalRoutes(r chi.Router, gw *aigateway.Gateway) {
 	mountPprofRoutes(r)
 }
 
+type pageData struct {
+	ActivePage string
+	PageTitle  string
+	Version    string
+}
+
+func renderPage(w http.ResponseWriter, page, title string) {
+	data := pageData{ActivePage: page, PageTitle: title, Version: version.Short()}
+	if err := renderWebTemplate(w, page, data); err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "failed to render dashboard", "server_error", "internal_error")
+	}
+}
+
 func mountDashboardRoutes(r chi.Router) {
 	r.Get("/dashboard", func(w http.ResponseWriter, _ *http.Request) {
-		if err := renderWebTemplate(w, "dashboard.html", nil); err != nil {
-			writeOpenAIError(w, http.StatusInternalServerError, "failed to render dashboard", "server_error", "internal_error")
+		renderPage(w, "getting-started", "Getting Started")
+	})
+	r.Get("/dashboard/overview", func(w http.ResponseWriter, _ *http.Request) {
+		renderPage(w, "overview", "Overview")
+	})
+	r.Get("/dashboard/keys", func(w http.ResponseWriter, _ *http.Request) {
+		renderPage(w, "keys", "API Keys")
+	})
+	r.Get("/dashboard/logs", func(w http.ResponseWriter, _ *http.Request) {
+		renderPage(w, "logs", "Request Logs")
+	})
+	r.Get("/dashboard/providers", func(w http.ResponseWriter, _ *http.Request) {
+		renderPage(w, "providers", "Providers")
+	})
+	r.Get("/dashboard/config", func(w http.ResponseWriter, _ *http.Request) {
+		renderPage(w, "config", "Config")
+	})
+	r.Get("/dashboard/analytics", func(w http.ResponseWriter, _ *http.Request) {
+		renderPage(w, "analytics", "Analytics")
+	})
+	r.Get("/dashboard/playground", func(w http.ResponseWriter, _ *http.Request) {
+		renderPage(w, "playground", "Playground")
+	})
+
+	r.Get("/dashboard/login", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		tmpl, err := template.ParseFS(webassets.Assets, "templates/login.html")
+		if err != nil {
+			writeOpenAIError(w, http.StatusInternalServerError, "failed to render login page", "server_error", "internal_error")
 			return
 		}
+		_ = tmpl.Execute(w, nil)
 	})
+
+	// Serve static assets from embedded filesystem.
+	staticFS, _ := fs.Sub(webassets.Assets, "static")
+	r.Handle("/dashboard/static/*", http.StripPrefix("/dashboard/static/", http.FileServer(http.FS(staticFS))))
+
 	r.Get("/logo.png", func(w http.ResponseWriter, _ *http.Request) {
 		serveLogo(w)
 	})
-}
-
-func mountModelRoutes(r chi.Router, gw *aigateway.Gateway) {
-	r.Get("/v1/models", modelsHandler(gw))
 }
 
 func mountAdminRoutes(
@@ -44,6 +90,7 @@ func mountAdminRoutes(
 	cfgManager admin.ConfigManager,
 	logReader requestlog.Reader,
 	logMaintainer requestlog.Maintainer,
+	masterKey string,
 ) {
 	adminHandlers := &admin.Handlers{
 		Keys:      keyStore,
@@ -53,25 +100,41 @@ func mountAdminRoutes(
 		LogAdmin:  logMaintainer,
 	}
 	r.Route("/admin", func(r chi.Router) {
-		r.Use(admin.AuthMiddleware(keyStore))
+		r.Use(admin.AuthMiddleware(keyStore, masterKey))
 		r.Mount("/", adminHandlers.Routes())
 	})
 }
 
-func mountOpenAIRoutes(r chi.Router, gw *aigateway.Gateway, registry *providers.Registry) {
-	r.Post("/v1/chat/completions", chatCompletionsHandler(gw))
+// optionalProxyAuth returns a middleware that requires auth on proxy routes
+// only when a master key is configured. When no master key is set, requests
+// pass through without authentication (backward compatible).
+func optionalProxyAuth(store admin.Store, masterKey string) func(http.Handler) http.Handler {
+	if masterKey == "" {
+		return func(next http.Handler) http.Handler { return next }
+	}
+	return admin.AuthMiddleware(store, masterKey)
+}
 
-	// Legacy text completions.
-	r.Post("/v1/completions", completionsHandler(registry))
+func mountOpenAIRoutes(r chi.Router, gw *aigateway.Gateway, registry *providers.Registry, store admin.Store, masterKey string) {
+	proxyAuth := optionalProxyAuth(store, masterKey)
 
-	// Embeddings endpoint.
-	r.Post("/v1/embeddings", embeddingsHandler(gw))
+	r.Group(func(r chi.Router) {
+		r.Use(proxyAuth)
+		r.Get("/v1/models", modelsHandler(gw))
+		r.Post("/v1/chat/completions", chatCompletionsHandler(gw))
 
-	// Image generation endpoint.
-	r.Post("/v1/images/generations", imagesHandler(gw))
+		// Legacy text completions.
+		r.Post("/v1/completions", completionsHandler(registry))
 
-	// Proxy pass-through for unhandled /v1/* endpoints.
-	r.HandleFunc("/v1/*", proxyHandler(registry))
+		// Embeddings endpoint.
+		r.Post("/v1/embeddings", embeddingsHandler(gw))
+
+		// Image generation endpoint.
+		r.Post("/v1/images/generations", imagesHandler(gw))
+
+		// Proxy pass-through for unhandled /v1/* endpoints.
+		r.HandleFunc("/v1/*", proxyHandler(registry))
+	})
 }
 
 func modelsHandler(gw *aigateway.Gateway) http.HandlerFunc {

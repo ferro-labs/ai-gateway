@@ -19,6 +19,8 @@ profile.cov
 
 # Dependency directories (remove the comment below to include it)
 vendor/
+# Allow vendored frontend assets
+!web/static/vendor/
 scripts/*
 !scripts/catalog-check/
 scripts/catalog-check/*
@@ -28,8 +30,10 @@ scripts/catalog-check/*
 go.work
 go.work.sum
 
-# env file
+# Environment secrets
 .env
+.env.local
+.env.*.local
 
 # Editor/IDE
 # .idea/
@@ -49,3 +53,7 @@ bin/
 
 #git hooks
 .githooks
+
+# Superpowers brainstorm sessions and internal planning docs
+.superpowers/
+docs/superpowers/

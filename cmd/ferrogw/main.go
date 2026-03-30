@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"html/template"
 	"net/http"
 	"os"
 	"os/signal"
@@ -13,13 +12,13 @@ import (
 	"time"
 
 	aigateway "github.com/ferro-labs/ai-gateway"
-	"github.com/ferro-labs/ai-gateway/internal/admin"
+	"github.com/ferro-labs/ai-gateway/internal/cli"
 	"github.com/ferro-labs/ai-gateway/internal/logging"
 	"github.com/ferro-labs/ai-gateway/internal/ratelimit"
 	"github.com/ferro-labs/ai-gateway/internal/version"
 	"github.com/ferro-labs/ai-gateway/providers"
 	bedrockpkg "github.com/ferro-labs/ai-gateway/providers/bedrock"
-	webassets "github.com/ferro-labs/ai-gateway/web"
+	"github.com/spf13/cobra"
 
 	// Register built-in plugins so they can be loaded from config.
 	_ "github.com/ferro-labs/ai-gateway/internal/plugins/budget"
@@ -30,18 +29,61 @@ import (
 	_ "github.com/ferro-labs/ai-gateway/internal/plugins/wordfilter"
 )
 
-var webTemplates = template.Must(template.ParseFS(webassets.Assets, "*.html"))
+var rootCmd = &cobra.Command{
+	Use:   "ferrogw",
+	Short: "Ferro Labs AI Gateway",
+	Long:  "High-performance AI gateway with smart routing, plugins, and admin dashboard.",
+	// Default: start the server (backward compatible).
+	Run: func(_ *cobra.Command, _ []string) {
+		runServe()
+	},
+}
+
+var serveCmd = &cobra.Command{
+	Use:   "serve",
+	Short: "Start the gateway server",
+	Run: func(_ *cobra.Command, _ []string) {
+		runServe()
+	},
+}
 
 func main() {
-	// Initialise structured logging before anything else.
+	rootCmd.AddCommand(serveCmd)
+	rootCmd.AddCommand(cli.InitCmd)
+	rootCmd.AddCommand(cli.ValidateCmd)
+	rootCmd.AddCommand(cli.PluginsCmd)
+	rootCmd.AddCommand(cli.DoctorCmd)
+	rootCmd.AddCommand(cli.StatusCmd)
+	rootCmd.AddCommand(cli.VersionCmd)
+	rootCmd.AddCommand(cli.AdminCmd)
+
+	// Persistent flags for CLI commands.
+	rootCmd.PersistentFlags().String("gateway-url", "",
+		"Gateway base URL (env: FERROGW_URL, default: http://localhost:8080)")
+	rootCmd.PersistentFlags().String("api-key", "",
+		"Admin API key (env: FERROGW_API_KEY)")
+	rootCmd.PersistentFlags().String("format", "table",
+		"Output format: table, json, or yaml")
+
+	if err := rootCmd.Execute(); err != nil {
+		os.Exit(1)
+	}
+}
+
+// resolveMasterKey returns the master key from the MASTER_KEY env var.
+func resolveMasterKey() string {
+	return strings.TrimSpace(os.Getenv("MASTER_KEY"))
+}
+
+func runServe() {
 	logging.Setup(os.Getenv("LOG_LEVEL"), os.Getenv("LOG_FORMAT"))
 
 	cfg := loadConfig()
 	registry := registerProviders()
+	masterKey := resolveMasterKey()
 
 	if len(registry.List()) == 0 {
-		logging.Logger.Error("no providers configured; set at least one provider API key (e.g. OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY) or OLLAMA_HOST for local models")
-		os.Exit(1)
+		logging.Logger.Warn("no providers configured; set provider API keys (e.g. OPENAI_API_KEY) or OLLAMA_HOST, or add them later via the admin API")
 	}
 
 	gw := buildGateway(cfg, registry)
@@ -56,7 +98,7 @@ func main() {
 		logging.Logger.Error("failed to initialize API key store", "error", err)
 		os.Exit(1)
 	}
-	logBootstrapConfigurationWarnings(keyStore)
+	logDeprecatedBootstrapKeys()
 
 	var corsOrigins []string
 	if origins := os.Getenv("CORS_ORIGINS"); origins != "" {
@@ -70,7 +112,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	r := newRouter(registry, keyStore, corsOrigins, gw, cfgManager, rlStore, logReader, logMaintainer)
+	r := newRouter(registry, keyStore, corsOrigins, gw, cfgManager, rlStore, logReader, logMaintainer, masterKey)
 
 	addr := ":8080"
 	if p := os.Getenv("PORT"); p != "" {
@@ -92,7 +134,7 @@ func main() {
 		}
 	}()
 
-	printStartupBanner(addr, len(registry.List()), cfg)
+	printStartupBanner(addr, registry, cfg, masterKey, keyStoreBackend, configStoreBackend)
 
 	logging.Logger.Info("ferrogw started",
 		"version", version.Short(),
@@ -123,42 +165,13 @@ func main() {
 	logging.Logger.Info("server stopped")
 }
 
-func logBootstrapConfigurationWarnings(keyStore admin.Store) {
-	bootstrapAdminConfigured := strings.TrimSpace(os.Getenv("ADMIN_BOOTSTRAP_KEY")) != ""
-	bootstrapReadOnlyConfigured := strings.TrimSpace(os.Getenv("ADMIN_BOOTSTRAP_READ_ONLY_KEY")) != ""
-	if !bootstrapAdminConfigured && !bootstrapReadOnlyConfigured {
-		return
+func logDeprecatedBootstrapKeys() {
+	if strings.TrimSpace(os.Getenv("ADMIN_BOOTSTRAP_KEY")) != "" {
+		logging.Logger.Warn("ADMIN_BOOTSTRAP_KEY is deprecated — use MASTER_KEY instead")
 	}
-
-	bootstrapEnabled := true
-	if raw := strings.TrimSpace(os.Getenv("ADMIN_BOOTSTRAP_ENABLED")); raw != "" {
-		parsed, err := strconv.ParseBool(raw)
-		if err != nil {
-			logging.Logger.Warn("invalid ADMIN_BOOTSTRAP_ENABLED value; expected true/false, defaulting to enabled", "value", raw)
-		} else {
-			bootstrapEnabled = parsed
-		}
+	if strings.TrimSpace(os.Getenv("ADMIN_BOOTSTRAP_READ_ONLY_KEY")) != "" {
+		logging.Logger.Warn("ADMIN_BOOTSTRAP_READ_ONLY_KEY is deprecated — use MASTER_KEY instead")
 	}
-
-	if !bootstrapEnabled {
-		logging.Logger.Info("bootstrap keys configured but disabled by ADMIN_BOOTSTRAP_ENABLED=false")
-		return
-	}
-
-	existingKeys := len(keyStore.List())
-	if existingKeys > 0 {
-		logging.Logger.Warn("bootstrap keys configured but ignored because API key store is not empty",
-			"existing_keys", existingKeys,
-			"bootstrap_admin_configured", bootstrapAdminConfigured,
-			"bootstrap_read_only_configured", bootstrapReadOnlyConfigured,
-		)
-		return
-	}
-
-	logging.Logger.Warn("bootstrap keys enabled for first-run setup; create persistent API keys and then unset bootstrap env vars",
-		"bootstrap_admin_configured", bootstrapAdminConfigured,
-		"bootstrap_read_only_configured", bootstrapReadOnlyConfigured,
-	)
 }
 
 // loadConfig loads and validates the gateway config from GATEWAY_CONFIG env var.
@@ -189,9 +202,6 @@ func registerProviders() *providers.Registry {
 	registry := providers.NewRegistry()
 
 	// Register all providers whose required environment variables are set.
-	// Each ProviderEntry in providers.AllProviders() declares its own env var
-	// mappings and Build function — no special-casing per provider needed here,
-	// except for AWS Bedrock which uses a multi-key "configured?" gate.
 	for _, entry := range providers.AllProviders() {
 		if entry.ID == providers.NameBedrock {
 			continue // handled below with its dual-key detection
@@ -212,8 +222,6 @@ func registerProviders() *providers.Registry {
 	}
 
 	// AWS Bedrock: register if AWS_REGION or AWS_ACCESS_KEY_ID is set.
-	// Accepts instance-role auth (no key vars) as long as AWS_REGION is set,
-	// or explicit static credentials when AWS_ACCESS_KEY_ID is present.
 	if region := os.Getenv("AWS_REGION"); region != "" || os.Getenv("AWS_ACCESS_KEY_ID") != "" {
 		p, err := bedrockpkg.NewWithOptions(bedrockpkg.Options{
 			Region:          os.Getenv("AWS_REGION"),
@@ -292,19 +300,22 @@ func newRateLimitStore() *ratelimit.Store {
 	return store
 }
 
-// printStartupBanner prints a branded banner to stderr on server start.
+// printStartupBanner prints a branded, informative banner to stderr on server start.
 //
 // Mark: iron-lattice glyph (ferro = iron) doubling as a gateway grid.
 //
 //	╔╦╗  FERRO LABS  AI GATEWAY  v0.x.x
 //	╠╫╣  → :8080
-//	╚╩╝  · N providers  ·  strategy  ·  N plugins
-func printStartupBanner(addr string, providerCount int, cfg *aigateway.Config) {
+//	╚╩╝  Dashboard → :8080/dashboard
+func printStartupBanner(addr string, registry *providers.Registry, cfg *aigateway.Config, masterKey, keyStoreBackend, configStoreBackend string) {
 	const (
 		orange = "\033[38;5;208m"
 		bold   = "\033[1m"
 		white  = "\033[97m"
 		dim    = "\033[2m"
+		green  = "\033[92m"
+		yellow = "\033[93m"
+		cyan   = "\033[96m"
 		reset  = "\033[0m"
 	)
 
@@ -315,6 +326,8 @@ func printStartupBanner(addr string, providerCount int, cfg *aigateway.Config) {
 		pluginCount = len(cfg.Plugins)
 	}
 
+	providerCount := len(registry.List())
+
 	mark := [3]string{
 		bold + orange + "╔╦╗" + reset,
 		bold + orange + "╠╫╣" + reset,
@@ -324,9 +337,71 @@ func printStartupBanner(addr string, providerCount int, cfg *aigateway.Config) {
 	fmt.Fprintf(os.Stderr, "\n")
 	fmt.Fprintf(os.Stderr, "  %s  %sFERRO LABS%s  AI GATEWAY  %s%s%s\n",
 		mark[0], bold+white, reset, dim, version.Short(), reset)
-	fmt.Fprintf(os.Stderr, "  %s  %s→%s  %s\n",
+	fmt.Fprintf(os.Stderr, "  %s  %s→%s  http://localhost%s\n",
 		mark[1], orange, reset, addr)
-	fmt.Fprintf(os.Stderr, "  %s  %s%d providers  ·  %s  ·  %d plugins%s\n",
-		mark[2], dim, providerCount, strategy, pluginCount, reset)
+	fmt.Fprintf(os.Stderr, "  %s  %sDashboard →%s  http://localhost%s/dashboard\n",
+		mark[2], dim, reset, addr)
 	fmt.Fprintf(os.Stderr, "\n")
+
+	// Provider status.
+	fmt.Fprintf(os.Stderr, "  %sProviders%s\n", bold+white, reset)
+	topProviders := []struct {
+		id     string
+		envVar string
+	}{
+		{"openai", "OPENAI_API_KEY"},
+		{"anthropic", "ANTHROPIC_API_KEY"},
+		{"gemini", "GEMINI_API_KEY"},
+		{"groq", "GROQ_API_KEY"},
+		{"mistral", "MISTRAL_API_KEY"},
+	}
+	for _, tp := range topProviders {
+		if _, ok := registry.Get(tp.id); ok {
+			fmt.Fprintf(os.Stderr, "    %s%s ✓%s\n", green, tp.id, reset)
+		} else {
+			fmt.Fprintf(os.Stderr, "    %s%s ✗%s (%s not set)\n", dim, tp.id, reset, tp.envVar)
+		}
+	}
+	// Show other registered providers not in the top-5 list.
+	topSet := map[string]bool{"openai": true, "anthropic": true, "gemini": true, "groq": true, "mistral": true}
+	for _, name := range registry.List() {
+		if !topSet[name] {
+			fmt.Fprintf(os.Stderr, "    %s%s ✓%s\n", green, name, reset)
+		}
+	}
+	fmt.Fprintf(os.Stderr, "    %s%d providers  ·  %s  ·  %d plugins%s\n",
+		dim, providerCount, strategy, pluginCount, reset)
+	fmt.Fprintf(os.Stderr, "\n")
+
+	// Auth status.
+	fmt.Fprintf(os.Stderr, "  %sAuth%s\n", bold+white, reset)
+	if masterKey != "" {
+		start := max(0, len(masterKey)-4)
+		masked := "****" + masterKey[start:]
+		fmt.Fprintf(os.Stderr, "    Master key: %s%s%s (from env)\n", cyan, masked, reset)
+	} else {
+		fmt.Fprintf(os.Stderr, "    %s! No MASTER_KEY set — run 'ferrogw init' to generate one%s\n", yellow, reset)
+	}
+	fmt.Fprintf(os.Stderr, "\n")
+
+	// Store warnings.
+	hasWarnings := false
+	if keyStoreBackend == backendMemory {
+		if !hasWarnings {
+			fmt.Fprintf(os.Stderr, "  %sWarnings%s\n", bold+white, reset)
+			hasWarnings = true
+		}
+		fmt.Fprintf(os.Stderr, "    %s! API key store: in-memory (keys lost on restart)%s\n", yellow, reset)
+	}
+	if configStoreBackend == backendMemory {
+		if !hasWarnings {
+			fmt.Fprintf(os.Stderr, "  %sWarnings%s\n", bold+white, reset)
+			hasWarnings = true
+		}
+		fmt.Fprintf(os.Stderr, "    %s! Config store: in-memory (config lost on restart)%s\n", yellow, reset)
+	}
+	if hasWarnings {
+		fmt.Fprintf(os.Stderr, "    %sSet API_KEY_STORE_BACKEND=sqlite for persistence%s\n", dim, reset)
+		fmt.Fprintf(os.Stderr, "\n")
+	}
 }

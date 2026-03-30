@@ -1,0 +1,46 @@
+{{define "content"}}
+<div class="stat-grid">
+  <div class="stat-card">
+    <div class="stat-label">Providers</div>
+    <div class="stat-value" id="stat-providers">-</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Active Keys</div>
+    <div class="stat-value" id="stat-keys">-</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Total Requests</div>
+    <div class="stat-value" id="stat-requests">-</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Error Rate</div>
+    <div class="stat-value" id="stat-errors">-</div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-title">Requests (24h)</div>
+  <div id="chart-container" style="width:100%;height:200px;"></div>
+</div>
+
+<div class="card">
+  <div class="card-title">Recent Requests</div>
+  <table class="data-table">
+    <thead>
+      <tr>
+        <th>Time</th>
+        <th>Provider</th>
+        <th>Model</th>
+        <th>Status</th>
+        <th>Latency</th>
+        <th>Tokens</th>
+      </tr>
+    </thead>
+    <tbody id="recent-body"></tbody>
+  </table>
+</div>
+{{end}}
+{{define "page-js"}}
+<script src="/dashboard/static/vendor/uplot.min.js"></script>
+<script src="/dashboard/static/pages/overview.js"></script>
+{{end}}

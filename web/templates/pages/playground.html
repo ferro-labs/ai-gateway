@@ -1,0 +1,59 @@
+{{define "content"}}
+<div id="playground-root">
+  <div style="display:grid;grid-template-columns:320px 1fr;gap:16px;align-items:start;">
+
+    <!-- Settings panel -->
+    <div class="card" style="margin-bottom:0;">
+      <div class="card-title">Settings</div>
+
+      <div class="form-group">
+        <label class="form-label" for="pg-model">Model</label>
+        <select id="pg-model" class="input" style="width:100%;">
+          <option value="">Loading models...</option>
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="pg-temp">Temperature</label>
+        <input id="pg-temp" class="input" type="number" min="0" max="2" step="0.1" value="0.7" style="width:100%;" />
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="pg-max-tokens">Max Tokens</label>
+        <input id="pg-max-tokens" class="input" type="number" min="1" max="32768" step="1" value="1024" style="width:100%;" />
+      </div>
+
+      <div class="form-group">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
+          <label class="form-label" for="pg-system" style="margin-bottom:0;">System Prompt</label>
+          <button id="pg-system-toggle" class="btn btn-ghost" style="padding:2px 8px;font-size:12px;" onclick="toggleSystemPrompt()">Show</button>
+        </div>
+        <textarea id="pg-system" class="playground-textarea" placeholder="Optional system instructions..." style="display:none;min-height:80px;"></textarea>
+      </div>
+    </div>
+
+    <!-- Chat panel -->
+    <div>
+      <div class="card" style="margin-bottom:16px;">
+        <div class="card-title">Message</div>
+        <div class="form-group" style="margin-bottom:12px;">
+          <textarea id="pg-user" class="playground-textarea" placeholder="Enter your message..." autofocus style="min-height:140px;"></textarea>
+        </div>
+        <button id="pg-send" class="btn btn-primary" onclick="sendMessage()">Send</button>
+      </div>
+
+      <div id="pg-response-card" class="card" style="display:none;margin-bottom:0;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+          <div class="card-title" style="margin-bottom:0;">Response</div>
+          <span id="pg-meta" class="mono" style="font-size:12px;color:var(--text-muted);"></span>
+        </div>
+        <div id="pg-response" class="playground-response"></div>
+      </div>
+    </div>
+
+  </div>
+</div>
+{{end}}
+{{define "page-js"}}
+<script src="/dashboard/static/pages/playground.js"></script>
+{{end}}

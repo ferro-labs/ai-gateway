@@ -38,7 +38,7 @@ body:
         - MCP / tool calling
         - Admin API
         - Config loading (YAML/JSON)
-        - CLI (ferrogw / ferrogw-cli)
+        - CLI (ferrogw subcommands)
         - Streaming
         - Other
     validations:

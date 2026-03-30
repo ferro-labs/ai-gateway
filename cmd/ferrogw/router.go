@@ -23,6 +23,7 @@ func newRouter(
 	rlStore *ratelimit.Store,
 	logReader requestlog.Reader,
 	logMaintainer requestlog.Maintainer,
+	masterKey string,
 ) http.Handler {
 	gw = ensureRouterGateway(gw, registry)
 
@@ -41,9 +42,8 @@ func newRouter(
 
 	mountOperationalRoutes(r, gw)
 	mountDashboardRoutes(r)
-	mountModelRoutes(r, gw)
-	mountAdminRoutes(r, gw, keyStore, cfgManager, logReader, logMaintainer)
-	mountOpenAIRoutes(r, gw, registry)
+	mountAdminRoutes(r, gw, keyStore, cfgManager, logReader, logMaintainer, masterKey)
+	mountOpenAIRoutes(r, gw, registry, keyStore, masterKey)
 
 	return r
 }

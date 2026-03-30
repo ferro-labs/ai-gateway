@@ -138,7 +138,7 @@ func setupTestRouterWithConfigManager(cm ConfigManager) (*Handlers, chi.Router) 
 		Configs: cm,
 	}
 	r := chi.NewRouter()
-	r.Use(AuthMiddleware(store))
+	r.Use(AuthMiddleware(store, ""))
 	r.Mount("/admin", h.Routes())
 	return h, r
 }
@@ -157,7 +157,7 @@ func setupTestRouter() (*Handlers, chi.Router) {
 		Configs: cm,
 	}
 	r := chi.NewRouter()
-	r.Use(AuthMiddleware(store))
+	r.Use(AuthMiddleware(store, ""))
 	r.Mount("/admin", h.Routes())
 	return h, r
 }
@@ -180,7 +180,7 @@ func setupTestRouterWithLogs(reader requestlog.Reader) (*Handlers, chi.Router) {
 		h.LogAdmin = maintainer
 	}
 	r := chi.NewRouter()
-	r.Use(AuthMiddleware(store))
+	r.Use(AuthMiddleware(store, ""))
 	r.Mount("/admin", h.Routes())
 	return h, r
 }

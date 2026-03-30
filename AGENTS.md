@@ -28,7 +28,6 @@
 ```bash
 # Build
 make build          # builds ./bin/ferrogw
-make build-cli      # builds ./bin/ferrogw-cli
 make all            # fmt + lint + test + coverage + build
 
 # Run
@@ -55,16 +54,15 @@ docker-compose up   # local dev environment
 ```sh
 ai-gateway/
 ├── cmd/
-│   ├── ferrogw/          # HTTP server entry point
-│   │   ├── main.go       # Server setup, provider registration, router
-│   │   ├── cors.go       # CORS middleware
-│   │   ├── completions.go # Legacy /v1/completions handler
-│   │   └── proxy.go      # Pass-through proxy for /v1/*
-│   └── ferrogw-cli/      # CLI management tool
-│       └── main.go
+│   └── ferrogw/          # HTTP server + CLI entry point (Cobra subcommands)
+│       ├── main.go       # Server setup, provider registration, router, Cobra root
+│       ├── cors.go       # CORS middleware
+│       ├── completions.go # Legacy /v1/completions handler
+│       └── proxy.go      # Pass-through proxy for /v1/*
 ├── internal/
 │   ├── admin/            # API key management + auth middleware
 │   ├── cache/            # Cache interface + in-memory implementation
+│   ├── cli/              # Shared CLI command implementations (doctor, status, admin, etc.)
 │   ├── plugins/          # Built-in plugin implementations
 │   │   ├── cache/        # Request/response caching
 │   │   ├── logger/       # Request/response logging
@@ -182,6 +180,7 @@ plugins:
 
 | Variable | Purpose |
 |----------|---------|
+| `MASTER_KEY` | Single admin credential for all auth (use `ferrogw init` to generate) |
 | `GATEWAY_CONFIG` | Path to config YAML/JSON |
 | `PORT` | Server port (default: 8080) |
 | `OPENAI_API_KEY` | OpenAI API key |
@@ -239,7 +238,7 @@ plugins:
 | `github.com/prometheus/client_golang` | Prometheus metrics |
 | `github.com/santhosh-tekuri/jsonschema/v5` | JSON schema validation (schemaguard plugin) |
 | `golang.org/x/oauth2` | Vertex AI service-account auth |
-| `github.com/spf13/cobra` | CLI (`ferrogw-cli`) |
+| `github.com/spf13/cobra` | CLI subcommands (`ferrogw init`, `ferrogw doctor`, etc.) |
 | `modernc.org/sqlite` | SQLite for admin/key storage |
 | `github.com/lib/pq` | PostgreSQL support |
 
