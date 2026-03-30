@@ -321,9 +321,11 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 
 	// Execute the strategy (provider selection + actual call).
 	var resp *providers.Response
+	providerStart := time.Now()
 	trace.WithRegion(ctx, "gateway.route.provider.execute", func() {
 		resp, err = s.Execute(ctx, req)
 	})
+	providerDuration := time.Since(providerStart)
 	latency := time.Since(start)
 
 	if err != nil {
@@ -467,6 +469,8 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 			cost,
 		))
 	}
+
+	resp.OverheadMs = float64((latency - providerDuration).Microseconds()) / 1000.0
 
 	return resp, nil
 }

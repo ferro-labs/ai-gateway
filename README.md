@@ -125,6 +125,21 @@ mock upstream** — results reflect gateway overhead only.
 At 1,000 VU: **13,925 RPS**, p50 overhead **8.1ms**, memory **135 MB**.
 No connection pool failures. No throughput ceiling.
 
+### Live Upstream Overhead (OpenAI API)
+
+Measured against **live OpenAI API** (gpt-4o-mini) using two independent methods:
+the gateway's `X-Gateway-Overhead-Ms` response header (precise internal timing)
+and paired direct-vs-gateway requests (external black-box validation).
+
+| Configuration | Overhead p50 | Overhead p99 |
+|:---|---:|---:|
+| No plugins (bare proxy) | **0.002ms** (2 microseconds) | 0.03ms |
+| With plugins (word-filter, max-token, logger, rate-limit) | **0.025ms** (25 microseconds) | 0.074ms |
+
+The gateway adds **25 microseconds** of processing overhead per request in a typical
+production configuration. LLM API calls take 500ms-2s — the gateway is 20,000x faster
+than the provider it proxies.
+
 ### How to Reproduce
 
 ```bash
@@ -299,6 +314,33 @@ export OPENAI_API_KEY=sk-your-key
 export GATEWAY_CONFIG=./config.yaml
 make build && ./bin/ferrogw
 ```
+
+### Option D — Docker Compose (dev & prod)
+
+The repo ships three Compose files that follow the standard override pattern:
+
+| File | Purpose |
+|---|---|
+| `docker-compose.yml` | Base — shared image, port mapping, all provider env var stubs |
+| `docker-compose.dev.yml` | Dev — builds from source, debug logging, live config mount, Ollama host access |
+| `docker-compose.prod.yml` | Prod — pinned image tag, restart policy, health check, resource limits, log rotation |
+
+**Dev** (builds from source):
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+```
+
+**Prod** (pin to a release tag — never use `latest` in production):
+
+```bash
+IMAGE_TAG=v1.0.1 CORS_ORIGINS=https://your-domain.com \
+  docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+```
+
+Provider API keys are commented out in `docker-compose.yml`. Uncomment and set the ones you need, or supply them via a `.env` file in the same directory.
+
+---
 
 ### Docker Compose (with PostgreSQL)
 

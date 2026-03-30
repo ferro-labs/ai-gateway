@@ -3,6 +3,15 @@
     "mode": "fallback",
     "_comment": "mode: single | fallback | loadbalance | conditional | content-based | ab-test | least-latency | cost-optimized"
   },
+  "_conditional_example": {
+    "strategy": {
+      "mode": "conditional",
+      "conditions": [
+        { "key": "model", "value": "gpt-4o",                      "target_key": "openai" },
+        { "key": "model", "value": "claude-3-5-sonnet-20241022",  "target_key": "anthropic" }
+      ]
+    }
+  },
   "_content_based_example": {
     "strategy": {
       "mode": "content-based",
@@ -26,11 +35,18 @@
     {
       "virtual_key": "openai",
       "retry": {
-        "attempts": 3
+        "attempts": 3,
+        "on_status_codes": [429, 502, 503],
+        "initial_backoff_ms": 100
       }
     },
     {
-      "virtual_key": "anthropic"
+      "virtual_key": "anthropic",
+      "circuit_breaker": {
+        "failure_threshold": 5,
+        "success_threshold": 1,
+        "timeout": "30s"
+      }
     },
     {
       "virtual_key": "xai"
@@ -82,6 +98,36 @@
     },
     {
       "virtual_key": "ollama"
+    },
+    {
+      "virtual_key": "cerebras"
+    },
+    {
+      "virtual_key": "cloudflare"
+    },
+    {
+      "virtual_key": "databricks"
+    },
+    {
+      "virtual_key": "deepinfra"
+    },
+    {
+      "virtual_key": "moonshot"
+    },
+    {
+      "virtual_key": "novita"
+    },
+    {
+      "virtual_key": "nvidia-nim"
+    },
+    {
+      "virtual_key": "openrouter"
+    },
+    {
+      "virtual_key": "qwen"
+    },
+    {
+      "virtual_key": "sambanova"
     }
   ],
   "aliases": {
@@ -108,7 +154,8 @@
       "enabled": true,
       "config": {
         "max_tokens": 4096,
-        "max_messages": 50
+        "max_messages": 50,
+        "max_input_length": 0
       }
     },
     {
@@ -210,6 +257,7 @@
       "enabled": false,
       "config": {
         "requests_per_second": 100,
+        "burst": 100,
         "key_rpm": 60,
         "user_rpm": 30
       }
@@ -223,7 +271,8 @@
         "store_id": "default",
         "spend_limit_usd": 10.0,
         "input_per_m_tokens": 3.0,
-        "output_per_m_tokens": 15.0
+        "output_per_m_tokens": 15.0,
+        "max_keys": 10000
       }
     }
   ],

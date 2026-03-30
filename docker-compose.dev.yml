@@ -1,0 +1,18 @@
+# Development overrides — build from source, verbose logging, no restart policy.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+
+services:
+  ferrogw:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # image: is overridden by build above
+    environment:
+      - LOG_LEVEL=debug
+      - CORS_ORIGINS=http://localhost:3000,http://localhost:5173
+    volumes:
+      # Live-reload config without rebuilding the image.
+      - ./config.example.yaml:/etc/ferrogw/config.yaml:ro
+    extra_hosts:
+      # Allows the container to reach Ollama running on the host machine.
+      - "host.docker.internal:host-gateway"

@@ -1,0 +1,34 @@
+# Production overrides — pinned image tag, restart policy, resource limits, health check.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# Before deploying:
+#   1. Pin IMAGE_TAG to a specific release (e.g. v1.0.1) — never use "latest" in prod.
+#   2. Supply secrets via environment or a .env file (never commit keys to the repo).
+
+services:
+  ferrogw:
+    image: ghcr.io/ferro-labs/ai-gateway:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      - CORS_ORIGINS=${CORS_ORIGINS:-}
+    volumes:
+      - ./config.yaml:/etc/ferrogw/config.yaml:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 128M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

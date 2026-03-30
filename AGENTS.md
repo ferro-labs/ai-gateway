@@ -265,6 +265,8 @@ Minimal by design — no heavy logging framework, no ORM.
    ```
 3. Add a `ProviderEntry` to the `allProviders` slice in `providers/providers_list.go` — fill in `ID`, `Capabilities`, `EnvMappings`, and `Build`.
 4. Add `providers/<id>/<id>_test.go` — the stability tests in `providers/stability_test.go` automatically catch name drift and missing capabilities.
+5. Add a `{ "virtual_key": "<id>" }` entry to `config.example.json` and a `- virtual_key: <id>` line to `config.example.yaml`.
+6. Add the provider's env var(s) (commented out) to `docker-compose.yml`.
 
 ## Adding a New Plugin
 
@@ -278,26 +280,12 @@ Minimal by design — no heavy logging framework, no ORM.
 2. Handle the new `StrategyMode` constant in `gateway.go`'s strategy selection logic.
 3. Add tests in `internal/strategies/<name>_test.go`.
 
-## Adding a New Plugin
-
-1. Create `internal/plugins/<name>/plugin.go` implementing `plugin.Plugin`
-2. Register via `plugin.Register(...)` in `init()`
-3. Add blank import in `cmd/ferrogw/main.go`: `_ "github.com/ferro-labs/ai-gateway/internal/plugins/<name>"`
-4. Plugin config is passed as `map[string]interface{}` to `Init()`
-
-## Adding a New Strategy
-
-1. Create `internal/strategies/<name>.go` implementing `strategies.Strategy`
-2. Handle the new `StrategyMode` constant in `gateway.go`'s strategy selection logic
-3. Add tests in `internal/strategies/<name>_test.go`
-
 ---
 
 ## Testing Conventions
 
 - Unit tests live alongside implementation as `*_test.go`
 - Integration tests require real provider API keys; run with `make test-integration`
-- Use `make precommit` (fmt + test) before committing
 - Benchmarks with `make bench`
 
 ### Additional checks for this branch

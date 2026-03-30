@@ -46,7 +46,9 @@ git push origin release/v1.0.0
 4. Add `providers/<id>/<id>_test.go` — run `go test ./providers/...`
 5. Add models to `models/catalog.json`
 6. Update the provider table in README.md
-7. Add an example in [ferro-labs/ai-gateway-examples](https://github.com/ferro-labs/ai-gateway-examples)
+7. Add a `{ "virtual_key": "<id>" }` entry to `config.example.json` and a `- virtual_key: <id>` line to `config.example.yaml`
+8. Add the provider's env var(s) (commented out) to `docker-compose.yml`
+9. Add an example in [ferro-labs/ai-gateway-examples](https://github.com/ferro-labs/ai-gateway-examples)
 
 **Important:** Providers go in the OSS repo only. Never add provider integrations to FerroCloud.
 
