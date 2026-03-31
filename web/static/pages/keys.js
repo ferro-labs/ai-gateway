@@ -118,7 +118,7 @@ function showCreateKeyModal() {
   var readOnlyCheck = document.getElementById('scope-read-only');
 
   if (nameInput) nameInput.value = '';
-  if (expiresInput) expiresInput.value = '';
+  if (expiresInput) expiresInput.value = '30';
   if (adminCheck) adminCheck.checked = true;
   if (readOnlyCheck) readOnlyCheck.checked = false;
 
@@ -154,8 +154,12 @@ async function submitCreateKey() {
 
   var expiresAt = '';
   if (expiresInput && expiresInput.value) {
-    var d = new Date(expiresInput.value);
-    if (!isNaN(d.getTime())) expiresAt = d.toISOString();
+    var days = parseInt(expiresInput.value, 10);
+    if (!isNaN(days) && days > 0) {
+      var d = new Date();
+      d.setDate(d.getDate() + days);
+      expiresAt = d.toISOString();
+    }
   }
 
   var body = { name: name, scopes: scopes };

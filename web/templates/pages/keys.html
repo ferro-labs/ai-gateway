@@ -47,8 +47,13 @@
       </div>
     </div>
     <div class="form-group">
-      <label class="form-label" for="key-expires-input">Expiry (optional)</label>
-      <input id="key-expires-input" class="input" type="datetime-local" />
+      <label class="form-label" for="key-expires-input">Expiry</label>
+      <select id="key-expires-input" class="input" style="width:100%;">
+        <option value="">No expiry</option>
+        <option value="7">7 days</option>
+        <option value="30" selected>30 days</option>
+        <option value="90">90 days</option>
+      </select>
     </div>
     <div class="modal-actions">
       <button class="btn btn-secondary" onclick="closeModal('create-key-modal')">Cancel</button>

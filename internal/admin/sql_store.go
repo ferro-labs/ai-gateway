@@ -478,7 +478,7 @@ func generateAPIKeyString() (string, error) {
 	if _, err := rand.Read(keyBytes); err != nil {
 		return "", fmt.Errorf("generating key: %w", err)
 	}
-	return "gw-" + hex.EncodeToString(keyBytes), nil
+	return "fgw_" + hex.EncodeToString(keyBytes), nil
 }
 
 func generateID() (string, error) {

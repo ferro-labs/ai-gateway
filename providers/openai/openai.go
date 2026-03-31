@@ -14,6 +14,7 @@ import (
 	oai "github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
 
+	"github.com/ferro-labs/ai-gateway/internal/discovery"
 	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
@@ -39,6 +40,7 @@ var (
 	_ core.EmbeddingProvider = (*Provider)(nil)
 	_ core.ImageProvider     = (*Provider)(nil)
 	_ core.ProxiableProvider = (*Provider)(nil)
+	_ core.DiscoveryProvider = (*Provider)(nil)
 )
 
 // New creates a new OpenAI provider.
@@ -81,10 +83,32 @@ func (p *Provider) AuthHeaders() map[string]string {
 // SupportedModels returns the list of models supported by this provider.
 func (p *Provider) SupportedModels() []string {
 	return []string{
+		// GPT-4o family
 		"gpt-4o",
+		"gpt-4o-mini",
+		"gpt-4o-2024-11-20",
+		"gpt-4o-2024-08-06",
+		"gpt-4o-mini-2024-07-18",
+		// GPT-4.1 family
+		"gpt-4.1",
+		"gpt-4.1-mini",
+		"gpt-4.1-nano",
+		"gpt-4.1-2025-04-14",
+		// GPT-4 legacy
 		"gpt-4-turbo",
+		"gpt-4-turbo-2024-04-09",
 		"gpt-4",
+		// GPT-3.5
 		"gpt-3.5-turbo",
+		// o-series reasoning
+		"o1",
+		"o1-mini",
+		"o1-preview",
+		"o3",
+		"o3-mini",
+		"o4-mini",
+		// ChatGPT
+		"chatgpt-4o-latest",
 	}
 }
 
@@ -104,6 +128,15 @@ func (p *Provider) SupportsModel(model string) bool {
 // Models returns model information for all supported models.
 func (p *Provider) Models() []core.ModelInfo {
 	return core.ModelsFromList(p.name, p.SupportedModels())
+}
+
+// DiscoverModels fetches the live model list from the OpenAI /v1/models endpoint.
+func (p *Provider) DiscoverModels(ctx context.Context) ([]core.ModelInfo, error) {
+	url := p.baseURL + "/v1/models"
+	if strings.HasSuffix(p.baseURL, "/v1") {
+		url = p.baseURL + "/models"
+	}
+	return discovery.DiscoverOpenAICompatibleModels(ctx, p.httpClient, url, p.apiKey, p.name)
 }
 
 // Embed sends an embedding request to OpenAI.

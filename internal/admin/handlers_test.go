@@ -1578,8 +1578,8 @@ func TestRotateKey(t *testing.T) {
 	if rotated.ID != keyID {
 		t.Errorf("expected rotated key to keep ID %q, got %q", keyID, rotated.ID)
 	}
-	if !strings.HasPrefix(rotated.Key, "gw-") {
-		t.Errorf("expected rotated key to start with gw-, got %q", rotated.Key)
+	if !strings.HasPrefix(rotated.Key, "fgw_") {
+		t.Errorf("expected rotated key to start with fgw_, got %q", rotated.Key)
 	}
 }
 

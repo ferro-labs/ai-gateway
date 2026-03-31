@@ -44,6 +44,7 @@ go.work.sum
 
 #config
 config.json
+config.yaml
 
 # binaries
 bin/

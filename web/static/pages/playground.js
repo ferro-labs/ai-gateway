@@ -13,7 +13,10 @@ async function loadModels() {
   var select = document.getElementById('pg-model');
   if (!select) return;
   try {
-    var res = await fetch('/v1/models');
+    var headers = {};
+    var token = getToken();
+    if (token) headers['Authorization'] = 'Bearer ' + token;
+    var res = await fetch('/v1/models', { headers: headers });
     var data = await res.json();
     var models = (data && data.data) ? data.data : [];
     clearEl(select);
