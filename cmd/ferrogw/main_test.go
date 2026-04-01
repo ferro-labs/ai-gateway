@@ -90,6 +90,7 @@ func TestHealth(t *testing.T) {
 }
 
 func TestModels(t *testing.T) {
+	t.Setenv("ALLOW_UNAUTHENTICATED_PROXY", "true")
 	ks := testKeyStore()
 	r := newRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "")
 	req := httptest.NewRequest("GET", "/v1/models", nil)
@@ -121,6 +122,7 @@ func TestPprofDisabledByDefault(t *testing.T) {
 
 func TestPprofEnabled(t *testing.T) {
 	t.Setenv("ENABLE_PPROF", "true")
+	t.Setenv("ALLOW_UNAUTHENTICATED_PROXY", "true")
 	ks := testKeyStore()
 	r := newRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "")
 	req := httptest.NewRequest("GET", "/debug/pprof/", nil)
@@ -136,6 +138,7 @@ func TestPprofEnabled(t *testing.T) {
 }
 
 func TestDebugVarsEnabled(t *testing.T) {
+	t.Setenv("ALLOW_UNAUTHENTICATED_PROXY", "true")
 	ks := testKeyStore()
 	r := newRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "")
 	req := httptest.NewRequest("GET", "/debug/vars", nil)
@@ -157,7 +160,7 @@ func TestDashboardUIPage(t *testing.T) {
 		path  string
 		title string
 	}{
-		{"/dashboard", "Getting Started"},
+		{"/dashboard/getting-started", "Getting Started"},
 		{"/dashboard/overview", "Overview"},
 		{"/dashboard/keys", "API Keys"},
 		{"/dashboard/logs", "Request Logs"},
@@ -184,6 +187,20 @@ func TestDashboardUIPage(t *testing.T) {
 	}
 }
 
+func TestDashboardRedirect(t *testing.T) {
+	ks := testKeyStore()
+	r := newRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "")
+	req := httptest.NewRequest("GET", "/dashboard", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusFound {
+		t.Errorf("status = %d, want 302", w.Code)
+	}
+	if loc := w.Header().Get("Location"); loc != "/dashboard/getting-started" {
+		t.Errorf("Location = %q, want /dashboard/getting-started", loc)
+	}
+}
+
 func TestDashboardStaticAssets(t *testing.T) {
 	ks := testKeyStore()
 	r := newRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "")
@@ -207,6 +224,7 @@ func TestDashboardStaticAssets(t *testing.T) {
 }
 
 func TestChatCompletions(t *testing.T) {
+	t.Setenv("ALLOW_UNAUTHENTICATED_PROXY", "true")
 	ks := testKeyStore()
 	r := newRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "")
 	payload := `{"model":"test-model","messages":[{"role":"user","content":"hi"}]}`
@@ -269,6 +287,7 @@ func TestDecodeChatCompletionRequest_ToolChoiceString(t *testing.T) {
 }
 
 func TestChatCompletions_ValidationError(t *testing.T) {
+	t.Setenv("ALLOW_UNAUTHENTICATED_PROXY", "true")
 	ks := testKeyStore()
 	r := newRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "")
 	payload := `{"model":"","messages":[]}`
@@ -283,6 +302,7 @@ func TestChatCompletions_ValidationError(t *testing.T) {
 }
 
 func TestChatCompletions_UnsupportedModel(t *testing.T) {
+	t.Setenv("ALLOW_UNAUTHENTICATED_PROXY", "true")
 	ks := testKeyStore()
 	r := newRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "")
 	payload := `{"model":"unknown","messages":[{"role":"user","content":"hi"}]}`
@@ -330,6 +350,7 @@ func testStreamRegistry() *providers.Registry {
 }
 
 func TestChatCompletions_Stream(t *testing.T) {
+	t.Setenv("ALLOW_UNAUTHENTICATED_PROXY", "true")
 	ks := testKeyStore()
 	r := newRouter(testStreamRegistry(), ks, nil, nil, nil, nil, nil, nil, "")
 	payload := `{"model":"test-stream-model","messages":[{"role":"user","content":"hi"}],"stream":true}`
@@ -372,6 +393,7 @@ func TestWriteSSE_StreamError(t *testing.T) {
 }
 
 func TestChatCompletions_StreamUnsupported(t *testing.T) {
+	t.Setenv("ALLOW_UNAUTHENTICATED_PROXY", "true")
 	ks := testKeyStore()
 	r := newRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "")
 	payload := `{"model":"test-model","messages":[{"role":"user","content":"hi"}],"stream":true}`

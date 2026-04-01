@@ -82,6 +82,10 @@ func runServe() {
 	registry := registerProviders()
 	masterKey := resolveMasterKey()
 
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("ALLOW_UNAUTHENTICATED_PROXY")), "true") {
+		logging.Logger.Warn("ALLOW_UNAUTHENTICATED_PROXY is set -- proxy routes are unauthenticated (not recommended for production)")
+	}
+
 	if len(registry.List()) == 0 {
 		logging.Logger.Warn("no providers configured; set provider API keys (e.g. OPENAI_API_KEY) or OLLAMA_HOST, or add them later via the admin API")
 	}
@@ -167,10 +171,10 @@ func runServe() {
 
 func logDeprecatedBootstrapKeys() {
 	if strings.TrimSpace(os.Getenv("ADMIN_BOOTSTRAP_KEY")) != "" {
-		logging.Logger.Warn("ADMIN_BOOTSTRAP_KEY is deprecated — use MASTER_KEY instead")
+		logging.Logger.Warn("ADMIN_BOOTSTRAP_KEY is deprecated -- use MASTER_KEY instead")
 	}
 	if strings.TrimSpace(os.Getenv("ADMIN_BOOTSTRAP_READ_ONLY_KEY")) != "" {
-		logging.Logger.Warn("ADMIN_BOOTSTRAP_READ_ONLY_KEY is deprecated — use MASTER_KEY instead")
+		logging.Logger.Warn("ADMIN_BOOTSTRAP_READ_ONLY_KEY is deprecated -- use MASTER_KEY instead")
 	}
 }
 
@@ -301,12 +305,6 @@ func newRateLimitStore() *ratelimit.Store {
 }
 
 // printStartupBanner prints a branded, informative banner to stderr on server start.
-//
-// Mark: iron-lattice glyph (ferro = iron) doubling as a gateway grid.
-//
-//	╔╦╗  FERRO LABS  AI GATEWAY  v0.x.x
-//	╠╫╣  → :8080
-//	╚╩╝  Dashboard → :8080/dashboard
 func printStartupBanner(addr string, registry *providers.Registry, cfg *aigateway.Config, masterKey, keyStoreBackend, configStoreBackend string) {
 	const (
 		orange = "\033[38;5;208m"
@@ -315,7 +313,6 @@ func printStartupBanner(addr string, registry *providers.Registry, cfg *aigatewa
 		dim    = "\033[2m"
 		green  = "\033[92m"
 		yellow = "\033[93m"
-		cyan   = "\033[96m"
 		reset  = "\033[0m"
 	)
 
@@ -328,23 +325,17 @@ func printStartupBanner(addr string, registry *providers.Registry, cfg *aigatewa
 
 	providerCount := len(registry.List())
 
-	mark := [3]string{
-		bold + orange + "╔╦╗" + reset,
-		bold + orange + "╠╫╣" + reset,
-		bold + orange + "╚╩╝" + reset,
-	}
-
 	fmt.Fprintf(os.Stderr, "\n")
-	fmt.Fprintf(os.Stderr, "  %s  %sFERRO LABS%s  AI GATEWAY  %s%s%s\n",
-		mark[0], bold+white, reset, dim, version.Short(), reset)
-	fmt.Fprintf(os.Stderr, "  %s  %s→%s  http://localhost%s\n",
-		mark[1], orange, reset, addr)
-	fmt.Fprintf(os.Stderr, "  %s  %sDashboard →%s  http://localhost%s/dashboard\n",
-		mark[2], dim, reset, addr)
+	fmt.Fprintf(os.Stderr, "  %sFERRO LABS  AI GATEWAY%s  %s%s%s\n",
+		bold+white, reset, dim, version.Short(), reset)
+	fmt.Fprintf(os.Stderr, "  %s->%s  http://localhost%s\n",
+		orange, reset, addr)
+	fmt.Fprintf(os.Stderr, "  %s->%s  http://localhost%s/dashboard\n",
+		dim, reset, addr)
 	fmt.Fprintf(os.Stderr, "\n")
 
 	// Provider status.
-	fmt.Fprintf(os.Stderr, "  %sProviders%s\n", bold+white, reset)
+	fmt.Fprintf(os.Stderr, "  Providers\n")
 	topProviders := []struct {
 		id     string
 		envVar string
@@ -357,30 +348,27 @@ func printStartupBanner(addr string, registry *providers.Registry, cfg *aigatewa
 	}
 	for _, tp := range topProviders {
 		if _, ok := registry.Get(tp.id); ok {
-			fmt.Fprintf(os.Stderr, "    %s%s ✓%s\n", green, tp.id, reset)
+			fmt.Fprintf(os.Stderr, "    %s[OK]%s %s\n", green, reset, tp.id)
 		} else {
-			fmt.Fprintf(os.Stderr, "    %s%s ✗%s (%s not set)\n", dim, tp.id, reset, tp.envVar)
+			fmt.Fprintf(os.Stderr, "    %s[-]%s  %s (%s not set)\n", dim, reset, tp.id, tp.envVar)
 		}
 	}
-	// Show other registered providers not in the top-5 list.
 	topSet := map[string]bool{"openai": true, "anthropic": true, "gemini": true, "groq": true, "mistral": true}
 	for _, name := range registry.List() {
 		if !topSet[name] {
-			fmt.Fprintf(os.Stderr, "    %s%s ✓%s\n", green, name, reset)
+			fmt.Fprintf(os.Stderr, "    %s[OK]%s %s\n", green, reset, name)
 		}
 	}
-	fmt.Fprintf(os.Stderr, "    %s%d providers  ·  %s  ·  %d plugins%s\n",
+	fmt.Fprintf(os.Stderr, "    %s%d providers | %s | %d plugins%s\n",
 		dim, providerCount, strategy, pluginCount, reset)
 	fmt.Fprintf(os.Stderr, "\n")
 
 	// Auth status.
-	fmt.Fprintf(os.Stderr, "  %sAuth%s\n", bold+white, reset)
+	fmt.Fprintf(os.Stderr, "  Auth\n")
 	if masterKey != "" {
-		start := max(0, len(masterKey)-4)
-		masked := "****" + masterKey[start:]
-		fmt.Fprintf(os.Stderr, "    Master key: %s%s%s (from env)\n", cyan, masked, reset)
+		fmt.Fprintf(os.Stderr, "    Master key: %sconfigured%s\n", green, reset)
 	} else {
-		fmt.Fprintf(os.Stderr, "    %s! No MASTER_KEY set — run 'ferrogw init' to generate one%s\n", yellow, reset)
+		fmt.Fprintf(os.Stderr, "    %s[!] No MASTER_KEY set -- run 'ferrogw init' to generate one%s\n", yellow, reset)
 	}
 	fmt.Fprintf(os.Stderr, "\n")
 
@@ -388,17 +376,17 @@ func printStartupBanner(addr string, registry *providers.Registry, cfg *aigatewa
 	hasWarnings := false
 	if keyStoreBackend == backendMemory {
 		if !hasWarnings {
-			fmt.Fprintf(os.Stderr, "  %sWarnings%s\n", bold+white, reset)
+			fmt.Fprintf(os.Stderr, "  Warnings\n")
 			hasWarnings = true
 		}
-		fmt.Fprintf(os.Stderr, "    %s! API key store: in-memory (keys lost on restart)%s\n", yellow, reset)
+		fmt.Fprintf(os.Stderr, "    %s[!] API key store: in-memory (keys lost on restart)%s\n", yellow, reset)
 	}
 	if configStoreBackend == backendMemory {
 		if !hasWarnings {
-			fmt.Fprintf(os.Stderr, "  %sWarnings%s\n", bold+white, reset)
+			fmt.Fprintf(os.Stderr, "  Warnings\n")
 			hasWarnings = true
 		}
-		fmt.Fprintf(os.Stderr, "    %s! Config store: in-memory (config lost on restart)%s\n", yellow, reset)
+		fmt.Fprintf(os.Stderr, "    %s[!] Config store: in-memory (config lost on restart)%s\n", yellow, reset)
 	}
 	if hasWarnings {
 		fmt.Fprintf(os.Stderr, "    %sSet API_KEY_STORE_BACKEND=sqlite for persistence%s\n", dim, reset)

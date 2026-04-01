@@ -7,6 +7,8 @@ import (
 	"html/template"
 	"io/fs"
 	"net/http"
+	"os"
+	"strings"
 
 	aigateway "github.com/ferro-labs/ai-gateway"
 	"github.com/ferro-labs/ai-gateway/internal/admin"
@@ -18,11 +20,17 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-func mountOperationalRoutes(r chi.Router, gw *aigateway.Gateway) {
+var loginTemplate = template.Must(template.ParseFS(webassets.Assets, "templates/login.html"))
+
+func mountOperationalRoutes(r chi.Router, gw *aigateway.Gateway, store admin.Store, masterKey string) {
 	r.Get("/health", healthHandler(gw))
-	r.Handle("/metrics", promhttp.Handler())
-	r.Handle("/debug/vars", expvar.Handler())
-	mountPprofRoutes(r)
+	obsAuth := proxyAuth(store, masterKey)
+	r.Group(func(r chi.Router) {
+		r.Use(obsAuth)
+		r.Handle("/metrics", promhttp.Handler())
+		r.Handle("/debug/vars", expvar.Handler())
+		mountPprofRoutes(r)
+	})
 }
 
 type pageData struct {
@@ -39,7 +47,10 @@ func renderPage(w http.ResponseWriter, page, title string) {
 }
 
 func mountDashboardRoutes(r chi.Router) {
-	r.Get("/dashboard", func(w http.ResponseWriter, _ *http.Request) {
+	r.Get("/dashboard", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/dashboard/getting-started", http.StatusFound)
+	})
+	r.Get("/dashboard/getting-started", func(w http.ResponseWriter, _ *http.Request) {
 		renderPage(w, "getting-started", "Getting Started")
 	})
 	r.Get("/dashboard/overview", func(w http.ResponseWriter, _ *http.Request) {
@@ -66,12 +77,7 @@ func mountDashboardRoutes(r chi.Router) {
 
 	r.Get("/dashboard/login", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		tmpl, err := template.ParseFS(webassets.Assets, "templates/login.html")
-		if err != nil {
-			writeOpenAIError(w, http.StatusInternalServerError, "failed to render login page", "server_error", "internal_error")
-			return
-		}
-		_ = tmpl.Execute(w, nil)
+		_ = loginTemplate.Execute(w, nil)
 	})
 
 	// Serve static assets from embedded filesystem.
@@ -105,18 +111,17 @@ func mountAdminRoutes(
 	})
 }
 
-// optionalProxyAuth returns a middleware that requires auth on proxy routes
-// only when a master key is configured. When no master key is set, requests
-// pass through without authentication (backward compatible).
-func optionalProxyAuth(store admin.Store, masterKey string) func(http.Handler) http.Handler {
-	if masterKey == "" {
+// proxyAuth returns a middleware that requires auth on proxy routes by default.
+// Set ALLOW_UNAUTHENTICATED_PROXY=true to disable (local dev only).
+func proxyAuth(store admin.Store, masterKey string) func(http.Handler) http.Handler {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("ALLOW_UNAUTHENTICATED_PROXY")), "true") {
 		return func(next http.Handler) http.Handler { return next }
 	}
 	return admin.AuthMiddleware(store, masterKey)
 }
 
 func mountOpenAIRoutes(r chi.Router, gw *aigateway.Gateway, registry *providers.Registry, store admin.Store, masterKey string) {
-	proxyAuth := optionalProxyAuth(store, masterKey)
+	proxyAuth := proxyAuth(store, masterKey)
 
 	r.Group(func(r chi.Router) {
 		r.Use(proxyAuth)

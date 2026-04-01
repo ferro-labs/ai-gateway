@@ -76,7 +76,7 @@ func (p *Printer) PrintTable(td TableData) error {
 	return w.Flush()
 }
 
-// PrintSuccess prints a green checkmark with a message.
+// PrintSuccess prints a success indicator with a message.
 func PrintSuccess(msg string) {
-	fmt.Println(Clr(ColorGreen, "  ✓ ") + msg)
+	fmt.Println(Clr(ColorGreen, "  "+SymOK+" ") + msg)
 }

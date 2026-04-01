@@ -96,23 +96,17 @@ func runInit(cmd *cobra.Command, _ []string) error {
 	nonInteractive, _ := cmd.Flags().GetBool("non-interactive")
 
 	out := os.Stderr
-	// eprintf writes to stderr; errors are intentionally ignored — if stderr is
-	// unavailable there is nothing useful we can do from a CLI init command.
 	eprintf := func(format string, a ...any) { _, _ = fmt.Fprintf(out, format, a...) }
 
 	if !nonInteractive {
-		eprintf("\n")
-		eprintf("%s\n", Clr(ColorBold+ColorWhite, "  Ferro Labs AI Gateway — Setup"))
-		eprintf("\n")
+		eprintf("\n  Ferro Labs AI Gateway -- Setup\n\n")
 	}
 
-	// Resolve format.
 	format = strings.ToLower(format)
 	if format != FormatJSON {
 		format = FormatYAML
 	}
 
-	// Resolve output path.
 	if output == "" {
 		if format == FormatJSON {
 			output = "config.json"
@@ -121,34 +115,28 @@ func runInit(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
-	// Generate master key.
 	masterKey := GenerateMasterKey()
 
-	// Write config file.
 	err := WriteDefaultConfig(output, format)
 	if err != nil {
 		if strings.Contains(err.Error(), "already exists") {
-			eprintf("  %s %s\n", Clr(ColorYellow, "!"), err)
-			eprintf("    Skipping config file creation.\n")
+			eprintf("  %s %s (skipped)\n", Clr(ColorYellow, SymWARN), err)
 		} else {
 			return err
 		}
 	} else {
-		eprintf("  %s Created %s\n", Clr(ColorGreen, "✓"), output)
+		eprintf("  %s Created %s\n", Clr(ColorGreen, SymOK), output)
 	}
 
-	// Print master key to stderr so it is not captured by shell redirections or CI log scrapers.
+	eprintf("  %s Master key: %s\n", Clr(ColorGreen, SymOK), Clr(ColorBold+ColorOrange, masterKey))
 	eprintf("\n")
-	eprintf("  Master key: %s\n", Clr(ColorBold+ColorOrange, masterKey))
+	eprintf("  %s Save this key -- you need it for the dashboard and API.\n", Clr(ColorYellow, SymWARN))
+	eprintf("    export MASTER_KEY=%s\n", masterKey)
 	eprintf("\n")
-	eprintf("  %s Save this key — you'll need it for the dashboard and API.\n", Clr(ColorYellow, "!"))
-	eprintf("    Set it as an environment variable:\n")
-	eprintf("    %s\n", Clr(ColorDim, "export MASTER_KEY="+masterKey))
-	eprintf("\n")
-	eprintf("%s\n", Clr(ColorBold+ColorWhite, "  Next steps:"))
+	eprintf("  Next steps:\n")
 	eprintf("    1. Set provider API keys (e.g. export OPENAI_API_KEY=sk-...)\n")
-	eprintf("    2. Start the gateway: %s\n", Clr(ColorCyan, "ferrogw serve"))
-	eprintf("    3. Open dashboard:    %s\n", Clr(ColorCyan, "http://localhost:8080/dashboard"))
+	eprintf("    2. Start the gateway:  ferrogw serve\n")
+	eprintf("    3. Open dashboard:     http://localhost:8080/dashboard\n")
 	eprintf("\n")
 
 	return nil

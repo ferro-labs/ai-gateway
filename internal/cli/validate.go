@@ -34,7 +34,7 @@ func runValidate(cmd *cobra.Command, args []string) error {
 		return pr.Print(cfg)
 	}
 
-	fmt.Println("✓ Config is valid")
+	fmt.Printf("%s Config is valid\n", SymOK)
 	fmt.Printf("  Strategy:  %s\n", cfg.Strategy.Mode)
 	fmt.Printf("  Targets:   %d\n", len(cfg.Targets))
 

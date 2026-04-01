@@ -167,6 +167,21 @@ body {
   align-items: center;
   gap: 8px;
 }
+.header-help-link {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 6px;
+  color: var(--text-secondary, #888);
+  transition: color 0.15s, background 0.15s;
+  text-decoration: none;
+}
+.header-help-link:hover {
+  color: var(--text-primary, #fff);
+  background: var(--bg-hover, rgba(255,255,255,0.08));
+}
 
 .content {
   padding: 24px;

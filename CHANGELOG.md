@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+---
+
+## [1.0.3] — 2026-04-01
+
+### Security
+
+- **Dockerfile runs as non-root user**: Added `ferro` user/group in `Dockerfile.release`. Container no longer runs as root.
+- **Constant-time auth comparison**: Admin middleware now uses `hmac.Equal` consistently for all key comparisons, preventing timing side-channels.
+
+### Improved
+
+- **Template caching**: Dashboard page templates are parsed once at startup instead of on every request — eliminates per-request `template.ParseFS` overhead.
+- **Dashboard redesign**: Improved layout, navigation, and styling across all dashboard pages.
+- **CLI polish**: Consistent color helpers, cleaner output formatting, ASCII-safe log messages (replaced unicode dashes/arrows).
+
 ### Added
 
 - **`MASTER_KEY` environment variable**: Single credential that authenticates at gateway startup — no stored keys required. Checked first in the auth chain using `hmac.Equal` (no length oracle). Grants full admin scope.

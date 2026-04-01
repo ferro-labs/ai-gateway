@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"html/template"
 	"io/fs"
 	"net/http"
@@ -17,11 +18,31 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
+// pageTemplates caches parsed templates per page name (parsed once at startup).
+var pageTemplates = make(map[string]*template.Template)
+
+func init() {
+	pages := []string{
+		"getting-started", "overview", "keys", "logs",
+		"providers", "config", "analytics", "playground",
+	}
+	for _, page := range pages {
+		tmpl, err := template.ParseFS(webassets.Assets,
+			"templates/layout.html",
+			"templates/pages/"+page+".html",
+		)
+		if err != nil {
+			panic("failed to parse template " + page + ": " + err.Error())
+		}
+		pageTemplates[page] = tmpl
+	}
+}
+
 func renderWebTemplate(w http.ResponseWriter, pageName string, data interface{}) error {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	tmpl, err := template.ParseFS(webassets.Assets, "templates/layout.html", "templates/pages/"+pageName+".html")
-	if err != nil {
-		return err
+	tmpl, ok := pageTemplates[pageName]
+	if !ok {
+		return fmt.Errorf("unknown page template: %s", pageName)
 	}
 	return tmpl.ExecuteTemplate(w, "layout.html", data)
 }

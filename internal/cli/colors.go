@@ -1,6 +1,9 @@
 package cli
 
-import "os"
+import (
+	"os"
+	"runtime"
+)
 
 // ANSI color codes for terminal output.
 const (
@@ -15,9 +18,27 @@ const (
 	ColorReset  = "\033[0m"
 )
 
+// ASCII-safe symbols that render on every OS and terminal.
+const (
+	SymOK   = "[OK]"
+	SymFAIL = "[X]"
+	SymWARN = "[!]"
+	SymDASH = "[-]"
+)
+
 // NoColor returns true when colored output should be suppressed.
 var NoColor = func() bool {
-	return os.Getenv("NO_COLOR") != ""
+	if os.Getenv("NO_COLOR") != "" {
+		return true
+	}
+	// Disable colors on Windows cmd.exe unless running in Windows Terminal
+	// or another modern terminal that sets WT_SESSION or TERM.
+	if runtime.GOOS == "windows" {
+		if os.Getenv("WT_SESSION") == "" && os.Getenv("TERM") == "" {
+			return true
+		}
+	}
+	return false
 }
 
 // Clr wraps s in the given ANSI code unless NoColor() is true.

@@ -2,7 +2,6 @@ package admin
 
 import (
 	"context"
-	"crypto/hmac"
 	"crypto/subtle"
 	"encoding/json"
 	"net/http"
@@ -70,15 +69,14 @@ func AuthMiddleware(store Store, masterKey string) func(http.Handler) http.Handl
 			key := strings.TrimPrefix(auth, "Bearer ")
 
 			// 1. Master key check (always active if set).
-			// Use HMAC comparison to prevent length-based timing oracle.
-			if masterKey != "" && hmac.Equal([]byte(key), []byte(masterKey)) {
+			if masterKey != "" && subtle.ConstantTimeCompare([]byte(key), []byte(masterKey)) == 1 {
 				ctx := context.WithValue(r.Context(), apiKeyContextKey, masterAPIKey)
 				next.ServeHTTP(w, r.WithContext(ctx))
 				return
 			}
 
-			// 2. Bootstrap key check (only when store is empty).
-			if bootstrapEnabled && len(store.List()) == 0 {
+			// 2. Bootstrap key check (only when store is empty and no master key is configured).
+			if masterKey == "" && bootstrapEnabled && len(store.List()) == 0 {
 				if bootstrapAdminKey != "" && subtle.ConstantTimeCompare([]byte(key), []byte(bootstrapAdminKey)) == 1 {
 					ctx := context.WithValue(r.Context(), apiKeyContextKey, bootstrapAdminAPIKey)
 					next.ServeHTTP(w, r.WithContext(ctx))

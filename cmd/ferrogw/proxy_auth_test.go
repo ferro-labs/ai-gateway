@@ -10,7 +10,7 @@ import (
 
 func TestProxyAuthMiddleware_MasterKeyRequired(t *testing.T) {
 	store := admin.NewKeyStore()
-	mw := optionalProxyAuth(store, "test-master-key")
+	mw := proxyAuth(store, "test-master-key")
 
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -34,19 +34,37 @@ func TestProxyAuthMiddleware_MasterKeyRequired(t *testing.T) {
 	}
 }
 
-func TestProxyAuthMiddleware_NoMasterKey_PassThrough(t *testing.T) {
+func TestProxyAuthMiddleware_UnauthenticatedProxy(t *testing.T) {
+	t.Setenv("ALLOW_UNAUTHENTICATED_PROXY", "true")
 	store := admin.NewKeyStore()
-	mw := optionalProxyAuth(store, "")
+	mw := proxyAuth(store, "")
 
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	// No master key set → pass through without auth.
+	// Unauthenticated proxy explicitly enabled → pass through.
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Errorf("expected 200 pass-through, got %d", rr.Code)
+	}
+}
+
+func TestProxyAuthMiddleware_DefaultRequiresAuth(t *testing.T) {
+	store := admin.NewKeyStore()
+	mw := proxyAuth(store, "")
+
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// No master key, no ALLOW_UNAUTHENTICATED_PROXY → 401.
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 by default, got %d", rr.Code)
 	}
 }

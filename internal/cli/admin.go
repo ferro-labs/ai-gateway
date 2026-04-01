@@ -436,7 +436,7 @@ func numVal(m map[string]any, key string) float64 {
 func fmtTime(m map[string]any, key string) string {
 	s := str(m, key)
 	if s == "" {
-		return "—"
+		return "-"
 	}
 	t, err := time.Parse(time.RFC3339Nano, s)
 	if err != nil {

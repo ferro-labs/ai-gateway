@@ -22,13 +22,13 @@ func runStatus(cmd *cobra.Command, _ []string) error {
 	start := time.Now()
 	var health map[string]any
 	if err := c.Get("/health", &health); err != nil {
-		fmt.Printf("  %s Gateway unreachable: %v\n", Clr(ColorRed, "✗"), err)
+		fmt.Printf("  %s Gateway unreachable: %v\n", Clr(ColorRed, SymFAIL), err)
 		return nil
 	}
 	latency := time.Since(start)
 
-	fmt.Printf("  %s %s — %s (%s)\n",
-		Clr(ColorGreen, "✓"),
+	fmt.Printf("  %s %s -- %s (%s)\n",
+		Clr(ColorGreen, SymOK),
 		c.BaseURL,
 		Clr(ColorBold+ColorGreen, "healthy"),
 		latency.Round(time.Millisecond),

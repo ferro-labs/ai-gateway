@@ -40,7 +40,7 @@ func newRouter(
 		r.Use(rateLimitMiddleware(rlStore))
 	}
 
-	mountOperationalRoutes(r, gw)
+	mountOperationalRoutes(r, gw, keyStore, masterKey)
 	mountDashboardRoutes(r)
 	mountAdminRoutes(r, gw, keyStore, cfgManager, logReader, logMaintainer, masterKey)
 	mountOpenAIRoutes(r, gw, registry, keyStore, masterKey)
