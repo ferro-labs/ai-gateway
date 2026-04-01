@@ -62,6 +62,7 @@ func (h *Handlers) Routes() chi.Router {
 		r.Get("/logs/stats", h.logsStats)
 		r.Get("/providers", h.listProviders)
 		r.Get("/health", h.healthCheck)
+		r.Get("/plugins", h.listPlugins)
 		r.Get("/config", h.getConfig)
 		r.Get("/config/history", h.getConfigHistory)
 	})
@@ -705,7 +706,31 @@ func (h *Handlers) listProviders(w http.ResponseWriter, _ *http.Request) {
 	_ = json.NewEncoder(w).Encode(result)
 }
 
-func (h *Handlers) healthCheck(w http.ResponseWriter, _ *http.Request) {
+func (h *Handlers) listPlugins(w http.ResponseWriter, _ *http.Request) {
+	type pluginInfo struct {
+		Name    string `json:"name"`
+		Type    string `json:"type"`
+		Enabled bool   `json:"enabled"`
+	}
+
+	var result []pluginInfo
+	if h.Configs != nil {
+		for _, p := range h.Configs.GetConfig().Plugins {
+			result = append(result, pluginInfo{
+				Name:    p.Name,
+				Type:    p.Type,
+				Enabled: p.Enabled,
+			})
+		}
+	}
+	if result == nil {
+		result = []pluginInfo{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(result)
+}
+
+func (h *Handlers) healthCheck(w http.ResponseWriter, r *http.Request) {
 	type providerHealth struct {
 		Name    string `json:"name"`
 		Status  string `json:"status"`
@@ -741,11 +766,19 @@ func (h *Handlers) healthCheck(w http.ResponseWriter, _ *http.Request) {
 		overallStatus = "no_providers"
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+	resp := map[string]interface{}{
 		"status":    overallStatus,
 		"providers": providerStatuses,
-	})
+	}
+
+	// Include scopes of the authenticated key so the dashboard can set up
+	// role-based UI without a separate round trip.
+	if apiKey, ok := APIKeyFromContext(r.Context()); ok {
+		resp["scopes"] = apiKey.Scopes
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func (h *Handlers) getConfig(w http.ResponseWriter, _ *http.Request) {

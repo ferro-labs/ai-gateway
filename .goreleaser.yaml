@@ -31,27 +31,6 @@ builds:
       - goos: windows
         goarch: arm64
 
-  - id: ferrogw-cli
-    binary: ferrogw-cli
-    main: ./cmd/ferrogw-cli
-    ldflags:
-      - -s -w
-      - -X github.com/ferro-labs/ai-gateway/internal/version.Version={{.Version}}
-      - -X github.com/ferro-labs/ai-gateway/internal/version.Commit={{.ShortCommit}}
-      - -X github.com/ferro-labs/ai-gateway/internal/version.Date={{.Date}}
-    env:
-      - CGO_ENABLED=0
-    goos:
-      - linux
-      - darwin
-      - windows
-    goarch:
-      - amd64
-      - arm64
-    ignore:
-      - goos: windows
-        goarch: arm64
-
 # ─── Archives ────────────────────────────────────────────────────────────────
 
 archives:
@@ -67,16 +46,6 @@ archives:
       - CHANGELOG.md
       - config.example.yaml
       - config.example.json
-
-  - id: ferrogw-cli
-    builds: [ferrogw-cli]
-    name_template: "ferrogw-cli_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
-    format_overrides:
-      - goos: windows
-        formats: [zip]
-    files:
-      - README.md
-      - LICENSE
 
 # ─── Checksums ───────────────────────────────────────────────────────────────
 

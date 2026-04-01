@@ -44,7 +44,7 @@ func (s *KeyStore) Create(name string, scopes []string, expiresAt *time.Time) (*
 	if _, err := rand.Read(keyBytes); err != nil {
 		return nil, fmt.Errorf("generating key: %w", err)
 	}
-	key := "gw-" + hex.EncodeToString(keyBytes)
+	key := "fgw_" + hex.EncodeToString(keyBytes)
 
 	idBytes := make([]byte, 16)
 	if _, err := rand.Read(idBytes); err != nil {
@@ -178,7 +178,7 @@ func (s *KeyStore) RotateKey(id string) (*APIKey, error) {
 	if _, err := rand.Read(keyBytes); err != nil {
 		return nil, fmt.Errorf("generating key: %w", err)
 	}
-	newKey := "gw-" + hex.EncodeToString(keyBytes)
+	newKey := "fgw_" + hex.EncodeToString(keyBytes)
 
 	delete(s.byKey, k.Key)
 	k.Key = newKey

@@ -1,0 +1,46 @@
+{{define "content"}}
+<div id="logs-root">
+  <div class="filter-bar" id="logs-filter-bar">
+    <select id="filter-provider" class="input input-sm">
+      <option value="">All Providers</option>
+    </select>
+    <select id="filter-model" class="input input-sm">
+      <option value="">All Models</option>
+    </select>
+    <select id="filter-stage" class="input input-sm">
+      <option value="">All Stages</option>
+      <option value="before_request">before_request</option>
+      <option value="after_request">after_request</option>
+      <option value="on_error">on_error</option>
+    </select>
+    <input id="filter-since" class="input input-sm" type="datetime-local" title="Since" />
+    <button id="logs-apply-btn" class="btn btn-primary" style="font-size:13px;padding:6px 14px;">Apply</button>
+    <button id="logs-clear-btn" class="btn btn-secondary" style="font-size:13px;padding:6px 14px;">Clear</button>
+  </div>
+
+  <div class="card" style="padding:0;overflow:hidden;">
+    <table class="data-table" id="logs-table">
+      <thead>
+        <tr>
+          <th>Time</th>
+          <th>Provider</th>
+          <th>Model</th>
+          <th>Stage</th>
+          <th>Status</th>
+          <th>Latency</th>
+          <th>Tokens</th>
+          <th>Error</th>
+        </tr>
+      </thead>
+      <tbody id="logs-tbody">
+        <tr><td colspan="8"><div class="empty-state">Loading...</div></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="pagination" id="logs-pagination"></div>
+</div>
+{{end}}
+{{define "page-js"}}
+<script src="/dashboard/static/pages/logs.js"></script>
+{{end}}

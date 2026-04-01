@@ -1,0 +1,89 @@
+{{define "content"}}
+<div id="keys-root">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;">
+    <p id="keys-summary" style="color:var(--text-muted);font-size:14px;margin:0;">Loading...</p>
+    <button class="btn btn-primary" data-scope="admin" onclick="showCreateKeyModal()">Create Key</button>
+  </div>
+
+  <div class="card" style="padding:0;overflow:hidden;">
+    <table class="data-table" id="keys-table">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Key</th>
+          <th>Status</th>
+          <th>Scopes</th>
+          <th>Usage</th>
+          <th>Last Used</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="keys-tbody">
+        <tr><td colspan="7"><div class="empty-state">Loading...</div></td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Create Key Modal -->
+<div id="create-key-modal" class="modal-overlay" style="display:none;" onclick="handleOverlayClick(event,'create-key-modal')">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="modal-title">Create API Key</div>
+    <div class="form-group">
+      <label class="form-label" for="key-name-input">Name</label>
+      <input id="key-name-input" class="input" type="text" placeholder="e.g. my-service-key" autocomplete="off" />
+    </div>
+    <div class="form-group">
+      <label class="form-label">Scopes</label>
+      <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:4px;">
+        <label style="display:flex;align-items:center;gap:6px;font-size:14px;cursor:pointer;">
+          <input id="scope-admin" type="checkbox" value="admin" checked />
+          admin
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:14px;cursor:pointer;">
+          <input id="scope-read-only" type="checkbox" value="read_only" />
+          read-only
+        </label>
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="form-label" for="key-expires-input">Expiry</label>
+      <select id="key-expires-input" class="input" style="width:100%;">
+        <option value="">No expiry</option>
+        <option value="7">7 days</option>
+        <option value="30" selected>30 days</option>
+        <option value="90">90 days</option>
+      </select>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal('create-key-modal')">Cancel</button>
+      <button class="btn btn-primary" data-scope="admin" onclick="submitCreateKey()">Create</button>
+    </div>
+  </div>
+</div>
+
+<!-- Key Created Modal -->
+<div id="key-created-modal" class="modal-overlay" style="display:none;" onclick="handleOverlayClick(event,'key-created-modal')">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="modal-title">Key Created</div>
+    <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px;">
+      Copy your key now — it will not be shown again.
+    </p>
+    <div class="form-group">
+      <div style="display:flex;align-items:center;gap:8px;">
+        <code id="created-key-display" class="mono" style="flex:1;padding:10px 12px;background:var(--bg-secondary);border:1px solid var(--border);border-radius:6px;font-size:13px;word-break:break-all;"></code>
+        <button class="btn btn-secondary" onclick="copyCreatedKey()" style="white-space:nowrap;">Copy</button>
+      </div>
+    </div>
+    <div style="padding:10px 12px;background:color-mix(in srgb,var(--warning) 10%,transparent);border:1px solid color-mix(in srgb,var(--warning) 30%,transparent);border-radius:6px;font-size:13px;color:var(--text-primary);margin-bottom:16px;">
+      Store this key securely. Once you close this dialog, the key cannot be recovered.
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-primary" onclick="closeModal('key-created-modal')">Done</button>
+    </div>
+  </div>
+</div>
+{{end}}
+{{define "page-js"}}
+<script src="/dashboard/static/pages/keys.js"></script>
+{{end}}

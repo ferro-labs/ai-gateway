@@ -32,9 +32,10 @@ Get from zero to first request in under 2 minutes.
 ### Option A — Binary (fastest)
 
 ```bash
-curl -fsSL https://github.com/ferro-labs/ai-gateway/releases/download/v1.0.0/ferro-gw_linux_amd64 -o ferro-gw
-chmod +x ferro-gw
-./ferro-gw --config config.yaml
+curl -fsSL https://github.com/ferro-labs/ai-gateway/releases/download/v1.0.0/ferrogw_linux_amd64 -o ferrogw
+chmod +x ferrogw
+./ferrogw init          # generates config.yaml + MASTER_KEY
+./ferrogw               # starts the server
 ```
 
 ### Option B — Docker
@@ -43,6 +44,7 @@ chmod +x ferro-gw
 docker pull ghcr.io/ferro-labs/ai-gateway:v1.0.0
 docker run -p 8080:8080 \
   -e OPENAI_API_KEY=sk-your-key \
+  -e MASTER_KEY=fgw_your-master-key \
   ghcr.io/ferro-labs/ai-gateway:v1.0.0
 ```
 
@@ -50,11 +52,33 @@ docker run -p 8080:8080 \
 
 ```bash
 go install github.com/ferro-labs/ai-gateway/cmd/ferrogw@v1.0.0
+ferrogw init            # first-run setup
+ferrogw                 # start the server
 ```
+
+### First-time setup
+
+`ferrogw init` generates a master key and writes a minimal `config.yaml`:
+
+```
+$ ferrogw init
+
+  Master key (set as MASTER_KEY env var):
+  fgw_a3f2e1d4c5b6a7f8e9d0c1b2a3f4e5d6
+
+  Config written to: ./config.yaml
+
+  Next steps:
+    export MASTER_KEY=fgw_a3f2e1d4c5b6a7f8e9d0c1b2a3f4e5d6
+    export OPENAI_API_KEY=sk-...
+    ferrogw
+```
+
+The master key is shown once — store it in your `.env` file or secret manager. It is never written to disk.
 
 ### Minimal config
 
-Create `config.yaml`:
+Create `config.yaml` (or use `ferrogw init`):
 
 ```yaml
 strategy:
@@ -305,12 +329,34 @@ See [config.example.yaml](config.example.yaml) and [config.example.json](config.
 
 ---
 
+## CLI
+
+`ferrogw` is a single binary — no separate CLI tool required.
+
+| Command | Description |
+|:--------|:------------|
+| `ferrogw` | Start the gateway server (default) |
+| `ferrogw init` | First-run setup — generate master key and config |
+| `ferrogw validate` | Validate a config file without starting |
+| `ferrogw doctor` | Check environment (API keys, config, connectivity) |
+| `ferrogw status` | Show gateway health and provider status |
+| `ferrogw version` | Print version, commit, and build info |
+| `ferrogw admin keys list` | List API keys |
+| `ferrogw admin keys create <name>` | Create an API key |
+| `ferrogw admin stats` | Show usage statistics |
+| `ferrogw plugins` | List registered plugins |
+
+Global flags available on all subcommands: `--gateway-url`, `--api-key`, `--format` (text/json/yaml), `--no-color`.
+
+---
+
 ## Deployment
 
 ### Local development
 
 ```bash
 export OPENAI_API_KEY=sk-your-key
+export MASTER_KEY=fgw_your-master-key
 export GATEWAY_CONFIG=./config.yaml
 make build && ./bin/ferrogw
 ```

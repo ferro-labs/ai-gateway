@@ -5,5 +5,5 @@ import "embed"
 
 // Assets contains embedded web UI assets for the built-in dashboard.
 //
-//go:embed *.html *.png
+//go:embed all:templates all:static *.png
 var Assets embed.FS

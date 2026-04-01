@@ -21,7 +21,7 @@ func corsMiddleware(allowedOrigins ...string) func(http.Handler) http.Handler {
 
 	if allowAny || len(allowed) == 0 {
 		allowAny = true
-		slog.Warn("CORS configured with wildcard '*' — all origins allowed. Set CORS_ORIGINS for production use.")
+		slog.Warn("CORS configured with wildcard '*' -- all origins allowed. Set CORS_ORIGINS for production use.")
 	}
 
 	return func(next http.Handler) http.Handler {

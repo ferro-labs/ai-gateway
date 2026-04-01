@@ -1,0 +1,43 @@
+{{define "content"}}
+<div class="tabs" id="range-tabs">
+  <button class="tab active" onclick="setRange(this, 1)">1h</button>
+  <button class="tab" onclick="setRange(this, 6)">6h</button>
+  <button class="tab" onclick="setRange(this, 24)">24h</button>
+  <button class="tab" onclick="setRange(this, 168)">7d</button>
+</div>
+
+<div class="stat-grid" style="grid-template-columns: repeat(3, 1fr);">
+  <div class="stat-card">
+    <div class="stat-label">Total Requests</div>
+    <div class="stat-value" id="stat-total-requests">-</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Total Tokens</div>
+    <div class="stat-value" id="stat-total-tokens">-</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Errors</div>
+    <div class="stat-value" id="stat-errors">-</div>
+  </div>
+</div>
+
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px;">
+  <div class="card">
+    <div class="card-title">Requests by Provider</div>
+    <div id="chart-by-provider"></div>
+  </div>
+  <div class="card">
+    <div class="card-title">Requests by Model</div>
+    <div id="chart-by-model"></div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-title">Token Usage Over Time</div>
+  <div id="chart-tokens"></div>
+</div>
+{{end}}
+{{define "page-js"}}
+<script src="/dashboard/static/vendor/uplot.min.js"></script>
+<script src="/dashboard/static/pages/analytics.js"></script>
+{{end}}

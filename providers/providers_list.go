@@ -297,7 +297,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameOpenAI,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityImage, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityImage, CapabilityProxy, CapabilityDiscovery},
 		EnvMappings: []EnvMapping{
 			{CfgKeyAPIKey, "OPENAI_API_KEY", true},
 			{CfgKeyBaseURL, "OPENAI_BASE_URL", false},

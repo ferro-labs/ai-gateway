@@ -28,7 +28,8 @@ func APIKeyFromContext(ctx context.Context) (*APIKey, bool) {
 
 // AuthMiddleware returns a chi-compatible middleware that validates API keys
 // and stores the authenticated key in the request context.
-func AuthMiddleware(store Store) func(http.Handler) http.Handler {
+// If masterKey is non-empty, it is checked first and grants full admin scope.
+func AuthMiddleware(store Store, masterKey string) func(http.Handler) http.Handler {
 	bootstrapAdminKey := strings.TrimSpace(os.Getenv("ADMIN_BOOTSTRAP_KEY"))
 	bootstrapReadOnlyKey := strings.TrimSpace(os.Getenv("ADMIN_BOOTSTRAP_READ_ONLY_KEY"))
 	bootstrapEnabled := true
@@ -50,6 +51,12 @@ func AuthMiddleware(store Store) func(http.Handler) http.Handler {
 		Scopes: []string{ScopeReadOnly},
 		Active: true,
 	}
+	masterAPIKey := &APIKey{
+		ID:     "master-key",
+		Name:   "master-key",
+		Scopes: []string{ScopeAdmin},
+		Active: true,
+	}
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -60,7 +67,16 @@ func AuthMiddleware(store Store) func(http.Handler) http.Handler {
 			}
 
 			key := strings.TrimPrefix(auth, "Bearer ")
-			if bootstrapEnabled && len(store.List()) == 0 {
+
+			// 1. Master key check (always active if set).
+			if masterKey != "" && subtle.ConstantTimeCompare([]byte(key), []byte(masterKey)) == 1 {
+				ctx := context.WithValue(r.Context(), apiKeyContextKey, masterAPIKey)
+				next.ServeHTTP(w, r.WithContext(ctx))
+				return
+			}
+
+			// 2. Bootstrap key check (only when store is empty and no master key is configured).
+			if masterKey == "" && bootstrapEnabled && len(store.List()) == 0 {
 				if bootstrapAdminKey != "" && subtle.ConstantTimeCompare([]byte(key), []byte(bootstrapAdminKey)) == 1 {
 					ctx := context.WithValue(r.Context(), apiKeyContextKey, bootstrapAdminAPIKey)
 					next.ServeHTTP(w, r.WithContext(ctx))
@@ -74,6 +90,7 @@ func AuthMiddleware(store Store) func(http.Handler) http.Handler {
 				}
 			}
 
+			// 3. Key store lookup.
 			apiKey, ok := store.ValidateKey(key)
 			if !ok {
 				writeError(w, http.StatusUnauthorized, "invalid or revoked API key", "authentication_error", "invalid_api_key")

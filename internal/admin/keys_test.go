@@ -12,8 +12,8 @@ func TestCreate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.HasPrefix(key.Key, "gw-") {
-		t.Errorf("key %q does not have gw- prefix", key.Key)
+	if !strings.HasPrefix(key.Key, "fgw_") {
+		t.Errorf("key %q does not have fgw_ prefix", key.Key)
 	}
 	if !key.Active {
 		t.Error("expected key to be active")

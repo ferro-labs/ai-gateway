@@ -1,0 +1,45 @@
+{{define "content"}}
+<div class="tabs">
+  <button class="tab active" id="tab-current" onclick="switchTab('current')">Current</button>
+  <button class="tab" id="tab-history" onclick="switchTab('history')">History</button>
+</div>
+
+<div id="panel-current">
+  <div class="card">
+    <div class="card-title" style="display:flex;align-items:center;justify-content:space-between;">
+      <span>Current Config</span>
+      <div style="display:flex;gap:8px;" id="config-actions">
+        <button class="btn btn-secondary" id="btn-edit" data-scope="admin" onclick="startEdit()">Edit</button>
+      </div>
+    </div>
+    <pre class="code-block" id="config-display"></pre>
+    <textarea class="playground-textarea" id="config-editor" style="display:none;font-family:var(--font-mono);font-size:13px;min-height:400px;" spellcheck="false"></textarea>
+    <div style="display:none;gap:8px;margin-top:12px;" id="edit-actions">
+      <button class="btn btn-primary" data-scope="admin" onclick="saveConfig()">Save</button>
+      <button class="btn btn-ghost" onclick="cancelEdit()">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<div id="panel-history" style="display:none;">
+  <div class="card">
+    <div class="card-title">Config History</div>
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Version</th>
+          <th>Updated At</th>
+          <th>Strategy</th>
+          <th>Rolled Back From</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+      <tbody id="history-body"></tbody>
+    </table>
+    <p id="history-empty" style="display:none;color:var(--text-muted);font-size:14px;padding:12px 0;">No history available.</p>
+  </div>
+</div>
+{{end}}
+{{define "page-js"}}
+<script src="/dashboard/static/pages/config.js"></script>
+{{end}}

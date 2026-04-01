@@ -24,27 +24,21 @@ ai-gateway/
 ├── go.mod / go.sum         # Module: github.com/ferro-labs/ai-gateway (Go 1.24+)
 │
 ├── cmd/
-│   ├── ferrogw/            # HTTP server entry point (21 files)
-│   │   ├── main.go         # Server setup, provider auto-registration, router init
-│   │   ├── router.go       # chi router initialization
-│   │   ├── router_routes.go # All route definitions
-│   │   ├── chat_request.go # POST /v1/chat/completions handler
-│   │   ├── completions.go  # POST /v1/completions (legacy)
-│   │   ├── models_handler.go # GET /v1/models
-│   │   ├── embeddings.go   # Embedding endpoint
-│   │   ├── images.go       # Image generation endpoint
-│   │   ├── proxy.go        # Pass-through proxy for unhandled /v1/* routes
-│   │   ├── sse.go          # Server-Sent Events streaming
-│   │   ├── cors.go         # CORS middleware
-│   │   ├── server.go       # HTTP server wrapper
-│   │   ├── store_init.go   # Store initialization
-│   │   ├── server_observability.go # Metrics/tracing setup
-│   │   └── http_helpers.go # HTTP utility functions
-│   └── ferrogw-cli/        # CLI management tool (cobra-based)
-│       ├── main.go         # CLI entry + command definitions
-│       ├── admin.go        # Admin commands (keys, config, logs, stats)
-│       ├── client.go       # HTTP client for CLI
-│       └── output.go       # Output formatting
+│   └── ferrogw/            # HTTP server + CLI entry point (Cobra subcommands)
+│       ├── main.go         # Server setup, provider auto-registration, Cobra root cmd
+│       ├── router.go       # chi router initialization
+│       ├── router_routes.go # All route definitions (including /v1/models)
+│       ├── chat_request.go # POST /v1/chat/completions handler
+│       ├── completions.go  # POST /v1/completions (legacy)
+│       ├── embeddings.go   # Embedding endpoint
+│       ├── images.go       # Image generation endpoint
+│       ├── proxy.go        # Pass-through proxy for unhandled /v1/* routes
+│       ├── sse.go          # Server-Sent Events streaming
+│       ├── cors.go         # CORS middleware
+│       ├── server.go       # HTTP server wrapper
+│       ├── store_init.go   # Store initialization
+│       ├── server_observability.go # Metrics/tracing setup
+│       └── http_helpers.go # HTTP utility functions
 │
 ├── providers/
 │   ├── core/               # Shared interfaces and types
@@ -82,10 +76,21 @@ ai-gateway/
 │   ├── admin/              # API key CRUD, dashboard, config history/rollback (13 files)
 │   │   ├── handlers.go     # Admin API endpoints (26KB)
 │   │   ├── keys.go         # API key management
-│   │   ├── middleware.go   # Bearer token auth
+│   │   ├── middleware.go   # Bearer token auth (MASTER_KEY + bootstrap + key store)
 │   │   ├── config_store.go # Config versioning & rollback
 │   │   ├── sql_store.go    # SQLite/PostgreSQL backend
 │   │   └── store.go        # Store interface
+│   ├── cli/                # Shared CLI command implementations
+│   │   ├── init.go         # ferrogw init — generates master key + config
+│   │   ├── admin.go        # ferrogw admin — keys, config, logs, stats
+│   │   ├── doctor.go       # ferrogw doctor — environment health check
+│   │   ├── status.go       # ferrogw status — gateway status
+│   │   ├── validate.go     # ferrogw validate — config file validation
+│   │   ├── plugins.go      # ferrogw plugins — list registered plugins
+│   │   ├── version.go      # ferrogw version — version info
+│   │   ├── client.go       # HTTP client for admin API calls
+│   │   ├── colors.go       # ANSI color constants
+│   │   └── output.go       # Output formatting (table/json/yaml)
 │   ├── plugins/            # Built-in plugin implementations
 │   │   ├── budget/         # API cost budget enforcement
 │   │   ├── cache/          # Request/response caching
@@ -408,7 +413,7 @@ make bench
 
 # Full quality check
 make all
-# → deps + fmt + lint + test + test-coverage
+# → deps + fmt + vet + lint + test-coverage + build
 ```
 
 ---
@@ -466,7 +471,6 @@ The gateway uses Go's `log` package (no heavy framework). Key log patterns:
 
 ```bash
 make build          # Build ./bin/ferrogw
-make build-cli      # Build ./bin/ferrogw-cli
 make test           # Unit tests (short, race)
 make lint           # golangci-lint
 make fmt            # gofmt
@@ -492,4 +496,4 @@ When debugging a request failure, check in this order:
 4. `plugin/manager.go` — is a plugin rejecting the request?
 5. `internal/circuitbreaker/` — is the circuit breaker open?
 
-Key env vars: `GATEWAY_CONFIG`, `PORT` (default 8080), `CORS_ORIGINS`, provider keys (see `.env.example`).
+Key env vars: `MASTER_KEY` (admin credential, generate with `ferrogw init`), `GATEWAY_CONFIG`, `PORT` (default 8080), `CORS_ORIGINS`, provider keys (see `.env.example`).

@@ -138,7 +138,7 @@ func setupTestRouterWithConfigManager(cm ConfigManager) (*Handlers, chi.Router) 
 		Configs: cm,
 	}
 	r := chi.NewRouter()
-	r.Use(AuthMiddleware(store))
+	r.Use(AuthMiddleware(store, ""))
 	r.Mount("/admin", h.Routes())
 	return h, r
 }
@@ -157,7 +157,7 @@ func setupTestRouter() (*Handlers, chi.Router) {
 		Configs: cm,
 	}
 	r := chi.NewRouter()
-	r.Use(AuthMiddleware(store))
+	r.Use(AuthMiddleware(store, ""))
 	r.Mount("/admin", h.Routes())
 	return h, r
 }
@@ -180,7 +180,7 @@ func setupTestRouterWithLogs(reader requestlog.Reader) (*Handlers, chi.Router) {
 		h.LogAdmin = maintainer
 	}
 	r := chi.NewRouter()
-	r.Use(AuthMiddleware(store))
+	r.Use(AuthMiddleware(store, ""))
 	r.Mount("/admin", h.Routes())
 	return h, r
 }
@@ -1156,6 +1156,66 @@ func TestLogsEndpoint(t *testing.T) {
 	}
 }
 
+func TestLogsEndpointUsesSnakeCaseFields(t *testing.T) {
+	now := time.Now().UTC()
+	reader := &fakeLogReader{entries: []requestlog.Entry{
+		{
+			TraceID:          "trace-1",
+			Stage:            "after_request",
+			Model:            "gpt-4",
+			Provider:         "openai",
+			PromptTokens:     12,
+			CompletionTokens: 34,
+			TotalTokens:      46,
+			ErrorMessage:     "boom",
+			CreatedAt:        now,
+		},
+	}}
+	h, r := setupTestRouterWithLogs(reader)
+	adminKey := createAdminKey(t, h)
+
+	req := authedRequest(http.MethodGet, "/admin/logs?limit=1", "", adminKey)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var payload struct {
+		Data []map[string]interface{} `json:"data"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode logs response: %v", err)
+	}
+	if len(payload.Data) != 1 {
+		t.Fatalf("expected 1 log entry, got %d", len(payload.Data))
+	}
+
+	entry := payload.Data[0]
+	for _, key := range []string{
+		"trace_id",
+		"stage",
+		"model",
+		"provider",
+		"prompt_tokens",
+		"completion_tokens",
+		"total_tokens",
+		"error_message",
+		"created_at",
+	} {
+		if _, ok := entry[key]; !ok {
+			t.Fatalf("expected JSON field %q in response entry: %+v", key, entry)
+		}
+	}
+
+	for _, key := range []string{"TraceID", "Stage", "Model", "Provider", "CreatedAt", "ErrorMessage"} {
+		if _, ok := entry[key]; ok {
+			t.Fatalf("did not expect Go-style JSON field %q in response entry: %+v", key, entry)
+		}
+	}
+}
+
 func TestDashboardEndpoint(t *testing.T) {
 	now := time.Now().UTC()
 	store := &fakeLogStore{entries: []requestlog.Entry{
@@ -1578,8 +1638,8 @@ func TestRotateKey(t *testing.T) {
 	if rotated.ID != keyID {
 		t.Errorf("expected rotated key to keep ID %q, got %q", keyID, rotated.ID)
 	}
-	if !strings.HasPrefix(rotated.Key, "gw-") {
-		t.Errorf("expected rotated key to start with gw-, got %q", rotated.Key)
+	if !strings.HasPrefix(rotated.Key, "fgw_") {
+		t.Errorf("expected rotated key to start with fgw_, got %q", rotated.Key)
 	}
 }
 

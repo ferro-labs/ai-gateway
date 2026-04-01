@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"html/template"
 	"io/fs"
 	"net/http"
 	httppprof "net/http/pprof"
@@ -16,9 +18,33 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-func renderWebTemplate(w http.ResponseWriter, templateName string, data interface{}) error {
+// pageTemplates caches parsed templates per page name (parsed once at startup).
+var pageTemplates = make(map[string]*template.Template)
+
+func init() {
+	pages := []string{
+		"getting-started", "overview", "keys", "logs",
+		"providers", "config", "analytics", "playground",
+	}
+	for _, page := range pages {
+		tmpl, err := template.ParseFS(webassets.Assets,
+			"templates/layout.html",
+			"templates/pages/"+page+".html",
+		)
+		if err != nil {
+			panic("failed to parse template " + page + ": " + err.Error())
+		}
+		pageTemplates[page] = tmpl
+	}
+}
+
+func renderWebTemplate(w http.ResponseWriter, pageName string, data interface{}) error {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	return webTemplates.ExecuteTemplate(w, templateName, data)
+	tmpl, ok := pageTemplates[pageName]
+	if !ok {
+		return fmt.Errorf("unknown page template: %s", pageName)
+	}
+	return tmpl.ExecuteTemplate(w, "layout.html", data)
 }
 
 func mountPprofRoutes(r chi.Router) {

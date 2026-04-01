@@ -4,11 +4,17 @@
 # need to build from source here.
 FROM alpine:3.20
 
-RUN apk add --no-cache ca-certificates tzdata
+RUN apk add --no-cache ca-certificates tzdata && \
+    addgroup -S ferro && adduser -S ferro -G ferro && \
+    mkdir -p /app && chown ferro:ferro /app
 
 # Pre-built binary is placed in the build context by GoReleaser.
-COPY ferrogw /bin/ferrogw
+COPY --chown=ferro:ferro ferrogw /bin/ferrogw
+
+WORKDIR /app
 
 EXPOSE 8080
+
+USER ferro
 
 ENTRYPOINT ["/bin/ferrogw"]
