@@ -24,7 +24,7 @@ var loginTemplate = template.Must(template.ParseFS(webassets.Assets, "templates/
 
 func mountOperationalRoutes(r chi.Router, gw *aigateway.Gateway, store admin.Store, masterKey string) {
 	r.Get("/health", healthHandler(gw))
-	obsAuth := proxyAuth(store, masterKey)
+	obsAuth := admin.AuthMiddleware(store, masterKey)
 	r.Group(func(r chi.Router) {
 		r.Use(obsAuth)
 		r.Handle("/metrics", promhttp.Handler())

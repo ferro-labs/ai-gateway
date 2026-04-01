@@ -79,6 +79,7 @@ function renderKeysTable(keys) {
 
     var rotateBtn = createEl('button', {
       className: 'btn btn-secondary',
+      'data-scope': 'admin',
       textContent: 'Rotate',
       style: 'font-size:12px;padding:4px 10px;',
       onclick: function() { rotateKey(key.id); }
@@ -86,6 +87,7 @@ function renderKeysTable(keys) {
 
     var revokeBtn = createEl('button', {
       className: 'btn btn-danger',
+      'data-scope': 'admin',
       textContent: 'Revoke',
       style: 'font-size:12px;padding:4px 10px;',
       onclick: function() { revokeKey(key.id); }
@@ -109,6 +111,10 @@ function renderKeysTable(keys) {
     ]);
     tbody.appendChild(tr);
   });
+
+  if (typeof hideWriteActions === 'function') {
+    hideWriteActions();
+  }
 }
 
 function showCreateKeyModal() {
@@ -149,7 +155,7 @@ async function submitCreateKey() {
 
   var scopes = [];
   if (adminCheck && adminCheck.checked) scopes.push('admin');
-  if (readOnlyCheck && readOnlyCheck.checked) scopes.push('read-only');
+  if (readOnlyCheck && readOnlyCheck.checked) scopes.push('read_only');
   if (scopes.length === 0) scopes.push('admin');
 
   var expiresAt = '';

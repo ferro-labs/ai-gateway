@@ -105,10 +105,10 @@ function initScopeBadge() {
   var scopes = JSON.parse(localStorage.getItem('gw-scopes') || '["admin"]');
   if (scopes.indexOf('admin') >= 0) {
     badge.textContent = 'Admin';
-    badge.className = 'badge badge-admin';
+    badge.className = 'badge badge-info';
   } else {
     badge.textContent = 'Read Only';
-    badge.className = 'badge badge-readonly';
+    badge.className = 'badge badge-muted';
     hideWriteActions();
   }
 }

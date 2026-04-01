@@ -2,7 +2,7 @@
 <div id="keys-root">
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;">
     <p id="keys-summary" style="color:var(--text-muted);font-size:14px;margin:0;">Loading...</p>
-    <button class="btn btn-primary" onclick="showCreateKeyModal()">Create Key</button>
+    <button class="btn btn-primary" data-scope="admin" onclick="showCreateKeyModal()">Create Key</button>
   </div>
 
   <div class="card" style="padding:0;overflow:hidden;">
@@ -41,7 +41,7 @@
           admin
         </label>
         <label style="display:flex;align-items:center;gap:6px;font-size:14px;cursor:pointer;">
-          <input id="scope-read-only" type="checkbox" value="read-only" />
+          <input id="scope-read-only" type="checkbox" value="read_only" />
           read-only
         </label>
       </div>
@@ -57,7 +57,7 @@
     </div>
     <div class="modal-actions">
       <button class="btn btn-secondary" onclick="closeModal('create-key-modal')">Cancel</button>
-      <button class="btn btn-primary" onclick="submitCreateKey()">Create</button>
+      <button class="btn btn-primary" data-scope="admin" onclick="submitCreateKey()">Create</button>
     </div>
   </div>
 </div>

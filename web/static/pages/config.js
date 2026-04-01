@@ -97,6 +97,7 @@ function loadHistory() {
 
       var rollbackBtn = createEl('button', {
         className: 'btn btn-secondary',
+        'data-scope': 'admin',
         textContent: 'Rollback',
         style: 'padding:4px 12px;font-size:13px;',
         onclick: function() { rollbackTo(entry.version); }

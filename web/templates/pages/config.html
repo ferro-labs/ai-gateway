@@ -9,13 +9,13 @@
     <div class="card-title" style="display:flex;align-items:center;justify-content:space-between;">
       <span>Current Config</span>
       <div style="display:flex;gap:8px;" id="config-actions">
-        <button class="btn btn-secondary" id="btn-edit" onclick="startEdit()">Edit</button>
+        <button class="btn btn-secondary" id="btn-edit" data-scope="admin" onclick="startEdit()">Edit</button>
       </div>
     </div>
     <pre class="code-block" id="config-display"></pre>
     <textarea class="playground-textarea" id="config-editor" style="display:none;font-family:var(--font-mono);font-size:13px;min-height:400px;" spellcheck="false"></textarea>
     <div style="display:none;gap:8px;margin-top:12px;" id="edit-actions">
-      <button class="btn btn-primary" onclick="saveConfig()">Save</button>
+      <button class="btn btn-primary" data-scope="admin" onclick="saveConfig()">Save</button>
       <button class="btn btn-ghost" onclick="cancelEdit()">Cancel</button>
     </div>
   </div>

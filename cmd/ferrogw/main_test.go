@@ -120,12 +120,27 @@ func TestPprofDisabledByDefault(t *testing.T) {
 	}
 }
 
-func TestPprofEnabled(t *testing.T) {
+func TestPprofEnabledRequiresAuthEvenWhenUnauthenticatedProxyEnabled(t *testing.T) {
 	t.Setenv("ENABLE_PPROF", "true")
 	t.Setenv("ALLOW_UNAUTHENTICATED_PROXY", "true")
 	ks := testKeyStore()
 	r := newRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "")
 	req := httptest.NewRequest("GET", "/debug/pprof/", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401, body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestPprofEnabledWithAuth(t *testing.T) {
+	t.Setenv("ENABLE_PPROF", "true")
+	t.Setenv("ALLOW_UNAUTHENTICATED_PROXY", "true")
+	ks := testKeyStore()
+	r := newRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "test-master-key")
+	req := httptest.NewRequest("GET", "/debug/pprof/", nil)
+	req.Header.Set("Authorization", "Bearer test-master-key")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -137,11 +152,38 @@ func TestPprofEnabled(t *testing.T) {
 	}
 }
 
-func TestDebugVarsEnabled(t *testing.T) {
+func TestDebugVarsRequireAuthEvenWhenUnauthenticatedProxyEnabled(t *testing.T) {
 	t.Setenv("ALLOW_UNAUTHENTICATED_PROXY", "true")
 	ks := testKeyStore()
 	r := newRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "")
 	req := httptest.NewRequest("GET", "/debug/vars", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", w.Code)
+	}
+}
+
+func TestMetricsRequireAuthEvenWhenUnauthenticatedProxyEnabled(t *testing.T) {
+	t.Setenv("ALLOW_UNAUTHENTICATED_PROXY", "true")
+	ks := testKeyStore()
+	r := newRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "")
+	req := httptest.NewRequest("GET", "/metrics", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", w.Code)
+	}
+}
+
+func TestDebugVarsEnabledWithAuth(t *testing.T) {
+	t.Setenv("ALLOW_UNAUTHENTICATED_PROXY", "true")
+	ks := testKeyStore()
+	r := newRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "test-master-key")
+	req := httptest.NewRequest("GET", "/debug/vars", nil)
+	req.Header.Set("Authorization", "Bearer test-master-key")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
