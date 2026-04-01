@@ -76,6 +76,10 @@ $ ferrogw init
 
 The master key is shown once — store it in your `.env` file or secret manager. It is never written to disk.
 
+<div align="center">
+  <img src="docs/demo.gif" alt="Ferro Labs AI Gateway — Quick Start Demo" width="720" />
+</div>
+
 ### Minimal config
 
 Create `config.yaml` (or use `ferrogw init`):
