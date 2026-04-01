@@ -112,6 +112,10 @@ function loadHistory() {
       ]);
       tbody.appendChild(tr);
     });
+
+    if (typeof hideWriteActions === 'function') {
+      hideWriteActions();
+    }
   }).catch(function(err) {
     showToast('Failed to load history: ' + err.message, 'error');
   });

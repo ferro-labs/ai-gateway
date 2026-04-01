@@ -154,6 +154,7 @@ async function sendMessage() {
       metaParts.push(promptTokens + ' in / ' + completionTokens + ' out tokens');
     }
     metaSpan.textContent = metaParts.join(' · ');
+    localStorage.setItem('gw-made-request', 'true');
 
   } catch (err) {
     responseDiv.textContent = 'Error: ' + (err.message || 'Unknown error');

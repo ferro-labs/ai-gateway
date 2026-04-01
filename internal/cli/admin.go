@@ -112,7 +112,7 @@ var keysRevokeCmd = &cobra.Command{
 		flagURL, _ := cmd.Root().PersistentFlags().GetString("gateway-url")
 		flagKey, _ := cmd.Root().PersistentFlags().GetString("api-key")
 		c := NewAdminClient(flagURL, flagKey)
-		if err := c.Del("/admin/keys/"+args[0], nil); err != nil {
+		if err := c.Post("/admin/keys/"+args[0]+"/revoke", nil, nil); err != nil {
 			return err
 		}
 		PrintSuccess("Key revoked.")

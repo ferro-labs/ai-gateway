@@ -1,33 +1,35 @@
 'use strict';
 
-function loadOverview() {
-  // GET /admin/dashboard — providers and key counts
-  apiRequest('/admin/dashboard')
-    .then(function(data) {
-      var providersEl = document.getElementById('stat-providers');
-      if (providersEl) {
-        var available = (data.providers && data.providers.available != null) ? data.providers.available : 0;
-        var total = (data.providers && data.providers.total != null) ? data.providers.total : 0;
-        providersEl.textContent = available + '/' + total;
-      }
+function setLogsDisabledState() {
+  var errEl = document.getElementById('stat-errors');
+  if (errEl) {
+    errEl.textContent = '-';
+    errEl.style.color = '';
+  }
 
-      var keysEl = document.getElementById('stat-keys');
-      if (keysEl) {
-        var active = (data.keys && data.keys.active != null) ? data.keys.active : 0;
-        keysEl.textContent = formatNumber(active);
-      }
+  var chart = document.getElementById('chart-container');
+  if (chart) {
+    clearEl(chart);
+    chart.appendChild(createEl('p', {
+      className: 'empty-state',
+      textContent: 'Request logging is disabled.'
+    }));
+  }
 
-      var requestsEl = document.getElementById('stat-requests');
-      if (requestsEl) {
-        var totalUsage = (data.total_usage != null) ? data.total_usage : 0;
-        requestsEl.textContent = formatNumber(totalUsage);
-      }
-    })
-    .catch(function(err) {
-      showToast('Failed to load dashboard stats: ' + err.message, 'error');
-    });
+  var tbody = document.getElementById('recent-body');
+  if (tbody) {
+    clearEl(tbody);
+    tbody.appendChild(createEl('tr', null, [
+      createEl('td', {
+        colspan: '6',
+        className: 'empty-state',
+        textContent: 'Request logging is disabled.'
+      })
+    ]));
+  }
+}
 
-  // GET /admin/logs/stats — error rate
+function loadLogStats() {
   apiRequest('/admin/logs/stats')
     .then(function(data) {
       var summary = data.summary || {};
@@ -52,8 +54,43 @@ function loadOverview() {
     .catch(function(err) {
       showToast('Failed to load log stats: ' + err.message, 'error');
     });
+}
 
-  loadRecentRequests();
+function loadOverview() {
+  // GET /admin/dashboard — providers and key counts
+  apiRequest('/admin/dashboard')
+    .then(function(data) {
+      var providersEl = document.getElementById('stat-providers');
+      if (providersEl) {
+        var available = (data.providers && data.providers.available != null) ? data.providers.available : 0;
+        var total = (data.providers && data.providers.total != null) ? data.providers.total : 0;
+        providersEl.textContent = available + '/' + total;
+      }
+
+      var keysEl = document.getElementById('stat-keys');
+      if (keysEl) {
+        var active = (data.keys && data.keys.active != null) ? data.keys.active : 0;
+        keysEl.textContent = formatNumber(active);
+      }
+
+      var requestsEl = document.getElementById('stat-requests');
+      if (requestsEl) {
+        var totalUsage = (data.keys && data.keys.total_usage != null) ? data.keys.total_usage : 0;
+        requestsEl.textContent = formatNumber(totalUsage);
+      }
+
+      var logsEnabled = !!(data.request_logs && data.request_logs.enabled);
+      if (!logsEnabled) {
+        setLogsDisabledState();
+        return;
+      }
+
+      loadLogStats();
+      loadRecentRequests();
+    })
+    .catch(function(err) {
+      showToast('Failed to load dashboard stats: ' + err.message, 'error');
+    });
 }
 
 function renderChart(stats) {
@@ -141,12 +178,12 @@ function loadRecentRequests() {
 
       entries.forEach(function(log) {
         var createdAt = log.created_at || log.CreatedAt || '';
-        var provider = log.provider || '-';
-        var model = log.model || '-';
-        var latencyMs = log.latency_ms != null ? log.latency_ms : null;
+        var provider = log.provider || log.Provider || '-';
+        var model = log.model || log.Model || '-';
+        var latencyMs = log.latency_ms != null ? log.latency_ms : (log.LatencyMS != null ? log.LatencyMS : null);
         var totalTokens = log.total_tokens != null ? log.total_tokens : (log.TotalTokens != null ? log.TotalTokens : null);
         var errorMessage = log.error_message || log.ErrorMessage || '';
-        var stage = log.stage || '';
+        var stage = log.stage || log.Stage || '';
 
         var isError = !!(errorMessage || stage === 'on_error');
 

@@ -119,7 +119,7 @@ function stageBadgeClass(stage) {
 }
 
 function statusBadge(entry) {
-  if (entry.error_message) {
+  if (entry.error_message || entry.ErrorMessage) {
     return createEl('span', { className: 'badge badge-error', textContent: 'error' });
   }
   return createEl('span', { className: 'badge badge-success', textContent: 'ok' });
@@ -142,13 +142,13 @@ function renderLogsTable(entries) {
   }
 
   entries.forEach(function(entry) {
-    var stage = entry.stage || '';
-    var provider = entry.provider || '-';
-    var model = entry.model || '-';
+    var stage = entry.stage || entry.Stage || '';
+    var provider = entry.provider || entry.Provider || '-';
+    var model = entry.model || entry.Model || '-';
     var totalTokens = entry.total_tokens != null ? entry.total_tokens : (entry.TotalTokens != null ? entry.TotalTokens : null);
     var errorMsg = entry.error_message || entry.ErrorMessage || '';
     var createdAt = entry.created_at || entry.CreatedAt || '';
-    var latencyMs = entry.latency_ms != null ? entry.latency_ms : null;
+    var latencyMs = entry.latency_ms != null ? entry.latency_ms : (entry.LatencyMS != null ? entry.LatencyMS : null);
 
     var stageBadge = createEl('span', { className: stageBadgeClass(stage), textContent: stage || '-' });
 

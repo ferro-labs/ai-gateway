@@ -21,15 +21,15 @@ const (
 
 // Entry represents a persistent request log event emitted by logging plugins.
 type Entry struct {
-	TraceID          string
-	Stage            string
-	Model            string
-	Provider         string
-	PromptTokens     int
-	CompletionTokens int
-	TotalTokens      int
-	ErrorMessage     string
-	CreatedAt        time.Time
+	TraceID          string    `json:"trace_id" yaml:"trace_id"`
+	Stage            string    `json:"stage" yaml:"stage"`
+	Model            string    `json:"model" yaml:"model"`
+	Provider         string    `json:"provider" yaml:"provider"`
+	PromptTokens     int       `json:"prompt_tokens" yaml:"prompt_tokens"`
+	CompletionTokens int       `json:"completion_tokens" yaml:"completion_tokens"`
+	TotalTokens      int       `json:"total_tokens" yaml:"total_tokens"`
+	ErrorMessage     string    `json:"error_message" yaml:"error_message"`
+	CreatedAt        time.Time `json:"created_at" yaml:"created_at"`
 }
 
 // Query defines request log listing filters.

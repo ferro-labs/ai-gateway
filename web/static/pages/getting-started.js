@@ -16,7 +16,9 @@ async function loadChecklist() {
     var dashboard = await apiRequest('/admin/dashboard');
     if (dashboard.providers && dashboard.providers.available > 0) steps[1].done = true;
     if (dashboard.keys && dashboard.keys.total > 0) steps[2].done = true;
-    if (dashboard.request_logs && dashboard.request_logs.total > 0) steps[3].done = true;
+    if (localStorage.getItem('gw-made-request') || (dashboard.request_logs && dashboard.request_logs.total > 0)) {
+      steps[3].done = true;
+    }
     if (localStorage.getItem('gw-visited-logs')) steps[4].done = true;
   } catch (e) {
     root.appendChild(createEl('p', { className: 'empty-state', textContent: e.message }));
