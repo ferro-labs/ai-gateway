@@ -289,6 +289,73 @@ func TestCachePlugin_MaxEntries(t *testing.T) {
 	}
 }
 
+
+func TestCachePlugin_MaxEntriesUpdateDoesNotEvict(t *testing.T) {
+	c := initCache(t, map[string]interface{}{"max_entries": 2})
+
+	store := func(content, id string, expiresIn time.Duration) {
+		resp := testResponse()
+		resp.ID = id
+		pctx := plugin.NewContext(testRequest("gpt-4", content))
+		pctx.Response = resp
+		if err := c.Execute(context.Background(), pctx); err != nil {
+			t.Fatalf("Execute (store %s) error: %v", content, err)
+		}
+		key := cacheKey(testRequest("gpt-4", content))
+		c.mu.Lock()
+		entry := c.entries[key]
+		entry.expiresAt = time.Now().Add(expiresIn)
+		c.entries[key] = entry
+		c.mu.Unlock()
+	}
+
+	store("msg-0", "resp-0", 10*time.Second)
+	store("msg-1", "resp-1", 20*time.Second)
+	store("msg-1", "resp-1-updated", 30*time.Second)
+
+	lookup0 := plugin.NewContext(testRequest("gpt-4", "msg-0"))
+	if err := c.Execute(context.Background(), lookup0); err != nil {
+		t.Fatalf("Execute (lookup msg-0) error: %v", err)
+	}
+	if !lookup0.Skip {
+		t.Fatal("expected cache hit for msg-0; existing-key update should not evict another entry")
+	}
+
+	lookup1 := plugin.NewContext(testRequest("gpt-4", "msg-1"))
+	if err := c.Execute(context.Background(), lookup1); err != nil {
+		t.Fatalf("Execute (lookup msg-1) error: %v", err)
+	}
+	if !lookup1.Skip {
+		t.Fatal("expected cache hit for updated msg-1 entry")
+	}
+	if lookup1.Response == nil || lookup1.Response.ID != "resp-1-updated" {
+		t.Fatalf("expected updated response for msg-1, got %#v", lookup1.Response)
+	}
+}
+
+func TestCachePlugin_MaxEntriesZeroDisablesStore(t *testing.T) {
+	c := initCache(t, map[string]interface{}{"max_entries": 0})
+	pctx := plugin.NewContext(testRequest("gpt-4", "hello"))
+	pctx.Response = testResponse()
+	if err := c.Execute(context.Background(), pctx); err != nil {
+		t.Fatalf("Execute (store) error: %v", err)
+	}
+
+	lookup := plugin.NewContext(testRequest("gpt-4", "hello"))
+	if err := c.Execute(context.Background(), lookup); err != nil {
+		t.Fatalf("Execute (lookup) error: %v", err)
+	}
+	if lookup.Skip {
+		t.Fatal("expected cache miss when max_entries=0")
+	}
+
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if len(c.entries) != 0 {
+		t.Fatalf("expected no cached entries when max_entries=0, got %d", len(c.entries))
+	}
+}
+
 func TestCachePlugin_CacheHitMetadata(t *testing.T) {
 	c := initCache(t, map[string]interface{}{})
 	req := testRequest("gpt-4", "hello")
