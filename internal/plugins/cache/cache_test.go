@@ -240,7 +240,6 @@ func TestCachePlugin_MaxEntries(t *testing.T) {
 	c := initCache(t, map[string]interface{}{"max_entries": 2})
 	resp := testResponse()
 
-	// Fill cache to max
 	for i := 0; i < 2; i++ {
 		pctx := plugin.NewContext(testRequest("gpt-4", fmt.Sprintf("msg-%d", i)))
 		pctx.Response = resp
@@ -249,7 +248,17 @@ func TestCachePlugin_MaxEntries(t *testing.T) {
 		}
 	}
 
-	// Third entry should not be added
+	// Make msg-0 the oldest entry to ensure deterministic eviction.
+	c.mu.Lock()
+	entry0 := c.entries[cacheKey(testRequest("gpt-4", "msg-0"))]
+	entry1 := c.entries[cacheKey(testRequest("gpt-4", "msg-1"))]
+	entry0.expiresAt = time.Now().Add(10 * time.Second)
+	entry1.expiresAt = time.Now().Add(20 * time.Second)
+	c.entries[cacheKey(testRequest("gpt-4", "msg-0"))] = entry0
+	c.entries[cacheKey(testRequest("gpt-4", "msg-1"))] = entry1
+	c.mu.Unlock()
+
+	// Third entry should evict the earliest expiring entry (msg-0).
 	pctx := plugin.NewContext(testRequest("gpt-4", "msg-overflow"))
 	pctx.Response = resp
 	if err := c.Execute(context.Background(), pctx); err != nil {
@@ -263,13 +272,20 @@ func TestCachePlugin_MaxEntries(t *testing.T) {
 		t.Errorf("expected 2 entries, got %d", count)
 	}
 
-	// Verify the overflow entry is not cached
-	lookupPctx := plugin.NewContext(testRequest("gpt-4", "msg-overflow"))
-	if err := c.Execute(context.Background(), lookupPctx); err != nil {
-		t.Fatalf("Execute (lookup) error: %v", err)
+	lookupOverflow := plugin.NewContext(testRequest("gpt-4", "msg-overflow"))
+	if err := c.Execute(context.Background(), lookupOverflow); err != nil {
+		t.Fatalf("Execute (lookup overflow) error: %v", err)
 	}
-	if lookupPctx.Skip {
-		t.Error("expected cache miss for entry beyond max_entries")
+	if !lookupOverflow.Skip {
+		t.Error("expected cache hit for newest entry after eviction")
+	}
+
+	lookupEvicted := plugin.NewContext(testRequest("gpt-4", "msg-0"))
+	if err := c.Execute(context.Background(), lookupEvicted); err != nil {
+		t.Fatalf("Execute (lookup evicted) error: %v", err)
+	}
+	if lookupEvicted.Skip {
+		t.Error("expected cache miss for evicted earliest-expiring entry")
 	}
 }
 
