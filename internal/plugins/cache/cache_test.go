@@ -289,7 +289,6 @@ func TestCachePlugin_MaxEntries(t *testing.T) {
 	}
 }
 
-
 func TestCachePlugin_MaxEntriesUpdateDoesNotEvict(t *testing.T) {
 	c := initCache(t, map[string]interface{}{"max_entries": 2})
 
