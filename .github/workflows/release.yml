@@ -48,7 +48,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Generate release notes
-        run: scripts/generate_release_notes.sh "${GITHUB_REF_NAME}" .release-notes.md
+        run: bash scripts/generate_release_notes.sh "${GITHUB_REF_NAME}" .release-notes.md
 
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v7
