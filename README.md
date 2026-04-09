@@ -388,8 +388,6 @@ REQUEST_LOG_STORE_DSN=/data/logs.db
 RAILWAY_RUN_UID=0
 ```
 
-`RAILWAY_RUN_UID=0` is required when using a Railway Volume because the volume is mounted as `root`, while the container normally runs as a non-root user. See [docs/railway-template.md](docs/railway-template.md) for the full Railway guide.
-
 ### Render (PostgreSQL)
 
 The repo includes a `render.yaml` Blueprint for a one-click Render deploy with a Docker web service and managed Postgres database. It generates `MASTER_KEY`, asks the user for `OPENAI_API_KEY`, and wires the three store DSNs to the database's internal connection string automatically.
