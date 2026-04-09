@@ -6,6 +6,12 @@
 
 **High-performance AI gateway in Go. Route LLM requests across 29 providers via a single OpenAI-compatible API.**
 
+**Deploy templates**
+
+[![Deploy on Railway: SQLite](https://railway.com/button.svg)](https://railway.com/deploy/ferro-labs-ai-sqlite-storage?referralCode=KblxKX&utm_medium=integration&utm_source=template&utm_campaign=generic)
+[![Deploy on Railway: PostgreSQL](https://railway.com/button.svg)](https://railway.com/deploy/ferro-labs-ai-postgresql-storage?referralCode=KblxKX&utm_medium=integration&utm_source=template&utm_campaign=generic)
+[![Deploy to Render: PostgreSQL](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/ferro-labs/ai-gateway)
+
 [![Go](https://img.shields.io/badge/go-1.24+-00ADD8.svg)](https://go.dev)
 [![Go Reference](https://pkg.go.dev/badge/github.com/ferro-labs/ai-gateway.svg)](https://pkg.go.dev/github.com/ferro-labs/ai-gateway)
 [![codecov](https://codecov.io/gh/ferro-labs/ai-gateway/branch/main/graph/badge.svg)](https://codecov.io/gh/ferro-labs/ai-gateway)
@@ -363,6 +369,33 @@ export OPENAI_API_KEY=sk-your-key
 export MASTER_KEY=fgw_your-master-key
 export GATEWAY_CONFIG=./config.yaml
 make build && ./bin/ferrogw
+```
+
+### Railway (SQLite)
+
+For a fast Railway deploy with persistent SQLite storage, attach a Railway Volume at `/data` and set:
+
+```bash
+MASTER_KEY=fgw_your-master-key
+OPENAI_API_KEY=sk-your-key
+PORT=8080
+API_KEY_STORE_BACKEND=sqlite
+API_KEY_STORE_DSN=/data/keys.db
+CONFIG_STORE_BACKEND=sqlite
+CONFIG_STORE_DSN=/data/config.db
+REQUEST_LOG_STORE_BACKEND=sqlite
+REQUEST_LOG_STORE_DSN=/data/logs.db
+RAILWAY_RUN_UID=0
+```
+
+### Render (PostgreSQL)
+
+The repo includes a `render.yaml` Blueprint for a one-click Render deploy with a Docker web service and managed Postgres database. It generates `MASTER_KEY`, asks the user for `OPENAI_API_KEY`, and wires the three store DSNs to the database's internal connection string automatically.
+
+Use the button at the top of this README, or deploy directly from:
+
+```text
+https://render.com/deploy?repo=https://github.com/ferro-labs/ai-gateway
 ```
 
 ### Option D — Docker Compose (dev & prod)
