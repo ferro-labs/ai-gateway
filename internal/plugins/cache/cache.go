@@ -102,8 +102,23 @@ func (c *ResponseCache) Execute(_ context.Context, pctx *plugin.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if len(c.entries) >= c.maxEntries {
+	if c.maxEntries <= 0 {
 		return nil
+	}
+
+	_, exists := c.entries[key]
+	if !exists && len(c.entries) >= c.maxEntries {
+		var evictKey string
+		var evictAt time.Time
+		for existingKey, existingEntry := range c.entries {
+			if evictKey == "" || existingEntry.expiresAt.Before(evictAt) {
+				evictKey = existingKey
+				evictAt = existingEntry.expiresAt
+			}
+		}
+		if evictKey != "" {
+			delete(c.entries, evictKey)
+		}
 	}
 
 	c.entries[key] = cacheEntry{
