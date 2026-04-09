@@ -94,11 +94,8 @@ release:
     name: ai-gateway
   draft: false
   prerelease: auto
+  mode: replace
   name_template: "v{{ .Version }}"
-  header: |
-    ## Ferro Labs AI Gateway {{ .Version }}
-
-    **Full Changelog**: https://github.com/ferro-labs/ai-gateway/blob/main/CHANGELOG.md
 
 # ─── Docker images ───────────────────────────────────────────────────────────
 # Uses Dockerfile.release which copies the pre-built binary instead of
