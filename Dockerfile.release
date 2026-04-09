@@ -15,12 +15,15 @@ WORKDIR /app
 
 EXPOSE 8080
 
-# /data is pre-created as ferro:ferro so that Docker named volumes
-# (Railway, Fly.io, K8s emptyDir, Docker volumes) inherit the ownership
-# on first mount — letting SQLite stores work without runtime privilege
-# escalation. Bind mounts (-v /host/path:/data) still inherit host
-# ownership and may need a manual chown.
-VOLUME ["/data"]
+# /data is pre-created as ferro:ferro so that managed volumes
+# (Railway, Fly.io, Docker named volumes, K8s emptyDir/PVCs) inherit the
+# ownership on first mount — letting SQLite stores work without runtime
+# privilege escalation. Bind mounts (-v /host/path:/data) still inherit
+# host ownership and may need a manual chown.
+#
+# Note: Railway bans the VOLUME directive in Dockerfiles — declare
+# persistent storage via Railway's UI/API instead. The pre-created
+# directory above is the part that actually fixes the permission issue.
 
 USER ferro
 
