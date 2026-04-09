@@ -32,7 +32,7 @@ Get from zero to first request in under 2 minutes.
 ### Option A — Binary (fastest)
 
 ```bash
-curl -fsSL https://github.com/ferro-labs/ai-gateway/releases/download/v1.0.0/ferrogw_linux_amd64 -o ferrogw
+curl -fsSL https://github.com/ferro-labs/ai-gateway/releases/download/v1.0.3/ferrogw_1.0.3_linux_amd64.tar.gz | tar xz
 chmod +x ferrogw
 ./ferrogw init          # generates config.yaml + MASTER_KEY
 ./ferrogw               # starts the server
@@ -41,17 +41,17 @@ chmod +x ferrogw
 ### Option B — Docker
 
 ```bash
-docker pull ghcr.io/ferro-labs/ai-gateway:v1.0.0
+docker pull ghcr.io/ferro-labs/ai-gateway:latest
 docker run -p 8080:8080 \
   -e OPENAI_API_KEY=sk-your-key \
   -e MASTER_KEY=fgw_your-master-key \
-  ghcr.io/ferro-labs/ai-gateway:v1.0.0
+  ghcr.io/ferro-labs/ai-gateway:latest
 ```
 
 ### Option C — Go
 
 ```bash
-go install github.com/ferro-labs/ai-gateway/cmd/ferrogw@v1.0.0
+go install github.com/ferro-labs/ai-gateway/cmd/ferrogw@latest
 ferrogw init            # first-run setup
 ferrogw                 # start the server
 ```
@@ -397,7 +397,7 @@ Provider API keys are commented out in `docker-compose.yml`. Uncomment and set t
 ```yaml
 services:
   ferrogw:
-    image: ghcr.io/ferro-labs/ai-gateway:v1.0.0
+    image: ghcr.io/ferro-labs/ai-gateway:latest
     ports:
       - "8080:8080"
     environment:

@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.4] — 2026-04-09
+
+### Security
+
+- **Dependabot: AWS SDK EventStream decoder DoS**: Upgraded `github.com/aws/aws-sdk-go-v2/service/bedrockruntime` from `v1.50.1` to `v1.50.4` and `github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream` from `v1.7.6` to `v1.7.8` to address GitHub advisory `GHSA-xmrv-pmrh-hhx2`.
+
+### Fixed
+
+- **Cache eviction at capacity** fixes [#43](https://github.com/ferro-labs/ai-gateway/issues/43)): When the response cache reached `max_entries`, new responses could be dropped permanently. The cache now evicts the earliest-expiring entry first so new responses continue to be stored, with regression coverage for deterministic eviction order.
+
+### Improved
+
+- **README polish**: Refined the README content and release documentation for the `v1.0.4` maintenance release.
+
+---
+
 ## [1.0.3] — 2026-04-01
 
 ### Security
