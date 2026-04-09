@@ -6,7 +6,7 @@ FROM alpine:3.20
 
 RUN apk add --no-cache ca-certificates tzdata && \
     addgroup -S ferro && adduser -S ferro -G ferro && \
-    mkdir -p /app && chown ferro:ferro /app
+    mkdir -p /app /data && chown ferro:ferro /app /data
 
 # Pre-built binary is placed in the build context by GoReleaser.
 COPY --chown=ferro:ferro ferrogw /bin/ferrogw
@@ -14,6 +14,13 @@ COPY --chown=ferro:ferro ferrogw /bin/ferrogw
 WORKDIR /app
 
 EXPOSE 8080
+
+# /data is pre-created as ferro:ferro so that Docker named volumes
+# (Railway, Fly.io, K8s emptyDir, Docker volumes) inherit the ownership
+# on first mount — letting SQLite stores work without runtime privilege
+# escalation. Bind mounts (-v /host/path:/data) still inherit host
+# ownership and may need a manual chown.
+VOLUME ["/data"]
 
 USER ferro
 

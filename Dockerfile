@@ -15,13 +15,20 @@ FROM alpine:3.20
 
 RUN apk add --no-cache ca-certificates && \
     addgroup -S ferro && adduser -S ferro -G ferro && \
-    mkdir -p /app && chown ferro:ferro /app
+    mkdir -p /app /data && chown ferro:ferro /app /data
 
 COPY --from=builder --chown=ferro:ferro /bin/ferrogw /bin/ferrogw
 
 WORKDIR /app
 
 EXPOSE 8080
+
+# /data is pre-created as ferro:ferro so that Docker named volumes
+# (K8s emptyDir, Docker volumes) inherit the ownership
+# on first mount — letting SQLite stores work without runtime privilege
+# escalation. Bind mounts (-v /host/path:/data) still inherit host
+# ownership and may need a manual chown.
+VOLUME ["/data"]
 
 USER ferro
 
