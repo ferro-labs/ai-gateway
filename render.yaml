@@ -1,0 +1,33 @@
+services:
+  - type: web
+    name: ferrogw
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    autoDeployTrigger: off
+    envVars:
+      - key: MASTER_KEY
+        generateValue: true
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: API_KEY_STORE_BACKEND
+        value: postgres
+      - key: API_KEY_STORE_DSN
+        fromDatabase:
+          name: ferrogw-db
+          property: internalConnectionString
+      - key: CONFIG_STORE_BACKEND
+        value: postgres
+      - key: CONFIG_STORE_DSN
+        fromDatabase:
+          name: ferrogw-db
+          property: internalConnectionString
+      - key: REQUEST_LOG_STORE_BACKEND
+        value: postgres
+      - key: REQUEST_LOG_STORE_DSN
+        fromDatabase:
+          name: ferrogw-db
+          property: internalConnectionString
+
+databases:
+  - name: ferrogw-db
