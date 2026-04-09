@@ -11,17 +11,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.0.4] — 2026-04-09
 
+Patch release focused on security maintenance, cache correctness, and refreshed project messaging. This release keeps the `v1.0.x` line stable while improving the published release notes for GitHub releases.
+
 ### Security
 
-- **Dependabot: AWS SDK EventStream decoder DoS**: Upgraded `github.com/aws/aws-sdk-go-v2/service/bedrockruntime` from `v1.50.1` to `v1.50.4` and `github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream` from `v1.7.6` to `v1.7.8` to address GitHub advisory `GHSA-xmrv-pmrh-hhx2`.
+- **Dependabot: AWS SDK EventStream decoder DoS**: Upgraded `github.com/aws/aws-sdk-go-v2/service/bedrockruntime` from `v1.50.1` to `v1.50.4` and `github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream` from `v1.7.6` to `v1.7.8` to address GitHub advisory `GHSA-xmrv-pmrh-hhx2`. The patched versions prevent malformed EventStream frames from triggering a panic in affected AWS SDK decoder paths.
 
 ### Fixed
 
-- **Cache eviction at capacity** fixes [#43](https://github.com/ferro-labs/ai-gateway/issues/43)): When the response cache reached `max_entries`, new responses could be dropped permanently. The cache now evicts the earliest-expiring entry first so new responses continue to be stored, with regression coverage for deterministic eviction order.
+- **Cache eviction at capacity** ([#83](https://github.com/ferro-labs/ai-gateway/pull/83), fixes [#43](https://github.com/ferro-labs/ai-gateway/issues/43)): When the response cache reached `max_entries`, new responses were dropped instead of replacing stale entries, which effectively disabled caching once the store filled up. The cache now evicts the earliest-expiring entry first, stores the incoming response, and includes regression coverage for deterministic eviction order.
 
 ### Improved
 
-- **README polish**: Refined the README content and release documentation for the `v1.0.4` maintenance release.
+- **README polish**: Refined the README content and release documentation for the `v1.0.4` maintenance release so the project overview, positioning, and upgrade story are clearer for users landing on the repository or release page.
+- **GitHub release notes**: Tag-driven releases now use the matching `CHANGELOG.md` section as the source for the GitHub release body, then append a full changelog link at the bottom. This keeps release pages richer, more descriptive, and aligned with the repository changelog.
 
 ---
 
