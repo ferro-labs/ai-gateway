@@ -1,5 +1,9 @@
 <div align="center">
 
+<p align="right">
+  <a href="README.md">English</a> | <a href="README.zh-CN.md">中文</a>
+</p>
+
 <h1 align="center">
   <img src="docs/logo.png" alt="Ferro Labs AI Gateway" height="60" align="absmiddle" /> Ferro Labs AI Gateway
 </h1>
