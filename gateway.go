@@ -751,8 +751,10 @@ func (p *cbProvider) Complete(ctx context.Context, req providers.Request) (*prov
 	}
 	resp, err := p.Provider.Complete(ctx, req)
 	if err != nil {
-		p.cb.RecordFailure()
-		metrics.CircuitBreakerState.WithLabelValues(p.name).Set(float64(p.cb.State()))
+		if !isRateLimitError(err) {
+			p.cb.RecordFailure()
+			metrics.CircuitBreakerState.WithLabelValues(p.name).Set(float64(p.cb.State()))
+		}
 		return nil, err
 	}
 	p.cb.RecordSuccess()
@@ -771,13 +773,21 @@ func (p *cbProvider) CompleteStream(ctx context.Context, req providers.Request) 
 	}
 	ch, err := sp.CompleteStream(ctx, req)
 	if err != nil {
-		p.cb.RecordFailure()
-		metrics.CircuitBreakerState.WithLabelValues(p.name).Set(float64(p.cb.State()))
+		if !isRateLimitError(err) {
+			p.cb.RecordFailure()
+			metrics.CircuitBreakerState.WithLabelValues(p.name).Set(float64(p.cb.State()))
+		}
 		return nil, err
 	}
 	p.cb.RecordSuccess()
 	metrics.CircuitBreakerState.WithLabelValues(p.name).Set(0)
 	return ch, nil
+}
+
+// isRateLimitError checks if the error is a 429 rate limit response.
+// Rate limits are expected and temporary — they should not trip the circuit breaker.
+func isRateLimitError(err error) bool {
+	return providers.ParseStatusCode(err) == 429
 }
 
 // LoadPlugins initializes and registers plugins from the gateway configuration.
