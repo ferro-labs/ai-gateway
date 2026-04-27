@@ -149,7 +149,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameCohere,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityProxy, CapabilityEmbed},
 		EnvMappings: []EnvMapping{
 			{CfgKeyAPIKey, "COHERE_API_KEY", true},
 			{CfgKeyBaseURL, "COHERE_BASE_URL", false},

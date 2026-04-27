@@ -32,6 +32,7 @@ var (
 	_ core.Provider          = (*Provider)(nil)
 	_ core.StreamProvider    = (*Provider)(nil)
 	_ core.ProxiableProvider = (*Provider)(nil)
+	_ core.EmbeddingProvider = (*Provider)(nil)
 )
 
 // New creates a new Cohere provider.
@@ -315,4 +316,102 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 	}()
 
 	return ch, nil
+}
+
+type cohereEmbedRequest struct {
+	Texts     []string `json:"texts"`
+	Model     string   `json:"model"`
+	InputType string   `json:"input_type"`
+}
+
+type cohereEmbedResponse struct {
+	ID         string      `json:"id"`
+	Embeddings [][]float64 `json:"embeddings"`
+	Texts      []string    `json:"texts"`
+	Meta       struct {
+		BilledUnits struct {
+			InputTokens int `json:"input_tokens"`
+		} `json:"billed_units"`
+	} `json:"meta"`
+}
+
+// Embed sends an embedding request to Cohere's /v1/embed endpoint.
+func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.EmbeddingResponse, error) {
+	var texts []string
+	switch v := req.Input.(type) {
+	case string:
+		texts = []string{v}
+	case []string:
+		texts = v
+	case []interface{}:
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				texts = append(texts, s)
+			}
+		}
+	default:
+		return nil, fmt.Errorf("unsupported input type: %T", req.Input)
+	}
+
+	cohReq := cohereEmbedRequest{
+		Texts:     texts,
+		Model:     req.Model,
+		InputType: "search_document",
+	}
+
+	bodyReader, _, release, err := core.JSONBodyReader(cohReq)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal embed request: %w", err)
+	}
+	defer release()
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/v1/embed", bodyReader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create embed request: %w", err)
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	httpResp, err := p.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("embed request failed: %w", err)
+	}
+	defer func() { _ = httpResp.Body.Close() }()
+
+	respBody, err := io.ReadAll(httpResp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read embed response: %w", err)
+	}
+
+	if httpResp.StatusCode != http.StatusOK {
+		var errResp cohereErrorResponse
+		if json.Unmarshal(respBody, &errResp) == nil && errResp.Message != "" {
+			return nil, fmt.Errorf("cohere embed API error (%d): %s", httpResp.StatusCode, errResp.Message)
+		}
+		return nil, fmt.Errorf("cohere embed API error (%d): %s", httpResp.StatusCode, string(respBody))
+	}
+
+	var cohResp cohereEmbedResponse
+	if err := json.Unmarshal(respBody, &cohResp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal embed response: %w", err)
+	}
+
+	data := make([]core.Embedding, len(cohResp.Embeddings))
+	for i, emb := range cohResp.Embeddings {
+		data[i] = core.Embedding{
+			Object:    "embedding",
+			Embedding: emb,
+			Index:     i,
+		}
+	}
+
+	return &core.EmbeddingResponse{
+		Object: "list",
+		Data:   data,
+		Model:  req.Model,
+		Usage: core.EmbeddingUsage{
+			PromptTokens: cohResp.Meta.BilledUnits.InputTokens,
+			TotalTokens:  cohResp.Meta.BilledUnits.InputTokens,
+		},
+	}, nil
 }
