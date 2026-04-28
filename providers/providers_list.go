@@ -24,6 +24,7 @@ import (
 	novitapkg "github.com/ferro-labs/ai-gateway/providers/novita"
 	nvidianimpkg "github.com/ferro-labs/ai-gateway/providers/nvidia_nim"
 	ollamapkg "github.com/ferro-labs/ai-gateway/providers/ollama"
+	ollamacloudpkg "github.com/ferro-labs/ai-gateway/providers/ollama_cloud"
 	openaipkg "github.com/ferro-labs/ai-gateway/providers/openai"
 	openrouterpkg "github.com/ferro-labs/ai-gateway/providers/openrouter"
 	perplexitypkg "github.com/ferro-labs/ai-gateway/providers/perplexity"
@@ -293,6 +294,22 @@ var allProviders = []ProviderEntry{
 				models = strings.Split(m, ",")
 			}
 			return ollamapkg.New(cfg[CfgKeyHost], models)
+		},
+	},
+	{
+		ID:           NameOllamaCloud,
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityDiscovery},
+		EnvMappings: []EnvMapping{
+			{CfgKeyAPIKey, "OLLAMA_API_KEY", true},
+			{CfgKeyBaseURL, "OLLAMA_CLOUD_BASE_URL", false},
+			{CfgKeyModels, "OLLAMA_CLOUD_MODELS", false},
+		},
+		Build: func(cfg ProviderConfig) (Provider, error) {
+			var models []string
+			if m := cfg[CfgKeyModels]; m != "" {
+				models = strings.Split(m, ",")
+			}
+			return ollamacloudpkg.New(cfg[CfgKeyAPIKey], cfg[CfgKeyBaseURL], models)
 		},
 	},
 	{

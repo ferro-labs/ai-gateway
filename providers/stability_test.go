@@ -21,6 +21,7 @@ import (
 	novitapkg "github.com/ferro-labs/ai-gateway/providers/novita"
 	nvidianimpkg "github.com/ferro-labs/ai-gateway/providers/nvidia_nim"
 	ollamapkg "github.com/ferro-labs/ai-gateway/providers/ollama"
+	ollamacloudpkg "github.com/ferro-labs/ai-gateway/providers/ollama_cloud"
 	openaipkg "github.com/ferro-labs/ai-gateway/providers/openai"
 	openrouterpkg "github.com/ferro-labs/ai-gateway/providers/openrouter"
 	perplexitypkg "github.com/ferro-labs/ai-gateway/providers/perplexity"
@@ -268,6 +269,17 @@ func providerNameStabilityCases() []providerNameStabilityCase {
 				p, err := ollamapkg.New("http://localhost:11434", nil)
 				if err != nil {
 					t.Fatalf("NewOllama: %v", err)
+				}
+				return p
+			},
+		},
+		{
+			wantName: NameOllamaCloud,
+			build: func(t *testing.T) Provider {
+				t.Helper()
+				p, err := ollamacloudpkg.New(testAPIKey, "", []string{"gpt-oss:20b"})
+				if err != nil {
+					t.Fatalf("NewOllamaCloud: %v", err)
 				}
 				return p
 			},

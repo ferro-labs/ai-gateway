@@ -100,6 +100,9 @@
       "virtual_key": "ollama"
     },
     {
+      "virtual_key": "ollama-cloud"
+    },
+    {
       "virtual_key": "cerebras"
     },
     {

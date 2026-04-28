@@ -4,7 +4,7 @@
   <img src="docs/logo.png" alt="Ferro Labs AI Gateway" height="60" align="absmiddle" /> Ferro Labs AI Gateway
 </h1>
 
-**High-performance AI gateway in Go. Route LLM requests across 29 providers via a single OpenAI-compatible API.**
+**High-performance AI gateway in Go. Route LLM requests across 30 providers via a single OpenAI-compatible API.**
 
 **Deploy templates**
 
@@ -21,7 +21,7 @@
 [![Code Scanning](https://github.com/ferro-labs/ai-gateway/actions/workflows/code-scanning.yml/badge.svg)](https://github.com/ferro-labs/ai-gateway/actions/workflows/code-scanning.yml)
 [![Discord](https://img.shields.io/badge/Discord-Join%20Us-5865F2?logo=discord&logoColor=white)](https://discord.gg/yCAeYvJeDV)
 
-🔀 **29 providers, 2,500+ models — one API**<br/>
+🔀 **30 providers, 2,500+ models — one API**<br/>
 ⚡ **13,925 RPS at 1,000 concurrent users**<br/>
 📦 **Single binary, zero dependencies, 32 MB base memory**
 
@@ -129,7 +129,7 @@ Most AI gateways are Python proxies that crack under load or JavaScript services
 |:-----------------|:------------|:--------|:-----------|:------------|
 | Language         | Go          | Python  | Go         | Go/Lua      |
 | Single binary    | ✅          | ❌      | ✅         | ❌          |
-| Providers        | 29          | 100+    | 20+        | 10+         |
+| Providers        | 30          | 100+    | 20+        | 10+         |
 | MCP support      | ✅          | ❌      | ✅         | ❌          |
 | Response cache   | ✅          | ✅      | ✅         | ❌ (paid)   |
 | Guardrails       | ✅          | ✅      | ❌         | ❌ (paid)   |
@@ -195,11 +195,11 @@ Full methodology, raw results, and flamegraph analysis:
 - Provider failover with configurable retry policies and status code filters
 - Per-request model aliases (`fast → gpt-4o-mini`, `smart → claude-3-5-sonnet`)
 
-### 🔌 Providers (29)
+### 🔌 Providers (30)
 
 | OpenAI & Compatible | Anthropic & Google | Cloud & Enterprise | Open Source & Inference |
 |:---|:---|:---|:---|
-| OpenAI | Anthropic | AWS Bedrock | Ollama |
+| OpenAI | Anthropic | AWS Bedrock | Ollama, Ollama Cloud |
 | Azure OpenAI | Google Gemini | Azure Foundry | Hugging Face |
 | OpenRouter | Vertex AI | Databricks | Replicate |
 | DeepSeek | | Cloudflare Workers AI | Together AI |

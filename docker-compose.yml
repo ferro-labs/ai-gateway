@@ -63,6 +63,10 @@ services:
       # Ollama (local):
       # - OLLAMA_HOST=http://host.docker.internal:11434
       # - OLLAMA_MODELS=llama3,gemma
+      # Ollama Cloud:
+      # - OLLAMA_API_KEY=...
+      # - OLLAMA_CLOUD_MODELS=gpt-oss:20b,gpt-oss:120b
+      # - OLLAMA_CLOUD_BASE_URL=https://ollama.com
       # Optional config file:
       # - GATEWAY_CONFIG=/etc/ferrogw/config.yaml
     # volumes:

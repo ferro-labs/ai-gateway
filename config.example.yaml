@@ -74,6 +74,7 @@ targets:
   - virtual_key: vertex-ai
   - virtual_key: hugging-face
   - virtual_key: ollama
+  - virtual_key: ollama-cloud
   - virtual_key: cerebras
   - virtual_key: cloudflare
   - virtual_key: databricks
