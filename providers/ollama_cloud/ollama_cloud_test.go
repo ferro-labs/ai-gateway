@@ -1,4 +1,4 @@
-package ollama_cloud
+package ollamacloud
 
 import (
 	"context"

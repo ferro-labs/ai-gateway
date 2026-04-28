@@ -364,6 +364,17 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 	if len(texts) == 0 {
 		return nil, fmt.Errorf("embedding input must contain at least one text")
 	}
+	switch req.EncodingFormat {
+	case "", "float":
+	default:
+		return nil, fmt.Errorf("embed: unsupported encoding_format %q; Cohere embeddings return float vectors", req.EncodingFormat)
+	}
+	if req.Dimensions != nil {
+		return nil, fmt.Errorf("embed: dimensions are not supported by Cohere embeddings")
+	}
+	if req.User != "" {
+		return nil, fmt.Errorf("embed: user is not supported by Cohere embeddings")
+	}
 
 	cohReq := cohereEmbedRequest{
 		Texts:     texts,

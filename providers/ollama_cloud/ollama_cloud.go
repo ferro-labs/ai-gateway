@@ -1,5 +1,5 @@
-// Package ollama_cloud provides a client for the Ollama Cloud API.
-package ollama_cloud
+// Package ollamacloud provides a client for the Ollama Cloud API.
+package ollamacloud
 
 import (
 	"bufio"

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/ferro-labs/ai-gateway/providers/core"
@@ -298,6 +299,66 @@ func TestCohereProvider_Embed_EmptyInput(t *testing.T) {
 				t.Errorf("error = %q, want at least one text", err.Error())
 			}
 		})
+	}
+}
+
+func TestCohereProvider_Embed_UnsupportedOptionalFields(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	dimensions := 256
+	p, _ := New("test-key", srv.URL)
+	tests := []struct {
+		name    string
+		req     core.EmbeddingRequest
+		wantErr string
+	}{
+		{
+			name: "unsupported encoding format",
+			req: core.EmbeddingRequest{
+				Model:          "embed-english-v3.0",
+				Input:          "hello",
+				EncodingFormat: "base64",
+			},
+			wantErr: "unsupported encoding_format",
+		},
+		{
+			name: "dimensions",
+			req: core.EmbeddingRequest{
+				Model:      "embed-english-v3.0",
+				Input:      "hello",
+				Dimensions: &dimensions,
+			},
+			wantErr: "dimensions are not supported",
+		},
+		{
+			name: "user",
+			req: core.EmbeddingRequest{
+				Model: "embed-english-v3.0",
+				Input: "hello",
+				User:  "user-123",
+			},
+			wantErr: "user is not supported",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := p.Embed(context.Background(), tc.req)
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("error = %q, want %q", err.Error(), tc.wantErr)
+			}
+		})
+	}
+	if got := atomic.LoadInt32(&calls); got != 0 {
+		t.Fatalf("upstream calls = %d, want 0", got)
 	}
 }
 
