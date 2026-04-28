@@ -466,6 +466,21 @@ func TestProviderCapabilitiesNotEmpty(t *testing.T) {
 	}
 }
 
+// TestProviderEmbedCapabilityMatchesInterface keeps factory metadata aligned
+// with the optional EmbeddingProvider interface used by /v1/embeddings routing.
+func TestProviderEmbedCapabilityMatchesInterface(t *testing.T) {
+	for _, tc := range providerNameStabilityCases() {
+		t.Run(tc.wantName, func(t *testing.T) {
+			p := tc.build(t)
+			_, implements := p.(EmbeddingProvider)
+			declares := ProviderHasCapability(tc.wantName, CapabilityEmbed)
+			if implements != declares {
+				t.Errorf("provider %q embed capability mismatch: implements EmbeddingProvider=%v, declares %q=%v", tc.wantName, implements, CapabilityEmbed, declares)
+			}
+		})
+	}
+}
+
 // TestProviderEnvMappingsHaveRequiredKey verifies that each provider entry has
 // a configured? gate: either at least one EnvMapping with Required=true, or a
 // ConfiguredFn (used for providers whose gate is an OR across multiple env vars,

@@ -2,9 +2,13 @@ package together
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -127,3 +131,179 @@ func TestTogetherProvider_Complete_Integration(t *testing.T) {
 }
 
 func intPtr(i int) *int { return &i }
+
+func TestTogetherProvider_Embed_Interface(_ *testing.T) {
+	p, _ := New("test-key", "")
+	var _ core.EmbeddingProvider = p
+}
+
+func TestTogetherProvider_SupportedModels_Embeddings(t *testing.T) {
+	p, _ := New("test-key", "")
+	models := p.SupportedModels()
+	found := false
+	for _, m := range models {
+		if m == "BAAI/bge-base-en-v1.5" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("embedding model %q not found in SupportedModels()", "BAAI/bge-base-en-v1.5")
+	}
+	if !p.SupportsModel("BAAI/bge-base-en-v1.5") {
+		t.Fatalf("SupportsModel(%q) = false, want true", "BAAI/bge-base-en-v1.5")
+	}
+}
+
+func TestTogetherProvider_Embed_StringInput_MockHTTP(t *testing.T) {
+	testTogetherEmbedSuccess(t, "hello world")
+}
+
+func TestTogetherProvider_Embed_StringSliceInput_MockHTTP(t *testing.T) {
+	testTogetherEmbedSuccess(t, []string{"hello", "world"})
+}
+
+func TestTogetherProvider_Embed_InvalidInput(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	badInputs := []struct {
+		name  string
+		input interface{}
+	}{
+		{"nil", nil},
+		{"integer", 42},
+		{"empty-string-slice", []string{}},
+		{"empty-interface-slice", []interface{}{}},
+		{"non-string-array-member", []interface{}{"ok", 42}},
+	}
+	for _, tc := range badInputs {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := p.Embed(context.Background(), core.EmbeddingRequest{
+				Model: "BAAI/bge-base-en-v1.5",
+				Input: tc.input,
+			})
+			if err == nil {
+				t.Fatalf("Embed() error = nil, want error")
+			}
+		})
+	}
+	if got := atomic.LoadInt32(&calls); got != 0 {
+		t.Fatalf("upstream calls = %d, want 0", got)
+	}
+}
+
+func TestTogetherProvider_Embed_UpstreamError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/embeddings" {
+			t.Errorf("path = %q, want /v1/embeddings", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"rate limited","type":"rate_limit"}}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	_, err := p.Embed(context.Background(), core.EmbeddingRequest{
+		Model: "BAAI/bge-base-en-v1.5",
+		Input: "hello",
+	})
+	if err == nil {
+		t.Fatal("Embed() error = nil, want upstream error")
+	}
+	if !strings.Contains(err.Error(), "rate limited") {
+		t.Fatalf("error = %v, want rate limited message", err)
+	}
+}
+
+func testTogetherEmbedSuccess(t *testing.T, input interface{}) {
+	t.Helper()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %s, want POST", r.Method)
+		}
+		if r.URL.Path != "/v1/embeddings" {
+			t.Errorf("path = %q, want /v1/embeddings", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
+			t.Errorf("Authorization = %q, want Bearer test-key", got)
+		}
+		if got := r.Header.Get("Content-Type"); got != "application/json" {
+			t.Errorf("Content-Type = %q, want application/json", got)
+		}
+
+		var body map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("failed to decode request body: %v", err)
+		}
+		if got := body["model"]; got != "BAAI/bge-base-en-v1.5" {
+			t.Errorf("model = %v, want BAAI/bge-base-en-v1.5", got)
+		}
+		assertTogetherEmbeddingInput(t, body["input"], input)
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"object":"embedding","embedding":[0.1,0.2],"index":0},{"object":"embedding","embedding":[0.3,0.4],"index":1}],"model":"BAAI/bge-base-en-v1.5","usage":{"prompt_tokens":3,"total_tokens":3}}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	resp, err := p.Embed(context.Background(), core.EmbeddingRequest{
+		Model: "BAAI/bge-base-en-v1.5",
+		Input: input,
+	})
+	if err != nil {
+		t.Fatalf("Embed() error: %v", err)
+	}
+	if resp.Object != "list" {
+		t.Errorf("Object = %q, want list", resp.Object)
+	}
+	if resp.Model != "BAAI/bge-base-en-v1.5" {
+		t.Errorf("Model = %q, want BAAI/bge-base-en-v1.5", resp.Model)
+	}
+	if len(resp.Data) != 2 {
+		t.Fatalf("Data length = %d, want 2", len(resp.Data))
+	}
+	if resp.Data[0].Object != "embedding" || resp.Data[0].Index != 0 || !reflect.DeepEqual(resp.Data[0].Embedding, []float64{0.1, 0.2}) {
+		t.Errorf("Data[0] = %+v, want mapped embedding at index 0", resp.Data[0])
+	}
+	if resp.Data[1].Index != 1 || !reflect.DeepEqual(resp.Data[1].Embedding, []float64{0.3, 0.4}) {
+		t.Errorf("Data[1] = %+v, want mapped embedding at index 1", resp.Data[1])
+	}
+	if resp.Usage.PromptTokens != 3 || resp.Usage.TotalTokens != 3 {
+		t.Errorf("Usage = %+v, want prompt=3 total=3", resp.Usage)
+	}
+}
+
+func assertTogetherEmbeddingInput(t *testing.T, got interface{}, want interface{}) {
+	t.Helper()
+
+	switch w := want.(type) {
+	case string:
+		if got != w {
+			t.Fatalf("input = %#v, want %q", got, w)
+		}
+	case []string:
+		arr, ok := got.([]interface{})
+		if !ok {
+			t.Fatalf("input type = %T, want JSON array", got)
+		}
+		if len(arr) != len(w) {
+			t.Fatalf("input length = %d, want %d", len(arr), len(w))
+		}
+		for i := range w {
+			if arr[i] != w[i] {
+				t.Fatalf("input[%d] = %#v, want %q", i, arr[i], w[i])
+			}
+		}
+	default:
+		t.Fatalf("unsupported test input type %T", want)
+	}
+}

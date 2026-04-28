@@ -34,6 +34,7 @@ type Provider struct {
 var (
 	_ core.Provider          = (*Provider)(nil)
 	_ core.StreamProvider    = (*Provider)(nil)
+	_ core.EmbeddingProvider = (*Provider)(nil)
 	_ core.ProxiableProvider = (*Provider)(nil)
 	_ core.DiscoveryProvider = (*Provider)(nil)
 )
@@ -76,6 +77,13 @@ func (p *Provider) SupportedModels() []string {
 		"accounts/fireworks/models/firefunction-v2",
 		"accounts/fireworks/models/qwen2p5-72b-instruct",
 		"accounts/fireworks/models/deepseek-v3",
+		"accounts/fireworks/models/qwen3-embedding-0p6b",
+		"accounts/fireworks/models/qwen3-embedding-4b",
+		"fireworks_ai/nomic-ai/nomic-embed-text-v1",
+		"fireworks_ai/nomic-ai/nomic-embed-text-v1.5",
+		"fireworks_ai/WhereIsAI/UAE-Large-V1",
+		"fireworks_ai/thenlper/gte-base",
+		"fireworks_ai/thenlper/gte-large",
 	}
 }
 

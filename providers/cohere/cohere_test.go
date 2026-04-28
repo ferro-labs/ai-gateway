@@ -2,10 +2,15 @@ package cohere
 
 import (
 	"context"
-	"github.com/ferro-labs/ai-gateway/providers/core"
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"strings"
 	"testing"
+
+	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
 func TestNewCohere(t *testing.T) {
@@ -24,14 +29,15 @@ func TestCohereProvider_SupportedModels(t *testing.T) {
 	if len(models) == 0 {
 		t.Error("SupportedModels() returned empty")
 	}
-	found := false
+	wantModels := []string{"command-r-plus", "embed-v4.0", "embed-english-v3.0", "embed-multilingual-v3.0"}
+	found := map[string]bool{}
 	for _, m := range models {
-		if m == "command-r-plus" {
-			found = true
-		}
+		found[m] = true
 	}
-	if !found {
-		t.Error("command-r-plus not found")
+	for _, want := range wantModels {
+		if !found[want] {
+			t.Errorf("%s not found", want)
+		}
 	}
 }
 
@@ -61,6 +67,11 @@ func TestCohereProvider_Models(t *testing.T) {
 func TestCohereProvider_CompleteStream_Interface(_ *testing.T) {
 	p, _ := New("test-key", "")
 	var _ core.StreamProvider = p
+}
+
+func TestCohereProvider_EmbeddingProvider_Interface(_ *testing.T) {
+	p, _ := New("test-key", "")
+	var _ core.EmbeddingProvider = p
 }
 
 func TestCohereProvider_CompleteStream_MockSSE(t *testing.T) {
@@ -101,5 +112,212 @@ func TestCohereProvider_CompleteStream_MockSSE(t *testing.T) {
 	}
 	if chunks[2].Choices[0].FinishReason != "COMPLETE" {
 		t.Errorf("finish_reason = %q, want COMPLETE", chunks[2].Choices[0].FinishReason)
+	}
+}
+
+func TestCohereProvider_Embed_StringInput_MockHTTP(t *testing.T) {
+	const apiKey = "test-key"
+	seenRequest := false
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenRequest = true
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %q, want POST", r.Method)
+		}
+		if r.URL.Path != "/v1/embed" {
+			t.Errorf("request path = %q, want /v1/embed", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer "+apiKey {
+			t.Errorf("Authorization = %q, want Bearer %s", got, apiKey)
+		}
+
+		var got cohereEmbedRequest
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Errorf("failed to decode request: %v", err)
+		}
+		if got.Model != "embed-english-v3.0" {
+			t.Errorf("model = %q, want embed-english-v3.0", got.Model)
+		}
+		if !reflect.DeepEqual(got.Texts, []string{"hello"}) {
+			t.Errorf("texts = %#v, want [hello]", got.Texts)
+		}
+		if got.InputType != "search_document" {
+			t.Errorf("input_type = %q, want search_document", got.InputType)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"id":"embed-1","embeddings":[[0.1,0.2]],"texts":["hello"],"meta":{"billed_units":{"input_tokens":3}}}`)
+	}))
+	defer srv.Close()
+
+	p, _ := New(apiKey, srv.URL)
+	resp, err := p.Embed(context.Background(), core.EmbeddingRequest{
+		Model: "embed-english-v3.0",
+		Input: "hello",
+	})
+	if err != nil {
+		t.Fatalf("Embed() error: %v", err)
+	}
+	if !seenRequest {
+		t.Fatal("expected test server to receive request")
+	}
+	if resp.Object != "list" {
+		t.Errorf("Object = %q, want list", resp.Object)
+	}
+	if resp.Model != "embed-english-v3.0" {
+		t.Errorf("Model = %q, want embed-english-v3.0", resp.Model)
+	}
+	if len(resp.Data) != 1 {
+		t.Fatalf("Data length = %d, want 1", len(resp.Data))
+	}
+	if resp.Data[0].Object != "embedding" {
+		t.Errorf("Data[0].Object = %q, want embedding", resp.Data[0].Object)
+	}
+	if resp.Data[0].Index != 0 {
+		t.Errorf("Data[0].Index = %d, want 0", resp.Data[0].Index)
+	}
+	if !reflect.DeepEqual(resp.Data[0].Embedding, []float64{0.1, 0.2}) {
+		t.Errorf("Data[0].Embedding = %#v, want [0.1 0.2]", resp.Data[0].Embedding)
+	}
+	if resp.Usage.PromptTokens != 3 || resp.Usage.TotalTokens != 3 {
+		t.Errorf("Usage = %+v, want prompt_tokens=3 total_tokens=3", resp.Usage)
+	}
+}
+
+func TestCohereProvider_Embed_StringSliceInput_MockHTTP(t *testing.T) {
+	var gotTexts []string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/embed" {
+			t.Errorf("request path = %q, want /v1/embed", r.URL.Path)
+		}
+
+		var got cohereEmbedRequest
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Errorf("failed to decode request: %v", err)
+		}
+		gotTexts = got.Texts
+		if got.Model != "embed-multilingual-v3.0" {
+			t.Errorf("model = %q, want embed-multilingual-v3.0", got.Model)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"id":"embed-2","embeddings":[[0.1,0.2],[0.3,0.4]],"texts":["hello","there"],"meta":{"billed_units":{"input_tokens":5}}}`)
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	resp, err := p.Embed(context.Background(), core.EmbeddingRequest{
+		Model: "embed-multilingual-v3.0",
+		Input: []string{"hello", "there"},
+	})
+	if err != nil {
+		t.Fatalf("Embed() error: %v", err)
+	}
+	if !reflect.DeepEqual(gotTexts, []string{"hello", "there"}) {
+		t.Errorf("texts = %#v, want [hello there]", gotTexts)
+	}
+	if len(resp.Data) != 2 {
+		t.Fatalf("Data length = %d, want 2", len(resp.Data))
+	}
+	for i := range resp.Data {
+		if resp.Data[i].Index != i {
+			t.Errorf("Data[%d].Index = %d, want %d", i, resp.Data[i].Index, i)
+		}
+	}
+	if resp.Usage.PromptTokens != 5 || resp.Usage.TotalTokens != 5 {
+		t.Errorf("Usage = %+v, want prompt_tokens=5 total_tokens=5", resp.Usage)
+	}
+}
+
+func TestCohereProvider_Embed_InvalidInputType(t *testing.T) {
+	p, _ := New("test-key", "")
+	badInputs := []struct {
+		name  string
+		input interface{}
+	}{
+		{"nil", nil},
+		{"integer", 42},
+		{"float", 3.14},
+		{"bool", true},
+		{"map", map[string]string{"hello": "there"}},
+	}
+
+	for _, tc := range badInputs {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := p.Embed(context.Background(), core.EmbeddingRequest{
+				Model: "embed-english-v3.0",
+				Input: tc.input,
+			})
+			if err == nil {
+				t.Fatalf("Embed() with Input=%T: expected error, got nil", tc.input)
+			}
+			if !strings.Contains(err.Error(), "unsupported input type") {
+				t.Errorf("error = %q, want unsupported input type", err.Error())
+			}
+		})
+	}
+}
+
+func TestCohereProvider_Embed_SliceWithNonStringElement(t *testing.T) {
+	p, _ := New("test-key", "")
+	_, err := p.Embed(context.Background(), core.EmbeddingRequest{
+		Model: "embed-english-v3.0",
+		Input: []interface{}{"valid", 99, "also-valid"},
+	})
+	if err == nil {
+		t.Fatal("expected error for []interface{} with non-string element, got nil")
+	}
+	if !strings.Contains(err.Error(), "input[1]") || !strings.Contains(err.Error(), "expected string") {
+		t.Errorf("error = %q, want offending index and expected type", err.Error())
+	}
+}
+
+func TestCohereProvider_Embed_EmptyInput(t *testing.T) {
+	p, _ := New("test-key", "")
+	inputs := []struct {
+		name  string
+		input interface{}
+	}{
+		{"empty string slice", []string{}},
+		{"empty interface slice", []interface{}{}},
+	}
+
+	for _, tc := range inputs {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := p.Embed(context.Background(), core.EmbeddingRequest{
+				Model: "embed-english-v3.0",
+				Input: tc.input,
+			})
+			if err == nil {
+				t.Fatal("expected error for empty input, got nil")
+			}
+			if !strings.Contains(err.Error(), "at least one text") {
+				t.Errorf("error = %q, want at least one text", err.Error())
+			}
+		})
+	}
+}
+
+func TestCohereProvider_Embed_UpstreamNon2xxError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"message":"rate limited"}`)
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	_, err := p.Embed(context.Background(), core.EmbeddingRequest{
+		Model: "embed-english-v3.0",
+		Input: "hello",
+	})
+	if err == nil {
+		t.Fatal("expected upstream error, got nil")
+	}
+	if !strings.Contains(err.Error(), "cohere embed API error (429): rate limited") {
+		t.Errorf("error = %q, want cohere embed API error (429): rate limited", err.Error())
 	}
 }

@@ -34,6 +34,7 @@ type Provider struct {
 var (
 	_ core.Provider          = (*Provider)(nil)
 	_ core.StreamProvider    = (*Provider)(nil)
+	_ core.EmbeddingProvider = (*Provider)(nil)
 	_ core.DiscoveryProvider = (*Provider)(nil)
 	_ core.ProxiableProvider = (*Provider)(nil)
 )
@@ -71,6 +72,9 @@ func (p *Provider) SupportedModels() []string {
 		"minimax/minimax-m2.1",
 		"qwen/qwen3-vl-235b-a22b-thinking",
 		"zai-org/glm-4.7",
+		"baai/bge-m3",
+		"qwen/qwen3-embedding-0.6b",
+		"qwen/qwen3-embedding-8b",
 	}
 }
 

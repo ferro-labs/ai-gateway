@@ -41,6 +41,7 @@ type Provider struct {
 var (
 	_ core.Provider          = (*Provider)(nil)
 	_ core.StreamProvider    = (*Provider)(nil)
+	_ core.EmbeddingProvider = (*Provider)(nil)
 	_ core.ProxiableProvider = (*Provider)(nil)
 )
 
@@ -111,11 +112,23 @@ func (p *Provider) SupportedModels() []string {
 		"gemini-2.5-pro",
 		"gemini-2.5-flash",
 		"gemini-2.0-flash",
+		"gemini-embedding-001",
+		"text-embedding-005",
+		"text-embedding-004",
+		"text-multilingual-embedding-002",
+		"textembedding-gecko@003",
+		"textembedding-gecko-multilingual@001",
 	}
 }
 
-// SupportsModel returns true for any model — Vertex AI validates model names.
-func (p *Provider) SupportsModel(_ string) bool { return true }
+// SupportsModel returns true for known Vertex AI chat and text embedding model families.
+func (p *Provider) SupportsModel(model string) bool {
+	model = vertexAIModelID(model)
+	return strings.HasPrefix(model, "gemini-") ||
+		strings.HasPrefix(model, "text-embedding-") ||
+		strings.HasPrefix(model, "textembedding-gecko") ||
+		strings.HasPrefix(model, "text-multilingual-embedding-")
+}
 
 // Models returns structured model metadata.
 func (p *Provider) Models() []core.ModelInfo {
@@ -144,8 +157,50 @@ type vertexAIError struct {
 	} `json:"error"`
 }
 
+type vertexAIEmbeddingRequest struct {
+	Instances  []vertexAIEmbeddingInstance  `json:"instances"`
+	Parameters *vertexAIEmbeddingParameters `json:"parameters,omitempty"`
+}
+
+type vertexAIEmbeddingInstance struct {
+	Content string `json:"content"`
+}
+
+type vertexAIEmbeddingParameters struct {
+	OutputDimensionality *int `json:"outputDimensionality,omitempty"`
+}
+
+type vertexAIEmbeddingPrediction struct {
+	Embeddings struct {
+		Values     []float64 `json:"values"`
+		Statistics struct {
+			TokenCount      int `json:"token_count"`
+			TokenCountCamel int `json:"tokenCount"`
+		} `json:"statistics"`
+	} `json:"embeddings"`
+	Values    []float64 `json:"values"`
+	Embedding []float64 `json:"embedding"`
+}
+
+type vertexAIEmbeddingResponse struct {
+	Predictions []vertexAIEmbeddingPrediction `json:"predictions"`
+	Metadata    struct {
+		TokenMetadata struct {
+			InputTokenCount struct {
+				TotalTokens int `json:"totalTokens"`
+			} `json:"inputTokenCount"`
+		} `json:"tokenMetadata"`
+	} `json:"metadata"`
+}
+
 func (p *Provider) endpoint() string {
 	return p.baseURL + "/chat/completions"
+}
+
+func (p *Provider) predictionEndpoint(model string) string {
+	baseURL := strings.TrimRight(p.baseURL, "/")
+	baseURL = strings.TrimSuffix(baseURL, "/endpoints/openapi")
+	return fmt.Sprintf("%s/publishers/google/models/%s:predict", baseURL, vertexAIModelID(model))
 }
 
 func (p *Provider) authorizeRequest(req *http.Request) error {
@@ -162,6 +217,156 @@ func (p *Provider) authorizeRequest(req *http.Request) error {
 	}
 	req.Header.Set("Authorization", "Bearer "+tok.AccessToken)
 	return nil
+}
+
+func vertexAIEmbeddingInputs(input interface{}) ([]string, error) {
+	switch v := input.(type) {
+	case string:
+		return []string{v}, nil
+	case []string:
+		if len(v) == 0 {
+			return nil, fmt.Errorf("embed: Input must not be an empty array")
+		}
+		return v, nil
+	case []interface{}:
+		if len(v) == 0 {
+			return nil, fmt.Errorf("embed: Input must not be an empty array")
+		}
+		texts := make([]string, 0, len(v))
+		for i, item := range v {
+			s, ok := item.(string)
+			if !ok {
+				return nil, fmt.Errorf("embed: Input[%d] is %T, want string", i, item)
+			}
+			texts = append(texts, s)
+		}
+		return texts, nil
+	case nil:
+		return nil, fmt.Errorf("embed: Input must not be nil")
+	default:
+		return nil, fmt.Errorf("embed: unsupported Input type %T; want string or []string", input)
+	}
+}
+
+func vertexAIModelID(model string) string {
+	model = strings.TrimPrefix(model, "publishers/google/models/")
+	model = strings.TrimPrefix(model, "models/")
+	return model
+}
+
+func isVertexAITextEmbeddingModel(model string) bool {
+	model = vertexAIModelID(model)
+	return model == "gemini-embedding-001" ||
+		strings.HasPrefix(model, "text-embedding-") ||
+		strings.HasPrefix(model, "textembedding-gecko") ||
+		strings.HasPrefix(model, "text-multilingual-embedding-")
+}
+
+func vertexAIEmbeddingValues(prediction vertexAIEmbeddingPrediction) ([]float64, int) {
+	values := prediction.Embeddings.Values
+	if values == nil {
+		values = prediction.Values
+	}
+	if values == nil {
+		values = prediction.Embedding
+	}
+	tokenCount := prediction.Embeddings.Statistics.TokenCount
+	if tokenCount == 0 {
+		tokenCount = prediction.Embeddings.Statistics.TokenCountCamel
+	}
+	return values, tokenCount
+}
+
+// Embed sends a text embedding request to Vertex AI's publisher model predict endpoint.
+func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.EmbeddingResponse, error) {
+	if !isVertexAITextEmbeddingModel(req.Model) {
+		return nil, fmt.Errorf("embed: unsupported Vertex AI text embedding model %q", req.Model)
+	}
+	if req.EncodingFormat != "" && req.EncodingFormat != "float" {
+		return nil, fmt.Errorf("embed: unsupported encoding_format %q; valid value is \"float\"", req.EncodingFormat)
+	}
+	texts, err := vertexAIEmbeddingInputs(req.Input)
+	if err != nil {
+		return nil, err
+	}
+
+	vertexReq := vertexAIEmbeddingRequest{
+		Instances: make([]vertexAIEmbeddingInstance, 0, len(texts)),
+	}
+	for _, text := range texts {
+		vertexReq.Instances = append(vertexReq.Instances, vertexAIEmbeddingInstance{Content: text})
+	}
+	if req.Dimensions != nil {
+		vertexReq.Parameters = &vertexAIEmbeddingParameters{OutputDimensionality: req.Dimensions}
+	}
+
+	bodyReader, _, release, err := core.JSONBodyReader(vertexReq)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal embed request: %w", err)
+	}
+	defer release()
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.predictionEndpoint(req.Model), bodyReader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create embed request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	if err := p.authorizeRequest(httpReq); err != nil {
+		return nil, err
+	}
+
+	httpResp, err := p.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("embed request failed: %w", err)
+	}
+	defer func() { _ = httpResp.Body.Close() }()
+
+	respBody, err := io.ReadAll(httpResp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read embed response: %w", err)
+	}
+
+	if httpResp.StatusCode != http.StatusOK {
+		var errResp vertexAIError
+		if json.Unmarshal(respBody, &errResp) == nil && errResp.Error.Message != "" {
+			return nil, fmt.Errorf("vertex ai embed API error (%d): %s", httpResp.StatusCode, errResp.Error.Message)
+		}
+		return nil, fmt.Errorf("vertex ai embed API error (%d): %s", httpResp.StatusCode, string(respBody))
+	}
+
+	var vertexResp vertexAIEmbeddingResponse
+	if err := json.Unmarshal(respBody, &vertexResp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal embed response: %w", err)
+	}
+	if len(vertexResp.Predictions) != len(texts) {
+		return nil, fmt.Errorf("vertex ai embed API returned %d embeddings for %d inputs", len(vertexResp.Predictions), len(texts))
+	}
+
+	data := make([]core.Embedding, len(vertexResp.Predictions))
+	promptTokens := vertexResp.Metadata.TokenMetadata.InputTokenCount.TotalTokens
+	statisticsTokens := 0
+	for i, prediction := range vertexResp.Predictions {
+		values, tokenCount := vertexAIEmbeddingValues(prediction)
+		data[i] = core.Embedding{
+			Object:    "embedding",
+			Embedding: values,
+			Index:     i,
+		}
+		statisticsTokens += tokenCount
+	}
+	if promptTokens == 0 {
+		promptTokens = statisticsTokens
+	}
+
+	return &core.EmbeddingResponse{
+		Object: "list",
+		Data:   data,
+		Model:  req.Model,
+		Usage: core.EmbeddingUsage{
+			PromptTokens: promptTokens,
+			TotalTokens:  promptTokens,
+		},
+	}, nil
 }
 
 // Complete sends a chat completion request to Vertex AI.

@@ -67,6 +67,13 @@ func (p *Provider) SupportedModels() []string {
 		"command-r",
 		"command-light",
 		"command",
+		"embed-v4.0",
+		"embed-english-v3.0",
+		"embed-multilingual-v3.0",
+		"embed-english-light-v3.0",
+		"embed-multilingual-light-v3.0",
+		"embed-english-v2.0",
+		"embed-multilingual-v2.0",
 	}
 }
 
@@ -344,13 +351,18 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 	case []string:
 		texts = v
 	case []interface{}:
-		for _, item := range v {
-			if s, ok := item.(string); ok {
-				texts = append(texts, s)
+		for i, item := range v {
+			s, ok := item.(string)
+			if !ok {
+				return nil, fmt.Errorf("unsupported input type at input[%d]: %T; expected string", i, item)
 			}
+			texts = append(texts, s)
 		}
 	default:
 		return nil, fmt.Errorf("unsupported input type: %T", req.Input)
+	}
+	if len(texts) == 0 {
+		return nil, fmt.Errorf("embedding input must contain at least one text")
 	}
 
 	cohReq := cohereEmbedRequest{

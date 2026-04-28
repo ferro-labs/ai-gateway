@@ -34,6 +34,7 @@ type Provider struct {
 var (
 	_ core.Provider          = (*Provider)(nil)
 	_ core.StreamProvider    = (*Provider)(nil)
+	_ core.EmbeddingProvider = (*Provider)(nil)
 	_ core.ProxiableProvider = (*Provider)(nil)
 )
 
@@ -73,6 +74,10 @@ func (p *Provider) SupportedModels() []string {
 		"meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
 		"mistralai/Mixtral-8x7B-Instruct-v0.1",
 		"Qwen/Qwen2.5-72B-Instruct-Turbo",
+		"BAAI/bge-base-en-v1.5",
+		"baai/bge-base-en-v1.5",
+		"together-ai-embedding-up-to-150m",
+		"together-ai-embedding-151m-to-350m",
 	}
 }
 

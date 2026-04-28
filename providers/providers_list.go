@@ -98,7 +98,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameBedrock,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityProxy},
 		// All Bedrock env mappings are optional because the provider can be
 		// configured in two different ways:
 		//   1. Instance-role / credential-chain auth: only AWS_REGION is set.
@@ -161,7 +161,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameDatabricks,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityProxy},
 		EnvMappings: []EnvMapping{
 			{CfgKeyAPIKey, "DATABRICKS_TOKEN", true},
 			{CfgKeyBaseURL, "DATABRICKS_HOST", true},
@@ -194,7 +194,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameFireworks,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityDiscovery, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityDiscovery, CapabilityProxy},
 		EnvMappings: []EnvMapping{
 			{CfgKeyAPIKey, "FIREWORKS_API_KEY", true},
 			{CfgKeyBaseURL, "FIREWORKS_BASE_URL", false},
@@ -205,7 +205,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameGemini,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityProxy},
 		EnvMappings: []EnvMapping{
 			{CfgKeyAPIKey, "GEMINI_API_KEY", true},
 			{CfgKeyBaseURL, "GEMINI_BASE_URL", false},
@@ -238,7 +238,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameMistral,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityProxy},
 		EnvMappings: []EnvMapping{
 			{CfgKeyAPIKey, "MISTRAL_API_KEY", true},
 			{CfgKeyBaseURL, "MISTRAL_BASE_URL", false},
@@ -260,7 +260,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameNovita,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityDiscovery, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityDiscovery, CapabilityProxy},
 		EnvMappings: []EnvMapping{
 			{CfgKeyAPIKey, "NOVITA_API_KEY", true},
 			{CfgKeyBaseURL, "NOVITA_BASE_URL", false},
@@ -390,7 +390,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameTogether,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityProxy},
 		EnvMappings: []EnvMapping{
 			{CfgKeyAPIKey, "TOGETHER_API_KEY", true},
 			{CfgKeyBaseURL, "TOGETHER_BASE_URL", false},
@@ -401,7 +401,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameVertexAI,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityProxy},
 		// project_id is the gate: if unset, skip silently.
 		// region plus one of api_key / service_account_json are required once
 		// project_id is present.

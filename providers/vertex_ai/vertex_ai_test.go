@@ -2,8 +2,10 @@ package vertexai
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/ferro-labs/ai-gateway/providers/core"
@@ -70,6 +72,27 @@ func TestVertexAIProvider_AuthHeaders_APIKey(t *testing.T) {
 	}
 }
 
+func TestVertexAIProvider_SupportedModels(t *testing.T) {
+	p, _ := New(Options{
+		ProjectID: "demo-project",
+		Region:    "us-central1",
+		APIKey:    "test-key",
+	})
+	models := p.SupportedModels()
+	found := map[string]bool{}
+	for _, model := range models {
+		found[model] = true
+	}
+	for _, want := range []string{"gemini-2.5-flash", "text-embedding-005", "textembedding-gecko@003", "gemini-embedding-001"} {
+		if !found[want] {
+			t.Errorf("SupportedModels() missing %q", want)
+		}
+		if !p.SupportsModel(want) {
+			t.Errorf("SupportsModel(%q) = false, want true", want)
+		}
+	}
+}
+
 func TestVertexAIProvider_CompleteStream_Interface(_ *testing.T) {
 	p, _ := New(Options{
 		ProjectID: "demo-project",
@@ -77,6 +100,160 @@ func TestVertexAIProvider_CompleteStream_Interface(_ *testing.T) {
 		APIKey:    "test-key",
 	})
 	var _ core.StreamProvider = p
+}
+
+func TestVertexAIProvider_Embed_Interface(_ *testing.T) {
+	p, _ := New(Options{
+		ProjectID: "demo-project",
+		Region:    "us-central1",
+		APIKey:    "test-key",
+	})
+	var _ core.EmbeddingProvider = p
+}
+
+func TestVertexAIProvider_Embed_BatchSuccess_APIKey(t *testing.T) {
+	dimensions := 256
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		wantPath := "/v1/projects/demo-project/locations/us-central1/publishers/google/models/text-embedding-005:predict"
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %s, want POST", r.Method)
+		}
+		if r.URL.Path != wantPath {
+			t.Errorf("request path = %q, want %s", r.URL.Path, wantPath)
+		}
+		if got := r.Header.Get("x-goog-api-key"); got != "test-key" {
+			t.Errorf("x-goog-api-key = %q, want test-key", got)
+		}
+		var body struct {
+			Instances []struct {
+				Content string `json:"content"`
+			} `json:"instances"`
+			Parameters struct {
+				OutputDimensionality *int `json:"outputDimensionality"`
+			} `json:"parameters"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if len(body.Instances) != 2 || body.Instances[0].Content != "first" || body.Instances[1].Content != "second" {
+			t.Fatalf("instances = %+v, want first/second", body.Instances)
+		}
+		if body.Parameters.OutputDimensionality == nil || *body.Parameters.OutputDimensionality != dimensions {
+			t.Errorf("outputDimensionality = %v, want %d", body.Parameters.OutputDimensionality, dimensions)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"predictions":[{"embeddings":{"values":[0.1,0.2],"statistics":{"token_count":2}}},{"embeddings":{"values":[0.3,0.4],"statistics":{"token_count":3}}}]}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New(Options{
+		ProjectID: "demo-project",
+		Region:    "us-central1",
+		APIKey:    "test-key",
+	})
+	p.SetBaseURL(srv.URL + "/v1/projects/demo-project/locations/us-central1/endpoints/openapi")
+
+	resp, err := p.Embed(context.Background(), core.EmbeddingRequest{
+		Model:      "text-embedding-005",
+		Input:      []string{"first", "second"},
+		Dimensions: &dimensions,
+	})
+	if err != nil {
+		t.Fatalf("Embed() error: %v", err)
+	}
+	if resp.Object != "list" || resp.Model != "text-embedding-005" {
+		t.Errorf("response metadata = (%q, %q)", resp.Object, resp.Model)
+	}
+	if len(resp.Data) != 2 || resp.Data[0].Index != 0 || resp.Data[1].Index != 1 {
+		t.Fatalf("response data = %+v", resp.Data)
+	}
+	if resp.Data[0].Embedding[0] != 0.1 || resp.Data[1].Embedding[1] != 0.4 {
+		t.Errorf("embeddings = %+v", resp.Data)
+	}
+	if resp.Usage.PromptTokens != 5 || resp.Usage.TotalTokens != 5 {
+		t.Errorf("usage = %+v, want 5 prompt/total", resp.Usage)
+	}
+}
+
+func TestVertexAIProvider_Embed_StringInput(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/publishers/google/models/textembedding-gecko@003:predict" {
+			t.Errorf("request path = %q, want /publishers/google/models/textembedding-gecko@003:predict", r.URL.Path)
+		}
+		var body struct {
+			Instances []struct {
+				Content string `json:"content"`
+			} `json:"instances"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if len(body.Instances) != 1 || body.Instances[0].Content != "hello" {
+			t.Fatalf("instances = %+v, want hello", body.Instances)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"predictions":[{"embeddings":{"values":[1,2,3],"statistics":{"tokenCount":4}}}]}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New(Options{
+		ProjectID: "demo-project",
+		Region:    "us-central1",
+		APIKey:    "test-key",
+	})
+	p.SetBaseURL(srv.URL)
+
+	resp, err := p.Embed(context.Background(), core.EmbeddingRequest{
+		Model: "textembedding-gecko@003",
+		Input: "hello",
+	})
+	if err != nil {
+		t.Fatalf("Embed() error: %v", err)
+	}
+	if len(resp.Data) != 1 || resp.Data[0].Embedding[2] != 3 {
+		t.Errorf("response data = %+v", resp.Data)
+	}
+	if resp.Usage.TotalTokens != 4 {
+		t.Errorf("usage = %+v, want total_tokens 4", resp.Usage)
+	}
+}
+
+func TestVertexAIProvider_Embed_InvalidInput(t *testing.T) {
+	p, _ := New(Options{
+		ProjectID: "demo-project",
+		Region:    "us-central1",
+		APIKey:    "test-key",
+	})
+	_, err := p.Embed(context.Background(), core.EmbeddingRequest{
+		Model: "text-embedding-005",
+		Input: []interface{}{"ok", 123},
+	})
+	if err == nil || !strings.Contains(err.Error(), "Input[1]") {
+		t.Fatalf("Embed() error = %v, want invalid input error", err)
+	}
+}
+
+func TestVertexAIProvider_Embed_UpstreamError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"bad predict request"}}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New(Options{
+		ProjectID: "demo-project",
+		Region:    "us-central1",
+		APIKey:    "test-key",
+	})
+	p.SetBaseURL(srv.URL)
+
+	_, err := p.Embed(context.Background(), core.EmbeddingRequest{
+		Model: "text-embedding-005",
+		Input: "hello",
+	})
+	if err == nil || !strings.Contains(err.Error(), "bad predict request") {
+		t.Fatalf("Embed() error = %v, want upstream error", err)
+	}
 }
 
 func TestVertexAIProvider_Complete_MockHTTP(t *testing.T) {

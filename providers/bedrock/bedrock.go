@@ -29,10 +29,15 @@ type Options struct {
 	SessionToken    string
 }
 
+type bedrockRuntimeClient interface {
+	InvokeModel(context.Context, *bedrockruntime.InvokeModelInput, ...func(*bedrockruntime.Options)) (*bedrockruntime.InvokeModelOutput, error)
+	InvokeModelWithResponseStream(context.Context, *bedrockruntime.InvokeModelWithResponseStreamInput, ...func(*bedrockruntime.Options)) (*bedrockruntime.InvokeModelWithResponseStreamOutput, error)
+}
+
 // Provider implements the AWS Bedrock API client.
 type Provider struct {
 	name   string
-	client *bedrockruntime.Client
+	client bedrockRuntimeClient
 	region string
 }
 
@@ -40,6 +45,7 @@ type Provider struct {
 var (
 	_ core.Provider          = (*Provider)(nil)
 	_ core.StreamProvider    = (*Provider)(nil)
+	_ core.EmbeddingProvider = (*Provider)(nil)
 	_ core.ProxiableProvider = (*Provider)(nil)
 )
 
@@ -116,11 +122,36 @@ func (p *Provider) SupportedModels() []string {
 		"meta.llama3-1-8b-instruct-v1:0",
 		"meta.llama3-70b-instruct-v1:0",
 		"meta.llama3-8b-instruct-v1:0",
+		"amazon.titan-embed-text-v1",
+		"amazon.titan-embed-text-v2:0",
+		"cohere.embed-english-v3",
+		"cohere.embed-multilingual-v3",
+		"cohere.embed-v4:0",
 	}
 }
 
-// SupportsModel returns true for any model — AWS Bedrock validates model IDs.
-func (p *Provider) SupportsModel(_ string) bool { return true }
+// SupportsModel returns true for model families with request shapes implemented
+// by this provider. Bedrock still validates the exact model ID upstream.
+func (p *Provider) SupportsModel(model string) bool {
+	model = bedrockModelRoutingID(model)
+	for _, supported := range p.SupportedModels() {
+		if model == supported {
+			return true
+		}
+	}
+	for _, prefix := range []string{
+		"anthropic.claude-",
+		"amazon.titan-text-",
+		"amazon.titan-embed-text-",
+		"cohere.embed-",
+		"meta.llama",
+	} {
+		if strings.HasPrefix(model, prefix) {
+			return true
+		}
+	}
+	return false
+}
 
 // Models returns structured model metadata.
 func (p *Provider) Models() []core.ModelInfo {
@@ -189,6 +220,224 @@ type bedrockLlamaResponse struct {
 	PromptTokenCount     int    `json:"prompt_token_count"`
 	GenerationTokenCount int    `json:"generation_token_count"`
 	StopReason           string `json:"stop_reason"`
+}
+
+// ── Embeddings ───────────────────────────────────────────────────────────────
+
+type bedrockTitanEmbedRequest struct {
+	InputText  string `json:"inputText"`
+	Dimensions *int   `json:"dimensions,omitempty"`
+}
+
+type bedrockTitanEmbedResponse struct {
+	Embedding           []float64 `json:"embedding"`
+	InputTextTokenCount int       `json:"inputTextTokenCount"`
+}
+
+type bedrockCohereEmbedRequest struct {
+	Texts          []string `json:"texts"`
+	InputType      string   `json:"input_type"`
+	EmbeddingTypes []string `json:"embedding_types,omitempty"`
+}
+
+type bedrockCohereEmbeddingVectors [][]float64
+
+func (v *bedrockCohereEmbeddingVectors) UnmarshalJSON(data []byte) error {
+	var vectors [][]float64
+	if err := json.Unmarshal(data, &vectors); err == nil {
+		*v = vectors
+		return nil
+	}
+
+	var typed map[string][][]float64
+	if err := json.Unmarshal(data, &typed); err != nil {
+		return err
+	}
+	if vectors, ok := typed["float"]; ok {
+		*v = vectors
+		return nil
+	}
+	return fmt.Errorf("cohere embedding response did not include float embeddings")
+}
+
+type bedrockCohereEmbedResponse struct {
+	Embeddings bedrockCohereEmbeddingVectors `json:"embeddings"`
+	Meta       struct {
+		BilledUnits struct {
+			InputTokens int `json:"input_tokens"`
+		} `json:"billed_units"`
+	} `json:"meta"`
+}
+
+// Embed sends a text embedding request to AWS Bedrock.
+func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.EmbeddingResponse, error) {
+	texts, err := bedrockEmbeddingTexts(req.Input)
+	if err != nil {
+		return nil, err
+	}
+
+	switch req.EncodingFormat {
+	case "", "float":
+	default:
+		return nil, fmt.Errorf("embed: unsupported encoding_format %q; Bedrock embeddings return float vectors", req.EncodingFormat)
+	}
+
+	modelID := bedrockModelRoutingID(req.Model)
+	switch {
+	case isBedrockTitanTextEmbeddingModel(modelID):
+		return p.embedTitan(ctx, req, modelID, texts)
+	case isBedrockCohereEmbeddingModel(modelID):
+		return p.embedCohere(ctx, req, modelID, texts)
+	default:
+		return nil, fmt.Errorf("unsupported Bedrock embedding model: %s", req.Model)
+	}
+}
+
+func bedrockEmbeddingTexts(input interface{}) ([]string, error) {
+	switch v := input.(type) {
+	case string:
+		return []string{v}, nil
+	case []string:
+		if len(v) == 0 {
+			return nil, fmt.Errorf("embed: Input must not be an empty array")
+		}
+		return v, nil
+	case []interface{}:
+		if len(v) == 0 {
+			return nil, fmt.Errorf("embed: Input must not be an empty array")
+		}
+		texts := make([]string, 0, len(v))
+		for i, item := range v {
+			s, ok := item.(string)
+			if !ok {
+				return nil, fmt.Errorf("embed: Input[%d] is %T, want string", i, item)
+			}
+			texts = append(texts, s)
+		}
+		return texts, nil
+	case nil:
+		return nil, fmt.Errorf("embed: Input must not be nil")
+	default:
+		return nil, fmt.Errorf("embed: unsupported Input type %T; want string or []string", input)
+	}
+}
+
+func (p *Provider) embedTitan(ctx context.Context, req core.EmbeddingRequest, modelID string, texts []string) (*core.EmbeddingResponse, error) {
+	if req.Dimensions != nil && !strings.HasPrefix(modelID, "amazon.titan-embed-text-v2") {
+		return nil, fmt.Errorf("embed: dimensions are only supported for amazon.titan-embed-text-v2 models")
+	}
+
+	data := make([]core.Embedding, 0, len(texts))
+	promptTokens := 0
+	for i, text := range texts {
+		titanReq := bedrockTitanEmbedRequest{
+			InputText:  text,
+			Dimensions: req.Dimensions,
+		}
+		var titanResp bedrockTitanEmbedResponse
+		if err := p.invokeModelJSON(ctx, req.Model, titanReq, &titanResp); err != nil {
+			return nil, err
+		}
+		data = append(data, core.Embedding{
+			Object:    "embedding",
+			Embedding: titanResp.Embedding,
+			Index:     i,
+		})
+		promptTokens += titanResp.InputTextTokenCount
+	}
+
+	return &core.EmbeddingResponse{
+		Object: "list",
+		Data:   data,
+		Model:  req.Model,
+		Usage: core.EmbeddingUsage{
+			PromptTokens: promptTokens,
+			TotalTokens:  promptTokens,
+		},
+	}, nil
+}
+
+func (p *Provider) embedCohere(ctx context.Context, req core.EmbeddingRequest, modelID string, texts []string) (*core.EmbeddingResponse, error) {
+	if req.Dimensions != nil {
+		return nil, fmt.Errorf("embed: dimensions are not supported for Bedrock Cohere embeddings")
+	}
+
+	cohereReq := bedrockCohereEmbedRequest{
+		Texts:     texts,
+		InputType: "search_document",
+	}
+	if strings.HasPrefix(modelID, "cohere.embed-v4") {
+		cohereReq.EmbeddingTypes = []string{"float"}
+	}
+
+	var cohereResp bedrockCohereEmbedResponse
+	if err := p.invokeModelJSON(ctx, req.Model, cohereReq, &cohereResp); err != nil {
+		return nil, err
+	}
+	if len(cohereResp.Embeddings) != len(texts) {
+		return nil, fmt.Errorf("bedrock cohere embed response returned %d embeddings for %d inputs", len(cohereResp.Embeddings), len(texts))
+	}
+
+	data := make([]core.Embedding, len(cohereResp.Embeddings))
+	for i, emb := range cohereResp.Embeddings {
+		data[i] = core.Embedding{
+			Object:    "embedding",
+			Embedding: emb,
+			Index:     i,
+		}
+	}
+	inputTokens := cohereResp.Meta.BilledUnits.InputTokens
+	return &core.EmbeddingResponse{
+		Object: "list",
+		Data:   data,
+		Model:  req.Model,
+		Usage: core.EmbeddingUsage{
+			PromptTokens: inputTokens,
+			TotalTokens:  inputTokens,
+		},
+	}, nil
+}
+
+func (p *Provider) invokeModelJSON(ctx context.Context, modelID string, payload interface{}, out interface{}) error {
+	body, err := core.MarshalJSON(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	output, err := p.client.InvokeModel(ctx, &bedrockruntime.InvokeModelInput{
+		ModelId:     aws.String(modelID),
+		ContentType: aws.String("application/json"),
+		Accept:      aws.String("application/json"),
+		Body:        body,
+	})
+	if err != nil {
+		return fmt.Errorf("bedrock invoke failed: %w", err)
+	}
+
+	if err := json.Unmarshal(output.Body, out); err != nil {
+		return fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return nil
+}
+
+func bedrockModelRoutingID(model string) string {
+	if idx := strings.LastIndex(model, "/"); idx >= 0 && idx < len(model)-1 {
+		model = model[idx+1:]
+	}
+	for _, prefix := range []string{"us.", "eu.", "apac."} {
+		if strings.HasPrefix(model, prefix) {
+			return strings.TrimPrefix(model, prefix)
+		}
+	}
+	return model
+}
+
+func isBedrockTitanTextEmbeddingModel(model string) bool {
+	return strings.HasPrefix(model, "amazon.titan-embed-text-")
+}
+
+func isBedrockCohereEmbeddingModel(model string) bool {
+	return strings.HasPrefix(model, "cohere.embed-")
 }
 
 // Complete sends a request to AWS Bedrock and returns the response.

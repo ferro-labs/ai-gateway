@@ -2,9 +2,13 @@ package fireworks
 
 import (
 	"context"
+	"encoding/json"
 	"github.com/ferro-labs/ai-gateway/providers/core"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -136,5 +140,181 @@ func TestFireworksProvider_Complete_MockHTTP(t *testing.T) {
 	}
 	if len(resp.Choices) == 0 {
 		t.Error("expected at least one choice")
+	}
+}
+
+func TestFireworksProvider_Embed_Interface(_ *testing.T) {
+	p, _ := New("test-key", "")
+	var _ core.EmbeddingProvider = p
+}
+
+func TestFireworksProvider_SupportedModels_Embeddings(t *testing.T) {
+	p, _ := New("test-key", "")
+	models := p.SupportedModels()
+	found := false
+	for _, m := range models {
+		if m == "accounts/fireworks/models/qwen3-embedding-0p6b" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("embedding model %q not found in SupportedModels()", "accounts/fireworks/models/qwen3-embedding-0p6b")
+	}
+	if !p.SupportsModel("accounts/fireworks/models/qwen3-embedding-0p6b") {
+		t.Fatalf("SupportsModel(%q) = false, want true", "accounts/fireworks/models/qwen3-embedding-0p6b")
+	}
+}
+
+func TestFireworksProvider_Embed_StringInput_MockHTTP(t *testing.T) {
+	testFireworksEmbedSuccess(t, "hello world")
+}
+
+func TestFireworksProvider_Embed_StringSliceInput_MockHTTP(t *testing.T) {
+	testFireworksEmbedSuccess(t, []string{"hello", "world"})
+}
+
+func TestFireworksProvider_Embed_InvalidInput(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	badInputs := []struct {
+		name  string
+		input interface{}
+	}{
+		{"nil", nil},
+		{"integer", 42},
+		{"empty-string-slice", []string{}},
+		{"empty-interface-slice", []interface{}{}},
+		{"non-string-array-member", []interface{}{"ok", 42}},
+	}
+	for _, tc := range badInputs {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := p.Embed(context.Background(), core.EmbeddingRequest{
+				Model: "accounts/fireworks/models/qwen3-embedding-0p6b",
+				Input: tc.input,
+			})
+			if err == nil {
+				t.Fatalf("Embed() error = nil, want error")
+			}
+		})
+	}
+	if got := atomic.LoadInt32(&calls); got != 0 {
+		t.Fatalf("upstream calls = %d, want 0", got)
+	}
+}
+
+func TestFireworksProvider_Embed_UpstreamError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/embeddings" {
+			t.Errorf("path = %q, want /v1/embeddings", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"rate limited","type":"rate_limit"}}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	_, err := p.Embed(context.Background(), core.EmbeddingRequest{
+		Model: "accounts/fireworks/models/qwen3-embedding-0p6b",
+		Input: "hello",
+	})
+	if err == nil {
+		t.Fatal("Embed() error = nil, want upstream error")
+	}
+	if !strings.Contains(err.Error(), "rate limited") {
+		t.Fatalf("error = %v, want rate limited message", err)
+	}
+}
+
+func testFireworksEmbedSuccess(t *testing.T, input interface{}) {
+	t.Helper()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %s, want POST", r.Method)
+		}
+		if r.URL.Path != "/v1/embeddings" {
+			t.Errorf("path = %q, want /v1/embeddings", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
+			t.Errorf("Authorization = %q, want Bearer test-key", got)
+		}
+		if got := r.Header.Get("Content-Type"); got != "application/json" {
+			t.Errorf("Content-Type = %q, want application/json", got)
+		}
+
+		var body map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("failed to decode request body: %v", err)
+		}
+		if got := body["model"]; got != "accounts/fireworks/models/qwen3-embedding-0p6b" {
+			t.Errorf("model = %v, want accounts/fireworks/models/qwen3-embedding-0p6b", got)
+		}
+		assertFireworksEmbeddingInput(t, body["input"], input)
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"object":"embedding","embedding":[0.1,0.2],"index":0},{"object":"embedding","embedding":[0.3,0.4],"index":1}],"model":"accounts/fireworks/models/qwen3-embedding-0p6b","usage":{"prompt_tokens":3,"total_tokens":3}}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	resp, err := p.Embed(context.Background(), core.EmbeddingRequest{
+		Model: "accounts/fireworks/models/qwen3-embedding-0p6b",
+		Input: input,
+	})
+	if err != nil {
+		t.Fatalf("Embed() error: %v", err)
+	}
+	if resp.Object != "list" {
+		t.Errorf("Object = %q, want list", resp.Object)
+	}
+	if resp.Model != "accounts/fireworks/models/qwen3-embedding-0p6b" {
+		t.Errorf("Model = %q, want accounts/fireworks/models/qwen3-embedding-0p6b", resp.Model)
+	}
+	if len(resp.Data) != 2 {
+		t.Fatalf("Data length = %d, want 2", len(resp.Data))
+	}
+	if resp.Data[0].Object != "embedding" || resp.Data[0].Index != 0 || !reflect.DeepEqual(resp.Data[0].Embedding, []float64{0.1, 0.2}) {
+		t.Errorf("Data[0] = %+v, want mapped embedding at index 0", resp.Data[0])
+	}
+	if resp.Data[1].Index != 1 || !reflect.DeepEqual(resp.Data[1].Embedding, []float64{0.3, 0.4}) {
+		t.Errorf("Data[1] = %+v, want mapped embedding at index 1", resp.Data[1])
+	}
+	if resp.Usage.PromptTokens != 3 || resp.Usage.TotalTokens != 3 {
+		t.Errorf("Usage = %+v, want prompt=3 total=3", resp.Usage)
+	}
+}
+
+func assertFireworksEmbeddingInput(t *testing.T, got interface{}, want interface{}) {
+	t.Helper()
+
+	switch w := want.(type) {
+	case string:
+		if got != w {
+			t.Fatalf("input = %#v, want %q", got, w)
+		}
+	case []string:
+		arr, ok := got.([]interface{})
+		if !ok {
+			t.Fatalf("input type = %T, want JSON array", got)
+		}
+		if len(arr) != len(w) {
+			t.Fatalf("input length = %d, want %d", len(arr), len(w))
+		}
+		for i := range w {
+			if arr[i] != w[i] {
+				t.Fatalf("input[%d] = %#v, want %q", i, arr[i], w[i])
+			}
+		}
+	default:
+		t.Fatalf("unsupported test input type %T", want)
 	}
 }

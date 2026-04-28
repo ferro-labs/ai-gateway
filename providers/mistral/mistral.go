@@ -33,6 +33,7 @@ type Provider struct {
 var (
 	_ core.Provider          = (*Provider)(nil)
 	_ core.StreamProvider    = (*Provider)(nil)
+	_ core.EmbeddingProvider = (*Provider)(nil)
 	_ core.ProxiableProvider = (*Provider)(nil)
 )
 
@@ -68,6 +69,9 @@ func (p *Provider) SupportedModels() []string {
 		"mistral-small-latest",
 		"open-mistral-nemo",
 		"codestral-latest",
+		"mistral-embed",
+		"codestral-embed",
+		"codestral-embed-2505",
 	}
 }
 

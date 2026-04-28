@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.5] — 2026-04-28
+
+Feature release adding first-class Ollama Cloud support and broader embedding coverage while keeping the gateway's public API OpenAI-compatible for end users.
+
+### Added
+
+- **Ollama Cloud provider** ([#94](https://github.com/ferro-labs/ai-gateway/issues/94)): Added `ollama-cloud` as a separate provider from local `ollama`, using Ollama Cloud's documented `https://ollama.com/api` endpoints with Bearer token authentication via `OLLAMA_API_KEY`.
+- **OpenAI-compatible gateway surface for Ollama Cloud**: Users can call the existing `/v1/chat/completions` endpoint with normal OpenAI-style payloads while the provider internally adapts requests to Ollama Cloud's native `/api/chat` API.
+- **Streaming and model discovery**: Added native NDJSON streaming support and live model discovery from `/api/tags`, exposed through the gateway's normalized streaming and model-list interfaces.
+- **Ollama Cloud model catalog entries**: Added `ollama-cloud/*` catalog entries for initial direct Cloud model IDs, including `gpt-oss:120b`, `gpt-oss:20b`, `qwen3-coder:480b`, and `deepseek-v3.1:671b`, in both the primary and embedded backup catalogs.
+- **Expanded embeddings**: Bedrock, Cohere, Databricks, Fireworks, Gemini, Mistral, Novita, Together, and Vertex AI now implement the gateway's `EmbeddingProvider` interface, advertise the `embed` capability, and route `/v1/embeddings` requests through provider-native or OpenAI-compatible embedding APIs with normalized vectors and token-usage responses.
+- **Embedding provider tests and registry guardrails**: Added package-local embedding tests for success, invalid input, upstream errors, auth/path mapping, and usage mapping, plus a registry consistency test that keeps `CapabilityEmbed` aligned with actual `EmbeddingProvider` implementations.
+- **Implementation plan documentation**: Added `docs/ollama-cloud-implementation-plan.md` documenting provider identity, API mapping, catalog policy, testing scope, and known open questions.
+
+### Changed
+
+- **Provider registry and examples**: Updated provider registration, stability tests, config examples, Docker environment comments, and README provider counts for the new 30th provider.
+- **Catalog pricing policy for Ollama Cloud**: Ollama Cloud catalog entries use `null` token pricing because Ollama currently documents plan/GPU-usage-based limits rather than fixed per-token rates.
+- **Proxy scope**: Ollama Cloud intentionally does not advertise pass-through proxy support yet because Ollama Cloud's documented direct API is `/api/*`, not `/v1/*`.
+
+---
+
 ## [1.0.4] — 2026-04-09
 
 Patch release focused on security maintenance, cache correctness, and refreshed project messaging. This release keeps the `v1.0.x` line stable while improving the published release notes for GitHub releases.
