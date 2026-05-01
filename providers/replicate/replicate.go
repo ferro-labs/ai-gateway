@@ -2,6 +2,7 @@
 package replicate
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -37,6 +38,7 @@ type Provider struct {
 // Compile-time interface assertions.
 var (
 	_ core.Provider          = (*Provider)(nil)
+	_ core.StreamProvider    = (*Provider)(nil)
 	_ core.ImageProvider     = (*Provider)(nil)
 	_ core.ProxiableProvider = (*Provider)(nil)
 )
@@ -132,10 +134,14 @@ func ModelVersion(path string) string {
 
 // Prediction represents a Replicate API prediction result.
 type Prediction struct {
-	ID     string      `json:"id"`
-	Status string      `json:"status"`
-	Output interface{} `json:"output"`
-	Error  string      `json:"error,omitempty"`
+	ID        string      `json:"id"`
+	Status    string      `json:"status"`
+	Output    interface{} `json:"output"`
+	Error     string      `json:"error,omitempty"`
+	StreamURL string      `json:"stream_url,omitempty"`
+	URLs      struct {
+		Stream string `json:"stream,omitempty"`
+	} `json:"urls,omitempty"`
 }
 
 type replicatePredictionInput struct {
@@ -147,6 +153,7 @@ type replicatePredictionInput struct {
 type replicatePredictionRequest struct {
 	Version string                   `json:"version,omitempty"`
 	Input   replicatePredictionInput `json:"input"`
+	Stream  bool                     `json:"stream,omitempty"`
 }
 
 type replicateImageInput struct {
@@ -235,6 +242,78 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 	}, nil
 }
 
+// CompleteStream submits a Replicate prediction with streaming enabled and
+// translates Replicate output SSE events into OpenAI-compatible stream chunks.
+func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan core.StreamChunk, error) {
+	var sb strings.Builder
+	for _, msg := range req.Messages {
+		sb.WriteString(msg.Role)
+		sb.WriteString(": ")
+		sb.WriteString(msg.Content)
+		sb.WriteString("\n")
+	}
+	sb.WriteString("assistant: ")
+
+	input := replicatePredictionInput{Prompt: sb.String()}
+	if req.MaxTokens != nil {
+		input.MaxTokens = *req.MaxTokens
+	}
+	if req.Temperature != nil {
+		input.Temperature = *req.Temperature
+	}
+
+	predReq := replicatePredictionRequest{Input: input, Stream: true}
+	modelPath := p.resolveTextModel(req.Model)
+
+	var url string
+	if v := ModelVersion(modelPath); v != "" {
+		predReq.Version = v
+		url = fmt.Sprintf("%s/predictions", p.baseURL)
+	} else {
+		url = fmt.Sprintf("%s/models/%s/predictions", p.baseURL, ModelBaseName(modelPath))
+	}
+
+	bodyReader, _, release, err := core.JSONBodyReader(predReq)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+	defer release()
+
+	pred, err := p.submitPrediction(ctx, url, bodyReader)
+	if err != nil {
+		return nil, err
+	}
+	streamURL := pred.URLs.Stream
+	if streamURL == "" {
+		streamURL = pred.StreamURL
+	}
+	if streamURL == "" {
+		return nil, fmt.Errorf("replicate prediction %s does not include a stream URL", pred.ID)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, streamURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create stream request: %w", err)
+	}
+	httpReq.Header.Set("Authorization", "Token "+p.apiKey)
+	httpReq.Header.Set("Accept", "text/event-stream")
+
+	httpResp, err := p.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("stream request failed: %w", err)
+	}
+
+	if httpResp.StatusCode != http.StatusOK {
+		defer func() { _ = httpResp.Body.Close() }()
+		respBody, _ := io.ReadAll(httpResp.Body)
+		return nil, fmt.Errorf("replicate stream error (%d): %s", httpResp.StatusCode, string(respBody))
+	}
+
+	ch := make(chan core.StreamChunk)
+	go p.readStream(ctx, httpResp.Body, ch, pred.ID, req.Model)
+	return ch, nil
+}
+
 // GenerateImage submits an image generation prediction and polls until done.
 func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*core.ImageResponse, error) {
 	input := replicateImageInput{Prompt: req.Prompt}
@@ -295,6 +374,138 @@ func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*c
 		Created: time.Now().Unix(),
 		Data:    images,
 	}, nil
+}
+
+func (p *Provider) resolveTextModel(model string) string {
+	for _, m := range p.textModels {
+		if ModelBaseName(m) == ModelBaseName(model) {
+			return m
+		}
+	}
+	return model
+}
+
+func (p *Provider) submitPrediction(ctx context.Context, url string, body io.Reader) (*Prediction, error) {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	httpReq.Header.Set("Authorization", "Token "+p.apiKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	httpResp, err := p.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer func() { _ = httpResp.Body.Close() }()
+
+	if httpResp.StatusCode != http.StatusCreated && httpResp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(httpResp.Body)
+		return nil, fmt.Errorf("replicate API error (%d): %s", httpResp.StatusCode, string(respBody))
+	}
+
+	var pred Prediction
+	if err := json.NewDecoder(httpResp.Body).Decode(&pred); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal prediction: %w", err)
+	}
+	if pred.Status == "failed" || pred.Status == "canceled" {
+		return nil, fmt.Errorf("replicate prediction %s: %s", pred.Status, pred.Error)
+	}
+	return &pred, nil
+}
+
+func (p *Provider) readStream(ctx context.Context, body io.ReadCloser, ch chan<- core.StreamChunk, predictionID, model string) {
+	defer close(ch)
+	defer func() { _ = body.Close() }()
+
+	scanner := bufio.NewScanner(body)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+
+	event := "message"
+	id := predictionID
+	var data strings.Builder
+	dispatch := func() bool {
+		if data.Len() == 0 && event == "message" {
+			return true
+		}
+		payload := data.String()
+		payload = strings.TrimSuffix(payload, "\n")
+		switch event {
+		case "output":
+			ch <- core.StreamChunk{
+				ID:    id,
+				Model: model,
+				Choices: []core.StreamChoice{{
+					Index: 0,
+					Delta: core.MessageDelta{Content: payload},
+				}},
+			}
+		case "error":
+			ch <- core.StreamChunk{Error: fmt.Errorf("replicate stream error: %s", payload)}
+			return false
+		case "done":
+			if payload != "" && payload != "{}" {
+				var done struct {
+					Reason string `json:"reason"`
+				}
+				if json.Unmarshal([]byte(payload), &done) == nil && done.Reason != "" {
+					ch <- core.StreamChunk{Error: fmt.Errorf("replicate prediction finished with reason %q", done.Reason)}
+					return false
+				}
+			}
+			ch <- core.StreamChunk{
+				ID:    id,
+				Model: model,
+				Choices: []core.StreamChoice{{
+					Index:        0,
+					FinishReason: "stop",
+				}},
+			}
+			return false
+		}
+		return true
+	}
+
+	for scanner.Scan() {
+		select {
+		case <-ctx.Done():
+			ch <- core.StreamChunk{Error: ctx.Err()}
+			return
+		default:
+		}
+
+		line := scanner.Text()
+		if line == "" {
+			if !dispatch() {
+				return
+			}
+			event = "message"
+			id = predictionID
+			data.Reset()
+			continue
+		}
+		if strings.HasPrefix(line, ":") {
+			continue
+		}
+		if value, ok := strings.CutPrefix(line, "event:"); ok {
+			event = strings.TrimSpace(value)
+			continue
+		}
+		if value, ok := strings.CutPrefix(line, "id:"); ok {
+			id = strings.TrimSpace(value)
+			continue
+		}
+		if value, ok := strings.CutPrefix(line, "data:"); ok {
+			data.WriteString(strings.TrimPrefix(value, " "))
+			data.WriteByte('\n')
+		}
+	}
+	if data.Len() > 0 {
+		_ = dispatch()
+	}
+	if err := scanner.Err(); err != nil {
+		ch <- core.StreamChunk{Error: fmt.Errorf("stream read error: %w", err)}
+	}
 }
 
 // submitAndPoll submits a prediction and polls until it completes.
