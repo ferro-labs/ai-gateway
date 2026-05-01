@@ -189,14 +189,7 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 
 	predReq := replicatePredictionRequest{Input: input}
 
-	modelPath := req.Model
-	for _, m := range p.textModels {
-		if ModelBaseName(m) == ModelBaseName(req.Model) {
-			modelPath = m
-			break
-		}
-	}
-
+	modelPath := p.resolveTextModel(req.Model)
 	var url string
 	if v := ModelVersion(modelPath); v != "" {
 		predReq.Version = v
@@ -422,7 +415,6 @@ func (p *Provider) readStream(ctx context.Context, body io.ReadCloser, ch chan<-
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 
 	event := "message"
-	id := predictionID
 	var data strings.Builder
 	dispatch := func() bool {
 		if data.Len() == 0 && event == "message" {
@@ -433,7 +425,7 @@ func (p *Provider) readStream(ctx context.Context, body io.ReadCloser, ch chan<-
 		switch event {
 		case "output":
 			ch <- core.StreamChunk{
-				ID:    id,
+				ID:    predictionID,
 				Model: model,
 				Choices: []core.StreamChoice{{
 					Index: 0,
@@ -454,7 +446,7 @@ func (p *Provider) readStream(ctx context.Context, body io.ReadCloser, ch chan<-
 				}
 			}
 			ch <- core.StreamChunk{
-				ID:    id,
+				ID:    predictionID,
 				Model: model,
 				Choices: []core.StreamChoice{{
 					Index:        0,
@@ -480,7 +472,6 @@ func (p *Provider) readStream(ctx context.Context, body io.ReadCloser, ch chan<-
 				return
 			}
 			event = "message"
-			id = predictionID
 			data.Reset()
 			continue
 		}
@@ -489,10 +480,6 @@ func (p *Provider) readStream(ctx context.Context, body io.ReadCloser, ch chan<-
 		}
 		if value, ok := strings.CutPrefix(line, "event:"); ok {
 			event = strings.TrimSpace(value)
-			continue
-		}
-		if value, ok := strings.CutPrefix(line, "id:"); ok {
-			id = strings.TrimSpace(value)
 			continue
 		}
 		if value, ok := strings.CutPrefix(line, "data:"); ok {

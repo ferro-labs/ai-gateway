@@ -302,6 +302,11 @@ func TestReplicateProvider_CompleteStream_MockSSE(t *testing.T) {
 	if len(chunks) != 3 {
 		t.Fatalf("got %d chunks, want 3: %+v", len(chunks), chunks)
 	}
+	for i, chunk := range chunks {
+		if chunk.ID != "pred-stream" {
+			t.Fatalf("chunk %d ID = %q, want pred-stream", i, chunk.ID)
+		}
+	}
 	if chunks[0].Choices[0].Delta.Content != "Hello" {
 		t.Fatalf("first chunk content = %q, want Hello", chunks[0].Choices[0].Delta.Content)
 	}
