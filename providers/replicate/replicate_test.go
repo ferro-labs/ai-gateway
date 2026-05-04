@@ -3,11 +3,12 @@ package replicate
 import (
 	"context"
 	"encoding/json"
-	"github.com/ferro-labs/ai-gateway/providers/core"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
 func TestNewReplicate(t *testing.T) {
@@ -226,6 +227,94 @@ func TestReplicateProvider_Complete_MockHTTP(t *testing.T) {
 	}
 	if resp.Choices[0].Message.Content != "Hello world" {
 		t.Errorf("content = %q, want 'Hello world'", resp.Choices[0].Message.Content)
+	}
+}
+
+func TestReplicateProvider_CompleteStream_Interface(_ *testing.T) {
+	p, _ := New("test-token", "", nil, nil)
+	var _ core.StreamProvider = p
+}
+
+func TestReplicateProvider_CompleteStream_MockSSE(t *testing.T) {
+	var gotPath string
+	var gotAuth string
+	var gotAccept string
+	var gotBody map[string]interface{}
+
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/models/test/model/predictions":
+			gotPath = r.URL.Path
+			gotAuth = r.Header.Get("Authorization")
+			if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+				t.Fatalf("decode prediction request: %v", err)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{
+				"id":"pred-stream",
+				"status":"starting",
+				"urls":{"stream":"` + srv.URL + `/stream"}
+			}`))
+		case "/stream":
+			gotAccept = r.Header.Get("Accept")
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("event: output\nid: 1\ndata: Hello\n\n" +
+				"event: output\nid: 2\ndata:  world\n\n" +
+				"event: done\ndata: {}\n\n"))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-token", srv.URL, []string{"test/model"}, nil)
+	ch, err := p.CompleteStream(context.Background(), core.Request{
+		Model:    "test/model",
+		Messages: []core.Message{{Role: "user", Content: "Hi"}},
+	})
+	if err != nil {
+		t.Fatalf("CompleteStream() error: %v", err)
+	}
+
+	var chunks []core.StreamChunk
+	for c := range ch {
+		if c.Error != nil {
+			t.Fatalf("stream chunk error: %v", c.Error)
+		}
+		chunks = append(chunks, c)
+	}
+
+	if gotPath != "/models/test/model/predictions" {
+		t.Fatalf("request path = %q, want /models/test/model/predictions", gotPath)
+	}
+	if gotAuth != "Token test-token" {
+		t.Fatalf("authorization = %q, want Token test-token", gotAuth)
+	}
+	if gotAccept != "text/event-stream" {
+		t.Fatalf("stream Accept = %q, want text/event-stream", gotAccept)
+	}
+	if gotBody["stream"] != true {
+		t.Fatalf("body[\"stream\"] = %v, want true", gotBody["stream"])
+	}
+	if len(chunks) != 3 {
+		t.Fatalf("got %d chunks, want 3: %+v", len(chunks), chunks)
+	}
+	for i, chunk := range chunks {
+		if chunk.ID != "pred-stream" {
+			t.Fatalf("chunk %d ID = %q, want pred-stream", i, chunk.ID)
+		}
+	}
+	if chunks[0].Choices[0].Delta.Content != "Hello" {
+		t.Fatalf("first chunk content = %q, want Hello", chunks[0].Choices[0].Delta.Content)
+	}
+	if chunks[1].Choices[0].Delta.Content != " world" {
+		t.Fatalf("second chunk content = %q, want ' world'", chunks[1].Choices[0].Delta.Content)
+	}
+	if chunks[2].Choices[0].FinishReason != "stop" {
+		t.Fatalf("final finish_reason = %q, want stop", chunks[2].Choices[0].FinishReason)
 	}
 }
 
