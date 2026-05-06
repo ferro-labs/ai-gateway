@@ -8,7 +8,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.11
 	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.50.4
 	github.com/go-chi/chi/v5 v5.2.5
-	github.com/lib/pq v1.11.2
+	github.com/lib/pq v1.12.3
 	github.com/openai/openai-go v1.12.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
