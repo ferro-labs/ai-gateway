@@ -80,19 +80,53 @@ chore: bump Go version to 1.24
 
 ## Running Tests
 
-```bash
-go test ./...              # all tests
-go test ./... -race        # with race detector
-go test -run TestProvider  # specific test
-go vet ./...               # vet
-```
+The gateway has three test suites with separate build tags and Make targets.
 
-Integration tests require real provider API keys:
+### Unit tests (no build tag)
 
 ```bash
-export OPENAI_API_KEY=sk-...
-go test -v -race -timeout 60s ./... -run Integration
+make test           # go test -v -short -race ./...
+make test-coverage  # with HTML coverage report
 ```
+
+### Integration tests (build tag: `integration`)
+
+Spin up an in-process gateway with stub providers — no real LLM calls. The
+`test/integration/` root package uses testcontainers-go for a real Postgres 16
+container; the `http/`, `plugins/`, and `strategies/` sub-packages run without
+Docker.
+
+```bash
+make test-integration   # go test -tags=integration -race -timeout 180s ./test/integration/...
+```
+
+### How to add an integration test
+
+1. Choose the right sub-package:
+   - `test/integration/http/` — HTTP routing, proxy pass-through, auth
+   - `test/integration/plugins/` — plugin chain behaviour (word-filter, cache, rate-limit, etc.)
+   - `test/integration/strategies/` — routing strategy behaviour (fallback, load-balance, least-latency, etc.)
+   - `test/integration/` (root) — admin store, config store, request log persistence (uses Postgres)
+
+2. Add the build-tag header at the top of every new file:
+
+   ```go
+   //go:build integration
+   // +build integration
+   ```
+
+3. Use the shared `stubProvider` in `test/integration/http/stub_provider_test.go` (or
+   `internal/testutil/stub_provider.go` if one is added later) to simulate provider
+   responses without real API calls.
+
+4. Run your new test to verify it compiles and passes:
+
+   ```bash
+   go test -tags=integration -race -run TestYourNewTest ./test/integration/...
+   ```
+
+5. Make sure `go test ./...` (no tag) still compiles cleanly — integration files
+   must not leak symbols into the unit-test build.
 
 ---
 

@@ -6,7 +6,7 @@ LDFLAGS  := -s -w \
             -X github.com/ferro-labs/ai-gateway/internal/version.Commit=$(COMMIT) \
             -X github.com/ferro-labs/ai-gateway/internal/version.Date=$(DATE)
 
-.PHONY: build run test test-coverage test-integration test-integration-containers bench fmt vet lint clean deps precommit all snapshot release-check release-dry-run
+.PHONY: build run test test-coverage test-integration test-integration-postgres test-integration-containers test-integration-live test-integration-all bench fmt vet lint clean deps precommit all snapshot release-check release-dry-run
 
 build:
 	@mkdir -p bin
@@ -27,10 +27,18 @@ test-coverage:
 	@go tool cover -func=coverage.out | grep total | awk '{print "Total coverage: " $$3}'
 
 test-integration:
-	go test -v -race -timeout 60s ./... -run Integration
+	go test -v -tags=integration -race -timeout 180s ./test/integration/...
 
-test-integration-containers:
-	go test -v -race -timeout 120s ./test/integration/...
+test-integration-postgres:
+	go test -v -tags=integration -race -timeout 120s ./test/integration/...
+
+# Backward-compatible alias for test-integration-postgres (deprecated — remove in v1.1.0).
+test-integration-containers: test-integration-postgres
+
+test-integration-live:
+	go test -v -tags=live -race -timeout 300s ./test/live/...
+
+test-integration-all: test-integration test-integration-live
 
 bench:
 	go test -v -bench=. -benchmem ./...

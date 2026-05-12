@@ -247,6 +247,24 @@ func (g *Gateway) MCPInitDone() <-chan struct{} {
 	return done
 }
 
+// runBeforePlugins runs before-request plugins and returns an early response
+// when a plugin (e.g. response-cache) sets Skip=true. It also propagates any
+// request mutations the plugins made. RunAfter is called before returning the
+// early response so logging/metrics plugins still fire.
+func (g *Gateway) runBeforePlugins(ctx context.Context, pctx *plugin.Context, req *providers.Request) (*providers.Response, error) {
+	if err := g.plugins.RunBefore(ctx, pctx); err != nil {
+		return nil, err
+	}
+	if pctx.Request != nil {
+		*req = *pctx.Request
+	}
+	if pctx.Skip && pctx.Response != nil {
+		_ = g.plugins.RunAfter(ctx, pctx)
+		return pctx.Response, nil
+	}
+	return nil, nil
+}
+
 // Route routes a request to the appropriate provider based on the configuration.
 func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.Response, error) {
 	ctx, task := trace.NewTask(ctx, "gateway.route")
@@ -270,16 +288,16 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	if g.plugins.HasPlugins() {
 		pctx = plugin.NewContext(&req)
 		defer plugin.PutContext(pctx)
+		var early *providers.Response
 		trace.WithRegion(ctx, "gateway.route.plugins.before", func() {
-			err = g.plugins.RunBefore(ctx, pctx)
+			early, err = g.runBeforePlugins(ctx, pctx, &req)
 		})
 		if err != nil {
 			metrics.ForRequest("", req.Model).Rejected.Inc()
 			return nil, err
 		}
-		// Propagate any request mutations made by before-request plugins.
-		if pctx.Request != nil {
-			req = *pctx.Request
+		if early != nil {
+			return early, nil
 		}
 	}
 

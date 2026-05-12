@@ -9,6 +9,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.8] — 2026-05-12
+
+Internal quality release completing the integration-test harness. No public API or behaviour changes.
+
+### Added
+
+- **`test/integration/http/`** — HTTP-layer integration tests (build tag: `integration`):
+  - `TestChatCompletion_*`: non-streaming and streaming chat completions through the in-process gateway with stub providers.
+  - `TestModels_*`: model listing, provider filtering, and empty-registry edge cases.
+  - `TestProxy_PassThrough`, `TestProxy_AuthHeadersInjected`, `TestProxy_NoProvider`: pass-through proxy tests against a live `httptest.Server` upstream.
+- **`test/integration/plugins/`** — Plugin-chain integration tests (build tag: `integration`):
+  - `TestPluginChain_WordFilter_BlockedWord` / `_CleanRequest`: word-filter blocks/passes requests at `before_request`.
+  - `TestPluginChain_ResponseCache_Hit`: cache short-circuits the provider on the second identical request (same plugin instance registered at both `before_request` and `after_request`).
+  - `TestPluginChain_OnError_Fires`: verifies `on_error` stage fires when the provider returns an error.
+- **`test/integration/strategies/`** — Strategy integration tests (build tag: `integration`):
+  - `TestStrategy_Fallback_PrimaryFails_SecondarySucceeds`, `_AllFail`: fallback routing behaviour.
+  - `TestStrategy_LoadBalance_DistributesRequests`: 40 requests, each provider must receive ≥20%.
+  - `TestStrategy_LeastLatency_LocksOntoFastestSeen`: seeds both providers, then asserts the faster one handles ≥80% of post-seed requests.
+
+### Fixed
+
+- **`gateway.go`**: `pctx.Skip = true` set by a `before_request` plugin (e.g. `response-cache`) was silently ignored — the gateway now short-circuits provider dispatch and returns the cached response directly. `after_request` plugins (logging, metrics) still fire.
+- **`internal/strategies/leastlatency.go`**: Cold-start bug where the strategy locked onto the first-ever provider and never explored others. Unseen providers are now sampled before falling back to the lowest-p50 selection.
+- **`.github/workflows/ci.yml`**: Integration job now runs `make test-integration` (which includes `-tags=integration`) instead of a bare `go test` that silently skipped all integration tests.
+
+### Changed
+
+- **`AGENTS.md`**: Updated Testing Conventions section to document unit and integration test suites with build tags, Make targets, and Postgres requirements.
+- **`CONTRIBUTING.md`**: Replaced outdated "Integration tests require real provider API keys" section with a step-by-step "How to add an integration test" guide.
+
+---
+
 ## [1.0.7] — 2026-05-11
 
 Internal architecture release completing the `cmd/ferrogw` refactor. No public API or behaviour changes.

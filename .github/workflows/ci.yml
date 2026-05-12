@@ -105,7 +105,7 @@ jobs:
         run: go mod download
 
       - name: Run integration tests
-        run: go test -v -race -timeout 120s ./test/integration/...
+        run: make test-integration
 
   lint:
     name: Lint
