@@ -54,22 +54,34 @@ func (l *LeastLatency) Execute(ctx context.Context, req providers.Request) (*pro
 		return nil, fmt.Errorf("no provider supports model %s", req.Model)
 	}
 
-	// Among providers with observed latency, pick the one with the lowest p50.
+	// Collect unseen providers so they get sampled before we commit to a best-known.
+	// This ensures all providers are profiled during cold-start, not just the first
+	// one that happened to be picked at random.
+	var unseen []*candidate
+	for i := range candidates {
+		if !candidates[i].hasSeen {
+			unseen = append(unseen, &candidates[i])
+		}
+	}
+	if len(unseen) > 0 {
+		// Round-robin through unseen providers to gather latency samples for each
+		// before settling on the best-known option.
+		pick := unseen[rand.Intn(len(unseen))] //nolint:gosec
+		p, _ := l.lookup(pick.target.VirtualKey)
+		resp, err := p.Complete(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+		return responseWithProvider(resp, pick.target.VirtualKey), nil
+	}
+
+	// All providers have been sampled — pick the one with the lowest p50.
 	var best *candidate
 	for i := range candidates {
 		c := &candidates[i]
-		if !c.hasSeen {
-			continue
-		}
 		if best == nil || c.p50 < best.p50 {
 			best = c
 		}
-	}
-
-	// No observations yet — fall back to random selection so cold-start traffic
-	// is distributed evenly and the tracker warms up across all providers.
-	if best == nil {
-		best = &candidates[rand.Intn(len(candidates))] //nolint:gosec
 	}
 
 	p, _ := l.lookup(best.target.VirtualKey)

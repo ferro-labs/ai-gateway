@@ -283,11 +283,41 @@ Minimal by design — no heavy logging framework, no ORM.
 
 ## Testing Conventions
 
-- Unit tests live alongside implementation as `*_test.go`
-- Integration tests require real provider API keys; run with `make test-integration`
-- Benchmarks with `make bench`
+The gateway has three test suites, each with its own build tag and Make target:
 
-### Additional checks for this branch
+### 1. Unit tests (default, no build tag)
+
+Live alongside implementation as `*_test.go`.
+
+```bash
+make test           # go test -v -short -race ./...
+make test-coverage  # with coverage HTML report
+```
+
+### 2. Integration tests (build tag: `integration`)
+
+Located in `test/integration/` and sub-packages (`http/`, `plugins/`, `strategies/`).
+Spin up an in-process gateway with stub providers — no real LLM calls.
+The `test/integration/` package itself uses testcontainers-go for a real Postgres 16
+container to test key store, config store, and request log persistence.
+
+```bash
+make test-integration          # go test -tags=integration -race ./test/integration/...
+make test-integration-postgres # alias for the above
+```
+
+Postgres requirement: testcontainers-go pulls `postgres:16-alpine` automatically.
+Without Docker available locally, the Postgres-dependent tests skip cleanly.
+The `test/integration/http/`, `plugins/`, and `strategies/` sub-packages do not
+require Postgres and always run.
+
+Build tag headers on every integration test file:
+```go
+//go:build integration
+// +build integration
+```
+
+### Additional checks
 
 - `go test ./internal/admin/...`
 - `go test ./internal/plugins/logger/...`
