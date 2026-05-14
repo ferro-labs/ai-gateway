@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.10] — 2026-05-16
+
+Security maintenance release addressing GitHub Dependabot alerts and adding CI coverage for reachable Go vulnerabilities.
+
+### Security
+
+- **gRPC-Go authorization bypass**: Overrode transitive `google.golang.org/grpc` resolution to `v1.79.3` to address `GHSA-p77j-4mvh-x3m3` / `CVE-2026-33186`.
+- **golang.org/x/crypto SSH vulnerabilities**: Upgraded `golang.org/x/crypto` from `v0.35.0` to `v0.51.0`, addressing `GHSA-f6x5-jh6r-wrfv` / `CVE-2025-47914` and `GHSA-j5w8-q4qc-rx2x` / `CVE-2025-58181`.
+- **Moby/Docker advisory cleanup**: Upgraded the `testcontainers-go` dependency chain and removed the vulnerable `github.com/docker/docker` module from the final Go module graph, addressing `GHSA-x744-4wpc-v9h2` / `CVE-2026-34040`, `GHSA-pxq6-2prw-chj9` / `CVE-2026-33997`, and `GHSA-4vq8-7jfc-9cvp` / `CVE-2025-54410`.
+- **containerd advisory cleanup**: Upgraded the `testcontainers-go` dependency chain and removed the vulnerable `github.com/containerd/containerd` module from the final Go module graph, addressing `GHSA-pwhc-rpq9-4c8w` / `CVE-2024-25621`, `GHSA-265r-hfxg-fhmg` / `CVE-2024-40635`, and `GHSA-m6hq-p25p-ffr2` / `CVE-2025-64329`.
+- **Go standard library scan coverage**: Added CI `govulncheck` scanning and configured CI/CodeQL workflows to use the latest Go 1.25 patch release, covering reachable standard-library findings such as `GO-2026-4982`, `GO-2026-4980`, `GO-2026-4976`, `GO-2026-4971`, and `GO-2026-4918`.
+- **Repository security settings**: Enabled Dependabot security updates, secret scanning, and secret scanning push protection for the GitHub repository.
+
+### Changed
+
+- Upgraded `github.com/testcontainers/testcontainers-go/modules/postgres` from `v0.34.0` to `v0.42.0`.
+- Upgraded `golang.org/x/oauth2` from `v0.30.0` to `v0.34.0` as part of the dependency refresh.
+- Added a dedicated `Vulnerability Scan` job to CI using `govulncheck`.
+
+---
+
 ## [1.0.9] — 2026-05-14
 
 Maintenance release updating the project baseline from Go 1.24 to Go 1.25. No public API or behaviour changes.
