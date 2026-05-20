@@ -23,6 +23,7 @@ import (
 	ollamapkg "github.com/ferro-labs/ai-gateway/providers/ollama"
 	ollamacloudpkg "github.com/ferro-labs/ai-gateway/providers/ollama_cloud"
 	openaipkg "github.com/ferro-labs/ai-gateway/providers/openai"
+	nanogptpkg "github.com/ferro-labs/ai-gateway/providers/nanogpt"
 	openrouterpkg "github.com/ferro-labs/ai-gateway/providers/openrouter"
 	perplexitypkg "github.com/ferro-labs/ai-gateway/providers/perplexity"
 	qwenpkg "github.com/ferro-labs/ai-gateway/providers/qwen"
@@ -31,6 +32,7 @@ import (
 	togetherpkg "github.com/ferro-labs/ai-gateway/providers/together"
 	vertexaipkg "github.com/ferro-labs/ai-gateway/providers/vertex_ai"
 	xaipkg "github.com/ferro-labs/ai-gateway/providers/xai"
+	zaipkg "github.com/ferro-labs/ai-gateway/providers/zai"
 )
 
 // Canonical provider name constants.
@@ -138,6 +140,12 @@ const (
 
 	// NameOpenRouter is the canonical name for the OpenRouter provider.
 	NameOpenRouter = openrouterpkg.Name
+
+	// NameNanoGPT is the canonical name for the NanoGPT provider.
+	NameNanoGPT = nanogptpkg.Name
+
+	// NameZAI is the canonical name for the Z.ai (Zhipu AI) provider.
+	NameZAI = zaipkg.Name
 )
 
 // AllProviderNames returns every registered canonical provider name in a
@@ -175,5 +183,7 @@ func AllProviderNames() []string {
 		NameTogether,
 		NameVertexAI,
 		NameXAI,
+		NameNanoGPT,
+		NameZAI,
 	}
 }

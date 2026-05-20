@@ -26,6 +26,7 @@ import (
 	ollamapkg "github.com/ferro-labs/ai-gateway/providers/ollama"
 	ollamacloudpkg "github.com/ferro-labs/ai-gateway/providers/ollama_cloud"
 	openaipkg "github.com/ferro-labs/ai-gateway/providers/openai"
+	nanogptpkg "github.com/ferro-labs/ai-gateway/providers/nanogpt"
 	openrouterpkg "github.com/ferro-labs/ai-gateway/providers/openrouter"
 	perplexitypkg "github.com/ferro-labs/ai-gateway/providers/perplexity"
 	qwenpkg "github.com/ferro-labs/ai-gateway/providers/qwen"
@@ -34,6 +35,7 @@ import (
 	togetherpkg "github.com/ferro-labs/ai-gateway/providers/together"
 	vertexaipkg "github.com/ferro-labs/ai-gateway/providers/vertex_ai"
 	xaipkg "github.com/ferro-labs/ai-gateway/providers/xai"
+	zaipkg "github.com/ferro-labs/ai-gateway/providers/zai"
 )
 
 // allProviders is the canonical ordered registry of all built-in providers.
@@ -435,6 +437,28 @@ var allProviders = []ProviderEntry{
 		},
 		Build: func(cfg ProviderConfig) (Provider, error) {
 			return xaipkg.New(cfg[CfgKeyAPIKey], cfg[CfgKeyBaseURL])
+		},
+	},
+	{
+		ID:           NameNanoGPT,
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityDiscovery, CapabilityProxy},
+		EnvMappings: []EnvMapping{
+			{CfgKeyAPIKey, "NANOGPT_API_KEY", true},
+			{CfgKeyBaseURL, "NANOGPT_BASE_URL", false},
+		},
+		Build: func(cfg ProviderConfig) (Provider, error) {
+			return nanogptpkg.New(cfg[CfgKeyAPIKey], cfg[CfgKeyBaseURL])
+		},
+	},
+	{
+		ID:           NameZAI,
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityDiscovery, CapabilityProxy},
+		EnvMappings: []EnvMapping{
+			{CfgKeyAPIKey, "ZAI_API_KEY", true},
+			{CfgKeyBaseURL, "ZAI_BASE_URL", false},
+		},
+		Build: func(cfg ProviderConfig) (Provider, error) {
+			return zaipkg.New(cfg[CfgKeyAPIKey], cfg[CfgKeyBaseURL])
 		},
 	},
 }
