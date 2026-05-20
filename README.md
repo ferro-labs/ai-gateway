@@ -8,7 +8,7 @@
   <img src="docs/logo.png" alt="Ferro Labs AI Gateway" height="60" align="absmiddle" /> Ferro Labs AI Gateway
 </h1>
 
-**High-performance AI gateway in Go. Route LLM requests across 30 providers via a single OpenAI-compatible API.**
+**High-performance AI gateway in Go. Route LLM requests across 32 providers via a single OpenAI-compatible API.**
 
 **Deploy templates**
 
@@ -27,7 +27,7 @@
 [![Artifact Hub](https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/ferro-labs)](https://artifacthub.io/packages/search?org=ferro-labs)
 [![Discord](https://img.shields.io/badge/Discord-Join%20Us-5865F2?logo=discord&logoColor=white)](https://discord.gg/yCAeYvJeDV)
 
-🔀 **30 providers, 2,500+ models — one API**<br/>
+🔀 **32 providers, 2,500+ models — one API**<br/>
 ⚡ **13,925 RPS at 1,000 concurrent users**<br/>
 📦 **Single binary, zero dependencies, 32 MB base memory**
 
@@ -203,7 +203,7 @@ Full methodology, raw results, and flamegraph analysis:
 - Provider failover with configurable retry policies and status code filters
 - Per-request model aliases (`fast → gpt-4o-mini`, `smart → claude-3-5-sonnet`)
 
-### 🔌 Providers (30)
+### 🔌 Providers (32)
 
 | OpenAI & Compatible | Anthropic & Google | Cloud & Enterprise | Open Source & Inference |
 |:---|:---|:---|:---|
@@ -218,6 +218,7 @@ Full methodology, raw results, and flamegraph analysis:
 | Cohere | | | Novita AI |
 | AI21 | | | Cerebras |
 | Moonshot / Kimi | | | Qwen / DashScope |
+| NanoGPT | | | Z.ai (Zhipu AI) |
 
 ### 🛡️ Guardrails & Plugins
 

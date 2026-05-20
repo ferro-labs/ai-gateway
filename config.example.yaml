@@ -85,6 +85,8 @@ targets:
   - virtual_key: openrouter
   - virtual_key: qwen
   - virtual_key: sambanova
+  - virtual_key: nanogpt
+  - virtual_key: zai
 
 # Model aliases: map friendly names to actual model IDs.
 # Aliases are resolved before routing and plugin execution.

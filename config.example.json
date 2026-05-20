@@ -131,6 +131,12 @@
     },
     {
       "virtual_key": "sambanova"
+    },
+    {
+      "virtual_key": "nanogpt"
+    },
+    {
+      "virtual_key": "zai"
     }
   ],
   "aliases": {
