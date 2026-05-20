@@ -67,13 +67,12 @@ func (p *Provider) AuthHeaders() map[string]string {
 func (p *Provider) SupportedModels() []string {
 	return []string{
 		"glm-5.1",
-		"glm-5-plus",
-		"glm-4-plus",
-		"glm-4-flash",
-		"glm-4-air",
-		"glm-4-airx",
-		"glm-4-long",
-		"glm-zero-preview",
+		"glm-5-turbo",
+		"glm-5",
+		"glm-4.7",
+		"glm-4.6",
+		"glm-4.5",
+		"glm-4.5-air",
 	}
 }
 
