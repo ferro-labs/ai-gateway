@@ -66,24 +66,35 @@ func (p *Provider) AuthHeaders() map[string]string {
 // SupportedModels returns a static list of known NanoGPT models.
 func (p *Provider) SupportedModels() []string {
 	return []string{
+		// Anthropic
 		"anthropic/claude-opus-4.7",
 		"anthropic/claude-opus-latest",
 		"anthropic/claude-sonnet-latest",
 		"anthropic/claude-haiku-latest",
+		"anthropic/claude-opus-4.6",
+		"anthropic/claude-sonnet-4.6",
+		// OpenAI
 		"openai/gpt-5.5",
 		"openai/gpt-chat-latest",
 		"openai/gpt-latest",
+		// xAI
+		"x-ai/grok-4.20",
 		"x-ai/grok-4.3",
 		"x-ai/grok-latest",
+		// DeepSeek
 		"deepseek/deepseek-v4-pro",
 		"deepseek/deepseek-v4-flash",
 		"deepseek/deepseek-latest",
+		// Moonshot
 		"moonshotai/kimi-k2.6",
 		"moonshotai/kimi-latest",
+		// Google
 		"google/gemini-flash-latest",
 		"google/gemini-pro-latest",
+		"google/gemini-3.5-flash",
+		"google/gemini-3-flash-preview",
+		// Mistral
 		"mistral/mistral-medium-3.5",
-		"ibm-granite/granite-4.1-8b",
 	}
 }
 

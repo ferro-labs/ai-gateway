@@ -112287,50 +112287,6 @@
     "updated_at": "2026-05-20",
     "tier": "standard"
   },
-  "nanogpt/ibm-granite/granite-4.1-8b": {
-    "provider": "nanogpt",
-    "model_id": "ibm-granite/granite-4.1-8b",
-    "display_name": "ibm-granite/granite-4.1-8b",
-    "mode": "chat",
-    "context_window": 128000,
-    "max_output_tokens": 4096,
-    "pricing": {
-      "input_per_m_tokens": 0.0,
-      "output_per_m_tokens": 0.0,
-      "cache_read_per_m_tokens": null,
-      "cache_write_per_m_tokens": null,
-      "reasoning_per_m_tokens": null,
-      "image_per_tile": null,
-      "audio_input_per_minute": null,
-      "audio_output_per_character": null,
-      "embedding_per_m_tokens": null,
-      "finetune_train_per_m_tokens": null,
-      "finetune_input_per_m_tokens": null,
-      "finetune_output_per_m_tokens": null
-    },
-    "capabilities": {
-      "vision": false,
-      "audio_input": false,
-      "audio_output": false,
-      "function_calling": true,
-      "parallel_tool_calls": false,
-      "json_mode": true,
-      "response_schema": false,
-      "prompt_caching": false,
-      "reasoning": false,
-      "streaming": true,
-      "finetuneable": false
-    },
-    "lifecycle": {
-      "status": "ga",
-      "deprecation_date": null,
-      "sunset_date": null,
-      "successor": null
-    },
-    "source": "https://nano-gpt.com",
-    "updated_at": "2026-05-20",
-    "tier": "standard"
-  },
   "zai/glm-5.1": {
     "provider": "zai",
     "model_id": "glm-5.1",
@@ -112680,6 +112636,226 @@
       "successor": null
     },
     "source": "https://api.z.ai",
+    "updated_at": "2026-05-20",
+    "tier": "standard"
+  },
+  "nanogpt/anthropic/claude-opus-4.6": {
+    "provider": "nanogpt",
+    "model_id": "anthropic/claude-opus-4.6",
+    "display_name": "anthropic/claude-opus-4.6",
+    "mode": "chat",
+    "context_window": 200000,
+    "max_output_tokens": 32000,
+    "pricing": {
+      "input_per_m_tokens": 15.0,
+      "output_per_m_tokens": 75.0,
+      "cache_read_per_m_tokens": null,
+      "cache_write_per_m_tokens": null,
+      "reasoning_per_m_tokens": null,
+      "image_per_tile": null,
+      "audio_input_per_minute": null,
+      "audio_output_per_character": null,
+      "embedding_per_m_tokens": null,
+      "finetune_train_per_m_tokens": null,
+      "finetune_input_per_m_tokens": null,
+      "finetune_output_per_m_tokens": null
+    },
+    "capabilities": {
+      "vision": true,
+      "audio_input": false,
+      "audio_output": false,
+      "function_calling": true,
+      "parallel_tool_calls": false,
+      "json_mode": true,
+      "response_schema": false,
+      "prompt_caching": false,
+      "reasoning": false,
+      "streaming": true,
+      "finetuneable": false
+    },
+    "lifecycle": {
+      "status": "ga",
+      "deprecation_date": null,
+      "sunset_date": null,
+      "successor": null
+    },
+    "source": "https://nano-gpt.com",
+    "updated_at": "2026-05-20",
+    "tier": "standard"
+  },
+  "nanogpt/anthropic/claude-sonnet-4.6": {
+    "provider": "nanogpt",
+    "model_id": "anthropic/claude-sonnet-4.6",
+    "display_name": "anthropic/claude-sonnet-4.6",
+    "mode": "chat",
+    "context_window": 200000,
+    "max_output_tokens": 64000,
+    "pricing": {
+      "input_per_m_tokens": 3.0,
+      "output_per_m_tokens": 15.0,
+      "cache_read_per_m_tokens": null,
+      "cache_write_per_m_tokens": null,
+      "reasoning_per_m_tokens": null,
+      "image_per_tile": null,
+      "audio_input_per_minute": null,
+      "audio_output_per_character": null,
+      "embedding_per_m_tokens": null,
+      "finetune_train_per_m_tokens": null,
+      "finetune_input_per_m_tokens": null,
+      "finetune_output_per_m_tokens": null
+    },
+    "capabilities": {
+      "vision": true,
+      "audio_input": false,
+      "audio_output": false,
+      "function_calling": true,
+      "parallel_tool_calls": false,
+      "json_mode": true,
+      "response_schema": false,
+      "prompt_caching": false,
+      "reasoning": false,
+      "streaming": true,
+      "finetuneable": false
+    },
+    "lifecycle": {
+      "status": "ga",
+      "deprecation_date": null,
+      "sunset_date": null,
+      "successor": null
+    },
+    "source": "https://nano-gpt.com",
+    "updated_at": "2026-05-20",
+    "tier": "standard"
+  },
+  "nanogpt/x-ai/grok-4.20": {
+    "provider": "nanogpt",
+    "model_id": "x-ai/grok-4.20",
+    "display_name": "x-ai/grok-4.20",
+    "mode": "chat",
+    "context_window": 2000000,
+    "max_output_tokens": 32000,
+    "pricing": {
+      "input_per_m_tokens": 2.0,
+      "output_per_m_tokens": 6.0,
+      "cache_read_per_m_tokens": null,
+      "cache_write_per_m_tokens": null,
+      "reasoning_per_m_tokens": null,
+      "image_per_tile": null,
+      "audio_input_per_minute": null,
+      "audio_output_per_character": null,
+      "embedding_per_m_tokens": null,
+      "finetune_train_per_m_tokens": null,
+      "finetune_input_per_m_tokens": null,
+      "finetune_output_per_m_tokens": null
+    },
+    "capabilities": {
+      "vision": true,
+      "audio_input": false,
+      "audio_output": false,
+      "function_calling": true,
+      "parallel_tool_calls": false,
+      "json_mode": true,
+      "response_schema": false,
+      "prompt_caching": false,
+      "reasoning": false,
+      "streaming": true,
+      "finetuneable": false
+    },
+    "lifecycle": {
+      "status": "ga",
+      "deprecation_date": null,
+      "sunset_date": null,
+      "successor": null
+    },
+    "source": "https://nano-gpt.com",
+    "updated_at": "2026-05-20",
+    "tier": "standard"
+  },
+  "nanogpt/google/gemini-3.5-flash": {
+    "provider": "nanogpt",
+    "model_id": "google/gemini-3.5-flash",
+    "display_name": "google/gemini-3.5-flash",
+    "mode": "chat",
+    "context_window": 1000000,
+    "max_output_tokens": 8192,
+    "pricing": {
+      "input_per_m_tokens": 1.5,
+      "output_per_m_tokens": 9.0,
+      "cache_read_per_m_tokens": null,
+      "cache_write_per_m_tokens": null,
+      "reasoning_per_m_tokens": null,
+      "image_per_tile": null,
+      "audio_input_per_minute": null,
+      "audio_output_per_character": null,
+      "embedding_per_m_tokens": null,
+      "finetune_train_per_m_tokens": null,
+      "finetune_input_per_m_tokens": null,
+      "finetune_output_per_m_tokens": null
+    },
+    "capabilities": {
+      "vision": false,
+      "audio_input": false,
+      "audio_output": false,
+      "function_calling": true,
+      "parallel_tool_calls": false,
+      "json_mode": true,
+      "response_schema": false,
+      "prompt_caching": false,
+      "reasoning": false,
+      "streaming": true,
+      "finetuneable": false
+    },
+    "lifecycle": {
+      "status": "ga",
+      "deprecation_date": null,
+      "sunset_date": null,
+      "successor": null
+    },
+    "source": "https://nano-gpt.com",
+    "updated_at": "2026-05-20",
+    "tier": "standard"
+  },
+  "nanogpt/google/gemini-3-flash-preview": {
+    "provider": "nanogpt",
+    "model_id": "google/gemini-3-flash-preview",
+    "display_name": "google/gemini-3-flash-preview",
+    "mode": "chat",
+    "context_window": 1000000,
+    "max_output_tokens": 8192,
+    "pricing": {
+      "input_per_m_tokens": 0.5,
+      "output_per_m_tokens": 3.0,
+      "cache_read_per_m_tokens": null,
+      "cache_write_per_m_tokens": null,
+      "reasoning_per_m_tokens": null,
+      "image_per_tile": null,
+      "audio_input_per_minute": null,
+      "audio_output_per_character": null,
+      "embedding_per_m_tokens": null,
+      "finetune_train_per_m_tokens": null,
+      "finetune_input_per_m_tokens": null,
+      "finetune_output_per_m_tokens": null
+    },
+    "capabilities": {
+      "vision": false,
+      "audio_input": false,
+      "audio_output": false,
+      "function_calling": true,
+      "parallel_tool_calls": false,
+      "json_mode": true,
+      "response_schema": false,
+      "prompt_caching": false,
+      "reasoning": false,
+      "streaming": true,
+      "finetuneable": false
+    },
+    "lifecycle": {
+      "status": "ga",
+      "deprecation_date": null,
+      "sunset_date": null,
+      "successor": null
+    },
+    "source": "https://nano-gpt.com",
     "updated_at": "2026-05-20",
     "tier": "standard"
   }
