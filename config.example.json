@@ -302,6 +302,20 @@
       "url": "https://mcp-search.example.com/mcp",
       "allowed_tools": ["web_search", "web_read"],
       "timeout_seconds": 20
+    },
+    {
+      "name": "brave-search",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-brave-search"],
+      "env": { "BRAVE_API_KEY": "${BRAVE_API_KEY}" },
+      "max_call_depth": 3
+    },
+    {
+      "name": "sqlite-db",
+      "command": "/path/to/venv/bin/python",
+      "args": ["-m", "mcp_server_sqlite", "--db-path", "/var/data/app.db"],
+      "allowed_tools": ["query", "list_tables"],
+      "max_call_depth": 5
     }
   ],
   "observability": {

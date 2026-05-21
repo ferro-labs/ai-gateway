@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"runtime/trace"
 	"sync"
@@ -25,7 +26,7 @@ type Registry struct {
 // serverEntry holds the live state for one registered MCP server.
 type serverEntry struct {
 	config       ServerConfig
-	client       *Client
+	client       mcpClient
 	tools        []Tool
 	ready        bool  // true once Initialize + ListTools have succeeded
 	initializing bool  // true while initServer goroutine is running for this entry
@@ -41,21 +42,29 @@ func NewRegistry() *Registry {
 	}
 }
 
-// RegisterConfig stores an MCP server configuration and creates its client
-// without making any network calls. Call InitializeAll in a background
+// RegisterConfig stores an MCP server configuration and creates its transport
+// client without performing any I/O. Call InitializeAll in a background
 // goroutine after gateway.New() returns so the first LLM request is never
 // blocked by MCP cold-start latency.
 //
-// Re-registering a server with the same Name preserves its original
-// registration order (and therefore its tool-conflict priority). Stale
-// tool→server mappings owned by the old entry are removed immediately so
-// FindToolServer never routes to stale state.
+// Transport selection: when cfg.Command is non-empty a stdio client is created
+// (the subprocess is started immediately); otherwise an HTTP client is created.
+//
+// Re-registering a server with the same Name closes the old client, preserves
+// the original registration order (and therefore its tool-conflict priority),
+// and removes stale tool→server mappings so FindToolServer never routes to
+// stale state.
 func (r *Registry) RegisterConfig(cfg ServerConfig) {
-	timeout := time.Duration(cfg.TimeoutSeconds) * time.Second
-	if timeout <= 0 {
-		timeout = 30 * time.Second
+	var client mcpClient
+	if cfg.Command != "" {
+		client = newStdioClient(cfg.Command, cfg.Args, cfg.Env)
+	} else {
+		timeout := time.Duration(cfg.TimeoutSeconds) * time.Second
+		if timeout <= 0 {
+			timeout = 30 * time.Second
+		}
+		client = NewClient(cfg.URL, cfg.Headers, timeout)
 	}
-	client := NewClient(cfg.URL, cfg.Headers, timeout)
 
 	r.mu.Lock()
 	if old, ok := r.servers[cfg.Name]; ok {
@@ -64,6 +73,10 @@ func (r *Registry) RegisterConfig(cfg ServerConfig) {
 			if r.toolMap[t.Name] == cfg.Name {
 				delete(r.toolMap, t.Name)
 			}
+		}
+		// Close the old client (no-op for HTTP; terminates subprocess for stdio).
+		if old.client != nil {
+			_ = old.client.Close()
 		}
 		// Registration order and serverIndex are preserved on re-registration.
 	} else {
@@ -207,9 +220,9 @@ func (r *Registry) initServer(ctx context.Context, name string) error {
 	return nil
 }
 
-// FindToolServer returns the Client responsible for the named tool.
+// FindToolServer returns the transport client responsible for the named tool.
 // Returns (nil, false) when no ready server exposes the tool.
-func (r *Registry) FindToolServer(toolName string) (*Client, bool) {
+func (r *Registry) FindToolServer(toolName string) (mcpClient, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -222,6 +235,28 @@ func (r *Registry) FindToolServer(toolName string) (*Client, bool) {
 		return nil, false
 	}
 	return entry.client, true
+}
+
+// Close shuts down all registered MCP server clients. For stdio servers this
+// terminates the subprocess; for HTTP servers it is a no-op. Errors from
+// individual clients are joined and returned together.
+func (r *Registry) Close() error {
+	r.mu.Lock()
+	clients := make([]mcpClient, 0, len(r.servers))
+	for _, entry := range r.servers {
+		if entry.client != nil {
+			clients = append(clients, entry.client)
+		}
+	}
+	r.mu.Unlock()
+
+	var errs []error
+	for _, c := range clients {
+		if err := c.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // AllTools returns the combined list of tools from all ready servers.

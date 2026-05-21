@@ -239,3 +239,8 @@ func (c *Client) setSessionID(sid string) {
 	c.sessionID = sid
 	c.sessionMu.Unlock()
 }
+
+// Close is a no-op for the HTTP transport: the underlying http.Client has no
+// persistent connection state that requires explicit cleanup.
+// It exists so that *Client satisfies the mcpClient interface.
+func (c *Client) Close() error { return nil }

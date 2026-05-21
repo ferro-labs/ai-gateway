@@ -11,15 +11,35 @@ import "context"
 
 // ServerConfig defines how the gateway connects to one external MCP server.
 // It lives in gateway.Config.MCPServers and is consumed by the internal Registry.
+//
+// Transport selection: when Command is non-empty the gateway uses stdio transport
+// (the server is launched as a subprocess). Otherwise Streamable HTTP transport
+// is used and URL must be provided.
 type ServerConfig struct {
 	// Name is a unique human-readable identifier for this MCP server.
 	Name string `json:"name" yaml:"name"`
+
+	// ── HTTP transport (URL must be set when Command is empty) ───────────────
 	// URL is the Streamable HTTP endpoint (e.g. "https://mcp.example.com/mcp").
-	URL string `json:"url" yaml:"url"`
+	URL string `json:"url,omitempty" yaml:"url,omitempty"`
 	// Headers are additional HTTP headers sent with every MCP request
 	// (e.g. authorization tokens). Values may reference environment variables
 	// via shell-style ${VAR} substitution performed by the caller.
 	Headers map[string]string `json:"headers,omitempty" yaml:"headers,omitempty"`
+
+	// ── Stdio transport (Command must be set; URL/Headers are ignored) ───────
+	// Command is the executable to launch as an MCP stdio server.
+	// The process is started at gateway-init time and kept alive for the
+	// lifetime of the gateway.
+	Command string `json:"command,omitempty" yaml:"command,omitempty"`
+	// Args are the command-line arguments passed to Command.
+	Args []string `json:"args,omitempty" yaml:"args,omitempty"`
+	// Env are additional environment variables injected into the subprocess.
+	// They are merged with the current process environment; keys listed here
+	// take precedence over any identically-named inherited variables.
+	Env map[string]string `json:"env,omitempty" yaml:"env,omitempty"`
+
+	// ── Common options ────────────────────────────────────────────────────────
 	// AllowedTools restricts which tools from this server are exposed to the LLM.
 	// An empty slice means all discovered tools are allowed.
 	AllowedTools []string `json:"allowed_tools,omitempty" yaml:"allowed_tools,omitempty"`
@@ -29,7 +49,7 @@ type ServerConfig struct {
 	// Defaults to 5 when all servers leave MaxCallDepth unset or zero.
 	MaxCallDepth int `json:"max_call_depth,omitempty" yaml:"max_call_depth,omitempty"`
 	// TimeoutSeconds is the per-request timeout for calls to this server.
-	// Defaults to 30 when unset or zero.
+	// Applies to HTTP transport only. Defaults to 30 when unset or zero.
 	TimeoutSeconds int `json:"timeout_seconds,omitempty" yaml:"timeout_seconds,omitempty"`
 }
 
