@@ -201,8 +201,13 @@ plugins:
 # MCP (Model Context Protocol) agentic tool servers.
 # When configured, the gateway injects these tools into every chat completion
 # request and runs an agentic loop when the LLM returns tool_calls.
-# Requires MCP 2025-11-25 Streamable HTTP servers.
+#
+# Two transports are supported:
+#   • Streamable HTTP (MCP 2025-11-25) — set url; command must be omitted.
+#   • stdio                            — set command; url must be omitted.
 mcp_servers:
+  # ── HTTP transport examples ──────────────────────────────────────────────────
+
   # Local filesystem tool server (no auth required).
   - name: filesystem
     url: "http://localhost:3001/mcp"
@@ -228,6 +233,33 @@ mcp_servers:
       - web_search
       - web_read
     timeout_seconds: 20
+
+  # ── stdio transport examples ─────────────────────────────────────────────────
+  # The gateway launches the subprocess and communicates via stdin/stdout.
+  # The process runs for the lifetime of the gateway.
+
+  # npx-based MCP server (no pre-installation required).
+  - name: brave-search
+    command: npx
+    args:
+      - -y
+      - "@modelcontextprotocol/server-brave-search"
+    env:
+      BRAVE_API_KEY: "${BRAVE_API_KEY}"
+    max_call_depth: 3
+
+  # Python-based MCP server installed in a virtualenv.
+  - name: sqlite-db
+    command: /path/to/venv/bin/python
+    args:
+      - -m
+      - mcp_server_sqlite
+      - --db-path
+      - /var/data/app.db
+    allowed_tools:
+      - query
+      - list_tables
+    max_call_depth: 5
 
 # Compatibility controls how the gateway treats OpenAI request parameters that a
 # routed provider cannot express (see GET /v1/capabilities for the matrix).

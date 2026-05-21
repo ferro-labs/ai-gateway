@@ -253,7 +253,7 @@ Full methodology, raw results, and flamegraph analysis:
 ### 🤖 MCP (Model Context Protocol)
 
 - Agentic tool-call loop — the gateway drives `tool_calls` automatically
-- Streamable HTTP transport (MCP 2025-11-25 spec)
+- **Streamable HTTP transport** (MCP 2025-11-25 spec) and **stdio transport** (subprocess)
 - Tool filtering with `allowed_tools` and bounded `max_call_depth`
 - Multiple MCP servers with cross-server tool deduplication
 
@@ -369,7 +369,7 @@ plugins:
       backend: sqlite
       dsn: ferrogw-requests.db
 
-# MCP tool servers (optional)
+# MCP tool servers — HTTP transport
 mcp_servers:
   - name: my-tools
     url: https://mcp.example.com/mcp
@@ -378,6 +378,13 @@ mcp_servers:
     allowed_tools: [search, get_weather]
     max_call_depth: 5
     timeout_seconds: 30
+
+  # stdio transport — gateway spawns the subprocess
+  - name: brave-search
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-brave-search"]
+    env:
+      BRAVE_API_KEY: ${BRAVE_API_KEY}
 ```
 
 `${VAR}` references in MCP headers, plugin config, and observability exporter config are substituted **when that component is constructed**, not when the config file is read. The config itself keeps the `${VAR}` reference for its whole life, so a secret is never written to the config-history store, never returned by `GET /admin/config`, and never restored into the database on a rollback — while the plugin, exporter, or MCP client still receives the real value.

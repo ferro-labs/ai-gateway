@@ -502,6 +502,9 @@ func (g *Gateway) FindStreamingByModel(model string) (providers.StreamProvider, 
 // times out — Close must never block indefinitely (a panicking hook could
 // otherwise wedge shutdown).
 //
+// For stdio MCP servers this terminates their subprocesses; HTTP MCP servers
+// require no explicit teardown.
+//
 // Safe to call multiple times; subsequent calls are no-ops.
 func (g *Gateway) Close() error {
 	g.closeOnce.Do(func() {
@@ -524,5 +527,8 @@ func (g *Gateway) Close() error {
 		case <-time.After(5 * time.Second):
 		}
 	})
+	if g.mcpRegistry != nil {
+		_ = g.mcpRegistry.Close()
+	}
 	return nil
 }
