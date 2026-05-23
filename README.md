@@ -26,6 +26,7 @@
 [![Ask DeepWiki](https://deepwiki.com/badge.svg?url=https%3A%2F%2Fdeepwiki.com%2Fferro-labs%2Fai-gateway)](https://deepwiki.com/ferro-labs/ai-gateway)
 [![Artifact Hub](https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/ferro-labs)](https://artifacthub.io/packages/search?org=ferro-labs)
 [![Discord](https://img.shields.io/badge/Discord-Join%20Us-5865F2?logo=discord&logoColor=white)](https://discord.gg/yCAeYvJeDV)
+[![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://codspeed.io/ferro-labs/ai-gateway?utm_source=badge)
 
 🔀 **30 providers, 2,500+ models — one API**<br/>
 ⚡ **13,925 RPS at 1,000 concurrent users**<br/>
@@ -711,6 +712,7 @@ We welcome contributions. New providers go in this OSS repo only — never in Fe
 
 - [GitHub Discussions](https://github.com/ferro-labs/ai-gateway/discussions)
 - [Discord](https://discord.gg/yCAeYvJeDV)
+[![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://codspeed.io/ferro-labs/ai-gateway?utm_source=badge)
 - Built with Ferro Labs AI Gateway? Open a PR to add to our showcase.
 
 ---
