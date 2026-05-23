@@ -14,6 +14,7 @@ import (
 	aigateway "github.com/ferro-labs/ai-gateway"
 	"github.com/ferro-labs/ai-gateway/internal/httpserver"
 	"github.com/ferro-labs/ai-gateway/internal/logging"
+	gwotel "github.com/ferro-labs/ai-gateway/internal/otel"
 	"github.com/ferro-labs/ai-gateway/internal/ratelimit"
 	"github.com/ferro-labs/ai-gateway/internal/version"
 	"github.com/ferro-labs/ai-gateway/providers"
@@ -38,6 +39,21 @@ func Serve() {
 	}
 
 	gw := BuildGateway(cfg, registry)
+
+	// Initialise OpenTelemetry. Init returns a NoOp provider (and a
+	// no-op shutdown) when neither an OTLP endpoint nor any enabled
+	// exporter is configured, so this is free for users who don't opt in.
+	var obsCfg aigateway.ObservabilityConfig
+	if cfg != nil {
+		obsCfg = cfg.Observability
+	}
+	obsProvider, otelShutdown, err := gwotel.Init(context.Background(), otelConfigFromGateway(obsCfg))
+	if err != nil {
+		logging.Logger.Error("failed to initialize observability", "error", err)
+		os.Exit(1)
+	}
+	gw.SetObservability(obsProvider)
+
 	cfgManager, configStoreBackend, err := CreateConfigManagerFromEnv(gw)
 	if err != nil {
 		logging.Logger.Error("failed to initialize config store", "error", err)
@@ -116,6 +132,15 @@ func Serve() {
 		httpserver.NamedResource{Name: "request log store", Value: logReader},
 	); err != nil {
 		logging.Logger.Error("shutdown cleanup error", "error", err)
+	}
+
+	// Drain OTel exporters last so spans emitted during the rest of the
+	// shutdown sequence still reach the collector.
+	// The ShutdownFunc returned by gwotel.Init applies its own internal
+	// deadline derived from cfg.ShutdownGrace, so we pass context.Background()
+	// here rather than duplicating the duration parse.
+	if err := otelShutdown(context.Background()); err != nil {
+		logging.Logger.Error("otel shutdown error", "error", err)
 	}
 
 	logging.Logger.Info("server stopped")

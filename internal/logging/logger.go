@@ -82,11 +82,21 @@ func Enabled(ctx context.Context, level slog.Level) bool {
 }
 
 // Middleware injects a trace ID into every request context and echoes it in
-// the X-Request-ID response header. Uses the incoming X-Request-ID header if
-// present, otherwise generates a new one.
+// the X-Request-ID response header. Resolution precedence:
+//  1. A trace ID already present on the request context (e.g. seeded by
+//     internal/otel.Middleware after extracting an inbound W3C traceparent).
+//  2. The inbound X-Request-ID header.
+//  3. A freshly generated 16-byte hex ID.
+//
+// This precedence is what keeps the OTel trace_id, logging trace ID,
+// X-Request-ID response header, and ferro.gateway.trace_id span
+// attribute equal per request.
 func Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		traceID := r.Header.Get("X-Request-ID")
+		traceID := TraceIDFromContext(r.Context())
+		if traceID == "" {
+			traceID = r.Header.Get("X-Request-ID")
+		}
 		if traceID == "" {
 			traceID = NewTraceID()
 		}

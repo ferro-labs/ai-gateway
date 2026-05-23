@@ -23,17 +23,17 @@ func TestDefaultConfig(t *testing.T) {
 		t.Error("ForceHTTP2 = false, want true")
 	}
 
-	// Streaming client must have no ResponseHeaderTimeout.
+	// Streaming client must have no ResponseHeaderTimeout. Read the raw
+	// transport directly — the client's RoundTripper is the OTel
+	// wrapper since v1.1.0.
 	m := NewDefault()
-	st := m.streamClient.Transport.(*http.Transport)
-	if st.ResponseHeaderTimeout != 0 {
-		t.Errorf("streaming ResponseHeaderTimeout = %v, want 0", st.ResponseHeaderTimeout)
+	if m.streamTransport.ResponseHeaderTimeout != 0 {
+		t.Errorf("streaming ResponseHeaderTimeout = %v, want 0", m.streamTransport.ResponseHeaderTimeout)
 	}
 
 	// Default client must have ResponseHeaderTimeout set.
-	dt := m.defaultClient.Transport.(*http.Transport)
-	if dt.ResponseHeaderTimeout != cfg.ResponseHeaderTimeout {
-		t.Errorf("default ResponseHeaderTimeout = %v, want %v", dt.ResponseHeaderTimeout, cfg.ResponseHeaderTimeout)
+	if m.defaultTransport.ResponseHeaderTimeout != cfg.ResponseHeaderTimeout {
+		t.Errorf("default ResponseHeaderTimeout = %v, want %v", m.defaultTransport.ResponseHeaderTimeout, cfg.ResponseHeaderTimeout)
 	}
 }
 
@@ -62,31 +62,34 @@ func TestForProvider_Isolation(t *testing.T) {
 		t.Error("registered provider must NOT return defaultClient")
 	}
 
-	// Verify transport configs are isolated.
-	oaiTransport := oaiClient.Transport.(*http.Transport)
-	antTransport := antClient.Transport.(*http.Transport)
+	// Verify transport configs are isolated. The Client.Transport is the
+	// OTel wrapper since v1.1.0 — read raw transports from the manager.
+	oaiTransport := m.providerRawTransport("openai")
+	antTransport := m.providerRawTransport("anthropic")
 	if oaiTransport.MaxIdleConnsPerHost != 50 {
 		t.Errorf("openai MaxIdleConnsPerHost = %d, want 50", oaiTransport.MaxIdleConnsPerHost)
 	}
 	if antTransport.MaxIdleConnsPerHost != 30 {
 		t.Errorf("anthropic MaxIdleConnsPerHost = %d, want 30", antTransport.MaxIdleConnsPerHost)
 	}
+	_ = oaiClient
+	_ = antClient
 }
 
 func TestForStreaming(t *testing.T) {
 	m := NewDefault()
 	sc := m.ForStreaming("any-provider")
 
-	transport, ok := sc.Transport.(*http.Transport)
-	if !ok {
-		t.Fatal("streaming client transport is not *http.Transport")
-	}
+	// Client.Transport is the OTel wrapper; read the raw transport
+	// from the Manager for assertions.
+	transport := m.streamTransport
 	if transport.ResponseHeaderTimeout != 0 {
 		t.Errorf("streaming ResponseHeaderTimeout = %v, want 0", transport.ResponseHeaderTimeout)
 	}
 	if !transport.ForceAttemptHTTP2 {
 		t.Error("streaming ForceAttemptHTTP2 = false, want true")
 	}
+	_ = sc
 }
 
 func TestBufferPool(t *testing.T) {

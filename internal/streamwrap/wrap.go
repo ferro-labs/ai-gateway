@@ -20,7 +20,8 @@ import (
 // finishes.
 // Required fields: Provider, Model.
 // Optional fields: Catalog (zero value disables cost reporting), PublishFn
-// (nil disables event publishing), TraceID (empty value is allowed).
+// (nil disables event publishing), TraceID (empty value is allowed),
+// SpanFinisher (nil leaves observability span finalisation to the caller).
 type MeterMeta struct {
 	// Provider is the name of the provider that handled the request (e.g. "openai").
 	Provider string
@@ -33,7 +34,40 @@ type MeterMeta struct {
 	PublishFn func(ctx context.Context, event events.HookEvent)
 	// TraceID is the per-request trace identifier, forwarded into events.
 	TraceID string
+	// SpanFinisher, if non-nil, is invoked exactly once when the stream
+	// completes (with final usage + cost + timings) or fails. The
+	// gateway uses this to stamp the observability root span with the
+	// numbers that are only known after the channel drains. The metric
+	// type is intentionally a minimal local interface so streamwrap
+	// stays decoupled from the public observability package.
+	SpanFinisher SpanFinisher
 }
+
+// StreamOutcome bundles the values stamped onto the observability span
+// at stream completion. ErrorMsg is non-empty only on the failure path.
+type StreamOutcome struct {
+	TokensIn    int
+	TokensOut   int
+	ReasoningIn int
+	Cost        models.CostResult
+	TTFTMs      float64
+	TTLTMs      float64
+	ErrorMsg    string
+}
+
+// SpanFinisher is implemented by the gateway-level observability span
+// wrapper. wrap.Meter calls Finish once per request after the source
+// channel drains. Implementations MUST call End() on the underlying
+// span themselves; Meter does not double-end.
+type SpanFinisher interface {
+	Finish(StreamOutcome)
+}
+
+// SpanFinisherFunc is a function adapter for SpanFinisher.
+type SpanFinisherFunc func(StreamOutcome)
+
+// Finish implements SpanFinisher.
+func (f SpanFinisherFunc) Finish(o StreamOutcome) { f(o) }
 
 // Meter wraps src and returns a new channel that forwards every StreamChunk
 // unchanged. When a chunk carrying a non-nil Error is received, or when src
@@ -51,8 +85,16 @@ func Meter(ctx context.Context, src <-chan providers.StreamChunk, start time.Tim
 
 		var usage providers.Usage
 		var streamErr error
+		var firstChunkAt time.Time
+		var lastChunkAt time.Time
 
 		for chunk := range src {
+			now := time.Now()
+			if firstChunkAt.IsZero() {
+				firstChunkAt = now
+			}
+			lastChunkAt = now
+
 			// Capture the last non-zero usage block (the final OpenAI chunk with
 			// include_usage=true has TotalTokens > 0; other providers may set it
 			// differently).
@@ -73,6 +115,14 @@ func Meter(ctx context.Context, src <-chan providers.StreamChunk, start time.Tim
 
 		latency := time.Since(start)
 
+		// Stream timings (relative to start). Zero when no chunks
+		// arrived (the error-before-first-token case).
+		var ttftMs, ttltMs float64
+		if !firstChunkAt.IsZero() {
+			ttftMs = float64(firstChunkAt.Sub(start).Microseconds()) / 1000.0
+			ttltMs = float64(lastChunkAt.Sub(start).Microseconds()) / 1000.0
+		}
+
 		if streamErr != nil {
 			errType := "provider_error"
 			if errors.Is(streamErr, circuitbreaker.ErrCircuitOpen) {
@@ -90,6 +140,15 @@ func Meter(ctx context.Context, src <-chan providers.StreamChunk, start time.Tim
 					latency,
 					true,
 				))
+			}
+			if meta.SpanFinisher != nil {
+				meta.SpanFinisher.Finish(StreamOutcome{
+					TokensIn:  usage.PromptTokens,
+					TokensOut: usage.CompletionTokens,
+					TTFTMs:    ttftMs,
+					TTLTMs:    ttltMs,
+					ErrorMsg:  streamErr.Error(),
+				})
 			}
 			return
 		}
@@ -130,6 +189,16 @@ func Meter(ctx context.Context, src <-chan providers.StreamChunk, start time.Tim
 				cost,
 				false,
 			))
+		}
+		if meta.SpanFinisher != nil {
+			meta.SpanFinisher.Finish(StreamOutcome{
+				TokensIn:    usage.PromptTokens,
+				TokensOut:   usage.CompletionTokens,
+				ReasoningIn: usage.ReasoningTokens,
+				Cost:        cost,
+				TTFTMs:      ttftMs,
+				TTLTMs:      ttltMs,
+			})
 		}
 	}()
 

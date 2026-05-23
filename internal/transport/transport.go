@@ -17,6 +17,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 // Config holds transport configuration.
@@ -54,23 +56,27 @@ func DefaultConfig() Config {
 // Manager owns all HTTP transports.
 // Create once at startup — never per-request.
 type Manager struct {
-	cfg           Config
-	mu            sync.RWMutex
-	providers     map[string]*http.Client
-	defaultClient *http.Client
-	streamClient  *http.Client
-	metrics       *Metrics
+	cfg                Config
+	mu                 sync.RWMutex
+	providers          map[string]*http.Client
+	providerTransports map[string]*http.Transport // raw transports for inspection
+	defaultClient      *http.Client
+	streamClient       *http.Client
+	defaultTransport   *http.Transport // raw transport for DefaultTransport()
+	streamTransport    *http.Transport // raw streaming transport
+	metrics            *Metrics
 }
 
 // New creates a Manager with the given config.
 func New(cfg Config) *Manager {
 	m := &Manager{
-		cfg:       cfg,
-		providers: make(map[string]*http.Client),
-		metrics:   newMetrics(),
+		cfg:                cfg,
+		providers:          make(map[string]*http.Client),
+		providerTransports: make(map[string]*http.Transport),
+		metrics:            newMetrics(),
 	}
-	m.defaultClient = m.buildClient(cfg, false)
-	m.streamClient = m.buildClient(cfg, true)
+	m.defaultClient, m.defaultTransport = m.buildClient(cfg, false)
+	m.streamClient, m.streamTransport = m.buildClient(cfg, true)
 	return m
 }
 
@@ -101,10 +107,24 @@ func (m *Manager) ForStreaming(_ string) *http.Client {
 // RegisterProvider registers a custom-tuned client for a provider.
 // Call at startup for known providers to pre-warm pools.
 func (m *Manager) RegisterProvider(provider string, cfg Config) {
-	client := m.buildClient(cfg, false)
+	client, raw := m.buildClient(cfg, false)
 	m.mu.Lock()
 	m.providers[provider] = client
+	m.providerTransports[provider] = raw
 	m.mu.Unlock()
+}
+
+// providerRawTransport returns the raw *http.Transport for a named
+// provider, or the default raw transport when the provider was not
+// registered.
+func (m *Manager) providerRawTransport(provider string) *http.Transport {
+	m.mu.RLock()
+	t, ok := m.providerTransports[provider]
+	m.mu.RUnlock()
+	if ok {
+		return t
+	}
+	return m.defaultTransport
 }
 
 // Metrics returns the transport metrics for Prometheus registration.
@@ -117,9 +137,12 @@ func (m *Manager) DefaultClient() *http.Client {
 	return m.defaultClient
 }
 
-// DefaultTransport returns the underlying *http.Transport of the default client.
+// DefaultTransport returns the underlying *http.Transport of the
+// default client. The returned transport is the raw http.Transport,
+// not the OTel-wrapping outer RoundTripper installed on the client —
+// callers that want OTel propagation should go through DefaultClient.
 func (m *Manager) DefaultTransport() *http.Transport {
-	return m.defaultClient.Transport.(*http.Transport)
+	return m.defaultTransport
 }
 
 // CloseIdleConnections closes idle connections on all managed transports.
@@ -133,7 +156,17 @@ func (m *Manager) CloseIdleConnections() {
 	}
 }
 
-func (m *Manager) buildClient(cfg Config, streaming bool) *http.Client {
+// buildClient returns an *http.Client and the underlying raw
+// *http.Transport. The client's Transport is UNCONDITIONALLY wrapped
+// with otelhttp.NewTransport so every outbound provider call gets:
+//   - traceparent injected into request headers
+//   - a CLIENT span emitted by the OTel SDK
+//
+// The wrapper is applied regardless of whether OTel tracing is enabled.
+// When no real TracerProvider is configured the global no-op tracer and
+// no-op propagator are used, so no spans are exported; however there is
+// a small per-RoundTrip overhead (~100 ns) even on the disabled path.
+func (m *Manager) buildClient(cfg Config, streaming bool) (*http.Client, *http.Transport) {
 	dialer := &net.Dialer{
 		Timeout:   cfg.DialTimeout,
 		KeepAlive: cfg.KeepAliveInterval,
@@ -164,8 +197,8 @@ func (m *Manager) buildClient(cfg Config, streaming bool) *http.Client {
 	}
 
 	return &http.Client{
-		Transport: t,
+		Transport: otelhttp.NewTransport(t),
 		// No global Timeout — use context.WithTimeout per request.
 		// LLM streaming responses can legitimately take 60-120s.
-	}
+	}, t
 }

@@ -21,7 +21,7 @@ ai-gateway/
 ├── config.example.yaml     # Example YAML config
 ├── config.example.json     # Example JSON config
 ├── Makefile                # Build/test/lint/release targets
-├── go.mod / go.sum         # Module: github.com/ferro-labs/ai-gateway (Go 1.24+)
+├── go.mod / go.sum         # Module: github.com/ferro-labs/ai-gateway (Go 1.25+)
 │
 ├── cmd/
 │   └── ferrogw/            # HTTP server + CLI entry point (Cobra subcommands)
@@ -68,9 +68,17 @@ ai-gateway/
 │
 ├── plugin/                 # Public plugin framework
 │   ├── plugin.go           # Plugin interface, PluginType, Stage, Context
-│   ├── manager.go          # RunBefore/RunAfter/RunOnError lifecycle
+│   ├── manager.go          # RunBefore/RunAfter/RunOnError lifecycle (+ per-plugin OTel child spans)
 │   ├── registry.go         # RegisterFactory() for plugin init()
 │   └── errors.go           # RejectionError type
+│
+├── observability/          # Public OpenTelemetry seam (stable contract for exporter plugins)
+│   ├── observability.go    # Provider, Span, Exporter, Event, EventRecordingProvider interfaces
+│   ├── attributes.go       # gen_ai.* / ferro.* attribute-name constants (Emitted vs Planned)
+│   ├── event.go            # Event + CostBreakdown types
+│   ├── noop.go             # Zero-allocation NoOp Provider (default until SetObservability)
+│   ├── registry.go         # RegisterExporter() / LookupExporter() for exporter init()
+│   └── doc.go              # Package overview
 │
 ├── internal/
 │   ├── admin/              # API key CRUD, dashboard, config history/rollback (13 files)
@@ -113,9 +121,18 @@ ai-gateway/
 │   ├── events/             # Async event hook dispatch
 │   ├── httpclient/         # HTTP client with connection pooling
 │   ├── latency/            # Latency tracking for least-latency strategy
-│   ├── logging/            # Centralized logger
-│   ├── mcp/               # Model Context Protocol integration
+│   ├── logging/            # Centralized logger (trace-ID middleware; source of the unified request ID)
+│   ├── mcp/               # Model Context Protocol integration (emits mcp.call_tool child spans)
 │   ├── metrics/            # Prometheus metrics (/metrics endpoint)
+│   ├── otel/               # OTel-backed observability.Provider
+│   │   ├── otel.go         #   Init() — OTLP TracerProvider or NoOp; resolves exporters; ShutdownFunc
+│   │   ├── provider.go     #   otelProvider/otelSpan — attribute stamping + privacy-aware SetError
+│   │   ├── idgen.go        #   IDGenerator adopting the logging trace ID (trace-ID unification)
+│   │   ├── middleware.go   #   chi middleware: extract inbound W3C traceparent (mount BEFORE logging.Middleware)
+│   │   ├── propagator.go   #   W3C TraceContext + Baggage propagator install
+│   │   └── config.go       #   Config + Validate() (privacy_level, sample_ratio, shutdown_grace, exporters)
+│   ├── redact/             # Error-message redaction (email / JWT / AWS key) applied before spans/events
+│   ├── bootstrap/          # Serve(): wires gateway + OTel Init + SetObservability + shutdown drain
 │   ├── ratelimit/          # Token bucket algorithm
 │   ├── requestlog/         # Request log persistence (SQLite/Postgres)
 │   ├── streamwrap/         # Stream wrapping utilities
@@ -226,6 +243,27 @@ code := core.ParseStatusCode(err)  // returns 0 if no match
 ```
 
 **No external error libraries.** Always `fmt.Errorf` with `%w` for wrapping.
+
+### 2d. Observability Seam (OpenTelemetry)
+
+`Gateway` holds one `observability.Provider`, defaulting to `observability.NoOp()` (zero-alloc). The
+real implementation lives in `internal/otel`; the gateway core never imports OTel directly — it talks
+to the `observability` interfaces only.
+
+- **Install at startup**: `internal/bootstrap` calls `otel.Init(ctx, cfg)` → `gw.SetObservability(p)`. Call `SetObservability` only before serving traffic (the hot path snapshots `g.obs`/`g.obsEventsActive` under `RLock`).
+- **Spans**: `Route`/`RouteStream` open a `gateway.request` root span and stamp attributes via constants in `observability/attributes.go` (`gen_ai.system`, `gen_ai.request.model`, `gen_ai.usage.*`, `ferro.cost.*`, `ferro.routing.*`, `ferro.stream.*`). Plugins (`plugin/manager.go`) and MCP tool calls (`internal/mcp`) open child spans. Streaming finalises the span in the `streamwrap` `SpanFinisher` closure (uses `context.Background()` since the request ctx is already cancelled).
+- **Trace-ID unification**: `internal/otel/idgen.go` adopts `logging.TraceIDFromContext` as the span `trace_id`, so OTel `trace_id` == log trace ID == `X-Request-ID` == `ferro.gateway.trace_id`. `otel.Middleware` MUST be mounted before `logging.Middleware`.
+- **Privacy**: `privacy_level` (none|metadata|full) gates `otelSpan.SetError` — `none` records a generic `"redacted"`, `metadata` redacts via `internal/redact`, `full` keeps raw text. Validated at config load.
+- **Events / exporters**: registered `Exporter`s (via `observability.RegisterExporter`) receive `gateway.request.completed`/`failed` events through `Provider.RecordEvent`. Event construction is gated on `obsEventsActive` to preserve the NoOp zero-alloc baseline.
+- **Always use the attribute constants** — never hardcode `"gen_ai..."`/`"ferro..."` strings.
+
+```go
+// Default seam — NoOp until configured. Never import OTel from gateway core.
+gw.SetObservability(observability.NoOp())
+
+// otel-side: build a span attribute (only via constants)
+span.SetAttributes(attribute.String(observability.AttrGenAIRequestModel, req.Model))
+```
 
 ---
 
@@ -454,6 +492,24 @@ The gateway uses Go's `log` package (no heavy framework). Key log patterns:
 - **Plugin rejections**: `"plugin word-filter rejected request: blocked word detected"`
 - **Circuit breaker**: `"circuit breaker open for provider: openai"`
 - **Errors**: `"provider API error (429): rate limited"` — status code in parens
+
+### Tracing / Observability
+
+Tracing is off (NoOp) unless an OTLP endpoint or an exporter is configured.
+
+```bash
+# Local collector (Jaeger all-in-one exposes OTLP gRPC on 4317)
+docker run -d --name jaeger -p 16686:16686 -p 4317:4317 jaegertracing/all-in-one:latest
+
+# Point the gateway at it (env wins over config)
+OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4317 OPENAI_API_KEY=sk-... ./bin/ferrogw
+# → traces at http://localhost:16686 (service "ferrogw")
+```
+
+- No spans appearing? Confirm `OTEL_EXPORTER_OTLP_ENDPOINT` is set OR `observability.tracing.endpoint` is non-blank; otherwise `otel.Init` returns NoOp by design.
+- `https://` endpoint uses TLS; bare `host:port` / `http://` is insecure.
+- Log↔trace correlation: the `trace_id` in logs equals the OTel `trace_id` and the `X-Request-ID` header (see `internal/otel/idgen.go`). Mismatch ⇒ check middleware order (`otel.Middleware` before `logging.Middleware`).
+- Asserting the disabled hot path stays allocation-free: `go test -run TestRoute_TracingOff_AllocBaseline .`
 
 ### Common Build/Test Failures
 

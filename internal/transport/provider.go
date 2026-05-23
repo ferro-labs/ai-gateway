@@ -9,10 +9,11 @@ import (
 // Each pool is fully isolated — one provider's slow responses or connection
 // exhaustion cannot degrade other providers.
 type ProviderPool struct {
-	name      string
-	client    *http.Client
-	streamCli *http.Client
-	cfg       Config
+	name         string
+	client       *http.Client
+	streamCli    *http.Client
+	rawTransport *http.Transport // raw http.Transport for inspection
+	cfg          Config
 }
 
 // ProviderPreset contains tuned transport settings for a known provider.
@@ -112,18 +113,20 @@ func (m *Manager) Pool(provider string) *ProviderPool {
 
 	if !ok {
 		return &ProviderPool{
-			name:      provider,
-			client:    m.defaultClient,
-			streamCli: m.streamClient,
-			cfg:       m.cfg,
+			name:         provider,
+			client:       m.defaultClient,
+			streamCli:    m.streamClient,
+			rawTransport: m.defaultTransport,
+			cfg:          m.cfg,
 		}
 	}
 
 	return &ProviderPool{
-		name:      provider,
-		client:    c,
-		streamCli: m.streamClient,
-		cfg:       m.cfg,
+		name:         provider,
+		client:       c,
+		streamCli:    m.streamClient,
+		rawTransport: m.providerRawTransport(provider),
+		cfg:          m.cfg,
 	}
 }
 
@@ -142,8 +145,10 @@ func (pp *ProviderPool) Name() string {
 	return pp.name
 }
 
-// Transport returns the underlying *http.Transport for inspection
-// (e.g. connection pool stats).
+// Transport returns the raw underlying *http.Transport for inspection
+// (e.g. connection pool stats). The transport returned is the inner
+// http.Transport, not the OTel-wrapping RoundTripper on the client —
+// see Manager.DefaultTransport for the same convention.
 func (pp *ProviderPool) Transport() *http.Transport {
-	return pp.client.Transport.(*http.Transport)
+	return pp.rawTransport
 }

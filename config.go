@@ -24,6 +24,94 @@ type Config struct {
 	// calling New. FerroCloud uses it to write async audit entries to the
 	// mcp_tool_call_logs table.
 	MCPToolCallAuditFn mcp.ToolCallAuditFn `json:"-" yaml:"-"`
+	// Observability configures OpenTelemetry tracing. When omitted the
+	// gateway runs with a NoOp provider (zero allocations on the hot
+	// path). See internal/otel.
+	Observability ObservabilityConfig `json:"observability,omitempty" yaml:"observability,omitempty"`
+}
+
+// ObservabilityConfig is the user-facing observability section of
+// gateway config. It mirrors internal/otel.Config but lives here so
+// the public Config schema does not pull in internal packages.
+//
+// Standard OTEL_* environment variables (notably
+// OTEL_EXPORTER_OTLP_ENDPOINT) always take precedence — this matches
+// the OTel SDK convention required for predictable container
+// deployments.
+type ObservabilityConfig struct {
+	// Tracing holds the OTLP tracing configuration. v1.1.0 ships
+	// tracing only; metrics and logs exporters arrive in later
+	// releases (see docs/OSS-ECOSYSTEM-ROADMAP.md).
+	Tracing TracingConfig `json:"tracing,omitempty" yaml:"tracing,omitempty"`
+	// Exporters lists the plugin observability exporters that should
+	// receive gateway events (request completed / request failed).
+	// Each entry names an exporter registered via
+	// observability.RegisterExporter and carries its own Config block.
+	// Exporters that are not registered at startup emit a warning and
+	// are skipped — they do not prevent the gateway from starting.
+	Exporters []ExporterConfig `json:"exporters,omitempty" yaml:"exporters,omitempty"`
+}
+
+// ExporterConfig configures a single observability plugin exporter.
+// Plugin authors register their factory via observability.RegisterExporter
+// in their package init(); gateway operators then reference the name here.
+//
+// Example (YAML):
+//
+//	exporters:
+//	  - name: langsmith
+//	    enabled: true
+//	    config:
+//	      api_key: "${LANGSMITH_API_KEY}"
+type ExporterConfig struct {
+	// Name is the canonical exporter name, e.g. "langsmith".
+	// Must match the name passed to observability.RegisterExporter.
+	Name string `json:"name" yaml:"name"`
+	// Enabled gates the exporter. Set to false to temporarily disable
+	// without removing the config block.
+	Enabled bool `json:"enabled" yaml:"enabled"`
+	// Config is the exporter-specific configuration map. Passed
+	// verbatim to Exporter.Init at gateway startup.
+	Config map[string]any `json:"config,omitempty" yaml:"config,omitempty"`
+}
+
+// TracingConfig configures the OTLP tracing pipeline. All fields are
+// optional; sensible defaults apply when omitted (see
+// internal/otel.DefaultConfig).
+type TracingConfig struct {
+	// Enabled is the master switch. Defaults to true; the pipeline
+	// still short-circuits to NoOp when no OTLP endpoint is configured.
+	Enabled bool `json:"enabled" yaml:"enabled"`
+	// Endpoint overrides OTEL_EXPORTER_OTLP_ENDPOINT (host:port form).
+	Endpoint string `json:"endpoint,omitempty" yaml:"endpoint,omitempty"`
+	// Protocol selects the OTLP transport: "grpc" (default) or "http/protobuf".
+	Protocol string `json:"protocol,omitempty" yaml:"protocol,omitempty"`
+	// ServiceName populates the OTel service.name resource attribute.
+	ServiceName string `json:"service_name,omitempty" yaml:"service_name,omitempty"`
+	// SampleRatio is the head sampler ratio (0.0–1.0). Pointer so an
+	// explicit 0.0 (sample nothing) is distinguishable from an omitted
+	// field; nil falls back to the default of 1.0 (sample everything).
+	SampleRatio *float64 `json:"sample_ratio,omitempty" yaml:"sample_ratio,omitempty"`
+	// PrivacyLevel controls whether prompt/response content is exported.
+	// One of: "none", "metadata" (default), "full".
+	PrivacyLevel string `json:"privacy_level,omitempty" yaml:"privacy_level,omitempty"`
+	// ShutdownGrace is the maximum time the gateway waits for in-flight
+	// OTel exports to drain during graceful shutdown. Accepts any Go
+	// duration string, e.g. "10s", "500ms". Defaults to 10s when empty
+	// or unparseable.
+	ShutdownGrace string `json:"shutdown_grace,omitempty" yaml:"shutdown_grace,omitempty"`
+	// Headers are additional HTTP/gRPC metadata headers sent with every OTLP
+	// export request. Use this to authenticate with managed backends such as
+	// Datadog, New Relic, Honeycomb, or Grafana Cloud.
+	//
+	// SECURITY: prefer ${ENV_VAR} references for secret values — only the
+	// template (e.g. "${DATADOG_API_KEY}") is persisted in config and returned
+	// by the admin config API; the secret is resolved from the environment at
+	// export time and never stored. A literal value IS persisted verbatim and
+	// exposed via /admin/config, so do not hard-code raw secrets here. The
+	// standard OTEL_EXPORTER_OTLP_HEADERS environment variable also applies per
+	// OTel convention.
+	Headers map[string]string `json:"headers,omitempty" yaml:"headers,omitempty"`
 }
 
 // StrategyConfig defines the routing strategy.

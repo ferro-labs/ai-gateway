@@ -92,6 +92,33 @@ func TestMiddleware_PropagatesProvidedHeader(t *testing.T) {
 	}
 }
 
+// TestMiddleware_ReusesContextTraceID asserts the unification protocol:
+// when a trace ID is already on the request context (e.g. seeded by
+// internal/otel.Middleware after a valid inbound traceparent), the
+// logging layer reuses it rather than reading the header or generating
+// a new one.
+func TestMiddleware_ReusesContextTraceID(t *testing.T) {
+	const ctxTraceID = "0af7651916cd43dd8448eb211c80319c"
+
+	handler := Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := TraceIDFromContext(r.Context()); got != ctxTraceID {
+			t.Errorf("context trace ID = %q, want %q", got, ctxTraceID)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	// Both header and context populated; context MUST win.
+	req.Header.Set("X-Request-ID", "header-only-id")
+	req = req.WithContext(WithTraceID(req.Context(), ctxTraceID))
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if got := rr.Header().Get("X-Request-ID"); got != ctxTraceID {
+		t.Errorf("response X-Request-ID = %q, want %q", got, ctxTraceID)
+	}
+}
+
 func TestMiddleware_GeneratesHeaderWhenMissing(t *testing.T) {
 	handler := Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if TraceIDFromContext(r.Context()) == "" {

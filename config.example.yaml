@@ -198,3 +198,38 @@ mcp_servers:
       - web_search
       - web_read
     timeout_seconds: 20
+
+# OpenTelemetry tracing (v1.1.0+).
+# When unset (or endpoint empty) the gateway runs with a zero-alloc
+# NoOp provider — there is no cost to leaving this section out.
+# Standard OTEL_* env vars (notably OTEL_EXPORTER_OTLP_ENDPOINT) take
+# precedence over any value here.
+observability:
+  tracing:
+    enabled: true
+    endpoint: ""            # host:port; leave blank to fall back to OTEL_EXPORTER_OTLP_ENDPOINT
+    protocol: grpc           # grpc | http/protobuf
+    service_name: ferrogw
+    sample_ratio: 1.0
+    privacy_level: metadata  # none | metadata | full
+    shutdown_grace: 10s      # max time to drain in-flight OTel exports on shutdown
+    # headers:                       # OTLP export headers (e.g. vendor API keys)
+    #   dd-api-key: "${DATADOG_API_KEY}"   # values support ${ENV} interpolation
+
+  # exporters lists plugin observability exporters that receive
+  # gateway.request.completed / gateway.request.failed events.
+  # Each entry names a factory registered via observability.RegisterExporter
+  # in a plugin's init().  Unrecognised names emit a warning and are skipped
+  # (non-fatal).  No built-in exporters ship with this repo — they are
+  # provided by the ai-gateway-plugins repo.
+  #
+  # exporters:
+  #   - name: langsmith
+  #     enabled: true
+  #     config:
+  #       api_key: "${LANGSMITH_API_KEY}"
+  #   - name: langfuse
+  #     enabled: true
+  #     config:
+  #       public_key: "${LANGFUSE_PUBLIC_KEY}"
+  #       secret_key: "${LANGFUSE_SECRET_KEY}"

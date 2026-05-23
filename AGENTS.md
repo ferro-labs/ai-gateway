@@ -20,6 +20,7 @@
 - **Admin API** — dashboard, key management, usage stats, request logs, config history/rollback (`internal/admin/handlers.go`).
 - **Metrics** — Prometheus metrics exposed at `/metrics` (`internal/metrics/`).
 - **Circuit breaker** — per-provider circuit breaker in `internal/circuitbreaker/`.
+- **Observability (v1.1.0)** — OpenTelemetry tracing. Public `observability/` package (stable `Provider`/`Span`/`Exporter`/`Event` seam + `gen_ai.*`/`ferro.*` attribute constants); `internal/otel/` wires the OTLP exporter, W3C propagation, and a custom `IDGenerator` that unifies the OTel `trace_id` with the logging trace ID / `X-Request-ID`; `internal/redact/` redacts error messages. Defaults to a zero-allocation NoOp when no OTLP endpoint **and** no exporter are configured.
 
 ---
 
@@ -71,6 +72,7 @@ ai-gateway/
 │   ├── strategies/       # Routing strategy implementations
 │   └── version/
 ├── plugin/               # Public plugin framework (interfaces + manager + registry)
+├── observability/        # Public OTel seam: Provider/Span/Exporter/Event + attribute constants + NoOp + exporter registry
 ├── providers/
 │   ├── core/             # Shared interfaces (contracts.go) and types (chat, stream, embedding, image, model)
 │   ├── <id>/             # One subpackage per provider
@@ -86,6 +88,8 @@ ai-gateway/
 │   ├── discovery/        # Shared OpenAI-compatible model discovery helper
 │   ├── latency/          # Latency tracking for least-latency strategy
 │   ├── metrics/          # Prometheus metrics
+│   ├── otel/             # OTel-backed observability.Provider: OTLP exporter, W3C propagation, trace-ID unifying IDGenerator, privacy-aware span errors, HTTP middleware
+│   ├── redact/           # Error-message redaction policies (email / JWT / AWS key)
 │   ├── plugins/          # Built-in plugin implementations
 │   │   ├── cache/        # Request/response caching
 │   │   ├── logger/       # Request/response logging
@@ -118,7 +122,15 @@ ai-gateway/
 | `providers/names.go` | Canonical `NameXxx` constants (re-exported from subpackages) |
 | `providers/registry.go` | `Registry` — runtime lookup by provider name |
 | `plugin/plugin.go` | `Plugin` interface, `PluginType`, `Stage`, `Context` |
-| `plugin/manager.go` | Plugin lifecycle: before/after/error stage execution |
+| `plugin/manager.go` | Plugin lifecycle: before/after/error stage execution (emits per-plugin child spans) |
+| `observability/observability.go` | `Provider`, `Span`, `Exporter`, `Event`, `EventRecordingProvider` interfaces — the gateway↔backend seam |
+| `observability/attributes.go` | `gen_ai.*` / `ferro.*` attribute-name constants (Emitted vs Planned) |
+| `observability/noop.go` | Zero-allocation default `Provider` (used until `SetObservability`) |
+| `observability/registry.go` | `RegisterExporter` / `LookupExporter` — exporter plugin registry |
+| `internal/otel/otel.go` | `Init()` — builds an OTLP-backed `Provider` (or NoOp), resolves exporters, returns a grace-bounded `ShutdownFunc` |
+| `internal/otel/idgen.go` | Custom `IDGenerator` adopting the logging trace ID so OTel `trace_id` == log trace ID == `X-Request-ID` == `ferro.gateway.trace_id` |
+| `internal/otel/config.go` | OTel `Config` (endpoint, protocol, sample_ratio, privacy_level, shutdown_grace) + `Validate()` |
+| `internal/redact/redact.go` | `Redactor` applied to span/event error messages |
 | `internal/strategies/strategy.go` | `Strategy` interface |
 | `internal/discovery/openai_compat.go` | `DiscoverOpenAICompatibleModels` — shared by fireworks, hugging_face, perplexity, xai |
 | `cmd/ferrogw/main.go` | HTTP server setup and entry point |
@@ -135,6 +147,7 @@ ai-gateway/
 - **OpenAI Compatibility**: All requests/responses match OpenAI spec — other provider responses are translated
 - **Pass-Through Proxy**: Unhandled `/v1/*` endpoints forwarded transparently via `cmd/ferrogw/proxy.go`
 - **Compile-time assertions**: Every provider subpackage has `var _ core.XxxProvider = (*Provider)(nil)` guards
+- **Observability seam**: `Gateway` holds exactly one `observability.Provider` (NoOp by default; install via `SetObservability`). `Route`/`RouteStream` open a `gateway.request` root span and stamp `gen_ai.*`/`ferro.*` attributes; plugins and MCP tool calls emit child spans. Registered exporters receive `gateway.request.completed`/`failed` events. With OTel disabled the hot path stays at the NoOp allocation baseline (asserted by `TestRoute_TracingOff_AllocBaseline`). Standard `OTEL_*` env vars take precedence over config.
 
 ### Request Flow
 
@@ -174,6 +187,20 @@ plugins:
     enabled: true
     config:
       blocked_words: ["password", "secret"]
+
+observability:
+  tracing:
+    enabled: true
+    endpoint: ""             # host:port; blank falls back to OTEL_EXPORTER_OTLP_ENDPOINT
+    protocol: grpc           # grpc | http/protobuf  (https:// endpoint ⇒ TLS, else insecure)
+    service_name: ferrogw
+    sample_ratio: 1.0        # head sampler 0.0–1.0
+    privacy_level: metadata  # none | metadata (redacted, default) | full (raw error text)
+    shutdown_grace: 10s      # max drain time for in-flight OTel exports on shutdown
+  exporters:                 # plugin exporters receiving completed/failed events; none ship in-repo
+    - name: langsmith
+      enabled: false
+      config: {}
 ```
 
 ### Key Environment Variables
@@ -209,6 +236,8 @@ plugins:
 | `AWS_ACCESS_KEY_ID` | AWS access key (optional — falls back to instance role) |
 | `AWS_SECRET_ACCESS_KEY` | AWS secret key |
 | `CORS_ORIGINS` | Comma-separated allowed CORS origins |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP collector endpoint; enables tracing when set (takes precedence over config) |
+| `OTEL_TRACES_SAMPLER` / `OTEL_TRACES_SAMPLER_ARG` | Standard OTel head-sampler overrides |
 
 ---
 
@@ -241,6 +270,8 @@ plugins:
 | `github.com/spf13/cobra` | CLI subcommands (`ferrogw init`, `ferrogw doctor`, etc.) |
 | `modernc.org/sqlite` | SQLite for admin/key storage |
 | `github.com/lib/pq` | PostgreSQL support |
+| `go.opentelemetry.io/otel` (+ `sdk`, `trace`, OTLP `otlptrace*` exporters) | OpenTelemetry tracing pipeline |
+| `go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp` | Outbound provider-call CLIENT spans + `traceparent` propagation |
 
 Minimal by design — no heavy logging framework, no ORM.
 
@@ -278,6 +309,16 @@ Minimal by design — no heavy logging framework, no ORM.
 1. Create `internal/strategies/<name>.go` implementing `strategies.Strategy`.
 2. Handle the new `StrategyMode` constant in `gateway.go`'s strategy selection logic.
 3. Add tests in `internal/strategies/<name>_test.go`.
+
+## Adding an Observability Exporter
+
+Exporters bridge gateway events to a backend (LangSmith, Langfuse, Datadog, …). They live in the
+separate `ai-gateway-plugins` repo, not here — the gateway only ships the contract + wiring.
+
+1. Implement `observability.Exporter` (`Name`, `Init(cfg map[string]any)`, `Export(ctx, Event)`, `Shutdown(ctx)`). `Export` must be safe for concurrent use and non-blocking.
+2. Register a factory in `init()`: `observability.RegisterExporter("<name>", New)`.
+3. Configure it under `observability.exporters` (`name`/`enabled`/`config`) — `internal/otel.Init` resolves enabled entries via `LookupExporter`; unknown/failed exporters are logged and skipped (non-fatal). Exporters work even with no OTLP endpoint.
+4. Emit new span attributes only via constants in `observability/attributes.go`; mark not-yet-wired ones as Planned.
 
 ---
 

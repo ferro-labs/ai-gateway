@@ -244,9 +244,10 @@ Full methodology, raw results, and flamegraph analysis:
 
 ### 📊 Observability
 
+- **OpenTelemetry tracing** (v1.1.0+) — OTLP gRPC/HTTP exporter, W3C `traceparent` propagation, GenAI semantic conventions (`gen_ai.*`) plus `ferro.*` extensions for cost, routing, MCP, and stream timings; `privacy_level` enforced on error recording; configurable `shutdown_grace`
 - Prometheus metrics at `/metrics`
 - Deep health checks at `/health` with per-provider status
-- Structured JSON request logging with SQLite/PostgreSQL persistence
+- Structured JSON request logging with SQLite/PostgreSQL persistence (trace ID unified across logs, OTel spans, and `X-Request-ID` response header)
 - Admin API with usage stats, request logs, and config history/rollback
 - Built-in dashboard UI at `/dashboard`
 - HTTP-level connection tracing with DNS, TLS, and first-byte latency
@@ -344,6 +345,86 @@ mcp_servers:
 ```
 
 See [config.example.yaml](config.example.yaml) and [config.example.json](config.example.json) for the full template with all options.
+
+---
+
+## Observability
+
+Ferro Labs AI Gateway ships first-class **OpenTelemetry** support in v1.1.0+. When OTel is disabled (the default) the gateway runs with a zero-allocation no-op provider — there is no cost to leaving it off. When you set an OTLP endpoint, every request emits a `gateway.request` root span with rich GenAI semantic conventions plus Ferro-specific extensions for cost, routing, and stream timings.
+
+### Enable in one step
+
+Either set the standard OTel environment variable:
+
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4317
+ferrogw serve
+```
+
+…or add an `observability` block to `config.yaml`:
+
+```yaml
+observability:
+  tracing:
+    enabled: true
+    endpoint: localhost:4317   # or leave blank to read OTEL_EXPORTER_OTLP_ENDPOINT
+    protocol: grpc             # grpc | http/protobuf
+    service_name: ferrogw
+    sample_ratio: 1.0
+    privacy_level: metadata    # none | metadata | full  (see below)
+    shutdown_grace: 10s        # max time to drain OTel exports on shutdown
+    # headers:                        # OTLP export headers for authenticated backends
+    #   dd-api-key: "${DATADOG_API_KEY}"  # values support ${ENV_VAR} interpolation
+
+  # exporters wires plugin observability exporters (see "Plugin exporters" below).
+  # exporters:
+  #   - name: langsmith
+  #     enabled: true
+  #     config:
+  #       api_key: "${LANGSMITH_API_KEY}"
+```
+
+Standard `OTEL_*` environment variables (e.g. `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_TRACES_SAMPLER`) always take precedence over the config file — this matches the OTel SDK convention and is required for predictable container deployments.
+
+`observability.tracing.headers` lets you send OTLP traces to authenticated managed backends (Datadog, New Relic, Honeycomb, Grafana Cloud) by setting vendor-specific headers such as API keys. Values support `${ENV_VAR}` interpolation so secrets are never stored literally in the config file. The standard `OTEL_EXPORTER_OTLP_HEADERS` environment variable also applies per OTel convention.
+
+The **endpoint scheme selects transport security**: an `https://` endpoint uses TLS, while an `http://` endpoint or a bare `host:port` (e.g. `localhost:4317`) connects in plaintext. Managed backends require the `https://` form.
+
+### What gets emitted
+
+The following attributes are **currently emitted** on the `gateway.request` root span. Attributes marked "Planned" are reserved but not yet wired.
+
+- **`gateway.request`** root span per request (`SERVER` kind) with `gen_ai.system`, `gen_ai.operation.name`, `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.usage.{input,output}_tokens`
+- **`HTTP {GET,POST}`** child span per outbound provider call (`CLIENT` kind, via `otelhttp` transport wrapping) — propagates `traceparent` to upstream providers
+- **`ferro.*` emitted attributes**: `ferro.cost.{usd,input_usd,output_usd,cache_read_usd,cache_write_usd,reasoning_usd,model_found}`, `ferro.routing.{strategy,target_key}`, `ferro.stream.time_to_{first,last}_token_ms`, `ferro.gateway.trace_id`, `ferro.plugin.{name,kind,stage,outcome,reason}`, `ferro.mcp.{server,tool,latency_ms}`
+- **W3C TraceContext + Baggage** propagation: inbound `traceparent` is honoured; outbound requests carry it forward
+- **Unified trace ID**: the OTel `trace_id`, the `X-Request-ID` response header, and the `trace_id` field on every log line are guaranteed equal per request for all requests served through the gateway's HTTP stack. (Embedders that bypass `logging.Middleware` receive a consistent-but-independent span trace ID.)
+
+### Try it locally with Jaeger
+
+```bash
+docker run --rm -p 16686:16686 -p 4317:4317 jaegertracing/all-in-one
+OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4317 ferrogw serve
+# fire a request, then open http://localhost:16686
+```
+
+### Privacy levels
+
+`privacy_level` controls how error messages are recorded on spans. No prompt or response content is exported at any level — that requires a future L3 exporter plugin.
+
+| Level | Error recording on spans | Default |
+|:------|:------|:------|
+| `none` | Status and exception carry only the static string `"redacted"` — no content or internal type exposed | — |
+| `metadata` | Error message is redacted (email / JWT / AWS keys replaced by tokens) before being attached | ✅ |
+| `full` | Raw error text recorded without redaction — for trusted self-hosted debugging only | — |
+
+Invalid values are rejected at startup by config validation.
+
+### Plugin exporters
+
+The `observability.exporters` config block wires plugin exporters that receive `gateway.request.completed` and `gateway.request.failed` events on every request. Exporters operate independently of whether an OTLP tracing endpoint is configured.
+
+**No built-in exporter plugins ship in this repo.** They are provided by the `ai-gateway-plugins` repository and self-register via `observability.RegisterExporter` in their `init()`. The `observability.Exporter` contract is stable as of v1.1.0. Unrecognised or failing exporters emit a warning and are skipped — the gateway still starts.
 
 ---
 
