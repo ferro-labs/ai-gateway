@@ -167,8 +167,8 @@ func TestRouteErrorDetails_NoCapableProvider(t *testing.T) {
 	if errType != errTypeInvalidRequest {
 		t.Fatalf("expected invalid_request_error, got %q", errType)
 	}
-	if code != "model_not_found" {
-		t.Fatalf("expected model_not_found, got %q", code)
+	if code != codeModelNotFound {
+		t.Fatalf("expected %s, got %q", codeModelNotFound, code)
 	}
 }
 
@@ -180,7 +180,7 @@ func TestRouteErrorDetails_NoCapableProvider_DirectSentinel(t *testing.T) {
 	if errType != errTypeInvalidRequest {
 		t.Fatalf("expected invalid_request_error, got %q", errType)
 	}
-	if code != "model_not_found" {
-		t.Fatalf("expected model_not_found, got %q", code)
+	if code != codeModelNotFound {
+		t.Fatalf("expected %s, got %q", codeModelNotFound, code)
 	}
 }

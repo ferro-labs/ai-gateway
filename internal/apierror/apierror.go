@@ -10,6 +10,8 @@ import (
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
+const codeModelNotFound = "model_not_found"
+
 // WriteOpenAI writes a unified OpenAI-compatible JSON error response.
 func WriteOpenAI(w http.ResponseWriter, status int, message, errType, code string) {
 	w.Header().Set("Content-Type", "application/json")
@@ -45,7 +47,7 @@ func RouteErrorDetails(err error) (status int, errType, code string) {
 	}
 
 	if errors.Is(err, core.ErrNoCapableProvider) {
-		return http.StatusNotFound, "invalid_request_error", "model_not_found"
+		return http.StatusNotFound, "invalid_request_error", codeModelNotFound
 	}
 
 	return status, errType, code
