@@ -2,7 +2,6 @@
 package ollamacloud
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -198,8 +197,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 		defer close(ch)
 		defer func() { _ = httpResp.Body.Close() }()
 
-		scanner := bufio.NewScanner(httpResp.Body)
-		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		scanner := core.NewSSEScanner(httpResp.Body)
 		for scanner.Scan() {
 			line := strings.TrimSpace(scanner.Text())
 			if line == "" {

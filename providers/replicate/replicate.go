@@ -2,7 +2,6 @@
 package replicate
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -417,8 +416,7 @@ func (p *Provider) readStream(ctx context.Context, body io.ReadCloser, ch chan<-
 	defer close(ch)
 	defer func() { _ = body.Close() }()
 
-	scanner := bufio.NewScanner(body)
-	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	scanner := core.NewSSEScanner(body)
 
 	event := eventMessage
 	var data strings.Builder

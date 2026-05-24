@@ -2,7 +2,6 @@
 package cloudflare
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -221,7 +220,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 		defer close(ch)
 		defer func() { _ = httpResp.Body.Close() }()
 
-		scanner := bufio.NewScanner(httpResp.Body)
+		scanner := core.NewSSEScanner(httpResp.Body)
 		for scanner.Scan() {
 			line := scanner.Text()
 			if !strings.HasPrefix(line, "data: ") {
