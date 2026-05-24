@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/ferro-labs/ai-gateway/plugin"
+	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
 // WriteOpenAI writes a unified OpenAI-compatible JSON error response.
@@ -41,6 +42,10 @@ func RouteErrorDetails(err error) (status int, errType, code string) {
 		default:
 			return http.StatusInternalServerError, "server_error", "request_rejected"
 		}
+	}
+
+	if errors.Is(err, core.ErrNoCapableProvider) {
+		return http.StatusNotFound, "invalid_request_error", "model_not_found"
 	}
 
 	return status, errType, code

@@ -358,7 +358,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameReplicate,
-		Capabilities: []string{CapabilityChat, CapabilityImage, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityImage, CapabilityProxy},
 		// Replicate uses api_token (not api_key) as its primary key.
 		EnvMappings: []EnvMapping{
 			{CfgKeyAPIToken, "REPLICATE_API_TOKEN", true},
