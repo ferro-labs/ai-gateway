@@ -183,6 +183,71 @@ func TestCostOptimized_FallsBackToFirstCompatibleWhenAllCandidatesUnpriced(t *te
 	}
 }
 
+func TestCostOptimized_AllowTreatsUnpricedAsZeroCost(t *testing.T) {
+	priced := &mockProvider{name: "priced", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "priced"}}
+	unpriced := &mockProvider{name: "unpriced", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "unpriced"}}
+
+	catalog := models.Catalog{
+		"priced/gpt-4o": {
+			Provider: "priced",
+			ModelID:  "gpt-4o",
+			Mode:     models.ModeChat,
+			Pricing: models.Pricing{
+				InputPerMTokens: ptrF(1.0),
+			},
+		},
+		"unpriced/gpt-4o": {
+			Provider: "unpriced",
+			ModelID:  "gpt-4o",
+			Mode:     models.ModeChat,
+			Pricing:  models.Pricing{},
+		},
+	}
+	targets := []Target{{VirtualKey: "priced"}, {VirtualKey: "unpriced"}}
+	s := NewCostOptimized(targets, newLookup(priced, unpriced), catalog, "allow")
+
+	resp, err := s.Execute(context.Background(), providers.Request{
+		Model:    "gpt-4o",
+		Messages: []providers.Message{{Role: "user", Content: "hello"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.ID != "unpriced" {
+		t.Errorf("expected allow mode to pick zero-cost unpriced provider, got %q", resp.ID)
+	}
+}
+
+func TestCostOptimized_SkipErrorsWhenAllCandidatesUnpriced(t *testing.T) {
+	first := &mockProvider{name: "first", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "first"}}
+	second := &mockProvider{name: "second", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "second"}}
+
+	catalog := models.Catalog{
+		"first/gpt-4o": {
+			Provider: "first",
+			ModelID:  "gpt-4o",
+			Mode:     models.ModeChat,
+			Pricing:  models.Pricing{},
+		},
+		"second/gpt-4o": {
+			Provider: "second",
+			ModelID:  "gpt-4o",
+			Mode:     models.ModeChat,
+			Pricing:  models.Pricing{},
+		},
+	}
+	targets := []Target{{VirtualKey: "first"}, {VirtualKey: "second"}}
+	s := NewCostOptimized(targets, newLookup(first, second), catalog, "skip")
+
+	_, err := s.Execute(context.Background(), providers.Request{
+		Model:    "gpt-4o",
+		Messages: []providers.Message{{Role: "user", Content: "hello"}},
+	})
+	if err == nil {
+		t.Fatal("expected error when skip mode has no priced candidates")
+	}
+}
+
 func TestCostOptimized_SkipsUnsupportedModel(t *testing.T) {
 	p1 := &mockProvider{name: "cheap", models: []string{"gpt-3.5-turbo"}, resp: &providers.Response{ID: "wrong"}}
 	p2 := &mockProvider{name: "expensive", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "right"}}

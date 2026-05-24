@@ -278,6 +278,8 @@ Full annotated example — copy to `config.yaml` and customize:
 strategy:
   mode: fallback  # single | fallback | loadbalance | conditional
                   # least-latency | cost-optimized | content-based | ab-test
+  # cost-optimized only: fallback (default) | skip | allow
+  # unpriced_strategy: fallback
 
 # Provider targets (tried in order for fallback mode)
 targets:
