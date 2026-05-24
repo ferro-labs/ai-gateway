@@ -136,16 +136,10 @@ func selectCostOptimizedCandidate(candidates []priced, strategy unpricedStrategy
 	if best != nil {
 		return best, nil
 	} else if strategy.requiresPricedCandidate() {
+		// No cataloged/priced candidate is selectable; return an error.
 		return nil, fmt.Errorf("no priced provider supports model %s", model)
 	}
-
 	// Preserve historical fallback behavior: when no cataloged/priced candidate
 	// is selectable, fallback and allow route to the first compatible target.
-	for i := range candidates {
-		if candidates[i].isModel {
-			return &candidates[i], nil
-		}
-	}
-
 	return &candidates[0], nil
 }
