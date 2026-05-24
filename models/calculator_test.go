@@ -48,6 +48,9 @@ func TestCalculateChatBasic(t *testing.T) {
 	if got.TotalUSD != 12.5 {
 		t.Errorf("TotalUSD: got %v, want 12.5", got.TotalUSD)
 	}
+	if !got.Priced {
+		t.Error("Priced should be true when token pricing is present")
+	}
 }
 
 func TestCalculateChatCacheAndReasoning(t *testing.T) {
@@ -111,6 +114,55 @@ func TestCalculateChatNilPricing(t *testing.T) {
 
 	if got.TotalUSD != 0 {
 		t.Errorf("TotalUSD: got %v, want 0 for all-nil pricing", got.TotalUSD)
+	}
+	if got.Priced {
+		t.Error("Priced should be false for all-nil pricing")
+	}
+}
+
+func TestCalculateChatOutputOnlyPricingIsNotInputPriced(t *testing.T) {
+	c := catalogWith("openai/output-only", Model{
+		Provider: "openai",
+		ModelID:  "output-only",
+		Mode:     ModeChat,
+		Pricing: Pricing{
+			OutputPerMTokens: ptr(15.0),
+		},
+	})
+
+	got := Calculate(c, "openai/output-only", Usage{
+		PromptTokens:     100_000,
+		CompletionTokens: 100_000,
+	})
+
+	if got.InputUSD != 0 {
+		t.Errorf("InputUSD: got %v, want 0 when input pricing is nil", got.InputUSD)
+	}
+	if got.OutputUSD != 1.5 {
+		t.Errorf("OutputUSD: got %v, want 1.5", got.OutputUSD)
+	}
+	if got.Priced {
+		t.Error("Priced should be false when input pricing is nil")
+	}
+}
+
+func TestCalculateChatZeroInputPriceIsPriced(t *testing.T) {
+	c := catalogWith("openai/free-input", Model{
+		Provider: "openai",
+		ModelID:  "free-input",
+		Mode:     ModeChat,
+		Pricing: Pricing{
+			InputPerMTokens: ptr(0),
+		},
+	})
+
+	got := Calculate(c, "openai/free-input", Usage{PromptTokens: 100_000})
+
+	if got.InputUSD != 0 {
+		t.Errorf("InputUSD: got %v, want 0 for explicit free input pricing", got.InputUSD)
+	}
+	if !got.Priced {
+		t.Error("Priced should be true when input pricing is explicitly zero")
 	}
 }
 
@@ -236,6 +288,9 @@ func TestCalculateModelNotFound(t *testing.T) {
 	}
 	if got.TotalUSD != 0 {
 		t.Errorf("TotalUSD: got %v, want 0 for unknown model", got.TotalUSD)
+	}
+	if got.Priced {
+		t.Error("Priced should be false for unknown model")
 	}
 }
 

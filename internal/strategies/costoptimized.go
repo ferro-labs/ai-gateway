@@ -41,6 +41,7 @@ func (c *CostOptimized) Execute(ctx context.Context, req providers.Request) (*pr
 		target   Target
 		costUSD  float64
 		hasPrice bool
+		isModel  bool
 	}
 
 	var candidates []priced
@@ -55,7 +56,8 @@ func (c *CostOptimized) Execute(ctx context.Context, req providers.Request) (*pr
 		candidates = append(candidates, priced{
 			target:   t,
 			costUSD:  result.InputUSD,
-			hasPrice: result.ModelFound,
+			hasPrice: result.Priced,
+			isModel:  result.ModelFound,
 		})
 	}
 
@@ -67,7 +69,7 @@ func (c *CostOptimized) Execute(ctx context.Context, req providers.Request) (*pr
 	var best *priced
 	for i := range candidates {
 		entry := &candidates[i]
-		if !entry.hasPrice {
+		if !entry.hasPrice || !entry.isModel {
 			continue
 		}
 		if best == nil || entry.costUSD < best.costUSD {
