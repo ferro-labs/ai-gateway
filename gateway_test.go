@@ -81,6 +81,8 @@ func counterValue(t *testing.T, c prometheus.Counter) float64 {
 	return m.GetCounter().GetValue()
 }
 
+func ptrFloat64(v float64) *float64 { return &v }
+
 func TestGateway_Route_Single(t *testing.T) {
 	gw, _ := New(Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
@@ -132,6 +134,83 @@ func TestGateway_Route_Fallback(t *testing.T) {
 	}
 	if resp.ID != "fallback-ok" {
 		t.Errorf("got ID %q, want fallback-ok", resp.ID)
+	}
+}
+
+func TestGateway_Route_CostOptimizedPassesUnpricedStrategy(t *testing.T) {
+	tests := []struct {
+		name             string
+		unpricedStrategy string
+		wantProvider     string
+	}{
+		{
+			name:             "skip routes to priced provider",
+			unpricedStrategy: "skip",
+			wantProvider:     "priced",
+		},
+		{
+			name:             "allow routes to unpriced provider",
+			unpricedStrategy: "allow",
+			wantProvider:     "unpriced",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gw, err := New(Config{
+				Strategy: StrategyConfig{
+					Mode:             ModeCostOptimized,
+					UnpricedStrategy: tt.unpricedStrategy,
+				},
+				Targets: []Target{
+					{VirtualKey: "unpriced"},
+					{VirtualKey: "priced"},
+				},
+			})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			gw.catalog = models.Catalog{
+				"unpriced/gpt-4o": {
+					Provider: "unpriced",
+					ModelID:  "gpt-4o",
+					Mode:     models.ModeChat,
+					Pricing:  models.Pricing{},
+				},
+				"priced/gpt-4o": {
+					Provider: "priced",
+					ModelID:  "gpt-4o",
+					Mode:     models.ModeChat,
+					Pricing: models.Pricing{
+						InputPerMTokens: ptrFloat64(1.0),
+					},
+				},
+			}
+			gw.RegisterProvider(&mockProvider{
+				name:   "unpriced",
+				models: []string{"gpt-4o"},
+				resp:   &providers.Response{ID: "unpriced", Model: "gpt-4o"},
+			})
+			gw.RegisterProvider(&mockProvider{
+				name:   "priced",
+				models: []string{"gpt-4o"},
+				resp:   &providers.Response{ID: "priced", Model: "gpt-4o"},
+			})
+
+			resp, err := gw.Route(context.Background(), providers.Request{
+				Model:    "gpt-4o",
+				Messages: []providers.Message{{Role: "user", Content: "hello"}},
+			})
+			if err != nil {
+				t.Fatalf("Route: %v", err)
+			}
+			if resp.Provider != tt.wantProvider {
+				t.Fatalf("got provider %q, want %q", resp.Provider, tt.wantProvider)
+			}
+			if resp.ID != tt.wantProvider {
+				t.Fatalf("got response ID %q, want %q", resp.ID, tt.wantProvider)
+			}
+		})
 	}
 }
 

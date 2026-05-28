@@ -67,6 +67,14 @@ func ValidateConfig(cfg Config) error {
 		return fmt.Errorf("ab-test strategy requires at least one ab_variant")
 	}
 
+	if mode == ModeCostOptimized {
+		switch cfg.Strategy.UnpricedStrategy {
+		case "", "fallback", "skip", "allow":
+		default:
+			return fmt.Errorf("cost-optimized unpriced_strategy must be one of fallback, skip, allow")
+		}
+	}
+
 	if mode == ModeLoadBalance {
 		var sum float64
 		for _, t := range cfg.Targets {

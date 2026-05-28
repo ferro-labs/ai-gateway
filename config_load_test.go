@@ -28,6 +28,24 @@ func TestLoadConfig_Valid(t *testing.T) {
 	}
 }
 
+func TestLoadConfig_CostOptimizedUnpricedStrategy(t *testing.T) {
+	data := `{
+		"strategy": {"mode": "cost-optimized", "unpriced_strategy": "skip"},
+		"targets": [
+			{"virtual_key": "openai-key"}
+		]
+	}`
+	path := writeTempFile(t, "config.json", data)
+
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Strategy.UnpricedStrategy != "skip" {
+		t.Errorf("expected unpriced_strategy %q, got %q", "skip", cfg.Strategy.UnpricedStrategy)
+	}
+}
+
 func TestLoadConfig_NonExistentFile(t *testing.T) {
 	_, err := LoadConfig("/tmp/does-not-exist-config-12345.json")
 	if err == nil {
@@ -103,6 +121,36 @@ func TestValidateConfig_UnknownStrategy(t *testing.T) {
 	}
 	if err := ValidateConfig(cfg); err == nil {
 		t.Fatal("expected error for unknown strategy")
+	}
+}
+
+func TestValidateConfig_CostOptimizedUnpricedStrategy(t *testing.T) {
+	tests := []struct {
+		name              string
+		unpricedStrategy  string
+		wantValidationErr bool
+	}{
+		{name: "default"},
+		{name: "fallback", unpricedStrategy: "fallback"},
+		{name: "skip", unpricedStrategy: "skip"},
+		{name: "allow", unpricedStrategy: "allow"},
+		{name: "invalid", unpricedStrategy: "free", wantValidationErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Config{
+				Strategy: StrategyConfig{Mode: ModeCostOptimized, UnpricedStrategy: tt.unpricedStrategy},
+				Targets:  []Target{{VirtualKey: "key1"}},
+			}
+			err := ValidateConfig(cfg)
+			if tt.wantValidationErr && err == nil {
+				t.Fatal("expected validation error")
+			}
+			if !tt.wantValidationErr && err != nil {
+				t.Fatalf("unexpected validation error: %v", err)
+			}
+		})
 	}
 }
 

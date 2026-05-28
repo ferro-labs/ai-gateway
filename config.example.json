@@ -1,6 +1,7 @@
 {
   "strategy": {
     "mode": "fallback",
+    "_unpriced_strategy_comment": "cost-optimized only: fallback (default) | skip | allow",
     "_comment": "mode: single | fallback | loadbalance | conditional | content-based | ab-test | least-latency | cost-optimized"
   },
   "_conditional_example": {
