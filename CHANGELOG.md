@@ -5,7 +5,27 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.1.0] — 2026-05-24
+
+Adds opt-in OpenTelemetry tracing. Off by default — a zero-allocation no-op until an OTLP endpoint or exporter is configured.
+
+### Added
+
+- **OpenTelemetry tracing** (issue [#49](https://github.com/ferro-labs/ai-gateway/issues/49)): new public `observability` package (stable `Provider`/`Span`/`Exporter`/`Event` seam + `gen_ai.*`/`ferro.*` attribute constants) backed by an `internal/otel` OTLP pipeline (gRPC + HTTP/protobuf, W3C propagation). Each `Route()`/`RouteStream()` emits a `gateway.request` span carrying model, token-usage, cost, and routing attributes; plugins and MCP tool calls emit child spans; outbound provider calls are `otelhttp`-instrumented.
+- **Unified trace ID**: the OTel `trace_id`, log trace ID, `X-Request-ID` header, and `ferro.gateway.trace_id` attribute are identical per request (custom `IDGenerator` adopting the logging trace ID). Holds for self-originated requests too; embedders bypassing `logging.Middleware` get a consistent independent ID.
+- **Privacy levels**: `observability.tracing.privacy_level` — `none` (records only `"redacted"`), `metadata` (default; redacts email/JWT/AWS keys via `internal/redact`), or `full` (raw error text). Validated at config load.
+- **Exporter event pathway**: registered exporters receive `gateway.request.completed`/`failed` events, configured via the new `observability.exporters` block (non-fatal on unknown/failing exporters). Contract + wiring only — no built-in exporters ship here; vendor bridges live in the forthcoming `ai-gateway-plugins` repo.
+- **Config**: `ObservabilityConfig`/`TracingConfig`/`ExporterConfig` (endpoint, protocol, sample_ratio, privacy_level, shutdown_grace) in `gateway.Config`; `OTEL_*` env vars take precedence. New `Gateway.SetObservability`/`Observability` accessors.
+- **OTLP exporter headers**: `observability.tracing.headers` (values support `${ENV}` interpolation) enables authenticated OTLP export to managed backends (Datadog, New Relic, Honeycomb, …). The standard `OTEL_EXPORTER_OTLP_HEADERS` env var also applies. The endpoint scheme selects transport security — `https://` uses TLS, while `http://` or a bare `host:port` connects in plaintext.
+
+### Changed
+
+- `internal/logging.Middleware` trace-ID precedence: existing context ID → inbound `X-Request-ID` → freshly generated.
+- `internal/transport.Manager.DefaultTransport` and `ProviderPool.Transport` now return the raw `*http.Transport` (the client `RoundTripper` is the `otelhttp` wrapper) — inspect via these accessors.
+
+### Documentation
+
+- New **Observability** section in both [README.md](README.md) and [README.zh-CN.md](README.zh-CN.md) (Jaeger quickstart, config, OTLP headers, endpoint TLS, privacy levels, plugin exporters); `config.example.{yaml,json}` and ROADMAP updated for the OTel scope.
 
 ---
 

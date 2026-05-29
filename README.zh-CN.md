@@ -237,9 +237,10 @@ make setup && make bench
 
 ### 📊 可观测性
 
+- **OpenTelemetry 链路追踪**（v1.1.0+）—— OTLP gRPC/HTTP 导出器、W3C `traceparent` 传播、GenAI 语义约定（`gen_ai.*`）以及用于成本、路由、MCP 和流式时序的 `ferro.*` 扩展属性；错误记录受 `privacy_level` 约束；`shutdown_grace` 可配置
 - `/metrics` 端点提供 Prometheus 指标
 - `/health` 端点提供深度健康检查，包含每个提供商的状态
-- 结构化 JSON 请求日志，支持 SQLite/PostgreSQL 持久化
+- 结构化 JSON 请求日志，支持 SQLite/PostgreSQL 持久化（trace ID 在日志、OTel span 与 `X-Request-ID` 响应头之间保持统一）
 - 管理 API，提供使用统计、请求日志和配置历史/回滚
 - `/dashboard` 内置仪表盘 UI
 - HTTP 级连接追踪，包含 DNS、TLS 和首字节延迟
@@ -337,6 +338,86 @@ mcp_servers:
 ```
 
 完整模板及所有选项，请参阅 [config.example.yaml](config.example.yaml) 和 [config.example.json](config.example.json)。
+
+---
+
+## 可观测性
+
+Ferro Labs AI 网关在 v1.1.0+ 中提供一流的 **OpenTelemetry** 支持。当 OTel 关闭时（默认），网关使用零分配的 no-op provider 运行——保持关闭没有任何开销。一旦设置了 OTLP 端点，每个请求都会生成一个 `gateway.request` 根 span，携带丰富的 GenAI 语义约定以及用于成本、路由和流式时序的 Ferro 专有扩展。
+
+### 一步启用
+
+设置标准的 OTel 环境变量：
+
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4317
+ferrogw serve
+```
+
+……或在 `config.yaml` 中添加 `observability` 配置块：
+
+```yaml
+observability:
+  tracing:
+    enabled: true
+    endpoint: localhost:4317   # 留空则读取 OTEL_EXPORTER_OTLP_ENDPOINT
+    protocol: grpc             # grpc | http/protobuf
+    service_name: ferrogw
+    sample_ratio: 1.0
+    privacy_level: metadata    # none | metadata | full（见下文）
+    shutdown_grace: 10s        # 关闭时排空 OTel 导出的最长等待时间
+    # headers:                          # 认证后端所需的 OTLP 导出请求头
+    #   dd-api-key: "${DATADOG_API_KEY}"  # 值支持 ${ENV_VAR} 环境变量插值
+
+  # exporters 用于接入插件式可观测性导出器（见下文"插件导出器"）。
+  # exporters:
+  #   - name: langsmith
+  #     enabled: true
+  #     config:
+  #       api_key: "${LANGSMITH_API_KEY}"
+```
+
+标准 `OTEL_*` 环境变量（如 `OTEL_EXPORTER_OTLP_ENDPOINT`、`OTEL_TRACES_SAMPLER`）始终优先于配置文件——这符合 OTel SDK 约定，也是容器化部署可预测性的要求。
+
+`observability.tracing.headers` 允许向已认证的托管后端（Datadog、New Relic、Honeycomb、Grafana Cloud）发送 OTLP 链路数据，只需配置对应的 vendor 请求头（如 API Key）。值支持 `${ENV_VAR}` 插值，因此密钥不会以明文形式存储在配置文件中。标准环境变量 `OTEL_EXPORTER_OTLP_HEADERS` 同样适用，符合 OTel 约定。
+
+**端点 scheme 决定传输安全性**：`https://` 端点使用 TLS，而 `http://` 端点或裸 `host:port`（如 `localhost:4317`）以明文连接。托管后端需使用 `https://` 形式。
+
+### 会发出哪些数据
+
+以下属性**当前会**在 `gateway.request` 根 span 上发出。标注为"计划中"的属性已预留但尚未接入。
+
+- **`gateway.request`** 每个请求一个根 span（`SERVER` 类型），包含 `gen_ai.system`、`gen_ai.operation.name`、`gen_ai.request.model`、`gen_ai.response.model`、`gen_ai.usage.{input,output}_tokens`
+- **`HTTP {GET,POST}`** 每个出站提供商调用一个子 span（`CLIENT` 类型，通过 `otelhttp` 传输包装）——将 `traceparent` 传播给上游提供商
+- **`ferro.*` 已发出属性**：`ferro.cost.{usd,input_usd,output_usd,cache_read_usd,cache_write_usd,reasoning_usd,model_found}`、`ferro.routing.{strategy,target_key}`、`ferro.stream.time_to_{first,last}_token_ms`、`ferro.gateway.trace_id`、`ferro.plugin.{name,kind,stage,outcome,reason}`、`ferro.mcp.{server,tool,latency_ms}`
+- **W3C TraceContext + Baggage** 传播：尊重入站 `traceparent`；出站请求继续向下传递
+- **统一 trace ID**：对于通过网关 HTTP 栈处理的所有请求，OTel `trace_id`、`X-Request-ID` 响应头以及每条日志行的 `trace_id` 字段在每个请求内保证相等。（绕过 `logging.Middleware` 的嵌入式调用方会获得一个一致但独立的 span trace ID。）
+
+### 使用 Jaeger 本地试用
+
+```bash
+docker run --rm -p 16686:16686 -p 4317:4317 jaegertracing/all-in-one
+OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4317 ferrogw serve
+# 发起一个请求，然后打开 http://localhost:16686
+```
+
+### 隐私级别
+
+`privacy_level` 控制错误消息在 span 上的记录方式。任何级别都**不会**导出 prompt 或响应内容——那需要未来的 L3 导出器插件。
+
+| 级别 | span 上的错误记录 | 默认 |
+|:------|:------|:------|
+| `none` | 状态和异常仅携带静态字符串 `"redacted"`——不暴露任何内容或内部类型 | — |
+| `metadata` | 错误消息在附加前先经过脱敏（email / JWT / AWS 密钥替换为标记） | ✅ |
+| `full` | 原始错误文本不经脱敏直接记录——仅用于受信任的自托管调试 | — |
+
+非法取值会在启动时被配置校验拒绝。
+
+### 插件导出器
+
+`observability.exporters` 配置块用于接入插件导出器，它们在每个请求上接收 `gateway.request.completed` 和 `gateway.request.failed` 事件。导出器的工作与是否配置 OTLP 追踪端点无关。
+
+**本仓库不内置任何导出器插件。** 它们由 `ai-gateway-plugins` 仓库提供，并在其 `init()` 中通过 `observability.RegisterExporter` 自注册。`observability.Exporter` 契约自 v1.1.0 起保持稳定。无法识别或初始化失败的导出器会发出警告并被跳过——网关仍会正常启动。
 
 ---
 

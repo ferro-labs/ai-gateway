@@ -80,6 +80,19 @@ func ValidateConfig(cfg Config) error {
 		}
 	}
 
+	// Validate observability.tracing.privacy_level when explicitly set.
+	// Allowed values: "", "none", "metadata", "full".
+	// (Constants mirrored from internal/otel to avoid a root→internal import.)
+	switch cfg.Observability.Tracing.PrivacyLevel {
+	case "", "none", "metadata", "full":
+		// valid
+	default:
+		return fmt.Errorf(
+			"invalid observability.tracing.privacy_level %q: must be one of none, metadata, full",
+			cfg.Observability.Tracing.PrivacyLevel,
+		)
+	}
+
 	// Validate aliases: no alias may point to another alias (no cycles/chains).
 	for name, target := range cfg.Aliases {
 		if name == "" {

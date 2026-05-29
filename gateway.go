@@ -35,6 +35,7 @@ import (
 	"github.com/ferro-labs/ai-gateway/internal/streamwrap"
 	pubmcp "github.com/ferro-labs/ai-gateway/mcp"
 	"github.com/ferro-labs/ai-gateway/models"
+	"github.com/ferro-labs/ai-gateway/observability"
 	"github.com/ferro-labs/ai-gateway/plugin"
 	"github.com/ferro-labs/ai-gateway/providers"
 	"github.com/ferro-labs/ai-gateway/providers/core"
@@ -62,6 +63,19 @@ type Gateway struct {
 	discoveredModels map[string][]providers.ModelInfo
 	latencyTracker   *latency.Tracker
 	modelIndex       modelLookupIndex
+
+	// obs is the observability provider used to emit per-request spans.
+	// Defaults to observability.NoOp() when SetObservability has not
+	// been called, which guarantees zero allocations on the hot path
+	// (issue #49 acceptance criterion).
+	obs observability.Provider
+
+	// obsEventsActive is true when the installed Provider implements
+	// observability.EventRecordingProvider and RecordingEnabled() returned
+	// true at the time SetObservability was called.  It is read on the
+	// hot path without holding the gateway mutex — it is set once before
+	// traffic starts, so no additional synchronisation is required.
+	obsEventsActive bool
 
 	// MCP fields — nil when no MCPServers are configured.
 	mcpRegistry *mcp.Registry
@@ -107,6 +121,7 @@ func New(cfg Config) (*Gateway, error) {
 			exactImageProviders:  make(map[string][]string),
 		},
 		hookDispatchQ: make(chan hookDispatch, hookDispatchQueueSize),
+		obs:           observability.NoOp(),
 	}
 	gw.hookSnapshot.Store([]EventHookFunc{})
 	gw.startHookWorkers()
@@ -149,6 +164,37 @@ func New(cfg Config) (*Gateway, error) {
 	}
 
 	return gw, nil
+}
+
+// SetObservability installs an observability.Provider on the gateway.
+// Pass observability.NoOp() to disable. The provider's StartRequestSpan
+// is called at the top of Route and RouteStream; span attributes are
+// populated incrementally as the request progresses through routing,
+// provider execution, plugins, and final cost/usage calculation.
+//
+// Safe to call only at startup, before serving traffic. The cmd/ferrogw
+// wire-up constructs the provider via internal/otel.Init.
+func (g *Gateway) SetObservability(p observability.Provider) {
+	if p == nil {
+		p = observability.NoOp()
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.obs = p
+	// Cache whether the provider will receive RecordEvent calls so the
+	// hot path can skip Event construction when nothing is listening.
+	g.obsEventsActive = false
+	if er, ok := p.(observability.EventRecordingProvider); ok {
+		g.obsEventsActive = er.RecordingEnabled()
+	}
+}
+
+// Observability returns the current observability.Provider. Always
+// non-nil; defaults to NoOp.
+func (g *Gateway) Observability() observability.Provider {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.obs
 }
 
 // Catalog returns a shallow copy of the loaded model catalog.
@@ -273,6 +319,22 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	start := time.Now()
 	hooksEnabled := g.hasHooks()
 
+	// Start the observability root span. NoOp provider makes this a
+	// zero-allocation call when tracing is disabled.
+	g.mu.RLock()
+	strategyMode := string(g.config.Strategy.Mode)
+	obs := g.obs
+	obsEventsActive := g.obsEventsActive
+	g.mu.RUnlock()
+	ctx, span := obs.StartRequestSpan(ctx, observability.RequestAttrs{
+		Operation:       "chat",
+		RequestModel:    req.Model,
+		IsStream:        req.Stream,
+		TraceID:         logging.TraceIDFromContext(ctx),
+		RoutingStrategy: strategyMode,
+	})
+	defer span.End()
+
 	// Resolve model alias before routing.
 	trace.WithRegion(ctx, "gateway.route.resolve_alias", func() {
 		req = g.resolveAlias(req)
@@ -360,21 +422,24 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 		metrics.ForRequest("", req.Model).Error.Inc()
 		metrics.ForProviderError(provider, errType).Inc()
 
+		span.SetError(err)
+
 		logging.FromContext(ctx).Error("request failed",
 			"model", req.Model,
 			"latency_ms", latency.Milliseconds(),
 			"error", err.Error(),
 		)
 
-		if hooksEnabled {
-			g.publishEvent(ctx, failedEventData(
+		if hooksEnabled || obsEventsActive {
+			he := failedEventData(
 				logging.TraceIDFromContext(ctx),
 				"",
 				req.Model,
 				err.Error(),
 				latency,
 				originalStream,
-			))
+			)
+			g.dispatchRequestEvent(ctx, obs, hooksEnabled, obsEventsActive, he)
 		}
 		return nil, err
 	}
@@ -442,14 +507,38 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 		}
 	}
 
-	// Emit Prometheus metrics.
+	// Emit metrics + cost, stamp the span, and dispatch the completed event.
+	g.recordSuccess(ctx, span, obs, resp, latency, originalStream, hooksEnabled, obsEventsActive)
+
+	resp.OverheadMs = float64((latency - providerDuration).Microseconds()) / 1000.0
+
+	return resp, nil
+}
+
+// dispatchRequestEvent fans a request lifecycle event out to the async hook
+// workers and/or the observability provider, depending on which sinks are
+// active. Centralising the branching keeps Route/RouteStream readable and
+// keeps the two delivery paths in sync.
+func (g *Gateway) dispatchRequestEvent(ctx context.Context, obs observability.Provider, hooksEnabled, obsEventsActive bool, he events.HookEvent) {
+	if hooksEnabled {
+		g.publishEvent(ctx, he)
+	}
+	if obsEventsActive {
+		obs.RecordEvent(ctx, obsEventFromHook(he))
+	}
+}
+
+// recordSuccess emits Prometheus + cost metrics, stamps the root span with the
+// resolved provider/model/usage/cost, logs at debug level, and dispatches the
+// completed lifecycle event. Extracted from Route to keep its cyclomatic
+// complexity in check.
+func (g *Gateway) recordSuccess(ctx context.Context, span observability.Span, obs observability.Provider, resp *providers.Response, latency time.Duration, originalStream, hooksEnabled, obsEventsActive bool) {
 	requestMetrics := metrics.ForRequest(resp.Provider, resp.Model)
 	requestMetrics.Duration.Observe(latency.Seconds())
 	requestMetrics.Success.Inc()
 	requestMetrics.TokensIn.Add(float64(resp.Usage.PromptTokens))
 	requestMetrics.TokensOut.Add(float64(resp.Usage.CompletionTokens))
 
-	// Emit cost metrics using the model catalog.
 	g.mu.RLock()
 	catalog := g.catalog
 	g.mu.RUnlock()
@@ -464,6 +553,24 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 		requestMetrics.CostUSD.Add(cost.TotalUSD)
 	}
 
+	// Stamp final usage + cost + resolved provider/model on the root span.
+	span.SetAttribute(observability.AttrGenAISystem, resp.Provider)
+	span.SetAttribute(observability.AttrGenAIResponseModel, resp.Model)
+	// Stamp the resolved target key (virtual key = provider name in this routing layer).
+	if resp.Provider != "" {
+		span.SetAttribute(observability.AttrFerroRoutingTargetKey, resp.Provider)
+	}
+	span.SetTokens(resp.Usage.PromptTokens, resp.Usage.CompletionTokens, resp.Usage.ReasoningTokens)
+	span.SetCost(observability.CostBreakdown{
+		TotalUSD:      cost.TotalUSD,
+		InputUSD:      cost.InputUSD,
+		OutputUSD:     cost.OutputUSD,
+		CacheReadUSD:  cost.CacheReadUSD,
+		CacheWriteUSD: cost.CacheWriteUSD,
+		ReasoningUSD:  cost.ReasoningUSD,
+		ModelFound:    cost.ModelFound,
+	})
+
 	if logging.Enabled(ctx, slog.LevelDebug) {
 		logging.FromContext(ctx).Debug("request completed",
 			"model", resp.Model,
@@ -475,8 +582,8 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 		)
 	}
 
-	if hooksEnabled {
-		g.publishEvent(ctx, completedEventData(
+	if hooksEnabled || obsEventsActive {
+		he := completedEventData(
 			logging.TraceIDFromContext(ctx),
 			resp.Provider,
 			resp.Model,
@@ -485,12 +592,9 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 			resp.Usage.PromptTokens,
 			resp.Usage.CompletionTokens,
 			cost,
-		))
+		)
+		g.dispatchRequestEvent(ctx, obs, hooksEnabled, obsEventsActive, he)
 	}
-
-	resp.OverheadMs = float64((latency - providerDuration).Microseconds()) / 1000.0
-
-	return resp, nil
 }
 
 // publishEvent calls all registered hooks asynchronously.
@@ -558,6 +662,35 @@ func failedEventData(traceID, provider, model, errMsg string, latency time.Durat
 
 func completedEventData(traceID, provider, model string, latency time.Duration, stream bool, tokensIn, tokensOut int, cost models.CostResult) events.HookEvent {
 	return events.CompletedRequest(traceID, provider, model, latency, stream, tokensIn, tokensOut, cost, true)
+}
+
+// obsEventFromHook converts an internal HookEvent into the public
+// observability.Event that is broadcast to plugin Exporters via
+// Provider.RecordEvent. No prompt or response content is included —
+// only request metadata and usage/cost numbers.
+func obsEventFromHook(e events.HookEvent) observability.Event {
+	return observability.Event{
+		Subject:   e.Subject,
+		TraceID:   e.TraceID,
+		Provider:  e.Provider,
+		Model:     e.Model,
+		Status:    e.Status,
+		Error:     e.Error,
+		LatencyMs: e.LatencyMs,
+		Stream:    e.Stream,
+		TokensIn:  e.TokensIn,
+		TokensOut: e.TokensOut,
+		Cost: observability.CostBreakdown{
+			TotalUSD:      e.Cost.TotalUSD,
+			InputUSD:      e.Cost.InputUSD,
+			OutputUSD:     e.Cost.OutputUSD,
+			CacheReadUSD:  e.Cost.CacheReadUSD,
+			CacheWriteUSD: e.Cost.CacheWriteUSD,
+			ReasoningUSD:  e.Cost.ReasoningUSD,
+			ModelFound:    e.Cost.ModelFound,
+		},
+		Timestamp: e.Timestamp,
+	}
 }
 
 // ReloadConfig validates and applies a new configuration, forcing strategy rebuild on next request.
@@ -848,6 +981,29 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 	hooksEnabled := g.hasHooks()
 	var err error
 
+	// Start the observability root span. End() is normally called by
+	// streamwrap.Meter when the stream drains (via the SpanFinisher
+	// closure below). On the synchronous error paths below we end it
+	// explicitly. streamEnded prevents a double-End.
+	g.mu.RLock()
+	strategyMode := string(g.config.Strategy.Mode)
+	obs := g.obs
+	obsEventsActive := g.obsEventsActive
+	g.mu.RUnlock()
+	ctx, span := obs.StartRequestSpan(ctx, observability.RequestAttrs{
+		Operation:       "chat",
+		RequestModel:    req.Model,
+		IsStream:        true,
+		TraceID:         logging.TraceIDFromContext(ctx),
+		RoutingStrategy: strategyMode,
+	})
+	streamEnded := false
+	defer func() {
+		if !streamEnded {
+			span.End()
+		}
+	}()
+
 	// Resolve model alias before routing.
 	trace.WithRegion(ctx, "gateway.route_stream.resolve_alias", func() {
 		req = g.resolveAlias(req)
@@ -951,10 +1107,17 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 	g.mu.RUnlock()
 
 	if sp == nil {
-		return nil, fmt.Errorf("no streaming-capable provider found for model: %s", req.Model)
+		err = fmt.Errorf("no streaming-capable provider found for model: %s", req.Model)
+		span.SetError(err)
+		return nil, err
 	}
 
 	providerName := sp.Name()
+	span.SetAttribute(observability.AttrGenAISystem, providerName)
+	// Stamp the resolved target key (virtual key = provider name in this routing layer).
+	if providerName != "" {
+		span.SetAttribute(observability.AttrFerroRoutingTargetKey, providerName)
+	}
 	if logging.Enabled(ctx, slog.LevelDebug) {
 		logging.FromContext(ctx).Debug("stream request started", "model", req.Model, "provider", providerName)
 	}
@@ -970,15 +1133,17 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 		}
 		metrics.ForRequest(providerName, req.Model).Error.Inc()
 		metrics.ForProviderError(providerName, errType).Inc()
-		if hooksEnabled {
-			g.publishEvent(ctx, failedEventData(
+		span.SetError(err)
+		if hooksEnabled || obsEventsActive {
+			he := failedEventData(
 				logging.TraceIDFromContext(ctx),
 				providerName,
 				req.Model,
 				err.Error(),
 				time.Since(start),
 				true,
-			))
+			)
+			g.dispatchRequestEvent(ctx, obs, hooksEnabled, obsEventsActive, he)
 		}
 		return nil, err
 	}
@@ -998,6 +1163,65 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 	if hooksEnabled {
 		meta.PublishFn = g.publishEvent
 	}
+
+	// Hand the root span off to streamwrap so token, cost, and timing
+	// attributes are stamped after the channel drains. The finisher
+	// closes the span; the deferred fallback above is suppressed via
+	// streamEnded.
+	streamEnded = true
+	finishSpan := span
+	// obsProvider and obsEventsActive are the snapshot locals captured at the
+	// top of RouteStream — they must not re-read g.obs / g.obsEventsActive here.
+	obsProvider := obs
+	traceID := logging.TraceIDFromContext(ctx)
+	meta.SpanFinisher = streamwrap.SpanFinisherFunc(func(o streamwrap.StreamOutcome) {
+		finishSpan.SetTokens(o.TokensIn, o.TokensOut, o.ReasoningIn)
+		finishSpan.SetCost(observability.CostBreakdown{
+			TotalUSD:      o.Cost.TotalUSD,
+			InputUSD:      o.Cost.InputUSD,
+			OutputUSD:     o.Cost.OutputUSD,
+			CacheReadUSD:  o.Cost.CacheReadUSD,
+			CacheWriteUSD: o.Cost.CacheWriteUSD,
+			ReasoningUSD:  o.Cost.ReasoningUSD,
+			ModelFound:    o.Cost.ModelFound,
+		})
+		finishSpan.SetStreamTimings(o.TTFTMs, o.TTLTMs)
+		if o.ErrorMsg != "" {
+			finishSpan.SetError(errors.New(o.ErrorMsg))
+		}
+		finishSpan.End()
+
+		// Emit observability event for streaming completion/failure.
+		if obsEventsActive {
+			var he events.HookEvent
+			if o.ErrorMsg != "" {
+				he = events.FailedRequest(
+					traceID,
+					providerName,
+					req.Model,
+					o.ErrorMsg,
+					time.Duration(o.TTLTMs*float64(time.Millisecond)),
+					true,
+				)
+			} else {
+				he = events.CompletedRequest(
+					traceID,
+					providerName,
+					req.Model,
+					time.Duration(o.TTLTMs*float64(time.Millisecond)),
+					true,
+					o.TokensIn,
+					o.TokensOut,
+					o.Cost,
+					false,
+				)
+			}
+			// Use a detached context: this closure runs in the streamwrap
+			// goroutine after the HTTP handler has returned and the
+			// request ctx is already cancelled.
+			obsProvider.RecordEvent(context.Background(), obsEventFromHook(he))
+		}
+	})
 	return streamwrap.Meter(ctx, rawCh, start, meta), nil
 }
 

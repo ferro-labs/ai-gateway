@@ -4,13 +4,30 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"runtime/trace"
+	rtrace "runtime/trace"
 	"time"
 
+	"github.com/ferro-labs/ai-gateway/observability"
 	"github.com/ferro-labs/ai-gateway/providers/core"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
+
+// mcpTracerName is the OpenTelemetry instrumentation scope name used for
+// MCP tool-call child spans. Matches the package import path so backends
+// can identify the source of these spans.
+const mcpTracerName = "github.com/ferro-labs/ai-gateway/internal/mcp"
+
+// mcpTracer returns the OpenTelemetry tracer for MCP-instrumentation
+// spans. When OTel is not configured by the gateway, the global
+// provider returns a no-op tracer and spans are zero-cost.
+func mcpTracer() trace.Tracer {
+	return otel.Tracer(mcpTracerName)
+}
 
 // AuditFn is an optional callback invoked after every MCP tool invocation.
 // serverName and toolName identify the call; status is "ok" or "error";
@@ -101,7 +118,7 @@ func (e *Executor) ShouldContinueLoop(resp *core.Response, depth int) bool {
 // returning the new messages (one assistant message + one tool message per
 // call) to append to the conversation before the next LLM turn.
 func (e *Executor) ResolvePendingToolCalls(ctx context.Context, resp *core.Response) ([]core.Message, error) {
-	ctx, task := trace.NewTask(ctx, "mcp.resolve_tool_calls")
+	ctx, task := rtrace.NewTask(ctx, "mcp.resolve_tool_calls")
 	defer task.End()
 
 	if resp == nil || len(resp.Choices) == 0 {
@@ -148,19 +165,34 @@ func (e *Executor) ResolvePendingToolCalls(ctx context.Context, resp *core.Respo
 				args = json.RawMessage(tc.Function.Arguments)
 			}
 
+			// OTel child span around the MCP tool call. When the
+			// gateway has not initialised an OTel provider this is a
+			// no-op span at zero cost.
+			toolCtx, span := mcpTracer().Start(ctx, "mcp.call_tool",
+				trace.WithSpanKind(trace.SpanKindClient),
+				trace.WithAttributes(
+					attribute.String(observability.AttrFerroMCPServer, serverName),
+					attribute.String(observability.AttrFerroMCPTool, toolName),
+				),
+			)
+
 			callStart := time.Now()
 			var result *ToolCallResult
 			var err error
-			trace.WithRegion(ctx, "mcp.call_tool", func() {
-				result, err = client.CallTool(ctx, toolName, args)
+			rtrace.WithRegion(toolCtx, "mcp.call_tool", func() {
+				result, err = client.CallTool(toolCtx, toolName, args)
 			})
 			elapsed := time.Since(callStart)
 			metricToolCallDuration.WithLabelValues(serverName, toolName).Observe(elapsed.Seconds())
 			latencyMs := int(elapsed.Milliseconds())
+			span.SetAttributes(attribute.Int64(observability.AttrFerroMCPLatencyMs, int64(latencyMs)))
 
 			if err != nil {
 				metricToolCallsTotal.WithLabelValues(serverName, toolName, "error").Inc()
 				e.callAuditFn(ctx, serverName, toolName, "error", latencyMs, err.Error())
+				span.RecordError(err)
+				span.SetStatus(codes.Error, err.Error())
+				span.End()
 				extra = append(extra, core.Message{
 					Role:       core.RoleTool,
 					ToolCallID: tc.ID,
@@ -171,6 +203,8 @@ func (e *Executor) ResolvePendingToolCalls(ctx context.Context, resp *core.Respo
 
 			metricToolCallsTotal.WithLabelValues(serverName, toolName, "ok").Inc()
 			e.callAuditFn(ctx, serverName, toolName, "ok", latencyMs, "")
+			span.SetStatus(codes.Ok, "")
+			span.End()
 
 			// Convert MCP content blocks to a plain string for the LLM.
 			content, err := contentBlocksToString(result.Content)

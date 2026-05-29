@@ -302,5 +302,18 @@
       "allowed_tools": ["web_search", "web_read"],
       "timeout_seconds": 20
     }
-  ]
+  ],
+  "observability": {
+    "tracing": {
+      "enabled": true,
+      "endpoint": "",
+      "protocol": "grpc",
+      "service_name": "ferrogw",
+      "sample_ratio": 1.0,
+      "privacy_level": "metadata",
+      "shutdown_grace": "10s",
+      "headers": {}
+    },
+    "exporters": []
+  }
 }

@@ -2,7 +2,6 @@ package httpclient
 
 import (
 	"errors"
-	"net/http"
 	"testing"
 	"time"
 )
@@ -38,12 +37,12 @@ func TestSharedStreaming_NoTimeout(t *testing.T) {
 	if sc == nil {
 		t.Fatal("SharedStreaming() must not be nil")
 	}
-	transport, ok := sc.Transport.(*http.Transport)
-	if !ok {
-		t.Fatalf("streaming transport is %T, want *http.Transport", sc.Transport)
-	}
-	if transport.ResponseHeaderTimeout != 0 {
-		t.Errorf("streaming ResponseHeaderTimeout = %v, want 0", transport.ResponseHeaderTimeout)
+	// The client's RoundTripper is the OTel-wrapping transport since
+	// v1.1.0. The raw transport's ResponseHeaderTimeout is asserted in
+	// transport.TestDefaultConfig — here we just check the client is
+	// streaming-shaped (no client-level timeout).
+	if sc.Timeout != 0 {
+		t.Errorf("streaming client Timeout = %v, want 0", sc.Timeout)
 	}
 }
 

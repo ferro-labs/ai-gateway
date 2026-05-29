@@ -13,6 +13,7 @@ import (
 	"github.com/ferro-labs/ai-gateway/internal/handler"
 	"github.com/ferro-labs/ai-gateway/internal/logging"
 	"github.com/ferro-labs/ai-gateway/internal/middleware"
+	gwotel "github.com/ferro-labs/ai-gateway/internal/otel"
 	"github.com/ferro-labs/ai-gateway/internal/proxy"
 	"github.com/ferro-labs/ai-gateway/internal/ratelimit"
 	"github.com/ferro-labs/ai-gateway/internal/requestlog"
@@ -43,6 +44,12 @@ func NewRouter(
 	r := chi.NewRouter()
 
 	// Core middleware stack.
+	// OTel middleware MUST come before logging.Middleware so any inbound
+	// W3C traceparent is extracted into the request context, then the
+	// logging layer reuses that trace ID for X-Request-ID. When no OTel
+	// provider is configured this middleware is a cheap no-op (the
+	// global propagator is the default no-op propagator).
+	r.Use(gwotel.Middleware)
 	r.Use(logging.Middleware) // inject trace ID + X-Request-ID header
 	r.Use(chimw.Recoverer)
 	r.Use(chimw.RealIP)

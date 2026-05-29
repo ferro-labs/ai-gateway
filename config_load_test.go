@@ -185,6 +185,32 @@ func TestLoadConfig_UnsupportedExtension(t *testing.T) {
 	}
 }
 
+func TestValidateConfig_PrivacyLevel(t *testing.T) {
+	validLevels := []string{"", "none", "metadata", "full"}
+	for _, level := range validLevels {
+		cfg := Config{
+			Strategy:      StrategyConfig{Mode: ModeSingle},
+			Targets:       []Target{{VirtualKey: "key1"}},
+			Observability: ObservabilityConfig{Tracing: TracingConfig{PrivacyLevel: level}},
+		}
+		if err := ValidateConfig(cfg); err != nil {
+			t.Errorf("ValidateConfig with PrivacyLevel=%q: unexpected error: %v", level, err)
+		}
+	}
+
+	invalidLevels := []string{"bogus", "FULL", "None", "ALL", "redact"}
+	for _, level := range invalidLevels {
+		cfg := Config{
+			Strategy:      StrategyConfig{Mode: ModeSingle},
+			Targets:       []Target{{VirtualKey: "key1"}},
+			Observability: ObservabilityConfig{Tracing: TracingConfig{PrivacyLevel: level}},
+		}
+		if err := ValidateConfig(cfg); err == nil {
+			t.Errorf("ValidateConfig with PrivacyLevel=%q: expected error, got nil", level)
+		}
+	}
+}
+
 func writeTempFile(t *testing.T, name, content string) string {
 	t.Helper()
 	dir := t.TempDir()

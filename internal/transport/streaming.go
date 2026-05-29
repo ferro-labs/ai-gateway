@@ -40,6 +40,11 @@ func DefaultStreamingConfig() StreamingConfig {
 
 // StreamTransport wraps the SSE-optimized http.Transport with additional
 // configuration for reading streamed responses efficiently.
+//
+// Note: unlike Manager.buildClient, the streaming client's Transport is
+// the raw *http.Transport (not wrapped with otelhttp). SSE call sites
+// can still propagate traceparent via the request context but the
+// extra CLIENT span per chunk would be noisy for long-lived streams.
 type StreamTransport struct {
 	client    *http.Client
 	cfg       StreamingConfig

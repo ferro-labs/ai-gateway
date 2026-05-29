@@ -65,6 +65,41 @@ See `internal/plugins/wordfilter/wordfilter.go` for a minimal example.
 
 ---
 
+## Observability Exporters
+
+Exporters bridge gateway events (`gateway.request.completed` / `.failed`) to a
+backend (LangSmith, Langfuse, Datadog, New Relic, …). They live in a separate
+repository and are linked into a binary at build time — self-register via
+`init()` → `observability.RegisterExporter(name, factory)`, then blank-imported,
+exactly like plugins. The gateway ships the contract and wiring; no exporters
+are built in.
+
+When implementing or modifying anything on the `observability.Exporter` pathway,
+follow these rules:
+
+1. Implement `observability.Exporter`: `Name`, `Init(ctx, cfg)`,
+   `Export(ctx, Event)`, `Shutdown(ctx)`. Do auth/connection work in `Init` and
+   honour its context; `Export` must be safe for concurrent use.
+2. **The `Exporter` and `Event` contracts are stable.** Never change the
+   signatures of `Exporter`'s methods, and never remove or retype fields on
+   `Event` / `RequestAttrs` / `CostBreakdown` — plugins in other repos depend on
+   them.
+3. **Evolve additively only.** Carry new per-event data through
+   `Event.Attributes map[string]any`; add new capabilities as **new optional
+   interfaces** discovered via type assertion (the way `EventRecordingProvider`
+   extends `Provider`) — never by adding methods to an existing interface.
+4. Events are delivered to exporters **asynchronously, off the request path**
+   (buffered; dropped under sustained backpressure). Never assume `Export` runs
+   inline with the request, and keep it from blocking indefinitely.
+5. Use the `gen_ai.*` / `ferro.*` attribute-name constants in
+   `observability/attributes.go` — don't hardcode attribute strings. Mark
+   not-yet-emitted attributes as Planned.
+
+The gateway exports spans via OTLP to an external collector; it does not store
+traces itself.
+
+---
+
 ## Commit Convention (Conventional Commits)
 
 ```

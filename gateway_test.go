@@ -56,10 +56,20 @@ func (m *mockProvider) Complete(_ context.Context, _ providers.Request) (*provid
 type mockStreamProvider struct {
 	mockProvider
 	streamErr error
+	streamCh  <-chan providers.StreamChunk
 }
 
 func (m *mockStreamProvider) CompleteStream(_ context.Context, _ providers.Request) (<-chan providers.StreamChunk, error) {
-	return nil, m.streamErr
+	if m.streamErr != nil {
+		return nil, m.streamErr
+	}
+	if m.streamCh != nil {
+		return m.streamCh, nil
+	}
+	// Default: return an already-closed channel so streamwrap.Meter drains immediately.
+	ch := make(chan providers.StreamChunk)
+	close(ch)
+	return ch, nil
 }
 
 func counterValue(t *testing.T, c prometheus.Counter) float64 {
