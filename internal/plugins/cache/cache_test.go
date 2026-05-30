@@ -398,7 +398,7 @@ func TestCacheKey_DifferentTopLogProbsProducesDistinctKey(t *testing.T) {
 	}
 }
 
-func TestCacheKey_LogProbsNilTopLogProbsDoesNotPanic(t *testing.T) {
+func TestCacheKey_LogProbsNilTopLogProbsDoesNotPanic(_ *testing.T) {
 	req := &providers.Request{
 		Model:       "gpt-4",
 		Messages:    []providers.Message{{Role: "user", Content: "hello"}},
@@ -476,28 +476,28 @@ func TestCachePlugin_LogProbsCacheHit(t *testing.T) {
 }
 
 func TestCachePlugin_MaxEntriesMany(t *testing.T) {
-	const cap = 5
-	c := initCache(t, map[string]interface{}{"max_entries": cap})
+	const maxEntries = 5
+	c := initCache(t, map[string]interface{}{"max_entries": maxEntries})
 	resp := testResponse()
 
-	for i := 0; i < cap; i++ {
+	for i := 0; i < maxEntries; i++ {
 		pctx := plugin.NewContext(testRequest("gpt-4", fmt.Sprintf("msg-%d", i)))
 		pctx.Response = resp
 		if err := c.Execute(context.Background(), pctx); err != nil {
 			t.Fatalf("store %d: %v", i, err)
 		}
 	}
-	if c.Len() != cap {
-		t.Fatalf("expected %d entries, got %d", cap, c.Len())
+	if c.Len() != maxEntries {
+		t.Fatalf("expected %d entries, got %d", maxEntries, c.Len())
 	}
 
-	// Adding one more must not grow beyond cap.
+	// Adding one more must not grow beyond maxEntries.
 	overflow := plugin.NewContext(testRequest("gpt-4", "overflow"))
 	overflow.Response = resp
 	if err := c.Execute(context.Background(), overflow); err != nil {
 		t.Fatalf("store overflow: %v", err)
 	}
-	if c.Len() != cap {
-		t.Fatalf("expected %d entries after overflow, got %d", cap, c.Len())
+	if c.Len() != maxEntries {
+		t.Fatalf("expected %d entries after overflow, got %d", maxEntries, c.Len())
 	}
 }
