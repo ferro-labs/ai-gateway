@@ -265,8 +265,8 @@ func TestHalfOpenProbesZeroOnClosedToOpenTransition(t *testing.T) {
 	// Drive through a full cycle: closed→open→half-open→closed
 	cb.RecordFailure()
 	time.Sleep(5 * time.Millisecond)
-	_ = cb.State()    // →half-open
-	cb.Allow()        // probe admitted (halfOpenProbes=1)
+	_ = cb.State()     // →half-open
+	cb.Allow()         // probe admitted (halfOpenProbes=1)
 	cb.RecordSuccess() // closes (halfOpenProbes zeroed)
 
 	if cb.State() != StateClosed {
