@@ -1123,6 +1123,7 @@ func (g *Gateway) ensureCircuitBreakersLocked() {
 		g.circuitBreakers[t.VirtualKey] = circuitbreaker.New(
 			t.CircuitBreaker.FailureThreshold,
 			t.CircuitBreaker.SuccessThreshold,
+			t.CircuitBreaker.MaxHalfThreshold,
 			timeout,
 		)
 	}

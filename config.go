@@ -221,6 +221,9 @@ type CircuitBreakerConfig struct {
 	// SuccessThreshold is the number of consecutive successes in half-open state
 	// required to close the circuit. Defaults to 1.
 	SuccessThreshold int `json:"success_threshold" yaml:"success_threshold"`
+	// MaxHalfThreshold is the maximum number of concurrent in-flight probes
+	// allowed while the circuit is half-open. Zero or negative values default to 1.
+	MaxHalfThreshold int `json:"max_half_threshold" yaml:"max_half_threshold"`
 	// Timeout is the duration the circuit stays open before transitioning to
 	// half-open (e.g. "30s"). Defaults to "30s".
 	Timeout string `json:"timeout" yaml:"timeout"`

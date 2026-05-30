@@ -259,6 +259,62 @@ func TestValidateConfig_PrivacyLevel(t *testing.T) {
 	}
 }
 
+func TestLoadConfig_CircuitBreakerMaxHalfThreshold_JSON(t *testing.T) {
+	data := `{
+		"strategy": {"mode": "single"},
+		"targets": [{
+			"virtual_key": "openai",
+			"circuit_breaker": {
+				"failure_threshold": 5,
+				"success_threshold": 2,
+				"max_half_threshold": 3,
+				"timeout": "30s"
+			}
+		}]
+	}`
+	path := writeTempFile(t, "config.json", data)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	cb := cfg.Targets[0].CircuitBreaker
+	if cb == nil {
+		t.Fatal("expected CircuitBreaker config to be present")
+	}
+	if cb.MaxHalfThreshold != 3 {
+		t.Errorf("MaxHalfThreshold = %d, want 3", cb.MaxHalfThreshold)
+	}
+	if cb.FailureThreshold != 5 {
+		t.Errorf("FailureThreshold = %d, want 5", cb.FailureThreshold)
+	}
+}
+
+func TestLoadConfig_CircuitBreakerMaxHalfThreshold_YAML(t *testing.T) {
+	data := `
+strategy:
+  mode: single
+targets:
+  - virtual_key: anthropic
+    circuit_breaker:
+      failure_threshold: 3
+      success_threshold: 1
+      max_half_threshold: 2
+      timeout: 15s
+`
+	path := writeTempFile(t, "config.yaml", data)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	cb := cfg.Targets[0].CircuitBreaker
+	if cb == nil {
+		t.Fatal("expected CircuitBreaker config to be present")
+	}
+	if cb.MaxHalfThreshold != 2 {
+		t.Errorf("MaxHalfThreshold = %d, want 2", cb.MaxHalfThreshold)
+	}
+}
+
 func writeTempFile(t *testing.T, name, content string) string {
 	t.Helper()
 	dir := t.TempDir()
