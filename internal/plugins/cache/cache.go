@@ -25,11 +25,6 @@ func init() {
 	})
 }
 
-type cacheEntry struct {
-	response  *providers.Response
-	expiresAt time.Time
-}
-
 // ResponseCache is a transform plugin that caches LLM responses using
 // exact-match hashing of the request (model + messages + logprobs + toplogprobs(optional)).
 // It aliases Memory from the internal cache package.
@@ -80,7 +75,7 @@ func (c *ResponseCache) Execute(_ context.Context, pctx *plugin.Context) error {
 
 	if pctx.Response == nil {
 		// before_request: lookup
-		if resp, ok := c.Memory.Get(key); ok {
+		if resp, ok := c.Get(key); ok {
 			pctx.Response = resp
 			pctx.Skip = true
 			pctx.Metadata["cache_hit"] = true
@@ -93,11 +88,11 @@ func (c *ResponseCache) Execute(_ context.Context, pctx *plugin.Context) error {
 		return nil
 	}
 
-	if c.Memory.Capacity <= 0 {
+	if c.Capacity <= 0 {
 		return nil
 	}
 
-	c.Memory.Set(key, pctx.Response)
+	c.Set(key, pctx.Response)
 	return nil
 }
 
