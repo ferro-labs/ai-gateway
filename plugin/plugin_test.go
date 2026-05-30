@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/ferro-labs/ai-gateway/providers"
@@ -236,5 +237,82 @@ func TestManager_NoPlugins(t *testing.T) {
 	pctx := NewContext(&providers.Request{})
 	if err := m.RunBefore(context.Background(), pctx); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestManager_Register_AllStages verifies that HasPlugins reports true once a
+// plugin is registered at any stage and that each stage is independent.
+func TestManager_Register_AllStages(t *testing.T) {
+	for _, stage := range []Stage{StageBeforeRequest, StageAfterRequest, StageOnError} {
+		m := NewManager()
+		if m.HasPlugins() {
+			t.Fatalf("stage %s: expected HasPlugins=false before register", stage)
+		}
+		if err := m.Register(stage, &mockPlugin{name: "p", typ: TypeGuardrail}); err != nil {
+			t.Fatalf("stage %s: Register() error: %v", stage, err)
+		}
+		if !m.HasPlugins() {
+			t.Errorf("stage %s: expected HasPlugins=true after register", stage)
+		}
+	}
+}
+
+// TestManager_RunBefore_SnapshotIsolation verifies that a plugin registered
+// after RunBefore takes its slice snapshot is not included in that run.
+// This checks the snapshot semantics introduced by the RLock fix.
+func TestManager_RunBefore_SnapshotIsolation(t *testing.T) {
+	m := NewManager()
+
+	// firstStarted is closed by the first plugin's Execute, proving that
+	// RunBefore has already taken the slice snapshot and entered the loop.
+	firstStarted := make(chan struct{})
+	gate := make(chan struct{})
+	secondCalled := false
+
+	var firstOnce sync.Once
+	_ = m.Register(StageBeforeRequest, &mockPlugin{
+		name: "first",
+		typ:  TypeGuardrail,
+		execFn: func(_ context.Context, _ *Context) error {
+			// Only coordinate on the first call; subsequent runs just pass through.
+			firstOnce.Do(func() {
+				close(firstStarted) // snapshot was taken; we are inside the loop
+				<-gate              // block until the test has registered the second plugin
+			})
+			return nil
+		},
+	})
+
+	done := make(chan error, 1)
+	go func() {
+		done <- m.RunBefore(context.Background(), NewContext(&providers.Request{Model: "gpt-4o"}))
+	}()
+
+	// Wait until the first plugin is executing — the snapshot is now fixed.
+	<-firstStarted
+
+	// Register a second plugin. Because the snapshot was already taken, this
+	// registration must not affect the current RunBefore call.
+	_ = m.Register(StageBeforeRequest, &mockPlugin{
+		name: "second",
+		typ:  TypeGuardrail,
+		execFn: func(_ context.Context, _ *Context) error {
+			secondCalled = true
+			return nil
+		},
+	})
+
+	close(gate) // let the first plugin finish
+	if err := <-done; err != nil {
+		t.Fatalf("RunBefore() error: %v", err)
+	}
+	if secondCalled {
+		t.Error("second plugin (registered after snapshot) must not be called in this run")
+	}
+
+	// A subsequent RunBefore takes a fresh snapshot that includes "second".
+	_ = m.RunBefore(context.Background(), NewContext(&providers.Request{Model: "gpt-4o"}))
+	if !secondCalled {
+		t.Error("subsequent RunBefore must execute the newly registered second plugin")
 	}
 }

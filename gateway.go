@@ -325,6 +325,8 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	strategyMode := string(g.config.Strategy.Mode)
 	obs := g.obs
 	obsEventsActive := g.obsEventsActive
+	mcpRegistrySnapshot := g.mcpRegistry
+	mcpExecutorSnapshot := g.mcpExecutor
 	g.mu.RUnlock()
 	ctx, span := obs.StartRequestSpan(ctx, observability.RequestAttrs{
 		Operation:       "chat",
@@ -365,8 +367,8 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 
 	// Inject MCP tool definitions into the request when servers are ready.
 	var mcpTools []mcp.Tool
-	if g.mcpRegistry != nil {
-		mcpTools = g.mcpRegistry.AllTools()
+	if mcpRegistrySnapshot != nil {
+		mcpTools = mcpRegistrySnapshot.AllTools()
 	}
 	if len(mcpTools) > 0 {
 		// Build a set of tool names already present in the request so we do not
@@ -460,15 +462,15 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	// Agentic MCP tool-call loop. Runs only when MCP is active and the LLM
 	// returned tool_calls. Each iteration executes the tools and re-contacts
 	// the LLM until no more tool_calls are present or the depth limit is hit.
-	if g.mcpExecutor != nil && len(mcpTools) > 0 {
+	if mcpExecutorSnapshot != nil && len(mcpTools) > 0 {
 		depth := 0
 		trace.WithRegion(ctx, "gateway.route.mcp.loop", func() {
-			for g.mcpExecutor.ShouldContinueLoop(resp, depth) {
+			for mcpExecutorSnapshot.ShouldContinueLoop(resp, depth) {
 				depth++
 
 				// ResolvePendingToolCalls returns the assistant message (with tool_calls)
 				// plus one tool-result message per call — append all at once.
-				toolMsgs, toolErr := g.mcpExecutor.ResolvePendingToolCalls(ctx, resp)
+				toolMsgs, toolErr := mcpExecutorSnapshot.ResolvePendingToolCalls(ctx, resp)
 				if toolErr != nil {
 					err = fmt.Errorf("mcp tool execution at depth %d: %w", depth, toolErr)
 					return
@@ -989,6 +991,7 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 	strategyMode := string(g.config.Strategy.Mode)
 	obs := g.obs
 	obsEventsActive := g.obsEventsActive
+	mcpRegistrySnapshot := g.mcpRegistry
 	g.mu.RUnlock()
 	ctx, span := obs.StartRequestSpan(ctx, observability.RequestAttrs{
 		Operation:       "chat",
@@ -1012,9 +1015,7 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 	// MCP redirect: when tool servers are registered, the agentic loop must
 	// run to completion before any response is sent. Route() handles this
 	// entirely; we wrap its non-streaming result into a channel here.
-	g.mu.RLock()
-	hasMCP := g.mcpRegistry != nil && g.mcpRegistry.HasServers()
-	g.mu.RUnlock()
+	hasMCP := mcpRegistrySnapshot != nil && mcpRegistrySnapshot.HasServers()
 	if hasMCP {
 		// Do not force req.Stream = false here: let Route() capture the
 		// original stream flag via its own originalStream variable so that
