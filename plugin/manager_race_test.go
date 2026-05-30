@@ -13,7 +13,7 @@ import (
 // fix adds a lock to Register but RunBefore ranges over m.before without
 // holding m.mu.RLock(), so the goroutine scheduler can interleave a slice
 // grow (in Register) with the range read (in RunBefore).
-func TestManager_ConcurrentRegisterAndRunBefore(t *testing.T) {
+func TestManager_ConcurrentRegisterAndRunBefore(_ *testing.T) {
 	m := NewManager()
 	pctx := NewContext(&providers.Request{Model: "gpt-4o"})
 
@@ -36,7 +36,7 @@ func TestManager_ConcurrentRegisterAndRunBefore(t *testing.T) {
 
 // TestManager_ConcurrentRegisterAndRunAfter is the same race check for
 // RunAfter / m.after.
-func TestManager_ConcurrentRegisterAndRunAfter(t *testing.T) {
+func TestManager_ConcurrentRegisterAndRunAfter(_ *testing.T) {
 	m := NewManager()
 	pctx := NewContext(&providers.Request{Model: "gpt-4o"})
 	pctx.Response = &providers.Response{ID: "r1"}
@@ -60,7 +60,7 @@ func TestManager_ConcurrentRegisterAndRunAfter(t *testing.T) {
 
 // TestManager_ConcurrentRegisterAndRunOnError is the same race check for
 // RunOnError / m.onErr.
-func TestManager_ConcurrentRegisterAndRunOnError(t *testing.T) {
+func TestManager_ConcurrentRegisterAndRunOnError(_ *testing.T) {
 	m := NewManager()
 	pctx := NewContext(&providers.Request{Model: "gpt-4o"})
 
