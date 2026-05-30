@@ -1398,8 +1398,8 @@ type freshProvider struct {
 	models []string
 }
 
-func (f *freshProvider) Name() string              { return f.name }
-func (f *freshProvider) SupportedModels() []string { return f.models }
+func (f *freshProvider) Name() string                  { return f.name }
+func (f *freshProvider) SupportedModels() []string     { return f.models }
 func (f *freshProvider) Models() []providers.ModelInfo { return nil }
 func (f *freshProvider) SupportsModel(model string) bool {
 	for _, m := range f.models {
