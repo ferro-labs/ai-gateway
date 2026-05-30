@@ -84,7 +84,7 @@ func TestManager_ConcurrentRegisterAndRunOnError(_ *testing.T) {
 // TestManager_ConcurrentRegisterAndHasPlugins checks that HasPlugins does not
 // race with concurrent Register calls (it reads all three slice lengths without
 // a lock).
-func TestManager_ConcurrentRegisterAndHasPlugins(t *testing.T) {
+func TestManager_ConcurrentRegisterAndHasPlugins( _ *testing.T) {
 	m := NewManager()
 
 	var wg sync.WaitGroup
@@ -108,7 +108,7 @@ func TestManager_ConcurrentRegisterAndHasPlugins(t *testing.T) {
 // RunOnError, and HasPlugins simultaneously against concurrent Register calls.
 // This catches any reader–reader or reader–writer races that the individual
 // pairwise tests might miss under a specific schedule.
-func TestManager_ConcurrentAllReadersAndRegister(t *testing.T) {
+func TestManager_ConcurrentAllReadersAndRegister( _ *testing.T) {
 	m := NewManager()
 	pctxBefore := NewContext(&providers.Request{Model: "gpt-4o"})
 	pctxAfter := NewContext(&providers.Request{Model: "gpt-4o"})
