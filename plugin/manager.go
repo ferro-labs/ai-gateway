@@ -3,6 +3,7 @@ package plugin
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/ferro-labs/ai-gateway/internal/logging"
 	"github.com/ferro-labs/ai-gateway/observability"
@@ -38,6 +39,7 @@ type Manager struct {
 	before []Plugin
 	after  []Plugin
 	onErr  []Plugin
+	mu     sync.RWMutex
 }
 
 // NewManager creates a new plugin manager.
@@ -47,6 +49,9 @@ func NewManager() *Manager {
 
 // Register registers a plugin at the given stage.
 func (m *Manager) Register(stage Stage, p Plugin) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	switch stage {
 	case StageBeforeRequest:
 		m.before = append(m.before, p)
@@ -64,7 +69,10 @@ func (m *Manager) Register(stage Stage, p Plugin) error {
 // RunBefore executes all before-request plugins. Returns an error if a plugin
 // rejects the request.
 func (m *Manager) RunBefore(ctx context.Context, pctx *Context) error {
-	for _, p := range m.before {
+	m.mu.RLock()
+	plugins := m.before
+	m.mu.RUnlock()
+	for _, p := range plugins {
 		err := m.executePlugin(ctx, p, pctx, string(StageBeforeRequest))
 		if err != nil {
 			if pctx.Reject {
@@ -92,7 +100,10 @@ func (m *Manager) RunBefore(ctx context.Context, pctx *Context) error {
 
 // RunAfter executes all after-request plugins.
 func (m *Manager) RunAfter(ctx context.Context, pctx *Context) error {
-	for _, p := range m.after {
+	m.mu.RLock()
+	plugins := m.after
+	m.mu.RUnlock()
+	for _, p := range plugins {
 		err := m.executePlugin(ctx, p, pctx, string(StageAfterRequest))
 		if pctx.Reject {
 			reason := pctx.Reason
@@ -117,7 +128,10 @@ func (m *Manager) RunAfter(ctx context.Context, pctx *Context) error {
 
 // RunOnError executes all on-error plugins.
 func (m *Manager) RunOnError(ctx context.Context, pctx *Context) {
-	for _, p := range m.onErr {
+	m.mu.RLock()
+	plugins := m.onErr
+	m.mu.RUnlock()
+	for _, p := range plugins {
 		if err := m.executePlugin(ctx, p, pctx, string(StageOnError)); err != nil {
 			logging.Logger.Warn("on-error plugin error", "plugin", p.Name(), "error", err)
 		}
@@ -154,5 +168,7 @@ func (m *Manager) executePlugin(ctx context.Context, p Plugin, pctx *Context, st
 
 // HasPlugins returns true if any plugins are registered.
 func (m *Manager) HasPlugins() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	return len(m.before)+len(m.after)+len(m.onErr) > 0
 }
