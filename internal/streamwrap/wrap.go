@@ -87,29 +87,61 @@ func Meter(ctx context.Context, src <-chan providers.StreamChunk, start time.Tim
 		var streamErr error
 		var firstChunkAt time.Time
 		var lastChunkAt time.Time
+		clientCanceled := false
 
-		for chunk := range src {
-			now := time.Now()
-			if firstChunkAt.IsZero() {
-				firstChunkAt = now
-			}
-			lastChunkAt = now
+	loop:
+		for {
+			select {
+			case <-ctx.Done():
+				// Consumer (typically the HTTP handler) went away. Stop trying
+				// to forward chunks — out is almost certainly unread — but
+				// keep draining src so the upstream provider goroutine can
+				// finish its in-flight write to src and exit. The provider
+				// MUST close src eventually for this to terminate; that is
+				// the existing contract for every CompleteStream impl.
+				clientCanceled = true
+				streamErr = ctx.Err()
+				for range src { //nolint:revive
+				}
+				break loop
+			case chunk, ok := <-src:
+				if !ok {
+					break loop
+				}
+				now := time.Now()
+				if firstChunkAt.IsZero() {
+					firstChunkAt = now
+				}
+				lastChunkAt = now
 
-			// Capture the last non-zero usage block (the final OpenAI chunk with
-			// include_usage=true has TotalTokens > 0; other providers may set it
-			// differently).
-			if chunk.Usage != nil && (chunk.Usage.TotalTokens > 0 || chunk.Usage.PromptTokens > 0) {
-				usage = *chunk.Usage
-			}
-			if chunk.Error != nil {
-				streamErr = chunk.Error
-			}
-			out <- chunk
-			// Stop consuming src as soon as an error chunk is forwarded. If the
-			// provider does not close the channel promptly we would otherwise
-			// block here and never emit metrics or close out.
-			if streamErr != nil {
-				break
+				// Capture the last non-zero usage block (the final OpenAI chunk
+				// with include_usage=true has TotalTokens > 0; other providers
+				// may set it differently).
+				if chunk.Usage != nil && (chunk.Usage.TotalTokens > 0 || chunk.Usage.PromptTokens > 0) {
+					usage = *chunk.Usage
+				}
+				if chunk.Error != nil {
+					streamErr = chunk.Error
+				}
+
+				// Forward the chunk, but stop blocking if the consumer
+				// disconnects mid-send.
+				select {
+				case out <- chunk:
+				case <-ctx.Done():
+					clientCanceled = true
+					streamErr = ctx.Err()
+					for range src { //nolint:revive
+					}
+					break loop
+				}
+
+				// Stop consuming src as soon as an error chunk is forwarded.
+				// If the provider does not close src promptly we would
+				// otherwise block here and never emit metrics or close out.
+				if chunk.Error != nil {
+					break loop
+				}
 			}
 		}
 
@@ -125,7 +157,10 @@ func Meter(ctx context.Context, src <-chan providers.StreamChunk, start time.Tim
 
 		if streamErr != nil {
 			errType := "provider_error"
-			if errors.Is(streamErr, circuitbreaker.ErrCircuitOpen) {
+			switch {
+			case clientCanceled:
+				errType = "client_canceled"
+			case errors.Is(streamErr, circuitbreaker.ErrCircuitOpen):
 				errType = "circuit_open"
 			}
 			requestMetrics := metrics.ForRequest(meta.Provider, meta.Model)
