@@ -76,6 +76,211 @@ func TestCostOptimized_FallsBackWhenNoPricing(t *testing.T) {
 	}
 }
 
+func TestCostOptimized_SkipsUnpricedCatalogEntryWhenPricedCandidateExists(t *testing.T) {
+	unpriced := &mockProvider{name: "unpriced", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "unpriced"}}
+	priced := &mockProvider{name: "priced", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "priced"}}
+
+	catalog := models.Catalog{
+		"unpriced/gpt-4o": {
+			Provider: "unpriced",
+			ModelID:  "gpt-4o",
+			Mode:     models.ModeChat,
+			Pricing:  models.Pricing{},
+		},
+		"priced/gpt-4o": {
+			Provider: "priced",
+			ModelID:  "gpt-4o",
+			Mode:     models.ModeChat,
+			Pricing: models.Pricing{
+				InputPerMTokens:  ptrF(1.0),
+				OutputPerMTokens: ptrF(2.0),
+			},
+		},
+	}
+	targets := []Target{{VirtualKey: "unpriced"}, {VirtualKey: "priced"}}
+	s := NewCostOptimized(targets, newLookup(unpriced, priced), catalog)
+
+	resp, err := s.Execute(context.Background(), providers.Request{
+		Model:    "gpt-4o",
+		Messages: []providers.Message{{Role: "user", Content: "hello"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.ID != "priced" {
+		t.Errorf("expected priced provider, got %q", resp.ID)
+	}
+}
+
+func TestCostOptimized_DoesNotRankOutputOnlyPricingAsFreeInput(t *testing.T) {
+	outputOnly := &mockProvider{name: "output-only", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "output-only"}}
+	priced := &mockProvider{name: "priced", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "priced"}}
+
+	catalog := models.Catalog{
+		"output-only/gpt-4o": {
+			Provider: "output-only",
+			ModelID:  "gpt-4o",
+			Mode:     models.ModeChat,
+			Pricing: models.Pricing{
+				OutputPerMTokens: ptrF(2.0),
+			},
+		},
+		"priced/gpt-4o": {
+			Provider: "priced",
+			ModelID:  "gpt-4o",
+			Mode:     models.ModeChat,
+			Pricing: models.Pricing{
+				InputPerMTokens:  ptrF(1.0),
+				OutputPerMTokens: ptrF(2.0),
+			},
+		},
+	}
+	targets := []Target{{VirtualKey: "output-only"}, {VirtualKey: "priced"}}
+	s := NewCostOptimized(targets, newLookup(outputOnly, priced), catalog)
+
+	resp, err := s.Execute(context.Background(), providers.Request{
+		Model:    "gpt-4o",
+		Messages: []providers.Message{{Role: "user", Content: "hello"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.ID != "priced" {
+		t.Errorf("expected priced provider, got %q", resp.ID)
+	}
+}
+
+func TestCostOptimized_FallsBackToFirstCompatibleWhenAllCandidatesUnpriced(t *testing.T) {
+	first := &mockProvider{name: "first", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "first"}}
+	second := &mockProvider{name: "second", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "second"}}
+
+	catalog := models.Catalog{
+		"first/gpt-4o": {
+			Provider: "first",
+			ModelID:  "gpt-4o",
+			Mode:     models.ModeChat,
+			Pricing:  models.Pricing{},
+		},
+		"second/gpt-4o": {
+			Provider: "second",
+			ModelID:  "gpt-4o",
+			Mode:     models.ModeChat,
+			Pricing:  models.Pricing{},
+		},
+	}
+	targets := []Target{{VirtualKey: "first"}, {VirtualKey: "second"}}
+	s := NewCostOptimized(targets, newLookup(first, second), catalog)
+
+	resp, err := s.Execute(context.Background(), providers.Request{
+		Model:    "gpt-4o",
+		Messages: []providers.Message{{Role: "user", Content: "hello"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.ID != "first" {
+		t.Errorf("expected first compatible provider fallback, got %q", resp.ID)
+	}
+}
+
+func TestCostOptimized_InvalidUnpricedStrategyFallsBackToFirstCompatible(t *testing.T) {
+	first := &mockProvider{name: "first", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "first"}}
+	second := &mockProvider{name: "second", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "second"}}
+
+	catalog := models.Catalog{
+		"first/gpt-4o": {
+			Provider: "first",
+			ModelID:  "gpt-4o",
+			Mode:     models.ModeChat,
+			Pricing:  models.Pricing{},
+		},
+		"second/gpt-4o": {
+			Provider: "second",
+			ModelID:  "gpt-4o",
+			Mode:     models.ModeChat,
+			Pricing:  models.Pricing{},
+		},
+	}
+	targets := []Target{{VirtualKey: "first"}, {VirtualKey: "second"}}
+	s := NewCostOptimized(targets, newLookup(first, second), catalog, "unknown")
+
+	resp, err := s.Execute(context.Background(), providers.Request{
+		Model:    "gpt-4o",
+		Messages: []providers.Message{{Role: "user", Content: "hello"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.ID != "first" {
+		t.Errorf("expected invalid unpriced strategy to use fallback mode, got %q", resp.ID)
+	}
+}
+
+func TestCostOptimized_AllowTreatsUnpricedAsZeroCost(t *testing.T) {
+	priced := &mockProvider{name: "priced", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "priced"}}
+	unpriced := &mockProvider{name: "unpriced", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "unpriced"}}
+
+	catalog := models.Catalog{
+		"priced/gpt-4o": {
+			Provider: "priced",
+			ModelID:  "gpt-4o",
+			Mode:     models.ModeChat,
+			Pricing: models.Pricing{
+				InputPerMTokens: ptrF(1.0),
+			},
+		},
+		"unpriced/gpt-4o": {
+			Provider: "unpriced",
+			ModelID:  "gpt-4o",
+			Mode:     models.ModeChat,
+			Pricing:  models.Pricing{},
+		},
+	}
+	targets := []Target{{VirtualKey: "priced"}, {VirtualKey: "unpriced"}}
+	s := NewCostOptimized(targets, newLookup(priced, unpriced), catalog, "allow")
+
+	resp, err := s.Execute(context.Background(), providers.Request{
+		Model:    "gpt-4o",
+		Messages: []providers.Message{{Role: "user", Content: "hello"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.ID != "unpriced" {
+		t.Errorf("expected allow mode to pick zero-cost unpriced provider, got %q", resp.ID)
+	}
+}
+
+func TestCostOptimized_SkipErrorsWhenAllCandidatesUnpriced(t *testing.T) {
+	first := &mockProvider{name: "first", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "first"}}
+	second := &mockProvider{name: "second", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "second"}}
+
+	catalog := models.Catalog{
+		"first/gpt-4o": {
+			Provider: "first",
+			ModelID:  "gpt-4o",
+			Mode:     models.ModeChat,
+			Pricing:  models.Pricing{},
+		},
+		"second/gpt-4o": {
+			Provider: "second",
+			ModelID:  "gpt-4o",
+			Mode:     models.ModeChat,
+			Pricing:  models.Pricing{},
+		},
+	}
+	targets := []Target{{VirtualKey: "first"}, {VirtualKey: "second"}}
+	s := NewCostOptimized(targets, newLookup(first, second), catalog, "skip")
+
+	_, err := s.Execute(context.Background(), providers.Request{
+		Model:    "gpt-4o",
+		Messages: []providers.Message{{Role: "user", Content: "hello"}},
+	})
+	if err == nil {
+		t.Fatal("expected error when skip mode has no priced candidates")
+	}
+}
+
 func TestCostOptimized_SkipsUnsupportedModel(t *testing.T) {
 	p1 := &mockProvider{name: "cheap", models: []string{"gpt-3.5-turbo"}, resp: &providers.Response{ID: "wrong"}}
 	p2 := &mockProvider{name: "expensive", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "right"}}
@@ -93,6 +298,45 @@ func TestCostOptimized_SkipsUnsupportedModel(t *testing.T) {
 	}
 	if resp.ID != "right" {
 		t.Errorf("only expensive supports gpt-4o, expected right, got %q", resp.ID)
+	}
+}
+
+func TestCostOptimized_UnresolvableSelectedTargetReturnsError(t *testing.T) {
+	mp := &mockProvider{name: "cheap", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "cheap"}}
+	s := NewCostOptimized(
+		[]Target{{VirtualKey: "cheap"}},
+		lookupMissingAfterFirstHit(mp),
+		buildCatalog(),
+	)
+
+	_, err := s.Execute(context.Background(), providers.Request{
+		Model:    "gpt-4o",
+		Messages: []providers.Message{{Role: "user", Content: "hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected error when selected provider is no longer resolvable")
+	}
+}
+
+func TestCostOptimized_ErrorsWhenNoProviderSupportsModel(t *testing.T) {
+	p1 := &mockProvider{name: "cheap", models: []string{"gpt-3.5-turbo"}, resp: &providers.Response{ID: "wrong"}}
+	p2 := &mockProvider{name: "expensive", models: []string{"claude-3"}, resp: &providers.Response{ID: "wrong"}}
+
+	targets := []Target{{VirtualKey: "cheap"}, {VirtualKey: "expensive"}}
+	s := NewCostOptimized(targets, newLookup(p1, p2), buildCatalog())
+
+	_, err := s.Execute(context.Background(), providers.Request{
+		Model:    "gpt-4o",
+		Messages: []providers.Message{{Role: "user", Content: "hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected error when no provider supports model")
+	}
+	if err.Error() != "no provider supports model gpt-4o" {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if p1.calls != 0 || p2.calls != 0 {
+		t.Errorf("providers should not be called, got cheap=%d expensive=%d", p1.calls, p2.calls)
 	}
 }
 

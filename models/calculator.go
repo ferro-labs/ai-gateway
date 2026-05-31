@@ -30,6 +30,8 @@ type CostResult struct {
 	// ModelFound is false when the catalog has no entry for the requested model.
 	// All cost fields will be zero in that case.
 	ModelFound bool
+	// Priced is false when the model has no input-token price.
+	Priced bool
 }
 
 // perM converts a nullable price-per-million-tokens to a cost for n tokens.
@@ -52,6 +54,8 @@ func Calculate(catalog Catalog, modelKey string, usage Usage) CostResult {
 
 	p := model.Pricing
 	r := CostResult{ModelFound: true}
+
+	r.Priced = p.InputPerMTokens != nil
 
 	switch model.Mode {
 	case ModeChat:

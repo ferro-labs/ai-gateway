@@ -201,6 +201,7 @@ Full methodology, raw results, and flamegraph analysis:
 
 - **8 routing strategies:** single, fallback, load balance, least latency, cost-optimized, content-based, A/B test, conditional
 - Provider failover with configurable retry policies and status code filters
+- Cost-optimized routing can explicitly fallback, skip, or allow providers with unknown catalog prices
 - Per-request model aliases (`fast → gpt-4o-mini`, `smart → claude-3-5-sonnet`)
 
 ### 🔌 Providers (30)
@@ -278,6 +279,8 @@ Full annotated example — copy to `config.yaml` and customize:
 strategy:
   mode: fallback  # single | fallback | loadbalance | conditional
                   # least-latency | cost-optimized | content-based | ab-test
+  # cost-optimized only: fallback (default) | skip | allow
+  # unpriced_strategy: fallback
 
 # Provider targets (tried in order for fallback mode)
 targets:

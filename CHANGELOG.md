@@ -5,6 +5,43 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1] — 2026-05-31
+
+Stability hotfix. No new features, no API breaks. Fixes every issue labelled [`release-1.1.1`](https://github.com/ferro-labs/ai-gateway/issues?q=label%3Arelease-1.1.1) plus three additional CRITICAL bugs found in the post-v1.1.0 engine audit (shutdown panic, runtime-discovery data race, streaming goroutine/body leak). Adds a `goleak` + `-race` concurrency stress harness so these regressions can't recur silently.
+
+### Fixed
+
+- **Send on closed channel panic during shutdown** (issue [#127](https://github.com/ferro-labs/ai-gateway/issues/127)): `Gateway.Close()` previously called `close(g.hookDispatchQ)` while `publishEvent` could still be enqueuing dispatches; the producer's `select`/`default` arm guards a *full* channel but not a *closed* one, so production crashed under shutdown-under-load. `Close()` now cancels a shutdown context instead; producers select on it before sending; workers drain any queued events before exiting; `Close()` waits up to 5s for workers via a `WaitGroup` (never blocks indefinitely so a panicking hook can't wedge shutdown). Stress-tested with 50 concurrent `Route()` callers racing `Close()` under `-race`.
+- **Data race in provider lookup vs runtime discovery / config reload** (issue [#128](https://github.com/ferro-labs/ai-gateway/issues/128)): the lookup closure built in `getStrategy` read `g.providers` and `g.circuitBreakers` without holding `g.mu`, racing `RegisterProvider` and `ReloadConfig` (which reassigns `circuitBreakers` wholesale). Closure now takes `g.mu.RLock` for its body; verified `Route` (`gateway.go:330`) and `RouteStream` (`gateway.go:1108`) release the gateway lock before strategy execution so the lock-in-closure cannot recursively deadlock against a writer. Stress-tested with 20 concurrent `Route()` callers racing a mutator goroutine that reassigns both maps under `-race`.
+- **Streaming goroutine and HTTP body leak on client disconnect**: `streamwrap.Meter` previously blocked forever on `out <- chunk` when the consumer (typically the HTTP handler) stopped reading because the client disconnected. The `Meter` goroutine, the upstream provider goroutine (blocked on its next send to `src`), and the provider's HTTP response body all leaked. `Meter` now selects on `ctx.Done()` for every send and every read from `src`; on cancel it drains `src` so the upstream goroutine can finish its in-flight write and exit. Emits a single `gateway.request.failed` event with a new `client_canceled` `provider_errors` metric label so budgets and observability still see the request and dashboards can separate client disconnects from real provider errors.
+- **MCP registry/executor and plugin-manager races** (issue [#131](https://github.com/ferro-labs/ai-gateway/issues/131), PR [#172](https://github.com/ferro-labs/ai-gateway/pull/172)): `Route`/`RouteStream` now snapshot `g.mcpRegistry` / `g.mcpExecutor` under `g.mu.RLock` instead of reading the fields after the lock is released, eliminating a race against `ReloadConfig`. `plugin.Manager` gets its own `sync.RWMutex` around the `before`/`after`/`onErr` slices so registrations during reload are safe vs concurrent execution.
+- **Streaming aborts on SSE lines larger than 64 KB** (issue [#129](https://github.com/ferro-labs/ai-gateway/issues/129), PR [#153](https://github.com/ferro-labs/ai-gateway/pull/153)): added shared `providers/core/sse_scanner.go` with a `Buffer(_, 1 MiB)` helper and applied it to the 9 stream-capable providers that were missing it. Tools, long reasoning blocks, and large embedded payloads no longer truncate the stream.
+- **Nil-pointer panic in `least-latency` / `cost-optimized` / `loadbalance` when a target is unresolvable at dispatch** (issue [#130](https://github.com/ferro-labs/ai-gateway/issues/130), PR [#156](https://github.com/ferro-labs/ai-gateway/pull/156)): all three strategies now return a routing error when the selected target can no longer be resolved between candidate-building and dispatch, instead of dereferencing a nil provider.
+- **`cost-optimized` routing treated `null`-priced catalog entries as $0** (issue [#126](https://github.com/ferro-labs/ai-gateway/issues/126), PR [#155](https://github.com/ferro-labs/ai-gateway/pull/155); originally scoped for v1.1.2, pulled forward because the fix was ready). Unpriced candidates no longer silently win cheapest-provider selection in a mixed pool. Behavior is governed by the new `strategy.unpriced_strategy` knob (see *Added*); the default preserves the historical fallback ranking for pools where every candidate is priced.
+
+### Added
+
+- **`strategy.unpriced_strategy` config knob** for `cost-optimized` routing: `fallback` (default — prefer priced candidates, then first compatible unpriced target), `skip` (reject unpriced candidates), or `allow` (legacy behavior — treat missing prices as zero cost). Validated at config load.
+- **`providers/core/sse_scanner.go`**: shared `NewSSEScanner(r)` helper returning a `*bufio.Scanner` pre-configured with a 1 MiB line buffer. New stream providers should call it instead of repeating the buffer setup.
+- **`provider_errors{err="client_canceled"}` metric label**: distinguishes streaming requests cancelled by the client from real provider errors. Existing `provider_error` and `circuit_open` labels are unchanged.
+- **Stress / leak test harness**: `internal/streamwrap/wrap_leak_test.go` (goroutine-leak check + client-disconnect + natural-end-of-stream cases) and `gateway_stress_test.go` (`TestStress_ShutdownUnderLoad_NoPanic`, `TestStress_ReloadUnderLoad_NoRace`). Both use `go.uber.org/goleak` and run under `-race`.
+
+### Changed
+
+- **`Gateway.Close()`** now drains the hook-dispatch queue and waits up to 5 seconds for hook workers to finish in-flight dispatches before returning. The hook channel is no longer closed by `Close()` — workers exit via the new shutdown context. Calling `Close()` more than once remains safe (idempotent).
+- **`go.uber.org/goleak`** promoted from an indirect to a direct dependency, used by the new stress and leak tests.
+
+### Documentation
+
+- `README.md` and the YAML/JSON example configs document the new `strategy.unpriced_strategy` knob under the *Routing strategies* section.
+
+### Notes
+
+- All public `release-1.1.1` issues — [#126](https://github.com/ferro-labs/ai-gateway/issues/126), [#127](https://github.com/ferro-labs/ai-gateway/issues/127), [#128](https://github.com/ferro-labs/ai-gateway/issues/128), [#129](https://github.com/ferro-labs/ai-gateway/issues/129), [#130](https://github.com/ferro-labs/ai-gateway/issues/130), [#131](https://github.com/ferro-labs/ai-gateway/issues/131) — are closed by this release.
+- A separate GitHub Security Advisory accompanies this tag for the streaming-disconnect fix; check the Security tab for the GHSA ID and CVSS scoring.
+
+---
+
 ## [1.1.0] — 2026-05-24
 
 Adds opt-in OpenTelemetry tracing. Off by default — a zero-allocation no-op until an OTLP endpoint or exporter is configured.

@@ -67,7 +67,10 @@ func (l *LeastLatency) Execute(ctx context.Context, req providers.Request) (*pro
 		// Round-robin through unseen providers to gather latency samples for each
 		// before settling on the best-known option.
 		pick := unseen[rand.Intn(len(unseen))] //nolint:gosec
-		p, _ := l.lookup(pick.target.VirtualKey)
+		p, ok := l.lookup(pick.target.VirtualKey)
+		if !ok {
+			return nil, fmt.Errorf("least latency based routing: provider not found: %s", pick.target.VirtualKey)
+		}
 		resp, err := p.Complete(ctx, req)
 		if err != nil {
 			return nil, err
@@ -84,7 +87,10 @@ func (l *LeastLatency) Execute(ctx context.Context, req providers.Request) (*pro
 		}
 	}
 
-	p, _ := l.lookup(best.target.VirtualKey)
+	p, ok := l.lookup(best.target.VirtualKey)
+	if !ok {
+		return nil, fmt.Errorf("least latency based routing: provider not found: %s", best.target.VirtualKey)
+	}
 	resp, err := p.Complete(ctx, req)
 	if err != nil {
 		return nil, err

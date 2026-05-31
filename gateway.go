@@ -59,6 +59,9 @@ type Gateway struct {
 	hooks            []EventHookFunc
 	hookSnapshot     atomic.Value
 	hookDispatchQ    chan hookDispatch
+	hookWorkersDone  sync.WaitGroup
+	shutdownCtx      context.Context
+	shutdownCancel   context.CancelFunc
 	circuitBreakers  map[string]*circuitbreaker.CircuitBreaker
 	discoveredModels map[string][]providers.ModelInfo
 	latencyTracker   *latency.Tracker
@@ -123,6 +126,7 @@ func New(cfg Config) (*Gateway, error) {
 		hookDispatchQ: make(chan hookDispatch, hookDispatchQueueSize),
 		obs:           observability.NoOp(),
 	}
+	gw.shutdownCtx, gw.shutdownCancel = context.WithCancel(context.Background())
 	gw.hookSnapshot.Store([]EventHookFunc{})
 	gw.startHookWorkers()
 
@@ -325,6 +329,8 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	strategyMode := string(g.config.Strategy.Mode)
 	obs := g.obs
 	obsEventsActive := g.obsEventsActive
+	mcpRegistrySnapshot := g.mcpRegistry
+	mcpExecutorSnapshot := g.mcpExecutor
 	g.mu.RUnlock()
 	ctx, span := obs.StartRequestSpan(ctx, observability.RequestAttrs{
 		Operation:       "chat",
@@ -365,8 +371,8 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 
 	// Inject MCP tool definitions into the request when servers are ready.
 	var mcpTools []mcp.Tool
-	if g.mcpRegistry != nil {
-		mcpTools = g.mcpRegistry.AllTools()
+	if mcpRegistrySnapshot != nil {
+		mcpTools = mcpRegistrySnapshot.AllTools()
 	}
 	if len(mcpTools) > 0 {
 		// Build a set of tool names already present in the request so we do not
@@ -460,15 +466,15 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	// Agentic MCP tool-call loop. Runs only when MCP is active and the LLM
 	// returned tool_calls. Each iteration executes the tools and re-contacts
 	// the LLM until no more tool_calls are present or the depth limit is hit.
-	if g.mcpExecutor != nil && len(mcpTools) > 0 {
+	if mcpExecutorSnapshot != nil && len(mcpTools) > 0 {
 		depth := 0
 		trace.WithRegion(ctx, "gateway.route.mcp.loop", func() {
-			for g.mcpExecutor.ShouldContinueLoop(resp, depth) {
+			for mcpExecutorSnapshot.ShouldContinueLoop(resp, depth) {
 				depth++
 
 				// ResolvePendingToolCalls returns the assistant message (with tool_calls)
 				// plus one tool-result message per call — append all at once.
-				toolMsgs, toolErr := g.mcpExecutor.ResolvePendingToolCalls(ctx, resp)
+				toolMsgs, toolErr := mcpExecutorSnapshot.ResolvePendingToolCalls(ctx, resp)
 				if toolErr != nil {
 					err = fmt.Errorf("mcp tool execution at depth %d: %w", depth, toolErr)
 					return
@@ -611,6 +617,27 @@ func (g *Gateway) publishEvent(ctx context.Context, event events.HookEvent) {
 			hook:  hook,
 		}
 
+		// Bias toward the shutdown check first so we never race a Close()
+		// that has already cancelled. Once shutdownCtx is Done we drop the
+		// event rather than risk a send on what used to be a closed channel
+		// (we no longer close hookDispatchQ — workers exit via shutdownCtx).
+		// The nil-shutdownCtx branch supports a handful of unit tests that
+		// build Gateway literals directly without going through New().
+		if g.shutdownCtx != nil {
+			select {
+			case <-g.shutdownCtx.Done():
+				return
+			default:
+			}
+			select {
+			case g.hookDispatchQ <- dispatch:
+			case <-g.shutdownCtx.Done():
+				return
+			default:
+				metrics.HookEventsDroppedTotal.WithLabelValues(event.Subject).Inc()
+			}
+			continue
+		}
 		select {
 		case g.hookDispatchQ <- dispatch:
 		default:
@@ -635,9 +662,25 @@ func (g *Gateway) startHookWorkers() {
 	}
 
 	for range workerCount {
+		g.hookWorkersDone.Add(1)
 		go func() {
-			for dispatch := range g.hookDispatchQ {
-				runHookDispatch(dispatch)
+			defer g.hookWorkersDone.Done()
+			for {
+				select {
+				case <-g.shutdownCtx.Done():
+					// Best-effort drain anything queued before exiting so we
+					// don't lose events that were already enqueued.
+					for {
+						select {
+						case dispatch := <-g.hookDispatchQ:
+							runHookDispatch(dispatch)
+						default:
+							return
+						}
+					}
+				case dispatch := <-g.hookDispatchQ:
+					runHookDispatch(dispatch)
+				}
 			}
 		}()
 	}
@@ -770,7 +813,17 @@ func (g *Gateway) getStrategy() (strategies.Strategy, error) {
 	}
 
 	// Provider lookup with transparent circuit-breaker wrapping.
+	//
+	// The closure is captured into the strategy and invoked later from the
+	// request hot path, AFTER Route/RouteStream have released g.mu. It
+	// therefore needs its own RLock to coordinate with RegisterProvider and
+	// ReloadConfig (which reassigns circuitBreakers wholesale, line 707).
+	// Safe under sync.RWMutex because the calling paths drop the lock before
+	// strategy execution — see gateway.go:330 (Route) and
+	// gateway.go:1108 (RouteStream).
 	lookup := func(name string) (providers.Provider, bool) {
+		g.mu.RLock()
+		defer g.mu.RUnlock()
 		p, ok := g.providers[name]
 		if !ok {
 			return nil, false
@@ -816,7 +869,7 @@ func (g *Gateway) getStrategy() (strategies.Strategy, error) {
 		if len(targets) == 0 {
 			return nil, fmt.Errorf("no targets configured for cost-optimized strategy")
 		}
-		s = strategies.NewCostOptimized(targets, lookup, g.catalog)
+		s = strategies.NewCostOptimized(targets, lookup, g.catalog, g.config.Strategy.UnpricedStrategy)
 	case ModeConditional:
 		if len(g.config.Strategy.Conditions) == 0 {
 			return nil, fmt.Errorf("no conditions configured for conditional strategy")
@@ -989,6 +1042,7 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 	strategyMode := string(g.config.Strategy.Mode)
 	obs := g.obs
 	obsEventsActive := g.obsEventsActive
+	mcpRegistrySnapshot := g.mcpRegistry
 	g.mu.RUnlock()
 	ctx, span := obs.StartRequestSpan(ctx, observability.RequestAttrs{
 		Operation:       "chat",
@@ -1012,9 +1066,7 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 	// MCP redirect: when tool servers are registered, the agentic loop must
 	// run to completion before any response is sent. Route() handles this
 	// entirely; we wrap its non-streaming result into a channel here.
-	g.mu.RLock()
-	hasMCP := g.mcpRegistry != nil && g.mcpRegistry.HasServers()
-	g.mu.RUnlock()
+	hasMCP := mcpRegistrySnapshot != nil && mcpRegistrySnapshot.HasServers()
 	if hasMCP {
 		// Do not force req.Stream = false here: let Route() capture the
 		// original stream flag via its own originalStream variable so that
@@ -1602,9 +1654,26 @@ func (g *Gateway) FindStreamingByModel(model string) (providers.StreamProvider, 
 }
 
 // Close cleans up resources.
+//
+// Cancels the gateway shutdown context (which signals hook workers to drain
+// and exit) and waits up to 5s for the workers to finish so in-flight hook
+// dispatches are not abruptly killed. Returns nil even if the worker drain
+// times out — Close must never block indefinitely (a panicking hook could
+// otherwise wedge shutdown).
+//
+// Safe to call multiple times; subsequent calls are no-ops.
 func (g *Gateway) Close() error {
 	g.closeOnce.Do(func() {
-		close(g.hookDispatchQ)
+		g.shutdownCancel()
+		done := make(chan struct{})
+		go func() {
+			g.hookWorkersDone.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+		}
 	})
 	return nil
 }

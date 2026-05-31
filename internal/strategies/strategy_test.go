@@ -43,6 +43,20 @@ func newLookup(pp ...providers.Provider) ProviderLookup {
 	}
 }
 
+func lookupMissingAfterFirstHit(p providers.Provider) ProviderLookup {
+	calls := 0
+	return func(name string) (providers.Provider, bool) {
+		if name != p.Name() {
+			return nil, false
+		}
+		calls++
+		if calls == 1 {
+			return p, true
+		}
+		return nil, false
+	}
+}
+
 func TestSingle_Execute(t *testing.T) {
 	mp := &mockProvider{name: "a", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "ok"}}
 	s := NewSingle(Target{VirtualKey: "a"}, newLookup(mp))
@@ -382,6 +396,19 @@ func TestLoadBalance_MissingProvider(t *testing.T) {
 	_, err := lb.Execute(context.Background(), providers.Request{Model: "gpt-4o", Messages: []providers.Message{{Role: "user", Content: "hi"}}})
 	if err == nil {
 		t.Fatal("expected error when provider is not registered")
+	}
+}
+
+func TestLoadBalance_UnresolvableSelectedTargetReturnsError(t *testing.T) {
+	mp := &mockProvider{name: "a", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "a"}}
+	lb := NewLoadBalance(
+		[]Target{{VirtualKey: "a", Weight: 100}},
+		lookupMissingAfterFirstHit(mp),
+	)
+
+	_, err := lb.Execute(context.Background(), providers.Request{Model: "gpt-4o", Messages: []providers.Message{{Role: "user", Content: "hi"}}})
+	if err == nil {
+		t.Fatal("expected error when selected provider is no longer resolvable")
 	}
 }
 

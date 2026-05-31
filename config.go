@@ -118,6 +118,9 @@ type TracingConfig struct {
 type StrategyConfig struct {
 	Mode       StrategyMode `json:"mode" yaml:"mode"`
 	Conditions []Condition  `json:"conditions,omitempty" yaml:"conditions,omitempty"` // For conditional routing
+	// UnpricedStrategy controls how cost-optimized routing treats providers with
+	// missing catalog pricing: "fallback" (default), "skip", or "allow".
+	UnpricedStrategy string `json:"unpriced_strategy,omitempty" yaml:"unpriced_strategy,omitempty"`
 	// ContentConditions defines rules for the content-based routing strategy.
 	// Rules are evaluated in order; the first match wins.
 	ContentConditions []ContentCondition `json:"content_conditions,omitempty" yaml:"content_conditions,omitempty"`
