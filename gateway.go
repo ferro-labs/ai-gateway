@@ -59,6 +59,9 @@ type Gateway struct {
 	hooks            []EventHookFunc
 	hookSnapshot     atomic.Value
 	hookDispatchQ    chan hookDispatch
+	hookWorkersDone  sync.WaitGroup
+	shutdownCtx      context.Context
+	shutdownCancel   context.CancelFunc
 	circuitBreakers  map[string]*circuitbreaker.CircuitBreaker
 	discoveredModels map[string][]providers.ModelInfo
 	latencyTracker   *latency.Tracker
@@ -123,6 +126,7 @@ func New(cfg Config) (*Gateway, error) {
 		hookDispatchQ: make(chan hookDispatch, hookDispatchQueueSize),
 		obs:           observability.NoOp(),
 	}
+	gw.shutdownCtx, gw.shutdownCancel = context.WithCancel(context.Background())
 	gw.hookSnapshot.Store([]EventHookFunc{})
 	gw.startHookWorkers()
 
@@ -613,6 +617,27 @@ func (g *Gateway) publishEvent(ctx context.Context, event events.HookEvent) {
 			hook:  hook,
 		}
 
+		// Bias toward the shutdown check first so we never race a Close()
+		// that has already cancelled. Once shutdownCtx is Done we drop the
+		// event rather than risk a send on what used to be a closed channel
+		// (we no longer close hookDispatchQ — workers exit via shutdownCtx).
+		// The nil-shutdownCtx branch supports a handful of unit tests that
+		// build Gateway literals directly without going through New().
+		if g.shutdownCtx != nil {
+			select {
+			case <-g.shutdownCtx.Done():
+				return
+			default:
+			}
+			select {
+			case g.hookDispatchQ <- dispatch:
+			case <-g.shutdownCtx.Done():
+				return
+			default:
+				metrics.HookEventsDroppedTotal.WithLabelValues(event.Subject).Inc()
+			}
+			continue
+		}
 		select {
 		case g.hookDispatchQ <- dispatch:
 		default:
@@ -637,9 +662,25 @@ func (g *Gateway) startHookWorkers() {
 	}
 
 	for range workerCount {
+		g.hookWorkersDone.Add(1)
 		go func() {
-			for dispatch := range g.hookDispatchQ {
-				runHookDispatch(dispatch)
+			defer g.hookWorkersDone.Done()
+			for {
+				select {
+				case <-g.shutdownCtx.Done():
+					// Best-effort drain anything queued before exiting so we
+					// don't lose events that were already enqueued.
+					for {
+						select {
+						case dispatch := <-g.hookDispatchQ:
+							runHookDispatch(dispatch)
+						default:
+							return
+						}
+					}
+				case dispatch := <-g.hookDispatchQ:
+					runHookDispatch(dispatch)
+				}
 			}
 		}()
 	}
@@ -772,7 +813,17 @@ func (g *Gateway) getStrategy() (strategies.Strategy, error) {
 	}
 
 	// Provider lookup with transparent circuit-breaker wrapping.
+	//
+	// The closure is captured into the strategy and invoked later from the
+	// request hot path, AFTER Route/RouteStream have released g.mu. It
+	// therefore needs its own RLock to coordinate with RegisterProvider and
+	// ReloadConfig (which reassigns circuitBreakers wholesale, line 707).
+	// Safe under sync.RWMutex because the calling paths drop the lock before
+	// strategy execution — see gateway.go:330 (Route) and
+	// gateway.go:1108 (RouteStream).
 	lookup := func(name string) (providers.Provider, bool) {
+		g.mu.RLock()
+		defer g.mu.RUnlock()
 		p, ok := g.providers[name]
 		if !ok {
 			return nil, false
@@ -1603,9 +1654,26 @@ func (g *Gateway) FindStreamingByModel(model string) (providers.StreamProvider, 
 }
 
 // Close cleans up resources.
+//
+// Cancels the gateway shutdown context (which signals hook workers to drain
+// and exit) and waits up to 5s for the workers to finish so in-flight hook
+// dispatches are not abruptly killed. Returns nil even if the worker drain
+// times out — Close must never block indefinitely (a panicking hook could
+// otherwise wedge shutdown).
+//
+// Safe to call multiple times; subsequent calls are no-ops.
 func (g *Gateway) Close() error {
 	g.closeOnce.Do(func() {
-		close(g.hookDispatchQ)
+		g.shutdownCancel()
+		done := make(chan struct{})
+		go func() {
+			g.hookWorkersDone.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+		}
 	})
 	return nil
 }
