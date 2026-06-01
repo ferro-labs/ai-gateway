@@ -65,6 +65,8 @@ func TestOpenAIProvider_SupportsModel(t *testing.T) {
 		{"gpt-4-turbo supported", "gpt-4-turbo", true},
 		{"gpt-3.5-turbo supported", "gpt-3.5-turbo", true},
 		{"unknown model passthrough", "gpt-99", true},
+		{"codex family supported", "codex-mini-latest", true},
+		{"sora family supported", "sora-2-pro", true},
 	}
 
 	for _, tt := range tests {
