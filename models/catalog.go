@@ -27,6 +27,24 @@ const CatalogURLEnv = "FERRO_MODEL_CATALOG_URL"
 
 const defaultCatalogURL = "https://raw.githubusercontent.com/ferro-labs/ai-gateway/main/models/catalog.json"
 
+// modelIDIndex is a reverse lookup from bare model ID to catalog key.
+// Rebuilt by parse() on every catalog load so that Get() can resolve
+// bare model IDs in O(1) instead of scanning all ~2,500 entries.
+var modelIDIndex map[string]string
+
+// BuildIndex constructs the reverse modelID → key index for a catalog that
+// was not loaded through [Load] or [parse] (e.g. in tests). Calling this
+// is unnecessary when the catalog comes from [Load].
+func BuildIndex(c Catalog) {
+	idx := make(map[string]string, len(c))
+	for key, m := range c {
+		if _, exists := idx[m.ModelID]; !exists {
+			idx[m.ModelID] = key
+		}
+	}
+	modelIDIndex = idx
+}
+
 // Catalog is a flat map of "provider/model-id" → Model.
 type Catalog map[string]Model
 
@@ -140,19 +158,23 @@ func parse(data []byte) (Catalog, error) {
 	if err := json.Unmarshal(data, &c); err != nil {
 		return nil, fmt.Errorf("catalog parse: %w", err)
 	}
+	// Build the reverse modelID → key index so that Get() can resolve
+	// bare model IDs without scanning all entries.
+	BuildIndex(c)
 	return c, nil
 }
 
 // Get looks up a model by "provider/model-id".
-// If not found, scans for a bare model ID match as fallback.
+// If not found, uses the reverse index (built at catalog load time) to
+// resolve a bare model ID in O(1) instead of scanning all entries.
 func (c Catalog) Get(key string) (Model, bool) {
 	if m, ok := c[key]; ok {
 		return m, true
 	}
-	// Bare model ID: return the first matching entry.
-	for _, v := range c {
-		if v.ModelID == key {
-			return v, true
+	// Bare model ID: use the reverse index for constant-time lookup.
+	if idxKey, ok := modelIDIndex[key]; ok {
+		if m, ok := c[idxKey]; ok {
+			return m, true
 		}
 	}
 	return Model{}, false

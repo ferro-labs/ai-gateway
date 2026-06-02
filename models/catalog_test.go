@@ -102,12 +102,13 @@ func TestCatalogGet(t *testing.T) {
 			Mode:     ModeChat,
 		},
 	}
+	BuildIndex(c)
 
 	if _, ok := c.Get("openai/gpt-4o"); !ok {
 		t.Error("Get with provider prefix should succeed")
 	}
 	if _, ok := c.Get("gpt-4o"); !ok {
-		t.Error("Get with bare model ID should succeed via fallback scan")
+		t.Error("Get with bare model ID should succeed via reverse index")
 	}
 	if _, ok := c.Get("nonexistent-model"); ok {
 		t.Error("Get with unknown model should return false")
@@ -132,5 +133,25 @@ func TestIsDeprecated(t *testing.T) {
 		if got := m.IsDeprecated(); got != tc.want {
 			t.Errorf("IsDeprecated(%q) = %v, want %v", tc.status, got, tc.want)
 		}
+	}
+}
+
+// BenchmarkGetBareModelID benchmarks the bare-model-ID lookup path, which
+// now uses the reverse index instead of a linear scan.
+func BenchmarkGetBareModelID(b *testing.B) {
+	c, err := parse(bundledCatalog)
+	if err != nil {
+		b.Fatalf("parse: %v", err)
+	}
+	// Pick a model ID that exists in the catalog.
+	m, ok := c.Get("openai/gpt-4o")
+	if !ok {
+		b.Fatal("gpt-4o not found in catalog")
+	}
+	bareID := m.ModelID
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		c.Get(bareID)
 	}
 }

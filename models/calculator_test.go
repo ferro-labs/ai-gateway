@@ -294,7 +294,7 @@ func TestCalculateModelNotFound(t *testing.T) {
 	}
 }
 
-// Bare model ID (no provider prefix) should resolve via catalog scan.
+// Bare model ID (no provider prefix) should resolve via reverse index.
 func TestCalculateBareModelID(t *testing.T) {
 	c := catalogWith("openai/gpt-4o-mini", Model{
 		Provider: "openai",
@@ -305,6 +305,7 @@ func TestCalculateBareModelID(t *testing.T) {
 			OutputPerMTokens: ptr(0.60),
 		},
 	})
+	BuildIndex(c)
 
 	got := Calculate(c, "gpt-4o-mini", Usage{PromptTokens: 1_000_000})
 	if !got.ModelFound {
