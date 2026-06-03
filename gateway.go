@@ -126,7 +126,7 @@ func New(cfg Config) (*Gateway, error) {
 		hookDispatchQ: make(chan hookDispatch, hookDispatchQueueSize),
 		obs:           observability.NoOp(),
 	}
-	gw.shutdownCtx, gw.shutdownCancel = context.WithCancel(context.Background())
+	gw.shutdownCtx, gw.shutdownCancel = context.WithCancel(context.Background()) //nolint:gosec // canceled by Gateway.Close()
 	gw.hookSnapshot.Store([]EventHookFunc{})
 	gw.startHookWorkers()
 

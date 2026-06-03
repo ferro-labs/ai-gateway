@@ -626,13 +626,15 @@ func TestGateway_PublishEvent_AfterShutdownWithFullQueueDoesNotPanic(t *testing.
 	gw := &Gateway{
 		hookDispatchQ: make(chan hookDispatch, 1),
 	}
-	gw.shutdownCtx, gw.shutdownCancel = context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(context.Background())
+	gw.shutdownCtx = ctx
+	gw.shutdownCancel = cancel
 	gw.hookSnapshot.Store([]EventHookFunc{
 		func(context.Context, string, map[string]interface{}) {},
 		func(context.Context, string, map[string]interface{}) {},
 	})
 	gw.startHookWorkers()
-	t.Cleanup(func() { gw.shutdownCancel() })
+	t.Cleanup(cancel)
 
 	// Fill the queue so the next publishEvent hits the default branch.
 	gw.publishEvent(context.Background(), completedHookEvent("trace-fill"))
