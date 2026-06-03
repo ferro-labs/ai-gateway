@@ -47,6 +47,9 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Verify embedded catalog backup
+        run: go test ./models -run TestCatalogBackupParseable -count=1
+
       - name: Generate release notes
         env:
           # Used by scripts/generate_release_notes.sh to query the GitHub
