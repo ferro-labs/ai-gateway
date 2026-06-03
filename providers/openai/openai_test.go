@@ -3,10 +3,12 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -223,6 +225,51 @@ func TestOpenAIProvider_Complete_MockHTTP(t *testing.T) {
 	}
 	if len(resp.Choices) != 1 || len(resp.Choices[0].Message.ToolCalls) != 1 {
 		t.Fatalf("tool calls were not decoded correctly: %+v", resp.Choices)
+	}
+}
+
+func TestOpenAIProvider_Complete_DrainsSuccessfulResponseBody(t *testing.T) {
+	var newConnections atomic.Int32
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"chatcmpl-1",
+			"object":"chat.completion",
+			"created":1234567890,
+			"model":"gpt-4o-mini",
+			"choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],
+			"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}
+		}`))
+		_, _ = w.Write([]byte(strings.Repeat(" ", 1<<20)))
+	}))
+	srv.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			newConnections.Add(1)
+		}
+	}
+	srv.Start()
+	defer srv.Close()
+
+	provider, err := New("sk-test-key", srv.URL)
+	if err != nil {
+		t.Fatalf("New() returned error: %v", err)
+	}
+	transport := &http.Transport{}
+	defer transport.CloseIdleConnections()
+	provider.httpClient = &http.Client{Transport: transport}
+
+	req := core.Request{
+		Model:    "gpt-4o-mini",
+		Messages: []core.Message{{Role: "user", Content: "hi"}},
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := provider.Complete(context.Background(), req); err != nil {
+			t.Fatalf("Complete() call %d error: %v", i+1, err)
+		}
+	}
+
+	if got := newConnections.Load(); got != 1 {
+		t.Fatalf("new connections = %d, want 1; response body was not drained for reuse", got)
 	}
 }
 

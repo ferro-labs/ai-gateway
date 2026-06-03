@@ -299,6 +299,9 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 	if err := json.NewDecoder(httpResp.Body).Decode(&completion); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
+	if _, err := io.Copy(io.Discard, httpResp.Body); err != nil {
+		return nil, fmt.Errorf("failed to drain response: %w", err)
+	}
 
 	return &core.Response{
 		ID:       completion.ID,
@@ -335,6 +338,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 	ch := make(chan core.StreamChunk)
 	go func() {
 		defer close(ch)
+		defer func() { _ = stream.Close() }()
 		for stream.Next() {
 			chunk := stream.Current()
 			sc := core.StreamChunk{
