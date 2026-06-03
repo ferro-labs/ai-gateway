@@ -812,23 +812,25 @@ func (g *Gateway) getStrategy() (strategies.Strategy, error) {
 		g.circuitBreakers[t.VirtualKey] = cb
 	}
 
+	// Snapshot both maps under the write lock already held. The lookup closure
+	// runs inside Strategy.Execute with no lock held, so capturing local copies
+	// here is the only safe access pattern.
+	// maps.Clone is a shallow copy — safe because map values (Provider, *CB) are
+	// themselves immutable references; we never mutate through them in the closure.
+	providerSnap := maps.Clone(g.providers)
+	cbSnap := maps.Clone(g.circuitBreakers)
+
 	// Provider lookup with transparent circuit-breaker wrapping.
 	//
 	// The closure is captured into the strategy and invoked later from the
-	// request hot path, AFTER Route/RouteStream have released g.mu. It
-	// therefore needs its own RLock to coordinate with RegisterProvider and
-	// ReloadConfig (which reassigns circuitBreakers wholesale, line 707).
-	// Safe under sync.RWMutex because the calling paths drop the lock before
-	// strategy execution — see gateway.go:330 (Route) and
-	// gateway.go:1108 (RouteStream).
+	// request hot path, AFTER Route/RouteStream have released g.mu. It reads
+	// from the snapshots captured above, so no lock is needed in the closure.
 	lookup := func(name string) (providers.Provider, bool) {
-		g.mu.RLock()
-		defer g.mu.RUnlock()
-		p, ok := g.providers[name]
+		p, ok := providerSnap[name]
 		if !ok {
 			return nil, false
 		}
-		if cb, hasCB := g.circuitBreakers[name]; hasCB {
+		if cb, hasCB := cbSnap[name]; hasCB {
 			return &cbProvider{Provider: p, cb: cb, name: name}, true
 		}
 		return p, ok
