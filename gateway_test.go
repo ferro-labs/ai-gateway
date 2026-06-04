@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -296,6 +297,65 @@ func TestGateway_RouteStream_ContentBasedPromptRegex(t *testing.T) {
 		}
 	default:
 		t.Fatal("stream provider was not selected")
+	}
+}
+
+func TestGateway_NewRejectsInvalidStreamingPromptRegex(t *testing.T) {
+	_, err := New(Config{
+		Strategy: StrategyConfig{
+			Mode: ModeContentBased,
+			ContentConditions: []ContentCondition{{
+				Type:      "prompt_regex",
+				Value:     `[invalid`,
+				TargetKey: "code-stream",
+			}},
+		},
+		Targets: []Target{{VirtualKey: "code-stream"}},
+	})
+	if err == nil {
+		t.Fatal("expected invalid regex error")
+	}
+	if !strings.Contains(err.Error(), "invalid regex") {
+		t.Fatalf("error = %v, want invalid regex", err)
+	}
+}
+
+func TestGateway_ReloadConfigRebuildsStreamingContentRegex(t *testing.T) {
+	gw, err := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: "general-stream"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gw.streamingContent) != 0 {
+		t.Fatalf("single strategy streaming content = %d, want 0", len(gw.streamingContent))
+	}
+
+	err = gw.ReloadConfig(Config{
+		Strategy: StrategyConfig{
+			Mode: ModeContentBased,
+			ContentConditions: []ContentCondition{
+				{Type: "prompt_contains", Value: "docs", TargetKey: "general-stream"},
+				{Type: "prompt_regex", Value: `(?i)\b(code|function)\b`, TargetKey: "code-stream"},
+			},
+		},
+		Targets: []Target{
+			{VirtualKey: "general-stream"},
+			{VirtualKey: "code-stream"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ReloadConfig: %v", err)
+	}
+	if len(gw.streamingContent) != 2 {
+		t.Fatalf("streaming content = %d, want 2", len(gw.streamingContent))
+	}
+	if gw.streamingContent[0].re != nil {
+		t.Fatal("prompt_contains rule should not have a compiled regex")
+	}
+	if gw.streamingContent[1].re == nil {
+		t.Fatal("prompt_regex rule should have a compiled regex")
 	}
 }
 
