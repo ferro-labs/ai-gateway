@@ -57,11 +57,15 @@ type mockStreamProvider struct {
 	mockProvider
 	streamErr error
 	streamCh  <-chan providers.StreamChunk
+	streamFn  func(context.Context, providers.Request) (<-chan providers.StreamChunk, error)
 }
 
-func (m *mockStreamProvider) CompleteStream(_ context.Context, _ providers.Request) (<-chan providers.StreamChunk, error) {
+func (m *mockStreamProvider) CompleteStream(ctx context.Context, req providers.Request) (<-chan providers.StreamChunk, error) {
 	if m.streamErr != nil {
 		return nil, m.streamErr
+	}
+	if m.streamFn != nil {
+		return m.streamFn(ctx, req)
 	}
 	if m.streamCh != nil {
 		return m.streamCh, nil
@@ -225,6 +229,73 @@ func TestGateway_Route_NoTargets(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error for no targets")
+	}
+}
+
+func TestGateway_RouteStream_ContentBasedPromptRegex(t *testing.T) {
+	gw, err := New(Config{
+		Strategy: StrategyConfig{
+			Mode: ModeContentBased,
+			ContentConditions: []ContentCondition{{
+				Type:      "prompt_regex",
+				Value:     `(?i)\b(code|function)\b`,
+				TargetKey: "code-stream",
+			}},
+		},
+		Targets: []Target{
+			{VirtualKey: "general-stream"},
+			{VirtualKey: "code-stream"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gw.streamingContent) != 1 || gw.streamingContent[0].re == nil {
+		t.Fatal("expected compiled streaming content regex")
+	}
+
+	selected := make(chan string, 2)
+	recordStream := func(name string) func(context.Context, providers.Request) (<-chan providers.StreamChunk, error) {
+		return func(context.Context, providers.Request) (<-chan providers.StreamChunk, error) {
+			selected <- name
+			ch := make(chan providers.StreamChunk)
+			close(ch)
+			return ch, nil
+		}
+	}
+	gw.RegisterProvider(&mockStreamProvider{
+		mockProvider: mockProvider{
+			name:   "general-stream",
+			models: []string{"gpt-4o"},
+		},
+		streamFn: recordStream("general-stream"),
+	})
+	gw.RegisterProvider(&mockStreamProvider{
+		mockProvider: mockProvider{
+			name:   "code-stream",
+			models: []string{"gpt-4o"},
+		},
+		streamFn: recordStream("code-stream"),
+	})
+
+	out, err := gw.RouteStream(context.Background(), providers.Request{
+		Model:    "gpt-4o",
+		Stream:   true,
+		Messages: []providers.Message{{Role: "user", Content: "write a Go function"}},
+	})
+	if err != nil {
+		t.Fatalf("RouteStream: %v", err)
+	}
+	for range out { //nolint:revive
+	}
+
+	select {
+	case got := <-selected:
+		if got != "code-stream" {
+			t.Fatalf("selected provider = %q, want code-stream", got)
+		}
+	default:
+		t.Fatal("stream provider was not selected")
 	}
 }
 

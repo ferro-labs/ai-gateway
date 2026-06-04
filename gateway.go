@@ -54,6 +54,7 @@ type Gateway struct {
 	providers          map[string]providers.Provider
 	providerNames      []string
 	strategy           strategies.Strategy
+	streamingContent   []streamingContentCondition
 	plugins            *plugin.Manager
 	closeOnce          sync.Once
 	hooks              []EventHookFunc
@@ -94,6 +95,11 @@ type modelLookupIndex struct {
 	exactImageProviders  map[string][]string
 }
 
+type streamingContentCondition struct {
+	ContentCondition
+	re *regexp.Regexp
+}
+
 type hookDispatch struct {
 	ctx   context.Context
 	event events.HookEvent
@@ -116,10 +122,16 @@ func New(cfg Config) (*Gateway, error) {
 		catalog = models.Catalog{}
 	}
 
+	streamingContent, err := compileStreamingContentConditions(cfg.Strategy.Mode, cfg.Strategy.ContentConditions)
+	if err != nil {
+		return nil, err
+	}
+
 	gw := &Gateway{
 		config:           cfg,
 		catalog:          catalog,
 		providers:        make(map[string]providers.Provider),
+		streamingContent: streamingContent,
 		plugins:          plugin.NewManager(),
 		circuitBreakers:  make(map[string]*circuitbreaker.CircuitBreaker),
 		discoveredModels: make(map[string][]providers.ModelInfo),
@@ -799,9 +811,14 @@ func (g *Gateway) ReloadConfig(cfg Config) error {
 	if err := ValidateConfig(cfg); err != nil {
 		return fmt.Errorf("invalid config: %w", err)
 	}
+	streamingContent, err := compileStreamingContentConditions(cfg.Strategy.Mode, cfg.Strategy.ContentConditions)
+	if err != nil {
+		return fmt.Errorf("invalid config: %w", err)
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.config = cfg
+	g.streamingContent = streamingContent
 	g.strategy = nil // force rebuild on next request
 	g.circuitBreakers = make(map[string]*circuitbreaker.CircuitBreaker)
 
@@ -1366,7 +1383,7 @@ func (g *Gateway) streamingTargetOrderLocked(req providers.Request) []string {
 		return keys
 	case ModeContentBased:
 		// Evaluate content rules in order; first match wins, fallback is targets[0].
-		for _, cond := range g.config.Strategy.ContentConditions {
+		for _, cond := range g.streamingContent {
 			if streamingContentConditionMatches(cond, req) {
 				// Matched target first, then remaining targets as fallback.
 				keys := []string{cond.TargetKey}
@@ -1564,9 +1581,28 @@ func conditionMatches(cond Condition, model string) bool {
 	}
 }
 
+func compileStreamingContentConditions(mode StrategyMode, conditions []ContentCondition) ([]streamingContentCondition, error) {
+	if mode != ModeContentBased {
+		return nil, nil
+	}
+	compiled := make([]streamingContentCondition, len(conditions))
+	for i, cond := range conditions {
+		compiled[i].ContentCondition = cond
+		if cond.Type != "prompt_regex" {
+			continue
+		}
+		re, err := regexp.Compile(cond.Value)
+		if err != nil {
+			return nil, fmt.Errorf("streaming content-based routing: invalid regex %q in rule %d: %w", cond.Value, i, err)
+		}
+		compiled[i].re = re
+	}
+	return compiled, nil
+}
+
 // streamingContentConditionMatches evaluates a single ContentCondition against
 // a request, mirroring the logic in internal/strategies/contentbased.go.
-func streamingContentConditionMatches(cond ContentCondition, req providers.Request) bool {
+func streamingContentConditionMatches(cond streamingContentCondition, req providers.Request) bool {
 	switch cond.Type {
 	case "prompt_contains":
 		lower := strings.ToLower(cond.Value)
@@ -1585,12 +1621,11 @@ func streamingContentConditionMatches(cond ContentCondition, req providers.Reque
 		}
 		return true
 	case "prompt_regex":
-		re, err := regexp.Compile(cond.Value)
-		if err != nil {
+		if cond.re == nil {
 			return false
 		}
 		for _, msg := range req.Messages {
-			if msg.Role == roleUser && re.MatchString(msg.Content) {
+			if msg.Role == roleUser && cond.re.MatchString(msg.Content) {
 				return true
 			}
 		}
