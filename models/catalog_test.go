@@ -104,6 +104,34 @@ func TestDefaultCatalogURLUsesModelCatalogReleaseAsset(t *testing.T) {
 	}
 }
 
+func TestCatalogURLForLog(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{
+			name: "strips userinfo and query",
+			raw:  "https://user:super-secret@catalog.example.com/v1/catalog.json?token=abc123",
+			want: "https://catalog.example.com/v1/catalog.json",
+		},
+		{
+			name: "keeps public github asset path",
+			raw:  defaultCatalogURL,
+			want: "https://github.com/ferro-labs/model-catalog/releases/latest/download/catalog.json",
+		},
+		{name: "empty", raw: "", want: ""},
+		{name: "invalid", raw: "not-a-url", want: "<catalog-url>"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := CatalogURLForLog(tt.raw); got != tt.want {
+				t.Fatalf("CatalogURLForLog(%q) = %q, want %q", tt.raw, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestLoadWithInfoUsesRemoteCatalog(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -136,7 +164,8 @@ func TestLoadWithInfoFallsBackWhenRemoteFetchFails(t *testing.T) {
 	previous := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
 	t.Cleanup(func() { slog.SetDefault(previous) })
-	t.Setenv(CatalogURLEnv, "http://127.0.0.1:1/catalog.json")
+	const secret = "super-secret-token"
+	t.Setenv(CatalogURLEnv, "http://user:"+secret+"@127.0.0.1:1/catalog.json?api_key="+secret)
 
 	result, err := LoadWithInfo()
 	if err != nil {
@@ -148,8 +177,15 @@ func TestLoadWithInfoFallsBackWhenRemoteFetchFails(t *testing.T) {
 	if len(result.Catalog) == 0 {
 		t.Fatal("fallback catalog is empty")
 	}
-	if !strings.Contains(buf.String(), "using embedded fallback") {
-		t.Fatalf("fallback warning was not logged: %s", buf.String())
+	logged := buf.String()
+	if !strings.Contains(logged, "using embedded fallback") {
+		t.Fatalf("fallback warning was not logged: %s", logged)
+	}
+	if strings.Contains(logged, secret) {
+		t.Fatalf("catalog URL secret leaked into logs: %s", logged)
+	}
+	if !strings.Contains(logged, "http://127.0.0.1:1/catalog.json") {
+		t.Fatalf("expected redacted host/path in logs, got: %s", logged)
 	}
 }
 
@@ -214,6 +250,190 @@ func TestCatalogGet(t *testing.T) {
 		t.Error("Get with unknown model should return false")
 	}
 }
+
+func TestCatalogGetProviderAlias(t *testing.T) {
+	cacheRead := 1.25
+	c := Catalog{
+		"azure/gpt-4o": {
+			Provider: "azure",
+			ModelID:  "gpt-4o",
+			Mode:     ModeChat,
+			Pricing: Pricing{
+				InputPerMTokens:     ptrF(2.5),
+				CacheReadPerMTokens: &cacheRead,
+			},
+			Capabilities: Capabilities{PromptCaching: true},
+		},
+		"azure_foundry/gpt-4o": {
+			Provider: "azure_foundry",
+			ModelID:  "gpt-4o",
+			Mode:     ModeChat,
+			Pricing: Pricing{
+				InputPerMTokens: ptrF(2.5),
+			},
+			Capabilities: Capabilities{PromptCaching: false},
+		},
+		"vertex_ai/gemini-2.5-pro": {
+			Provider: "vertex_ai",
+			ModelID:  "gemini-2.5-pro",
+			Mode:     ModeChat,
+		},
+		"azure_openai/gpt-4o-mini": {
+			Provider: "azure_openai",
+			ModelID:  "gpt-4o-mini",
+			Mode:     ModeChat,
+			Pricing: Pricing{
+				InputPerMTokens: ptrF(0.15),
+			},
+		},
+		"azure/gpt-4o-mini": {
+			Provider: "azure",
+			ModelID:  "gpt-4o-mini",
+			Mode:     ModeChat,
+			Pricing: Pricing{
+				InputPerMTokens: ptrF(0.165),
+			},
+		},
+	}
+
+	cases := []struct {
+		key      string
+		provider string
+		modelID  string
+	}{
+		{"azure-openai/gpt-4o-mini", "azure_openai", "gpt-4o-mini"},
+		{"azure-foundry/gpt-4o", "azure_foundry", "gpt-4o"},
+		{"vertex-ai/gemini-2.5-pro", "vertex_ai", "gemini-2.5-pro"},
+	}
+	if len(cases) != len(catalogProviderAliases) {
+		t.Fatalf("test cases = %d, catalogProviderAliases = %d — add a case per alias",
+			len(cases), len(catalogProviderAliases))
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.key, func(t *testing.T) {
+			got, ok := c.Get(tc.key)
+			if !ok {
+				t.Fatalf("Get(%q) should succeed", tc.key)
+			}
+			if got.Provider != tc.provider || got.ModelID != tc.modelID {
+				t.Fatalf("Get(%q) = (%q,%q), want (%q,%q)",
+					tc.key, got.Provider, got.ModelID, tc.provider, tc.modelID)
+			}
+		})
+	}
+
+	for gatewayID := range catalogProviderAliases {
+		gatewayID := gatewayID
+		t.Run(gatewayID+"/unknown", func(t *testing.T) {
+			if _, ok := c.Get(gatewayID + "/unknown-model"); ok {
+				t.Fatalf("Get(%q/unknown-model) should not succeed", gatewayID)
+			}
+		})
+	}
+}
+
+func TestCatalogGetProviderAliasCaseInsensitive(t *testing.T) {
+	c := Catalog{
+		"azure/Phi-4": {
+			Provider: "azure",
+			ModelID:  "Phi-4",
+			Mode:     ModeChat,
+			Pricing: Pricing{
+				InputPerMTokens:  ptrF(0.125),
+				OutputPerMTokens: ptrF(0.5),
+			},
+		},
+	}
+
+	got, ok := c.Get("azure-foundry/phi-4")
+	if !ok {
+		t.Fatal("Get(azure-foundry/phi-4) should succeed via case-insensitive alias")
+	}
+	if got.ModelID != "Phi-4" {
+		t.Fatalf("ModelID = %q, want Phi-4", got.ModelID)
+	}
+	if got.Pricing.InputPerMTokens == nil || *got.Pricing.InputPerMTokens != 0.125 {
+		t.Fatalf("expected priced azure/Phi-4 entry, got %+v", got.Pricing)
+	}
+}
+
+func TestCatalogGetAzureFoundryPrefersFoundryCatalog(t *testing.T) {
+	c, err := parse(bundledCatalog)
+	if err != nil {
+		t.Fatalf("parse bundled catalog: %v", err)
+	}
+
+	got, ok := c.Get("azure-foundry/gpt-4o")
+	if !ok {
+		t.Fatal("embedded catalog should resolve azure-foundry/gpt-4o")
+	}
+	if got.Provider != "azure_foundry" {
+		t.Fatalf("Provider = %q, want azure_foundry", got.Provider)
+	}
+	if got.Capabilities.PromptCaching {
+		t.Fatal("expected azure_foundry/gpt-4o entry without prompt caching")
+	}
+	if got.Pricing.CacheReadPerMTokens != nil {
+		t.Fatal("expected azure_foundry entry without cache-read pricing")
+	}
+}
+
+func TestCatalogGetAzureFoundryPhi4MetadataEmbeddedCatalog(t *testing.T) {
+	c, err := parse(bundledCatalog)
+	if err != nil {
+		t.Fatalf("parse bundled catalog: %v", err)
+	}
+
+	got, ok := c.Get("azure-foundry/phi-4")
+	if !ok {
+		t.Fatal("embedded catalog should resolve azure-foundry/phi-4 for metadata")
+	}
+	if got.Provider != "azure_foundry" {
+		t.Fatalf("Provider = %q, want azure_foundry", got.Provider)
+	}
+	if got.MaxOutputTokens != 4096 {
+		t.Fatalf("MaxOutputTokens = %d, want Foundry metadata (4096)", got.MaxOutputTokens)
+	}
+}
+
+func TestCatalogGetForPricingAzureFoundryPhi4EmbeddedCatalog(t *testing.T) {
+	c, err := parse(bundledCatalog)
+	if err != nil {
+		t.Fatalf("parse bundled catalog: %v", err)
+	}
+
+	got, ok := c.GetForPricing("azure-foundry/phi-4")
+	if !ok {
+		t.Fatal("embedded catalog should resolve azure-foundry/phi-4 for pricing")
+	}
+	if got.ModelID != "Phi-4" {
+		t.Fatalf("ModelID = %q, want Phi-4", got.ModelID)
+	}
+	if got.Pricing.InputPerMTokens == nil {
+		t.Fatal("expected priced azure/Phi-4 entry, not azure_foundry/phi-4 null pricing")
+	}
+}
+
+func TestCatalogGetAzureOpenAIPrefersOpenAICatalog(t *testing.T) {
+	c, err := parse(bundledCatalog)
+	if err != nil {
+		t.Fatalf("parse bundled catalog: %v", err)
+	}
+
+	got, ok := c.Get("azure-openai/gpt-4o-mini")
+	if !ok {
+		t.Fatal("embedded catalog should resolve azure-openai/gpt-4o-mini")
+	}
+	if got.Provider != "azure_openai" {
+		t.Fatalf("Provider = %q, want azure_openai", got.Provider)
+	}
+	if got.Pricing.InputPerMTokens == nil || *got.Pricing.InputPerMTokens != 0.15 {
+		t.Fatalf("input price = %v, want 0.15 from azure_openai entry", got.Pricing.InputPerMTokens)
+	}
+}
+
+func ptrF(v float64) *float64 { return &v }
 
 func TestCatalogGetDirectCatalogFallsBackToScan(t *testing.T) {
 	BuildIndex(Catalog{})

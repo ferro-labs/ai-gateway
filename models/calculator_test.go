@@ -294,6 +294,130 @@ func TestCalculateModelNotFound(t *testing.T) {
 	}
 }
 
+func TestCalculateProviderAlias(t *testing.T) {
+	c := catalogWith("azure/gpt-4o", Model{
+		Provider: "azure",
+		ModelID:  "gpt-4o",
+		Mode:     ModeChat,
+		Pricing: Pricing{
+			InputPerMTokens:  ptr(2.5),
+			OutputPerMTokens: ptr(10.0),
+		},
+	})
+
+	got := Calculate(c, "azure-openai/gpt-4o", Usage{PromptTokens: 1_000_000})
+	if !got.ModelFound {
+		t.Fatal("ModelFound should be true for azure-openai alias")
+	}
+	if !got.Priced {
+		t.Fatal("Priced should be true")
+	}
+	if got.InputUSD != 2.5 {
+		t.Errorf("InputUSD: got %v, want 2.5", got.InputUSD)
+	}
+}
+
+func TestCalculateProviderAliasAzureFoundryNoCacheRead(t *testing.T) {
+	c := catalogWith("azure/gpt-4o", Model{
+		Provider: "azure",
+		ModelID:  "gpt-4o",
+		Mode:     ModeChat,
+		Pricing: Pricing{
+			InputPerMTokens:     ptr(2.5),
+			CacheReadPerMTokens: ptr(1.25),
+		},
+	})
+	c["azure_foundry/gpt-4o"] = Model{
+		Provider: "azure_foundry",
+		ModelID:  "gpt-4o",
+		Mode:     ModeChat,
+		Pricing: Pricing{
+			InputPerMTokens: ptr(2.5),
+		},
+	}
+
+	got := Calculate(c, "azure-foundry/gpt-4o", Usage{
+		PromptTokens:    1_000_000,
+		CacheReadTokens: 500_000,
+	})
+	if !got.ModelFound || !got.Priced {
+		t.Fatalf("ModelFound=%v Priced=%v", got.ModelFound, got.Priced)
+	}
+	if got.CacheReadUSD != 0 {
+		t.Errorf("CacheReadUSD: got %v, want 0 when using azure_foundry entry", got.CacheReadUSD)
+	}
+}
+
+func TestCalculateProviderAliasAzureOpenAIPrefersOpenAIPricing(t *testing.T) {
+	c := catalogWith("azure_openai/gpt-4o-mini", Model{
+		Provider: "azure_openai",
+		ModelID:  "gpt-4o-mini",
+		Mode:     ModeChat,
+		Pricing: Pricing{
+			InputPerMTokens:  ptr(0.15),
+			OutputPerMTokens: ptr(0.60),
+		},
+	})
+	c["azure/gpt-4o-mini"] = Model{
+		Provider: "azure",
+		ModelID:  "gpt-4o-mini",
+		Mode:     ModeChat,
+		Pricing: Pricing{
+			InputPerMTokens:  ptr(0.165),
+			OutputPerMTokens: ptr(0.66),
+		},
+	}
+
+	got := Calculate(c, "azure-openai/gpt-4o-mini", Usage{PromptTokens: 1_000_000})
+	if !got.ModelFound || !got.Priced {
+		t.Fatalf("ModelFound=%v Priced=%v", got.ModelFound, got.Priced)
+	}
+	if got.InputUSD != 0.15 {
+		t.Errorf("InputUSD: got %v, want 0.15 from azure_openai entry", got.InputUSD)
+	}
+}
+
+func TestCalculateCatalogNativeKeyAzureFoundryPhi4(t *testing.T) {
+	c, err := parse(bundledCatalog)
+	if err != nil {
+		t.Fatalf("parse bundled catalog: %v", err)
+	}
+
+	got := Calculate(c, "azure_foundry/phi-4", Usage{PromptTokens: 1_000_000})
+	if !got.ModelFound {
+		t.Fatal("ModelFound should be true for catalog-native azure_foundry/phi-4")
+	}
+	if !got.Priced {
+		t.Fatal("Priced should be true via azure/Phi-4 fallback")
+	}
+	if got.InputUSD != 0.125 {
+		t.Errorf("InputUSD: got %v, want 0.125", got.InputUSD)
+	}
+}
+
+func TestCalculateProviderAliasCaseInsensitive(t *testing.T) {
+	c := catalogWith("azure/Phi-4", Model{
+		Provider: "azure",
+		ModelID:  "Phi-4",
+		Mode:     ModeChat,
+		Pricing: Pricing{
+			InputPerMTokens:  ptr(0.125),
+			OutputPerMTokens: ptr(0.5),
+		},
+	})
+
+	got := Calculate(c, "azure-foundry/phi-4", Usage{PromptTokens: 1_000_000})
+	if !got.ModelFound {
+		t.Fatal("ModelFound should be true for azure-foundry/phi-4 alias")
+	}
+	if !got.Priced {
+		t.Fatal("Priced should be true")
+	}
+	if got.InputUSD != 0.125 {
+		t.Errorf("InputUSD: got %v, want 0.125", got.InputUSD)
+	}
+}
+
 // Bare model ID (no provider prefix) should resolve via reverse index.
 func TestCalculateBareModelID(t *testing.T) {
 	c := catalogWith("openai/gpt-4o-mini", Model{
