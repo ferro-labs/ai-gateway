@@ -2,6 +2,7 @@ package admin
 
 import (
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -36,6 +37,37 @@ func TestGet_Existing(t *testing.T) {
 	}
 	if got.ID != created.ID {
 		t.Errorf("got ID %q, want %q", got.ID, created.ID)
+	}
+}
+
+func TestGet_ReturnsCopy(t *testing.T) {
+	store := NewKeyStore()
+	created, _ := store.Create("copy-me", []string{"admin"}, nil)
+	expiresAt := time.Now().Add(time.Hour)
+	if err := store.SetExpiration(created.ID, &expiresAt); err != nil {
+		t.Fatalf("set expiration: %v", err)
+	}
+
+	got, ok := store.Get(created.ID)
+	if !ok {
+		t.Fatal("expected to find key")
+	}
+	got.Name = "changed-name"
+	got.Scopes[0] = "changed-scope"
+	*got.ExpiresAt = got.ExpiresAt.Add(24 * time.Hour)
+
+	fresh, ok := store.Get(created.ID)
+	if !ok {
+		t.Fatal("expected to find key")
+	}
+	if fresh.Name != "copy-me" {
+		t.Fatalf("expected stored name to stay copy-me, got %q", fresh.Name)
+	}
+	if got := fresh.Scopes[0]; got != "admin" {
+		t.Fatalf("expected stored scope to stay admin, got %q", got)
+	}
+	if want := expiresAt.UTC(); !fresh.ExpiresAt.Equal(want) {
+		t.Fatalf("expected stored expiration %v, got %v", want, *fresh.ExpiresAt)
 	}
 }
 
@@ -147,6 +179,87 @@ func TestValidateKey_IncrementsUsage(t *testing.T) {
 	}
 	if second.UsageCount != 2 {
 		t.Fatalf("expected usage_count 2, got %d", second.UsageCount)
+	}
+}
+
+func TestValidateKey_ReturnsCopy(t *testing.T) {
+	store := NewKeyStore()
+	created, _ := store.Create("validate-copy", nil, nil)
+
+	got, ok := store.ValidateKey(created.Key)
+	if !ok {
+		t.Fatal("expected key to be valid")
+	}
+	if got.LastUsedAt == nil {
+		t.Fatal("expected last_used_at to be set")
+	}
+	got.Name = "changed-validation"
+	got.UsageCount = 99
+	*got.LastUsedAt = time.Time{}
+
+	fresh, ok := store.Get(created.ID)
+	if !ok {
+		t.Fatal("expected to find key")
+	}
+	if fresh.Name != "validate-copy" {
+		t.Fatalf("expected stored name to stay validate-copy, got %q", fresh.Name)
+	}
+	if fresh.UsageCount != 1 {
+		t.Fatalf("expected stored usage_count 1, got %d", fresh.UsageCount)
+	}
+	if fresh.LastUsedAt == nil || fresh.LastUsedAt.IsZero() {
+		t.Fatal("expected stored last_used_at to stay set")
+	}
+
+	second, ok := store.ValidateKey(created.Key)
+	if !ok {
+		t.Fatal("expected second validation to pass")
+	}
+	if second.UsageCount != 2 {
+		t.Fatalf("expected usage_count 2, got %d", second.UsageCount)
+	}
+}
+
+func TestKeyStoreConcurrentValidateAndGet(t *testing.T) {
+	store := NewKeyStore()
+	created, _ := store.Create("race-key", nil, nil)
+
+	const workers = 16
+	const iterations = 100
+
+	var wg sync.WaitGroup
+	errs := make(chan string, workers*2)
+	for i := 0; i < workers; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < iterations; j++ {
+				if _, ok := store.ValidateKey(created.Key); !ok {
+					errs <- "expected key validation to pass"
+					return
+				}
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			for j := 0; j < iterations; j++ {
+				key, ok := store.Get(created.ID)
+				if !ok {
+					errs <- "expected key to exist"
+					return
+				}
+				_ = key.UsageCount
+				if key.LastUsedAt != nil {
+					_ = key.LastUsedAt.IsZero()
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		t.Fatal(err)
 	}
 }
 
