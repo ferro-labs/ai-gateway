@@ -80,7 +80,10 @@ func (s *KeyStore) Get(id string) (*APIKey, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	k, ok := s.byID[id]
-	return k, ok
+	if !ok {
+		return nil, false
+	}
+	return cloneAPIKey(k), true
 }
 
 // List returns all keys with the Key field masked.
@@ -208,5 +211,26 @@ func (s *KeyStore) ValidateKey(key string) (*APIKey, bool) {
 	lastUsedAt := now
 	k.LastUsedAt = &lastUsedAt
 	k.UsageCount++
-	return k, true
+	return cloneAPIKey(k), true
+}
+
+func cloneAPIKey(k *APIKey) *APIKey {
+	if k == nil {
+		return nil
+	}
+	cp := *k
+	cp.Scopes = append([]string(nil), k.Scopes...)
+	cp.RevokedAt = cloneTime(k.RevokedAt)
+	cp.ExpiresAt = cloneTime(k.ExpiresAt)
+	cp.RotatedAt = cloneTime(k.RotatedAt)
+	cp.LastUsedAt = cloneTime(k.LastUsedAt)
+	return &cp
+}
+
+func cloneTime(t *time.Time) *time.Time {
+	if t == nil {
+		return nil
+	}
+	cp := *t
+	return &cp
 }

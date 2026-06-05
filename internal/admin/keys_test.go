@@ -39,6 +39,38 @@ func TestGet_Existing(t *testing.T) {
 	}
 }
 
+func TestGet_ReturnsCopy(t *testing.T) {
+	store := NewKeyStore()
+	created, _ := store.Create("copy-key", []string{ScopeAdmin}, nil)
+
+	got, ok := store.Get(created.ID)
+	if !ok {
+		t.Fatal("expected to find key")
+	}
+	got.Name = "changed"
+	got.Scopes[0] = ScopeReadOnly
+	got.UsageCount = 99
+	now := time.Now()
+	got.LastUsedAt = &now
+
+	stored, ok := store.Get(created.ID)
+	if !ok {
+		t.Fatal("expected key to still exist")
+	}
+	if stored.Name != "copy-key" {
+		t.Fatalf("stored name = %q, want copy-key", stored.Name)
+	}
+	if stored.Scopes[0] != ScopeAdmin {
+		t.Fatalf("stored scope = %q, want %q", stored.Scopes[0], ScopeAdmin)
+	}
+	if stored.UsageCount != 0 {
+		t.Fatalf("stored usage_count = %d, want 0", stored.UsageCount)
+	}
+	if stored.LastUsedAt != nil {
+		t.Fatalf("stored last_used_at = %v, want nil", stored.LastUsedAt)
+	}
+}
+
 func TestGet_NonExisting(t *testing.T) {
 	store := NewKeyStore()
 	_, ok := store.Get("does-not-exist")
@@ -147,6 +179,33 @@ func TestValidateKey_IncrementsUsage(t *testing.T) {
 	}
 	if second.UsageCount != 2 {
 		t.Fatalf("expected usage_count 2, got %d", second.UsageCount)
+	}
+}
+
+func TestValidateKey_ReturnsCopy(t *testing.T) {
+	store := NewKeyStore()
+	created, _ := store.Create("validate-copy", []string{ScopeAdmin}, nil)
+
+	validated, ok := store.ValidateKey(created.Key)
+	if !ok {
+		t.Fatal("expected key to validate")
+	}
+	validated.Scopes[0] = ScopeReadOnly
+	validated.UsageCount = 100
+	validated.LastUsedAt = nil
+
+	stored, ok := store.Get(created.ID)
+	if !ok {
+		t.Fatal("expected key to still exist")
+	}
+	if stored.Scopes[0] != ScopeAdmin {
+		t.Fatalf("stored scope = %q, want %q", stored.Scopes[0], ScopeAdmin)
+	}
+	if stored.UsageCount != 1 {
+		t.Fatalf("stored usage_count = %d, want 1", stored.UsageCount)
+	}
+	if stored.LastUsedAt == nil {
+		t.Fatal("stored last_used_at = nil, want validation timestamp")
 	}
 }
 
