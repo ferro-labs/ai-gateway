@@ -320,6 +320,47 @@ func TestGateway_NewRejectsInvalidStreamingPromptRegex(t *testing.T) {
 	}
 }
 
+func TestGateway_ReloadConfigRejectsInvalidStreamingPromptRegex(t *testing.T) {
+	gw, err := New(Config{
+		Strategy: StrategyConfig{
+			Mode: ModeContentBased,
+			ContentConditions: []ContentCondition{{
+				Type:      "prompt_regex",
+				Value:     `docs`,
+				TargetKey: "general-stream",
+			}},
+		},
+		Targets: []Target{{VirtualKey: "general-stream"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = gw.ReloadConfig(Config{
+		Strategy: StrategyConfig{
+			Mode: ModeContentBased,
+			ContentConditions: []ContentCondition{{
+				Type:      "prompt_regex",
+				Value:     `[invalid`,
+				TargetKey: "general-stream",
+			}},
+		},
+		Targets: []Target{{VirtualKey: "general-stream"}},
+	})
+	if err == nil {
+		t.Fatal("expected invalid regex error")
+	}
+	if !strings.Contains(err.Error(), "invalid regex") {
+		t.Fatalf("error = %v, want invalid regex", err)
+	}
+	if len(gw.streamingContent) != 1 {
+		t.Fatalf("streaming content = %d, want previous config to remain", len(gw.streamingContent))
+	}
+	if gw.streamingContent[0].Value != "docs" || gw.streamingContent[0].re == nil {
+		t.Fatalf("streaming content was replaced after invalid reload: %#v", gw.streamingContent[0])
+	}
+}
+
 func TestGateway_ReloadConfigRebuildsStreamingContentRegex(t *testing.T) {
 	gw, err := New(Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
@@ -356,6 +397,35 @@ func TestGateway_ReloadConfigRebuildsStreamingContentRegex(t *testing.T) {
 	}
 	if gw.streamingContent[1].re == nil {
 		t.Fatal("prompt_regex rule should have a compiled regex")
+	}
+}
+
+func TestStreamingContentConditionMatchesPromptRegexRequiresCompiledRegex(t *testing.T) {
+	req := providers.Request{
+		Messages: []providers.Message{{Role: "user", Content: "write docs"}},
+	}
+
+	if streamingContentConditionMatches(streamingContentCondition{
+		ContentCondition: ContentCondition{Type: "prompt_regex", Value: "docs"},
+	}, req) {
+		t.Fatal("uncompiled prompt_regex should not match")
+	}
+
+	compiled, err := compileStreamingContentConditions(ModeContentBased, []ContentCondition{{
+		Type:      "prompt_regex",
+		Value:     "docs",
+		TargetKey: "general-stream",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !streamingContentConditionMatches(compiled[0], req) {
+		t.Fatal("compiled prompt_regex should match")
+	}
+	if streamingContentConditionMatches(streamingContentCondition{
+		ContentCondition: ContentCondition{Type: "unknown", Value: "docs"},
+	}, req) {
+		t.Fatal("unknown streaming content condition should not match")
 	}
 }
 
