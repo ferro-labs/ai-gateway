@@ -656,6 +656,64 @@ func TestGateway_StreamingLatencyOrderFallsBackWithoutStreamingCandidates(t *tes
 	requireKeys(t, got, "plain", "unsupported", "missing")
 }
 
+func TestGateway_StreamingLatencyOrderTriesUnseenBeforeSampled(t *testing.T) {
+	gw, err := New(Config{
+		Strategy: StrategyConfig{Mode: ModeLatency},
+		Targets: []Target{
+			{VirtualKey: "unseen-a"},
+			{VirtualKey: "sampled"},
+			{VirtualKey: "unseen-b"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gw.RegisterProvider(&mockStreamProvider{
+		mockProvider: mockProvider{name: "unseen-a", models: []string{"gpt-4o"}},
+	})
+	gw.RegisterProvider(&mockStreamProvider{
+		mockProvider: mockProvider{name: "sampled", models: []string{"gpt-4o"}},
+	})
+	gw.RegisterProvider(&mockStreamProvider{
+		mockProvider: mockProvider{name: "unseen-b", models: []string{"gpt-4o"}},
+	})
+	gw.latencyTracker.Record("sampled", 10*time.Millisecond)
+
+	got := gw.streamingLatencyOrderLocked(gw.config.Targets, providers.Request{Model: "gpt-4o"})
+	if got[2] != "sampled" {
+		t.Fatalf("got keys %v, want sampled provider after unseen providers", got)
+	}
+	firstTwoUnseen := (got[0] == "unseen-a" && got[1] == "unseen-b") ||
+		(got[0] == "unseen-b" && got[1] == "unseen-a")
+	if !firstTwoUnseen {
+		t.Fatalf("got keys %v, want unseen providers first", got)
+	}
+}
+
+func TestGateway_StreamingCostOrderFallsBackWithoutStreamingCandidates(t *testing.T) {
+	gw, err := New(Config{
+		Strategy: StrategyConfig{Mode: ModeCostOptimized},
+		Targets: []Target{
+			{VirtualKey: "plain"},
+			{VirtualKey: "unsupported"},
+			{VirtualKey: "missing"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gw.RegisterProvider(&mockProvider{
+		name:   "plain",
+		models: []string{"gpt-4o"},
+	})
+	gw.RegisterProvider(&mockStreamProvider{
+		mockProvider: mockProvider{name: "unsupported", models: []string{"other-model"}},
+	})
+
+	got := gw.streamingCostOrderLocked(gw.config.Targets, providers.Request{Model: "gpt-4o"})
+	requireKeys(t, got, "plain", "unsupported", "missing")
+}
+
 func TestGateway_RouteStream_ImmediateFailure_IncrementsProviderErrors(t *testing.T) {
 	gw, _ := New(Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
