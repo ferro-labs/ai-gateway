@@ -88,6 +88,15 @@ func counterValue(t *testing.T, c prometheus.Counter) float64 {
 
 func ptrFloat64(v float64) *float64 { return &v }
 
+func drainStream(t *testing.T, ch <-chan providers.StreamChunk) {
+	t.Helper()
+	for chunk := range ch {
+		if chunk.Error != nil {
+			t.Fatalf("stream chunk error: %v", chunk.Error)
+		}
+	}
+}
+
 func TestGateway_Route_Single(t *testing.T) {
 	gw, _ := New(Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
@@ -150,12 +159,12 @@ func TestGateway_Route_CostOptimizedPassesUnpricedStrategy(t *testing.T) {
 	}{
 		{
 			name:             "skip routes to priced provider",
-			unpricedStrategy: "skip",
+			unpricedStrategy: unpricedStrategySkip,
 			wantProvider:     "priced",
 		},
 		{
 			name:             "allow routes to unpriced provider",
-			unpricedStrategy: "allow",
+			unpricedStrategy: unpricedStrategyAllow,
 			wantProvider:     "unpriced",
 		},
 	}
@@ -427,6 +436,84 @@ func TestStreamingContentConditionMatchesPromptRegexRequiresCompiledRegex(t *tes
 	}, req) {
 		t.Fatal("unknown streaming content condition should not match")
 	}
+}
+
+func TestGateway_RouteStream_LeastLatencyUsesObservedP50(t *testing.T) {
+	gw, err := New(Config{
+		Strategy: StrategyConfig{Mode: ModeLatency},
+		Targets: []Target{
+			{VirtualKey: "slow"},
+			{VirtualKey: "fast"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gw.RegisterProvider(&mockStreamProvider{
+		mockProvider: mockProvider{name: "slow", models: []string{"gpt-4o"}},
+		streamErr:    errors.New("slow provider selected"),
+	})
+	gw.RegisterProvider(&mockStreamProvider{
+		mockProvider: mockProvider{name: "fast", models: []string{"gpt-4o"}},
+	})
+	gw.latencyTracker.Record("slow", 120*time.Millisecond)
+	gw.latencyTracker.Record("fast", 10*time.Millisecond)
+
+	ch, err := gw.RouteStream(context.Background(), providers.Request{
+		Model:    "gpt-4o",
+		Messages: []providers.Message{{Role: "user", Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("RouteStream error = %v, want fast provider", err)
+	}
+	drainStream(t, ch)
+}
+
+func TestGateway_RouteStream_CostOptimizedUsesCatalogCost(t *testing.T) {
+	gw, err := New(Config{
+		Strategy: StrategyConfig{Mode: ModeCostOptimized},
+		Targets: []Target{
+			{VirtualKey: "expensive"},
+			{VirtualKey: "cheap"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gw.catalog = models.Catalog{
+		"expensive/gpt-4o": {
+			Provider: "expensive",
+			ModelID:  "gpt-4o",
+			Mode:     models.ModeChat,
+			Pricing: models.Pricing{
+				InputPerMTokens: ptrFloat64(10),
+			},
+		},
+		"cheap/gpt-4o": {
+			Provider: "cheap",
+			ModelID:  "gpt-4o",
+			Mode:     models.ModeChat,
+			Pricing: models.Pricing{
+				InputPerMTokens: ptrFloat64(1),
+			},
+		},
+	}
+	gw.RegisterProvider(&mockStreamProvider{
+		mockProvider: mockProvider{name: "expensive", models: []string{"gpt-4o"}},
+		streamErr:    errors.New("expensive provider selected"),
+	})
+	gw.RegisterProvider(&mockStreamProvider{
+		mockProvider: mockProvider{name: "cheap", models: []string{"gpt-4o"}},
+	})
+
+	ch, err := gw.RouteStream(context.Background(), providers.Request{
+		Model:    "gpt-4o",
+		Messages: []providers.Message{{Role: "user", Content: "hello world"}},
+	})
+	if err != nil {
+		t.Fatalf("RouteStream error = %v, want cheap provider", err)
+	}
+	drainStream(t, ch)
 }
 
 func TestGateway_RouteStream_ImmediateFailure_IncrementsProviderErrors(t *testing.T) {

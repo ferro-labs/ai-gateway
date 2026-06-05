@@ -143,6 +143,12 @@ const (
 	ModeABTest        StrategyMode = "ab-test"
 )
 
+const (
+	unpricedStrategyFallback = "fallback"
+	unpricedStrategySkip     = "skip"
+	unpricedStrategyAllow    = "allow"
+)
+
 // Condition represents a condition for conditional routing.
 type Condition struct {
 	Key       string `json:"key" yaml:"key"`

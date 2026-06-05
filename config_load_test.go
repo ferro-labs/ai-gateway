@@ -41,8 +41,8 @@ func TestLoadConfig_CostOptimizedUnpricedStrategy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.Strategy.UnpricedStrategy != "skip" {
-		t.Errorf("expected unpriced_strategy %q, got %q", "skip", cfg.Strategy.UnpricedStrategy)
+	if cfg.Strategy.UnpricedStrategy != unpricedStrategySkip {
+		t.Errorf("expected unpriced_strategy %q, got %q", unpricedStrategySkip, cfg.Strategy.UnpricedStrategy)
 	}
 }
 
@@ -132,8 +132,8 @@ func TestValidateConfig_CostOptimizedUnpricedStrategy(t *testing.T) {
 	}{
 		{name: "default"},
 		{name: "fallback", unpricedStrategy: "fallback"},
-		{name: "skip", unpricedStrategy: "skip"},
-		{name: "allow", unpricedStrategy: "allow"},
+		{name: "skip", unpricedStrategy: unpricedStrategySkip},
+		{name: "allow", unpricedStrategy: unpricedStrategyAllow},
 		{name: "invalid", unpricedStrategy: "free", wantValidationErr: true},
 	}
 

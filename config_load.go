@@ -69,7 +69,7 @@ func ValidateConfig(cfg Config) error {
 
 	if mode == ModeCostOptimized {
 		switch cfg.Strategy.UnpricedStrategy {
-		case "", "fallback", "skip", "allow":
+		case "", unpricedStrategyFallback, unpricedStrategySkip, unpricedStrategyAllow:
 		default:
 			return fmt.Errorf("cost-optimized unpriced_strategy must be one of fallback, skip, allow")
 		}

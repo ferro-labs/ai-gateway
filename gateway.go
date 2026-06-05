@@ -20,6 +20,7 @@ import (
 	"regexp"
 	"runtime"
 	"runtime/trace"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1447,6 +1448,10 @@ func (g *Gateway) streamingTargetOrderLocked(req providers.Request) []string {
 			keys = append(keys, targets[(startIdx+i)%len(targets)].VirtualKey)
 		}
 		return keys
+	case ModeLatency:
+		return g.streamingLatencyOrderLocked(targets, req)
+	case ModeCostOptimized:
+		return g.streamingCostOrderLocked(targets, req)
 	default:
 		keys := make([]string, 0, len(targets))
 		for _, t := range targets {
@@ -1454,6 +1459,154 @@ func (g *Gateway) streamingTargetOrderLocked(req providers.Request) []string {
 		}
 		return keys
 	}
+}
+
+type streamingLatencyCandidate struct {
+	key        string
+	p50        time.Duration
+	hasSamples bool
+}
+
+func (g *Gateway) streamingLatencyOrderLocked(targets []Target, req providers.Request) []string {
+	var unseen []streamingLatencyCandidate
+	var sampled []streamingLatencyCandidate
+	for _, t := range targets {
+		if !g.isStreamingTargetCandidateLocked(t, req.Model) {
+			continue
+		}
+		candidate := streamingLatencyCandidate{
+			key:        t.VirtualKey,
+			p50:        g.latencyTracker.P50(t.VirtualKey),
+			hasSamples: g.latencyTracker.HasSamples(t.VirtualKey),
+		}
+		if candidate.hasSamples {
+			sampled = append(sampled, candidate)
+		} else {
+			unseen = append(unseen, candidate)
+		}
+	}
+
+	if len(unseen) == 0 && len(sampled) == 0 {
+		return targetKeys(targets)
+	}
+
+	if len(unseen) > 1 {
+		rand.Shuffle(len(unseen), func(i, j int) {
+			unseen[i], unseen[j] = unseen[j], unseen[i]
+		}) //nolint:gosec
+	}
+	sort.SliceStable(sampled, func(i, j int) bool {
+		return sampled[i].p50 < sampled[j].p50
+	})
+
+	keys := make([]string, 0, len(targets))
+	for _, candidate := range unseen {
+		keys = appendUniqueKey(keys, candidate.key)
+	}
+	for _, candidate := range sampled {
+		keys = appendUniqueKey(keys, candidate.key)
+	}
+	return appendRemainingTargetKeys(keys, targets)
+}
+
+type streamingCostCandidate struct {
+	key        string
+	costUSD    float64
+	hasPrice   bool
+	modelFound bool
+}
+
+func (g *Gateway) streamingCostOrderLocked(targets []Target, req providers.Request) []string {
+	estimatedPromptTokens := estimatePromptTokens(req)
+	candidates := make([]streamingCostCandidate, 0, len(targets))
+	for _, t := range targets {
+		if !g.isStreamingTargetCandidateLocked(t, req.Model) {
+			continue
+		}
+		result := models.Calculate(g.catalog, t.VirtualKey+"/"+req.Model, models.Usage{
+			PromptTokens: estimatedPromptTokens,
+		})
+		candidates = append(candidates, streamingCostCandidate{
+			key:        t.VirtualKey,
+			costUSD:    result.InputUSD,
+			hasPrice:   result.Priced,
+			modelFound: result.ModelFound,
+		})
+	}
+	if len(candidates) == 0 {
+		return targetKeys(targets)
+	}
+
+	ranked := make([]streamingCostCandidate, 0, len(candidates))
+	switch g.config.Strategy.UnpricedStrategy {
+	case unpricedStrategyAllow:
+		for _, candidate := range candidates {
+			if candidate.modelFound {
+				ranked = append(ranked, candidate)
+			}
+		}
+	case unpricedStrategySkip:
+		for _, candidate := range candidates {
+			if candidate.modelFound && candidate.hasPrice {
+				ranked = append(ranked, candidate)
+			}
+		}
+	default:
+		for _, candidate := range candidates {
+			if candidate.modelFound && candidate.hasPrice {
+				ranked = append(ranked, candidate)
+			}
+		}
+	}
+
+	if len(ranked) == 0 {
+		return targetKeys(targets)
+	}
+
+	sort.SliceStable(ranked, func(i, j int) bool {
+		return ranked[i].costUSD < ranked[j].costUSD
+	})
+
+	keys := make([]string, 0, len(targets))
+	for _, candidate := range ranked {
+		keys = appendUniqueKey(keys, candidate.key)
+	}
+	for _, candidate := range candidates {
+		keys = appendUniqueKey(keys, candidate.key)
+	}
+	return appendRemainingTargetKeys(keys, targets)
+}
+
+func (g *Gateway) isStreamingTargetCandidateLocked(t Target, model string) bool {
+	p, ok := g.providers[t.VirtualKey]
+	if !ok || !p.SupportsModel(model) {
+		return false
+	}
+	_, ok = p.(providers.StreamProvider)
+	return ok
+}
+
+func estimatePromptTokens(req providers.Request) int {
+	promptChars := 0
+	for _, msg := range req.Messages {
+		promptChars += len(msg.Content)
+	}
+	return promptChars/4 + 1
+}
+
+func targetKeys(targets []Target) []string {
+	keys := make([]string, 0, len(targets))
+	for _, t := range targets {
+		keys = append(keys, t.VirtualKey)
+	}
+	return keys
+}
+
+func appendRemainingTargetKeys(keys []string, targets []Target) []string {
+	for _, t := range targets {
+		keys = appendUniqueKey(keys, t.VirtualKey)
+	}
+	return keys
 }
 
 func (g *Gateway) rebuildModelIndexesLocked() {
