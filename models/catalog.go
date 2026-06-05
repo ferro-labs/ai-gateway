@@ -15,6 +15,8 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"reflect"
+	"sync"
 	"time"
 )
 
@@ -29,6 +31,15 @@ const defaultCatalogURL = "https://raw.githubusercontent.com/ferro-labs/ai-gatew
 
 // Catalog is a flat map of "provider/model-id" → Model.
 type Catalog map[string]Model
+
+type catalogModelIndex struct {
+	size      int
+	byModelID map[string]string
+}
+
+// Catalog stays a map for callers, so the bare-model lookup index lives next
+// to each map value and is preloaded when catalog JSON is parsed.
+var catalogModelIndexes sync.Map // map[uintptr]catalogModelIndex
 
 // Model holds all metadata for a single model.
 type Model struct {
@@ -140,22 +151,59 @@ func parse(data []byte) (Catalog, error) {
 	if err := json.Unmarshal(data, &c); err != nil {
 		return nil, fmt.Errorf("catalog parse: %w", err)
 	}
+	storeCatalogModelIndex(c)
 	return c, nil
 }
 
 // Get looks up a model by "provider/model-id".
-// If not found, scans for a bare model ID match as fallback.
+// If not found, it falls back to the catalog's model_id index.
 func (c Catalog) Get(key string) (Model, bool) {
 	if m, ok := c[key]; ok {
 		return m, true
 	}
-	// Bare model ID: return the first matching entry.
-	for _, v := range c {
-		if v.ModelID == key {
-			return v, true
+	if catalogKey, ok := c.modelIDIndex()[key]; ok {
+		if m, ok := c[catalogKey]; ok && m.ModelID == key {
+			return m, true
 		}
 	}
 	return Model{}, false
+}
+
+func (c Catalog) modelIDIndex() map[string]string {
+	if len(c) == 0 {
+		return nil
+	}
+	cacheKey := c.cacheKey()
+	if cached, ok := catalogModelIndexes.Load(cacheKey); ok {
+		index := cached.(catalogModelIndex)
+		if index.size == len(c) {
+			return index.byModelID
+		}
+	}
+	return storeCatalogModelIndex(c).byModelID
+}
+
+func storeCatalogModelIndex(c Catalog) catalogModelIndex {
+	index := catalogModelIndex{
+		size:      len(c),
+		byModelID: make(map[string]string, len(c)),
+	}
+	for key, model := range c {
+		if model.ModelID == "" {
+			continue
+		}
+		if _, exists := index.byModelID[model.ModelID]; !exists {
+			index.byModelID[model.ModelID] = key
+		}
+	}
+	if len(c) > 0 {
+		catalogModelIndexes.Store(c.cacheKey(), index)
+	}
+	return index
+}
+
+func (c Catalog) cacheKey() uintptr {
+	return reflect.ValueOf(c).Pointer()
 }
 
 // IsDeprecated returns true when the model's lifecycle status is deprecated or legacy.

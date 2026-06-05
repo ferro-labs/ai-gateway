@@ -1,6 +1,7 @@
 package models
 
 import (
+	"fmt"
 	"testing"
 )
 
@@ -107,11 +108,100 @@ func TestCatalogGet(t *testing.T) {
 		t.Error("Get with provider prefix should succeed")
 	}
 	if _, ok := c.Get("gpt-4o"); !ok {
-		t.Error("Get with bare model ID should succeed via fallback scan")
+		t.Error("Get with bare model ID should succeed via fallback index")
 	}
 	if _, ok := c.Get("nonexistent-model"); ok {
 		t.Error("Get with unknown model should return false")
 	}
+}
+
+func TestCatalogParseBuildsModelIDIndex(t *testing.T) {
+	c, err := parse([]byte(`{
+		"openai/gpt-4o": {"provider": "openai", "model_id": "gpt-4o", "mode": "chat"}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := catalogModelIndexes.Load(c.cacheKey()); !ok {
+		t.Fatal("expected parse to preload model_id index")
+	}
+	if _, ok := c.Get("gpt-4o"); !ok {
+		t.Fatal("Get with bare model ID should use preloaded index")
+	}
+}
+
+func TestCatalogGetRebuildsStaleIndexAfterGrowth(t *testing.T) {
+	c := Catalog{
+		"openai/gpt-4o": {
+			Provider: "openai",
+			ModelID:  "gpt-4o",
+			Mode:     ModeChat,
+		},
+	}
+	if _, ok := c.Get("claude-3-haiku"); ok {
+		t.Fatal("unexpected lookup hit before catalog update")
+	}
+
+	c["anthropic/claude-3-haiku"] = Model{
+		Provider: "anthropic",
+		ModelID:  "claude-3-haiku",
+		Mode:     ModeChat,
+	}
+	if got, ok := c.Get("claude-3-haiku"); !ok || got.Provider != "anthropic" {
+		t.Fatalf("Get after catalog growth = (%q, %v), want anthropic hit", got.Provider, ok)
+	}
+}
+
+func BenchmarkCatalogGetBareModelID(b *testing.B) {
+	for _, size := range []int{100, 10_000} {
+		b.Run(fmt.Sprintf("size_%d", size), func(b *testing.B) {
+			c := benchmarkCatalog(size)
+			target := fmt.Sprintf("model-%d", size-1)
+			if _, ok := c.Get(target); !ok {
+				b.Fatal("warmup lookup failed")
+			}
+
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				if _, ok := c.Get(target); !ok {
+					b.Fatal("lookup failed")
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkCatalogGetMiss(b *testing.B) {
+	for _, size := range []int{100, 10_000} {
+		b.Run(fmt.Sprintf("size_%d", size), func(b *testing.B) {
+			c := benchmarkCatalog(size)
+			if _, ok := c.Get("missing-provider/missing-model"); ok {
+				b.Fatal("warmup lookup should miss")
+			}
+
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				if _, ok := c.Get("missing-provider/missing-model"); ok {
+					b.Fatal("lookup should miss")
+				}
+			}
+		})
+	}
+}
+
+func benchmarkCatalog(size int) Catalog {
+	c := make(Catalog, size)
+	for i := 0; i < size; i++ {
+		modelID := fmt.Sprintf("model-%d", i)
+		c["provider/"+modelID] = Model{
+			Provider: "provider",
+			ModelID:  modelID,
+			Mode:     ModeChat,
+		}
+	}
+	return c
 }
 
 // TestIsDeprecated checks that both "deprecated" and "legacy" statuses are
