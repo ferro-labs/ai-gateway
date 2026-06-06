@@ -26,14 +26,23 @@ func TestCatalogBackupCoversRegisteredProviders(t *testing.T) {
 		if len(models) == 0 {
 			t.Fatalf("provider %s returned no supported models", entry.ID)
 		}
-		sampleModel := catalogCoverageSampleModel(provider.Name(), models)
-		if !provider.SupportsModel(sampleModel) {
-			t.Fatalf("provider %s does not support catalog coverage sample %q", provider.Name(), sampleModel)
-		}
-		if _, ok := catalog.Get(provider.Name() + "/" + sampleModel); !ok {
-			t.Fatalf("catalog_backup.json does not resolve provider sample %s/%s", provider.Name(), sampleModel)
+		samples := catalogCoverageSampleModels(provider.Name(), models)
+		for _, sampleModel := range samples {
+			if !provider.SupportsModel(sampleModel) {
+				t.Fatalf("provider %s does not support catalog coverage sample %q", provider.Name(), sampleModel)
+			}
+			if _, ok := catalog.Get(provider.Name() + "/" + sampleModel); !ok {
+				t.Fatalf("catalog_backup.json does not resolve provider sample %s/%s", provider.Name(), sampleModel)
+			}
 		}
 	}
+}
+
+func catalogCoverageSampleModels(providerName string, models []string) []string {
+	if _, ok := catalogProviderAliases[providerName]; ok {
+		return models
+	}
+	return []string{catalogCoverageSampleModel(providerName, models)}
 }
 
 func catalogCoverageSampleModel(providerName string, models []string) string {
@@ -101,9 +110,6 @@ func catalogCoverageValue(configKey string) string {
 
 func catalogCoverageExcluded(providerID string) bool {
 	switch providerID {
-	case providers.NameAzureFoundry, providers.NameAzureOpenAI, providers.NameVertexAI:
-		// Azure and Vertex prefix drift is tracked separately by #132.
-		return true
 	case providers.NameHuggingFace, providers.NameNVIDIANIM, providers.NameQwen:
 		// These provider packages exist, but the embedded catalog currently has no
 		// matching top-level provider prefix for their direct API provider names.

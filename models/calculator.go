@@ -47,7 +47,7 @@ func perM(price *float64, n int) float64 {
 // modelKey should be "provider/model-id"; a bare model ID is also accepted
 // and resolved via the reverse index built at catalog load time.
 func Calculate(catalog Catalog, modelKey string, usage Usage) CostResult {
-	model, ok := catalog.Get(modelKey)
+	model, ok := catalog.GetForPricing(modelKey)
 	if !ok {
 		return CostResult{ModelFound: false}
 	}

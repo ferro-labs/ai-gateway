@@ -118,7 +118,7 @@ func New(cfg Config) (*Gateway, error) {
 	catalog := catalogResult.Catalog
 	if err != nil {
 		// Non-fatal: operate without model metadata (no enrichment / cost reporting).
-		slog.Error("model catalog unavailable; continuing without catalog metadata", "url", catalogResult.URL, "error", err)
+		slog.Error("model catalog unavailable; continuing without catalog metadata", "url", catalogResult.URLForLog(), "error", err)
 		catalog = models.Catalog{}
 	}
 
@@ -252,11 +252,11 @@ func (g *Gateway) refreshCatalog() {
 	result, err := models.LoadWithInfo()
 	recordCatalogLoad(result.Source, err)
 	if err != nil {
-		slog.Error("model catalog refresh failed", "url", result.URL, "error", err)
+		slog.Error("model catalog refresh failed", "url", result.URLForLog(), "error", err)
 		return
 	}
 	if result.Source != models.LoadSourceRemote {
-		slog.Warn("model catalog refresh skipped; keeping current catalog", "url", result.URL, "source", result.Source)
+		slog.Warn("model catalog refresh skipped; keeping current catalog", "url", result.URLForLog(), "source", result.Source)
 		return
 	}
 
@@ -267,7 +267,7 @@ func (g *Gateway) refreshCatalog() {
 	}
 	g.mu.Unlock()
 
-	slog.Info("model catalog refreshed", "url", result.URL, "models", len(result.Catalog))
+	slog.Info("model catalog refreshed", "url", result.URLForLog(), "models", len(result.Catalog))
 }
 
 func recordCatalogLoad(source models.LoadSource, err error) {
