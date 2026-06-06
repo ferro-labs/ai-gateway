@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -57,11 +58,15 @@ type mockStreamProvider struct {
 	mockProvider
 	streamErr error
 	streamCh  <-chan providers.StreamChunk
+	streamFn  func(context.Context, providers.Request) (<-chan providers.StreamChunk, error)
 }
 
-func (m *mockStreamProvider) CompleteStream(_ context.Context, _ providers.Request) (<-chan providers.StreamChunk, error) {
+func (m *mockStreamProvider) CompleteStream(ctx context.Context, req providers.Request) (<-chan providers.StreamChunk, error) {
 	if m.streamErr != nil {
 		return nil, m.streamErr
+	}
+	if m.streamFn != nil {
+		return m.streamFn(ctx, req)
 	}
 	if m.streamCh != nil {
 		return m.streamCh, nil
@@ -225,6 +230,202 @@ func TestGateway_Route_NoTargets(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error for no targets")
+	}
+}
+
+func TestGateway_RouteStream_ContentBasedPromptRegex(t *testing.T) {
+	gw, err := New(Config{
+		Strategy: StrategyConfig{
+			Mode: ModeContentBased,
+			ContentConditions: []ContentCondition{{
+				Type:      "prompt_regex",
+				Value:     `(?i)\b(code|function)\b`,
+				TargetKey: "code-stream",
+			}},
+		},
+		Targets: []Target{
+			{VirtualKey: "general-stream"},
+			{VirtualKey: "code-stream"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gw.streamingContent) != 1 || gw.streamingContent[0].re == nil {
+		t.Fatal("expected compiled streaming content regex")
+	}
+
+	selected := make(chan string, 2)
+	recordStream := func(name string) func(context.Context, providers.Request) (<-chan providers.StreamChunk, error) {
+		return func(context.Context, providers.Request) (<-chan providers.StreamChunk, error) {
+			selected <- name
+			ch := make(chan providers.StreamChunk)
+			close(ch)
+			return ch, nil
+		}
+	}
+	gw.RegisterProvider(&mockStreamProvider{
+		mockProvider: mockProvider{
+			name:   "general-stream",
+			models: []string{"gpt-4o"},
+		},
+		streamFn: recordStream("general-stream"),
+	})
+	gw.RegisterProvider(&mockStreamProvider{
+		mockProvider: mockProvider{
+			name:   "code-stream",
+			models: []string{"gpt-4o"},
+		},
+		streamFn: recordStream("code-stream"),
+	})
+
+	out, err := gw.RouteStream(context.Background(), providers.Request{
+		Model:    "gpt-4o",
+		Stream:   true,
+		Messages: []providers.Message{{Role: "user", Content: "write a Go function"}},
+	})
+	if err != nil {
+		t.Fatalf("RouteStream: %v", err)
+	}
+	for range out { //nolint:revive
+	}
+
+	select {
+	case got := <-selected:
+		if got != "code-stream" {
+			t.Fatalf("selected provider = %q, want code-stream", got)
+		}
+	default:
+		t.Fatal("stream provider was not selected")
+	}
+}
+
+func TestGateway_NewRejectsInvalidStreamingPromptRegex(t *testing.T) {
+	_, err := New(Config{
+		Strategy: StrategyConfig{
+			Mode: ModeContentBased,
+			ContentConditions: []ContentCondition{{
+				Type:      "prompt_regex",
+				Value:     `[invalid`,
+				TargetKey: "code-stream",
+			}},
+		},
+		Targets: []Target{{VirtualKey: "code-stream"}},
+	})
+	if err == nil {
+		t.Fatal("expected invalid regex error")
+	}
+	if !strings.Contains(err.Error(), "invalid regex") {
+		t.Fatalf("error = %v, want invalid regex", err)
+	}
+}
+
+func TestGateway_ReloadConfigRejectsInvalidStreamingPromptRegex(t *testing.T) {
+	gw, err := New(Config{
+		Strategy: StrategyConfig{
+			Mode: ModeContentBased,
+			ContentConditions: []ContentCondition{{
+				Type:      "prompt_regex",
+				Value:     `docs`,
+				TargetKey: "general-stream",
+			}},
+		},
+		Targets: []Target{{VirtualKey: "general-stream"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = gw.ReloadConfig(Config{
+		Strategy: StrategyConfig{
+			Mode: ModeContentBased,
+			ContentConditions: []ContentCondition{{
+				Type:      "prompt_regex",
+				Value:     `[invalid`,
+				TargetKey: "general-stream",
+			}},
+		},
+		Targets: []Target{{VirtualKey: "general-stream"}},
+	})
+	if err == nil {
+		t.Fatal("expected invalid regex error")
+	}
+	if !strings.Contains(err.Error(), "invalid regex") {
+		t.Fatalf("error = %v, want invalid regex", err)
+	}
+	if len(gw.streamingContent) != 1 {
+		t.Fatalf("streaming content = %d, want previous config to remain", len(gw.streamingContent))
+	}
+	if gw.streamingContent[0].Value != "docs" || gw.streamingContent[0].re == nil {
+		t.Fatalf("streaming content was replaced after invalid reload: %#v", gw.streamingContent[0])
+	}
+}
+
+func TestGateway_ReloadConfigRebuildsStreamingContentRegex(t *testing.T) {
+	gw, err := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: "general-stream"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gw.streamingContent) != 0 {
+		t.Fatalf("single strategy streaming content = %d, want 0", len(gw.streamingContent))
+	}
+
+	err = gw.ReloadConfig(Config{
+		Strategy: StrategyConfig{
+			Mode: ModeContentBased,
+			ContentConditions: []ContentCondition{
+				{Type: "prompt_contains", Value: "docs", TargetKey: "general-stream"},
+				{Type: "prompt_regex", Value: `(?i)\b(code|function)\b`, TargetKey: "code-stream"},
+			},
+		},
+		Targets: []Target{
+			{VirtualKey: "general-stream"},
+			{VirtualKey: "code-stream"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ReloadConfig: %v", err)
+	}
+	if len(gw.streamingContent) != 2 {
+		t.Fatalf("streaming content = %d, want 2", len(gw.streamingContent))
+	}
+	if gw.streamingContent[0].re != nil {
+		t.Fatal("prompt_contains rule should not have a compiled regex")
+	}
+	if gw.streamingContent[1].re == nil {
+		t.Fatal("prompt_regex rule should have a compiled regex")
+	}
+}
+
+func TestStreamingContentConditionMatchesPromptRegexRequiresCompiledRegex(t *testing.T) {
+	req := providers.Request{
+		Messages: []providers.Message{{Role: "user", Content: "write docs"}},
+	}
+
+	if streamingContentConditionMatches(streamingContentCondition{
+		ContentCondition: ContentCondition{Type: "prompt_regex", Value: "docs"},
+	}, req) {
+		t.Fatal("uncompiled prompt_regex should not match")
+	}
+
+	compiled, err := compileStreamingContentConditions(ModeContentBased, []ContentCondition{{
+		Type:      "prompt_regex",
+		Value:     "docs",
+		TargetKey: "general-stream",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !streamingContentConditionMatches(compiled[0], req) {
+		t.Fatal("compiled prompt_regex should match")
+	}
+	if streamingContentConditionMatches(streamingContentCondition{
+		ContentCondition: ContentCondition{Type: "unknown", Value: "docs"},
+	}, req) {
+		t.Fatal("unknown streaming content condition should not match")
 	}
 }
 
