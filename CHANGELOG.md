@@ -5,6 +5,38 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.2] — 2026-06-06
+
+Release hardening patch for the external model catalog cutover, catalog pricing correctness, and response-body lifecycle fixes. No public API breaks. Fixes every issue labelled [`release-1.1.2`](https://github.com/ferro-labs/ai-gateway/issues?q=label%3Arelease-1.1.2): [#132](https://github.com/ferro-labs/ai-gateway/issues/132), [#133](https://github.com/ferro-labs/ai-gateway/issues/133), [#134](https://github.com/ferro-labs/ai-gateway/issues/134), and [#185](https://github.com/ferro-labs/ai-gateway/issues/185).
+
+### Fixed
+
+- **Azure OpenAI, Azure Foundry, and Vertex AI catalog pricing aliases** (issue [#132](https://github.com/ferro-labs/ai-gateway/issues/132)): gateway provider IDs such as `azure-openai`, `azure-foundry`, and `vertex-ai` now resolve against the catalog's canonical provider prefixes (`azure_openai`, `azure_foundry`, `azure`, and `vertex_ai`). Cost calculation walks the provider-specific fallback chain, skips unpriced preferred chat entries when a priced fallback exists, and includes explicit regression coverage for Azure and Vertex pricing.
+- **OpenAI response-body lifecycle** (issue [#185](https://github.com/ferro-labs/ai-gateway/issues/185)): non-streaming OpenAI-compatible responses now drain the HTTP body after decoding so transports can reuse connections, and streaming responses close the OpenAI stream when the gateway stream goroutine exits.
+- **Provider and circuit-breaker lookup race** (PR [#170](https://github.com/ferro-labs/ai-gateway/pull/170)): routing strategy provider lookup now snapshots the provider and circuit-breaker maps under the gateway lock before dispatch, avoiding concurrent map access during runtime discovery or config reload.
+- **Admin API key mutation leak** (PR [#190](https://github.com/ferro-labs/ai-gateway/pull/190)): key-management APIs now return copied in-memory key records so callers cannot mutate the store's internal state through returned pointers.
+- **Shutdown hook regression coverage** (PR [#171](https://github.com/ferro-labs/ai-gateway/pull/171)): added unit-level tests around hook shutdown behavior so future edits keep close/drain semantics intact.
+
+### Changed
+
+- **Model catalog loading now consumes the external release artifact** (issue [#133](https://github.com/ferro-labs/ai-gateway/issues/133)): the default catalog source is the latest `ferro-labs/model-catalog` release artifact. Gateway startup and refresh use remote-first loading with the embedded `catalog_backup.json` as fallback, preserving offline startup while allowing catalog updates without an ai-gateway release.
+- **Catalog lookup uses a reverse model-ID index** (issue [#134](https://github.com/ferro-labs/ai-gateway/issues/134)): bare model-ID lookups avoid scanning the full catalog, while preserving the previous behavior for arbitrary caller-constructed `Catalog` values through validation and fallback scanning.
+- **Streaming content matching precompiles regular expressions** (PR [#189](https://github.com/ferro-labs/ai-gateway/pull/189)): repeated streaming content checks no longer compile regexes on the hot path, and config validation fails fast on invalid patterns.
+- **CI and release workflows use Go `1.25.11`**: vulnerability scanning now runs against the patched Go 1.25 toolchain so standard-library `govulncheck` findings match the release environment rather than a stale host toolchain.
+
+### Added
+
+- **Catalog coverage guardrail**: added a provider/catalog coverage test that verifies registered providers either have priced catalog entries for representative models or are explicitly documented as dynamic/no-prefix exclusions.
+- **Catalog backup refresh guardrails**: added the `scripts/refresh_catalog_backup.sh` helper and release workflow checks to keep the embedded fallback catalog aligned with the external catalog artifact.
+- **Catalog load observability**: added `gateway_catalog_loads_total{source,result}` metrics and structured remote/fallback logging with catalog URLs sanitized for credentials and query strings.
+
+### Notes
+
+- `models/catalog.json` was removed from the repository. Runtime catalog loading now uses the remote release artifact plus the embedded `models/catalog_backup.json` fallback.
+- The release notes generator reads this `1.1.2` section directly when publishing the `v1.1.2` GitHub release.
+
+---
+
 ## [1.1.1] — 2026-05-31
 
 Stability hotfix. No new features, no API breaks. Fixes every issue labelled [`release-1.1.1`](https://github.com/ferro-labs/ai-gateway/issues?q=label%3Arelease-1.1.1) plus three additional CRITICAL bugs found in the post-v1.1.0 engine audit (shutdown panic, runtime-discovery data race, streaming goroutine/body leak). Adds a `goleak` + `-race` concurrency stress harness so these regressions can't recur silently.
