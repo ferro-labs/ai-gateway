@@ -114,7 +114,7 @@ func (p *Provider) SupportedModels() []string {
 
 // SupportsModel returns true if the model matches known OpenAI prefixes.
 func (p *Provider) SupportsModel(model string) bool {
-	for _, prefix := range []string{"gpt-", "chatgpt-", "dall-e-", "whisper-", "tts-", "text-embedding-", "ft:", "babbage-", "davinci-"} {
+	for _, prefix := range []string{"gpt-", "chatgpt-", "codex-", "sora-", "dall-e-", "whisper-", "tts-", "text-embedding-", "ft:", "babbage-", "davinci-"} {
 		if strings.HasPrefix(model, prefix) {
 			return true
 		}

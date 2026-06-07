@@ -103,6 +103,118 @@ func TestBedrockProvider_SupportedEmbeddingModels(t *testing.T) {
 	}
 }
 
+func TestBedrockProvider_SupportsModelProfilesAndNova(t *testing.T) {
+	p := &Provider{name: Name}
+
+	for _, model := range []string{
+		"us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+		"eu.anthropic.claude-3-5-sonnet-20241022-v2:0",
+		"global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+		"amazon.nova-lite-v1:0",
+		"us.amazon.nova-pro-v1:0",
+		"us-gov-east-1/amazon.nova-micro-v1:0",
+		"us.amazon.nova-2-lite-v1:0",
+	} {
+		if !p.SupportsModel(model) {
+			t.Errorf("SupportsModel(%q) = false, want true", model)
+		}
+	}
+
+	for _, model := range []string{
+		"openai/gpt-4o",
+		"amazon.titan-image-generator-v1",
+		"global.unknown.model",
+	} {
+		if p.SupportsModel(model) {
+			t.Errorf("SupportsModel(%q) = true, want false", model)
+		}
+	}
+}
+
+func TestBedrockProvider_Complete_AnthropicProfileKeepsOriginalModelID(t *testing.T) {
+	fake := &fakeBedrockRuntimeClient{
+		responses: [][]byte{
+			[]byte(`{"id":"msg-1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":2,"output_tokens":3}}`),
+		},
+	}
+	p := &Provider{name: Name, client: fake}
+
+	model := "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
+	resp, err := p.Complete(context.Background(), core.Request{
+		Model:    model,
+		Messages: []core.Message{{Role: core.RoleUser, Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Complete() error: %v", err)
+	}
+	if len(fake.invokeCalls) != 1 {
+		t.Fatalf("InvokeModel calls = %d, want 1", len(fake.invokeCalls))
+	}
+	if got := aws.ToString(fake.invokeCalls[0].ModelId); got != model {
+		t.Fatalf("ModelId = %q, want %q", got, model)
+	}
+	if resp.Model != model || resp.Choices[0].Message.Content != "ok" {
+		t.Fatalf("response = %+v, want model preserved and text returned", resp)
+	}
+	if resp.Usage.TotalTokens != 5 {
+		t.Fatalf("total tokens = %d, want 5", resp.Usage.TotalTokens)
+	}
+}
+
+func TestBedrockProvider_Complete_NovaMapsRequestAndResponse(t *testing.T) {
+	fake := &fakeBedrockRuntimeClient{
+		responses: [][]byte{
+			[]byte(`{"output":{"message":{"role":"assistant","content":[{"text":"hello"},{"text":" world"}]}},"stopReason":"end_turn","usage":{"inputTokens":4,"outputTokens":5,"totalTokens":9}}`),
+		},
+	}
+	p := &Provider{name: Name, client: fake}
+
+	model := "us.amazon.nova-lite-v1:0"
+	resp, err := p.Complete(context.Background(), core.Request{
+		Model: model,
+		Messages: []core.Message{
+			{Role: core.RoleSystem, Content: "be brief"},
+			{Role: core.RoleUser, Content: "hi"},
+		},
+		MaxCompletionTokens: intPtr(64),
+		Stop:                []string{"done"},
+	})
+	if err != nil {
+		t.Fatalf("Complete() error: %v", err)
+	}
+	if len(fake.invokeCalls) != 1 {
+		t.Fatalf("InvokeModel calls = %d, want 1", len(fake.invokeCalls))
+	}
+	if got := aws.ToString(fake.invokeCalls[0].ModelId); got != model {
+		t.Fatalf("ModelId = %q, want %q", got, model)
+	}
+
+	var body bedrockNovaRequest
+	mustUnmarshalBody(t, fake.invokeCalls[0].Body, &body)
+	if body.SchemaVersion != "messages-v1" {
+		t.Fatalf("schemaVersion = %q, want messages-v1", body.SchemaVersion)
+	}
+	if len(body.System) != 1 || body.System[0].Text != "be brief" {
+		t.Fatalf("system = %#v, want one text block", body.System)
+	}
+	if len(body.Messages) != 1 || body.Messages[0].Role != core.RoleUser || body.Messages[0].Content[0].Text != "hi" {
+		t.Fatalf("messages = %#v, want one user text message", body.Messages)
+	}
+	if body.InferenceConfig == nil || body.InferenceConfig.MaxTokens == nil || *body.InferenceConfig.MaxTokens != 64 {
+		t.Fatalf("inferenceConfig = %#v, want maxTokens 64", body.InferenceConfig)
+	}
+	if len(body.InferenceConfig.StopSequences) != 1 || body.InferenceConfig.StopSequences[0] != "done" {
+		t.Fatalf("stopSequences = %#v, want [done]", body.InferenceConfig.StopSequences)
+	}
+
+	if resp.Choices[0].Message.Content != "hello world" {
+		t.Fatalf("content = %q, want hello world", resp.Choices[0].Message.Content)
+	}
+	if resp.Usage.PromptTokens != 4 || resp.Usage.CompletionTokens != 5 || resp.Usage.TotalTokens != 9 {
+		t.Fatalf("usage = %+v, want 4/5/9", resp.Usage)
+	}
+}
+
 func TestBedrockProvider_Embed_TitanTextLoopsAndMapsResponse(t *testing.T) {
 	fake := &fakeBedrockRuntimeClient{
 		responses: [][]byte{

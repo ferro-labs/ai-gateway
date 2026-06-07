@@ -52,7 +52,6 @@ func TestOpenAIProvider_SupportedModels(t *testing.T) {
 }
 
 // TestOpenAIProvider_SupportsModel tests the SupportsModel method.
-// With passthrough enabled, all model strings are accepted.
 func TestOpenAIProvider_SupportsModel(t *testing.T) {
 	provider, _ := New("sk-test-key", "")
 
@@ -64,6 +63,9 @@ func TestOpenAIProvider_SupportsModel(t *testing.T) {
 		{"gpt-4o supported", "gpt-4o", true},
 		{"gpt-4-turbo supported", "gpt-4-turbo", true},
 		{"gpt-3.5-turbo supported", "gpt-3.5-turbo", true},
+		{"codex model supported", "codex-mini-latest", true},
+		{"sora model supported", "sora-2", true},
+		{"reasoning model supported", "o3-mini", true},
 		{"unknown model passthrough", "gpt-99", true},
 	}
 

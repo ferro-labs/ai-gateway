@@ -117,6 +117,9 @@ func (p *Provider) SupportedModels() []string {
 		"amazon.titan-text-express-v1",
 		"amazon.titan-text-lite-v1",
 		"amazon.titan-text-premier-v1:0",
+		"amazon.nova-micro-v1:0",
+		"amazon.nova-lite-v1:0",
+		"amazon.nova-pro-v1:0",
 		"meta.llama3-1-405b-instruct-v1:0",
 		"meta.llama3-1-70b-instruct-v1:0",
 		"meta.llama3-1-8b-instruct-v1:0",
@@ -139,14 +142,17 @@ func (p *Provider) SupportsModel(model string) bool {
 			return true
 		}
 	}
-	for _, prefix := range []string{
+	if isBedrockNovaTextModel(model) {
+		return true
+	}
+	for _, supportedPrefix := range []string{
 		"anthropic.claude-",
 		"amazon.titan-text-",
 		"amazon.titan-embed-text-",
 		"cohere.embed-",
 		"meta.llama",
 	} {
-		if strings.HasPrefix(model, prefix) {
+		if strings.HasPrefix(model, supportedPrefix) {
 			return true
 		}
 	}
@@ -220,6 +226,43 @@ type bedrockLlamaResponse struct {
 	PromptTokenCount     int    `json:"prompt_token_count"`
 	GenerationTokenCount int    `json:"generation_token_count"`
 	StopReason           string `json:"stop_reason"`
+}
+
+// ── Amazon Nova ──────────────────────────────────────────────────────────────
+
+type bedrockNovaRequest struct {
+	SchemaVersion   string                    `json:"schemaVersion"`
+	System          []bedrockNovaContentBlock `json:"system,omitempty"`
+	Messages        []bedrockNovaMessage      `json:"messages"`
+	InferenceConfig *bedrockNovaInference     `json:"inferenceConfig,omitempty"`
+}
+
+type bedrockNovaMessage struct {
+	Role    string                    `json:"role"`
+	Content []bedrockNovaContentBlock `json:"content"`
+}
+
+type bedrockNovaContentBlock struct {
+	Text string `json:"text"`
+}
+
+type bedrockNovaInference struct {
+	MaxTokens     *int     `json:"maxTokens,omitempty"`
+	Temperature   *float64 `json:"temperature,omitempty"`
+	TopP          *float64 `json:"topP,omitempty"`
+	StopSequences []string `json:"stopSequences,omitempty"`
+}
+
+type bedrockNovaResponse struct {
+	Output struct {
+		Message bedrockNovaMessage `json:"message"`
+	} `json:"output"`
+	StopReason string `json:"stopReason"`
+	Usage      struct {
+		InputTokens  int `json:"inputTokens"`
+		OutputTokens int `json:"outputTokens"`
+		TotalTokens  int `json:"totalTokens"`
+	} `json:"usage"`
 }
 
 // ── Embeddings ───────────────────────────────────────────────────────────────
@@ -424,7 +467,7 @@ func bedrockModelRoutingID(model string) string {
 	if idx := strings.LastIndex(model, "/"); idx >= 0 && idx < len(model)-1 {
 		model = model[idx+1:]
 	}
-	for _, prefix := range []string{"us.", "eu.", "apac."} {
+	for _, prefix := range []string{"us.", "eu.", "apac.", "global."} {
 		if strings.HasPrefix(model, prefix) {
 			return strings.TrimPrefix(model, prefix)
 		}
@@ -440,11 +483,32 @@ func isBedrockCohereEmbeddingModel(model string) bool {
 	return strings.HasPrefix(model, "cohere.embed-")
 }
 
+func isBedrockNovaTextModel(model string) bool {
+	for _, supportedPrefix := range []string{
+		"amazon.nova-micro-",
+		"amazon.nova-lite-",
+		"amazon.nova-pro-",
+		"amazon.nova-premier-",
+		"amazon.nova-2-micro-",
+		"amazon.nova-2-lite-",
+		"amazon.nova-2-pro-",
+		"amazon.nova-2-premier-",
+	} {
+		if strings.HasPrefix(model, supportedPrefix) {
+			return true
+		}
+	}
+	return false
+}
+
 // Complete sends a request to AWS Bedrock and returns the response.
 func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
-	modelID := req.Model
+	modelID := bedrockModelRoutingID(req.Model)
 	if strings.HasPrefix(modelID, "anthropic.") {
 		return p.completeAnthropic(ctx, req)
+	}
+	if isBedrockNovaTextModel(modelID) {
+		return p.completeNova(ctx, req)
 	}
 	if strings.HasPrefix(modelID, "amazon.titan") {
 		return p.completeTitan(ctx, req)
@@ -637,10 +701,69 @@ func (p *Provider) completeLlama(ctx context.Context, req core.Request) (*core.R
 	}, nil
 }
 
+func (p *Provider) completeNova(ctx context.Context, req core.Request) (*core.Response, error) {
+	novaReq := bedrockNovaRequest{
+		SchemaVersion: "messages-v1",
+	}
+	for _, msg := range req.Messages {
+		if msg.Role == core.RoleSystem {
+			novaReq.System = append(novaReq.System, bedrockNovaContentBlock{Text: msg.Content})
+			continue
+		}
+		novaReq.Messages = append(novaReq.Messages, bedrockNovaMessage{
+			Role: msg.Role,
+			Content: []bedrockNovaContentBlock{
+				{Text: msg.Content},
+			},
+		})
+	}
+	if len(novaReq.Messages) == 0 {
+		return nil, fmt.Errorf("nova request requires at least one non-system message")
+	}
+
+	inference := &bedrockNovaInference{
+		MaxTokens:     req.MaxTokens,
+		Temperature:   req.Temperature,
+		TopP:          req.TopP,
+		StopSequences: req.Stop,
+	}
+	if inference.MaxTokens == nil {
+		inference.MaxTokens = req.MaxCompletionTokens
+	}
+	if inference.MaxTokens != nil || inference.Temperature != nil || inference.TopP != nil || len(inference.StopSequences) > 0 {
+		novaReq.InferenceConfig = inference
+	}
+
+	var novaResp bedrockNovaResponse
+	if err := p.invokeModelJSON(ctx, req.Model, novaReq, &novaResp); err != nil {
+		return nil, err
+	}
+
+	text := ""
+	for _, block := range novaResp.Output.Message.Content {
+		text += block.Text
+	}
+
+	return &core.Response{
+		Model:    req.Model,
+		Provider: p.name,
+		Choices: []core.Choice{{
+			Index:        0,
+			Message:      core.Message{Role: core.RoleAssistant, Content: text},
+			FinishReason: novaResp.StopReason,
+		}},
+		Usage: core.Usage{
+			PromptTokens:     novaResp.Usage.InputTokens,
+			CompletionTokens: novaResp.Usage.OutputTokens,
+			TotalTokens:      novaResp.Usage.TotalTokens,
+		},
+	}, nil
+}
+
 // CompleteStream sends a streaming request to AWS Bedrock via InvokeModelWithResponseStream.
 // Currently only Anthropic Claude streaming is implemented.
 func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan core.StreamChunk, error) {
-	if !strings.HasPrefix(req.Model, "anthropic.") {
+	if !strings.HasPrefix(bedrockModelRoutingID(req.Model), "anthropic.") {
 		return nil, fmt.Errorf("streaming on Bedrock is currently only supported for anthropic.claude-* models")
 	}
 
