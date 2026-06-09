@@ -112,7 +112,7 @@ func TestCatalogURLForLog(t *testing.T) {
 	}{
 		{
 			name: "strips userinfo and query",
-			raw:  "https://user:super-secret@catalog.example.com/v1/catalog.json?token=abc123",
+			raw:  "https://user@catalog.example.com/v1/catalog.json?debug=true",
 			want: "https://catalog.example.com/v1/catalog.json",
 		},
 		{

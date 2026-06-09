@@ -1208,34 +1208,7 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 
 	// Resolve provider according to strategy mode.
 	g.mu.RLock()
-	orderedKeys, orderErr := g.streamingTargetOrderLocked(req)
-	var sp providers.StreamProvider
-	if orderErr == nil {
-		for _, key := range orderedKeys {
-			p, ok := g.providers[key]
-			if !ok || !p.SupportsModel(req.Model) {
-				continue
-			}
-			// Apply circuit breaker if configured.
-			candidate := p
-			if cb, hasCB := g.circuitBreakers[key]; hasCB {
-				candidate = &cbProvider{Provider: p, cb: cb, name: key}
-			}
-			if casted, ok := candidate.(providers.StreamProvider); ok {
-				sp = casted
-				break
-			}
-		}
-		// Fallback: any registered provider that supports this model and streaming.
-		if sp == nil {
-			if name, fallback, ok := g.findStreamingProviderMatchByModelLocked(req.Model); ok {
-				sp = fallback
-				if cb, hasCB := g.circuitBreakers[name]; hasCB {
-					sp = &cbProvider{Provider: g.providers[name], cb: cb, name: name}
-				}
-			}
-		}
-	}
+	sp, orderErr := g.resolveStreamingProviderLocked(req)
 	g.mu.RUnlock()
 
 	if orderErr != nil {
@@ -1362,6 +1335,43 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 		}
 	})
 	return streamwrap.Meter(ctx, rawCh, start, meta), nil
+}
+
+func (g *Gateway) resolveStreamingProviderLocked(req providers.Request) (providers.StreamProvider, error) {
+	orderedKeys, err := g.streamingTargetOrderLocked(req)
+	if err != nil {
+		return nil, err
+	}
+	for _, key := range orderedKeys {
+		if sp, ok := g.streamingProviderForTargetLocked(key, req.Model); ok {
+			return sp, nil
+		}
+	}
+
+	// Fallback: any registered provider that supports this model and streaming.
+	name, fallback, ok := g.findStreamingProviderMatchByModelLocked(req.Model)
+	if !ok {
+		return nil, nil
+	}
+	if cb, hasCB := g.circuitBreakers[name]; hasCB {
+		return &cbProvider{Provider: g.providers[name], cb: cb, name: name}, nil
+	}
+	return fallback, nil
+}
+
+func (g *Gateway) streamingProviderForTargetLocked(key, model string) (providers.StreamProvider, bool) {
+	p, ok := g.providers[key]
+	if !ok || !p.SupportsModel(model) {
+		return nil, false
+	}
+
+	// Apply circuit breaker if configured.
+	candidate := p
+	if cb, hasCB := g.circuitBreakers[key]; hasCB {
+		candidate = &cbProvider{Provider: p, cb: cb, name: key}
+	}
+	sp, ok := candidate.(providers.StreamProvider)
+	return sp, ok
 }
 
 func (g *Gateway) streamingTargetOrderLocked(req providers.Request) ([]string, error) {
