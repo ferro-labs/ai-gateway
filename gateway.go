@@ -1208,33 +1208,41 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 
 	// Resolve provider according to strategy mode.
 	g.mu.RLock()
-	orderedKeys := g.streamingTargetOrderLocked(req)
+	orderedKeys, orderErr := g.streamingTargetOrderLocked(req)
 	var sp providers.StreamProvider
-	for _, key := range orderedKeys {
-		p, ok := g.providers[key]
-		if !ok || !p.SupportsModel(req.Model) {
-			continue
+	if orderErr == nil {
+		for _, key := range orderedKeys {
+			p, ok := g.providers[key]
+			if !ok || !p.SupportsModel(req.Model) {
+				continue
+			}
+			// Apply circuit breaker if configured.
+			candidate := p
+			if cb, hasCB := g.circuitBreakers[key]; hasCB {
+				candidate = &cbProvider{Provider: p, cb: cb, name: key}
+			}
+			if casted, ok := candidate.(providers.StreamProvider); ok {
+				sp = casted
+				break
+			}
 		}
-		// Apply circuit breaker if configured.
-		candidate := p
-		if cb, hasCB := g.circuitBreakers[key]; hasCB {
-			candidate = &cbProvider{Provider: p, cb: cb, name: key}
-		}
-		if casted, ok := candidate.(providers.StreamProvider); ok {
-			sp = casted
-			break
-		}
-	}
-	// Fallback: any registered provider that supports this model and streaming.
-	if sp == nil {
-		if name, fallback, ok := g.findStreamingProviderMatchByModelLocked(req.Model); ok {
-			sp = fallback
-			if cb, hasCB := g.circuitBreakers[name]; hasCB {
-				sp = &cbProvider{Provider: g.providers[name], cb: cb, name: name}
+		// Fallback: any registered provider that supports this model and streaming.
+		if sp == nil {
+			if name, fallback, ok := g.findStreamingProviderMatchByModelLocked(req.Model); ok {
+				sp = fallback
+				if cb, hasCB := g.circuitBreakers[name]; hasCB {
+					sp = &cbProvider{Provider: g.providers[name], cb: cb, name: name}
+				}
 			}
 		}
 	}
 	g.mu.RUnlock()
+
+	if orderErr != nil {
+		err = orderErr
+		span.SetError(err)
+		return nil, err
+	}
 
 	if sp == nil {
 		err = fmt.Errorf("no streaming-capable provider found for model: %s", req.Model)
@@ -1355,21 +1363,21 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 	return streamwrap.Meter(ctx, rawCh, start, meta), nil
 }
 
-func (g *Gateway) streamingTargetOrderLocked(req providers.Request) []string {
+func (g *Gateway) streamingTargetOrderLocked(req providers.Request) ([]string, error) {
 	targets := g.config.Targets
 	if len(targets) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	switch g.config.Strategy.Mode {
 	case ModeSingle, "":
-		return []string{targets[0].VirtualKey}
+		return []string{targets[0].VirtualKey}, nil
 	case ModeFallback:
 		keys := make([]string, 0, len(targets))
 		for _, t := range targets {
 			keys = append(keys, t.VirtualKey)
 		}
-		return keys
+		return keys, nil
 	case ModeConditional:
 		keys := make([]string, 0, len(targets))
 		for _, cond := range g.config.Strategy.Conditions {
@@ -1381,7 +1389,7 @@ func (g *Gateway) streamingTargetOrderLocked(req providers.Request) []string {
 		for _, t := range targets {
 			keys = appendUniqueKey(keys, t.VirtualKey)
 		}
-		return keys
+		return keys, nil
 	case ModeContentBased:
 		// Evaluate content rules in order; first match wins, fallback is targets[0].
 		for _, cond := range g.streamingContent {
@@ -1391,7 +1399,7 @@ func (g *Gateway) streamingTargetOrderLocked(req providers.Request) []string {
 				for _, t := range targets {
 					keys = appendUniqueKey(keys, t.VirtualKey)
 				}
-				return keys
+				return keys, nil
 			}
 		}
 		// No rule matched — use declared target order (targets[0] is the fallback).
@@ -1399,7 +1407,7 @@ func (g *Gateway) streamingTargetOrderLocked(req providers.Request) []string {
 		for _, t := range targets {
 			keys = append(keys, t.VirtualKey)
 		}
-		return keys
+		return keys, nil
 	case ModeABTest:
 		// Weighted random variant selection mirrors ABTest.selectVariant.
 		total := 0.0
@@ -1424,7 +1432,7 @@ func (g *Gateway) streamingTargetOrderLocked(req providers.Request) []string {
 					for _, t := range targets {
 						keys = appendUniqueKey(keys, t.VirtualKey)
 					}
-					return keys
+					return keys, nil
 				}
 			}
 			// Floating-point safety net — use last variant.
@@ -1433,23 +1441,23 @@ func (g *Gateway) streamingTargetOrderLocked(req providers.Request) []string {
 			for _, t := range targets {
 				keys = appendUniqueKey(keys, t.VirtualKey)
 			}
-			return keys
+			return keys, nil
 		}
 		// No variants configured — fall through to raw order.
 		keys := make([]string, 0, len(targets))
 		for _, t := range targets {
 			keys = append(keys, t.VirtualKey)
 		}
-		return keys
+		return keys, nil
 	case ModeLoadBalance:
 		startIdx := weightedStartIndex(targets)
 		keys := make([]string, 0, len(targets))
 		for i := 0; i < len(targets); i++ {
 			keys = append(keys, targets[(startIdx+i)%len(targets)].VirtualKey)
 		}
-		return keys
+		return keys, nil
 	case ModeLatency:
-		return g.streamingLatencyOrderLocked(targets, req)
+		return g.streamingLatencyOrderLocked(targets, req), nil
 	case ModeCostOptimized:
 		return g.streamingCostOrderLocked(targets, req)
 	default:
@@ -1457,7 +1465,7 @@ func (g *Gateway) streamingTargetOrderLocked(req providers.Request) []string {
 		for _, t := range targets {
 			keys = append(keys, t.VirtualKey)
 		}
-		return keys
+		return keys, nil
 	}
 }
 
@@ -1516,7 +1524,7 @@ type streamingCostCandidate struct {
 	modelFound bool
 }
 
-func (g *Gateway) streamingCostOrderLocked(targets []Target, req providers.Request) []string {
+func (g *Gateway) streamingCostOrderLocked(targets []Target, req providers.Request) ([]string, error) {
 	estimatedPromptTokens := estimatePromptTokens(req)
 	candidates := make([]streamingCostCandidate, 0, len(targets))
 	for _, t := range targets {
@@ -1534,7 +1542,7 @@ func (g *Gateway) streamingCostOrderLocked(targets []Target, req providers.Reque
 		})
 	}
 	if len(candidates) == 0 {
-		return targetKeys(targets)
+		return targetKeys(targets), nil
 	}
 
 	ranked := make([]streamingCostCandidate, 0, len(candidates))
@@ -1560,7 +1568,10 @@ func (g *Gateway) streamingCostOrderLocked(targets []Target, req providers.Reque
 	}
 
 	if len(ranked) == 0 {
-		return targetKeys(targets)
+		if g.config.Strategy.UnpricedStrategy == unpricedStrategySkip {
+			return nil, fmt.Errorf("no priced provider supports model %s", req.Model)
+		}
+		return targetKeys(targets), nil
 	}
 
 	sort.SliceStable(ranked, func(i, j int) bool {
@@ -1574,7 +1585,7 @@ func (g *Gateway) streamingCostOrderLocked(targets []Target, req providers.Reque
 	for _, candidate := range candidates {
 		keys = appendUniqueKey(keys, candidate.key)
 	}
-	return appendRemainingTargetKeys(keys, targets)
+	return appendRemainingTargetKeys(keys, targets), nil
 }
 
 func (g *Gateway) isStreamingTargetCandidateLocked(t Target, model string) bool {

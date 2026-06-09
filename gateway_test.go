@@ -528,6 +528,55 @@ func TestGateway_RouteStream_CostOptimizedUsesCatalogCost(t *testing.T) {
 	drainStream(t, ch)
 }
 
+func TestGateway_RouteStream_CostOptimizedSkipErrorsWhenAllStreamCandidatesUnpriced(t *testing.T) {
+	gw, err := New(Config{
+		Strategy: StrategyConfig{
+			Mode:             ModeCostOptimized,
+			UnpricedStrategy: unpricedStrategySkip,
+		},
+		Targets: []Target{
+			{VirtualKey: "first"},
+			{VirtualKey: "second"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gw.catalog = models.Catalog{
+		"first/gpt-4o": {
+			Provider: "first",
+			ModelID:  "gpt-4o",
+			Mode:     models.ModeChat,
+			Pricing:  models.Pricing{},
+		},
+		"second/gpt-4o": {
+			Provider: "second",
+			ModelID:  "gpt-4o",
+			Mode:     models.ModeChat,
+			Pricing:  models.Pricing{},
+		},
+	}
+	gw.RegisterProvider(&mockStreamProvider{
+		mockProvider: mockProvider{name: "first", models: []string{"gpt-4o"}},
+		streamErr:    errors.New("first provider selected"),
+	})
+	gw.RegisterProvider(&mockStreamProvider{
+		mockProvider: mockProvider{name: "second", models: []string{"gpt-4o"}},
+		streamErr:    errors.New("second provider selected"),
+	})
+
+	_, err = gw.RouteStream(context.Background(), providers.Request{
+		Model:    "gpt-4o",
+		Messages: []providers.Message{{Role: "user", Content: "hello"}},
+	})
+	if err == nil {
+		t.Fatal("expected RouteStream to reject unpriced providers in skip mode")
+	}
+	if !strings.Contains(err.Error(), "no priced provider supports model gpt-4o") {
+		t.Fatalf("RouteStream error = %v, want no priced provider error", err)
+	}
+}
+
 func TestGateway_StreamingCostOrderHandlesUnpricedStrategies(t *testing.T) {
 	tests := []struct {
 		name             string
@@ -623,10 +672,13 @@ func TestGateway_StreamingCostOrderHandlesUnpricedStrategies(t *testing.T) {
 				models: []string{"gpt-4o"},
 			})
 
-			got := gw.streamingCostOrderLocked(gw.config.Targets, providers.Request{
+			got, err := gw.streamingCostOrderLocked(gw.config.Targets, providers.Request{
 				Model:    "gpt-4o",
 				Messages: []providers.Message{{Role: "user", Content: "hello world"}},
 			})
+			if err != nil {
+				t.Fatal(err)
+			}
 			requireKeys(t, got, tt.want...)
 		})
 	}
@@ -710,7 +762,10 @@ func TestGateway_StreamingCostOrderFallsBackWithoutStreamingCandidates(t *testin
 		mockProvider: mockProvider{name: "unsupported", models: []string{"other-model"}},
 	})
 
-	got := gw.streamingCostOrderLocked(gw.config.Targets, providers.Request{Model: "gpt-4o"})
+	got, err := gw.streamingCostOrderLocked(gw.config.Targets, providers.Request{Model: "gpt-4o"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	requireKeys(t, got, "plain", "unsupported", "missing")
 }
 

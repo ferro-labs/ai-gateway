@@ -40,11 +40,11 @@ Status: **Shipped** (2026-05-04)
 
 ## v1.1.0 — OpenTelemetry Core
 
-Status: **In progress** — branch `release/v1.1.0-observability`. Tracking issue: [#49](https://github.com/ferro-labs/ai-gateway/issues/49).
+Status: **Shipped** (2026-05-24). Tracking issue: [#49](https://github.com/ferro-labs/ai-gateway/issues/49).
 
 This release is intentionally **scoped to a pure OpenTelemetry core**. Vendor-specific bridges (LangSmith, Langfuse, Phoenix, Datadog, New Relic, Sentry, Helicone, Honeycomb, Grafana, …) are deliberately deferred to the v1.2.0 plugin SDK so they live once, in Go, in a dedicated repo — instead of being duplicated across the gateway core, the Python SDK, and the TypeScript SDK.
 
-### In this release
+### What shipped
 
 - **Public `observability` package** — semver-stable `Provider` / `Span` / `Exporter` / `Event` contract with `gen_ai.*` (OTel GenAI semantic conventions) plus `ferro.*` extension attributes for cost, routing, cache, MCP, and stream timings.
 - **OTLP tracing pipeline** — gRPC and HTTP/protobuf exporters via `internal/otel`, global W3C `TraceContext` + `Baggage` propagation, head sampling.
@@ -56,12 +56,18 @@ This release is intentionally **scoped to a pure OpenTelemetry core**. Vendor-sp
 - **SDK observability** in [ferrolabs-python-sdk](https://github.com/ferro-labs/ferrolabs-python-sdk) and [ferrolabs-typescript-sdk](https://github.com/ferro-labs/ferrolabs-typescript-sdk) — runtime OTel detection (no hard dependency), `traceparent` injection, `trace_id` / `traceId` surfaced from gateway response headers.
 
 
-### Backlog (still landing under v1.1.x patch releases)
+## v1.1.x — Stability Fixes
+
+Status: **Shipped** through v1.1.2.
+
+Patch releases stayed limited to stability and release-hardening work: shutdown/race/leak fixes, safer streaming, catalog pricing and fallback correctness, OpenAI response-body lifecycle cleanup, and catalog load guardrails. No public API breaks.
+
+### Carried into v1.1.x / v1.2.x backlog
 
 - Plugin-stage child spans inside `plugin/Manager.Run{Before,After,OnError}`.
 - Span hand-off from `RouteStream` into `streamwrap.Meter` so token / cost / stream-timing attributes land on the same span.
 - MCP tool-call child spans.
-- Semantic caching, Redis-backed auth cache, additional provider expansion — moved out of v1.1.0 to keep this release focused; tracked under v1.1.x / v1.2.x.
+- Semantic caching, Redis-backed auth cache, additional provider expansion.
 
 ## v1.2.0 — Plugin SDK & Vendor Bridges
 
