@@ -204,6 +204,68 @@ type streamError struct{ msg string }
 
 func (e *streamError) Error() string { return e.msg }
 
+func TestMeter_CallsCircuitBreakerOutcome_OnSuccessAndError(t *testing.T) {
+	var mu sync.Mutex
+	var outcomes []error
+
+	outcomeFn := func(err error) {
+		mu.Lock()
+		outcomes = append(outcomes, err)
+		mu.Unlock()
+	}
+
+	t.Run("success", func(t *testing.T) {
+		mu.Lock()
+		outcomes = nil
+		mu.Unlock()
+
+		src := feed(providers.StreamChunk{ID: "1"})
+		out := Meter(context.Background(), src, time.Now(), MeterMeta{
+			Provider:              "openai",
+			Model:                 "gpt-4o",
+			Catalog:               models.Catalog{},
+			CircuitBreakerOutcome: outcomeFn,
+		})
+		for range out { //nolint:revive
+		}
+
+		mu.Lock()
+		defer mu.Unlock()
+		if len(outcomes) != 1 || outcomes[0] != nil {
+			t.Fatalf("outcomes = %v, want single nil", outcomes)
+		}
+	})
+
+	t.Run("provider error", func(t *testing.T) {
+		mu.Lock()
+		outcomes = nil
+		mu.Unlock()
+
+		providerErr := errors.New("provider blew up")
+		src := feed(
+			providers.StreamChunk{ID: "1"},
+			providers.StreamChunk{Error: providerErr},
+		)
+		out := Meter(context.Background(), src, time.Now(), MeterMeta{
+			Provider:              "openai",
+			Model:                 "gpt-4o",
+			Catalog:               models.Catalog{},
+			CircuitBreakerOutcome: outcomeFn,
+		})
+		for range out { //nolint:revive
+		}
+
+		mu.Lock()
+		defer mu.Unlock()
+		if len(outcomes) != 1 {
+			t.Fatalf("outcomes len = %d, want 1", len(outcomes))
+		}
+		if !errors.Is(outcomes[0], providerErr) {
+			t.Fatalf("outcome = %v, want provider error", outcomes[0])
+		}
+	})
+}
+
 func TestMeter_NilPublishFn_NoPanic(t *testing.T) {
 	t.Helper()
 	src := feed(providers.StreamChunk{ID: "1"})

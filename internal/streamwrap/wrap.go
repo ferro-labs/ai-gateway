@@ -43,6 +43,9 @@ type MeterMeta struct {
 	// type is intentionally a minimal local interface so streamwrap
 	// stays decoupled from the public observability package.
 	SpanFinisher SpanFinisher
+	// CircuitBreakerOutcome, if non-nil, is invoked once when the stream
+	// finishes. err is nil on success; non-nil on provider/stream failure.
+	CircuitBreakerOutcome func(err error)
 }
 
 // StreamOutcome bundles the values stamped onto the observability span
@@ -187,6 +190,9 @@ func Meter(ctx context.Context, src <-chan providers.StreamChunk, start time.Tim
 					ErrorMsg:  streamErr.Error(),
 				})
 			}
+			if meta.CircuitBreakerOutcome != nil {
+				meta.CircuitBreakerOutcome(streamErr)
+			}
 			return
 		}
 
@@ -240,6 +246,9 @@ func Meter(ctx context.Context, src <-chan providers.StreamChunk, start time.Tim
 				TTFTMs:      ttftMs,
 				TTLTMs:      ttltMs,
 			})
+		}
+		if meta.CircuitBreakerOutcome != nil {
+			meta.CircuitBreakerOutcome(nil)
 		}
 	}()
 

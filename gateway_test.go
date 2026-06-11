@@ -863,6 +863,101 @@ func TestGateway_RouteStream_ImmediateCircuitOpen_IncrementsCircuitOpenProviderE
 	}
 }
 
+func streamTestRequest() providers.Request {
+	return providers.Request{
+		Model:    "gpt-4o",
+		Messages: []providers.Message{{Role: "user", Content: "hi"}},
+	}
+}
+
+func drainMeteredStream(t *testing.T, ch <-chan providers.StreamChunk) {
+	t.Helper()
+	for range ch { //nolint:revive
+	}
+}
+
+func TestGateway_RouteStream_StartupFailureTripsCircuitWithoutRoute(t *testing.T) {
+	gw, err := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets: []Target{{
+			VirtualKey: "flaky-stream",
+			CircuitBreaker: &CircuitBreakerConfig{
+				FailureThreshold: 2,
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	gw.RegisterProvider(&mockStreamProvider{
+		mockProvider: mockProvider{
+			name:   "flaky-stream",
+			models: []string{"gpt-4o"},
+		},
+		streamErr: errors.New("stream startup failed"),
+	})
+
+	req := streamTestRequest()
+	for i := 0; i < 2; i++ {
+		_, err := gw.RouteStream(context.Background(), req)
+		if err == nil {
+			t.Fatalf("attempt %d: expected startup error", i+1)
+		}
+	}
+
+	_, err = gw.RouteStream(context.Background(), req)
+	if !errors.Is(err, circuitbreaker.ErrCircuitOpen) {
+		t.Fatalf("expected circuit open, got %v", err)
+	}
+}
+
+func TestGateway_RouteStream_MidStreamFailureTripsCircuit(t *testing.T) {
+	streamErr := errors.New("mid-stream provider failure")
+	gw, err := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets: []Target{{
+			VirtualKey: "flaky-stream",
+			CircuitBreaker: &CircuitBreakerConfig{
+				FailureThreshold: 2,
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	gw.RegisterProvider(&mockStreamProvider{
+		mockProvider: mockProvider{
+			name:   "flaky-stream",
+			models: []string{"gpt-4o"},
+		},
+		streamFn: func(_ context.Context, _ providers.Request) (<-chan providers.StreamChunk, error) {
+			ch := make(chan providers.StreamChunk, 2)
+			ch <- providers.StreamChunk{
+				Choices: []providers.StreamChoice{{
+					Delta: providers.MessageDelta{Content: "partial"},
+				}},
+			}
+			ch <- providers.StreamChunk{Error: streamErr}
+			close(ch)
+			return ch, nil
+		},
+	})
+
+	req := streamTestRequest()
+	for i := 0; i < 2; i++ {
+		ch, err := gw.RouteStream(context.Background(), req)
+		if err != nil {
+			t.Fatalf("attempt %d: RouteStream error = %v", i+1, err)
+		}
+		drainMeteredStream(t, ch)
+	}
+
+	_, err = gw.RouteStream(context.Background(), req)
+	if !errors.Is(err, circuitbreaker.ErrCircuitOpen) {
+		t.Fatalf("expected circuit open after mid-stream failures, got %v", err)
+	}
+}
+
 func TestGateway_RouteStream_BeforePluginCanSetNilRequest(t *testing.T) {
 	gw, _ := New(Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
