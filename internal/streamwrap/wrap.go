@@ -105,8 +105,13 @@ func Meter(ctx context.Context, src <-chan providers.StreamChunk, start time.Tim
 				// MUST close src eventually for this to terminate; that is
 				// the existing contract for every CompleteStream impl.
 				clientCanceled = true
-				streamErr = ctx.Err()
-				for range src { //nolint:revive
+				if streamErr == nil {
+					streamErr = ctx.Err()
+				}
+				for chunk := range src {
+					if chunk.Error != nil {
+						streamErr = chunk.Error
+					}
 				}
 				break loop
 			case chunk, ok := <-src:
@@ -135,8 +140,13 @@ func Meter(ctx context.Context, src <-chan providers.StreamChunk, start time.Tim
 				case out <- chunk:
 				case <-ctx.Done():
 					clientCanceled = true
-					streamErr = ctx.Err()
-					for range src { //nolint:revive
+					if streamErr == nil {
+						streamErr = ctx.Err()
+					}
+					for chunk := range src {
+						if chunk.Error != nil {
+							streamErr = chunk.Error
+						}
 					}
 					break loop
 				}
