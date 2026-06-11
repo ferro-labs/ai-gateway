@@ -1063,7 +1063,8 @@ func (p *cbProvider) CompleteStream(ctx context.Context, req providers.Request) 
 // this handles stream completion only.
 func recordStreamCircuitBreakerOutcome(cb *circuitbreaker.CircuitBreaker, name string, err error) {
 	if err != nil {
-		if errors.Is(err, context.Canceled) {
+		// Client-side cancellation/deadlines are not provider failures.
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return
 		}
 		if isRateLimitError(err) {
