@@ -204,6 +204,116 @@ type streamError struct{ msg string }
 
 func (e *streamError) Error() string { return e.msg }
 
+func TestMeter_CircuitBreakerOutcome_PreservesProviderErrorOnClientCancel(t *testing.T) {
+	providerErr := errors.New("provider blew up")
+	src := make(chan providers.StreamChunk)
+
+	sendErr := make(chan struct{})
+	go func() {
+		src <- providers.StreamChunk{ID: "1"}
+		<-sendErr
+		src <- providers.StreamChunk{Error: providerErr}
+		close(src)
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	var mu sync.Mutex
+	var outcomes []error
+	outcomeFn := func(err error) {
+		mu.Lock()
+		outcomes = append(outcomes, err)
+		mu.Unlock()
+	}
+
+	out := Meter(ctx, src, time.Now(), MeterMeta{
+		Provider:              "openai",
+		Model:                 "gpt-4o",
+		Catalog:               models.Catalog{},
+		CircuitBreakerOutcome: outcomeFn,
+	})
+
+	if _, ok := <-out; !ok {
+		t.Fatal("expected first chunk")
+	}
+	cancel()
+	close(sendErr)
+
+	for range out { //nolint:revive
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(outcomes) != 1 {
+		t.Fatalf("outcomes len = %d, want 1", len(outcomes))
+	}
+	if !errors.Is(outcomes[0], providerErr) {
+		t.Fatalf("outcome = %v, want provider error", outcomes[0])
+	}
+}
+
+func TestMeter_CallsCircuitBreakerOutcome_OnSuccessAndError(t *testing.T) {
+	var mu sync.Mutex
+	var outcomes []error
+
+	outcomeFn := func(err error) {
+		mu.Lock()
+		outcomes = append(outcomes, err)
+		mu.Unlock()
+	}
+
+	t.Run("success", func(t *testing.T) {
+		mu.Lock()
+		outcomes = nil
+		mu.Unlock()
+
+		src := feed(providers.StreamChunk{ID: "1"})
+		out := Meter(context.Background(), src, time.Now(), MeterMeta{
+			Provider:              "openai",
+			Model:                 "gpt-4o",
+			Catalog:               models.Catalog{},
+			CircuitBreakerOutcome: outcomeFn,
+		})
+		for range out { //nolint:revive
+		}
+
+		mu.Lock()
+		defer mu.Unlock()
+		if len(outcomes) != 1 || outcomes[0] != nil {
+			t.Fatalf("outcomes = %v, want single nil", outcomes)
+		}
+	})
+
+	t.Run("provider error", func(t *testing.T) {
+		mu.Lock()
+		outcomes = nil
+		mu.Unlock()
+
+		providerErr := errors.New("provider blew up")
+		src := feed(
+			providers.StreamChunk{ID: "1"},
+			providers.StreamChunk{Error: providerErr},
+		)
+		out := Meter(context.Background(), src, time.Now(), MeterMeta{
+			Provider:              "openai",
+			Model:                 "gpt-4o",
+			Catalog:               models.Catalog{},
+			CircuitBreakerOutcome: outcomeFn,
+		})
+		for range out { //nolint:revive
+		}
+
+		mu.Lock()
+		defer mu.Unlock()
+		if len(outcomes) != 1 {
+			t.Fatalf("outcomes len = %d, want 1", len(outcomes))
+		}
+		if !errors.Is(outcomes[0], providerErr) {
+			t.Fatalf("outcome = %v, want provider error", outcomes[0])
+		}
+	})
+}
+
 func TestMeter_NilPublishFn_NoPanic(t *testing.T) {
 	t.Helper()
 	src := feed(providers.StreamChunk{ID: "1"})
