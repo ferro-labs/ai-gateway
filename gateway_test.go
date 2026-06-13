@@ -1062,6 +1062,63 @@ func TestGateway_RouteStream_FallbackSkipsOpenCircuitBreakerTarget(t *testing.T)
 	}
 }
 
+type slowCompleteProvider struct {
+	mockProvider
+}
+
+func (p *slowCompleteProvider) Complete(ctx context.Context, _ providers.Request) (*providers.Response, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-time.After(500 * time.Millisecond):
+		return &providers.Response{ID: "ok"}, nil
+	}
+}
+
+func TestGateway_Route_ClientDeadlineDoesNotTripCircuit(t *testing.T) {
+	gw, err := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets: []Target{{
+			VirtualKey: "slow",
+			CircuitBreaker: &CircuitBreakerConfig{
+				FailureThreshold: 2,
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	gw.RegisterProvider(&slowCompleteProvider{
+		mockProvider: mockProvider{
+			name:   "slow",
+			models: []string{"gpt-4o"},
+		},
+	})
+
+	req := providers.Request{
+		Model:    "gpt-4o",
+		Messages: []providers.Message{{Role: "user", Content: "hi"}},
+	}
+	for i := 0; i < 2; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+		_, routeErr := gw.Route(ctx, req)
+		cancel()
+		if !errors.Is(routeErr, context.DeadlineExceeded) {
+			t.Fatalf("attempt %d: error = %v, want context.DeadlineExceeded", i+1, routeErr)
+		}
+	}
+
+	gw.mu.RLock()
+	cb := gw.circuitBreakers["slow"]
+	gw.mu.RUnlock()
+	if cb == nil {
+		t.Fatal("expected circuit breaker for slow")
+	}
+	if cb.State() != circuitbreaker.StateClosed {
+		t.Fatalf("circuit state = %v, want closed after client deadlines", cb.State())
+	}
+}
+
 func TestGateway_RouteStream_ClientDeadlineDoesNotTripCircuit(t *testing.T) {
 	gw, err := New(Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
