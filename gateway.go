@@ -1049,7 +1049,7 @@ func (p *cbProvider) CompleteStream(ctx context.Context, req providers.Request) 
 	}
 	ch, err := sp.CompleteStream(ctx, req)
 	if err != nil {
-		if !isRateLimitError(err) {
+		if shouldRecordCircuitBreakerFailure(err) {
 			p.cb.RecordFailure()
 			metrics.CircuitBreakerState.WithLabelValues(p.name).Set(float64(p.cb.State()))
 		}
@@ -1058,16 +1058,25 @@ func (p *cbProvider) CompleteStream(ctx context.Context, req providers.Request) 
 	return ch, nil
 }
 
+// shouldRecordCircuitBreakerFailure reports whether an error should count toward
+// opening the circuit. Client-side cancellation/deadlines and rate limits are
+// excluded so transient client behavior does not block healthy traffic.
+func shouldRecordCircuitBreakerFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	return !isRateLimitError(err)
+}
+
 // recordStreamCircuitBreakerOutcome updates breaker state when a stream
 // finishes. Startup failures are recorded in cbProvider.CompleteStream;
 // this handles stream completion only.
 func recordStreamCircuitBreakerOutcome(cb *circuitbreaker.CircuitBreaker, name string, err error) {
 	if err != nil {
-		// Client-side cancellation/deadlines are not provider failures.
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return
-		}
-		if isRateLimitError(err) {
+		if !shouldRecordCircuitBreakerFailure(err) {
 			return
 		}
 		cb.RecordFailure()
@@ -1383,10 +1392,20 @@ func (g *Gateway) resolveStreamingProviderLocked(req providers.Request) (provide
 	if err != nil {
 		return nil, err
 	}
+	var openCircuitTarget providers.StreamProvider
 	for _, key := range orderedKeys {
-		if sp, ok := g.streamingProviderForTargetLocked(key, req.Model); ok {
-			return sp, nil
+		sp, ok := g.streamingProviderForTargetLocked(key, req.Model)
+		if !ok {
+			continue
 		}
+		if wrapped, isCB := sp.(*cbProvider); isCB && !wrapped.cb.Allow() {
+			openCircuitTarget = sp
+			continue
+		}
+		return sp, nil
+	}
+	if openCircuitTarget != nil {
+		return openCircuitTarget, nil
 	}
 
 	// Fallback: any registered provider that supports this model and streaming.

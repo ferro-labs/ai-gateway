@@ -961,6 +961,107 @@ func TestGateway_RouteStream_FallbackSkipsNonStreamingTargetWithCircuitBreaker(t
 	}
 }
 
+func TestGateway_RouteStream_StartupCancellationDoesNotTripCircuit(t *testing.T) {
+	gw, err := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets: []Target{{
+			VirtualKey: "flaky-stream",
+			CircuitBreaker: &CircuitBreakerConfig{
+				FailureThreshold: 2,
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	gw.RegisterProvider(&mockStreamProvider{
+		mockProvider: mockProvider{
+			name:   "flaky-stream",
+			models: []string{"gpt-4o"},
+		},
+		streamErr: context.DeadlineExceeded,
+	})
+
+	req := streamTestRequest()
+	for i := 0; i < 3; i++ {
+		_, err := gw.RouteStream(context.Background(), req)
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("attempt %d: error = %v, want context.DeadlineExceeded", i+1, err)
+		}
+	}
+
+	gw.mu.RLock()
+	cb := gw.circuitBreakers["flaky-stream"]
+	gw.mu.RUnlock()
+	if cb == nil {
+		t.Fatal("expected circuit breaker for flaky-stream")
+	}
+	if cb.State() != circuitbreaker.StateClosed {
+		t.Fatalf("circuit state = %v, want closed after startup cancellations", cb.State())
+	}
+}
+
+func TestGateway_RouteStream_FallbackSkipsOpenCircuitBreakerTarget(t *testing.T) {
+	var selected atomic.Value
+	gw, err := New(Config{
+		Strategy: StrategyConfig{Mode: ModeFallback},
+		Targets: []Target{
+			{
+				VirtualKey: "flaky-stream",
+				CircuitBreaker: &CircuitBreakerConfig{
+					FailureThreshold: 2,
+				},
+			},
+			{VirtualKey: "healthy-stream"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	gw.RegisterProvider(&mockStreamProvider{
+		mockProvider: mockProvider{
+			name:   "flaky-stream",
+			models: []string{"gpt-4o"},
+		},
+		streamErr: errors.New("stream startup failed"),
+	})
+	gw.RegisterProvider(&mockStreamProvider{
+		mockProvider: mockProvider{
+			name:   "healthy-stream",
+			models: []string{"gpt-4o"},
+		},
+		streamFn: func(_ context.Context, _ providers.Request) (<-chan providers.StreamChunk, error) {
+			selected.Store("healthy-stream")
+			ch := make(chan providers.StreamChunk, 1)
+			ch <- providers.StreamChunk{
+				ID: "healthy-ok",
+				Choices: []providers.StreamChoice{{
+					Delta: providers.MessageDelta{Content: "ok"},
+				}},
+			}
+			close(ch)
+			return ch, nil
+		},
+	})
+
+	req := streamTestRequest()
+	for i := 0; i < 2; i++ {
+		_, err := gw.RouteStream(context.Background(), req)
+		if err == nil {
+			t.Fatalf("attempt %d: expected startup error to trip breaker", i+1)
+		}
+	}
+
+	ch, err := gw.RouteStream(context.Background(), req)
+	if err != nil {
+		t.Fatalf("RouteStream error = %v, want healthy-stream fallback", err)
+	}
+	drainMeteredStream(t, ch)
+	if got := selected.Load(); got != "healthy-stream" {
+		t.Fatalf("selected provider = %v, want healthy-stream", got)
+	}
+}
+
 func TestGateway_RouteStream_ClientDeadlineDoesNotTripCircuit(t *testing.T) {
 	gw, err := New(Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
