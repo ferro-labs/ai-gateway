@@ -1406,13 +1406,16 @@ func (g *Gateway) streamingProviderForTargetLocked(key, model string) (providers
 		return nil, false
 	}
 
-	// Apply circuit breaker if configured.
-	candidate := p
-	if cb, hasCB := g.circuitBreakers[key]; hasCB {
-		candidate = &cbProvider{Provider: p, cb: cb, name: key}
+	sp, ok := p.(providers.StreamProvider)
+	if !ok {
+		return nil, false
 	}
-	sp, ok := candidate.(providers.StreamProvider)
-	return sp, ok
+
+	// Apply circuit breaker if configured.
+	if cb, hasCB := g.circuitBreakers[key]; hasCB {
+		return &cbProvider{Provider: p, cb: cb, name: key}, true
+	}
+	return sp, true
 }
 
 func (g *Gateway) streamingTargetOrderLocked(req providers.Request) ([]string, error) {
