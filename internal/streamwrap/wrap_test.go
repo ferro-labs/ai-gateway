@@ -11,6 +11,7 @@ import (
 	"github.com/ferro-labs/ai-gateway/internal/events"
 	"github.com/ferro-labs/ai-gateway/internal/metrics"
 	"github.com/ferro-labs/ai-gateway/models"
+	"github.com/ferro-labs/ai-gateway/plugin"
 	"github.com/ferro-labs/ai-gateway/providers"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
@@ -312,6 +313,34 @@ func TestMeter_CallsCircuitBreakerOutcome_OnSuccessAndError(t *testing.T) {
 			t.Fatalf("outcome = %v, want provider error", outcomes[0])
 		}
 	})
+}
+
+func TestMeter_CallsCircuitBreakerOutcome_OnAfterPluginError(t *testing.T) {
+	var outcomeErr error
+	pluginErr := &plugin.RejectionError{Plugin: "after", PluginType: plugin.TypeLogging, Stage: plugin.StageAfterRequest, Reason: "rejected"}
+	src := feed(
+		providers.StreamChunk{ID: "1", Choices: []providers.StreamChoice{{
+			Delta: providers.MessageDelta{Content: "ok"},
+		}}},
+	)
+
+	out := Meter(context.Background(), src, time.Now(), MeterMeta{
+		Provider: "openai",
+		Model:    "gpt-4o",
+		Catalog:  models.Catalog{},
+		CompletionFn: func(context.Context, *providers.Response) error {
+			return pluginErr
+		},
+		CircuitBreakerOutcome: func(err error) {
+			outcomeErr = err
+		},
+	})
+	for range out { //nolint:revive
+	}
+
+	if outcomeErr != nil {
+		t.Fatalf("circuit breaker outcome error = %v, want nil after successful provider stream", outcomeErr)
+	}
 }
 
 func TestMeter_NilPublishFn_NoPanic(t *testing.T) {

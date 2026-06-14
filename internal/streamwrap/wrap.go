@@ -43,6 +43,12 @@ type MeterMeta struct {
 	// type is intentionally a minimal local interface so streamwrap
 	// stays decoupled from the public observability package.
 	SpanFinisher SpanFinisher
+	// CompletionFn, if non-nil, is invoked once after the upstream stream closes
+	// successfully and before success metrics/events are emitted.
+	CompletionFn func(ctx context.Context, resp *providers.Response) error
+	// ErrorFn, if non-nil, is invoked once when the upstream stream fails or
+	// the downstream client cancels before the stream completes.
+	ErrorFn func(ctx context.Context, err error)
 	// CircuitBreakerOutcome, if non-nil, is invoked once when the stream
 	// finishes. err is nil on success; non-nil on provider/stream failure.
 	CircuitBreakerOutcome func(err error)
@@ -93,6 +99,11 @@ func Meter(ctx context.Context, src <-chan providers.StreamChunk, start time.Tim
 		var firstChunkAt time.Time
 		var lastChunkAt time.Time
 		clientCanceled := false
+		resp := providers.Response{
+			Object:   "chat.completion",
+			Provider: meta.Provider,
+			Model:    meta.Model,
+		}
 
 	loop:
 		for {
@@ -130,6 +141,7 @@ func Meter(ctx context.Context, src <-chan providers.StreamChunk, start time.Tim
 				if chunk.Usage != nil && (chunk.Usage.TotalTokens > 0 || chunk.Usage.PromptTokens > 0) {
 					usage = *chunk.Usage
 				}
+				applyChunkToResponse(&resp, chunk)
 				if chunk.Error != nil {
 					streamErr = chunk.Error
 				}
@@ -191,6 +203,9 @@ func Meter(ctx context.Context, src <-chan providers.StreamChunk, start time.Tim
 					true,
 				))
 			}
+			if meta.ErrorFn != nil {
+				meta.ErrorFn(ctx, streamErr)
+			}
 			if meta.SpanFinisher != nil {
 				meta.SpanFinisher.Finish(StreamOutcome{
 					TokensIn:  usage.PromptTokens,
@@ -208,6 +223,36 @@ func Meter(ctx context.Context, src <-chan providers.StreamChunk, start time.Tim
 
 		if meta.LatencyRecorder != nil && meta.Provider != "" {
 			meta.LatencyRecorder(meta.Provider, latency)
+		}
+
+		resp.Usage = usage
+		if resp.Usage.TotalTokens == 0 {
+			resp.Usage.TotalTokens = resp.Usage.PromptTokens + resp.Usage.CompletionTokens
+		}
+		if meta.CompletionFn != nil {
+			if err := meta.CompletionFn(ctx, &resp); err != nil {
+				requestMetrics := metrics.ForRequest(meta.Provider, meta.Model)
+				requestMetrics.Error.Inc()
+				metrics.ForProviderError(meta.Provider, "plugin_error").Inc()
+				select {
+				case out <- providers.StreamChunk{Error: err}:
+				case <-ctx.Done():
+				}
+				if meta.SpanFinisher != nil {
+					meta.SpanFinisher.Finish(StreamOutcome{
+						TokensIn:  usage.PromptTokens,
+						TokensOut: usage.CompletionTokens,
+						TTFTMs:    ttftMs,
+						TTLTMs:    ttltMs,
+						ErrorMsg:  err.Error(),
+					})
+				}
+				// Provider stream completed; plugin failure must not block CB recovery.
+				if meta.CircuitBreakerOutcome != nil {
+					meta.CircuitBreakerOutcome(nil)
+				}
+				return
+			}
 		}
 
 		// Success path: emit the same metrics as Gateway.Route().
@@ -263,4 +308,41 @@ func Meter(ctx context.Context, src <-chan providers.StreamChunk, start time.Tim
 	}()
 
 	return out
+}
+
+func applyChunkToResponse(resp *providers.Response, chunk providers.StreamChunk) {
+	if chunk.ID != "" && resp.ID == "" {
+		resp.ID = chunk.ID
+	}
+	if chunk.Created != 0 && resp.Created == 0 {
+		resp.Created = chunk.Created
+	}
+	if chunk.Model != "" {
+		resp.Model = chunk.Model
+	}
+	for _, streamChoice := range chunk.Choices {
+		idx := streamChoice.Index
+		if idx < 0 {
+			continue
+		}
+		for len(resp.Choices) <= idx {
+			resp.Choices = append(resp.Choices, providers.Choice{
+				Index: len(resp.Choices),
+				Message: providers.Message{
+					Role: "assistant",
+				},
+			})
+		}
+		choice := &resp.Choices[idx]
+		if streamChoice.Delta.Role != "" {
+			choice.Message.Role = streamChoice.Delta.Role
+		}
+		choice.Message.Content += streamChoice.Delta.Content
+		if len(streamChoice.Delta.ToolCalls) > 0 {
+			choice.Message.ToolCalls = append(choice.Message.ToolCalls, streamChoice.Delta.ToolCalls...)
+		}
+		if streamChoice.FinishReason != "" {
+			choice.FinishReason = streamChoice.FinishReason
+		}
+	}
 }

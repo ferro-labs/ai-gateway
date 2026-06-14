@@ -1195,57 +1195,29 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 		if err != nil {
 			return nil, err
 		}
-		// Convert the completed Response into a buffered single-chunk channel.
-		// Preserve all choices so n>1 requests are handled correctly, and use
-		// the real FinishReason from each choice rather than hardcoding "stop".
-		ch := make(chan providers.StreamChunk, 1)
-		streamChoices := make([]providers.StreamChoice, len(resp.Choices))
-		for i, c := range resp.Choices {
-			streamChoices[i] = providers.StreamChoice{
-				Index: c.Index,
-				Delta: providers.MessageDelta{
-					Role:      c.Message.Role,
-					Content:   c.Message.Content,
-					ToolCalls: c.Message.ToolCalls,
-				},
-				FinishReason: c.FinishReason,
-			}
-		}
-		ch <- providers.StreamChunk{
-			ID:      resp.ID,
-			Object:  "chat.completion.chunk",
-			Created: resp.Created,
-			Model:   resp.Model,
-			Choices: streamChoices,
-			Usage:   &resp.Usage,
-		}
-		close(ch)
 		_ = start // latency already recorded inside Route()
-		return ch, nil
+		return responseStream(resp), nil
 	}
 
 	// Run before-request plugins (word-filter, max-token, rate-limit, etc.).
+	var pctx *plugin.Context
 	if g.plugins.HasPlugins() {
-		pctx := plugin.NewContext(&req)
+		pctx = plugin.NewContext(&req)
+		var early *providers.Response
 		trace.WithRegion(ctx, "gateway.route_stream.plugins.before", func() {
-			err = g.plugins.RunBefore(ctx, pctx)
+			early, err = g.runBeforePlugins(ctx, pctx, &req)
 		})
 		if err != nil {
 			plugin.PutContext(pctx)
+			pctx = nil
 			metrics.ForRequest("", req.Model).Rejected.Inc()
 			return nil, err
 		}
-		if pctx.Reject {
-			reason := pctx.Reason
+		if early != nil {
 			plugin.PutContext(pctx)
-			metrics.ForRequest("", req.Model).Rejected.Inc()
-			return nil, fmt.Errorf("request rejected by plugin: %s", reason)
+			pctx = nil
+			return responseStream(early), nil
 		}
-		// Propagate any modifications made by plugins (e.g., capped max_tokens).
-		if pctx.Request != nil {
-			req = *pctx.Request
-		}
-		plugin.PutContext(pctx)
 	}
 
 	// Resolve provider according to strategy mode.
@@ -1259,12 +1231,22 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 	if orderErr != nil {
 		err = orderErr
 		span.SetError(err)
+		if pctx != nil {
+			pctx.Error = err
+			g.plugins.RunOnError(ctx, pctx)
+			plugin.PutContext(pctx)
+		}
 		return nil, err
 	}
 
 	if sp == nil {
 		err = fmt.Errorf("no streaming-capable provider found for model: %s", req.Model)
 		span.SetError(err)
+		if pctx != nil {
+			pctx.Error = err
+			g.plugins.RunOnError(ctx, pctx)
+			plugin.PutContext(pctx)
+		}
 		return nil, err
 	}
 
@@ -1286,6 +1268,11 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 		errType := "provider_error"
 		if errors.Is(err, circuitbreaker.ErrCircuitOpen) {
 			errType = "circuit_open"
+		}
+		if pctx != nil {
+			pctx.Error = err
+			g.plugins.RunOnError(ctx, pctx)
+			plugin.PutContext(pctx)
 		}
 		metrics.ForRequest(providerName, req.Model).Error.Inc()
 		metrics.ForProviderError(providerName, errType).Inc()
@@ -1325,6 +1312,31 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 		cbName := wrapped.name
 		meta.CircuitBreakerOutcome = func(err error) {
 			recordStreamCircuitBreakerOutcome(ctx, cb, cbName, err)
+		}
+	}
+	if pctx != nil {
+		meta.CompletionFn = func(ctx context.Context, resp *providers.Response) error {
+			pctx.Response = resp
+			err := g.plugins.RunAfter(ctx, pctx)
+			if pctx.Response != nil {
+				*resp = *pctx.Response
+			}
+			if err != nil {
+				pctx.Error = err
+				g.plugins.RunOnError(ctx, pctx)
+			}
+			plugin.PutContext(pctx)
+			pctx = nil
+			return err
+		}
+		meta.ErrorFn = func(ctx context.Context, err error) {
+			if pctx == nil {
+				return
+			}
+			pctx.Error = err
+			g.plugins.RunOnError(ctx, pctx)
+			plugin.PutContext(pctx)
+			pctx = nil
 		}
 	}
 
@@ -1387,6 +1399,32 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 		}
 	})
 	return streamwrap.Meter(ctx, rawCh, start, meta), nil
+}
+
+func responseStream(resp *providers.Response) <-chan providers.StreamChunk {
+	ch := make(chan providers.StreamChunk, 1)
+	streamChoices := make([]providers.StreamChoice, len(resp.Choices))
+	for i, c := range resp.Choices {
+		streamChoices[i] = providers.StreamChoice{
+			Index: c.Index,
+			Delta: providers.MessageDelta{
+				Role:      c.Message.Role,
+				Content:   c.Message.Content,
+				ToolCalls: c.Message.ToolCalls,
+			},
+			FinishReason: c.FinishReason,
+		}
+	}
+	ch <- providers.StreamChunk{
+		ID:      resp.ID,
+		Object:  "chat.completion.chunk",
+		Created: resp.Created,
+		Model:   resp.Model,
+		Choices: streamChoices,
+		Usage:   &resp.Usage,
+	}
+	close(ch)
+	return ch
 }
 
 func (g *Gateway) resolveStreamingProviderLocked(req providers.Request) (providers.StreamProvider, error) {
