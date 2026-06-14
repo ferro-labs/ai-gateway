@@ -1027,7 +1027,7 @@ func (p *cbProvider) Complete(ctx context.Context, req providers.Request) (*prov
 	}
 	resp, err := p.Provider.Complete(ctx, req)
 	if err != nil {
-		if shouldRecordCircuitBreakerFailure(err) {
+		if shouldRecordCircuitBreakerFailure(ctx, err) {
 			p.cb.RecordFailure()
 			metrics.CircuitBreakerState.WithLabelValues(p.name).Set(float64(p.cb.State()))
 		}
@@ -1049,7 +1049,7 @@ func (p *cbProvider) CompleteStream(ctx context.Context, req providers.Request) 
 	}
 	ch, err := sp.CompleteStream(ctx, req)
 	if err != nil {
-		if shouldRecordCircuitBreakerFailure(err) {
+		if shouldRecordCircuitBreakerFailure(ctx, err) {
 			p.cb.RecordFailure()
 			metrics.CircuitBreakerState.WithLabelValues(p.name).Set(float64(p.cb.State()))
 		}
@@ -1059,13 +1059,15 @@ func (p *cbProvider) CompleteStream(ctx context.Context, req providers.Request) 
 }
 
 // shouldRecordCircuitBreakerFailure reports whether an error should count toward
-// opening the circuit. Client-side cancellation/deadlines and rate limits are
+// opening the circuit. Caller-side cancellation/deadlines and rate limits are
 // excluded so transient client behavior does not block healthy traffic.
-func shouldRecordCircuitBreakerFailure(err error) bool {
+// Provider-side timeouts that surface as context.DeadlineExceeded while the
+// request context is still active are counted as failures.
+func shouldRecordCircuitBreakerFailure(ctx context.Context, err error) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	if ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
 		return false
 	}
 	return !isRateLimitError(err)
@@ -1074,9 +1076,9 @@ func shouldRecordCircuitBreakerFailure(err error) bool {
 // recordStreamCircuitBreakerOutcome updates breaker state when a stream
 // finishes. Startup failures are recorded in cbProvider.CompleteStream;
 // this handles stream completion only.
-func recordStreamCircuitBreakerOutcome(cb *circuitbreaker.CircuitBreaker, name string, err error) {
+func recordStreamCircuitBreakerOutcome(ctx context.Context, cb *circuitbreaker.CircuitBreaker, name string, err error) {
 	if err != nil {
-		if !shouldRecordCircuitBreakerFailure(err) {
+		if !shouldRecordCircuitBreakerFailure(ctx, err) {
 			return
 		}
 		cb.RecordFailure()
@@ -1322,7 +1324,7 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 		cb := wrapped.cb
 		cbName := wrapped.name
 		meta.CircuitBreakerOutcome = func(err error) {
-			recordStreamCircuitBreakerOutcome(cb, cbName, err)
+			recordStreamCircuitBreakerOutcome(ctx, cb, cbName, err)
 		}
 	}
 

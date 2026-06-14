@@ -979,14 +979,16 @@ func TestGateway_RouteStream_StartupCancellationDoesNotTripCircuit(t *testing.T)
 			name:   "flaky-stream",
 			models: []string{"gpt-4o"},
 		},
-		streamErr: context.DeadlineExceeded,
+		streamErr: context.Canceled,
 	})
 
 	req := streamTestRequest()
 	for i := 0; i < 3; i++ {
-		_, err := gw.RouteStream(context.Background(), req)
-		if !errors.Is(err, context.DeadlineExceeded) {
-			t.Fatalf("attempt %d: error = %v, want context.DeadlineExceeded", i+1, err)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		_, err := gw.RouteStream(ctx, req)
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("attempt %d: error = %v, want context.Canceled", i+1, err)
 		}
 	}
 
@@ -998,6 +1000,136 @@ func TestGateway_RouteStream_StartupCancellationDoesNotTripCircuit(t *testing.T)
 	}
 	if cb.State() != circuitbreaker.StateClosed {
 		t.Fatalf("circuit state = %v, want closed after startup cancellations", cb.State())
+	}
+}
+
+func TestGateway_Route_ProviderTimeoutTripsCircuit(t *testing.T) {
+	gw, err := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets: []Target{{
+			VirtualKey: "slow",
+			CircuitBreaker: &CircuitBreakerConfig{
+				FailureThreshold: 2,
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	gw.RegisterProvider(&mockProvider{
+		name:   "slow",
+		models: []string{"gpt-4o"},
+		err:    context.DeadlineExceeded,
+	})
+
+	req := providers.Request{
+		Model:    "gpt-4o",
+		Messages: []providers.Message{{Role: "user", Content: "hi"}},
+	}
+	for i := 0; i < 2; i++ {
+		_, routeErr := gw.Route(context.Background(), req)
+		if !errors.Is(routeErr, context.DeadlineExceeded) {
+			t.Fatalf("attempt %d: error = %v, want context.DeadlineExceeded", i+1, routeErr)
+		}
+	}
+
+	_, routeErr := gw.Route(context.Background(), req)
+	if !errors.Is(routeErr, circuitbreaker.ErrCircuitOpen) {
+		t.Fatalf("expected circuit open after provider timeouts, got %v", routeErr)
+	}
+}
+
+func TestGateway_RouteStream_ProviderTimeoutTripsCircuit(t *testing.T) {
+	gw, err := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets: []Target{{
+			VirtualKey: "flaky-stream",
+			CircuitBreaker: &CircuitBreakerConfig{
+				FailureThreshold: 2,
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	gw.RegisterProvider(&mockStreamProvider{
+		mockProvider: mockProvider{
+			name:   "flaky-stream",
+			models: []string{"gpt-4o"},
+		},
+		streamErr: context.DeadlineExceeded,
+	})
+
+	req := streamTestRequest()
+	for i := 0; i < 2; i++ {
+		_, err := gw.RouteStream(context.Background(), req)
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("attempt %d: error = %v, want context.DeadlineExceeded", i+1, err)
+		}
+	}
+
+	_, err = gw.RouteStream(context.Background(), req)
+	if !errors.Is(err, circuitbreaker.ErrCircuitOpen) {
+		t.Fatalf("expected circuit open after provider timeouts, got %v", err)
+	}
+}
+
+func TestShouldRecordCircuitBreakerFailure(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		ctx  context.Context
+		err  error
+		want bool
+	}{
+		{
+			name: "nil error",
+			ctx:  context.Background(),
+			err:  nil,
+			want: false,
+		},
+		{
+			name: "provider timeout with live request context",
+			ctx:  context.Background(),
+			err:  context.DeadlineExceeded,
+			want: true,
+		},
+		{
+			name: "client deadline with canceled request context",
+			ctx: func() context.Context {
+				ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+				cancel()
+				return ctx
+			}(),
+			err:  context.DeadlineExceeded,
+			want: false,
+		},
+		{
+			name: "client cancel with canceled request context",
+			ctx: func() context.Context {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				return ctx
+			}(),
+			err:  context.Canceled,
+			want: false,
+		},
+		{
+			name: "provider error with live request context",
+			ctx:  context.Background(),
+			err:  errors.New("upstream unavailable"),
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := shouldRecordCircuitBreakerFailure(tt.ctx, tt.err); got != tt.want {
+				t.Fatalf("shouldRecordCircuitBreakerFailure() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 
