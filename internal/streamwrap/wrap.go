@@ -183,41 +183,7 @@ func Meter(ctx context.Context, src <-chan providers.StreamChunk, start time.Tim
 		}
 
 		if streamErr != nil {
-			errType := "provider_error"
-			switch {
-			case clientCanceled:
-				errType = "client_canceled"
-			case errors.Is(streamErr, circuitbreaker.ErrCircuitOpen):
-				errType = "circuit_open"
-			}
-			requestMetrics := metrics.ForRequest(meta.Provider, meta.Model)
-			requestMetrics.Error.Inc()
-			metrics.ForProviderError(meta.Provider, errType).Inc()
-			if meta.PublishFn != nil {
-				meta.PublishFn(ctx, events.FailedRequest(
-					meta.TraceID,
-					meta.Provider,
-					meta.Model,
-					streamErr.Error(),
-					latency,
-					true,
-				))
-			}
-			if meta.ErrorFn != nil {
-				meta.ErrorFn(ctx, streamErr)
-			}
-			if meta.SpanFinisher != nil {
-				meta.SpanFinisher.Finish(StreamOutcome{
-					TokensIn:  usage.PromptTokens,
-					TokensOut: usage.CompletionTokens,
-					TTFTMs:    ttftMs,
-					TTLTMs:    ttltMs,
-					ErrorMsg:  streamErr.Error(),
-				})
-			}
-			if meta.CircuitBreakerOutcome != nil {
-				meta.CircuitBreakerOutcome(streamErr)
-			}
+			finishStreamOnError(ctx, meta, usage, ttftMs, ttltMs, clientCanceled, streamErr, latency)
 			return
 		}
 
@@ -229,85 +195,169 @@ func Meter(ctx context.Context, src <-chan providers.StreamChunk, start time.Tim
 		if resp.Usage.TotalTokens == 0 {
 			resp.Usage.TotalTokens = resp.Usage.PromptTokens + resp.Usage.CompletionTokens
 		}
-		if meta.CompletionFn != nil {
-			if err := meta.CompletionFn(ctx, &resp); err != nil {
-				requestMetrics := metrics.ForRequest(meta.Provider, meta.Model)
-				requestMetrics.Error.Inc()
-				metrics.ForProviderError(meta.Provider, "plugin_error").Inc()
-				select {
-				case out <- providers.StreamChunk{Error: err}:
-				case <-ctx.Done():
-				}
-				if meta.SpanFinisher != nil {
-					meta.SpanFinisher.Finish(StreamOutcome{
-						TokensIn:  usage.PromptTokens,
-						TokensOut: usage.CompletionTokens,
-						TTFTMs:    ttftMs,
-						TTLTMs:    ttltMs,
-						ErrorMsg:  err.Error(),
-					})
-				}
-				// Provider stream completed; plugin failure must not block CB recovery.
-				if meta.CircuitBreakerOutcome != nil {
-					meta.CircuitBreakerOutcome(nil)
-				}
-				return
-			}
+		if handleCompletionFn(ctx, meta, usage, ttftMs, ttltMs, &resp, out) {
+			return
 		}
 
 		// Success path: emit the same metrics as Gateway.Route().
-		requestMetrics := metrics.ForRequest(meta.Provider, meta.Model)
-		requestMetrics.Duration.Observe(latency.Seconds())
-		requestMetrics.Success.Inc()
-
-		if usage.PromptTokens > 0 {
-			requestMetrics.TokensIn.Add(float64(usage.PromptTokens))
-		}
-		if usage.CompletionTokens > 0 {
-			requestMetrics.TokensOut.Add(float64(usage.CompletionTokens))
-		}
-
-		// Compute and emit cost.
-		cost := models.Calculate(meta.Catalog, meta.Provider+"/"+meta.Model, models.Usage{
-			PromptTokens:     usage.PromptTokens,
-			CompletionTokens: usage.CompletionTokens,
-			ReasoningTokens:  usage.ReasoningTokens,
-			CacheReadTokens:  usage.CacheReadTokens,
-			CacheWriteTokens: usage.CacheWriteTokens,
-		})
-		if cost.TotalUSD > 0 {
-			requestMetrics.CostUSD.Add(cost.TotalUSD)
-		}
-
-		if meta.PublishFn != nil {
-			meta.PublishFn(ctx, events.CompletedRequest(
-				meta.TraceID,
-				meta.Provider,
-				meta.Model,
-				latency,
-				true,
-				usage.PromptTokens,
-				usage.CompletionTokens,
-				cost,
-				false,
-			))
-		}
-		if meta.SpanFinisher != nil {
-			meta.SpanFinisher.Finish(StreamOutcome{
-				TokensIn:    usage.PromptTokens,
-				TokensOut:   usage.CompletionTokens,
-				ReasoningIn: usage.ReasoningTokens,
-				Cost:        cost,
-				TTFTMs:      ttftMs,
-				TTLTMs:      ttltMs,
-			})
-		}
-		if meta.CircuitBreakerOutcome != nil {
-			meta.CircuitBreakerOutcome(nil)
-		}
+		finishStreamOnSuccess(ctx, meta, usage, ttftMs, ttltMs, latency)
 	}()
 
 	return out
+}
+
+// finishStreamOnError emits error metrics, invokes error hooks, finalises the
+// observability span, and records the circuit-breaker outcome. It is called
+// exactly once when the stream loop exits with a non-nil streamErr.
+func finishStreamOnError(
+	ctx context.Context,
+	meta MeterMeta,
+	usage providers.Usage,
+	ttftMs, ttltMs float64,
+	clientCanceled bool,
+	streamErr error,
+	latency time.Duration,
+) {
+	errType := "provider_error"
+	switch {
+	case clientCanceled:
+		errType = "client_canceled"
+	case errors.Is(streamErr, circuitbreaker.ErrCircuitOpen):
+		errType = "circuit_open"
+	}
+	requestMetrics := metrics.ForRequest(meta.Provider, meta.Model)
+	requestMetrics.Error.Inc()
+	metrics.ForProviderError(meta.Provider, errType).Inc()
+	if meta.PublishFn != nil {
+		meta.PublishFn(ctx, events.FailedRequest(
+			meta.TraceID,
+			meta.Provider,
+			meta.Model,
+			streamErr.Error(),
+			latency,
+			true,
+		))
+	}
+	if meta.ErrorFn != nil {
+		meta.ErrorFn(ctx, streamErr)
+	}
+	if meta.SpanFinisher != nil {
+		meta.SpanFinisher.Finish(StreamOutcome{
+			TokensIn:  usage.PromptTokens,
+			TokensOut: usage.CompletionTokens,
+			TTFTMs:    ttftMs,
+			TTLTMs:    ttltMs,
+			ErrorMsg:  streamErr.Error(),
+		})
+	}
+	if meta.CircuitBreakerOutcome != nil {
+		meta.CircuitBreakerOutcome(streamErr)
+	}
+}
+
+// handleCompletionFn invokes meta.CompletionFn when it is set. It returns
+// true if the caller (the Meter goroutine) should return immediately, which
+// happens when CompletionFn returns a non-nil error. On error it emits plugin
+// error metrics, forwards an error chunk on out, finalises the span, and
+// records a successful circuit-breaker outcome (the provider stream itself
+// completed successfully; only the plugin failed).
+func handleCompletionFn(
+	ctx context.Context,
+	meta MeterMeta,
+	usage providers.Usage,
+	ttftMs, ttltMs float64,
+	resp *providers.Response,
+	out chan<- providers.StreamChunk,
+) bool {
+	if meta.CompletionFn == nil {
+		return false
+	}
+	err := meta.CompletionFn(ctx, resp)
+	if err == nil {
+		return false
+	}
+	requestMetrics := metrics.ForRequest(meta.Provider, meta.Model)
+	requestMetrics.Error.Inc()
+	metrics.ForProviderError(meta.Provider, "plugin_error").Inc()
+	select {
+	case out <- providers.StreamChunk{Error: err}:
+	case <-ctx.Done():
+	}
+	if meta.SpanFinisher != nil {
+		meta.SpanFinisher.Finish(StreamOutcome{
+			TokensIn:  usage.PromptTokens,
+			TokensOut: usage.CompletionTokens,
+			TTFTMs:    ttftMs,
+			TTLTMs:    ttltMs,
+			ErrorMsg:  err.Error(),
+		})
+	}
+	// Provider stream completed; plugin failure must not block CB recovery.
+	if meta.CircuitBreakerOutcome != nil {
+		meta.CircuitBreakerOutcome(nil)
+	}
+	return true
+}
+
+// finishStreamOnSuccess emits success metrics, publishes the completion event,
+// finalises the observability span, and records a successful circuit-breaker
+// outcome. It mirrors what Gateway.Route() does for non-streaming requests.
+func finishStreamOnSuccess(
+	ctx context.Context,
+	meta MeterMeta,
+	usage providers.Usage,
+	ttftMs, ttltMs float64,
+	latency time.Duration,
+) {
+	requestMetrics := metrics.ForRequest(meta.Provider, meta.Model)
+	requestMetrics.Duration.Observe(latency.Seconds())
+	requestMetrics.Success.Inc()
+
+	if usage.PromptTokens > 0 {
+		requestMetrics.TokensIn.Add(float64(usage.PromptTokens))
+	}
+	if usage.CompletionTokens > 0 {
+		requestMetrics.TokensOut.Add(float64(usage.CompletionTokens))
+	}
+
+	// Compute and emit cost.
+	cost := models.Calculate(meta.Catalog, meta.Provider+"/"+meta.Model, models.Usage{
+		PromptTokens:     usage.PromptTokens,
+		CompletionTokens: usage.CompletionTokens,
+		ReasoningTokens:  usage.ReasoningTokens,
+		CacheReadTokens:  usage.CacheReadTokens,
+		CacheWriteTokens: usage.CacheWriteTokens,
+	})
+	if cost.TotalUSD > 0 {
+		requestMetrics.CostUSD.Add(cost.TotalUSD)
+	}
+
+	if meta.PublishFn != nil {
+		meta.PublishFn(ctx, events.CompletedRequest(
+			meta.TraceID,
+			meta.Provider,
+			meta.Model,
+			latency,
+			true,
+			usage.PromptTokens,
+			usage.CompletionTokens,
+			cost,
+			false,
+		))
+	}
+	if meta.SpanFinisher != nil {
+		meta.SpanFinisher.Finish(StreamOutcome{
+			TokensIn:    usage.PromptTokens,
+			TokensOut:   usage.CompletionTokens,
+			ReasoningIn: usage.ReasoningTokens,
+			Cost:        cost,
+			TTFTMs:      ttftMs,
+			TTLTMs:      ttltMs,
+		})
+	}
+	if meta.CircuitBreakerOutcome != nil {
+		meta.CircuitBreakerOutcome(nil)
+	}
 }
 
 func applyChunkToResponse(resp *providers.Response, chunk providers.StreamChunk) {

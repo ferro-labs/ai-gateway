@@ -32,6 +32,9 @@ import (
 	_ "github.com/ferro-labs/ai-gateway/internal/plugins/wordfilter"
 )
 
+// mockProviderName is the canonical provider name used by test mock providers.
+const mockProviderName = "mock"
+
 // mockProvider is a test double for providers.Provider.
 type mockProvider struct {
 	name   string
@@ -113,10 +116,10 @@ func requireKeys(t *testing.T, got []string, want ...string) {
 func TestGateway_Route_Single(t *testing.T) {
 	gw, _ := New(Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
-		Targets:  []Target{{VirtualKey: "mock"}},
+		Targets:  []Target{{VirtualKey: mockProviderName}},
 	})
 	gw.RegisterProvider(&mockProvider{
-		name:   "mock",
+		name:   mockProviderName,
 		models: []string{"gpt-4o"},
 		resp:   &providers.Response{ID: "r1", Model: "gpt-4o"},
 	})
@@ -1395,10 +1398,10 @@ func TestGateway_RouteStream_BeforePluginCanSetNilRequest(t *testing.T) {
 func TestGateway_RouteStream_RunAfterReceivesStreamResponse(t *testing.T) {
 	gw, _ := New(Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
-		Targets:  []Target{{VirtualKey: "mock"}},
+		Targets:  []Target{{VirtualKey: mockProviderName}},
 	})
 	gw.RegisterProvider(&mockStreamProvider{
-		mockProvider: mockProvider{name: "mock", models: []string{"gpt-4o"}},
+		mockProvider: mockProvider{name: mockProviderName, models: []string{"gpt-4o"}},
 		streamFn: func(context.Context, providers.Request) (<-chan providers.StreamChunk, error) {
 			ch := make(chan providers.StreamChunk, 3)
 			ch <- providers.StreamChunk{
@@ -1446,7 +1449,7 @@ func TestGateway_RouteStream_RunAfterReceivesStreamResponse(t *testing.T) {
 			if pctx.Response == nil {
 				t.Fatal("after plugin response is nil")
 			}
-			if pctx.Response.Provider != "mock" {
+			if pctx.Response.Provider != mockProviderName {
 				t.Fatalf("after plugin provider = %q, want mock", pctx.Response.Provider)
 			}
 			if pctx.Response.Model != "gpt-4o" {
@@ -1481,10 +1484,10 @@ func TestGateway_RouteStream_RunOnErrorReceivesStreamError(t *testing.T) {
 	streamErr := errors.New("stream failed")
 	gw, _ := New(Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
-		Targets:  []Target{{VirtualKey: "mock"}},
+		Targets:  []Target{{VirtualKey: mockProviderName}},
 	})
 	gw.RegisterProvider(&mockStreamProvider{
-		mockProvider: mockProvider{name: "mock", models: []string{"gpt-4o"}},
+		mockProvider: mockProvider{name: mockProviderName, models: []string{"gpt-4o"}},
 		streamFn: func(context.Context, providers.Request) (<-chan providers.StreamChunk, error) {
 			ch := make(chan providers.StreamChunk, 1)
 			ch <- providers.StreamChunk{Error: streamErr}
@@ -1531,10 +1534,10 @@ func TestGateway_RouteStream_RunOnErrorReceivesStreamError(t *testing.T) {
 func TestGateway_RouteStream_AfterPluginRejectRunsOnError(t *testing.T) {
 	gw, _ := New(Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
-		Targets:  []Target{{VirtualKey: "mock"}},
+		Targets:  []Target{{VirtualKey: mockProviderName}},
 	})
 	gw.RegisterProvider(&mockStreamProvider{
-		mockProvider: mockProvider{name: "mock", models: []string{"gpt-4o"}},
+		mockProvider: mockProvider{name: mockProviderName, models: []string{"gpt-4o"}},
 		streamFn: func(context.Context, providers.Request) (<-chan providers.StreamChunk, error) {
 			ch := make(chan providers.StreamChunk, 2)
 			ch <- providers.StreamChunk{
@@ -1601,11 +1604,11 @@ func TestGateway_RouteStream_AfterPluginRejectRunsOnError(t *testing.T) {
 func TestGateway_RouteStream_ResponseCacheHitSkipsProvider(t *testing.T) {
 	gw, _ := New(Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
-		Targets:  []Target{{VirtualKey: "mock"}},
+		Targets:  []Target{{VirtualKey: mockProviderName}},
 	})
 	var streamCalls atomic.Int32
 	gw.RegisterProvider(&mockStreamProvider{
-		mockProvider: mockProvider{name: "mock", models: []string{"gpt-4o"}},
+		mockProvider: mockProvider{name: mockProviderName, models: []string{"gpt-4o"}},
 		streamFn: func(context.Context, providers.Request) (<-chan providers.StreamChunk, error) {
 			streamCalls.Add(1)
 			ch := make(chan providers.StreamChunk, 2)
@@ -1785,7 +1788,7 @@ func (p *gateStreamProvider) CompleteStream(_ context.Context, _ providers.Reque
 func completedHookEvent(traceID string) events.HookEvent {
 	return events.CompletedRequest(
 		traceID,
-		"mock",
+		mockProviderName,
 		"gpt-4o",
 		time.Millisecond,
 		false,
@@ -2178,10 +2181,10 @@ func TestGateway_Route_ProviderNotFound(t *testing.T) {
 func TestGateway_Route_HookPanicIsRecovered(t *testing.T) {
 	gw, _ := New(Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
-		Targets:  []Target{{VirtualKey: "mock"}},
+		Targets:  []Target{{VirtualKey: mockProviderName}},
 	})
 	gw.RegisterProvider(&mockProvider{
-		name:   "mock",
+		name:   mockProviderName,
 		models: []string{"gpt-4o"},
 		resp:   &providers.Response{ID: "ok", Model: "gpt-4o"},
 	})
@@ -2220,7 +2223,7 @@ func TestGateway_PublishEvent_CallsAllHooks(t *testing.T) {
 
 	gw.publishEvent(context.Background(), events.CompletedRequest(
 		"trace-123",
-		"mock",
+		mockProviderName,
 		"gpt-4o",
 		time.Millisecond,
 		false,
@@ -2254,7 +2257,7 @@ func TestGateway_PublishEvent_EnqueuesEachHookIndividually(t *testing.T) {
 
 	gw.publishEvent(context.Background(), events.CompletedRequest(
 		"trace-123",
-		"mock",
+		mockProviderName,
 		"gpt-4o",
 		time.Millisecond,
 		false,
@@ -2272,7 +2275,7 @@ func TestGateway_PublishEvent_EnqueuesEachHookIndividually(t *testing.T) {
 func TestRunHookDispatch_CreatesFreshPayloadMapPerHook(t *testing.T) {
 	event := events.CompletedRequest(
 		"trace-123",
-		"mock",
+		mockProviderName,
 		"gpt-4o",
 		time.Millisecond,
 		false,
@@ -2304,7 +2307,7 @@ func TestRunHookDispatch_CreatesFreshPayloadMapPerHook(t *testing.T) {
 	if got := firstData["provider"]; got != "mutated" {
 		t.Fatalf("first hook provider = %v, want mutated", got)
 	}
-	if secondProvider != "mock" {
+	if secondProvider != mockProviderName {
 		t.Fatalf("second hook provider = %q, want mock", secondProvider)
 	}
 }
@@ -2322,11 +2325,11 @@ func TestGateway_PublishEvent_IncrementsDropMetricWhenQueueFull(t *testing.T) {
 
 	// Fill the queue.
 	gw.publishEvent(context.Background(), events.CompletedRequest(
-		"trace-fill", "mock", "gpt-4o", time.Millisecond, false, 1, 1, models.CostResult{}, true,
+		"trace-fill", mockProviderName, "gpt-4o", time.Millisecond, false, 1, 1, models.CostResult{}, true,
 	))
 	// This one should be dropped.
 	gw.publishEvent(context.Background(), events.CompletedRequest(
-		"trace-drop", "mock", "gpt-4o", time.Millisecond, false, 1, 1, models.CostResult{}, true,
+		"trace-drop", mockProviderName, "gpt-4o", time.Millisecond, false, 1, 1, models.CostResult{}, true,
 	))
 
 	after := counterValue(t, counter)
@@ -2355,10 +2358,10 @@ func (p *testPlugin) Execute(ctx context.Context, pctx *plugin.Context) error {
 func TestGateway_Route_WithBeforePlugin(t *testing.T) {
 	gw, _ := New(Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
-		Targets:  []Target{{VirtualKey: "mock"}},
+		Targets:  []Target{{VirtualKey: mockProviderName}},
 	})
 	gw.RegisterProvider(&mockProvider{
-		name:   "mock",
+		name:   mockProviderName,
 		models: []string{"gpt-4o"},
 		resp:   &providers.Response{ID: "ok"},
 	})
@@ -2388,10 +2391,10 @@ func TestGateway_Route_WithBeforePlugin(t *testing.T) {
 func TestGateway_Route_PluginRejectsRequest(t *testing.T) {
 	gw, _ := New(Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
-		Targets:  []Target{{VirtualKey: "mock"}},
+		Targets:  []Target{{VirtualKey: mockProviderName}},
 	})
 	gw.RegisterProvider(&mockProvider{
-		name:   "mock",
+		name:   mockProviderName,
 		models: []string{"gpt-4o"},
 		resp:   &providers.Response{ID: "should-not-reach"},
 	})
@@ -2424,7 +2427,7 @@ func init() {
 func TestGateway_LoadPlugins(t *testing.T) {
 	gw, _ := New(Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
-		Targets:  []Target{{VirtualKey: "mock"}},
+		Targets:  []Target{{VirtualKey: mockProviderName}},
 		Plugins: []PluginConfig{
 			{
 				Name:    "test-plugin",
@@ -2436,7 +2439,7 @@ func TestGateway_LoadPlugins(t *testing.T) {
 		},
 	})
 	gw.RegisterProvider(&mockProvider{
-		name:   "mock",
+		name:   mockProviderName,
 		models: []string{"gpt-4o"},
 		resp:   &providers.Response{ID: "ok"},
 	})
@@ -2452,7 +2455,7 @@ func TestGateway_LoadPlugins(t *testing.T) {
 func TestGateway_LoadPlugins_UnknownPlugin(t *testing.T) {
 	gw, _ := New(Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
-		Targets:  []Target{{VirtualKey: "mock"}},
+		Targets:  []Target{{VirtualKey: mockProviderName}},
 		Plugins: []PluginConfig{
 			{
 				Name:    "does-not-exist",
@@ -2502,13 +2505,13 @@ func (m *mockImageProvider) GenerateImage(_ context.Context, req providers.Image
 func TestGateway_Embed_ResolvesAlias(t *testing.T) {
 	ep := &mockEmbeddingProvider{
 		mockProvider: mockProvider{
-			name:   "mock",
+			name:   mockProviderName,
 			models: []string{"text-embedding-3-small"},
 		},
 	}
 	gw, _ := New(Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
-		Targets:  []Target{{VirtualKey: "mock"}},
+		Targets:  []Target{{VirtualKey: mockProviderName}},
 		Aliases:  map[string]string{"my-embed": "text-embedding-3-small"},
 	})
 	gw.RegisterProvider(ep)
@@ -2528,13 +2531,13 @@ func TestGateway_Embed_ResolvesAlias(t *testing.T) {
 func TestGateway_Embed_NoAliasPassthrough(t *testing.T) {
 	ep := &mockEmbeddingProvider{
 		mockProvider: mockProvider{
-			name:   "mock",
+			name:   mockProviderName,
 			models: []string{"text-embedding-3-small"},
 		},
 	}
 	gw, _ := New(Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
-		Targets:  []Target{{VirtualKey: "mock"}},
+		Targets:  []Target{{VirtualKey: mockProviderName}},
 	})
 	gw.RegisterProvider(ep)
 
@@ -2553,13 +2556,13 @@ func TestGateway_Embed_NoAliasPassthrough(t *testing.T) {
 func TestGateway_GenerateImage_ResolvesAlias(t *testing.T) {
 	ip := &mockImageProvider{
 		mockProvider: mockProvider{
-			name:   "mock",
+			name:   mockProviderName,
 			models: []string{"dall-e-3"},
 		},
 	}
 	gw, _ := New(Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
-		Targets:  []Target{{VirtualKey: "mock"}},
+		Targets:  []Target{{VirtualKey: mockProviderName}},
 		Aliases:  map[string]string{"my-image-model": "dall-e-3"},
 	})
 	gw.RegisterProvider(ip)
