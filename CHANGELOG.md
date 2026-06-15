@@ -5,6 +5,29 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.3] — 2026-06-15
+
+Streaming-correctness release. Brings the streaming routing path (`RouteStream`) to parity with non-streaming `Route`: the post-request plugin pipeline, the per-provider circuit breaker, and least-latency / cost-optimized ordering now all apply to `stream: true` traffic. Also tightens fallback retry semantics and async-context propagation. No public API breaks. Fixes every issue labelled [`release-1.1.3`](https://github.com/ferro-labs/ai-gateway/issues?q=label%3Arelease-1.1.3): [#135](https://github.com/ferro-labs/ai-gateway/issues/135), [#136](https://github.com/ferro-labs/ai-gateway/issues/136), [#137](https://github.com/ferro-labs/ai-gateway/issues/137), and [#138](https://github.com/ferro-labs/ai-gateway/issues/138), plus enhancement [#181](https://github.com/ferro-labs/ai-gateway/issues/181).
+
+### Fixed
+
+- **Streaming requests skipped the post-request plugin pipeline** (issue [#135](https://github.com/ferro-labs/ai-gateway/issues/135), PR [#201](https://github.com/ferro-labs/ai-gateway/pull/201)): `RouteStream` ran only `before_request` plugins, so `after_request` (response-cache store, request-logger) and `on_error` plugins never fired for streaming traffic and a cache `Skip` hit was discarded with the provider called anyway. The full plugin lifecycle now runs for streams: `RunAfter` fires once the stream drains — with the response reconstructed from streamed chunks so the response-cache can store it — `RunOnError` fires on resolution / provider / stream / after-plugin failures, and a cache hit short-circuits the provider into a single streamed chunk.
+- **Circuit breaker was a no-op for streaming-first traffic** (issue [#136](https://github.com/ferro-labs/ai-gateway/issues/136), PR [#199](https://github.com/ferro-labs/ai-gateway/pull/199)): the streaming path never recorded breaker outcomes, so mid-stream provider failures did not count and the breaker never opened. Stream success is now recorded at stream completion and failures (both at startup and mid-stream) count toward the breaker; open-circuit streaming targets are skipped during resolution so fallback advances instead of returning circuit-open.
+- **Fallback strategy retried cancellations and open circuits** (issue [#137](https://github.com/ferro-labs/ai-gateway/issues/137), PR [#198](https://github.com/ferro-labs/ai-gateway/pull/198)): `shouldRetry` returned true for any error without a parseable HTTP status code, so `context.Canceled` / `context.DeadlineExceeded` and `circuitbreaker.ErrCircuitOpen` re-attempted already-cancelled requests and burned the whole retry budget against an open circuit. These sentinels are now non-retryable, and the retry loop checks `ctx.Err()` before each attempt.
+- **Streaming ignored least-latency / cost-optimized ordering** (issue [#138](https://github.com/ferro-labs/ai-gateway/issues/138), PR [#198](https://github.com/ferro-labs/ai-gateway/pull/198)): `streamingTargetOrderLocked` had no case for these modes and silently fell through to declaration order. Streaming now orders targets by observed p50 latency (exploring unsampled targets first) and by catalog model cost, mirroring the non-streaming path, and records successful stream latency samples so least-latency converges for streaming-only traffic.
+
+### Changed
+
+- **Circuit-breaker failure accounting** (issue [#136](https://github.com/ferro-labs/ai-gateway/issues/136), PR [#199](https://github.com/ferro-labs/ai-gateway/pull/199)): caller-side cancellation and client deadlines no longer trip the breaker, while provider-side timeouts that surface as `context.DeadlineExceeded` while the request context is still live are counted as failures. Applies to both `Route` and `RouteStream`.
+- **Detached background goroutines preserve trace context** (issue [#181](https://github.com/ferro-labs/ai-gateway/issues/181), PR [#202](https://github.com/ferro-labs/ai-gateway/pull/202)): async event hooks and the streaming observability completion event now run under `context.WithoutCancel(ctx)` instead of the already-cancelled request context / `context.Background()`, so fire-and-forget work (DB writes, outbound calls) is no longer dead-on-arrival and recorded events stay linked to the originating trace. MCP background initialization parents its 60s timeout on the gateway shutdown context so `Close()` cancels in-flight handshakes instead of letting them linger.
+
+### Notes
+
+- Under `cost-optimized` routing with `unpriced_strategy: skip`, the streaming path keeps unpriced providers as a last-resort fallback (and errors only when *no* candidate is priced), whereas the non-streaming path never selects an unpriced provider. This is intentional for the streaming fallback chain.
+- All public `release-1.1.3` issues — [#135](https://github.com/ferro-labs/ai-gateway/issues/135), [#136](https://github.com/ferro-labs/ai-gateway/issues/136), [#137](https://github.com/ferro-labs/ai-gateway/issues/137), [#138](https://github.com/ferro-labs/ai-gateway/issues/138) — and enhancement [#181](https://github.com/ferro-labs/ai-gateway/issues/181) are closed by this release.
+
+---
+
 ## [1.1.2] — 2026-06-06
 
 Release hardening patch for the external model catalog cutover, catalog pricing correctness, and response-body lifecycle fixes. No public API breaks. Fixes every issue labelled [`release-1.1.2`](https://github.com/ferro-labs/ai-gateway/issues?q=label%3Arelease-1.1.2): [#132](https://github.com/ferro-labs/ai-gateway/issues/132), [#133](https://github.com/ferro-labs/ai-gateway/issues/133), [#134](https://github.com/ferro-labs/ai-gateway/issues/134), and [#185](https://github.com/ferro-labs/ai-gateway/issues/185).
@@ -261,13 +284,13 @@ Patch release focused on security maintenance, cache correctness, and refreshed 
 - **`ferrogw init`**: First-run setup command — generates a `fgw_`+32-hex master key with 128-bit entropy, writes a minimal `config.yaml`. Never writes secrets to disk.
 - **Dashboard login page** (`/dashboard/login`): Validates key via `/admin/health`, stores in `localStorage`, shows Admin / Read Only badge, and hides write actions for read-only sessions.
 - **`/admin/health` returns scopes**: The health endpoint now includes the authenticated key's scopes so clients can determine permission level without a separate request.
-- **`.env.example`**: Full reference file documenting `MASTER_KEY`, all 29 provider API keys, storage backends, rate limiting, and CORS origins. Bootstrap env vars marked deprecated.
+- **`.env.example`**: Full reference file documenting `MASTER_KEY`, all 29 provider API keys, storage backends, rate limiting, and CORS origins. Bootstrap env vars marked deprecated. <!-- drift-ok: historical v1.0.3 count -->
 
 ### Changed
 
 - **Single binary**: `ferrogw-cli` has been merged into `ferrogw` as Cobra subcommands (`doctor`, `status`, `admin`, `validate`, `plugins`, `version`). Running `ferrogw` with no subcommand still starts the server (backward compatible).
 - **`proxyAuth`**: `/v1/*` routes now enforce `AuthMiddleware` by default and are only open when `ALLOW_UNAUTHENTICATED_PROXY=true` is set for local development. Operational endpoints such as `/metrics`, `/debug/vars`, and `/debug/pprof/*` continue to require auth.
-- **Enhanced startup banner**: Shows top-5 provider status, masked master key, key store / config store backends, and a warning when deprecated bootstrap keys are in use.
+- **Enhanced startup banner**: Shows top-5 provider status, masked master key, key store / config store backends, and a warning when deprecated bootstrap keys are in use. <!-- drift-ok: "top-5" is a display limit, not a provider count -->
 - **Bootstrap keys deprecated**: `ADMIN_BOOTSTRAP_KEY` and `ADMIN_BOOTSTRAP_READ_ONLY_KEY` still work but are superseded by `MASTER_KEY`. They only activate when the key store is empty.
 
 ### Removed
@@ -287,8 +310,8 @@ Patch release focused on security maintenance, cache correctness, and refreshed 
 
 ### Changed
 
-- **Config examples**: Added all 29 providers as targets, conditional routing examples, retry/circuit-breaker config, and previously undocumented plugin fields (`max_input_length`, `burst`, `max_keys`).
-- **`docker-compose.yml`**: Refactored to shared base config with commented env var stubs for all 29 providers.
+- **Config examples**: Added all 29 providers as targets, conditional routing examples, retry/circuit-breaker config, and previously undocumented plugin fields (`max_input_length`, `burst`, `max_keys`). <!-- drift-ok: historical v1.0.2 count -->
+- **`docker-compose.yml`**: Refactored to shared base config with commented env var stubs for all 29 providers. <!-- drift-ok: historical v1.0.2 count -->
 - **AGENTS.md / CONTRIBUTING.md**: Updated "Adding a New Provider" checklist with config example and docker-compose steps; removed duplicate sections.
 
 ---
@@ -372,7 +395,7 @@ No breaking changes from `1.0.0-rc.3`. Updated README and CONTRIBUTING docs for 
   `ResponseHeaderTimeout` for SSE. Known provider presets for OpenAI,
   Anthropic, Gemini, Bedrock, Vertex AI, Groq, Ollama, and Azure OpenAI.
   Prometheus metrics for connection pool observability.
-- **Per-provider HTTP clients**: All 28 providers now use
+- **Per-provider HTTP clients**: All 28 providers now use <!-- drift-ok: historical rc.3 count -->
   `httpclient.ForProvider(Name)` for isolated connection pools instead of a
   single shared client. Legacy completions handler switched from
   `http.DefaultClient`.
@@ -381,7 +404,7 @@ No breaking changes from `1.0.0-rc.3`. Updated README and CONTRIBUTING docs for 
   pooled. All fields explicitly reset before pool return for multi-tenant
   safety.
 - **Pooled JSON marshaling buffers**: Added `core.MarshalJSON` and
-  `core.JSONBodyReader` backed by `sync.Pool`. All 28 provider subpackages
+  `core.JSONBodyReader` backed by `sync.Pool`. All 28 provider subpackages <!-- drift-ok: historical rc.3 count -->
   updated to use pooled buffers for request body serialization.
 - **getStrategy() lock contention fix**: Changed from exclusive `Mutex.Lock`
   to double-checked locking with `RLock` fast path. Eliminates write-lock
