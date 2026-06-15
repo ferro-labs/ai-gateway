@@ -188,6 +188,10 @@ func New(cfg Config) (*Gateway, error) {
 		}()
 	}
 
+	gw.mu.Lock()
+	gw.ensureCircuitBreakersLocked()
+	gw.mu.Unlock()
+
 	return gw, nil
 }
 
@@ -822,6 +826,7 @@ func (g *Gateway) ReloadConfig(cfg Config) error {
 	g.streamingContent = streamingContent
 	g.strategy = nil // force rebuild on next request
 	g.circuitBreakers = make(map[string]*circuitbreaker.CircuitBreaker)
+	g.ensureCircuitBreakersLocked()
 
 	// Re-register MCP servers from the new config.
 	if len(cfg.MCPServers) > 0 {
@@ -875,18 +880,7 @@ func (g *Gateway) getStrategy() (strategies.Strategy, error) {
 		return g.strategy, nil
 	}
 
-	// Build circuit breakers for targets that have them configured.
-	for _, t := range g.config.Targets {
-		if t.CircuitBreaker == nil {
-			continue
-		}
-		if _, exists := g.circuitBreakers[t.VirtualKey]; exists {
-			continue
-		}
-		timeout, _ := time.ParseDuration(t.CircuitBreaker.Timeout)
-		cb := circuitbreaker.New(t.CircuitBreaker.FailureThreshold, t.CircuitBreaker.SuccessThreshold, timeout)
-		g.circuitBreakers[t.VirtualKey] = cb
-	}
+	g.ensureCircuitBreakersLocked()
 
 	// Snapshot both maps under the write lock already held. The lookup closure
 	// runs inside Strategy.Execute with no lock held, so capturing local copies
@@ -1033,7 +1027,7 @@ func (p *cbProvider) Complete(ctx context.Context, req providers.Request) (*prov
 	}
 	resp, err := p.Provider.Complete(ctx, req)
 	if err != nil {
-		if !isRateLimitError(err) {
+		if shouldRecordCircuitBreakerFailure(ctx, err) {
 			p.cb.RecordFailure()
 			metrics.CircuitBreakerState.WithLabelValues(p.name).Set(float64(p.cb.State()))
 		}
@@ -1055,15 +1049,63 @@ func (p *cbProvider) CompleteStream(ctx context.Context, req providers.Request) 
 	}
 	ch, err := sp.CompleteStream(ctx, req)
 	if err != nil {
-		if !isRateLimitError(err) {
+		if shouldRecordCircuitBreakerFailure(ctx, err) {
 			p.cb.RecordFailure()
 			metrics.CircuitBreakerState.WithLabelValues(p.name).Set(float64(p.cb.State()))
 		}
 		return nil, err
 	}
-	p.cb.RecordSuccess()
-	metrics.CircuitBreakerState.WithLabelValues(p.name).Set(0)
 	return ch, nil
+}
+
+// shouldRecordCircuitBreakerFailure reports whether an error should count toward
+// opening the circuit. Caller-side cancellation/deadlines and rate limits are
+// excluded so transient client behavior does not block healthy traffic.
+// Provider-side timeouts that surface as context.DeadlineExceeded while the
+// request context is still active are counted as failures.
+func shouldRecordCircuitBreakerFailure(ctx context.Context, err error) bool {
+	if err == nil {
+		return false
+	}
+	if ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+		return false
+	}
+	return !isRateLimitError(err)
+}
+
+// recordStreamCircuitBreakerOutcome updates breaker state when a stream
+// finishes. Startup failures are recorded in cbProvider.CompleteStream;
+// this handles stream completion only.
+func recordStreamCircuitBreakerOutcome(ctx context.Context, cb *circuitbreaker.CircuitBreaker, name string, err error) {
+	if err != nil {
+		if !shouldRecordCircuitBreakerFailure(ctx, err) {
+			return
+		}
+		cb.RecordFailure()
+		metrics.CircuitBreakerState.WithLabelValues(name).Set(float64(cb.State()))
+		return
+	}
+	cb.RecordSuccess()
+	metrics.CircuitBreakerState.WithLabelValues(name).Set(0)
+}
+
+// ensureCircuitBreakersLocked creates circuit breakers for configured targets.
+// Caller must hold g.mu.
+func (g *Gateway) ensureCircuitBreakersLocked() {
+	for _, t := range g.config.Targets {
+		if t.CircuitBreaker == nil {
+			continue
+		}
+		if _, exists := g.circuitBreakers[t.VirtualKey]; exists {
+			continue
+		}
+		timeout, _ := time.ParseDuration(t.CircuitBreaker.Timeout)
+		g.circuitBreakers[t.VirtualKey] = circuitbreaker.New(
+			t.CircuitBreaker.FailureThreshold,
+			t.CircuitBreaker.SuccessThreshold,
+			timeout,
+		)
+	}
 }
 
 // isRateLimitError checks if the error is a 429 rate limit response.
@@ -1207,6 +1249,9 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 	}
 
 	// Resolve provider according to strategy mode.
+	g.mu.Lock()
+	g.ensureCircuitBreakersLocked()
+	g.mu.Unlock()
 	g.mu.RLock()
 	sp, orderErr := g.resolveStreamingProviderLocked(req)
 	g.mu.RUnlock()
@@ -1275,6 +1320,13 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 	if hooksEnabled {
 		meta.PublishFn = g.publishEvent
 	}
+	if wrapped, ok := sp.(*cbProvider); ok {
+		cb := wrapped.cb
+		cbName := wrapped.name
+		meta.CircuitBreakerOutcome = func(err error) {
+			recordStreamCircuitBreakerOutcome(ctx, cb, cbName, err)
+		}
+	}
 
 	// Hand the root span off to streamwrap so token, cost, and timing
 	// attributes are stamped after the channel drains. The finisher
@@ -1342,10 +1394,20 @@ func (g *Gateway) resolveStreamingProviderLocked(req providers.Request) (provide
 	if err != nil {
 		return nil, err
 	}
+	var openCircuitTarget providers.StreamProvider
 	for _, key := range orderedKeys {
-		if sp, ok := g.streamingProviderForTargetLocked(key, req.Model); ok {
-			return sp, nil
+		sp, ok := g.streamingProviderForTargetLocked(key, req.Model)
+		if !ok {
+			continue
 		}
+		if wrapped, isCB := sp.(*cbProvider); isCB && !wrapped.cb.Allow() {
+			openCircuitTarget = sp
+			continue
+		}
+		return sp, nil
+	}
+	if openCircuitTarget != nil {
+		return openCircuitTarget, nil
 	}
 
 	// Fallback: any registered provider that supports this model and streaming.
@@ -1365,13 +1427,16 @@ func (g *Gateway) streamingProviderForTargetLocked(key, model string) (providers
 		return nil, false
 	}
 
-	// Apply circuit breaker if configured.
-	candidate := p
-	if cb, hasCB := g.circuitBreakers[key]; hasCB {
-		candidate = &cbProvider{Provider: p, cb: cb, name: key}
+	sp, ok := p.(providers.StreamProvider)
+	if !ok {
+		return nil, false
 	}
-	sp, ok := candidate.(providers.StreamProvider)
-	return sp, ok
+
+	// Apply circuit breaker if configured.
+	if cb, hasCB := g.circuitBreakers[key]; hasCB {
+		return &cbProvider{Provider: p, cb: cb, name: key}, true
+	}
+	return sp, true
 }
 
 func (g *Gateway) streamingTargetOrderLocked(req providers.Request) ([]string, error) {

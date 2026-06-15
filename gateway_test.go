@@ -863,6 +863,510 @@ func TestGateway_RouteStream_ImmediateCircuitOpen_IncrementsCircuitOpenProviderE
 	}
 }
 
+func streamTestRequest() providers.Request {
+	return providers.Request{
+		Model:    "gpt-4o",
+		Messages: []providers.Message{{Role: "user", Content: "hi"}},
+	}
+}
+
+func drainMeteredStream(t *testing.T, ch <-chan providers.StreamChunk) {
+	t.Helper()
+	for range ch { //nolint:revive
+	}
+}
+
+func TestGateway_RouteStream_StartupFailureTripsCircuitWithoutRoute(t *testing.T) {
+	gw, err := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets: []Target{{
+			VirtualKey: "flaky-stream",
+			CircuitBreaker: &CircuitBreakerConfig{
+				FailureThreshold: 2,
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	gw.RegisterProvider(&mockStreamProvider{
+		mockProvider: mockProvider{
+			name:   "flaky-stream",
+			models: []string{"gpt-4o"},
+		},
+		streamErr: errors.New("stream startup failed"),
+	})
+
+	req := streamTestRequest()
+	for i := 0; i < 2; i++ {
+		_, err := gw.RouteStream(context.Background(), req)
+		if err == nil {
+			t.Fatalf("attempt %d: expected startup error", i+1)
+		}
+	}
+
+	_, err = gw.RouteStream(context.Background(), req)
+	if !errors.Is(err, circuitbreaker.ErrCircuitOpen) {
+		t.Fatalf("expected circuit open, got %v", err)
+	}
+}
+
+func TestGateway_RouteStream_FallbackSkipsNonStreamingTargetWithCircuitBreaker(t *testing.T) {
+	var selected atomic.Value
+	gw, err := New(Config{
+		Strategy: StrategyConfig{Mode: ModeFallback},
+		Targets: []Target{
+			{
+				VirtualKey: "plain",
+				CircuitBreaker: &CircuitBreakerConfig{
+					FailureThreshold: 2,
+				},
+			},
+			{VirtualKey: "stream"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	gw.RegisterProvider(&mockProvider{
+		name:   "plain",
+		models: []string{"gpt-4o"},
+	})
+	gw.RegisterProvider(&mockStreamProvider{
+		mockProvider: mockProvider{
+			name:   "stream",
+			models: []string{"gpt-4o"},
+		},
+		streamFn: func(_ context.Context, _ providers.Request) (<-chan providers.StreamChunk, error) {
+			selected.Store("stream")
+			ch := make(chan providers.StreamChunk, 1)
+			ch <- providers.StreamChunk{
+				ID: "stream-ok",
+				Choices: []providers.StreamChoice{{
+					Delta: providers.MessageDelta{Content: "ok"},
+				}},
+			}
+			close(ch)
+			return ch, nil
+		},
+	})
+
+	ch, err := gw.RouteStream(context.Background(), streamTestRequest())
+	if err != nil {
+		t.Fatalf("RouteStream error = %v, want streaming fallback target", err)
+	}
+	drainMeteredStream(t, ch)
+	if got := selected.Load(); got != "stream" {
+		t.Fatalf("selected provider = %v, want stream", got)
+	}
+}
+
+func TestGateway_RouteStream_StartupCancellationDoesNotTripCircuit(t *testing.T) {
+	gw, err := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets: []Target{{
+			VirtualKey: "flaky-stream",
+			CircuitBreaker: &CircuitBreakerConfig{
+				FailureThreshold: 2,
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	gw.RegisterProvider(&mockStreamProvider{
+		mockProvider: mockProvider{
+			name:   "flaky-stream",
+			models: []string{"gpt-4o"},
+		},
+		streamErr: context.Canceled,
+	})
+
+	req := streamTestRequest()
+	for i := 0; i < 3; i++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		_, err := gw.RouteStream(ctx, req)
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("attempt %d: error = %v, want context.Canceled", i+1, err)
+		}
+	}
+
+	gw.mu.RLock()
+	cb := gw.circuitBreakers["flaky-stream"]
+	gw.mu.RUnlock()
+	if cb == nil {
+		t.Fatal("expected circuit breaker for flaky-stream")
+	}
+	if cb.State() != circuitbreaker.StateClosed {
+		t.Fatalf("circuit state = %v, want closed after startup cancellations", cb.State())
+	}
+}
+
+func TestGateway_Route_ProviderTimeoutTripsCircuit(t *testing.T) {
+	gw, err := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets: []Target{{
+			VirtualKey: "slow",
+			CircuitBreaker: &CircuitBreakerConfig{
+				FailureThreshold: 2,
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	gw.RegisterProvider(&mockProvider{
+		name:   "slow",
+		models: []string{"gpt-4o"},
+		err:    context.DeadlineExceeded,
+	})
+
+	req := providers.Request{
+		Model:    "gpt-4o",
+		Messages: []providers.Message{{Role: "user", Content: "hi"}},
+	}
+	for i := 0; i < 2; i++ {
+		_, routeErr := gw.Route(context.Background(), req)
+		if !errors.Is(routeErr, context.DeadlineExceeded) {
+			t.Fatalf("attempt %d: error = %v, want context.DeadlineExceeded", i+1, routeErr)
+		}
+	}
+
+	_, routeErr := gw.Route(context.Background(), req)
+	if !errors.Is(routeErr, circuitbreaker.ErrCircuitOpen) {
+		t.Fatalf("expected circuit open after provider timeouts, got %v", routeErr)
+	}
+}
+
+func TestGateway_RouteStream_ProviderTimeoutTripsCircuit(t *testing.T) {
+	gw, err := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets: []Target{{
+			VirtualKey: "flaky-stream",
+			CircuitBreaker: &CircuitBreakerConfig{
+				FailureThreshold: 2,
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	gw.RegisterProvider(&mockStreamProvider{
+		mockProvider: mockProvider{
+			name:   "flaky-stream",
+			models: []string{"gpt-4o"},
+		},
+		streamErr: context.DeadlineExceeded,
+	})
+
+	req := streamTestRequest()
+	for i := 0; i < 2; i++ {
+		_, err := gw.RouteStream(context.Background(), req)
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("attempt %d: error = %v, want context.DeadlineExceeded", i+1, err)
+		}
+	}
+
+	_, err = gw.RouteStream(context.Background(), req)
+	if !errors.Is(err, circuitbreaker.ErrCircuitOpen) {
+		t.Fatalf("expected circuit open after provider timeouts, got %v", err)
+	}
+}
+
+func TestShouldRecordCircuitBreakerFailure(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		ctx  context.Context
+		err  error
+		want bool
+	}{
+		{
+			name: "nil error",
+			ctx:  context.Background(),
+			err:  nil,
+			want: false,
+		},
+		{
+			name: "provider timeout with live request context",
+			ctx:  context.Background(),
+			err:  context.DeadlineExceeded,
+			want: true,
+		},
+		{
+			name: "client deadline with canceled request context",
+			ctx: func() context.Context {
+				ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+				cancel()
+				return ctx
+			}(),
+			err:  context.DeadlineExceeded,
+			want: false,
+		},
+		{
+			name: "client cancel with canceled request context",
+			ctx: func() context.Context {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				return ctx
+			}(),
+			err:  context.Canceled,
+			want: false,
+		},
+		{
+			name: "provider error with live request context",
+			ctx:  context.Background(),
+			err:  errors.New("upstream unavailable"),
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := shouldRecordCircuitBreakerFailure(tt.ctx, tt.err); got != tt.want {
+				t.Fatalf("shouldRecordCircuitBreakerFailure() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestGateway_RouteStream_FallbackSkipsOpenCircuitBreakerTarget(t *testing.T) {
+	var selected atomic.Value
+	gw, err := New(Config{
+		Strategy: StrategyConfig{Mode: ModeFallback},
+		Targets: []Target{
+			{
+				VirtualKey: "flaky-stream",
+				CircuitBreaker: &CircuitBreakerConfig{
+					FailureThreshold: 2,
+				},
+			},
+			{VirtualKey: "healthy-stream"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	gw.RegisterProvider(&mockStreamProvider{
+		mockProvider: mockProvider{
+			name:   "flaky-stream",
+			models: []string{"gpt-4o"},
+		},
+		streamErr: errors.New("stream startup failed"),
+	})
+	gw.RegisterProvider(&mockStreamProvider{
+		mockProvider: mockProvider{
+			name:   "healthy-stream",
+			models: []string{"gpt-4o"},
+		},
+		streamFn: func(_ context.Context, _ providers.Request) (<-chan providers.StreamChunk, error) {
+			selected.Store("healthy-stream")
+			ch := make(chan providers.StreamChunk, 1)
+			ch <- providers.StreamChunk{
+				ID: "healthy-ok",
+				Choices: []providers.StreamChoice{{
+					Delta: providers.MessageDelta{Content: "ok"},
+				}},
+			}
+			close(ch)
+			return ch, nil
+		},
+	})
+
+	req := streamTestRequest()
+	for i := 0; i < 2; i++ {
+		_, err := gw.RouteStream(context.Background(), req)
+		if err == nil {
+			t.Fatalf("attempt %d: expected startup error to trip breaker", i+1)
+		}
+	}
+
+	ch, err := gw.RouteStream(context.Background(), req)
+	if err != nil {
+		t.Fatalf("RouteStream error = %v, want healthy-stream fallback", err)
+	}
+	drainMeteredStream(t, ch)
+	if got := selected.Load(); got != "healthy-stream" {
+		t.Fatalf("selected provider = %v, want healthy-stream", got)
+	}
+}
+
+type slowCompleteProvider struct {
+	mockProvider
+}
+
+func (p *slowCompleteProvider) Complete(ctx context.Context, _ providers.Request) (*providers.Response, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-time.After(500 * time.Millisecond):
+		return &providers.Response{ID: "ok"}, nil
+	}
+}
+
+func TestGateway_Route_ClientDeadlineDoesNotTripCircuit(t *testing.T) {
+	gw, err := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets: []Target{{
+			VirtualKey: "slow",
+			CircuitBreaker: &CircuitBreakerConfig{
+				FailureThreshold: 2,
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	gw.RegisterProvider(&slowCompleteProvider{
+		mockProvider: mockProvider{
+			name:   "slow",
+			models: []string{"gpt-4o"},
+		},
+	})
+
+	req := providers.Request{
+		Model:    "gpt-4o",
+		Messages: []providers.Message{{Role: "user", Content: "hi"}},
+	}
+	for i := 0; i < 2; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+		_, routeErr := gw.Route(ctx, req)
+		cancel()
+		if !errors.Is(routeErr, context.DeadlineExceeded) {
+			t.Fatalf("attempt %d: error = %v, want context.DeadlineExceeded", i+1, routeErr)
+		}
+	}
+
+	gw.mu.RLock()
+	cb := gw.circuitBreakers["slow"]
+	gw.mu.RUnlock()
+	if cb == nil {
+		t.Fatal("expected circuit breaker for slow")
+	}
+	if cb.State() != circuitbreaker.StateClosed {
+		t.Fatalf("circuit state = %v, want closed after client deadlines", cb.State())
+	}
+}
+
+func TestGateway_RouteStream_ClientDeadlineDoesNotTripCircuit(t *testing.T) {
+	gw, err := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets: []Target{{
+			VirtualKey: "slow-stream",
+			CircuitBreaker: &CircuitBreakerConfig{
+				FailureThreshold: 2,
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	gw.RegisterProvider(&mockStreamProvider{
+		mockProvider: mockProvider{
+			name:   "slow-stream",
+			models: []string{"gpt-4o"},
+		},
+		streamFn: func(ctx context.Context, _ providers.Request) (<-chan providers.StreamChunk, error) {
+			ch := make(chan providers.StreamChunk)
+			go func() {
+				defer close(ch)
+				ticker := time.NewTicker(20 * time.Millisecond)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case <-ticker.C:
+						select {
+						case ch <- providers.StreamChunk{
+							Choices: []providers.StreamChoice{{
+								Delta: providers.MessageDelta{Content: "x"},
+							}},
+						}:
+						case <-ctx.Done():
+							return
+						}
+					}
+				}
+			}()
+			return ch, nil
+		},
+	})
+
+	req := streamTestRequest()
+	for i := 0; i < 2; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+		ch, streamErr := gw.RouteStream(ctx, req)
+		if streamErr != nil {
+			cancel()
+			t.Fatalf("attempt %d: RouteStream error = %v", i+1, streamErr)
+		}
+		for range ch { //nolint:revive
+		}
+		cancel()
+	}
+
+	gw.mu.RLock()
+	cb := gw.circuitBreakers["slow-stream"]
+	gw.mu.RUnlock()
+	if cb == nil {
+		t.Fatal("expected circuit breaker for slow-stream")
+	}
+	if cb.State() != circuitbreaker.StateClosed {
+		t.Fatalf("circuit state = %v, want closed after client deadlines", cb.State())
+	}
+}
+
+func TestGateway_RouteStream_MidStreamFailureTripsCircuit(t *testing.T) {
+	streamErr := errors.New("mid-stream provider failure")
+	gw, err := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets: []Target{{
+			VirtualKey: "flaky-stream",
+			CircuitBreaker: &CircuitBreakerConfig{
+				FailureThreshold: 2,
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	gw.RegisterProvider(&mockStreamProvider{
+		mockProvider: mockProvider{
+			name:   "flaky-stream",
+			models: []string{"gpt-4o"},
+		},
+		streamFn: func(_ context.Context, _ providers.Request) (<-chan providers.StreamChunk, error) {
+			ch := make(chan providers.StreamChunk, 2)
+			ch <- providers.StreamChunk{
+				Choices: []providers.StreamChoice{{
+					Delta: providers.MessageDelta{Content: "partial"},
+				}},
+			}
+			ch <- providers.StreamChunk{Error: streamErr}
+			close(ch)
+			return ch, nil
+		},
+	})
+
+	req := streamTestRequest()
+	for i := 0; i < 2; i++ {
+		ch, err := gw.RouteStream(context.Background(), req)
+		if err != nil {
+			t.Fatalf("attempt %d: RouteStream error = %v", i+1, err)
+		}
+		drainMeteredStream(t, ch)
+	}
+
+	_, err = gw.RouteStream(context.Background(), req)
+	if !errors.Is(err, circuitbreaker.ErrCircuitOpen) {
+		t.Fatalf("expected circuit open after mid-stream failures, got %v", err)
+	}
+}
+
 func TestGateway_RouteStream_BeforePluginCanSetNilRequest(t *testing.T) {
 	gw, _ := New(Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
