@@ -1799,6 +1799,44 @@ func completedHookEvent(traceID string) events.HookEvent {
 	)
 }
 
+// TestGateway_PublishEvent_DetachesCancellationButPreservesValues covers
+// issue #181: async event hooks must run with a context that has shed the
+// request's cancellation (they fire after the HTTP handler returns) yet still
+// carry the request's trace context / values via context.WithoutCancel.
+func TestGateway_PublishEvent_DetachesCancellationButPreservesValues(t *testing.T) {
+	gw, err := New(Config{})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = gw.Close() })
+
+	type ctxKey string
+	const marker ctxKey = "trace-marker"
+
+	got := make(chan context.Context, 1)
+	gw.AddHook(func(ctx context.Context, _ string, _ map[string]any) {
+		got <- ctx
+	})
+
+	// The request context is already cancelled by the time the hook runs.
+	reqCtx, cancel := context.WithCancel(context.WithValue(context.Background(), marker, "trace-xyz"))
+	cancel()
+
+	gw.publishEvent(reqCtx, completedHookEvent("trace-1"))
+
+	select {
+	case hookCtx := <-got:
+		if err := hookCtx.Err(); err != nil {
+			t.Fatalf("hook ctx should be detached from cancellation, got %v", err)
+		}
+		if v, _ := hookCtx.Value(marker).(string); v != "trace-xyz" {
+			t.Fatalf("hook ctx lost request trace value: got %q, want trace-xyz", v)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("hook was not dispatched")
+	}
+}
+
 func runWithPanicCapture(t *testing.T, fn func()) any {
 	t.Helper()
 	done := make(chan any, 1)
