@@ -177,7 +177,10 @@ func New(cfg Config) (*Gateway, error) {
 		gw.mcpInitDone = done
 		go func() {
 			defer close(done)
-			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			// Parent the init timeout on the gateway shutdown context so a slow
+			// MCP handshake is cancelled by Close() instead of lingering up to
+			// the full timeout after shutdown.
+			ctx, cancel := context.WithTimeout(gw.shutdownCtx, 60*time.Second)
 			defer cancel()
 			reg.InitializeAll(ctx, func(name string, initErr error) {
 				slog.Error("mcp: server initialization failed",
@@ -685,9 +688,17 @@ func (g *Gateway) publishEvent(ctx context.Context, event events.HookEvent) {
 		return
 	}
 
+	// Detach from the request lifecycle: hooks are dispatched asynchronously
+	// and usually run after the HTTP handler has returned and ctx is already
+	// cancelled. WithoutCancel drops cancellation (so ctx-aware hook work like
+	// DB writes / outbound calls is not dead-on-arrival) while preserving the
+	// request's trace context and values. Worker shutdown is governed by
+	// g.shutdownCtx, not this context.
+	detachedCtx := context.WithoutCancel(ctx)
+
 	for _, hook := range hooks {
 		dispatch := hookDispatch{
-			ctx:   ctx,
+			ctx:   detachedCtx,
 			event: event,
 			hook:  hook,
 		}
@@ -846,7 +857,10 @@ func (g *Gateway) ReloadConfig(cfg Config) error {
 		g.mcpInitDone = done
 		go func() {
 			defer close(done)
-			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			// Parent the init timeout on the gateway shutdown context so a slow
+			// MCP handshake is cancelled by Close() instead of lingering up to
+			// the full timeout after shutdown.
+			ctx, cancel := context.WithTimeout(g.shutdownCtx, 60*time.Second)
 			defer cancel()
 			reg.InitializeAll(ctx, func(name string, initErr error) {
 				slog.Error("mcp: server initialization failed after reload",
@@ -1392,10 +1406,12 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 					false,
 				)
 			}
-			// Use a detached context: this closure runs in the streamwrap
-			// goroutine after the HTTP handler has returned and the
-			// request ctx is already cancelled.
-			obsProvider.RecordEvent(context.Background(), obsEventFromHook(he))
+			// Detach from the request lifecycle: this closure runs in the
+			// streamwrap goroutine after the HTTP handler has returned and the
+			// request ctx is already cancelled. WithoutCancel drops cancellation
+			// while preserving the request's trace context, so the recorded
+			// event stays linked to the originating trace.
+			obsProvider.RecordEvent(context.WithoutCancel(ctx), obsEventFromHook(he))
 		}
 	})
 	return streamwrap.Meter(ctx, rawCh, start, meta), nil
