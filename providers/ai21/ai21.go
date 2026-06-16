@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
+	"github.com/ferro-labs/ai-gateway/internal/openaicompat"
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
@@ -87,14 +88,6 @@ func IsJambaModel(model string) bool {
 
 // ── Jamba models (OpenAI-compatible) ─────────────────────────────────────────
 
-type ai21ChatRequest struct {
-	Model       string         `json:"model"`
-	Messages    []core.Message `json:"messages"`
-	Temperature *float64       `json:"temperature,omitempty"`
-	MaxTokens   *int           `json:"max_tokens,omitempty"`
-	Stream      bool           `json:"stream,omitempty"`
-}
-
 type ai21ChatResponse struct {
 	ID      string        `json:"id"`
 	Model   string        `json:"model"`
@@ -143,14 +136,7 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 }
 
 func (p *Provider) completeJamba(ctx context.Context, req core.Request) (*core.Response, error) {
-	chatReq := ai21ChatRequest{
-		Model:       req.Model,
-		Messages:    req.Messages,
-		Temperature: req.Temperature,
-		MaxTokens:   req.MaxTokens,
-	}
-
-	bodyReader, _, release, err := core.JSONBodyReader(chatReq)
+	bodyReader, _, release, err := openaicompat.BuildBody(req, false)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
@@ -203,6 +189,9 @@ func (p *Provider) completeJurassic(ctx context.Context, req core.Request) (*cor
 			prompt = msg.Content
 		}
 	}
+
+	core.WarnUnsupportedParams(ctx, p.Name(), req.Model, req,
+		"max_tokens", "temperature", "top_p", "stop")
 
 	completeReq := ai21CompleteRequest{
 		Prompt:        prompt,
@@ -290,15 +279,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 		return nil, fmt.Errorf("streaming is only supported for Jamba models; use a jamba-* model for streaming")
 	}
 
-	chatReq := ai21ChatRequest{
-		Model:       req.Model,
-		Messages:    req.Messages,
-		Temperature: req.Temperature,
-		MaxTokens:   req.MaxTokens,
-		Stream:      true,
-	}
-
-	bodyReader, _, release, err := core.JSONBodyReader(chatReq)
+	bodyReader, _, release, err := openaicompat.BuildBody(req, true)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}

@@ -92,11 +92,24 @@ func (p *Provider) Models() []core.ModelInfo {
 }
 
 type cohereRequest struct {
-	Model       string         `json:"model"`
-	Messages    []core.Message `json:"messages"`
-	Temperature *float64       `json:"temperature,omitempty"`
-	MaxTokens   *int           `json:"max_tokens,omitempty"`
-	Stream      bool           `json:"stream,omitempty"`
+	Model            string         `json:"model"`
+	Messages         []core.Message `json:"messages"`
+	Temperature      *float64       `json:"temperature,omitempty"`
+	MaxTokens        *int           `json:"max_tokens,omitempty"`
+	P                *float64       `json:"p,omitempty"`
+	Seed             *int64         `json:"seed,omitempty"`
+	PresencePenalty  *float64       `json:"presence_penalty,omitempty"`
+	FrequencyPenalty *float64       `json:"frequency_penalty,omitempty"`
+	StopSequences    []string       `json:"stop_sequences,omitempty"`
+	Stream           bool           `json:"stream,omitempty"`
+}
+
+// cohereSupportedParams lists the OpenAI parameters mappable onto the Cohere v2
+// chat API. Anything else the caller sets is warn-and-dropped (#140). Native
+// tool calling is tracked separately in #139.
+var cohereSupportedParams = []string{
+	"temperature", "top_p", "max_tokens", "stop",
+	"seed", "presence_penalty", "frequency_penalty",
 }
 
 type cohereContentBlock struct {
@@ -137,11 +150,18 @@ type cohereErrorResponse struct {
 
 // Complete sends a chat completion request to Cohere.
 func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
+	core.WarnUnsupportedParams(ctx, p.Name(), req.Model, req, cohereSupportedParams...)
+
 	cohReq := cohereRequest{
-		Model:       req.Model,
-		Messages:    req.Messages,
-		Temperature: req.Temperature,
-		MaxTokens:   req.MaxTokens,
+		Model:            req.Model,
+		Messages:         req.Messages,
+		Temperature:      req.Temperature,
+		MaxTokens:        req.MaxTokens,
+		P:                req.TopP,
+		Seed:             req.Seed,
+		PresencePenalty:  req.PresencePenalty,
+		FrequencyPenalty: req.FrequencyPenalty,
+		StopSequences:    req.Stop,
 	}
 
 	bodyReader, _, release, err := core.JSONBodyReader(cohReq)
@@ -230,12 +250,19 @@ type cohereMessageEndDelta struct {
 
 // CompleteStream sends a streaming chat completion request to Cohere.
 func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan core.StreamChunk, error) {
+	core.WarnUnsupportedParams(ctx, p.Name(), req.Model, req, cohereSupportedParams...)
+
 	cohReq := cohereRequest{
-		Model:       req.Model,
-		Messages:    req.Messages,
-		Temperature: req.Temperature,
-		MaxTokens:   req.MaxTokens,
-		Stream:      true,
+		Model:            req.Model,
+		Messages:         req.Messages,
+		Temperature:      req.Temperature,
+		MaxTokens:        req.MaxTokens,
+		P:                req.TopP,
+		Seed:             req.Seed,
+		PresencePenalty:  req.PresencePenalty,
+		FrequencyPenalty: req.FrequencyPenalty,
+		StopSequences:    req.Stop,
+		Stream:           true,
 	}
 
 	bodyReader, _, release, err := core.JSONBodyReader(cohReq)

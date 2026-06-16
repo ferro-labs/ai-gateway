@@ -441,8 +441,27 @@ func isBedrockCohereEmbeddingModel(model string) bool {
 }
 
 // Complete sends a request to AWS Bedrock and returns the response.
+// bedrockSupportedParams returns the OpenAI parameters expressible on the given
+// Bedrock model family's inference shape. Anything else the caller set is
+// warn-and-dropped (#140).
+func bedrockSupportedParams(modelID string) []string {
+	switch {
+	case strings.HasPrefix(modelID, "anthropic."):
+		return []string{"temperature", "top_p", "max_tokens", "stop"}
+	case strings.HasPrefix(modelID, "amazon.titan"):
+		return []string{"temperature", "top_p", "max_tokens", "stop"}
+	case strings.HasPrefix(modelID, "meta.llama"):
+		return []string{"temperature", "top_p", "max_tokens"}
+	default:
+		return nil
+	}
+}
+
+// Complete sends a non-streaming chat completion request to Bedrock, dispatching
+// to the model family (Anthropic, Titan, Llama) that matches the model prefix.
 func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
 	modelID := req.Model
+	core.WarnUnsupportedParams(ctx, p.Name(), modelID, req, bedrockSupportedParams(modelID)...)
 	if strings.HasPrefix(modelID, "anthropic.") {
 		return p.completeAnthropic(ctx, req)
 	}
@@ -643,6 +662,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 	if !strings.HasPrefix(req.Model, "anthropic.") {
 		return nil, fmt.Errorf("streaming on Bedrock is currently only supported for anthropic.claude-* models")
 	}
+	core.WarnUnsupportedParams(ctx, p.Name(), req.Model, req, bedrockSupportedParams(req.Model)...)
 
 	maxTokens := 1024
 	if req.MaxTokens != nil {

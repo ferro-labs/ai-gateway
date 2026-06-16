@@ -99,13 +99,20 @@ type anthropicMessage struct {
 }
 
 type anthropicRequest struct {
-	Model       string             `json:"model"`
-	MaxTokens   int                `json:"max_tokens"`
-	System      string             `json:"system,omitempty"`
-	Messages    []anthropicMessage `json:"messages"`
-	Temperature *float64           `json:"temperature,omitempty"`
-	Stream      bool               `json:"stream,omitempty"`
+	Model         string             `json:"model"`
+	MaxTokens     int                `json:"max_tokens"`
+	System        string             `json:"system,omitempty"`
+	Messages      []anthropicMessage `json:"messages"`
+	Temperature   *float64           `json:"temperature,omitempty"`
+	TopP          *float64           `json:"top_p,omitempty"`
+	StopSequences []string           `json:"stop_sequences,omitempty"`
+	Stream        bool               `json:"stream,omitempty"`
 }
+
+// anthropicSupportedParams lists the OpenAI parameters the Anthropic Messages
+// API can express. Anything else the caller sets is warn-and-dropped (#140).
+// Native tool calling is tracked separately in #139.
+var anthropicSupportedParams = []string{"temperature", "top_p", "max_tokens", "stop"}
 
 type anthropicContentBlock struct {
 	Type string `json:"type"`
@@ -163,12 +170,16 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 		maxTokens = *req.MaxTokens
 	}
 
+	core.WarnUnsupportedParams(ctx, p.Name(), req.Model, req, anthropicSupportedParams...)
+
 	aReq := anthropicRequest{
-		Model:       req.Model,
-		MaxTokens:   maxTokens,
-		Messages:    messages,
-		Temperature: req.Temperature,
-		System:      system,
+		Model:         req.Model,
+		MaxTokens:     maxTokens,
+		Messages:      messages,
+		Temperature:   req.Temperature,
+		TopP:          req.TopP,
+		StopSequences: req.Stop,
+		System:        system,
 	}
 
 	bodyReader, _, release, err := core.JSONBodyReader(aReq)
@@ -268,13 +279,17 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 		maxTokens = *req.MaxTokens
 	}
 
+	core.WarnUnsupportedParams(ctx, p.Name(), req.Model, req, anthropicSupportedParams...)
+
 	aReq := anthropicRequest{
-		Model:       req.Model,
-		MaxTokens:   maxTokens,
-		Messages:    messages,
-		Temperature: req.Temperature,
-		System:      system,
-		Stream:      true,
+		Model:         req.Model,
+		MaxTokens:     maxTokens,
+		Messages:      messages,
+		Temperature:   req.Temperature,
+		TopP:          req.TopP,
+		StopSequences: req.Stop,
+		System:        system,
+		Stream:        true,
 	}
 
 	bodyReader, _, release, err := core.JSONBodyReader(aReq)

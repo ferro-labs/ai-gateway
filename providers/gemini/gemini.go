@@ -103,8 +103,23 @@ type geminiContent struct {
 }
 
 type geminiGenerationConfig struct {
-	Temperature     *float64 `json:"temperature,omitempty"`
-	MaxOutputTokens *int     `json:"maxOutputTokens,omitempty"`
+	Temperature      *float64 `json:"temperature,omitempty"`
+	TopP             *float64 `json:"topP,omitempty"`
+	CandidateCount   *int     `json:"candidateCount,omitempty"`
+	Seed             *int64   `json:"seed,omitempty"`
+	MaxOutputTokens  *int     `json:"maxOutputTokens,omitempty"`
+	PresencePenalty  *float64 `json:"presencePenalty,omitempty"`
+	FrequencyPenalty *float64 `json:"frequencyPenalty,omitempty"`
+	StopSequences    []string `json:"stopSequences,omitempty"`
+	ResponseMimeType string   `json:"responseMimeType,omitempty"`
+}
+
+// geminiSupportedParams lists the OpenAI parameters mappable onto Gemini's
+// generationConfig. Anything else the caller sets is warn-and-dropped (#140).
+// Native tool calling is tracked separately in #139.
+var geminiSupportedParams = []string{
+	"temperature", "top_p", "n", "seed", "max_tokens",
+	"presence_penalty", "frequency_penalty", "stop", "response_format",
 }
 
 type geminiRequest struct {
@@ -228,11 +243,27 @@ func buildRequest(req core.Request) (geminiRequest, error) {
 	r := geminiRequest{
 		Contents: convertToGemini(req.Messages),
 	}
-	if req.Temperature != nil || req.MaxTokens != nil {
-		r.GenerationConfig = &geminiGenerationConfig{
-			Temperature:     req.Temperature,
-			MaxOutputTokens: req.MaxTokens,
-		}
+	cfg := geminiGenerationConfig{
+		Temperature:      req.Temperature,
+		TopP:             req.TopP,
+		CandidateCount:   req.N,
+		Seed:             req.Seed,
+		MaxOutputTokens:  req.MaxTokens,
+		PresencePenalty:  req.PresencePenalty,
+		FrequencyPenalty: req.FrequencyPenalty,
+		StopSequences:    req.Stop,
+	}
+	// Map OpenAI response_format JSON modes to Gemini's responseMimeType. The
+	// schema itself is not forwarded (Gemini uses a restricted schema dialect),
+	// so structured-output enforcement degrades to plain JSON mode.
+	if rf := req.ResponseFormat; rf != nil && (rf.Type == "json_object" || rf.Type == "json_schema") {
+		cfg.ResponseMimeType = "application/json"
+	}
+	hasConfig := cfg.Temperature != nil || cfg.TopP != nil || cfg.CandidateCount != nil ||
+		cfg.Seed != nil || cfg.MaxOutputTokens != nil || cfg.PresencePenalty != nil ||
+		cfg.FrequencyPenalty != nil || len(cfg.StopSequences) > 0 || cfg.ResponseMimeType != ""
+	if hasConfig {
+		r.GenerationConfig = &cfg
 	}
 	return r, nil
 }
@@ -360,6 +391,8 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 
 // Complete sends a chat completion request to Gemini.
 func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
+	core.WarnUnsupportedParams(ctx, p.Name(), req.Model, req, geminiSupportedParams...)
+
 	geminiReq, _ := buildRequest(req)
 
 	bodyReader, _, release, err := core.JSONBodyReader(geminiReq)
@@ -429,6 +462,8 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 
 // CompleteStream sends a streaming chat completion request to Gemini.
 func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan core.StreamChunk, error) {
+	core.WarnUnsupportedParams(ctx, p.Name(), req.Model, req, geminiSupportedParams...)
+
 	geminiReq, _ := buildRequest(req)
 
 	bodyReader, _, release, err := core.JSONBodyReader(geminiReq)
