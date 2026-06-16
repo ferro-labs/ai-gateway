@@ -1,5 +1,5 @@
-// Package openrouter provides a client for the OpenRouter API.
-package openrouter
+// Package zai provides a client for the Z.ai (Zhipu AI) API.
+package zai
 
 import (
 	"context"
@@ -10,13 +10,13 @@ import (
 )
 
 const (
-	// Name is the canonical identifier for the OpenRouter provider.
-	// Re-exported as providers.NameOpenRouter in providers/names.go.
-	Name           = "openrouter"
-	defaultBaseURL = "https://openrouter.ai/api/v1"
+	// Name is the canonical identifier for the Z.ai provider.
+	// Re-exported as providers.NameZAI in providers/names.go.
+	Name           = "zai"
+	defaultBaseURL = "https://api.z.ai/api/paas/v4"
 )
 
-// Provider implements the core.Provider interface for OpenRouter.
+// Provider implements the core.Provider interface for Z.ai.
 type Provider struct {
 	*compat.Client
 }
@@ -29,26 +29,27 @@ var (
 	_ core.DiscoveryProvider = (*Provider)(nil)
 )
 
-// New creates a new OpenRouter provider.
+// New creates a new Z.ai provider.
 func New(apiKey, baseURL string) (*Provider, error) {
 	return &Provider{
 		Client: compat.New(Name, apiKey, baseURL, defaultBaseURL, providerhttp.ForProvider(Name)),
 	}, nil
 }
 
-// SupportedModels returns a static list of known OpenRouter models.
+// SupportedModels returns a static list of known Z.ai models.
 func (p *Provider) SupportedModels() []string {
 	return []string{
-		"openrouter/auto",
-		"openai/gpt-4o",
-		"openai/gpt-5",
-		"anthropic/claude-sonnet-4.5",
-		"google/gemini-2.5-pro",
-		"deepseek/deepseek-r1",
+		"glm-5.1",
+		"glm-5-turbo",
+		"glm-5",
+		"glm-4.7",
+		"glm-4.6",
+		"glm-4.5",
+		"glm-4.5-air",
 	}
 }
 
-// SupportsModel returns true for any OpenRouter model name.
+// SupportsModel returns true for any Z.ai model name.
 func (p *Provider) SupportsModel(_ string) bool { return true }
 
 // Models returns structured model metadata.
@@ -56,7 +57,7 @@ func (p *Provider) Models() []core.ModelInfo {
 	return core.ModelsFromList(p.Name(), p.SupportedModels())
 }
 
-// DiscoverModels fetches the live model list from the OpenRouter /models endpoint.
+// DiscoverModels fetches the live model list from the Z.ai /models endpoint.
 func (p *Provider) DiscoverModels(ctx context.Context) ([]core.ModelInfo, error) {
 	return p.Client.DiscoverModels(ctx)
 }

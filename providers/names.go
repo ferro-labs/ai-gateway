@@ -18,6 +18,7 @@ import (
 	huggingfacepkg "github.com/ferro-labs/ai-gateway/providers/hugging_face"
 	mistralpkg "github.com/ferro-labs/ai-gateway/providers/mistral"
 	moonshotpkg "github.com/ferro-labs/ai-gateway/providers/moonshot"
+	nanogptpkg "github.com/ferro-labs/ai-gateway/providers/nanogpt"
 	novitapkg "github.com/ferro-labs/ai-gateway/providers/novita"
 	nvidianimpkg "github.com/ferro-labs/ai-gateway/providers/nvidia_nim"
 	ollamapkg "github.com/ferro-labs/ai-gateway/providers/ollama"
@@ -31,6 +32,7 @@ import (
 	togetherpkg "github.com/ferro-labs/ai-gateway/providers/together"
 	vertexaipkg "github.com/ferro-labs/ai-gateway/providers/vertex_ai"
 	xaipkg "github.com/ferro-labs/ai-gateway/providers/xai"
+	zaipkg "github.com/ferro-labs/ai-gateway/providers/zai"
 )
 
 // Canonical provider name constants.
@@ -124,6 +126,9 @@ const (
 	// NameMoonshot is the canonical name for the Moonshot AI provider.
 	NameMoonshot = moonshotpkg.Name
 
+	// NameNanoGPT is the canonical name for the NanoGPT provider.
+	NameNanoGPT = nanogptpkg.Name
+
 	// NameNVIDIANIM is the canonical name for the NVIDIA NIM provider.
 	NameNVIDIANIM = nvidianimpkg.Name
 
@@ -138,6 +143,9 @@ const (
 
 	// NameOpenRouter is the canonical name for the OpenRouter provider.
 	NameOpenRouter = openrouterpkg.Name
+
+	// NameZAI is the canonical name for the Z.ai (Zhipu AI) provider.
+	NameZAI = zaipkg.Name
 )
 
 // AllProviderNames returns every registered canonical provider name in a
@@ -162,6 +170,7 @@ func AllProviderNames() []string {
 		NameHuggingFace,
 		NameMistral,
 		NameMoonshot,
+		NameNanoGPT,
 		NameNovita,
 		NameNVIDIANIM,
 		NameOllama,
@@ -175,5 +184,6 @@ func AllProviderNames() []string {
 		NameTogether,
 		NameVertexAI,
 		NameXAI,
+		NameZAI,
 	}
 }
