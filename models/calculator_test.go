@@ -96,13 +96,13 @@ func TestCalculateChatCacheAndReasoning(t *testing.T) {
 	}
 }
 
-// Nil pricing fields must return 0, not panic.
+// Nil pricing fields must return 0 and Priced=false, not panic.
 func TestCalculateChatNilPricing(t *testing.T) {
 	c := catalogWith("openai/gpt-4o", Model{
 		Provider: "openai",
 		ModelID:  "gpt-4o",
 		Mode:     ModeChat,
-		Pricing:  Pricing{}, // all nil
+		Pricing:  Pricing{}, // all nil — credit-based / unknown cost
 	})
 
 	got := Calculate(c, "openai/gpt-4o", Usage{
@@ -163,6 +163,89 @@ func TestCalculateChatZeroInputPriceIsPriced(t *testing.T) {
 	}
 	if !got.Priced {
 		t.Error("Priced should be true when input pricing is explicitly zero")
+	}
+}
+
+// Priced must be true when a real per-token rate is present, and false when nil,
+// across all billing modes. This is the invariant the cost-optimized router relies
+// on to distinguish "unknown cost" from "$0".
+func TestCalculatePricedFlag(t *testing.T) {
+	tests := []struct {
+		name      string
+		model     Model
+		usage     Usage
+		wantPrice bool
+	}{
+		{
+			name:      "chat priced",
+			model:     Model{Mode: ModeChat, Pricing: Pricing{InputPerMTokens: ptr(1.0)}},
+			usage:     Usage{PromptTokens: 1000},
+			wantPrice: true,
+		},
+		{
+			name:      "chat unpriced",
+			model:     Model{Mode: ModeChat, Pricing: Pricing{}},
+			usage:     Usage{PromptTokens: 1000},
+			wantPrice: false,
+		},
+		{
+			name:      "embedding priced",
+			model:     Model{Mode: ModeEmbedding, Pricing: Pricing{EmbeddingPerMTokens: ptr(0.02)}},
+			usage:     Usage{PromptTokens: 1000},
+			wantPrice: true,
+		},
+		{
+			name:      "embedding unpriced",
+			model:     Model{Mode: ModeEmbedding, Pricing: Pricing{}},
+			usage:     Usage{PromptTokens: 1000},
+			wantPrice: false,
+		},
+		{
+			name:      "image priced",
+			model:     Model{Mode: ModeImage, Pricing: Pricing{ImagePerTile: ptr(0.04)}},
+			usage:     Usage{ImageCount: 1},
+			wantPrice: true,
+		},
+		{
+			name:      "image unpriced",
+			model:     Model{Mode: ModeImage, Pricing: Pricing{}},
+			usage:     Usage{ImageCount: 1},
+			wantPrice: false,
+		},
+		{
+			name:      "audio-in priced",
+			model:     Model{Mode: ModeAudioIn, Pricing: Pricing{AudioInputPerMinute: ptr(0.006)}},
+			usage:     Usage{AudioInputSecs: 60},
+			wantPrice: true,
+		},
+		{
+			name:      "audio-in unpriced",
+			model:     Model{Mode: ModeAudioIn, Pricing: Pricing{}},
+			usage:     Usage{AudioInputSecs: 60},
+			wantPrice: false,
+		},
+		{
+			name:      "audio-out priced",
+			model:     Model{Mode: ModeAudioOut, Pricing: Pricing{AudioOutputPerCharacter: ptr(0.000015)}},
+			usage:     Usage{AudioOutputChars: 1000},
+			wantPrice: true,
+		},
+		{
+			name:      "audio-out unpriced",
+			model:     Model{Mode: ModeAudioOut, Pricing: Pricing{}},
+			usage:     Usage{AudioOutputChars: 1000},
+			wantPrice: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := catalogWith("p/m", tt.model)
+			got := Calculate(c, "p/m", tt.usage)
+			if got.Priced != tt.wantPrice {
+				t.Errorf("Priced = %v, want %v", got.Priced, tt.wantPrice)
+			}
+		})
 	}
 }
 

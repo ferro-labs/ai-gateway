@@ -347,3 +347,46 @@ func TestCostOptimized_NoTargets(t *testing.T) {
 		t.Fatal("expected error for no targets")
 	}
 }
+
+// A provider whose catalog entry has null pricing (e.g. credit-based aggregators
+// like NanoGPT or ZAI GLM models) must NOT win cost-optimized selection against a
+// provider with real per-token pricing. Before the Priced fix, null-priced models
+// computed to $0 via ModelFound=true and always won.
+func TestCostOptimized_NullPricedDoesNotBeatRealPricing(t *testing.T) {
+	catalog := models.Catalog{
+		// Real pricing: $5 / 1M input tokens.
+		"real/gpt-4o": {
+			Provider: "real",
+			ModelID:  "gpt-4o",
+			Mode:     models.ModeChat,
+			Pricing: models.Pricing{
+				InputPerMTokens:  ptrF(5.0),
+				OutputPerMTokens: ptrF(15.0),
+			},
+		},
+		// Null pricing: credit-based, no per-token rate.
+		"nanogpt/gpt-4o": {
+			Provider: "nanogpt",
+			ModelID:  "gpt-4o",
+			Mode:     models.ModeChat,
+			Pricing:  models.Pricing{}, // all nil
+		},
+	}
+
+	real := &mockProvider{name: "real", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "real"}}
+	nano := &mockProvider{name: "nanogpt", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "nanogpt"}}
+
+	targets := []Target{{VirtualKey: "real"}, {VirtualKey: "nanogpt"}}
+	s := NewCostOptimized(targets, newLookup(real, nano), catalog)
+
+	resp, err := s.Execute(context.Background(), providers.Request{
+		Model:    "gpt-4o",
+		Messages: []providers.Message{{Role: "user", Content: "hello"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.ID != "real" {
+		t.Errorf("null-priced provider must not beat real pricing: got %q, want \"real\"", resp.ID)
+	}
+}

@@ -30,7 +30,11 @@ type CostResult struct {
 	// ModelFound is false when the catalog has no entry for the requested model.
 	// All cost fields will be zero in that case.
 	ModelFound bool
-	// Priced is false when the model has no input-token price.
+	// Priced is true when the model was found and has at least one non-null price
+	// for its primary billing dimension. A false Priced with a true ModelFound
+	// means the catalog entry exists but pricing is unknown (e.g. credit-based
+	// providers). Routing strategies should treat unpriced models as unknown cost,
+	// not as $0.
 	Priced bool
 }
 
@@ -64,24 +68,29 @@ func Calculate(catalog Catalog, modelKey string, usage Usage) CostResult {
 		r.CacheReadUSD = perM(p.CacheReadPerMTokens, usage.CacheReadTokens)
 		r.CacheWriteUSD = perM(p.CacheWritePerMTokens, usage.CacheWriteTokens)
 		r.ReasoningUSD = perM(p.ReasoningPerMTokens, usage.ReasoningTokens)
+		r.Priced = p.InputPerMTokens != nil
 
 	case ModeEmbedding:
 		r.EmbeddingUSD = perM(p.EmbeddingPerMTokens, usage.PromptTokens)
+		r.Priced = p.EmbeddingPerMTokens != nil
 
 	case ModeImage:
 		if p.ImagePerTile != nil && usage.ImageCount > 0 {
 			r.ImageUSD = *p.ImagePerTile * float64(usage.ImageCount)
 		}
+		r.Priced = p.ImagePerTile != nil
 
 	case ModeAudioIn:
 		if p.AudioInputPerMinute != nil && usage.AudioInputSecs > 0 {
 			r.AudioUSD = *p.AudioInputPerMinute * usage.AudioInputSecs / 60
 		}
+		r.Priced = p.AudioInputPerMinute != nil
 
 	case ModeAudioOut:
 		if p.AudioOutputPerCharacter != nil && usage.AudioOutputChars > 0 {
 			r.AudioUSD = *p.AudioOutputPerCharacter * float64(usage.AudioOutputChars)
 		}
+		r.Priced = p.AudioOutputPerCharacter != nil
 	}
 
 	r.TotalUSD = r.InputUSD + r.OutputUSD + r.CacheReadUSD +
