@@ -42,7 +42,7 @@ Status: **Shipped** (2026-05-04)
 
 Status: **Shipped** (2026-05-24). Tracking issue: [#49](https://github.com/ferro-labs/ai-gateway/issues/49).
 
-This release is intentionally **scoped to a pure OpenTelemetry core**. Vendor-specific bridges (LangSmith, Langfuse, Phoenix, Datadog, New Relic, Sentry, Helicone, Honeycomb, Grafana, …) are deliberately deferred to the v1.2.0 plugin SDK so they live once, in Go, in a dedicated repo — instead of being duplicated across the gateway core, the Python SDK, and the TypeScript SDK.
+This release is intentionally **scoped to a pure OpenTelemetry core**. Vendor-specific bridges (LangSmith, Langfuse, Phoenix, Datadog, New Relic, Sentry, Helicone, Honeycomb, Grafana, …) are deliberately deferred to the v1.5.0 plugin SDK so they live once, in Go, in a dedicated repo — instead of being duplicated across the gateway core, the Python SDK, and the TypeScript SDK.
 
 ### What shipped
 
@@ -56,22 +56,51 @@ This release is intentionally **scoped to a pure OpenTelemetry core**. Vendor-sp
 - **SDK observability** in [ferrolabs-python-sdk](https://github.com/ferro-labs/ferrolabs-python-sdk) and [ferrolabs-typescript-sdk](https://github.com/ferro-labs/ferrolabs-typescript-sdk) — runtime OTel detection (no hard dependency), `traceparent` injection, `trace_id` / `traceId` surfaced from gateway response headers.
 
 
-## v1.1.x — Stability Fixes
+## v1.1.x — Stability & Correctness Patches
 
-Status: **Shipped** through v1.1.2.
+Weekly patch line. Each release is backward-compatible bug-fixing on a single theme — no public API breaks.
 
-Patch releases stayed limited to stability and release-hardening work: shutdown/race/leak fixes, safer streaming, catalog pricing and fallback correctness, OpenAI response-body lifecycle cleanup, and catalog load guardrails. No public API breaks.
+### Shipped
 
-### Carried into v1.1.x / v1.2.x backlog
+- **v1.1.1** — Concurrency & crash-safety hardening: data races, nil-pointer panics in routing, send-on-closed-channel on shutdown, oversized-SSE aborts, null-priced-model mispricing.
+- **v1.1.2** — Cost & catalog accuracy: external model-catalog cutover, Azure/Vertex `$0` pricing fix, O(n) catalog-scan removal, OpenAI response-body lifecycle.
+- **v1.1.3** — Streaming & async correctness: `RouteStream` brought to parity with `Route` (post-request plugins, circuit breaker, least-latency / cost ordering), tighter fallback retry semantics, `context.WithoutCancel` for detached goroutines.
 
-- Plugin-stage child spans inside `plugin/Manager.Run{Before,After,OnError}`.
-- Span hand-off from `RouteStream` into `streamwrap.Meter` so token / cost / stream-timing attributes land on the same span.
-- MCP tool-call child spans.
-- Semantic caching, Redis-backed auth cache, additional provider expansion.
+### Planned
 
-## v1.2.0 — Plugin SDK & Vendor Bridges
+- **v1.1.4 — Provider-translation correctness** (target 2026-06-19): stop silently dropping or mangling request fields on non-OpenAI providers — sampling params ([#140](https://github.com/ferro-labs/ai-gateway/issues/140)), tool/function calling ([#139](https://github.com/ferro-labs/ai-gateway/issues/139)), `max_completion_tokens` ([#141](https://github.com/ferro-labs/ai-gateway/issues/141)), `finish_reason` normalization ([#142](https://github.com/ferro-labs/ai-gateway/issues/142)), Anthropic multimodal/tool roles ([#143](https://github.com/ferro-labs/ai-gateway/issues/143)), Gemini `systemInstruction` ([#144](https://github.com/ferro-labs/ai-gateway/issues/144)) — plus a dependency sweep. Forwarding-only + warn-and-drop; explicit capability semantics land in v1.2.0.
+- **v1.1.5 — Capability & model-support accuracy** (target 2026-06-26): correct capability-miss status codes (400/404, not 500) with interface-alignment tests, close capability gaps vs upstream APIs (Azure embeddings/images, image gen, discovery), de-stale `SupportedModels()`.
+- **v1.1.6 — Runtime robustness** (target 2026-07-03): cache & circuit-breaker correctness (cache key includes logprobs, true LRU, half-open probe cap), OTel shutdown span-loss fix, plugin-pipeline panic recovery / RunOnError-on-reject / Close-on-reload.
 
-Status: Planning
+## v1.2.0 — Provider Parameter Capability Matrix
+
+Status: Planning (target 2026-07-10). Tracking issue: [#207](https://github.com/ferro-labs/ai-gateway/issues/207).
+
+Builds on the v1.1.4 forwarding fix to make per-provider parameter support **explicit and machine-readable**, so a changed model behaviour can be traced to either provider capability or gateway forwarding.
+
+### Priorities
+
+- **Per-provider capability matrix** — provider profiles declaring per-param support (`forward` / `translate` / `unsupported`), built on a shared OpenAI-compatible request builder so providers can't drift.
+- **`GET /v1/capabilities`** — the matrix exposed so users can compare providers programmatically.
+- **Opt-in strict mode** — `compatibility.on_unsupported_param: warn | drop | reject`; default `warn` stays backward-compatible, `reject` returns a clear unsupported-parameter error.
+- **Sanitized debug echo** — forwarded parameter *names* surfaced via observability (never prompts or keys).
+- **Docs** — "OpenAI-compatible request shape" documented separately from "OpenAI-identical feature support."
+
+## v1.3.0 — MCP stdio Transport
+
+Status: Planning (target 2026-07-17). Tracking issue: [#121](https://github.com/ferro-labs/ai-gateway/issues/121).
+
+- **stdio transport** for the Model Context Protocol so the gateway can speak MCP over stdio alongside the existing transport, enabling local / embedded MCP clients.
+
+## v1.4.0 — Embeddable Gateway
+
+Status: Planning (target 2026-07-24). Tracking issue: [#206](https://github.com/ferro-labs/ai-gateway/issues/206).
+
+- **Public importable server entrypoint** — embed the gateway directly in Go programs and plugin builders instead of only running the standalone `ferrogw` binary. Carries the highest API-stability commitment of the near-term minors, so it ships with deliberate public-surface design.
+
+## v1.5.0 — Plugin SDK & Vendor Bridges
+
+Status: Planning (target 2026-07-31). _Renumbered from the original v1.2.0 roadmap slot._
 
 The plugin SDK lands here so observability bridges can be developed and released independently of the gateway core, on their own cadence, without bloating the `ferrogw` binary or duplicating code across the SDKs.
 
@@ -90,3 +119,10 @@ The plugin SDK lands here so observability bridges can be developed and released
 - Deepen production deployment guidance (Kubernetes operators, Terraform modules)
 - Expand the [ai-gateway-examples](https://github.com/ferro-labs/ai-gateway-examples) repo
 - Strengthen benchmark reporting and cross-gateway comparisons
+
+### Observability & caching backlog (unscheduled)
+
+- Plugin-stage child spans inside `plugin/Manager.Run{Before,After,OnError}`.
+- Span hand-off from `RouteStream` into `streamwrap.Meter` so token / cost / stream-timing attributes land on the same span.
+- MCP tool-call child spans.
+- Semantic caching, Redis-backed auth cache, additional provider expansion.
