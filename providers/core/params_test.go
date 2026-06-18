@@ -50,3 +50,35 @@ func TestParamPopulated_BooleanLogprobs(t *testing.T) {
 		t.Error("logprobs should be populated when true")
 	}
 }
+
+func TestNormalizeCompletionTokenLimits_FillsMaxTokensFromFallback(t *testing.T) {
+	maxCompletionTokens := 17
+	req := Request{MaxCompletionTokens: &maxCompletionTokens}
+
+	req.NormalizeCompletionTokenLimits()
+
+	if req.MaxTokens == nil || *req.MaxTokens != maxCompletionTokens {
+		t.Fatalf("MaxTokens = %v, want %d", req.MaxTokens, maxCompletionTokens)
+	}
+	if req.MaxCompletionTokens == nil || *req.MaxCompletionTokens != maxCompletionTokens {
+		t.Fatalf("MaxCompletionTokens = %v, want preserved %d", req.MaxCompletionTokens, maxCompletionTokens)
+	}
+}
+
+func TestNormalizeCompletionTokenLimits_PreservesExplicitMaxTokens(t *testing.T) {
+	maxTokens := 23
+	maxCompletionTokens := 17
+	req := Request{
+		MaxTokens:           &maxTokens,
+		MaxCompletionTokens: &maxCompletionTokens,
+	}
+
+	req.NormalizeCompletionTokenLimits()
+
+	if req.MaxTokens == nil || *req.MaxTokens != maxTokens {
+		t.Fatalf("MaxTokens = %v, want explicit %d", req.MaxTokens, maxTokens)
+	}
+	if req.MaxCompletionTokens == nil || *req.MaxCompletionTokens != maxCompletionTokens {
+		t.Fatalf("MaxCompletionTokens = %v, want preserved %d", req.MaxCompletionTokens, maxCompletionTokens)
+	}
+}

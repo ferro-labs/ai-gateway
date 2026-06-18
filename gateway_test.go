@@ -37,10 +37,11 @@ const mockProviderName = "mock"
 
 // mockProvider is a test double for providers.Provider.
 type mockProvider struct {
-	name   string
-	models []string
-	resp   *providers.Response
-	err    error
+	name       string
+	models     []string
+	resp       *providers.Response
+	err        error
+	completeFn func(context.Context, providers.Request) (*providers.Response, error)
 }
 
 func (m *mockProvider) Name() string                  { return m.name }
@@ -54,7 +55,10 @@ func (m *mockProvider) SupportsModel(model string) bool {
 	}
 	return false
 }
-func (m *mockProvider) Complete(_ context.Context, _ providers.Request) (*providers.Response, error) {
+func (m *mockProvider) Complete(ctx context.Context, req providers.Request) (*providers.Response, error) {
+	if m.completeFn != nil {
+		return m.completeFn(ctx, req)
+	}
 	return m.resp, m.err
 }
 
@@ -133,6 +137,77 @@ func TestGateway_Route_Single(t *testing.T) {
 	}
 	if resp.ID != "r1" {
 		t.Errorf("got ID %q, want r1", resp.ID)
+	}
+}
+
+func TestGateway_Route_NormalizesCompletionTokenLimitsBeforePlugins(t *testing.T) {
+	gw, _ := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: mockProviderName}},
+		Plugins: []PluginConfig{
+			{
+				Name:    "max-token",
+				Enabled: true,
+				Stage:   "before_request",
+				Config:  map[string]interface{}{"max_tokens": 100},
+			},
+		},
+	})
+	gw.RegisterProvider(&mockProvider{
+		name:   mockProviderName,
+		models: []string{"gpt-4o"},
+		resp:   &providers.Response{ID: "r1", Model: "gpt-4o"},
+	})
+	if err := gw.LoadPlugins(); err != nil {
+		t.Fatalf("LoadPlugins failed: %v", err)
+	}
+
+	maxCompletionTokens := 200
+	_, err := gw.Route(context.Background(), providers.Request{
+		Model:               "gpt-4o",
+		Messages:            []providers.Message{{Role: "user", Content: "hi"}},
+		MaxCompletionTokens: &maxCompletionTokens,
+	})
+	if err == nil {
+		t.Fatal("expected max-token plugin rejection")
+	}
+	if !strings.Contains(err.Error(), "max_tokens 200 exceeds limit of 100") {
+		t.Fatalf("error = %q, want max-token rejection with normalized max_tokens", err.Error())
+	}
+}
+
+func TestGateway_Route_NormalizesCompletionTokenLimitsBeforeProvider(t *testing.T) {
+	var captured providers.Request
+	gw, _ := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: mockProviderName}},
+	})
+	gw.RegisterProvider(&mockProvider{
+		name:   mockProviderName,
+		models: []string{"gpt-4o"},
+		completeFn: func(_ context.Context, req providers.Request) (*providers.Response, error) {
+			captured = req
+			return &providers.Response{ID: "r1", Model: req.Model}, nil
+		},
+	})
+
+	maxCompletionTokens := 17
+	resp, err := gw.Route(context.Background(), providers.Request{
+		Model:               "gpt-4o",
+		Messages:            []providers.Message{{Role: "user", Content: "hi"}},
+		MaxCompletionTokens: &maxCompletionTokens,
+	})
+	if err != nil {
+		t.Fatalf("Route returned error: %v", err)
+	}
+	if resp.ID != "r1" {
+		t.Fatalf("response ID = %q, want r1", resp.ID)
+	}
+	if captured.MaxTokens == nil || *captured.MaxTokens != maxCompletionTokens {
+		t.Fatalf("captured MaxTokens = %v, want %d", captured.MaxTokens, maxCompletionTokens)
+	}
+	if captured.MaxCompletionTokens == nil || *captured.MaxCompletionTokens != maxCompletionTokens {
+		t.Fatalf("captured MaxCompletionTokens = %v, want preserved %d", captured.MaxCompletionTokens, maxCompletionTokens)
 	}
 }
 

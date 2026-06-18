@@ -194,6 +194,16 @@ type Request struct {
 	LogitBias map[string]float64 `json:"logit_bias,omitempty"`
 }
 
+// NormalizeCompletionTokenLimits fills max_tokens from max_completion_tokens
+// when only the OpenAI-compatible completion-token field is provided. The
+// original max_completion_tokens value is preserved for providers that support
+// it natively.
+func (r *Request) NormalizeCompletionTokenLimits() {
+	if r.MaxTokens == nil && r.MaxCompletionTokens != nil {
+		r.MaxTokens = r.MaxCompletionTokens
+	}
+}
+
 // Validate returns an error if the request is missing required fields or
 // contains out-of-range parameter values.
 func (r Request) Validate() error {
