@@ -263,6 +263,9 @@ func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*c
 // Complete sends a chat completion request to OpenAI.
 func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
 	req.Stream = false
+	// o-series reasoning models reject max_tokens; the gateway seam leaves both
+	// token fields populated, so forward only the modern max_completion_tokens.
+	req.PreferCompletionTokens()
 
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -446,7 +449,13 @@ func applyParams(params *oai.ChatCompletionNewParams, req core.Request) {
 	if req.Seed != nil {
 		params.Seed = oai.Int(*req.Seed)
 	}
-	if req.MaxTokens != nil {
+	// Prefer max_completion_tokens: it is the modern field accepted by every
+	// chat model, including o-series reasoning models, which reject the legacy
+	// max_tokens with a 400. The gateway seam fills max_tokens from
+	// max_completion_tokens, so both may be set here — honor the modern one.
+	if req.MaxCompletionTokens != nil {
+		params.MaxCompletionTokens = oai.Int(int64(*req.MaxCompletionTokens))
+	} else if req.MaxTokens != nil {
 		params.MaxTokens = oai.Int(int64(*req.MaxTokens))
 	}
 	if req.PresencePenalty != nil {

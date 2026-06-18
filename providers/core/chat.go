@@ -200,7 +200,23 @@ type Request struct {
 // it natively.
 func (r *Request) NormalizeCompletionTokenLimits() {
 	if r.MaxTokens == nil && r.MaxCompletionTokens != nil {
-		r.MaxTokens = r.MaxCompletionTokens
+		// Copy the value rather than aliasing the pointer, so a plugin that
+		// clamps *MaxTokens in place cannot silently mutate MaxCompletionTokens.
+		v := *r.MaxCompletionTokens
+		r.MaxTokens = &v
+	}
+}
+
+// PreferCompletionTokens clears the legacy max_tokens when max_completion_tokens
+// is set. It is the counterpart to NormalizeCompletionTokenLimits, used by
+// providers on the OpenAI API surface (OpenAI, Azure OpenAI) whose o-series
+// reasoning models reject max_tokens with a 400. Because the gateway seam fills
+// max_tokens from max_completion_tokens, both fields are usually present by the
+// time a provider builds its body; forwarding both would break o-series, so
+// these providers keep only the modern field (accepted by every chat model).
+func (r *Request) PreferCompletionTokens() {
+	if r.MaxCompletionTokens != nil {
+		r.MaxTokens = nil
 	}
 }
 

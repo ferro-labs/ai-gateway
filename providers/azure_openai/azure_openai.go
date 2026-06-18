@@ -108,6 +108,9 @@ type azureOpenAIErrorResponse struct {
 
 // Complete sends a chat completion request to Azure OpenAI.
 func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
+	// Azure o-series reasoning deployments reject max_tokens; keep only the
+	// modern field (the gateway seam leaves both populated).
+	req.PreferCompletionTokens()
 	bodyReader, _, release, err := openaicompat.BuildBody(req, false)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
@@ -168,6 +171,7 @@ type azureOpenAIStreamResponse struct {
 
 // CompleteStream sends a streaming chat completion request to Azure OpenAI.
 func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan core.StreamChunk, error) {
+	req.PreferCompletionTokens()
 	bodyReader, _, release, err := openaicompat.BuildBody(req, true)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
