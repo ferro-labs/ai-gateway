@@ -166,8 +166,8 @@ func assertCompleteRequest(t *testing.T, r *http.Request) {
 	if len(body.Messages) != 1 || body.Messages[0].Role != "user" || body.Messages[0].Content != "hello" {
 		t.Errorf("messages = %#v, want user hello", body.Messages)
 	}
-	if body.Options == nil || body.Options.NumPredict == nil || *body.Options.NumPredict != 8 {
-		t.Fatalf("num_predict = %#v, want 8", body.Options)
+	if body.Options == nil || body.Options.NumPredict == nil || *body.Options.NumPredict != 99 {
+		t.Fatalf("num_predict = %#v, want 99", body.Options)
 	}
 	if body.Options.Temperature == nil || *body.Options.Temperature != 0.25 {
 		t.Fatalf("temperature = %#v, want 0.25", body.Options.Temperature)
