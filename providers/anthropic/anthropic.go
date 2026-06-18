@@ -127,12 +127,13 @@ type anthropicUsage struct {
 }
 
 type anthropicResponse struct {
-	ID      string                  `json:"id"`
-	Type    string                  `json:"type"`
-	Role    string                  `json:"role"`
-	Content []anthropicContentBlock `json:"content"`
-	Model   string                  `json:"model"`
-	Usage   anthropicUsage          `json:"usage"`
+	ID         string                  `json:"id"`
+	Type       string                  `json:"type"`
+	Role       string                  `json:"role"`
+	Content    []anthropicContentBlock `json:"content"`
+	Model      string                  `json:"model"`
+	StopReason string                  `json:"stop_reason"`
+	Usage      anthropicUsage          `json:"usage"`
 }
 
 type anthropicError struct {
@@ -239,7 +240,7 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 					Role:    aResp.Role,
 					Content: content.String(),
 				},
-				FinishReason: "stop",
+				FinishReason: core.NormalizeFinishReason(aResp.StopReason),
 			},
 		},
 		Usage: core.Usage{
@@ -267,6 +268,13 @@ type anthropicStreamContentDelta struct {
 	Delta struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
+	} `json:"delta"`
+}
+
+type anthropicStreamMessageDelta struct {
+	Type  string `json:"type"`
+	Delta struct {
+		StopReason string `json:"stop_reason"`
 	} `json:"delta"`
 }
 
@@ -365,13 +373,15 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 					}
 				}
 			case "message_delta":
+				var evt anthropicStreamMessageDelta
+				_ = json.Unmarshal([]byte(data), &evt)
 				ch <- core.StreamChunk{
 					ID:    msgID,
 					Model: model,
 					Choices: []core.StreamChoice{
 						{
 							Index:        0,
-							FinishReason: "stop",
+							FinishReason: core.NormalizeFinishReason(evt.Delta.StopReason),
 						},
 					},
 				}

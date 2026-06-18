@@ -219,7 +219,7 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 					Role:    cohResp.Message.Role,
 					Content: strings.Join(contentParts, ""),
 				},
-				FinishReason: cohResp.FinishReason,
+				FinishReason: core.NormalizeFinishReason(cohResp.FinishReason),
 			},
 		},
 		Usage: core.Usage{
@@ -336,7 +336,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 					Choices: []core.StreamChoice{
 						{
 							Index:        0,
-							FinishReason: delta.FinishReason,
+							FinishReason: core.NormalizeFinishReason(delta.FinishReason),
 						},
 					},
 				}

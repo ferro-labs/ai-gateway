@@ -533,7 +533,7 @@ func (p *Provider) completeAnthropic(ctx context.Context, req core.Request) (*co
 		Choices: []core.Choice{{
 			Index:        0,
 			Message:      core.Message{Role: core.RoleAssistant, Content: text},
-			FinishReason: anthropicResp.StopReason,
+			FinishReason: core.NormalizeFinishReason(anthropicResp.StopReason),
 		}},
 		Usage: core.Usage{
 			PromptTokens:     anthropicResp.Usage.InputTokens,
@@ -584,7 +584,7 @@ func (p *Provider) completeTitan(ctx context.Context, req core.Request) (*core.R
 		choices = append(choices, core.Choice{
 			Index:        i,
 			Message:      core.Message{Role: core.RoleAssistant, Content: result.OutputText},
-			FinishReason: result.CompletionReason,
+			FinishReason: core.NormalizeFinishReason(result.CompletionReason),
 		})
 	}
 
@@ -646,7 +646,7 @@ func (p *Provider) completeLlama(ctx context.Context, req core.Request) (*core.R
 		Choices: []core.Choice{{
 			Index:        0,
 			Message:      core.Message{Role: core.RoleAssistant, Content: llamaResp.Generation},
-			FinishReason: llamaResp.StopReason,
+			FinishReason: core.NormalizeFinishReason(llamaResp.StopReason),
 		}},
 		Usage: core.Usage{
 			PromptTokens:     llamaResp.PromptTokenCount,

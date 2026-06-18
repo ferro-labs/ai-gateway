@@ -111,8 +111,9 @@ func TestCohereProvider_CompleteStream_MockSSE(t *testing.T) {
 	if chunks[1].Choices[0].Delta.Content != " there" {
 		t.Errorf("delta content = %q, want ' there'", chunks[1].Choices[0].Delta.Content)
 	}
-	if chunks[2].Choices[0].FinishReason != "COMPLETE" {
-		t.Errorf("finish_reason = %q, want COMPLETE", chunks[2].Choices[0].FinishReason)
+	// COMPLETE is normalized to the OpenAI-canonical "stop" (#142).
+	if chunks[2].Choices[0].FinishReason != "stop" {
+		t.Errorf("finish_reason = %q, want stop", chunks[2].Choices[0].FinishReason)
 	}
 }
 
