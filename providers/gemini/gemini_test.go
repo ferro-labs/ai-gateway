@@ -282,6 +282,9 @@ func TestGeminiProvider_CompleteStream_IndexesFunctionCalls(t *testing.T) {
 	if toolCalls[1].Index == nil || *toolCalls[1].Index != 1 {
 		t.Fatalf("second tool index = %#v, want 1", toolCalls[1].Index)
 	}
+	if chunks[0].Choices[0].FinishReason != core.FinishReasonToolCalls {
+		t.Fatalf("finish reason = %q, want tool_calls", chunks[0].Choices[0].FinishReason)
+	}
 }
 
 func TestGeminiProvider_Complete_ForwardsToolsAndDecodesFunctionCall(t *testing.T) {
@@ -347,6 +350,9 @@ func TestGeminiProvider_Complete_ForwardsToolsAndDecodesFunctionCall(t *testing.
 	tc := resp.Choices[0].Message.ToolCalls[0]
 	if tc.ID != "call_1" || tc.Function.Name != "lookup" || tc.Function.Arguments != `{"city":"SF"}` {
 		t.Fatalf("tool call = %#v, want lookup", tc)
+	}
+	if resp.Choices[0].FinishReason != core.FinishReasonToolCalls {
+		t.Fatalf("finish reason = %q, want tool_calls", resp.Choices[0].FinishReason)
 	}
 }
 

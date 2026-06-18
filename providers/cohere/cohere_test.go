@@ -263,7 +263,14 @@ func TestCohereProvider_Complete_ForwardsToolsAndDecodesToolCalls(t *testing.T) 
 }
 
 func TestCohereProvider_Complete_ForwardsToolResultAndDecodesFinalAnswer(t *testing.T) {
-	var captured cohereRequest
+	var captured struct {
+		Messages []struct {
+			Role       string          `json:"role"`
+			ToolCallID string          `json:"tool_call_id,omitempty"`
+			Content    json.RawMessage `json:"content,omitempty"`
+			ToolCalls  []core.ToolCall `json:"tool_calls,omitempty"`
+		} `json:"messages"`
+	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
 			t.Fatalf("decode request: %v", err)
@@ -306,6 +313,20 @@ func TestCohereProvider_Complete_ForwardsToolResultAndDecodesFinalAnswer(t *test
 	}
 	if captured.Messages[2].Role != core.RoleTool || captured.Messages[2].ToolCallID != "call_1" {
 		t.Fatalf("tool result message = %#v, want role tool with call_1", captured.Messages[2])
+	}
+	var toolContent []struct {
+		Type     string `json:"type"`
+		Document struct {
+			Data string `json:"data"`
+		} `json:"document"`
+	}
+	if err := json.Unmarshal(captured.Messages[2].Content, &toolContent); err != nil {
+		t.Fatalf("decode tool content: %v", err)
+	}
+	if len(toolContent) != 1 ||
+		toolContent[0].Type != "document" ||
+		toolContent[0].Document.Data != `{"temp":"72F"}` {
+		t.Fatalf("tool result content = %#v, want document block", toolContent)
 	}
 	if got := resp.Choices[0].Message.Content; got != "It is 72F in SF." {
 		t.Fatalf("final answer = %q, want weather answer", got)

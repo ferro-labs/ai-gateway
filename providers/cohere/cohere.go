@@ -92,18 +92,18 @@ func (p *Provider) Models() []core.ModelInfo {
 }
 
 type cohereRequest struct {
-	Model            string         `json:"model"`
-	Messages         []core.Message `json:"messages"`
-	Tools            []core.Tool    `json:"tools,omitempty"`
-	ToolChoice       string         `json:"tool_choice,omitempty"`
-	Temperature      *float64       `json:"temperature,omitempty"`
-	MaxTokens        *int           `json:"max_tokens,omitempty"`
-	P                *float64       `json:"p,omitempty"`
-	Seed             *int64         `json:"seed,omitempty"`
-	PresencePenalty  *float64       `json:"presence_penalty,omitempty"`
-	FrequencyPenalty *float64       `json:"frequency_penalty,omitempty"`
-	StopSequences    []string       `json:"stop_sequences,omitempty"`
-	Stream           bool           `json:"stream,omitempty"`
+	Model            string                 `json:"model"`
+	Messages         []cohereRequestMessage `json:"messages"`
+	Tools            []core.Tool            `json:"tools,omitempty"`
+	ToolChoice       string                 `json:"tool_choice,omitempty"`
+	Temperature      *float64               `json:"temperature,omitempty"`
+	MaxTokens        *int                   `json:"max_tokens,omitempty"`
+	P                *float64               `json:"p,omitempty"`
+	Seed             *int64                 `json:"seed,omitempty"`
+	PresencePenalty  *float64               `json:"presence_penalty,omitempty"`
+	FrequencyPenalty *float64               `json:"frequency_penalty,omitempty"`
+	StopSequences    []string               `json:"stop_sequences,omitempty"`
+	Stream           bool                   `json:"stream,omitempty"`
 }
 
 // cohereSupportedParams lists the OpenAI parameters mappable onto the Cohere v2
@@ -112,6 +112,22 @@ type cohereRequest struct {
 var cohereSupportedParams = []string{
 	"temperature", "top_p", "max_tokens", "stop",
 	"seed", "presence_penalty", "frequency_penalty", "tools", "tool_choice",
+}
+
+type cohereRequestMessage struct {
+	Role       string          `json:"role"`
+	Content    any             `json:"content,omitempty"`
+	ToolCalls  []core.ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string          `json:"tool_call_id,omitempty"`
+}
+
+type cohereToolResultBlock struct {
+	Type     string                   `json:"type"`
+	Document cohereToolResultDocument `json:"document"`
+}
+
+type cohereToolResultDocument struct {
+	Data string `json:"data"`
 }
 
 type cohereContentBlock struct {
@@ -169,13 +185,36 @@ func cohereToolChoice(choice interface{}) string {
 	}
 }
 
+func cohereMessages(messages []core.Message) []cohereRequestMessage {
+	out := make([]cohereRequestMessage, 0, len(messages))
+	for _, msg := range messages {
+		cohMsg := cohereRequestMessage{
+			Role:       msg.Role,
+			ToolCalls:  msg.ToolCalls,
+			ToolCallID: msg.ToolCallID,
+		}
+		if msg.Role == core.RoleTool {
+			cohMsg.Content = []cohereToolResultBlock{{
+				Type: "document",
+				Document: cohereToolResultDocument{
+					Data: msg.Content,
+				},
+			}}
+		} else {
+			cohMsg.Content = msg.Content
+		}
+		out = append(out, cohMsg)
+	}
+	return out
+}
+
 // Complete sends a chat completion request to Cohere.
 func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
 	core.WarnUnsupportedParams(ctx, p.Name(), req.Model, req, cohereSupportedParams...)
 
 	cohReq := cohereRequest{
 		Model:            req.Model,
-		Messages:         req.Messages,
+		Messages:         cohereMessages(req.Messages),
 		Tools:            req.Tools,
 		ToolChoice:       cohereToolChoice(req.ToolChoice),
 		Temperature:      req.Temperature,
@@ -340,7 +379,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 
 	cohReq := cohereRequest{
 		Model:            req.Model,
-		Messages:         req.Messages,
+		Messages:         cohereMessages(req.Messages),
 		Tools:            req.Tools,
 		ToolChoice:       cohereToolChoice(req.ToolChoice),
 		Temperature:      req.Temperature,

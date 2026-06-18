@@ -304,14 +304,21 @@ func geminiParts(msg core.Message, toolCallNames map[string]string) []geminiPart
 func mapFinishReason(reason string) string {
 	switch reason {
 	case "STOP":
-		return "stop"
+		return core.FinishReasonStop
 	case "MAX_TOKENS":
-		return "length"
+		return core.FinishReasonLength
 	case "SAFETY":
-		return "content_filter"
+		return core.FinishReasonContentFilter
 	default:
 		return reason
 	}
+}
+
+func geminiFinishReason(reason string, toolCalls []core.ToolCall) string {
+	if len(toolCalls) > 0 {
+		return core.FinishReasonToolCalls
+	}
+	return mapFinishReason(reason)
 }
 
 func buildRequest(req core.Request) (geminiRequest, error) {
@@ -609,7 +616,7 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 				Content:   text,
 				ToolCalls: toolCalls,
 			},
-			FinishReason: mapFinishReason(candidate.FinishReason),
+			FinishReason: geminiFinishReason(candidate.FinishReason, toolCalls),
 		})
 	}
 
@@ -715,7 +722,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 						Content:   text,
 						ToolCalls: toolCalls,
 					},
-					FinishReason: mapFinishReason(candidate.FinishReason),
+					FinishReason: geminiFinishReason(candidate.FinishReason, toolCalls),
 				})
 			}
 			ch <- sc
