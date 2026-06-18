@@ -684,6 +684,8 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 				for _, part := range candidate.Content.Parts {
 					text += part.Text
 					if part.FunctionCall != nil {
+						toolCallIndex := len(toolCalls)
+						toolCallIndexPtr := toolCallIndex
 						args := string(part.FunctionCall.Args)
 						if args == "" {
 							args = "{}"
@@ -693,8 +695,9 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 							id = fmt.Sprintf("call_%d_%d", i, len(toolCalls))
 						}
 						toolCalls = append(toolCalls, core.ToolCall{
-							ID:   id,
-							Type: "function",
+							Index: &toolCallIndexPtr,
+							ID:    id,
+							Type:  "function",
 							Function: core.FunctionCall{
 								Name:      part.FunctionCall.Name,
 								Arguments: args,

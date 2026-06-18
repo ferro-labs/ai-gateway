@@ -244,6 +244,46 @@ func TestGeminiProvider_CompleteStream_MockSSE(t *testing.T) {
 	}
 }
 
+func TestGeminiProvider_CompleteStream_IndexesFunctionCalls(t *testing.T) {
+	sseData := `data: {"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"id":"call_1","name":"lookup_weather","args":{"city":"SF"}}},{"functionCall":{"id":"call_2","name":"lookup_time","args":{"city":"SF"}}}]},"finishReason":"STOP"}]}
+
+`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(sseData))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	ch, err := p.CompleteStream(context.Background(), core.Request{
+		Model:    "gemini-2.0-flash",
+		Messages: []core.Message{{Role: core.RoleUser, Content: "weather and time?"}},
+	})
+	if err != nil {
+		t.Fatalf("CompleteStream() error: %v", err)
+	}
+
+	var chunks []core.StreamChunk
+	for c := range ch {
+		chunks = append(chunks, c)
+	}
+
+	if len(chunks) != 1 || len(chunks[0].Choices) != 1 {
+		t.Fatalf("chunks = %#v, want one candidate chunk", chunks)
+	}
+	toolCalls := chunks[0].Choices[0].Delta.ToolCalls
+	if len(toolCalls) != 2 {
+		t.Fatalf("tool calls len = %d, want 2", len(toolCalls))
+	}
+	if toolCalls[0].Index == nil || *toolCalls[0].Index != 0 {
+		t.Fatalf("first tool index = %#v, want 0", toolCalls[0].Index)
+	}
+	if toolCalls[1].Index == nil || *toolCalls[1].Index != 1 {
+		t.Fatalf("second tool index = %#v, want 1", toolCalls[1].Index)
+	}
+}
+
 func TestGeminiProvider_Complete_ForwardsToolsAndDecodesFunctionCall(t *testing.T) {
 	var captured map[string]json.RawMessage
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -611,7 +611,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 						Model: model,
 						Choices: []core.StreamChoice{
 							{
-								Index: toolCallIndex,
+								Index: 0,
 								Delta: core.MessageDelta{
 									ToolCalls: []core.ToolCall{
 										{
@@ -641,7 +641,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 							Model: model,
 							Choices: []core.StreamChoice{
 								{
-									Index: toolCallIndex,
+									Index: 0,
 									Delta: core.MessageDelta{
 										ToolCalls: []core.ToolCall{
 											{

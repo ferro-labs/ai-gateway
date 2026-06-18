@@ -227,6 +227,12 @@ data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use"
 event: content_block_delta
 data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"city\""}}
 
+event: content_block_start
+data: {"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"toolu_2","name":"lookup_time","input":{}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"city\""}}
+
 event: message_delta
 data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}
 
@@ -252,16 +258,33 @@ data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}
 		chunks = append(chunks, c)
 	}
 
-	if len(chunks) != 4 {
-		t.Fatalf("chunks len = %d, want 4: %#v", len(chunks), chunks)
+	if len(chunks) != 6 {
+		t.Fatalf("chunks len = %d, want 6: %#v", len(chunks), chunks)
 	}
 	start := chunks[1].Choices[0].Delta.ToolCalls[0]
+	if chunks[1].Choices[0].Index != 0 {
+		t.Fatalf("choice index = %d, want sole completion index 0", chunks[1].Choices[0].Index)
+	}
 	if start.Index == nil || *start.Index != 0 {
 		t.Fatalf("tool call index = %#v, want OpenAI tool index 0", start.Index)
 	}
 	args := chunks[2].Choices[0].Delta.ToolCalls[0]
 	if args.Index == nil || *args.Index != 0 || args.Function.Arguments != `{"city"` {
 		t.Fatalf("args delta = %#v, want tool index 0 with city fragment", args)
+	}
+	secondStart := chunks[3].Choices[0].Delta.ToolCalls[0]
+	if chunks[3].Choices[0].Index != 0 {
+		t.Fatalf("second choice index = %d, want sole completion index 0", chunks[3].Choices[0].Index)
+	}
+	if secondStart.Index == nil || *secondStart.Index != 1 {
+		t.Fatalf("second tool call index = %#v, want OpenAI tool index 1", secondStart.Index)
+	}
+	secondArgs := chunks[4].Choices[0].Delta.ToolCalls[0]
+	if chunks[4].Choices[0].Index != 0 {
+		t.Fatalf("second args choice index = %d, want sole completion index 0", chunks[4].Choices[0].Index)
+	}
+	if secondArgs.Index == nil || *secondArgs.Index != 1 || secondArgs.Function.Arguments != `{"city"` {
+		t.Fatalf("second args delta = %#v, want tool index 1 with city fragment", secondArgs)
 	}
 }
 
