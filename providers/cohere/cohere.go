@@ -256,6 +256,8 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 
 type cohereStreamEvent struct {
 	Type  string          `json:"type"`
+	ID    string          `json:"id,omitempty"`
+	Index int             `json:"index,omitempty"`
 	Delta json.RawMessage `json:"delta"`
 }
 
@@ -270,6 +272,66 @@ type cohereContentDelta struct {
 type cohereMessageEndDelta struct {
 	FinishReason string      `json:"finish_reason"`
 	Usage        cohereUsage `json:"usage"`
+}
+
+type cohereToolCallStartDelta struct {
+	Message struct {
+		ToolCalls json.RawMessage `json:"tool_calls"`
+	} `json:"message"`
+}
+
+type cohereToolCallDelta struct {
+	Message struct {
+		ToolCalls json.RawMessage `json:"tool_calls"`
+	} `json:"message"`
+}
+
+type cohereToolCallDeltaPayload struct {
+	Function struct {
+		Arguments string `json:"arguments"`
+	} `json:"function"`
+}
+
+func intPtr(i int) *int {
+	return &i
+}
+
+func cohereStreamToolCallStart(raw json.RawMessage, index int) (core.ToolCall, bool) {
+	var calls []core.ToolCall
+	if err := json.Unmarshal(raw, &calls); err == nil && len(calls) > 0 {
+		calls[0].Index = intPtr(index)
+		return calls[0], true
+	}
+	var call core.ToolCall
+	if err := json.Unmarshal(raw, &call); err == nil && (call.ID != "" || call.Function.Name != "") {
+		call.Index = intPtr(index)
+		return call, true
+	}
+	return core.ToolCall{}, false
+}
+
+func cohereStreamToolCallDelta(raw json.RawMessage, index int) (core.ToolCall, bool) {
+	var payload cohereToolCallDeltaPayload
+	if err := json.Unmarshal(raw, &payload); err == nil && payload.Function.Arguments != "" {
+		return core.ToolCall{
+			Index: intPtr(index),
+			Type:  "function",
+			Function: core.FunctionCall{
+				Arguments: payload.Function.Arguments,
+			},
+		}, true
+	}
+	var payloads []cohereToolCallDeltaPayload
+	if err := json.Unmarshal(raw, &payloads); err == nil && len(payloads) > 0 && payloads[0].Function.Arguments != "" {
+		return core.ToolCall{
+			Index: intPtr(index),
+			Type:  "function",
+			Function: core.FunctionCall{
+				Arguments: payloads[0].Function.Arguments,
+			},
+		}, true
+	}
+	return core.ToolCall{}, false
 }
 
 // CompleteStream sends a streaming chat completion request to Cohere.
@@ -349,6 +411,46 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 							Index: 0,
 							Delta: core.MessageDelta{
 								Content: delta.Message.Content.Text,
+							},
+						},
+					},
+				}
+			case "tool-call-start":
+				var delta cohereToolCallStartDelta
+				if json.Unmarshal(event.Delta, &delta) != nil {
+					continue
+				}
+				tc, ok := cohereStreamToolCallStart(delta.Message.ToolCalls, event.Index)
+				if !ok {
+					continue
+				}
+				ch <- core.StreamChunk{
+					ID: event.ID,
+					Choices: []core.StreamChoice{
+						{
+							Index: event.Index,
+							Delta: core.MessageDelta{
+								ToolCalls: []core.ToolCall{tc},
+							},
+						},
+					},
+				}
+			case "tool-call-delta":
+				var delta cohereToolCallDelta
+				if json.Unmarshal(event.Delta, &delta) != nil {
+					continue
+				}
+				tc, ok := cohereStreamToolCallDelta(delta.Message.ToolCalls, event.Index)
+				if !ok {
+					continue
+				}
+				ch <- core.StreamChunk{
+					ID: event.ID,
+					Choices: []core.StreamChoice{
+						{
+							Index: event.Index,
+							Delta: core.MessageDelta{
+								ToolCalls: []core.ToolCall{tc},
 							},
 						},
 					},

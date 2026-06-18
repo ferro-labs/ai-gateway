@@ -483,9 +483,21 @@ type anthropicStreamContentDelta struct {
 	Type  string `json:"type"`
 	Index int    `json:"index"`
 	Delta struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
+		Type        string `json:"type"`
+		Text        string `json:"text"`
+		PartialJSON string `json:"partial_json"`
 	} `json:"delta"`
+}
+
+type anthropicStreamContentBlockStart struct {
+	Type         string `json:"type"`
+	Index        int    `json:"index"`
+	ContentBlock struct {
+		Type  string          `json:"type"`
+		ID    string          `json:"id"`
+		Name  string          `json:"name"`
+		Input json.RawMessage `json:"input"`
+	} `json:"content_block"`
 }
 
 type anthropicStreamMessageDelta struct {
@@ -494,6 +506,10 @@ type anthropicStreamMessageDelta struct {
 		StopReason string `json:"stop_reason"`
 	} `json:"delta"`
 	Usage anthropicUsage `json:"usage"`
+}
+
+func streamIndexPtr(i int) *int {
+	return &i
 }
 
 // CompleteStream sends a streaming chat completion request to Anthropic.
@@ -582,9 +598,60 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 					cacheReadTokens = evt.Message.Usage.CacheReadInputTokens
 					cacheWriteTokens = evt.Message.Usage.CacheCreationInputTokens
 				}
+			case "content_block_start":
+				var evt anthropicStreamContentBlockStart
+				if json.Unmarshal([]byte(data), &evt) == nil && evt.ContentBlock.Type == "tool_use" {
+					ch <- core.StreamChunk{
+						ID:    msgID,
+						Model: model,
+						Choices: []core.StreamChoice{
+							{
+								Index: evt.Index,
+								Delta: core.MessageDelta{
+									ToolCalls: []core.ToolCall{
+										{
+											Index: streamIndexPtr(evt.Index),
+											ID:    evt.ContentBlock.ID,
+											Type:  "function",
+											Function: core.FunctionCall{
+												Name: evt.ContentBlock.Name,
+											},
+										},
+									},
+								},
+							},
+						},
+					}
+				}
 			case "content_block_delta":
 				var evt anthropicStreamContentDelta
 				if json.Unmarshal([]byte(data), &evt) == nil {
+					if evt.Delta.Type == "input_json_delta" {
+						ch <- core.StreamChunk{
+							ID:    msgID,
+							Model: model,
+							Choices: []core.StreamChoice{
+								{
+									Index: evt.Index,
+									Delta: core.MessageDelta{
+										ToolCalls: []core.ToolCall{
+											{
+												Index: streamIndexPtr(evt.Index),
+												Type:  "function",
+												Function: core.FunctionCall{
+													Arguments: evt.Delta.PartialJSON,
+												},
+											},
+										},
+									},
+								},
+							},
+						}
+						continue
+					}
+					if evt.Delta.Type != "text_delta" {
+						continue
+					}
 					ch <- core.StreamChunk{
 						ID:    msgID,
 						Model: model,

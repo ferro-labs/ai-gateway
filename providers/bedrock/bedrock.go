@@ -835,23 +835,96 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 
 		for event := range stream.Events() {
 			if e, ok := event.(*types.ResponseStreamMemberChunk); ok {
-				var delta struct {
-					Type  string `json:"type"`
-					Index int    `json:"index"`
-					Delta struct {
-						Type string `json:"type"`
-						Text string `json:"text"`
-					} `json:"delta"`
+				var eventType struct {
+					Type string `json:"type"`
 				}
-				if err := json.Unmarshal(e.Value.Bytes, &delta); err != nil {
+				if err := json.Unmarshal(e.Value.Bytes, &eventType); err != nil {
 					continue
 				}
-				if delta.Type == "content_block_delta" && delta.Delta.Type == "text_delta" {
+
+				switch eventType.Type {
+				case "content_block_start":
+					var start struct {
+						Index        int `json:"index"`
+						ContentBlock struct {
+							Type string `json:"type"`
+							ID   string `json:"id"`
+							Name string `json:"name"`
+						} `json:"content_block"`
+					}
+					if err := json.Unmarshal(e.Value.Bytes, &start); err != nil || start.ContentBlock.Type != "tool_use" {
+						continue
+					}
+					ch <- core.StreamChunk{
+						Model: req.Model,
+						Choices: []core.StreamChoice{{
+							Index: start.Index,
+							Delta: core.MessageDelta{
+								ToolCalls: []core.ToolCall{{
+									Index: bedrockStreamIndexPtr(start.Index),
+									ID:    start.ContentBlock.ID,
+									Type:  "function",
+									Function: core.FunctionCall{
+										Name: start.ContentBlock.Name,
+									},
+								}},
+							},
+						}},
+					}
+				case "content_block_delta":
+					var delta struct {
+						Index int `json:"index"`
+						Delta struct {
+							Type        string `json:"type"`
+							Text        string `json:"text"`
+							PartialJSON string `json:"partial_json"`
+						} `json:"delta"`
+					}
+					if err := json.Unmarshal(e.Value.Bytes, &delta); err != nil {
+						continue
+					}
+					if delta.Delta.Type == "input_json_delta" {
+						ch <- core.StreamChunk{
+							Model: req.Model,
+							Choices: []core.StreamChoice{{
+								Index: delta.Index,
+								Delta: core.MessageDelta{
+									ToolCalls: []core.ToolCall{{
+										Index: bedrockStreamIndexPtr(delta.Index),
+										Type:  "function",
+										Function: core.FunctionCall{
+											Arguments: delta.Delta.PartialJSON,
+										},
+									}},
+								},
+							}},
+						}
+						continue
+					}
+					if delta.Delta.Type != "text_delta" {
+						continue
+					}
 					ch <- core.StreamChunk{
 						Model: req.Model,
 						Choices: []core.StreamChoice{{
 							Index: delta.Index,
 							Delta: core.MessageDelta{Content: delta.Delta.Text},
+						}},
+					}
+				case "message_delta":
+					var delta struct {
+						Delta struct {
+							StopReason string `json:"stop_reason"`
+						} `json:"delta"`
+					}
+					if err := json.Unmarshal(e.Value.Bytes, &delta); err != nil {
+						continue
+					}
+					ch <- core.StreamChunk{
+						Model: req.Model,
+						Choices: []core.StreamChoice{{
+							Index:        0,
+							FinishReason: core.NormalizeFinishReason(delta.Delta.StopReason),
 						}},
 					}
 				}
@@ -863,4 +936,8 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 	}()
 
 	return ch, nil
+}
+
+func bedrockStreamIndexPtr(i int) *int {
+	return &i
 }

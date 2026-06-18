@@ -117,6 +117,67 @@ func TestCohereProvider_CompleteStream_MockSSE(t *testing.T) {
 	}
 }
 
+func TestCohereProvider_CompleteStream_ForwardsToolCallDeltas(t *testing.T) {
+	sseData := `data: {"type":"message-start","id":"chat-1","delta":{"message":{"role":"assistant"}}}
+
+data: {"type":"tool-call-start","index":0,"delta":{"message":{"tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":""}}]}}}
+
+data: {"type":"tool-call-delta","index":0,"delta":{"message":{"tool_calls":{"function":{"arguments":"{\"city\""}}}}}
+
+data: {"type":"tool-call-delta","index":0,"delta":{"message":{"tool_calls":{"function":{"arguments":":\"SF\"}"}}}}}
+
+data: {"type":"tool-call-end","index":0}
+
+data: {"type":"message-end","delta":{"finish_reason":"TOOL_CALL","usage":{"tokens":{"input_tokens":5,"output_tokens":2}}}}
+
+`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(sseData))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	ch, err := p.CompleteStream(context.Background(), core.Request{
+		Model:    "command-r-plus",
+		Messages: []core.Message{{Role: core.RoleUser, Content: "weather?"}},
+		Tools: []core.Tool{{
+			Type: "function",
+			Function: core.Function{
+				Name:       "lookup",
+				Parameters: json.RawMessage(`{"type":"object","properties":{"city":{"type":"string"}}}`),
+			},
+		}},
+		ToolChoice: "required",
+	})
+	if err != nil {
+		t.Fatalf("CompleteStream() error: %v", err)
+	}
+
+	var chunks []core.StreamChunk
+	for c := range ch {
+		chunks = append(chunks, c)
+	}
+
+	if len(chunks) != 4 {
+		t.Fatalf("chunks len = %d, want 4: %#v", len(chunks), chunks)
+	}
+	start := chunks[0].Choices[0].Delta.ToolCalls[0]
+	if start.Index == nil || *start.Index != 0 || start.ID != "call_1" || start.Function.Name != "lookup" {
+		t.Fatalf("start tool call = %#v, want lookup call at index 0", start)
+	}
+	if chunks[1].Choices[0].Delta.ToolCalls[0].Function.Arguments != `{"city"` {
+		t.Fatalf("first args delta = %#v", chunks[1].Choices[0].Delta.ToolCalls)
+	}
+	if chunks[2].Choices[0].Delta.ToolCalls[0].Function.Arguments != `:"SF"}` {
+		t.Fatalf("second args delta = %#v", chunks[2].Choices[0].Delta.ToolCalls)
+	}
+	if chunks[3].Choices[0].FinishReason != core.FinishReasonToolCalls {
+		t.Fatalf("finish_reason = %q, want %q", chunks[3].Choices[0].FinishReason, core.FinishReasonToolCalls)
+	}
+}
+
 func TestCohereProvider_Complete_ForwardsToolsAndDecodesToolCalls(t *testing.T) {
 	var captured cohereRequest
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -169,6 +230,59 @@ func TestCohereProvider_Complete_ForwardsToolsAndDecodesToolCalls(t *testing.T) 
 	}
 	if resp.Choices[0].FinishReason != core.FinishReasonToolCalls {
 		t.Fatalf("finish reason = %q, want tool_calls", resp.Choices[0].FinishReason)
+	}
+}
+
+func TestCohereProvider_Complete_ForwardsToolResultAndDecodesFinalAnswer(t *testing.T) {
+	var captured cohereRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{
+			"id":"chat-2",
+			"finish_reason":"COMPLETE",
+			"message":{
+				"role":"assistant",
+				"content":[{"type":"text","text":"It is 72F in SF."}]
+			},
+			"usage":{"tokens":{"input_tokens":2,"output_tokens":3}}
+		}`)
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	resp, err := p.Complete(context.Background(), core.Request{
+		Model: "command-r-plus",
+		Messages: []core.Message{
+			{Role: core.RoleUser, Content: "weather?"},
+			{Role: core.RoleAssistant, ToolCalls: []core.ToolCall{{
+				ID:       "call_1",
+				Type:     "function",
+				Function: core.FunctionCall{Name: "lookup", Arguments: `{"city":"SF"}`},
+			}}},
+			{Role: core.RoleTool, ToolCallID: "call_1", Content: `{"temp":"72F"}`},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete() error: %v", err)
+	}
+
+	if len(captured.Messages) != 3 {
+		t.Fatalf("messages len = %d, want 3", len(captured.Messages))
+	}
+	if len(captured.Messages[1].ToolCalls) != 1 || captured.Messages[1].ToolCalls[0].ID != "call_1" {
+		t.Fatalf("assistant tool calls = %#v, want call_1", captured.Messages[1].ToolCalls)
+	}
+	if captured.Messages[2].Role != core.RoleTool || captured.Messages[2].ToolCallID != "call_1" {
+		t.Fatalf("tool result message = %#v, want role tool with call_1", captured.Messages[2])
+	}
+	if got := resp.Choices[0].Message.Content; got != "It is 72F in SF." {
+		t.Fatalf("final answer = %q, want weather answer", got)
+	}
+	if len(resp.Choices[0].Message.ToolCalls) != 0 {
+		t.Fatalf("final answer tool calls = %#v, want none", resp.Choices[0].Message.ToolCalls)
 	}
 }
 

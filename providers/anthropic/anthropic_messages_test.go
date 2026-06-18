@@ -240,6 +240,63 @@ func TestComplete_ForwardsToolsAndDecodesToolUse(t *testing.T) {
 	}
 }
 
+func TestComplete_ForwardsToolResultAndDecodesFinalAnswer(t *testing.T) {
+	var captured map[string]json.RawMessage
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &captured)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{
+			"id":"msg_2",
+			"type":"message",
+			"role":"assistant",
+			"content":[{"type":"text","text":"It is 72F in SF."}],
+			"model":"claude",
+			"stop_reason":"end_turn",
+			"usage":{"input_tokens":2,"output_tokens":3}
+		}`)
+	}))
+	defer srv.Close()
+
+	p, err := New("test-key", srv.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	resp, err := p.Complete(context.Background(), core.Request{
+		Model: "claude-3-5-sonnet",
+		Messages: []core.Message{
+			{Role: core.RoleUser, Content: "weather?"},
+			{Role: core.RoleAssistant, ToolCalls: []core.ToolCall{{
+				ID:       "toolu_1",
+				Type:     "function",
+				Function: core.FunctionCall{Name: "lookup", Arguments: `{"city":"SF"}`},
+			}}},
+			{Role: core.RoleTool, ToolCallID: "toolu_1", Content: `{"temp":"72F"}`},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	msgs := decodeMessages(t, captured)
+	if len(msgs) != 3 {
+		t.Fatalf("messages len = %d, want 3", len(msgs))
+	}
+	var resultBlocks []map[string]json.RawMessage
+	if err := json.Unmarshal(msgs[2]["content"], &resultBlocks); err != nil {
+		t.Fatalf("decode tool result blocks: %v", err)
+	}
+	if str(msgs[2]["role"]) != core.RoleUser || str(resultBlocks[0]["type"]) != "tool_result" || str(resultBlocks[0]["tool_use_id"]) != "toolu_1" {
+		t.Fatalf("tool result message = %#v blocks=%#v", msgs[2], resultBlocks)
+	}
+	if got := resp.Choices[0].Message.Content; got != "It is 72F in SF." {
+		t.Fatalf("final answer = %q, want weather answer", got)
+	}
+	if len(resp.Choices[0].Message.ToolCalls) != 0 {
+		t.Fatalf("final answer tool calls = %#v, want none", resp.Choices[0].Message.ToolCalls)
+	}
+}
+
 // TestBuildMessages_PlainTextStaysString verifies the common path is unchanged:
 // a plain-text turn still serializes content as a JSON string.
 func TestBuildMessages_PlainTextStaysString(t *testing.T) {
