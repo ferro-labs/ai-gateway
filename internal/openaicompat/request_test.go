@@ -149,6 +149,7 @@ func TestDecodeStreamChunk_ForwardsToolCallDeltas(t *testing.T) {
 			"delta":{
 				"role":"assistant",
 				"tool_calls":[{
+					"index":0,
 					"id":"call_1",
 					"type":"function",
 					"function":{"name":"lookup","arguments":"{\"city\":\"SF\"}"}
@@ -169,6 +170,9 @@ func TestDecodeStreamChunk_ForwardsToolCallDeltas(t *testing.T) {
 	got := chunk.Choices[0].Delta.ToolCalls
 	if len(got) != 1 {
 		t.Fatalf("tool_calls len = %d, want 1", len(got))
+	}
+	if got[0].Index == nil || *got[0].Index != 0 {
+		t.Fatalf("tool call index = %#v, want 0", got[0].Index)
 	}
 	if got[0].ID != "call_1" || got[0].Function.Name != "lookup" || got[0].Function.Arguments != `{"city":"SF"}` {
 		t.Fatalf("tool call = %#v, want lookup call", got[0])

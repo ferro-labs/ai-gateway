@@ -378,6 +378,58 @@ func TestOpenAIProvider_CompleteStream_MockSSE(t *testing.T) {
 	}
 }
 
+func TestOpenAIProvider_CompleteStream_ForwardsToolCallIndex(t *testing.T) {
+	sseData := "data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1234567890,\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"\"}}]},\"finish_reason\":null}]}\n\n" +
+		"data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1234567890,\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"city\\\"\"}}]},\"finish_reason\":null}]}\n\n" +
+		"data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1234567890,\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n" +
+		"data: [DONE]\n\n"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(sseData))
+	}))
+	defer srv.Close()
+
+	provider, _ := New("sk-test-key", srv.URL)
+	ch, err := provider.CompleteStream(context.Background(), core.Request{
+		Model:    "gpt-4o",
+		Messages: []core.Message{{Role: core.RoleUser, Content: "weather?"}},
+		Tools: []core.Tool{{
+			Type: "function",
+			Function: core.Function{
+				Name: "lookup",
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("CompleteStream() error: %v", err)
+	}
+
+	var chunks []core.StreamChunk
+	for c := range ch {
+		if c.Error != nil {
+			t.Fatalf("stream error: %v", c.Error)
+		}
+		chunks = append(chunks, c)
+	}
+
+	if len(chunks) != 3 {
+		t.Fatalf("chunks len = %d, want 3: %#v", len(chunks), chunks)
+	}
+	start := chunks[0].Choices[0].Delta.ToolCalls[0]
+	if start.Index == nil || *start.Index != 0 || start.ID != "call_1" || start.Function.Name != "lookup" {
+		t.Fatalf("start tool call = %#v, want lookup at index 0", start)
+	}
+	delta := chunks[1].Choices[0].Delta.ToolCalls[0]
+	if delta.Index == nil || *delta.Index != 0 || delta.Function.Arguments != `{"city"` {
+		t.Fatalf("args delta = %#v, want index 0 city fragment", delta)
+	}
+	if chunks[2].Choices[0].FinishReason != core.FinishReasonToolCalls {
+		t.Fatalf("finish_reason = %q, want %q", chunks[2].Choices[0].FinishReason, core.FinishReasonToolCalls)
+	}
+}
+
 // ── Embed() validation tests ─────────────────────────────────────────────────
 
 func TestOpenAIProvider_Embed_InvalidInputType(t *testing.T) {

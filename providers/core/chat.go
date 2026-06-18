@@ -36,6 +36,7 @@ type Function struct {
 
 // ToolCall is a function invocation returned by the model in its response.
 type ToolCall struct {
+	Index    *int         `json:"index,omitempty"` // present on streaming deltas
 	ID       string       `json:"id"`
 	Type     string       `json:"type"` // "function"
 	Function FunctionCall `json:"function"`

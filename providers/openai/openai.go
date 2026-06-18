@@ -562,9 +562,11 @@ func openAIStreamToolCalls(in []oai.ChatCompletionChunkChoiceDeltaToolCall) []co
 	}
 	out := make([]core.ToolCall, 0, len(in))
 	for _, tc := range in {
+		index := int(tc.Index)
 		out = append(out, core.ToolCall{
-			ID:   tc.ID,
-			Type: tc.Type,
+			Index: &index,
+			ID:    tc.ID,
+			Type:  tc.Type,
 			Function: core.FunctionCall{
 				Name:      tc.Function.Name,
 				Arguments: tc.Function.Arguments,
