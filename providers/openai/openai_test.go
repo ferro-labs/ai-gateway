@@ -228,6 +228,34 @@ func TestOpenAIProvider_Complete_MockHTTP(t *testing.T) {
 	}
 }
 
+func TestBuildMessages_AssistantToolCalls(t *testing.T) {
+	msgs := buildMessages([]core.Message{
+		{Role: core.RoleAssistant, ToolCalls: []core.ToolCall{{
+			ID:       "call_1",
+			Type:     "function",
+			Function: core.FunctionCall{Name: "lookup", Arguments: `{"city":"SF"}`},
+		}}},
+		{Role: core.RoleTool, ToolCallID: "call_1", Content: "72F"},
+	})
+	raw, err := json.Marshal(msgs)
+	if err != nil {
+		t.Fatalf("marshal messages: %v", err)
+	}
+	var got []core.Message
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal messages: %v\n%s", err, raw)
+	}
+	if len(got) != 2 {
+		t.Fatalf("messages len = %d, want 2", len(got))
+	}
+	if len(got[0].ToolCalls) != 1 || got[0].ToolCalls[0].Function.Name != "lookup" {
+		t.Fatalf("assistant tool_calls = %#v, want lookup", got[0].ToolCalls)
+	}
+	if got[1].ToolCallID != "call_1" {
+		t.Fatalf("tool_call_id = %q, want call_1", got[1].ToolCallID)
+	}
+}
+
 func TestOpenAIProvider_Complete_DrainsSuccessfulResponseBody(t *testing.T) {
 	var newConnections atomic.Int32
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
