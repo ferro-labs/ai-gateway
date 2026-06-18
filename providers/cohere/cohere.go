@@ -357,6 +357,33 @@ type cohereEmbedRequest struct {
 	InputType string   `json:"input_type"`
 }
 
+// defaultEmbedInputType is Cohere's document-indexing distribution, used when
+// the caller does not specify an input_type.
+const defaultEmbedInputType = "search_document"
+
+// cohereTextInputTypes are the input_type values Cohere accepts for text
+// embeddings. "image" is excluded — this path embeds texts.
+var cohereTextInputTypes = map[string]bool{
+	defaultEmbedInputType: true,
+	"search_query":        true,
+	"classification":      true,
+	"clustering":          true,
+}
+
+// resolveInputType validates a caller-supplied Cohere input_type, defaulting to
+// "search_document" (document-indexing distribution) when unset. Cohere requires
+// query embeddings to use "search_query", so honoring the override is what lets
+// retrieval work correctly.
+func resolveInputType(requested string) (string, error) {
+	if requested == "" {
+		return defaultEmbedInputType, nil
+	}
+	if !cohereTextInputTypes[requested] {
+		return "", fmt.Errorf("embed: unsupported input_type %q; want one of search_document, search_query, classification, clustering", requested)
+	}
+	return requested, nil
+}
+
 type cohereEmbedResponse struct {
 	ID         string      `json:"id"`
 	Embeddings [][]float64 `json:"embeddings"`
@@ -401,11 +428,15 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 	if req.User != "" {
 		return nil, fmt.Errorf("embed: user is not supported by Cohere embeddings")
 	}
+	inputType, err := resolveInputType(req.InputType)
+	if err != nil {
+		return nil, err
+	}
 
 	cohReq := cohereEmbedRequest{
 		Texts:     texts,
 		Model:     req.Model,
-		InputType: "search_document",
+		InputType: inputType,
 	}
 
 	bodyReader, _, release, err := core.JSONBodyReader(cohReq)

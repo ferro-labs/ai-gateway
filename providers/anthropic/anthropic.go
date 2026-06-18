@@ -392,9 +392,10 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 type anthropicStreamMessageStart struct {
 	Type    string `json:"type"`
 	Message struct {
-		ID    string `json:"id"`
-		Model string `json:"model"`
-		Role  string `json:"role"`
+		ID    string         `json:"id"`
+		Model string         `json:"model"`
+		Role  string         `json:"role"`
+		Usage anthropicUsage `json:"usage"`
 	} `json:"message"`
 }
 
@@ -412,6 +413,7 @@ type anthropicStreamMessageDelta struct {
 	Delta struct {
 		StopReason string `json:"stop_reason"`
 	} `json:"delta"`
+	Usage anthropicUsage `json:"usage"`
 }
 
 // CompleteStream sends a streaming chat completion request to Anthropic.
@@ -471,6 +473,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 		defer func() { _ = httpResp.Body.Close() }()
 
 		var msgID, model string
+		var promptTokens, cacheReadTokens, cacheWriteTokens int
 		scanner := core.NewSSEScanner(httpResp.Body)
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -491,6 +494,11 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 				if json.Unmarshal([]byte(data), &evt) == nil {
 					msgID = evt.Message.ID
 					model = evt.Message.Model
+					// Anthropic reports prompt + cache tokens once, on
+					// message_start; output_tokens arrive later on message_delta.
+					promptTokens = evt.Message.Usage.InputTokens
+					cacheReadTokens = evt.Message.Usage.CacheReadInputTokens
+					cacheWriteTokens = evt.Message.Usage.CacheCreationInputTokens
 				}
 			case "content_block_delta":
 				var evt anthropicStreamContentDelta
@@ -511,6 +519,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 			case "message_delta":
 				var evt anthropicStreamMessageDelta
 				_ = json.Unmarshal([]byte(data), &evt)
+				completionTokens := evt.Usage.OutputTokens
 				ch <- core.StreamChunk{
 					ID:    msgID,
 					Model: model,
@@ -519,6 +528,13 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 							Index:        0,
 							FinishReason: core.NormalizeFinishReason(evt.Delta.StopReason),
 						},
+					},
+					Usage: &core.Usage{
+						PromptTokens:     promptTokens,
+						CompletionTokens: completionTokens,
+						TotalTokens:      promptTokens + completionTokens,
+						CacheReadTokens:  cacheReadTokens,
+						CacheWriteTokens: cacheWriteTokens,
 					},
 				}
 			}

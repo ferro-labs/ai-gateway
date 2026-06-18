@@ -90,7 +90,33 @@ type response struct {
 	ID      string        `json:"id"`
 	Model   string        `json:"model"`
 	Choices []core.Choice `json:"choices"`
-	Usage   core.Usage    `json:"usage"`
+	Usage   usage         `json:"usage"`
+}
+
+// usage extends the OpenAI usage shape with DeepSeek's cache-accounting and
+// reasoning fields, which the gateway's canonical usage would otherwise drop.
+type usage struct {
+	PromptTokens            int `json:"prompt_tokens"`
+	CompletionTokens        int `json:"completion_tokens"`
+	TotalTokens             int `json:"total_tokens"`
+	PromptCacheHitTokens    int `json:"prompt_cache_hit_tokens"`
+	PromptCacheMissTokens   int `json:"prompt_cache_miss_tokens"`
+	CompletionTokensDetails struct {
+		ReasoningTokens int `json:"reasoning_tokens"`
+	} `json:"completion_tokens_details"`
+}
+
+// toCore maps DeepSeek usage onto the canonical usage. The cache-hit count is
+// the tokens served from DeepSeek's context cache (read); the miss count is
+// derivable as prompt_tokens − hit and is left off the canonical shape.
+func (u usage) toCore() core.Usage {
+	return core.Usage{
+		PromptTokens:     u.PromptTokens,
+		CompletionTokens: u.CompletionTokens,
+		TotalTokens:      u.TotalTokens,
+		ReasoningTokens:  u.CompletionTokensDetails.ReasoningTokens,
+		CacheReadTokens:  u.PromptCacheHitTokens,
+	}
 }
 
 type errorDetail struct {
@@ -108,8 +134,9 @@ type streamResponse struct {
 	Choices []struct {
 		Index int `json:"index"`
 		Delta struct {
-			Role    string `json:"role,omitempty"`
-			Content string `json:"content,omitempty"`
+			Role             string `json:"role,omitempty"`
+			Content          string `json:"content,omitempty"`
+			ReasoningContent string `json:"reasoning_content,omitempty"`
 		} `json:"delta"`
 		FinishReason string `json:"finish_reason,omitempty"`
 	} `json:"choices"`
@@ -159,7 +186,7 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 		Model:    pResp.Model,
 		Provider: p.name,
 		Choices:  pResp.Choices,
-		Usage:    pResp.Usage,
+		Usage:    pResp.Usage.toCore(),
 	}, nil
 }
 
@@ -219,8 +246,9 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 				sc.Choices = append(sc.Choices, core.StreamChoice{
 					Index: c.Index,
 					Delta: core.MessageDelta{
-						Role:    c.Delta.Role,
-						Content: c.Delta.Content,
+						Role:             c.Delta.Role,
+						Content:          c.Delta.Content,
+						ReasoningContent: c.Delta.ReasoningContent,
 					},
 					FinishReason: c.FinishReason,
 				})

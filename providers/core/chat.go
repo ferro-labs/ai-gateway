@@ -66,23 +66,28 @@ type Message struct {
 	Name         string        `json:"-"`
 	ToolCalls    []ToolCall    `json:"-"` // tool calls issued by the model
 	ToolCallID   string        `json:"-"` // for role="tool" result messages
+	// ReasoningContent is the model's chain-of-thought, surfaced by reasoning
+	// models (e.g. deepseek-reasoner). Empty for models that don't emit it.
+	ReasoningContent string `json:"-"`
 }
 
 // MarshalJSON encodes a Message to JSON.  Content is written as a string unless
 // ContentParts is set, in which case it is encoded as an array.
 func (m Message) MarshalJSON() ([]byte, error) {
 	type wire struct {
-		Role       string          `json:"role"`
-		Content    json.RawMessage `json:"content,omitempty"`
-		Name       string          `json:"name,omitempty"`
-		ToolCalls  []ToolCall      `json:"tool_calls,omitempty"`
-		ToolCallID string          `json:"tool_call_id,omitempty"`
+		Role             string          `json:"role"`
+		Content          json.RawMessage `json:"content,omitempty"`
+		Name             string          `json:"name,omitempty"`
+		ToolCalls        []ToolCall      `json:"tool_calls,omitempty"`
+		ToolCallID       string          `json:"tool_call_id,omitempty"`
+		ReasoningContent string          `json:"reasoning_content,omitempty"`
 	}
 	w := wire{
-		Role:       m.Role,
-		Name:       m.Name,
-		ToolCalls:  m.ToolCalls,
-		ToolCallID: m.ToolCallID,
+		Role:             m.Role,
+		Name:             m.Name,
+		ToolCalls:        m.ToolCalls,
+		ToolCallID:       m.ToolCallID,
+		ReasoningContent: m.ReasoningContent,
 	}
 	if len(m.ContentParts) > 0 {
 		b, err := json.Marshal(m.ContentParts)
@@ -104,11 +109,12 @@ func (m Message) MarshalJSON() ([]byte, error) {
 // string or an array of ContentPart objects; both forms are handled.
 func (m *Message) UnmarshalJSON(b []byte) error {
 	type wire struct {
-		Role       string          `json:"role"`
-		Content    json.RawMessage `json:"content"`
-		Name       string          `json:"name"`
-		ToolCalls  []ToolCall      `json:"tool_calls"`
-		ToolCallID string          `json:"tool_call_id"`
+		Role             string          `json:"role"`
+		Content          json.RawMessage `json:"content"`
+		Name             string          `json:"name"`
+		ToolCalls        []ToolCall      `json:"tool_calls"`
+		ToolCallID       string          `json:"tool_call_id"`
+		ReasoningContent string          `json:"reasoning_content"`
 	}
 	var w wire
 	if err := json.Unmarshal(b, &w); err != nil {
@@ -118,6 +124,7 @@ func (m *Message) UnmarshalJSON(b []byte) error {
 	m.Name = w.Name
 	m.ToolCalls = w.ToolCalls
 	m.ToolCallID = w.ToolCallID
+	m.ReasoningContent = w.ReasoningContent
 
 	if len(w.Content) == 0 || string(w.Content) == "null" {
 		return nil
