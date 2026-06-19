@@ -149,9 +149,11 @@ type anthropicTool struct {
 	InputSchema json.RawMessage `json:"input_schema,omitempty"`
 }
 
+// blockTypeToolUse is the Anthropic content-block type for a tool call.
+const blockTypeToolUse = "tool_use"
+
 // anthropicSupportedParams lists the OpenAI parameters the Anthropic Messages
 // API can express. Anything else the caller sets is warn-and-dropped (#140).
-// Native tool calling is tracked separately in #139.
 var anthropicSupportedParams = []string{"temperature", "top_p", "max_tokens", "stop", "tools", "tool_choice"}
 
 type anthropicContentBlock struct {
@@ -256,7 +258,7 @@ func buildContent(msg core.Message) any {
 			input = json.RawMessage("{}")
 		}
 		blocks = append(blocks, anthropicReqBlock{
-			Type:  "tool_use",
+			Type:  blockTypeToolUse,
 			ID:    tc.ID,
 			Name:  tc.Function.Name,
 			Input: input,
@@ -290,7 +292,11 @@ func anthropicTools(tools []core.Tool) []anthropicTool {
 	return out
 }
 
-func anthropicToolChoice(choice interface{}) interface{} {
+func anthropicToolChoice(choice interface{}, tools []core.Tool) interface{} {
+	// tool_choice is only valid alongside tools; Anthropic rejects it otherwise.
+	if len(tools) == 0 {
+		return nil
+	}
 	switch v := choice.(type) {
 	case nil:
 		return nil
@@ -379,7 +385,7 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 		StopSequences: req.Stop,
 		System:        system,
 		Tools:         anthropicTools(req.Tools),
-		ToolChoice:    anthropicToolChoice(req.ToolChoice),
+		ToolChoice:    anthropicToolChoice(req.ToolChoice, req.Tools),
 	}
 
 	bodyReader, _, release, err := core.JSONBodyReader(aReq)
@@ -427,7 +433,7 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 			content.WriteString(block.Text)
 			continue
 		}
-		if block.Type == "tool_use" {
+		if block.Type == blockTypeToolUse {
 			args := string(block.Input)
 			if args == "" {
 				args = "{}"
@@ -532,7 +538,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 		StopSequences: req.Stop,
 		System:        system,
 		Tools:         anthropicTools(req.Tools),
-		ToolChoice:    anthropicToolChoice(req.ToolChoice),
+		ToolChoice:    anthropicToolChoice(req.ToolChoice, req.Tools),
 		Stream:        true,
 	}
 
@@ -573,6 +579,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 		var msgID, model string
 		var promptTokens, cacheReadTokens, cacheWriteTokens int
 		toolCallIndexes := make(map[int]int)
+		toolArgsSeen := make(map[int]bool) // tool-call index -> received any input_json_delta
 		nextToolCallIndex := 0
 		scanner := core.NewSSEScanner(httpResp.Body)
 		for scanner.Scan() {
@@ -602,7 +609,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 				}
 			case "content_block_start":
 				var evt anthropicStreamContentBlockStart
-				if json.Unmarshal([]byte(data), &evt) == nil && evt.ContentBlock.Type == "tool_use" {
+				if json.Unmarshal([]byte(data), &evt) == nil && evt.ContentBlock.Type == blockTypeToolUse {
 					toolCallIndex := nextToolCallIndex
 					toolCallIndexes[evt.Index] = toolCallIndex
 					nextToolCallIndex++
@@ -636,6 +643,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 						if !ok {
 							toolCallIndex = evt.Index
 						}
+						toolArgsSeen[toolCallIndex] = true
 						ch <- core.StreamChunk{
 							ID:    msgID,
 							Model: model,
@@ -666,7 +674,10 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 						Model: model,
 						Choices: []core.StreamChoice{
 							{
-								Index: evt.Index,
+								// Single completion: the OpenAI choice index is
+								// always 0 (evt.Index is Anthropic's content-block
+								// index, not a choice index).
+								Index: 0,
 								Delta: core.MessageDelta{
 									Content: evt.Delta.Text,
 								},
@@ -675,6 +686,28 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 					}
 				}
 			case "message_delta":
+				// Emit "{}" arguments for any tool call that produced no
+				// input_json_delta (zero-argument tools), so clients that
+				// JSON.parse the arguments don't choke on an empty string.
+				for _, toolCallIndex := range toolCallIndexes {
+					if toolArgsSeen[toolCallIndex] {
+						continue
+					}
+					ch <- core.StreamChunk{
+						ID:    msgID,
+						Model: model,
+						Choices: []core.StreamChoice{{
+							Index: 0,
+							Delta: core.MessageDelta{
+								ToolCalls: []core.ToolCall{{
+									Index:    streamIndexPtr(toolCallIndex),
+									Type:     "function",
+									Function: core.FunctionCall{Arguments: "{}"},
+								}},
+							},
+						}},
+					}
+				}
 				var evt anthropicStreamMessageDelta
 				_ = json.Unmarshal([]byte(data), &evt)
 				completionTokens := evt.Usage.OutputTokens

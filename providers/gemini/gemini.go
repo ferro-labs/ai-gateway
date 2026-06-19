@@ -129,11 +129,12 @@ type geminiGenerationConfig struct {
 }
 
 // geminiSupportedParams lists the OpenAI parameters mappable onto Gemini's
-// generationConfig. Anything else the caller sets is warn-and-dropped (#140).
-// Native tool calling is tracked separately in #139.
+// generationConfig (plus native tool calling). Anything else the caller sets is
+// warn-and-dropped (#140).
 var geminiSupportedParams = []string{
 	"temperature", "top_p", "n", "seed", "max_tokens",
 	"presence_penalty", "frequency_penalty", "stop", "response_format",
+	"tools", "tool_choice",
 }
 
 type geminiRequest struct {
@@ -243,16 +244,22 @@ func convertToGemini(messages []core.Message) (contents []geminiContent, systemT
 		}
 
 		role := msg.Role
-		if role == "assistant" {
+		switch role {
+		case "assistant":
 			role = "model"
-		} else if role == core.RoleTool {
+		case core.RoleTool:
 			role = core.RoleUser
 		}
 
-		contents = append(contents, geminiContent{
-			Role:  role,
-			Parts: geminiParts(msg, toolCallNames),
-		})
+		parts := geminiParts(msg, toolCallNames)
+		// Coalesce consecutive same-role turns into one content. Gemini expects
+		// strict user/model alternation, so parallel tool results (each arriving
+		// as its own role="tool" → user message) must share a single user turn.
+		if n := len(contents); n > 0 && contents[n-1].Role == role {
+			contents[n-1].Parts = append(contents[n-1].Parts, parts...)
+		} else {
+			contents = append(contents, geminiContent{Role: role, Parts: parts})
+		}
 
 		for _, tc := range msg.ToolCalls {
 			if tc.ID != "" && tc.Function.Name != "" {
@@ -355,9 +362,11 @@ func buildRequest(req core.Request) (geminiRequest, error) {
 	}
 	if tools := geminiTools(req.Tools); len(tools) > 0 {
 		r.Tools = tools
-	}
-	if tc := geminiToolConfigFor(req.ToolChoice); tc != nil {
-		r.ToolConfig = tc
+		// toolConfig is only meaningful alongside tools; sending it without a
+		// functionDeclarations set makes Gemini reject the request.
+		if tc := geminiToolConfigFor(req.ToolChoice); tc != nil {
+			r.ToolConfig = tc
+		}
 	}
 	return r, nil
 }
@@ -375,10 +384,61 @@ func geminiTools(tools []core.Tool) []geminiTool {
 		decls = append(decls, geminiFunctionDeclaration{
 			Name:        t.Function.Name,
 			Description: t.Function.Description,
-			Parameters:  params,
+			Parameters:  sanitizeGeminiSchema(params),
 		})
 	}
 	return []geminiTool{{FunctionDeclarations: decls}}
+}
+
+// geminiUnsupportedSchemaKeys are JSON-schema keywords Gemini's OpenAPI-3.0
+// subset rejects. OpenAI strict-mode tools always emit "additionalProperties",
+// so forwarding it verbatim would 400 on gemini-1.5 models.
+var geminiUnsupportedSchemaKeys = map[string]bool{
+	"$schema":              true,
+	"$id":                  true,
+	"$ref":                 true,
+	"$defs":                true,
+	"$comment":             true,
+	"definitions":          true,
+	"additionalProperties": true,
+}
+
+// sanitizeGeminiSchema recursively strips JSON-schema keywords Gemini rejects.
+// Input that isn't a JSON object is forwarded unchanged.
+func sanitizeGeminiSchema(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return raw
+	}
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return raw
+	}
+	cleaned, err := json.Marshal(stripSchemaKeys(v))
+	if err != nil {
+		return raw
+	}
+	return cleaned
+}
+
+func stripSchemaKeys(v any) any {
+	switch t := v.(type) {
+	case map[string]any:
+		m := make(map[string]any, len(t))
+		for k, val := range t {
+			if geminiUnsupportedSchemaKeys[k] {
+				continue
+			}
+			m[k] = stripSchemaKeys(val)
+		}
+		return m
+	case []any:
+		for i := range t {
+			t[i] = stripSchemaKeys(t[i])
+		}
+		return t
+	default:
+		return v
+	}
 }
 
 func geminiToolConfigFor(choice interface{}) *geminiToolConfig {

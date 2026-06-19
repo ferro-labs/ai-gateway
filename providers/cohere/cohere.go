@@ -107,8 +107,8 @@ type cohereRequest struct {
 }
 
 // cohereSupportedParams lists the OpenAI parameters mappable onto the Cohere v2
-// chat API. Anything else the caller sets is warn-and-dropped (#140). Native
-// tool calling is tracked separately in #139.
+// chat API (including native tool calling). Anything else the caller sets is
+// warn-and-dropped (#140).
 var cohereSupportedParams = []string{
 	"temperature", "top_p", "max_tokens", "stop",
 	"seed", "presence_penalty", "frequency_penalty", "tools", "tool_choice",
@@ -167,6 +167,12 @@ type cohereErrorResponse struct {
 	Message string `json:"message"`
 }
 
+// Cohere v2 tool_choice values.
+const (
+	cohereToolChoiceRequired = "REQUIRED"
+	cohereToolChoiceNone     = "NONE"
+)
+
 func cohereToolChoice(choice interface{}) string {
 	switch v := choice.(type) {
 	case nil:
@@ -174,14 +180,16 @@ func cohereToolChoice(choice interface{}) string {
 	case string:
 		switch v {
 		case "required":
-			return "REQUIRED"
+			return cohereToolChoiceRequired
 		case "none":
-			return "NONE"
+			return cohereToolChoiceNone
 		default:
 			return ""
 		}
 	default:
-		return "REQUIRED"
+		// A named function choice ({type:function,...}) — Cohere v2 has no
+		// per-function selection, so approximate with REQUIRED.
+		return cohereToolChoiceRequired
 	}
 }
 
@@ -200,7 +208,10 @@ func cohereMessages(messages []core.Message) []cohereRequestMessage {
 					Data: msg.Content,
 				},
 			}}
-		} else {
+		} else if msg.Content != "" {
+			// Only set content when non-empty. Content is `any` with omitempty,
+			// which does not drop an empty string, so an assistant tool-call
+			// turn would otherwise emit content:"" — which Cohere v2 rejects.
 			cohMsg.Content = msg.Content
 		}
 		out = append(out, cohMsg)

@@ -31,7 +31,30 @@ type Options struct {
 
 type bedrockRuntimeClient interface {
 	InvokeModel(context.Context, *bedrockruntime.InvokeModelInput, ...func(*bedrockruntime.Options)) (*bedrockruntime.InvokeModelOutput, error)
-	InvokeModelWithResponseStream(context.Context, *bedrockruntime.InvokeModelWithResponseStreamInput, ...func(*bedrockruntime.Options)) (*bedrockruntime.InvokeModelWithResponseStreamOutput, error)
+	InvokeModelWithResponseStream(context.Context, *bedrockruntime.InvokeModelWithResponseStreamInput, ...func(*bedrockruntime.Options)) (bedrockEventStream, error)
+}
+
+// bedrockEventStream is the minimal surface CompleteStream needs from a
+// streaming invocation. *bedrockruntime.InvokeModelWithResponseStreamEventStream
+// satisfies it, and tests can supply a fake without poking unexported fields.
+type bedrockEventStream interface {
+	Events() <-chan types.ResponseStream
+	Close() error
+	Err() error
+}
+
+// realBedrockClient adapts the AWS SDK client to bedrockRuntimeClient, unwrapping
+// the streaming Output to its event stream so the interface stays test-friendly.
+type realBedrockClient struct {
+	*bedrockruntime.Client
+}
+
+func (c realBedrockClient) InvokeModelWithResponseStream(ctx context.Context, in *bedrockruntime.InvokeModelWithResponseStreamInput, opts ...func(*bedrockruntime.Options)) (bedrockEventStream, error) {
+	out, err := c.Client.InvokeModelWithResponseStream(ctx, in, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out.GetStream(), nil
 }
 
 // Provider implements the AWS Bedrock API client.
@@ -84,7 +107,7 @@ func NewWithOptions(opts Options) (*Provider, error) {
 		return nil, fmt.Errorf("failed to load AWS config: %w", err)
 	}
 
-	client := bedrockruntime.NewFromConfig(cfg)
+	client := realBedrockClient{bedrockruntime.NewFromConfig(cfg)}
 	return &Provider{
 		name:   Name,
 		client: client,
@@ -553,7 +576,11 @@ func bedrockAnthropicTools(tools []core.Tool) []bedrockAnthropicTool {
 	return out
 }
 
-func bedrockAnthropicToolChoice(choice interface{}) interface{} {
+func bedrockAnthropicToolChoice(choice interface{}, tools []core.Tool) interface{} {
+	// tool_choice is only valid alongside tools; Anthropic-on-Bedrock 400s otherwise.
+	if len(tools) == 0 {
+		return nil
+	}
 	switch v := choice.(type) {
 	case nil:
 		return nil
@@ -614,7 +641,7 @@ func (p *Provider) completeAnthropic(ctx context.Context, req core.Request) (*co
 		MaxTokens:        maxTokens,
 		Messages:         messages,
 		Tools:            bedrockAnthropicTools(req.Tools),
-		ToolChoice:       bedrockAnthropicToolChoice(req.ToolChoice),
+		ToolChoice:       bedrockAnthropicToolChoice(req.ToolChoice, req.Tools),
 		Temperature:      req.Temperature,
 		TopP:             req.TopP,
 		StopSequences:    req.Stop,
@@ -813,7 +840,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 		MaxTokens:        maxTokens,
 		Messages:         messages,
 		Tools:            bedrockAnthropicTools(req.Tools),
-		ToolChoice:       bedrockAnthropicToolChoice(req.ToolChoice),
+		ToolChoice:       bedrockAnthropicToolChoice(req.ToolChoice, req.Tools),
 		Temperature:      req.Temperature,
 		TopP:             req.TopP,
 		StopSequences:    req.Stop,
@@ -825,7 +852,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	output, err := p.client.InvokeModelWithResponseStream(ctx, &bedrockruntime.InvokeModelWithResponseStreamInput{
+	stream, err := p.client.InvokeModelWithResponseStream(ctx, &bedrockruntime.InvokeModelWithResponseStreamInput{
 		ModelId:     aws.String(req.Model),
 		ContentType: aws.String("application/json"),
 		Body:        body,
@@ -837,7 +864,6 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 	ch := make(chan core.StreamChunk)
 	go func() {
 		defer close(ch)
-		stream := output.GetStream()
 		defer func() { _ = stream.Close() }()
 
 		toolCallIndexes := make(map[int]int)

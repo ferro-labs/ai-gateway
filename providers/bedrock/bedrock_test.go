@@ -4,10 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"reflect"
 	"strings"
 	"testing"
-	"unsafe"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
@@ -575,7 +573,7 @@ func (f *fakeBedrockRuntimeClient) InvokeModel(_ context.Context, input *bedrock
 	return &bedrockruntime.InvokeModelOutput{Body: f.responses[idx]}, nil
 }
 
-func (f *fakeBedrockRuntimeClient) InvokeModelWithResponseStream(_ context.Context, input *bedrockruntime.InvokeModelWithResponseStreamInput, _ ...func(*bedrockruntime.Options)) (*bedrockruntime.InvokeModelWithResponseStreamOutput, error) {
+func (f *fakeBedrockRuntimeClient) InvokeModelWithResponseStream(_ context.Context, input *bedrockruntime.InvokeModelWithResponseStreamInput, _ ...func(*bedrockruntime.Options)) (bedrockEventStream, error) {
 	copied := *input
 	copied.Body = append([]byte(nil), input.Body...)
 	f.invokeStreamCalls = append(f.invokeStreamCalls, &copied)
@@ -587,16 +585,7 @@ func (f *fakeBedrockRuntimeClient) InvokeModelWithResponseStream(_ context.Conte
 		events <- &types.ResponseStreamMemberChunk{Value: types.PayloadPart{Bytes: body}}
 	}
 	close(events)
-	output := &bedrockruntime.InvokeModelWithResponseStreamOutput{}
-	setFakeBedrockEventStream(output, bedrockruntime.NewInvokeModelWithResponseStreamEventStream(func(es *bedrockruntime.InvokeModelWithResponseStreamEventStream) {
-		es.Reader = fakeBedrockResponseStreamReader{events: events}
-	}))
-	return output, nil
-}
-
-func setFakeBedrockEventStream(output *bedrockruntime.InvokeModelWithResponseStreamOutput, stream *bedrockruntime.InvokeModelWithResponseStreamEventStream) {
-	field := reflect.ValueOf(output).Elem().FieldByName("eventStream")
-	reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem().Set(reflect.ValueOf(stream))
+	return fakeBedrockResponseStreamReader{events: events}, nil
 }
 
 type fakeBedrockResponseStreamReader struct {
