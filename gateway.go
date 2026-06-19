@@ -45,7 +45,7 @@ import (
 // EventHookFunc is called asynchronously after a gateway event (request
 // completed or failed). It replaces the old EventPublisher interface with a
 // simpler function-based hook pattern.
-type EventHookFunc func(ctx context.Context, subject string, data map[string]interface{})
+type EventHookFunc func(ctx context.Context, subject string, data map[string]any)
 
 // Gateway is the main entry point for routing LLM requests.
 type Gateway struct {
@@ -400,6 +400,7 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 
 	start := time.Now()
 	hooksEnabled := g.hasHooks()
+	req.NormalizeCompletionTokenLimits()
 
 	// Start the observability root span. NoOp provider makes this a
 	// zero-allocation call when tracing is disabled.
@@ -1166,6 +1167,7 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 
 	start := time.Now()
 	hooksEnabled := g.hasHooks()
+	req.NormalizeCompletionTokenLimits()
 	var err error
 
 	// Start the observability root span. End() is normally called by

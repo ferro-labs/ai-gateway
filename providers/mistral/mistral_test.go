@@ -3,13 +3,14 @@ package mistral
 import (
 	"context"
 	"encoding/json"
-	"github.com/ferro-labs/ai-gateway/providers/core"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
 const testEmbeddingModel = "mistral-embed"

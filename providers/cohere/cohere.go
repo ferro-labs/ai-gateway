@@ -92,11 +92,42 @@ func (p *Provider) Models() []core.ModelInfo {
 }
 
 type cohereRequest struct {
-	Model       string         `json:"model"`
-	Messages    []core.Message `json:"messages"`
-	Temperature *float64       `json:"temperature,omitempty"`
-	MaxTokens   *int           `json:"max_tokens,omitempty"`
-	Stream      bool           `json:"stream,omitempty"`
+	Model            string                 `json:"model"`
+	Messages         []cohereRequestMessage `json:"messages"`
+	Tools            []core.Tool            `json:"tools,omitempty"`
+	ToolChoice       string                 `json:"tool_choice,omitempty"`
+	Temperature      *float64               `json:"temperature,omitempty"`
+	MaxTokens        *int                   `json:"max_tokens,omitempty"`
+	P                *float64               `json:"p,omitempty"`
+	Seed             *int64                 `json:"seed,omitempty"`
+	PresencePenalty  *float64               `json:"presence_penalty,omitempty"`
+	FrequencyPenalty *float64               `json:"frequency_penalty,omitempty"`
+	StopSequences    []string               `json:"stop_sequences,omitempty"`
+	Stream           bool                   `json:"stream,omitempty"`
+}
+
+// cohereSupportedParams lists the OpenAI parameters mappable onto the Cohere v2
+// chat API (including native tool calling). Anything else the caller sets is
+// warn-and-dropped (#140).
+var cohereSupportedParams = []string{
+	"temperature", "top_p", "max_tokens", "stop",
+	"seed", "presence_penalty", "frequency_penalty", "tools", "tool_choice",
+}
+
+type cohereRequestMessage struct {
+	Role       string          `json:"role"`
+	Content    any             `json:"content,omitempty"`
+	ToolCalls  []core.ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string          `json:"tool_call_id,omitempty"`
+}
+
+type cohereToolResultBlock struct {
+	Type     string                   `json:"type"`
+	Document cohereToolResultDocument `json:"document"`
+}
+
+type cohereToolResultDocument struct {
+	Data string `json:"data"`
 }
 
 type cohereContentBlock struct {
@@ -105,23 +136,19 @@ type cohereContentBlock struct {
 }
 
 type cohereMessage struct {
-	Role    string               `json:"role"`
-	Content []cohereContentBlock `json:"content"`
+	Role      string               `json:"role"`
+	Content   []cohereContentBlock `json:"content"`
+	ToolCalls []core.ToolCall      `json:"tool_calls,omitempty"`
 }
 
-type cohereBilledUnits struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
-}
-
-type cohereTokens struct {
+type cohereTokenCounts struct {
 	InputTokens  int `json:"input_tokens"`
 	OutputTokens int `json:"output_tokens"`
 }
 
 type cohereUsage struct {
-	BilledUnits cohereBilledUnits `json:"billed_units"`
-	Tokens      cohereTokens      `json:"tokens"`
+	BilledUnits cohereTokenCounts `json:"billed_units"`
+	Tokens      cohereTokenCounts `json:"tokens"`
 }
 
 type cohereResponse struct {
@@ -135,13 +162,67 @@ type cohereErrorResponse struct {
 	Message string `json:"message"`
 }
 
+// Cohere v2 tool_choice values.
+const (
+	cohereToolChoiceRequired = "REQUIRED"
+	cohereToolChoiceNone     = "NONE"
+)
+
+func cohereToolChoice(choice any) string {
+	// Cohere v2 only supports REQUIRED/NONE; a named-function choice has no
+	// per-function selection, so it is approximated with REQUIRED.
+	switch kind, _ := core.NormalizeToolChoice(choice); kind {
+	case core.ToolChoiceRequired, core.ToolChoiceFunction:
+		return cohereToolChoiceRequired
+	case core.ToolChoiceNone:
+		return cohereToolChoiceNone
+	default:
+		return ""
+	}
+}
+
+func cohereMessages(messages []core.Message) []cohereRequestMessage {
+	out := make([]cohereRequestMessage, 0, len(messages))
+	for _, msg := range messages {
+		cohMsg := cohereRequestMessage{
+			Role:       msg.Role,
+			ToolCalls:  msg.ToolCalls,
+			ToolCallID: msg.ToolCallID,
+		}
+		if msg.Role == core.RoleTool {
+			cohMsg.Content = []cohereToolResultBlock{{
+				Type: "document",
+				Document: cohereToolResultDocument{
+					Data: msg.Content,
+				},
+			}}
+		} else if msg.Content != "" {
+			// Only set content when non-empty. Content is `any` with omitempty,
+			// which does not drop an empty string, so an assistant tool-call
+			// turn would otherwise emit content:"" — which Cohere v2 rejects.
+			cohMsg.Content = msg.Content
+		}
+		out = append(out, cohMsg)
+	}
+	return out
+}
+
 // Complete sends a chat completion request to Cohere.
 func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
+	core.WarnUnsupportedParams(ctx, p.Name(), req.Model, req, cohereSupportedParams...)
+
 	cohReq := cohereRequest{
-		Model:       req.Model,
-		Messages:    req.Messages,
-		Temperature: req.Temperature,
-		MaxTokens:   req.MaxTokens,
+		Model:            req.Model,
+		Messages:         cohereMessages(req.Messages),
+		Tools:            req.Tools,
+		ToolChoice:       cohereToolChoice(req.ToolChoice),
+		Temperature:      req.Temperature,
+		MaxTokens:        req.MaxTokens,
+		P:                req.TopP,
+		Seed:             req.Seed,
+		PresencePenalty:  req.PresencePenalty,
+		FrequencyPenalty: req.FrequencyPenalty,
+		StopSequences:    req.Stop,
 	}
 
 	bodyReader, _, release, err := core.JSONBodyReader(cohReq)
@@ -196,10 +277,11 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 			{
 				Index: 0,
 				Message: core.Message{
-					Role:    cohResp.Message.Role,
-					Content: strings.Join(contentParts, ""),
+					Role:      cohResp.Message.Role,
+					Content:   strings.Join(contentParts, ""),
+					ToolCalls: cohResp.Message.ToolCalls,
 				},
-				FinishReason: cohResp.FinishReason,
+				FinishReason: core.NormalizeFinishReason(cohResp.FinishReason),
 			},
 		},
 		Usage: core.Usage{
@@ -212,6 +294,8 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 
 type cohereStreamEvent struct {
 	Type  string          `json:"type"`
+	ID    string          `json:"id,omitempty"`
+	Index int             `json:"index,omitempty"`
 	Delta json.RawMessage `json:"delta"`
 }
 
@@ -228,14 +312,79 @@ type cohereMessageEndDelta struct {
 	Usage        cohereUsage `json:"usage"`
 }
 
+type cohereToolCallStartDelta struct {
+	Message struct {
+		ToolCalls json.RawMessage `json:"tool_calls"`
+	} `json:"message"`
+}
+
+type cohereToolCallDelta struct {
+	Message struct {
+		ToolCalls json.RawMessage `json:"tool_calls"`
+	} `json:"message"`
+}
+
+type cohereToolCallDeltaPayload struct {
+	Function struct {
+		Arguments string `json:"arguments"`
+	} `json:"function"`
+}
+
+func cohereStreamToolCallStart(raw json.RawMessage, index int) (core.ToolCall, bool) {
+	var calls []core.ToolCall
+	if err := json.Unmarshal(raw, &calls); err == nil && len(calls) > 0 {
+		calls[0].Index = core.Ptr(index)
+		return calls[0], true
+	}
+	var call core.ToolCall
+	if err := json.Unmarshal(raw, &call); err == nil && (call.ID != "" || call.Function.Name != "") {
+		call.Index = core.Ptr(index)
+		return call, true
+	}
+	return core.ToolCall{}, false
+}
+
+func cohereStreamToolCallDelta(raw json.RawMessage, index int) (core.ToolCall, bool) {
+	var payload cohereToolCallDeltaPayload
+	if err := json.Unmarshal(raw, &payload); err == nil && payload.Function.Arguments != "" {
+		return core.ToolCall{
+			Index: core.Ptr(index),
+			Type:  "function",
+			Function: core.FunctionCall{
+				Arguments: payload.Function.Arguments,
+			},
+		}, true
+	}
+	var payloads []cohereToolCallDeltaPayload
+	if err := json.Unmarshal(raw, &payloads); err == nil && len(payloads) > 0 && payloads[0].Function.Arguments != "" {
+		return core.ToolCall{
+			Index: core.Ptr(index),
+			Type:  "function",
+			Function: core.FunctionCall{
+				Arguments: payloads[0].Function.Arguments,
+			},
+		}, true
+	}
+	return core.ToolCall{}, false
+}
+
 // CompleteStream sends a streaming chat completion request to Cohere.
 func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan core.StreamChunk, error) {
+	core.WarnUnsupportedParams(ctx, p.Name(), req.Model, req, cohereSupportedParams...)
+
 	cohReq := cohereRequest{
-		Model:       req.Model,
-		Messages:    req.Messages,
-		Temperature: req.Temperature,
-		MaxTokens:   req.MaxTokens,
-		Stream:      true,
+		Model:            req.Model,
+		Messages:         cohereMessages(req.Messages),
+		Tools:            req.Tools,
+		ToolChoice:       cohereToolChoice(req.ToolChoice),
+		Temperature:      req.Temperature,
+		MaxTokens:        req.MaxTokens,
+		P:                req.TopP,
+		Seed:             req.Seed,
+		PresencePenalty:  req.PresencePenalty,
+		FrequencyPenalty: req.FrequencyPenalty,
+		StopSequences:    req.Stop,
+		Stream:           true,
 	}
 
 	bodyReader, _, release, err := core.JSONBodyReader(cohReq)
@@ -300,6 +449,46 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 						},
 					},
 				}
+			case "tool-call-start":
+				var delta cohereToolCallStartDelta
+				if json.Unmarshal(event.Delta, &delta) != nil {
+					continue
+				}
+				tc, ok := cohereStreamToolCallStart(delta.Message.ToolCalls, event.Index)
+				if !ok {
+					continue
+				}
+				ch <- core.StreamChunk{
+					ID: event.ID,
+					Choices: []core.StreamChoice{
+						{
+							Index: 0,
+							Delta: core.MessageDelta{
+								ToolCalls: []core.ToolCall{tc},
+							},
+						},
+					},
+				}
+			case "tool-call-delta":
+				var delta cohereToolCallDelta
+				if json.Unmarshal(event.Delta, &delta) != nil {
+					continue
+				}
+				tc, ok := cohereStreamToolCallDelta(delta.Message.ToolCalls, event.Index)
+				if !ok {
+					continue
+				}
+				ch <- core.StreamChunk{
+					ID: event.ID,
+					Choices: []core.StreamChoice{
+						{
+							Index: 0,
+							Delta: core.MessageDelta{
+								ToolCalls: []core.ToolCall{tc},
+							},
+						},
+					},
+				}
 			case "message-end":
 				var delta cohereMessageEndDelta
 				if json.Unmarshal(event.Delta, &delta) != nil {
@@ -309,7 +498,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 					Choices: []core.StreamChoice{
 						{
 							Index:        0,
-							FinishReason: delta.FinishReason,
+							FinishReason: core.NormalizeFinishReason(delta.FinishReason),
 						},
 					},
 				}
@@ -328,6 +517,33 @@ type cohereEmbedRequest struct {
 	Texts     []string `json:"texts"`
 	Model     string   `json:"model"`
 	InputType string   `json:"input_type"`
+}
+
+// defaultEmbedInputType is Cohere's document-indexing distribution, used when
+// the caller does not specify an input_type.
+const defaultEmbedInputType = "search_document"
+
+// cohereTextInputTypes are the input_type values Cohere accepts for text
+// embeddings. "image" is excluded — this path embeds texts.
+var cohereTextInputTypes = map[string]bool{
+	defaultEmbedInputType: true,
+	"search_query":        true,
+	"classification":      true,
+	"clustering":          true,
+}
+
+// resolveInputType validates a caller-supplied Cohere input_type, defaulting to
+// "search_document" (document-indexing distribution) when unset. Cohere requires
+// query embeddings to use "search_query", so honoring the override is what lets
+// retrieval work correctly.
+func resolveInputType(requested string) (string, error) {
+	if requested == "" {
+		return defaultEmbedInputType, nil
+	}
+	if !cohereTextInputTypes[requested] {
+		return "", fmt.Errorf("embed: unsupported input_type %q; want one of search_document, search_query, classification, clustering", requested)
+	}
+	return requested, nil
 }
 
 type cohereEmbedResponse struct {
@@ -349,7 +565,7 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 		texts = []string{v}
 	case []string:
 		texts = v
-	case []interface{}:
+	case []any:
 		for i, item := range v {
 			s, ok := item.(string)
 			if !ok {
@@ -374,11 +590,15 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 	if req.User != "" {
 		return nil, fmt.Errorf("embed: user is not supported by Cohere embeddings")
 	}
+	inputType, err := resolveInputType(req.InputType)
+	if err != nil {
+		return nil, err
+	}
 
 	cohReq := cohereEmbedRequest{
 		Texts:     texts,
 		Model:     req.Model,
-		InputType: "search_document",
+		InputType: inputType,
 	}
 
 	bodyReader, _, release, err := core.JSONBodyReader(cohReq)

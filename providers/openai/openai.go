@@ -153,7 +153,7 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 			return nil, fmt.Errorf("embed: Input must not be an empty array")
 		}
 		params.Input = oai.EmbeddingNewParamsInputUnion{OfArrayOfStrings: v}
-	case []interface{}:
+	case []any:
 		if len(v) == 0 {
 			return nil, fmt.Errorf("embed: Input must not be an empty array")
 		}
@@ -263,6 +263,9 @@ func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*c
 // Complete sends a chat completion request to OpenAI.
 func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
 	req.Stream = false
+	// o-series reasoning models reject max_tokens; the gateway seam leaves both
+	// token fields populated, so forward only the modern max_completion_tokens.
+	req.PreferCompletionTokens()
 
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -349,8 +352,9 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 				sc.Choices = append(sc.Choices, core.StreamChoice{
 					Index: int(c.Index),
 					Delta: core.MessageDelta{
-						Role:    c.Delta.Role,
-						Content: c.Delta.Content,
+						Role:      c.Delta.Role,
+						Content:   c.Delta.Content,
+						ToolCalls: openAIStreamToolCalls(c.Delta.ToolCalls),
 					},
 					FinishReason: c.FinishReason,
 				})
@@ -420,7 +424,23 @@ func buildMessages(msgs []core.Message) []oai.ChatCompletionMessageParamUnion {
 		case core.RoleUser:
 			out = append(out, oai.UserMessage(msg.Content))
 		case core.RoleAssistant:
-			out = append(out, oai.AssistantMessage(msg.Content))
+			assistant := oai.ChatCompletionAssistantMessageParam{}
+			if msg.Content != "" {
+				assistant.Content.OfString = oai.String(msg.Content)
+			}
+			if len(msg.ToolCalls) > 0 {
+				assistant.ToolCalls = make([]oai.ChatCompletionMessageToolCallParam, 0, len(msg.ToolCalls))
+				for _, tc := range msg.ToolCalls {
+					assistant.ToolCalls = append(assistant.ToolCalls, oai.ChatCompletionMessageToolCallParam{
+						ID: tc.ID,
+						Function: oai.ChatCompletionMessageToolCallFunctionParam{
+							Name:      tc.Function.Name,
+							Arguments: tc.Function.Arguments,
+						},
+					})
+				}
+			}
+			out = append(out, oai.ChatCompletionMessageParamUnion{OfAssistant: &assistant})
 		case core.RoleSystem:
 			out = append(out, oai.SystemMessage(msg.Content))
 		case core.RoleTool:
@@ -446,7 +466,13 @@ func applyParams(params *oai.ChatCompletionNewParams, req core.Request) {
 	if req.Seed != nil {
 		params.Seed = oai.Int(*req.Seed)
 	}
-	if req.MaxTokens != nil {
+	// Prefer max_completion_tokens: it is the modern field accepted by every
+	// chat model, including o-series reasoning models, which reject the legacy
+	// max_tokens with a 400. The gateway seam fills max_tokens from
+	// max_completion_tokens, so both may be set here — honor the modern one.
+	if req.MaxCompletionTokens != nil {
+		params.MaxCompletionTokens = oai.Int(int64(*req.MaxCompletionTokens))
+	} else if req.MaxTokens != nil {
 		params.MaxTokens = oai.Int(int64(*req.MaxTokens))
 	}
 	if req.PresencePenalty != nil {
@@ -506,4 +532,46 @@ func applyParams(params *oai.ChatCompletionNewParams, req core.Request) {
 		}
 		params.Tools = tools
 	}
+	if req.ToolChoice != nil {
+		if choice, ok := openAIToolChoice(req.ToolChoice); ok {
+			params.ToolChoice = choice
+		}
+	}
+}
+
+func openAIToolChoice(choice any) (oai.ChatCompletionToolChoiceOptionUnionParam, bool) {
+	switch v := choice.(type) {
+	case string:
+		return oai.ChatCompletionToolChoiceOptionUnionParam{OfAuto: oai.String(v)}, true
+	default:
+		raw, err := json.Marshal(v)
+		if err != nil {
+			return oai.ChatCompletionToolChoiceOptionUnionParam{}, false
+		}
+		var parsed oai.ChatCompletionToolChoiceOptionUnionParam
+		if err := json.Unmarshal(raw, &parsed); err != nil {
+			return oai.ChatCompletionToolChoiceOptionUnionParam{}, false
+		}
+		return parsed, true
+	}
+}
+
+func openAIStreamToolCalls(in []oai.ChatCompletionChunkChoiceDeltaToolCall) []core.ToolCall {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]core.ToolCall, 0, len(in))
+	for _, tc := range in {
+		index := int(tc.Index)
+		out = append(out, core.ToolCall{
+			Index: &index,
+			ID:    tc.ID,
+			Type:  tc.Type,
+			Function: core.FunctionCall{
+				Name:      tc.Function.Name,
+				Arguments: tc.Function.Arguments,
+			},
+		})
+	}
+	return out
 }

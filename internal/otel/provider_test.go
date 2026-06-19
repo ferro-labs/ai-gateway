@@ -154,11 +154,11 @@ func TestProvider_StartRequestSpan_RoutingAttrsAbsentWhenEmpty(t *testing.T) {
 
 	if _, present := gotMap[observability.AttrFerroRoutingStrategy]; present {
 		t.Errorf("ferro.routing.strategy should be ABSENT when RoutingStrategy is empty, got %q",
-			gotMap[observability.AttrFerroRoutingStrategy].Emit())
+			gotMap[observability.AttrFerroRoutingStrategy].String())
 	}
 	if _, present := gotMap[observability.AttrFerroRoutingTargetKey]; present {
 		t.Errorf("ferro.routing.target_key should be ABSENT when TargetKey is empty, got %q",
-			gotMap[observability.AttrFerroRoutingTargetKey].Emit())
+			gotMap[observability.AttrFerroRoutingTargetKey].String())
 	}
 }
 
@@ -383,7 +383,7 @@ func TestConfigValidate(t *testing.T) {
 func eventAttrMap(kvs []attribute.KeyValue) map[string]string {
 	m := make(map[string]string, len(kvs))
 	for _, kv := range kvs {
-		m[string(kv.Key)] = kv.Value.Emit()
+		m[string(kv.Key)] = kv.Value.String()
 	}
 	return m
 }
@@ -402,8 +402,8 @@ func assertAttrs(t *testing.T, got []attribute.KeyValue, want map[string]attribu
 			t.Errorf("missing attribute %q", k)
 			continue
 		}
-		if gv.Emit() != v.Emit() {
-			t.Errorf("attribute %q = %q, want %q", k, gv.Emit(), v.Emit())
+		if gv.String() != v.String() {
+			t.Errorf("attribute %q = %q, want %q", k, gv.String(), v.String())
 		}
 	}
 }

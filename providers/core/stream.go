@@ -26,4 +26,7 @@ type MessageDelta struct {
 	Role      string     `json:"role,omitempty"`
 	Content   string     `json:"content,omitempty"`
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+	// ReasoningContent streams the model's chain-of-thought for reasoning
+	// models (e.g. deepseek-reasoner). Empty for models that don't emit it.
+	ReasoningContent string `json:"reasoning_content,omitempty"`
 }

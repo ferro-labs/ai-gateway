@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/ferro-labs/ai-gateway/internal/anthropicwire"
 	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
@@ -94,22 +95,68 @@ func (p *Provider) Models() []core.ModelInfo {
 }
 
 type anthropicMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role string `json:"role"`
+	// Content is either a plain string (text-only turns) or a []anthropicReqBlock
+	// (multimodal turns, tool_use on assistant turns, tool_result on user turns).
+	Content any `json:"content"`
+}
+
+// anthropicReqBlock is a single content block in an outbound message. Only the
+// fields relevant to Type are populated; omitempty keeps each block minimal.
+type anthropicReqBlock struct {
+	Type string `json:"type"`
+
+	// type=text
+	Text string `json:"text,omitempty"`
+
+	// type=image
+	Source *anthropicImageSource `json:"source,omitempty"`
+
+	// type=tool_use
+	ID    string          `json:"id,omitempty"`
+	Name  string          `json:"name,omitempty"`
+	Input json.RawMessage `json:"input,omitempty"`
+
+	// type=tool_result
+	ToolUseID string `json:"tool_use_id,omitempty"`
+	Content   string `json:"content,omitempty"`
+}
+
+// anthropicImageSource carries an image for an "image" content block. Anthropic
+// accepts either inlined base64 data or a remote URL.
+type anthropicImageSource struct {
+	Type      string `json:"type"`                 // "base64" | "url"
+	MediaType string `json:"media_type,omitempty"` // base64 only
+	Data      string `json:"data,omitempty"`       // base64 only
+	URL       string `json:"url,omitempty"`        // url only
 }
 
 type anthropicRequest struct {
-	Model       string             `json:"model"`
-	MaxTokens   int                `json:"max_tokens"`
-	System      string             `json:"system,omitempty"`
-	Messages    []anthropicMessage `json:"messages"`
-	Temperature *float64           `json:"temperature,omitempty"`
-	Stream      bool               `json:"stream,omitempty"`
+	Model         string               `json:"model"`
+	MaxTokens     int                  `json:"max_tokens"`
+	System        string               `json:"system,omitempty"`
+	Messages      []anthropicMessage   `json:"messages"`
+	Tools         []anthropicwire.Tool `json:"tools,omitempty"`
+	ToolChoice    any                  `json:"tool_choice,omitempty"`
+	Temperature   *float64             `json:"temperature,omitempty"`
+	TopP          *float64             `json:"top_p,omitempty"`
+	StopSequences []string             `json:"stop_sequences,omitempty"`
+	Stream        bool                 `json:"stream,omitempty"`
 }
 
+// blockTypeToolUse is the Anthropic content-block type for a tool call.
+const blockTypeToolUse = "tool_use"
+
+// anthropicSupportedParams lists the OpenAI parameters the Anthropic Messages
+// API can express. Anything else the caller sets is warn-and-dropped (#140).
+var anthropicSupportedParams = []string{"temperature", "top_p", "max_tokens", "stop", "tools", "tool_choice"}
+
 type anthropicContentBlock struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
+	Type  string          `json:"type"`
+	Text  string          `json:"text"`
+	ID    string          `json:"id"`
+	Name  string          `json:"name"`
+	Input json.RawMessage `json:"input"`
 }
 
 type anthropicUsage struct {
@@ -120,12 +167,13 @@ type anthropicUsage struct {
 }
 
 type anthropicResponse struct {
-	ID      string                  `json:"id"`
-	Type    string                  `json:"type"`
-	Role    string                  `json:"role"`
-	Content []anthropicContentBlock `json:"content"`
-	Model   string                  `json:"model"`
-	Usage   anthropicUsage          `json:"usage"`
+	ID         string                  `json:"id"`
+	Type       string                  `json:"type"`
+	Role       string                  `json:"role"`
+	Content    []anthropicContentBlock `json:"content"`
+	Model      string                  `json:"model"`
+	StopReason string                  `json:"stop_reason"`
+	Usage      anthropicUsage          `json:"usage"`
 }
 
 type anthropicError struct {
@@ -141,17 +189,140 @@ type anthropicErrorResponse struct {
 func buildMessages(req core.Request) ([]anthropicMessage, string) {
 	var systemParts []string
 	var messages []anthropicMessage
+
 	for _, msg := range req.Messages {
-		if msg.Role == "system" {
+		switch msg.Role {
+		case core.RoleSystem:
 			systemParts = append(systemParts, msg.Content)
-		} else {
+
+		case core.RoleTool:
+			// Anthropic requires tool results as tool_result blocks inside a
+			// user turn. Merge consecutive results into the preceding user turn
+			// so parallel tool calls land in a single message.
+			block := anthropicReqBlock{
+				Type:      "tool_result",
+				ToolUseID: msg.ToolCallID,
+				Content:   msg.Content,
+			}
+			if n := len(messages); n > 0 && messages[n-1].Role == core.RoleUser {
+				if blocks, ok := messages[n-1].Content.([]anthropicReqBlock); ok {
+					blocks = append(blocks, block)
+					messages[n-1].Content = blocks
+					continue
+				}
+			}
+			messages = append(messages, anthropicMessage{
+				Role:    core.RoleUser,
+				Content: []anthropicReqBlock{block},
+			})
+
+		default:
 			messages = append(messages, anthropicMessage{
 				Role:    msg.Role,
-				Content: msg.Content,
+				Content: buildContent(msg),
 			})
 		}
 	}
 	return messages, strings.Join(systemParts, "\n")
+}
+
+// buildContent renders a non-system message's content for the Anthropic API.
+// Plain text turns stay a JSON string (the common path); multimodal turns and
+// assistant tool calls become an array of content blocks.
+func buildContent(msg core.Message) any {
+	var blocks []anthropicReqBlock
+
+	if len(msg.ContentParts) > 0 {
+		for _, part := range msg.ContentParts {
+			switch part.Type {
+			case core.ContentTypeText:
+				blocks = append(blocks, anthropicReqBlock{Type: "text", Text: part.Text})
+			case "image_url":
+				if part.ImageURL != nil {
+					blocks = append(blocks, imageBlock(part.ImageURL.URL))
+				}
+			}
+		}
+	} else if msg.Content != "" {
+		blocks = append(blocks, anthropicReqBlock{Type: "text", Text: msg.Content})
+	}
+
+	for _, tc := range msg.ToolCalls {
+		input := json.RawMessage(tc.Function.Arguments)
+		if len(input) == 0 {
+			input = json.RawMessage("{}")
+		}
+		blocks = append(blocks, anthropicReqBlock{
+			Type:  blockTypeToolUse,
+			ID:    tc.ID,
+			Name:  tc.Function.Name,
+			Input: input,
+		})
+	}
+
+	// Plain single-text turn: keep the lightweight string form so the common
+	// path is byte-for-byte unchanged.
+	if len(msg.ContentParts) == 0 && len(msg.ToolCalls) == 0 {
+		return msg.Content
+	}
+	return blocks
+}
+
+func anthropicToolChoice(choice any, tools []core.Tool) any {
+	// tool_choice is only valid alongside tools; Anthropic rejects it otherwise.
+	if len(tools) == 0 {
+		return nil
+	}
+	switch kind, name := core.NormalizeToolChoice(choice); kind {
+	case core.ToolChoiceAuto:
+		return map[string]string{"type": "auto"}
+	case core.ToolChoiceNone:
+		return map[string]string{"type": "none"}
+	case core.ToolChoiceRequired:
+		return map[string]string{"type": "any"}
+	case core.ToolChoiceFunction:
+		return map[string]string{"type": "tool", "name": name}
+	default:
+		return nil
+	}
+}
+
+// imageBlock maps an OpenAI image_url (data URI or remote URL) to an Anthropic
+// image content block.
+func imageBlock(url string) anthropicReqBlock {
+	if mediaType, data, ok := parseDataURI(url); ok {
+		return anthropicReqBlock{
+			Type: "image",
+			Source: &anthropicImageSource{
+				Type:      "base64",
+				MediaType: mediaType,
+				Data:      data,
+			},
+		}
+	}
+	return anthropicReqBlock{
+		Type:   "image",
+		Source: &anthropicImageSource{Type: "url", URL: url},
+	}
+}
+
+// parseDataURI splits a data URI of the form "data:<media-type>;base64,<data>"
+// into its media type and payload. ok is false for any non-base64 data URI or
+// a plain remote URL.
+func parseDataURI(uri string) (mediaType, data string, ok bool) {
+	const prefix = "data:"
+	if !strings.HasPrefix(uri, prefix) {
+		return "", "", false
+	}
+	meta, payload, found := strings.Cut(uri[len(prefix):], ",")
+	if !found {
+		return "", "", false
+	}
+	mediaType, encoding, _ := strings.Cut(meta, ";")
+	if encoding != "base64" {
+		return "", "", false
+	}
+	return mediaType, payload, true
 }
 
 // Complete sends a chat completion request to Anthropic.
@@ -163,12 +334,18 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 		maxTokens = *req.MaxTokens
 	}
 
+	core.WarnUnsupportedParams(ctx, p.Name(), req.Model, req, anthropicSupportedParams...)
+
 	aReq := anthropicRequest{
-		Model:       req.Model,
-		MaxTokens:   maxTokens,
-		Messages:    messages,
-		Temperature: req.Temperature,
-		System:      system,
+		Model:         req.Model,
+		MaxTokens:     maxTokens,
+		Messages:      messages,
+		Temperature:   req.Temperature,
+		TopP:          req.TopP,
+		StopSequences: req.Stop,
+		System:        system,
+		Tools:         anthropicwire.MapTools(req.Tools),
+		ToolChoice:    anthropicToolChoice(req.ToolChoice, req.Tools),
 	}
 
 	bodyReader, _, release, err := core.JSONBodyReader(aReq)
@@ -210,9 +387,25 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 	}
 
 	var content strings.Builder
+	var toolCalls []core.ToolCall
 	for _, block := range aResp.Content {
 		if block.Type == "text" {
 			content.WriteString(block.Text)
+			continue
+		}
+		if block.Type == blockTypeToolUse {
+			args := string(block.Input)
+			if args == "" {
+				args = "{}"
+			}
+			toolCalls = append(toolCalls, core.ToolCall{
+				ID:   block.ID,
+				Type: "function",
+				Function: core.FunctionCall{
+					Name:      block.Name,
+					Arguments: args,
+				},
+			})
 		}
 	}
 
@@ -225,10 +418,11 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 			{
 				Index: 0,
 				Message: core.Message{
-					Role:    aResp.Role,
-					Content: content.String(),
+					Role:      aResp.Role,
+					Content:   content.String(),
+					ToolCalls: toolCalls,
 				},
-				FinishReason: "stop",
+				FinishReason: core.NormalizeFinishReason(aResp.StopReason),
 			},
 		},
 		Usage: core.Usage{
@@ -244,9 +438,10 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 type anthropicStreamMessageStart struct {
 	Type    string `json:"type"`
 	Message struct {
-		ID    string `json:"id"`
-		Model string `json:"model"`
-		Role  string `json:"role"`
+		ID    string         `json:"id"`
+		Model string         `json:"model"`
+		Role  string         `json:"role"`
+		Usage anthropicUsage `json:"usage"`
 	} `json:"message"`
 }
 
@@ -254,9 +449,29 @@ type anthropicStreamContentDelta struct {
 	Type  string `json:"type"`
 	Index int    `json:"index"`
 	Delta struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
+		Type        string `json:"type"`
+		Text        string `json:"text"`
+		PartialJSON string `json:"partial_json"`
 	} `json:"delta"`
+}
+
+type anthropicStreamContentBlockStart struct {
+	Type         string `json:"type"`
+	Index        int    `json:"index"`
+	ContentBlock struct {
+		Type  string          `json:"type"`
+		ID    string          `json:"id"`
+		Name  string          `json:"name"`
+		Input json.RawMessage `json:"input"`
+	} `json:"content_block"`
+}
+
+type anthropicStreamMessageDelta struct {
+	Type  string `json:"type"`
+	Delta struct {
+		StopReason string `json:"stop_reason"`
+	} `json:"delta"`
+	Usage anthropicUsage `json:"usage"`
 }
 
 // CompleteStream sends a streaming chat completion request to Anthropic.
@@ -268,13 +483,19 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 		maxTokens = *req.MaxTokens
 	}
 
+	core.WarnUnsupportedParams(ctx, p.Name(), req.Model, req, anthropicSupportedParams...)
+
 	aReq := anthropicRequest{
-		Model:       req.Model,
-		MaxTokens:   maxTokens,
-		Messages:    messages,
-		Temperature: req.Temperature,
-		System:      system,
-		Stream:      true,
+		Model:         req.Model,
+		MaxTokens:     maxTokens,
+		Messages:      messages,
+		Temperature:   req.Temperature,
+		TopP:          req.TopP,
+		StopSequences: req.Stop,
+		System:        system,
+		Tools:         anthropicwire.MapTools(req.Tools),
+		ToolChoice:    anthropicToolChoice(req.ToolChoice, req.Tools),
+		Stream:        true,
 	}
 
 	bodyReader, _, release, err := core.JSONBodyReader(aReq)
@@ -312,6 +533,10 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 		defer func() { _ = httpResp.Body.Close() }()
 
 		var msgID, model string
+		var promptTokens, cacheReadTokens, cacheWriteTokens int
+		toolCallIndexes := make(map[int]int)
+		toolArgsSeen := make(map[int]bool) // tool-call index -> received any input_json_delta
+		nextToolCallIndex := 0
 		scanner := core.NewSSEScanner(httpResp.Body)
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -320,7 +545,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 			}
 			data := strings.TrimPrefix(line, "data: ")
 
-			var raw map[string]interface{}
+			var raw map[string]any
 			if json.Unmarshal([]byte(data), &raw) != nil {
 				continue
 			}
@@ -332,16 +557,83 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 				if json.Unmarshal([]byte(data), &evt) == nil {
 					msgID = evt.Message.ID
 					model = evt.Message.Model
+					// Anthropic reports prompt + cache tokens once, on
+					// message_start; output_tokens arrive later on message_delta.
+					promptTokens = evt.Message.Usage.InputTokens
+					cacheReadTokens = evt.Message.Usage.CacheReadInputTokens
+					cacheWriteTokens = evt.Message.Usage.CacheCreationInputTokens
 				}
-			case "content_block_delta":
-				var evt anthropicStreamContentDelta
-				if json.Unmarshal([]byte(data), &evt) == nil {
+			case "content_block_start":
+				var evt anthropicStreamContentBlockStart
+				if json.Unmarshal([]byte(data), &evt) == nil && evt.ContentBlock.Type == blockTypeToolUse {
+					toolCallIndex := nextToolCallIndex
+					toolCallIndexes[evt.Index] = toolCallIndex
+					nextToolCallIndex++
 					ch <- core.StreamChunk{
 						ID:    msgID,
 						Model: model,
 						Choices: []core.StreamChoice{
 							{
-								Index: evt.Index,
+								Index: 0,
+								Delta: core.MessageDelta{
+									ToolCalls: []core.ToolCall{
+										{
+											Index: core.Ptr(toolCallIndex),
+											ID:    evt.ContentBlock.ID,
+											Type:  "function",
+											Function: core.FunctionCall{
+												Name: evt.ContentBlock.Name,
+											},
+										},
+									},
+								},
+							},
+						},
+					}
+				}
+			case "content_block_delta":
+				var evt anthropicStreamContentDelta
+				if json.Unmarshal([]byte(data), &evt) == nil {
+					if evt.Delta.Type == "input_json_delta" {
+						toolCallIndex, ok := toolCallIndexes[evt.Index]
+						if !ok {
+							toolCallIndex = evt.Index
+						}
+						toolArgsSeen[toolCallIndex] = true
+						ch <- core.StreamChunk{
+							ID:    msgID,
+							Model: model,
+							Choices: []core.StreamChoice{
+								{
+									Index: 0,
+									Delta: core.MessageDelta{
+										ToolCalls: []core.ToolCall{
+											{
+												Index: core.Ptr(toolCallIndex),
+												Type:  "function",
+												Function: core.FunctionCall{
+													Arguments: evt.Delta.PartialJSON,
+												},
+											},
+										},
+									},
+								},
+							},
+						}
+						continue
+					}
+					if evt.Delta.Type != "text_delta" {
+						continue
+					}
+					ch <- core.StreamChunk{
+						ID:    msgID,
+						Model: model,
+						Choices: []core.StreamChoice{
+							{
+								// Single completion: the OpenAI choice index is
+								// always 0 (evt.Index is Anthropic's content-block
+								// index, not a choice index).
+								Index: 0,
 								Delta: core.MessageDelta{
 									Content: evt.Delta.Text,
 								},
@@ -350,14 +642,46 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 					}
 				}
 			case "message_delta":
+				// Emit "{}" arguments for any tool call that produced no
+				// input_json_delta (zero-argument tools), so clients that
+				// JSON.parse the arguments don't choke on an empty string.
+				for _, toolCallIndex := range toolCallIndexes {
+					if toolArgsSeen[toolCallIndex] {
+						continue
+					}
+					ch <- core.StreamChunk{
+						ID:    msgID,
+						Model: model,
+						Choices: []core.StreamChoice{{
+							Index: 0,
+							Delta: core.MessageDelta{
+								ToolCalls: []core.ToolCall{{
+									Index:    core.Ptr(toolCallIndex),
+									Type:     "function",
+									Function: core.FunctionCall{Arguments: "{}"},
+								}},
+							},
+						}},
+					}
+				}
+				var evt anthropicStreamMessageDelta
+				_ = json.Unmarshal([]byte(data), &evt)
+				completionTokens := evt.Usage.OutputTokens
 				ch <- core.StreamChunk{
 					ID:    msgID,
 					Model: model,
 					Choices: []core.StreamChoice{
 						{
 							Index:        0,
-							FinishReason: "stop",
+							FinishReason: core.NormalizeFinishReason(evt.Delta.StopReason),
 						},
+					},
+					Usage: &core.Usage{
+						PromptTokens:     promptTokens,
+						CompletionTokens: completionTokens,
+						TotalTokens:      promptTokens + completionTokens,
+						CacheReadTokens:  cacheReadTokens,
+						CacheWriteTokens: cacheWriteTokens,
 					},
 				}
 			}

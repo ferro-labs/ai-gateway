@@ -9,6 +9,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
+	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
@@ -171,7 +172,7 @@ func TestBedrockProvider_Embed_CohereBatchesAndMapsArrayResponse(t *testing.T) {
 
 	resp, err := p.Embed(context.Background(), core.EmbeddingRequest{
 		Model: "cohere.embed-english-v3",
-		Input: []interface{}{"first", "second"},
+		Input: []any{"first", "second"},
 	})
 	if err != nil {
 		t.Fatalf("Embed() error: %v", err)
@@ -226,6 +227,272 @@ func TestBedrockProvider_Embed_CohereV4MapsTypedFloatResponse(t *testing.T) {
 	}
 }
 
+func TestBedrockProvider_CompleteAnthropic_ForwardsToolsAndDecodesToolUse(t *testing.T) {
+	fake := &fakeBedrockRuntimeClient{
+		responses: [][]byte{
+			[]byte(`{
+				"id":"msg_1",
+				"type":"message",
+				"role":"assistant",
+				"content":[{"type":"tool_use","id":"toolu_1","name":"lookup","input":{"city":"SF"}}],
+				"stop_reason":"tool_use",
+				"usage":{"input_tokens":1,"output_tokens":1}
+			}`),
+		},
+	}
+	p := &Provider{name: Name, client: fake}
+
+	resp, err := p.Complete(context.Background(), core.Request{
+		Model:    "anthropic.claude-3-5-sonnet-20241022-v2:0",
+		Messages: []core.Message{{Role: core.RoleUser, Content: "weather?"}},
+		Tools: []core.Tool{{
+			Type: "function",
+			Function: core.Function{
+				Name:        "lookup",
+				Description: "Lookup weather",
+				Parameters:  json.RawMessage(`{"type":"object","properties":{"city":{"type":"string"}}}`),
+			},
+		}},
+		ToolChoice: "required",
+	})
+	if err != nil {
+		t.Fatalf("Complete() error: %v", err)
+	}
+	var body bedrockAnthropicRequest
+	mustUnmarshalBody(t, fake.invokeCalls[0].Body, &body)
+	if len(body.Tools) != 1 || body.Tools[0].Name != "lookup" {
+		t.Fatalf("tools = %#v, want lookup", body.Tools)
+	}
+	choice, ok := body.ToolChoice.(map[string]any)
+	if !ok || choice["type"] != "any" {
+		t.Fatalf("tool_choice = %#v, want type any", body.ToolChoice)
+	}
+	if len(resp.Choices) != 1 || len(resp.Choices[0].Message.ToolCalls) != 1 {
+		t.Fatalf("tool calls = %#v, want one", resp.Choices)
+	}
+	tc := resp.Choices[0].Message.ToolCalls[0]
+	if tc.ID != "toolu_1" || tc.Function.Name != "lookup" || tc.Function.Arguments != `{"city":"SF"}` {
+		t.Fatalf("tool call = %#v, want lookup", tc)
+	}
+}
+
+func TestBedrockProvider_CompleteAnthropic_ForwardsToolResultAndDecodesFinalAnswer(t *testing.T) {
+	fake := &fakeBedrockRuntimeClient{
+		responses: [][]byte{
+			[]byte(`{
+				"id":"msg_2",
+				"type":"message",
+				"role":"assistant",
+				"content":[{"type":"text","text":"It is 72F in SF."}],
+				"stop_reason":"end_turn",
+				"usage":{"input_tokens":2,"output_tokens":3}
+			}`),
+		},
+	}
+	p := &Provider{name: Name, client: fake}
+
+	resp, err := p.Complete(context.Background(), core.Request{
+		Model: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+		Messages: []core.Message{
+			{Role: core.RoleUser, Content: "weather?"},
+			{Role: core.RoleAssistant, ToolCalls: []core.ToolCall{{
+				ID:       "toolu_1",
+				Type:     "function",
+				Function: core.FunctionCall{Name: "lookup", Arguments: `{"city":"SF"}`},
+			}}},
+			{Role: core.RoleTool, ToolCallID: "toolu_1", Content: `{"temp":"72F"}`},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete() error: %v", err)
+	}
+
+	var body struct {
+		Messages []struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+	}
+	mustUnmarshalBody(t, fake.invokeCalls[0].Body, &body)
+	if len(body.Messages) != 3 {
+		t.Fatalf("messages len = %d, want 3", len(body.Messages))
+	}
+	var resultBlocks []map[string]json.RawMessage
+	if err := json.Unmarshal(body.Messages[2].Content, &resultBlocks); err != nil {
+		t.Fatalf("decode tool result blocks: %v", err)
+	}
+	if body.Messages[2].Role != core.RoleUser || jsonString(resultBlocks[0]["type"]) != "tool_result" || jsonString(resultBlocks[0]["tool_use_id"]) != "toolu_1" {
+		t.Fatalf("tool result message = %#v blocks=%#v", body.Messages[2], resultBlocks)
+	}
+	if got := resp.Choices[0].Message.Content; got != "It is 72F in SF." {
+		t.Fatalf("final answer = %q, want weather answer", got)
+	}
+	if len(resp.Choices[0].Message.ToolCalls) != 0 {
+		t.Fatalf("final answer tool calls = %#v, want none", resp.Choices[0].Message.ToolCalls)
+	}
+}
+
+func TestBedrockProvider_CompleteAnthropic_MergesParallelToolResults(t *testing.T) {
+	fake := &fakeBedrockRuntimeClient{
+		responses: [][]byte{
+			[]byte(`{
+				"id":"msg_2",
+				"type":"message",
+				"role":"assistant",
+				"content":[{"type":"text","text":"done"}],
+				"stop_reason":"end_turn",
+				"usage":{"input_tokens":2,"output_tokens":3}
+			}`),
+		},
+	}
+	p := &Provider{name: Name, client: fake}
+
+	_, err := p.Complete(context.Background(), core.Request{
+		Model: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+		Messages: []core.Message{
+			{Role: core.RoleUser, Content: "weather and time?"},
+			{Role: core.RoleAssistant, ToolCalls: []core.ToolCall{
+				{ID: "toolu_weather", Type: "function", Function: core.FunctionCall{Name: "weather", Arguments: `{"city":"SF"}`}},
+				{ID: "toolu_time", Type: "function", Function: core.FunctionCall{Name: "time", Arguments: `{"city":"SF"}`}},
+			}},
+			{Role: core.RoleTool, ToolCallID: "toolu_weather", Content: `{"temp":"72F"}`},
+			{Role: core.RoleTool, ToolCallID: "toolu_time", Content: `{"time":"10:00"}`},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete() error: %v", err)
+	}
+
+	var body struct {
+		Messages []struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+	}
+	mustUnmarshalBody(t, fake.invokeCalls[0].Body, &body)
+	if len(body.Messages) != 3 {
+		t.Fatalf("messages len = %d, want 3 with merged tool results", len(body.Messages))
+	}
+	var resultBlocks []map[string]json.RawMessage
+	if err := json.Unmarshal(body.Messages[2].Content, &resultBlocks); err != nil {
+		t.Fatalf("decode tool result blocks: %v", err)
+	}
+	if body.Messages[2].Role != core.RoleUser || len(resultBlocks) != 2 {
+		t.Fatalf("tool result message = %#v blocks=%#v, want one user turn with two tool results", body.Messages[2], resultBlocks)
+	}
+	if jsonString(resultBlocks[0]["tool_use_id"]) != "toolu_weather" || jsonString(resultBlocks[1]["tool_use_id"]) != "toolu_time" {
+		t.Fatalf("tool result ids = %#v, want weather/time", resultBlocks)
+	}
+}
+
+func TestBedrockProvider_CompleteStreamAnthropic_ForwardsToolUseDeltas(t *testing.T) {
+	fake := &fakeBedrockRuntimeClient{
+		streamResponses: [][]byte{
+			[]byte(`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"lookup","input":{}}}`),
+			[]byte(`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"city\""}}`),
+			[]byte(`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":":\"SF\"}"}}`),
+			[]byte(`{"type":"message_delta","delta":{"stop_reason":"tool_use"}}`),
+		},
+	}
+	p := &Provider{name: Name, client: fake}
+
+	ch, err := p.CompleteStream(context.Background(), core.Request{
+		Model:    "anthropic.claude-3-5-sonnet-20241022-v2:0",
+		Messages: []core.Message{{Role: core.RoleUser, Content: "weather?"}},
+		Tools: []core.Tool{{
+			Type: "function",
+			Function: core.Function{
+				Name: "lookup",
+			},
+		}},
+		ToolChoice: "required",
+	})
+	if err != nil {
+		t.Fatalf("CompleteStream() error: %v", err)
+	}
+
+	var chunks []core.StreamChunk
+	for c := range ch {
+		chunks = append(chunks, c)
+	}
+
+	if len(chunks) != 4 {
+		t.Fatalf("chunks len = %d, want 4: %#v", len(chunks), chunks)
+	}
+	start := chunks[0].Choices[0].Delta.ToolCalls[0]
+	if start.Index == nil || *start.Index != 0 || start.ID != "toolu_1" || start.Function.Name != "lookup" {
+		t.Fatalf("start tool call = %#v, want lookup at index 0", start)
+	}
+	if chunks[1].Choices[0].Delta.ToolCalls[0].Function.Arguments != `{"city"` {
+		t.Fatalf("first args delta = %#v", chunks[1].Choices[0].Delta.ToolCalls)
+	}
+	if chunks[2].Choices[0].Delta.ToolCalls[0].Function.Arguments != `:"SF"}` {
+		t.Fatalf("second args delta = %#v", chunks[2].Choices[0].Delta.ToolCalls)
+	}
+	if chunks[3].Choices[0].FinishReason != core.FinishReasonToolCalls {
+		t.Fatalf("finish_reason = %q, want %q", chunks[3].Choices[0].FinishReason, core.FinishReasonToolCalls)
+	}
+}
+
+func TestBedrockProvider_CompleteStreamAnthropic_MapsContentBlockIndexToToolCallIndex(t *testing.T) {
+	fake := &fakeBedrockRuntimeClient{
+		streamResponses: [][]byte{
+			[]byte(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Let me check."}}`),
+			[]byte(`{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_1","name":"lookup","input":{}}}`),
+			[]byte(`{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"city\""}}`),
+			[]byte(`{"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"toolu_2","name":"lookup_time","input":{}}}`),
+			[]byte(`{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"city\""}}`),
+			[]byte(`{"type":"message_delta","delta":{"stop_reason":"tool_use"}}`),
+		},
+	}
+	p := &Provider{name: Name, client: fake}
+
+	ch, err := p.CompleteStream(context.Background(), core.Request{
+		Model:    "anthropic.claude-3-5-sonnet-20241022-v2:0",
+		Messages: []core.Message{{Role: core.RoleUser, Content: "weather?"}},
+	})
+	if err != nil {
+		t.Fatalf("CompleteStream() error: %v", err)
+	}
+
+	var chunks []core.StreamChunk
+	for c := range ch {
+		chunks = append(chunks, c)
+	}
+
+	if len(chunks) != 6 {
+		t.Fatalf("chunks len = %d, want 6: %#v", len(chunks), chunks)
+	}
+	start := chunks[1].Choices[0].Delta.ToolCalls[0]
+	if chunks[1].Choices[0].Index != 0 {
+		t.Fatalf("choice index = %d, want sole completion index 0", chunks[1].Choices[0].Index)
+	}
+	if start.Index == nil || *start.Index != 0 {
+		t.Fatalf("tool call index = %#v, want OpenAI tool index 0", start.Index)
+	}
+	args := chunks[2].Choices[0].Delta.ToolCalls[0]
+	if chunks[2].Choices[0].Index != 0 {
+		t.Fatalf("args choice index = %d, want sole completion index 0", chunks[2].Choices[0].Index)
+	}
+	if args.Index == nil || *args.Index != 0 || args.Function.Arguments != `{"city"` {
+		t.Fatalf("args delta = %#v, want tool index 0 with city fragment", args)
+	}
+	secondStart := chunks[3].Choices[0].Delta.ToolCalls[0]
+	if chunks[3].Choices[0].Index != 0 {
+		t.Fatalf("second choice index = %d, want sole completion index 0", chunks[3].Choices[0].Index)
+	}
+	if secondStart.Index == nil || *secondStart.Index != 1 {
+		t.Fatalf("second tool call index = %#v, want OpenAI tool index 1", secondStart.Index)
+	}
+	secondArgs := chunks[4].Choices[0].Delta.ToolCalls[0]
+	if chunks[4].Choices[0].Index != 0 {
+		t.Fatalf("second args choice index = %d, want sole completion index 0", chunks[4].Choices[0].Index)
+	}
+	if secondArgs.Index == nil || *secondArgs.Index != 1 || secondArgs.Function.Arguments != `{"city"` {
+		t.Fatalf("second args delta = %#v, want tool index 1 with city fragment", secondArgs)
+	}
+}
+
 func TestBedrockProvider_Embed_Validation(t *testing.T) {
 	cases := []struct {
 		name string
@@ -245,11 +512,11 @@ func TestBedrockProvider_Embed_Validation(t *testing.T) {
 		},
 		{
 			name: "empty interface slice",
-			req:  core.EmbeddingRequest{Model: "amazon.titan-embed-text-v1", Input: []interface{}{}},
+			req:  core.EmbeddingRequest{Model: "amazon.titan-embed-text-v1", Input: []any{}},
 		},
 		{
 			name: "non-string interface item",
-			req:  core.EmbeddingRequest{Model: "amazon.titan-embed-text-v1", Input: []interface{}{"ok", 42}},
+			req:  core.EmbeddingRequest{Model: "amazon.titan-embed-text-v1", Input: []any{"ok", 42}},
 		},
 		{
 			name: "base64 encoding",
@@ -285,9 +552,11 @@ func TestBedrockProvider_Embed_Validation(t *testing.T) {
 }
 
 type fakeBedrockRuntimeClient struct {
-	invokeCalls []*bedrockruntime.InvokeModelInput
-	responses   [][]byte
-	err         error
+	invokeCalls       []*bedrockruntime.InvokeModelInput
+	invokeStreamCalls []*bedrockruntime.InvokeModelWithResponseStreamInput
+	responses         [][]byte
+	streamResponses   [][]byte
+	err               error
 }
 
 func (f *fakeBedrockRuntimeClient) InvokeModel(_ context.Context, input *bedrockruntime.InvokeModelInput, _ ...func(*bedrockruntime.Options)) (*bedrockruntime.InvokeModelOutput, error) {
@@ -304,11 +573,38 @@ func (f *fakeBedrockRuntimeClient) InvokeModel(_ context.Context, input *bedrock
 	return &bedrockruntime.InvokeModelOutput{Body: f.responses[idx]}, nil
 }
 
-func (f *fakeBedrockRuntimeClient) InvokeModelWithResponseStream(context.Context, *bedrockruntime.InvokeModelWithResponseStreamInput, ...func(*bedrockruntime.Options)) (*bedrockruntime.InvokeModelWithResponseStreamOutput, error) {
-	return nil, fmt.Errorf("streaming not implemented in fake")
+func (f *fakeBedrockRuntimeClient) InvokeModelWithResponseStream(_ context.Context, input *bedrockruntime.InvokeModelWithResponseStreamInput, _ ...func(*bedrockruntime.Options)) (bedrockEventStream, error) {
+	copied := *input
+	copied.Body = append([]byte(nil), input.Body...)
+	f.invokeStreamCalls = append(f.invokeStreamCalls, &copied)
+	if f.err != nil {
+		return nil, f.err
+	}
+	events := make(chan types.ResponseStream, len(f.streamResponses))
+	for _, body := range f.streamResponses {
+		events <- &types.ResponseStreamMemberChunk{Value: types.PayloadPart{Bytes: body}}
+	}
+	close(events)
+	return fakeBedrockResponseStreamReader{events: events}, nil
 }
 
-func mustUnmarshalBody(t *testing.T, body []byte, out interface{}) {
+type fakeBedrockResponseStreamReader struct {
+	events <-chan types.ResponseStream
+}
+
+func (f fakeBedrockResponseStreamReader) Events() <-chan types.ResponseStream {
+	return f.events
+}
+
+func (f fakeBedrockResponseStreamReader) Close() error {
+	return nil
+}
+
+func (f fakeBedrockResponseStreamReader) Err() error {
+	return nil
+}
+
+func mustUnmarshalBody(t *testing.T, body []byte, out any) {
 	t.Helper()
 	if err := json.Unmarshal(body, out); err != nil {
 		t.Fatalf("failed to unmarshal body %s: %v", string(body), err)
@@ -325,3 +621,9 @@ func containsString(values []string, target string) bool {
 }
 
 func intPtr(v int) *int { return &v }
+
+func jsonString(raw json.RawMessage) string {
+	var s string
+	_ = json.Unmarshal(raw, &s)
+	return s
+}

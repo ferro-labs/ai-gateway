@@ -228,6 +228,34 @@ func TestOpenAIProvider_Complete_MockHTTP(t *testing.T) {
 	}
 }
 
+func TestBuildMessages_AssistantToolCalls(t *testing.T) {
+	msgs := buildMessages([]core.Message{
+		{Role: core.RoleAssistant, ToolCalls: []core.ToolCall{{
+			ID:       "call_1",
+			Type:     "function",
+			Function: core.FunctionCall{Name: "lookup", Arguments: `{"city":"SF"}`},
+		}}},
+		{Role: core.RoleTool, ToolCallID: "call_1", Content: "72F"},
+	})
+	raw, err := json.Marshal(msgs)
+	if err != nil {
+		t.Fatalf("marshal messages: %v", err)
+	}
+	var got []core.Message
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal messages: %v\n%s", err, raw)
+	}
+	if len(got) != 2 {
+		t.Fatalf("messages len = %d, want 2", len(got))
+	}
+	if len(got[0].ToolCalls) != 1 || got[0].ToolCalls[0].Function.Name != "lookup" {
+		t.Fatalf("assistant tool_calls = %#v, want lookup", got[0].ToolCalls)
+	}
+	if got[1].ToolCallID != "call_1" {
+		t.Fatalf("tool_call_id = %q, want call_1", got[1].ToolCallID)
+	}
+}
+
 func TestOpenAIProvider_Complete_DrainsSuccessfulResponseBody(t *testing.T) {
 	var newConnections atomic.Int32
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -350,6 +378,58 @@ func TestOpenAIProvider_CompleteStream_MockSSE(t *testing.T) {
 	}
 }
 
+func TestOpenAIProvider_CompleteStream_ForwardsToolCallIndex(t *testing.T) {
+	sseData := "data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1234567890,\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"\"}}]},\"finish_reason\":null}]}\n\n" +
+		"data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1234567890,\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"city\\\"\"}}]},\"finish_reason\":null}]}\n\n" +
+		"data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1234567890,\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n" +
+		"data: [DONE]\n\n"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(sseData))
+	}))
+	defer srv.Close()
+
+	provider, _ := New("sk-test-key", srv.URL)
+	ch, err := provider.CompleteStream(context.Background(), core.Request{
+		Model:    "gpt-4o",
+		Messages: []core.Message{{Role: core.RoleUser, Content: "weather?"}},
+		Tools: []core.Tool{{
+			Type: "function",
+			Function: core.Function{
+				Name: "lookup",
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("CompleteStream() error: %v", err)
+	}
+
+	var chunks []core.StreamChunk
+	for c := range ch {
+		if c.Error != nil {
+			t.Fatalf("stream error: %v", c.Error)
+		}
+		chunks = append(chunks, c)
+	}
+
+	if len(chunks) != 3 {
+		t.Fatalf("chunks len = %d, want 3: %#v", len(chunks), chunks)
+	}
+	start := chunks[0].Choices[0].Delta.ToolCalls[0]
+	if start.Index == nil || *start.Index != 0 || start.ID != "call_1" || start.Function.Name != "lookup" {
+		t.Fatalf("start tool call = %#v, want lookup at index 0", start)
+	}
+	delta := chunks[1].Choices[0].Delta.ToolCalls[0]
+	if delta.Index == nil || *delta.Index != 0 || delta.Function.Arguments != `{"city"` {
+		t.Fatalf("args delta = %#v, want index 0 city fragment", delta)
+	}
+	if chunks[2].Choices[0].FinishReason != core.FinishReasonToolCalls {
+		t.Fatalf("finish_reason = %q, want %q", chunks[2].Choices[0].FinishReason, core.FinishReasonToolCalls)
+	}
+}
+
 // ── Embed() validation tests ─────────────────────────────────────────────────
 
 func TestOpenAIProvider_Embed_InvalidInputType(t *testing.T) {
@@ -358,7 +438,7 @@ func TestOpenAIProvider_Embed_InvalidInputType(t *testing.T) {
 
 	badInputs := []struct {
 		name  string
-		input interface{}
+		input any
 	}{
 		{"nil", nil},
 		{"integer", 42},
@@ -385,7 +465,7 @@ func TestOpenAIProvider_Embed_EmptyArrayInput(t *testing.T) {
 		t.Error("Embed() with empty []string: expected error, got nil")
 	}
 
-	_, err = p.Embed(ctx, core.EmbeddingRequest{Model: "text-embedding-3-small", Input: []interface{}{}})
+	_, err = p.Embed(ctx, core.EmbeddingRequest{Model: "text-embedding-3-small", Input: []any{}})
 	if err == nil {
 		t.Error("Embed() with empty []interface{}: expected error, got nil")
 	}
@@ -397,7 +477,7 @@ func TestOpenAIProvider_Embed_SliceWithNonStringElement(t *testing.T) {
 
 	_, err := p.Embed(ctx, core.EmbeddingRequest{
 		Model: "text-embedding-3-small",
-		Input: []interface{}{"valid", 99, "also-valid"},
+		Input: []any{"valid", 99, "also-valid"},
 	})
 	if err == nil {
 		t.Error("expected error for []interface{} with non-string element, got nil")
@@ -429,9 +509,9 @@ func TestOpenAIProvider_Embed_InvalidEncodingFormat(t *testing.T) {
 func TestOpenAIProvider_Embed_ValidEncodingFormats(t *testing.T) {
 	// Mock server returns an OpenAI-compatible embedding response.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		resp := map[string]interface{}{
+		resp := map[string]any{
 			"object": "list",
-			"data": []map[string]interface{}{
+			"data": []map[string]any{
 				{"object": "embedding", "embedding": []float64{0.1, 0.2}, "index": 0},
 			},
 			"model": "text-embedding-3-small",

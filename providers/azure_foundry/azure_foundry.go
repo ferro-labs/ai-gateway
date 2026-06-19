@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
+	"github.com/ferro-labs/ai-gateway/internal/openaicompat"
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
@@ -85,14 +86,6 @@ func (p *Provider) endpoint() string {
 	return fmt.Sprintf("%s/chat/completions?api-version=%s", p.baseURL, p.apiVersion)
 }
 
-type azureFoundryRequest struct {
-	Model       string         `json:"model"`
-	Messages    []core.Message `json:"messages"`
-	Temperature *float64       `json:"temperature,omitempty"`
-	MaxTokens   *int           `json:"max_tokens,omitempty"`
-	Stream      bool           `json:"stream,omitempty"`
-}
-
 type azureFoundryResponse struct {
 	ID      string        `json:"id"`
 	Model   string        `json:"model"`
@@ -109,14 +102,7 @@ type azureFoundryErrorResponse struct {
 
 // Complete sends a chat completion request to Azure AI Foundry.
 func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
-	foundryReq := azureFoundryRequest{
-		Model:       req.Model,
-		Messages:    req.Messages,
-		Temperature: req.Temperature,
-		MaxTokens:   req.MaxTokens,
-	}
-
-	bodyReader, _, release, err := core.JSONBodyReader(foundryReq)
+	bodyReader, _, release, err := openaicompat.BuildBody(req, false)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
@@ -162,30 +148,9 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 	}, nil
 }
 
-type azureFoundryStreamResponse struct {
-	ID      string `json:"id"`
-	Model   string `json:"model"`
-	Choices []struct {
-		Index int `json:"index"`
-		Delta struct {
-			Role    string `json:"role,omitempty"`
-			Content string `json:"content,omitempty"`
-		} `json:"delta"`
-		FinishReason string `json:"finish_reason,omitempty"`
-	} `json:"choices"`
-}
-
 // CompleteStream sends a streaming chat completion request to Azure AI Foundry.
 func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan core.StreamChunk, error) {
-	foundryReq := azureFoundryRequest{
-		Model:       req.Model,
-		Messages:    req.Messages,
-		Temperature: req.Temperature,
-		MaxTokens:   req.MaxTokens,
-		Stream:      true,
-	}
-
-	bodyReader, _, release, err := core.JSONBodyReader(foundryReq)
+	bodyReader, _, release, err := openaicompat.BuildBody(req, true)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
@@ -213,44 +178,5 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 		return nil, fmt.Errorf("azure foundry API error (%d): %s", httpResp.StatusCode, string(respBody))
 	}
 
-	ch := make(chan core.StreamChunk)
-	go func() {
-		defer close(ch)
-		defer func() { _ = httpResp.Body.Close() }()
-
-		scanner := core.NewSSEScanner(httpResp.Body)
-		for scanner.Scan() {
-			line := scanner.Text()
-			if !strings.HasPrefix(line, "data: ") {
-				continue
-			}
-			data := strings.TrimPrefix(line, "data: ")
-			if data == core.SSEDone {
-				return
-			}
-
-			var chunk azureFoundryStreamResponse
-			if json.Unmarshal([]byte(data), &chunk) != nil {
-				continue
-			}
-
-			sc := core.StreamChunk{ID: chunk.ID, Model: chunk.Model}
-			for _, c := range chunk.Choices {
-				sc.Choices = append(sc.Choices, core.StreamChoice{
-					Index: c.Index,
-					Delta: core.MessageDelta{
-						Role:    c.Delta.Role,
-						Content: c.Delta.Content,
-					},
-					FinishReason: c.FinishReason,
-				})
-			}
-			ch <- sc
-		}
-		if err := scanner.Err(); err != nil {
-			ch <- core.StreamChunk{Error: err}
-		}
-	}()
-
-	return ch, nil
+	return openaicompat.StreamSSE(httpResp.Body), nil
 }

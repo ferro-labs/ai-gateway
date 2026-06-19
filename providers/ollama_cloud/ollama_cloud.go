@@ -339,10 +339,10 @@ type tagsResponse struct {
 
 func buildChatRequest(req core.Request, stream bool) chatRequest {
 	var maxTokens *int
-	if req.MaxCompletionTokens != nil {
-		maxTokens = req.MaxCompletionTokens
-	} else {
+	if req.MaxTokens != nil {
 		maxTokens = req.MaxTokens
+	} else {
+		maxTokens = req.MaxCompletionTokens
 	}
 
 	var options *chatOptions

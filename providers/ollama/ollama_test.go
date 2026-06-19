@@ -2,10 +2,11 @@ package ollama
 
 import (
 	"context"
-	"github.com/ferro-labs/ai-gateway/providers/core"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
 func TestNewOllama(t *testing.T) {

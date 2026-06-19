@@ -52,7 +52,14 @@ func NewRouter(
 	r.Use(gwotel.Middleware)
 	r.Use(logging.Middleware) // inject trace ID + X-Request-ID header
 	r.Use(chimw.Recoverer)
-	r.Use(chimw.RealIP)
+	// RealIP rewrites RemoteAddr from X-Forwarded-For/X-Real-IP so per-IP rate
+	// limiting and request logs see the client IP rather than the load
+	// balancer's. chi v5.3.0 deprecated it as spoofable (GHSA-3fxj-6jh8-hvhx);
+	// that risk only applies when the gateway is exposed directly to clients —
+	// the intended deployment is behind a trusted proxy that sets these headers.
+	// Removing it would collapse all traffic into a single rate-limit bucket.
+	// TODO(v1.1.x): replace with a trusted-proxy-aware client-IP resolver.
+	r.Use(chimw.RealIP) //nolint:staticcheck // SA1019: deprecated but intentional behind a trusted proxy; see comment above
 	r.Use(middleware.CORS(corsOrigins...))
 
 	// Optional per-IP rate limiting middleware.

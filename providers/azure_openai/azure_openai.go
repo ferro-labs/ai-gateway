@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
+	"github.com/ferro-labs/ai-gateway/internal/openaicompat"
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
@@ -89,14 +90,6 @@ func (p *Provider) endpoint() string {
 		p.baseURL, p.deploymentName, p.apiVersion)
 }
 
-type azureOpenAIRequest struct {
-	Model       string         `json:"model"`
-	Messages    []core.Message `json:"messages"`
-	Temperature *float64       `json:"temperature,omitempty"`
-	MaxTokens   *int           `json:"max_tokens,omitempty"`
-	Stream      bool           `json:"stream,omitempty"`
-}
-
 type azureOpenAIResponse struct {
 	ID      string        `json:"id"`
 	Model   string        `json:"model"`
@@ -115,14 +108,10 @@ type azureOpenAIErrorResponse struct {
 
 // Complete sends a chat completion request to Azure OpenAI.
 func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
-	azureReq := azureOpenAIRequest{
-		Model:       req.Model,
-		Messages:    req.Messages,
-		Temperature: req.Temperature,
-		MaxTokens:   req.MaxTokens,
-	}
-
-	bodyReader, _, release, err := core.JSONBodyReader(azureReq)
+	// Azure o-series reasoning deployments reject max_tokens; keep only the
+	// modern field (the gateway seam leaves both populated).
+	req.PreferCompletionTokens()
+	bodyReader, _, release, err := openaicompat.BuildBody(req, false)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
@@ -167,30 +156,10 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 	}, nil
 }
 
-type azureOpenAIStreamResponse struct {
-	ID      string `json:"id"`
-	Model   string `json:"model"`
-	Choices []struct {
-		Index int `json:"index"`
-		Delta struct {
-			Role    string `json:"role,omitempty"`
-			Content string `json:"content,omitempty"`
-		} `json:"delta"`
-		FinishReason string `json:"finish_reason,omitempty"`
-	} `json:"choices"`
-}
-
 // CompleteStream sends a streaming chat completion request to Azure OpenAI.
 func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan core.StreamChunk, error) {
-	azureReq := azureOpenAIRequest{
-		Model:       req.Model,
-		Messages:    req.Messages,
-		Temperature: req.Temperature,
-		MaxTokens:   req.MaxTokens,
-		Stream:      true,
-	}
-
-	bodyReader, _, release, err := core.JSONBodyReader(azureReq)
+	req.PreferCompletionTokens()
+	bodyReader, _, release, err := openaicompat.BuildBody(req, true)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
@@ -218,47 +187,5 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 		return nil, fmt.Errorf("azure openai API error (%d): %s", httpResp.StatusCode, string(respBody))
 	}
 
-	ch := make(chan core.StreamChunk)
-	go func() {
-		defer close(ch)
-		defer func() { _ = httpResp.Body.Close() }()
-
-		scanner := core.NewSSEScanner(httpResp.Body)
-		for scanner.Scan() {
-			line := scanner.Text()
-			if !strings.HasPrefix(line, "data: ") {
-				continue
-			}
-			data := strings.TrimPrefix(line, "data: ")
-			if data == core.SSEDone {
-				return
-			}
-
-			var chunk azureOpenAIStreamResponse
-			if json.Unmarshal([]byte(data), &chunk) != nil {
-				continue
-			}
-
-			sc := core.StreamChunk{
-				ID:    chunk.ID,
-				Model: chunk.Model,
-			}
-			for _, c := range chunk.Choices {
-				sc.Choices = append(sc.Choices, core.StreamChoice{
-					Index: c.Index,
-					Delta: core.MessageDelta{
-						Role:    c.Delta.Role,
-						Content: c.Delta.Content,
-					},
-					FinishReason: c.FinishReason,
-				})
-			}
-			ch <- sc
-		}
-		if err := scanner.Err(); err != nil {
-			ch <- core.StreamChunk{Error: err}
-		}
-	}()
-
-	return ch, nil
+	return openaicompat.StreamSSE(httpResp.Body), nil
 }

@@ -21,3 +21,11 @@ linters:
   settings:
     gocyclo:
       min-complexity: 30
+
+  exclusions:
+    rules:
+      # Test fixtures legitimately repeat literals (tool names, IDs, JSON
+      # fragments); enforce the constant rule on production code only.
+      - path: _test\.go
+        linters:
+          - goconst

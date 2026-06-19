@@ -1,12 +1,17 @@
 package core
 
-// EmbeddingRequest mirrors the OpenAI /v1/embeddings request schema.
+// EmbeddingRequest mirrors the OpenAI /v1/embeddings request schema, plus a
+// small set of provider extensions accepted as pass-through fields.
 type EmbeddingRequest struct {
-	Model          string      `json:"model"`
-	Input          interface{} `json:"input"` // string or []string
-	EncodingFormat string      `json:"encoding_format,omitempty"`
-	Dimensions     *int        `json:"dimensions,omitempty"`
-	User           string      `json:"user,omitempty"`
+	Model          string `json:"model"`
+	Input          any    `json:"input"` // string or []string
+	EncodingFormat string `json:"encoding_format,omitempty"`
+	Dimensions     *int   `json:"dimensions,omitempty"`
+	User           string `json:"user,omitempty"`
+	// InputType is a non-OpenAI extension used by providers (e.g. Cohere) that
+	// distinguish embedding intent — "search_document", "search_query",
+	// "classification", "clustering". Empty lets the provider pick a default.
+	InputType string `json:"input_type,omitempty"`
 }
 
 // EmbeddingResponse mirrors the OpenAI /v1/embeddings response schema.

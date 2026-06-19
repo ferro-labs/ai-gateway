@@ -183,7 +183,7 @@ func TestGeminiProvider_Embed_InvalidInput(t *testing.T) {
 	p, _ := New("test-key", "")
 	_, err := p.Embed(context.Background(), core.EmbeddingRequest{
 		Model: "gemini-embedding-001",
-		Input: []interface{}{"ok", 123},
+		Input: []any{"ok", 123},
 	})
 	if err == nil || !strings.Contains(err.Error(), "Input[1]") {
 		t.Fatalf("Embed() error = %v, want invalid input error", err)
@@ -241,5 +241,227 @@ func TestGeminiProvider_CompleteStream_MockSSE(t *testing.T) {
 	}
 	if chunks[1].Choices[0].Delta.Content != " there" {
 		t.Errorf("delta content = %q, want ' there'", chunks[1].Choices[0].Delta.Content)
+	}
+}
+
+func TestGeminiProvider_CompleteStream_IndexesFunctionCalls(t *testing.T) {
+	sseData := `data: {"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"id":"call_1","name":"lookup_weather","args":{"city":"SF"}}},{"functionCall":{"id":"call_2","name":"lookup_time","args":{"city":"SF"}}}]},"finishReason":"STOP"}]}
+
+`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(sseData))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	ch, err := p.CompleteStream(context.Background(), core.Request{
+		Model:    "gemini-2.0-flash",
+		Messages: []core.Message{{Role: core.RoleUser, Content: "weather and time?"}},
+	})
+	if err != nil {
+		t.Fatalf("CompleteStream() error: %v", err)
+	}
+
+	var chunks []core.StreamChunk
+	for c := range ch {
+		chunks = append(chunks, c)
+	}
+
+	if len(chunks) != 1 || len(chunks[0].Choices) != 1 {
+		t.Fatalf("chunks = %#v, want one candidate chunk", chunks)
+	}
+	toolCalls := chunks[0].Choices[0].Delta.ToolCalls
+	if len(toolCalls) != 2 {
+		t.Fatalf("tool calls len = %d, want 2", len(toolCalls))
+	}
+	if toolCalls[0].Index == nil || *toolCalls[0].Index != 0 {
+		t.Fatalf("first tool index = %#v, want 0", toolCalls[0].Index)
+	}
+	if toolCalls[1].Index == nil || *toolCalls[1].Index != 1 {
+		t.Fatalf("second tool index = %#v, want 1", toolCalls[1].Index)
+	}
+	if chunks[0].Choices[0].FinishReason != core.FinishReasonToolCalls {
+		t.Fatalf("finish reason = %q, want tool_calls", chunks[0].Choices[0].FinishReason)
+	}
+}
+
+func TestGeminiProvider_Complete_ForwardsToolsAndDecodesFunctionCall(t *testing.T) {
+	var captured map[string]json.RawMessage
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"candidates":[{
+				"content":{"role":"model","parts":[{"functionCall":{"id":"call_1","name":"lookup","args":{"city":"SF"}}}]},
+				"finishReason":"STOP"
+			}],
+			"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}
+		}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	resp, err := p.Complete(context.Background(), core.Request{
+		Model:    "gemini-2.0-flash",
+		Messages: []core.Message{{Role: core.RoleUser, Content: "weather?"}},
+		Tools: []core.Tool{{
+			Type: "function",
+			Function: core.Function{
+				Name:        "lookup",
+				Description: "Lookup weather",
+				Parameters:  json.RawMessage(`{"type":"object","properties":{"city":{"type":"string"}}}`),
+			},
+		}},
+		ToolChoice: "required",
+	})
+	if err != nil {
+		t.Fatalf("Complete() error: %v", err)
+	}
+
+	var body struct {
+		Tools []struct {
+			FunctionDeclarations []struct {
+				Name string `json:"name"`
+			} `json:"functionDeclarations"`
+		} `json:"tools"`
+		ToolConfig struct {
+			FunctionCallingConfig struct {
+				Mode string `json:"mode"`
+			} `json:"functionCallingConfig"`
+		} `json:"toolConfig"`
+	}
+	raw, _ := json.Marshal(captured)
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("decode captured body: %v", err)
+	}
+	if len(body.Tools) != 1 || len(body.Tools[0].FunctionDeclarations) != 1 || body.Tools[0].FunctionDeclarations[0].Name != "lookup" {
+		t.Fatalf("tools = %#v, want lookup", body.Tools)
+	}
+	if body.ToolConfig.FunctionCallingConfig.Mode != "ANY" {
+		t.Fatalf("tool config mode = %q, want ANY", body.ToolConfig.FunctionCallingConfig.Mode)
+	}
+	if len(resp.Choices) != 1 || len(resp.Choices[0].Message.ToolCalls) != 1 {
+		t.Fatalf("tool calls = %#v, want one", resp.Choices)
+	}
+	tc := resp.Choices[0].Message.ToolCalls[0]
+	if tc.ID != "call_1" || tc.Function.Name != "lookup" || tc.Function.Arguments != `{"city":"SF"}` {
+		t.Fatalf("tool call = %#v, want lookup", tc)
+	}
+	if resp.Choices[0].FinishReason != core.FinishReasonToolCalls {
+		t.Fatalf("finish reason = %q, want tool_calls", resp.Choices[0].FinishReason)
+	}
+}
+
+func TestGeminiProvider_Complete_ForwardsToolResultWithFunctionName(t *testing.T) {
+	var captured struct {
+		Contents []struct {
+			Role  string `json:"role"`
+			Parts []struct {
+				FunctionResponse *struct {
+					ID       string          `json:"id"`
+					Name     string          `json:"name"`
+					Response json.RawMessage `json:"response"`
+				} `json:"functionResponse"`
+			} `json:"parts"`
+		} `json:"contents"`
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":"done"}]}}]}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	_, err := p.Complete(context.Background(), core.Request{
+		Model: "gemini-2.0-flash",
+		Messages: []core.Message{
+			{Role: core.RoleUser, Content: "weather?"},
+			{Role: core.RoleAssistant, ToolCalls: []core.ToolCall{{
+				ID:   "call_1",
+				Type: "function",
+				Function: core.FunctionCall{
+					Name:      "lookup",
+					Arguments: `{"city":"SF"}`,
+				},
+			}}},
+			{Role: core.RoleTool, ToolCallID: "call_1", Content: `{"temp":72}`},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete() error: %v", err)
+	}
+
+	if len(captured.Contents) != 3 {
+		t.Fatalf("contents len = %d, want 3", len(captured.Contents))
+	}
+	toolResult := captured.Contents[2]
+	if toolResult.Role != core.RoleUser || len(toolResult.Parts) != 1 || toolResult.Parts[0].FunctionResponse == nil {
+		t.Fatalf("tool result content = %#v, want user functionResponse", toolResult)
+	}
+	got := toolResult.Parts[0].FunctionResponse
+	if got.ID != "call_1" || got.Name != "lookup" || string(got.Response) != `{"temp":72}` {
+		t.Fatalf("function response = %#v, want lookup call_1", got)
+	}
+}
+
+func TestGeminiProvider_Complete_WrapsNonObjectToolResult(t *testing.T) {
+	var captured struct {
+		Contents []struct {
+			Role  string `json:"role"`
+			Parts []struct {
+				FunctionResponse *struct {
+					ID       string          `json:"id"`
+					Name     string          `json:"name"`
+					Response json.RawMessage `json:"response"`
+				} `json:"functionResponse"`
+			} `json:"parts"`
+		} `json:"contents"`
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":"done"}]}}]}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	_, err := p.Complete(context.Background(), core.Request{
+		Model: "gemini-2.0-flash",
+		Messages: []core.Message{
+			{Role: core.RoleUser, Content: "status?"},
+			{Role: core.RoleAssistant, ToolCalls: []core.ToolCall{{
+				ID:   "call_1",
+				Type: "function",
+				Function: core.FunctionCall{
+					Name:      "lookup",
+					Arguments: `{}`,
+				},
+			}}},
+			{Role: core.RoleTool, ToolCallID: "call_1", Content: `"ok"`},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete() error: %v", err)
+	}
+
+	if len(captured.Contents) != 3 {
+		t.Fatalf("contents len = %d, want 3", len(captured.Contents))
+	}
+	toolResult := captured.Contents[2]
+	if toolResult.Role != core.RoleUser || len(toolResult.Parts) != 1 || toolResult.Parts[0].FunctionResponse == nil {
+		t.Fatalf("tool result content = %#v, want user functionResponse", toolResult)
+	}
+	got := toolResult.Parts[0].FunctionResponse
+	if got.ID != "call_1" || got.Name != "lookup" || string(got.Response) != `{"result":"ok"}` {
+		t.Fatalf("function response = %#v, want wrapped lookup call_1", got)
 	}
 }

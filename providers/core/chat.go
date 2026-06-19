@@ -36,15 +36,16 @@ type Function struct {
 
 // ToolCall is a function invocation returned by the model in its response.
 type ToolCall struct {
-	ID       string       `json:"id"`
-	Type     string       `json:"type"` // "function"
+	Index    *int         `json:"index,omitempty"` // present on streaming deltas
+	ID       string       `json:"id,omitempty"`
+	Type     string       `json:"type,omitempty"` // "function"
 	Function FunctionCall `json:"function"`
 }
 
 // FunctionCall holds the name and arguments of a model-generated function call.
 type FunctionCall struct {
-	Name      string `json:"name"`
-	Arguments string `json:"arguments"` // JSON-encoded argument object
+	Name      string `json:"name,omitempty"`
+	Arguments string `json:"arguments,omitempty"` // JSON-encoded argument object
 }
 
 // ResponseFormat instructs the model how to format its output.
@@ -66,23 +67,32 @@ type Message struct {
 	Name         string        `json:"-"`
 	ToolCalls    []ToolCall    `json:"-"` // tool calls issued by the model
 	ToolCallID   string        `json:"-"` // for role="tool" result messages
+	// ReasoningContent is the model's chain-of-thought, surfaced by reasoning
+	// models (e.g. deepseek-reasoner). Empty for models that don't emit it.
+	ReasoningContent string `json:"-"`
+}
+
+// messageWire is the JSON shape of a Message, shared by MarshalJSON and
+// UnmarshalJSON so the two never drift. omitempty only affects encoding, so the
+// same tags decode correctly.
+type messageWire struct {
+	Role             string          `json:"role"`
+	Content          json.RawMessage `json:"content,omitempty"`
+	Name             string          `json:"name,omitempty"`
+	ToolCalls        []ToolCall      `json:"tool_calls,omitempty"`
+	ToolCallID       string          `json:"tool_call_id,omitempty"`
+	ReasoningContent string          `json:"reasoning_content,omitempty"`
 }
 
 // MarshalJSON encodes a Message to JSON.  Content is written as a string unless
 // ContentParts is set, in which case it is encoded as an array.
 func (m Message) MarshalJSON() ([]byte, error) {
-	type wire struct {
-		Role       string          `json:"role"`
-		Content    json.RawMessage `json:"content,omitempty"`
-		Name       string          `json:"name,omitempty"`
-		ToolCalls  []ToolCall      `json:"tool_calls,omitempty"`
-		ToolCallID string          `json:"tool_call_id,omitempty"`
-	}
-	w := wire{
-		Role:       m.Role,
-		Name:       m.Name,
-		ToolCalls:  m.ToolCalls,
-		ToolCallID: m.ToolCallID,
+	w := messageWire{
+		Role:             m.Role,
+		Name:             m.Name,
+		ToolCalls:        m.ToolCalls,
+		ToolCallID:       m.ToolCallID,
+		ReasoningContent: m.ReasoningContent,
 	}
 	if len(m.ContentParts) > 0 {
 		b, err := json.Marshal(m.ContentParts)
@@ -103,14 +113,7 @@ func (m Message) MarshalJSON() ([]byte, error) {
 // UnmarshalJSON decodes a Message from JSON.  The content field may be a plain
 // string or an array of ContentPart objects; both forms are handled.
 func (m *Message) UnmarshalJSON(b []byte) error {
-	type wire struct {
-		Role       string          `json:"role"`
-		Content    json.RawMessage `json:"content"`
-		Name       string          `json:"name"`
-		ToolCalls  []ToolCall      `json:"tool_calls"`
-		ToolCallID string          `json:"tool_call_id"`
-	}
-	var w wire
+	var w messageWire
 	if err := json.Unmarshal(b, &w); err != nil {
 		return err
 	}
@@ -118,6 +121,7 @@ func (m *Message) UnmarshalJSON(b []byte) error {
 	m.Name = w.Name
 	m.ToolCalls = w.ToolCalls
 	m.ToolCallID = w.ToolCallID
+	m.ReasoningContent = w.ReasoningContent
 
 	if len(w.Content) == 0 || string(w.Content) == "null" {
 		return nil
@@ -169,8 +173,8 @@ type Request struct {
 	Stop []string `json:"stop,omitempty"`
 
 	// Tools / function calling
-	Tools      []Tool      `json:"tools,omitempty"`
-	ToolChoice interface{} `json:"tool_choice,omitempty"`
+	Tools      []Tool `json:"tools,omitempty"`
+	ToolChoice any    `json:"tool_choice,omitempty"`
 
 	// Structured output
 	ResponseFormat *ResponseFormat `json:"response_format,omitempty"`
@@ -185,6 +189,32 @@ type Request struct {
 	// Misc
 	User      string             `json:"user,omitempty"`
 	LogitBias map[string]float64 `json:"logit_bias,omitempty"`
+}
+
+// NormalizeCompletionTokenLimits fills max_tokens from max_completion_tokens
+// when only the OpenAI-compatible completion-token field is provided. The
+// original max_completion_tokens value is preserved for providers that support
+// it natively.
+func (r *Request) NormalizeCompletionTokenLimits() {
+	if r.MaxTokens == nil && r.MaxCompletionTokens != nil {
+		// Copy the value rather than aliasing the pointer, so a plugin that
+		// clamps *MaxTokens in place cannot silently mutate MaxCompletionTokens.
+		v := *r.MaxCompletionTokens
+		r.MaxTokens = &v
+	}
+}
+
+// PreferCompletionTokens clears the legacy max_tokens when max_completion_tokens
+// is set. It is the counterpart to NormalizeCompletionTokenLimits, used by
+// providers on the OpenAI API surface (OpenAI, Azure OpenAI) whose o-series
+// reasoning models reject max_tokens with a 400. Because the gateway seam fills
+// max_tokens from max_completion_tokens, both fields are usually present by the
+// time a provider builds its body; forwarding both would break o-series, so
+// these providers keep only the modern field (accepted by every chat model).
+func (r *Request) PreferCompletionTokens() {
+	if r.MaxCompletionTokens != nil {
+		r.MaxTokens = nil
+	}
 }
 
 // Validate returns an error if the request is missing required fields or

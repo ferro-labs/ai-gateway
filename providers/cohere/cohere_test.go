@@ -111,8 +111,228 @@ func TestCohereProvider_CompleteStream_MockSSE(t *testing.T) {
 	if chunks[1].Choices[0].Delta.Content != " there" {
 		t.Errorf("delta content = %q, want ' there'", chunks[1].Choices[0].Delta.Content)
 	}
-	if chunks[2].Choices[0].FinishReason != "COMPLETE" {
-		t.Errorf("finish_reason = %q, want COMPLETE", chunks[2].Choices[0].FinishReason)
+	// COMPLETE is normalized to the OpenAI-canonical "stop" (#142).
+	if chunks[2].Choices[0].FinishReason != "stop" {
+		t.Errorf("finish_reason = %q, want stop", chunks[2].Choices[0].FinishReason)
+	}
+}
+
+func TestCohereProvider_CompleteStream_ForwardsToolCallDeltas(t *testing.T) {
+	sseData := `data: {"type":"message-start","id":"chat-1","delta":{"message":{"role":"assistant"}}}
+
+data: {"type":"tool-call-start","index":0,"delta":{"message":{"tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":""}}]}}}
+
+data: {"type":"tool-call-delta","index":0,"delta":{"message":{"tool_calls":{"function":{"arguments":"{\"city\""}}}}}
+
+data: {"type":"tool-call-delta","index":0,"delta":{"message":{"tool_calls":{"function":{"arguments":":\"SF\"}"}}}}}
+
+data: {"type":"tool-call-end","index":0}
+
+data: {"type":"tool-call-start","index":1,"delta":{"message":{"tool_calls":[{"id":"call_2","type":"function","function":{"name":"lookup_time","arguments":""}}]}}}
+
+data: {"type":"tool-call-delta","index":1,"delta":{"message":{"tool_calls":{"function":{"arguments":"{\"city\""}}}}}
+
+data: {"type":"tool-call-end","index":1}
+
+data: {"type":"message-end","delta":{"finish_reason":"TOOL_CALL","usage":{"tokens":{"input_tokens":5,"output_tokens":2}}}}
+
+`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(sseData))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	ch, err := p.CompleteStream(context.Background(), core.Request{
+		Model:    "command-r-plus",
+		Messages: []core.Message{{Role: core.RoleUser, Content: "weather?"}},
+		Tools: []core.Tool{{
+			Type: "function",
+			Function: core.Function{
+				Name:       "lookup",
+				Parameters: json.RawMessage(`{"type":"object","properties":{"city":{"type":"string"}}}`),
+			},
+		}},
+		ToolChoice: "required",
+	})
+	if err != nil {
+		t.Fatalf("CompleteStream() error: %v", err)
+	}
+
+	var chunks []core.StreamChunk
+	for c := range ch {
+		chunks = append(chunks, c)
+	}
+
+	if len(chunks) != 6 {
+		t.Fatalf("chunks len = %d, want 6: %#v", len(chunks), chunks)
+	}
+	start := chunks[0].Choices[0].Delta.ToolCalls[0]
+	if chunks[0].Choices[0].Index != 0 {
+		t.Fatalf("choice index = %d, want sole completion index 0", chunks[0].Choices[0].Index)
+	}
+	if start.Index == nil || *start.Index != 0 || start.ID != "call_1" || start.Function.Name != "lookup" {
+		t.Fatalf("start tool call = %#v, want lookup call at index 0", start)
+	}
+	if chunks[1].Choices[0].Index != 0 {
+		t.Fatalf("args choice index = %d, want sole completion index 0", chunks[1].Choices[0].Index)
+	}
+	if chunks[1].Choices[0].Delta.ToolCalls[0].Function.Arguments != `{"city"` {
+		t.Fatalf("first args delta = %#v", chunks[1].Choices[0].Delta.ToolCalls)
+	}
+	if chunks[2].Choices[0].Index != 0 {
+		t.Fatalf("second args choice index = %d, want sole completion index 0", chunks[2].Choices[0].Index)
+	}
+	if chunks[2].Choices[0].Delta.ToolCalls[0].Function.Arguments != `:"SF"}` {
+		t.Fatalf("second args delta = %#v", chunks[2].Choices[0].Delta.ToolCalls)
+	}
+	secondStart := chunks[3].Choices[0].Delta.ToolCalls[0]
+	if chunks[3].Choices[0].Index != 0 {
+		t.Fatalf("second tool choice index = %d, want sole completion index 0", chunks[3].Choices[0].Index)
+	}
+	if secondStart.Index == nil || *secondStart.Index != 1 || secondStart.ID != "call_2" || secondStart.Function.Name != "lookup_time" {
+		t.Fatalf("second start tool call = %#v, want lookup_time call at index 1", secondStart)
+	}
+	secondArgs := chunks[4].Choices[0].Delta.ToolCalls[0]
+	if chunks[4].Choices[0].Index != 0 {
+		t.Fatalf("second tool args choice index = %d, want sole completion index 0", chunks[4].Choices[0].Index)
+	}
+	if secondArgs.Index == nil || *secondArgs.Index != 1 || secondArgs.Function.Arguments != `{"city"` {
+		t.Fatalf("second tool args delta = %#v, want index 1 city fragment", secondArgs)
+	}
+	if chunks[5].Choices[0].FinishReason != core.FinishReasonToolCalls {
+		t.Fatalf("finish_reason = %q, want %q", chunks[5].Choices[0].FinishReason, core.FinishReasonToolCalls)
+	}
+}
+
+func TestCohereProvider_Complete_ForwardsToolsAndDecodesToolCalls(t *testing.T) {
+	var captured cohereRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{
+			"id":"chat-1",
+			"finish_reason":"TOOL_CALL",
+			"message":{
+				"role":"assistant",
+				"content":[],
+				"tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{\"city\":\"SF\"}"}}]
+			},
+			"usage":{"tokens":{"input_tokens":1,"output_tokens":1}}
+		}`)
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	resp, err := p.Complete(context.Background(), core.Request{
+		Model:    "command-r-plus",
+		Messages: []core.Message{{Role: core.RoleUser, Content: "weather?"}},
+		Tools: []core.Tool{{
+			Type: "function",
+			Function: core.Function{
+				Name:        "lookup",
+				Description: "Lookup weather",
+				Parameters:  json.RawMessage(`{"type":"object","properties":{"city":{"type":"string"}}}`),
+			},
+		}},
+		ToolChoice: "required",
+	})
+	if err != nil {
+		t.Fatalf("Complete() error: %v", err)
+	}
+	if len(captured.Tools) != 1 || captured.Tools[0].Function.Name != "lookup" {
+		t.Fatalf("tools = %#v, want lookup", captured.Tools)
+	}
+	if captured.ToolChoice != "REQUIRED" {
+		t.Fatalf("tool_choice = %q, want REQUIRED", captured.ToolChoice)
+	}
+	if len(resp.Choices) != 1 || len(resp.Choices[0].Message.ToolCalls) != 1 {
+		t.Fatalf("tool calls = %#v, want one", resp.Choices)
+	}
+	tc := resp.Choices[0].Message.ToolCalls[0]
+	if tc.ID != "call_1" || tc.Function.Name != "lookup" || tc.Function.Arguments != `{"city":"SF"}` {
+		t.Fatalf("tool call = %#v, want lookup", tc)
+	}
+	if resp.Choices[0].FinishReason != core.FinishReasonToolCalls {
+		t.Fatalf("finish reason = %q, want tool_calls", resp.Choices[0].FinishReason)
+	}
+}
+
+func TestCohereProvider_Complete_ForwardsToolResultAndDecodesFinalAnswer(t *testing.T) {
+	var captured struct {
+		Messages []struct {
+			Role       string          `json:"role"`
+			ToolCallID string          `json:"tool_call_id,omitempty"`
+			Content    json.RawMessage `json:"content,omitempty"`
+			ToolCalls  []core.ToolCall `json:"tool_calls,omitempty"`
+		} `json:"messages"`
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{
+			"id":"chat-2",
+			"finish_reason":"COMPLETE",
+			"message":{
+				"role":"assistant",
+				"content":[{"type":"text","text":"It is 72F in SF."}]
+			},
+			"usage":{"tokens":{"input_tokens":2,"output_tokens":3}}
+		}`)
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	resp, err := p.Complete(context.Background(), core.Request{
+		Model: "command-r-plus",
+		Messages: []core.Message{
+			{Role: core.RoleUser, Content: "weather?"},
+			{Role: core.RoleAssistant, ToolCalls: []core.ToolCall{{
+				ID:       "call_1",
+				Type:     "function",
+				Function: core.FunctionCall{Name: "lookup", Arguments: `{"city":"SF"}`},
+			}}},
+			{Role: core.RoleTool, ToolCallID: "call_1", Content: `{"temp":"72F"}`},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete() error: %v", err)
+	}
+
+	if len(captured.Messages) != 3 {
+		t.Fatalf("messages len = %d, want 3", len(captured.Messages))
+	}
+	if len(captured.Messages[1].ToolCalls) != 1 || captured.Messages[1].ToolCalls[0].ID != "call_1" {
+		t.Fatalf("assistant tool calls = %#v, want call_1", captured.Messages[1].ToolCalls)
+	}
+	if captured.Messages[2].Role != core.RoleTool || captured.Messages[2].ToolCallID != "call_1" {
+		t.Fatalf("tool result message = %#v, want role tool with call_1", captured.Messages[2])
+	}
+	var toolContent []struct {
+		Type     string `json:"type"`
+		Document struct {
+			Data string `json:"data"`
+		} `json:"document"`
+	}
+	if err := json.Unmarshal(captured.Messages[2].Content, &toolContent); err != nil {
+		t.Fatalf("decode tool content: %v", err)
+	}
+	if len(toolContent) != 1 ||
+		toolContent[0].Type != "document" ||
+		toolContent[0].Document.Data != `{"temp":"72F"}` {
+		t.Fatalf("tool result content = %#v, want document block", toolContent)
+	}
+	if got := resp.Choices[0].Message.Content; got != "It is 72F in SF." {
+		t.Fatalf("final answer = %q, want weather answer", got)
+	}
+	if len(resp.Choices[0].Message.ToolCalls) != 0 {
+		t.Fatalf("final answer tool calls = %#v, want none", resp.Choices[0].Message.ToolCalls)
 	}
 }
 
@@ -237,7 +457,7 @@ func TestCohereProvider_Embed_InvalidInputType(t *testing.T) {
 	p, _ := New("test-key", "")
 	badInputs := []struct {
 		name  string
-		input interface{}
+		input any
 	}{
 		{"nil", nil},
 		{"integer", 42},
@@ -266,7 +486,7 @@ func TestCohereProvider_Embed_SliceWithNonStringElement(t *testing.T) {
 	p, _ := New("test-key", "")
 	_, err := p.Embed(context.Background(), core.EmbeddingRequest{
 		Model: "embed-english-v3.0",
-		Input: []interface{}{"valid", 99, "also-valid"},
+		Input: []any{"valid", 99, "also-valid"},
 	})
 	if err == nil {
 		t.Fatal("expected error for []interface{} with non-string element, got nil")
@@ -280,10 +500,10 @@ func TestCohereProvider_Embed_EmptyInput(t *testing.T) {
 	p, _ := New("test-key", "")
 	inputs := []struct {
 		name  string
-		input interface{}
+		input any
 	}{
 		{"empty string slice", []string{}},
-		{"empty interface slice", []interface{}{}},
+		{"empty interface slice", []any{}},
 	}
 
 	for _, tc := range inputs {
