@@ -31,10 +31,10 @@ func TestStreamSSE_Contract(t *testing.T) {
 	t.Run("delivers valid frames, skips malformed, honors [DONE]", func(t *testing.T) {
 		body := strings.Join([]string{
 			`data: {"id":"a","choices":[{"index":0,"delta":{"content":"Hel"}}]}`,
-			`: keep-alive comment`,                       // non-"data:" line -> skipped
-			`data: {not valid json`,                      // malformed -> skipped, NOT fatal
+			`: keep-alive comment`,  // non-"data:" line -> skipped
+			`data: {not valid json`, // malformed -> skipped, NOT fatal
 			`data: {"id":"a","choices":[{"index":0,"delta":{"content":"lo"}}]}`,
-			`data: [DONE]`,                               // terminates
+			`data: [DONE]`, // terminates
 			`data: {"id":"a","choices":[{"delta":{"content":"AFTER"}}]}`, // never read
 		}, "\n\n") + "\n\n"
 
