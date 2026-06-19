@@ -13,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 
+	"github.com/ferro-labs/ai-gateway/internal/anthropicwire"
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
@@ -187,7 +188,7 @@ type bedrockAnthropicRequest struct {
 	AnthropicVersion string                    `json:"anthropic_version"`
 	MaxTokens        int                       `json:"max_tokens"`
 	Messages         []bedrockAnthropicMessage `json:"messages"`
-	Tools            []bedrockAnthropicTool    `json:"tools,omitempty"`
+	Tools            []anthropicwire.Tool      `json:"tools,omitempty"`
 	ToolChoice       any                       `json:"tool_choice,omitempty"`
 	Temperature      *float64                  `json:"temperature,omitempty"`
 	TopP             *float64                  `json:"top_p,omitempty"`
@@ -208,12 +209,6 @@ type bedrockAnthropicBlock struct {
 	Input     json.RawMessage `json:"input,omitempty"`
 	ToolUseID string          `json:"tool_use_id,omitempty"`
 	Content   string          `json:"content,omitempty"`
-}
-
-type bedrockAnthropicTool struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description,omitempty"`
-	InputSchema json.RawMessage `json:"input_schema,omitempty"`
 }
 
 type bedrockAnthropicResponse struct {
@@ -557,25 +552,6 @@ func bedrockAnthropicContent(msg core.Message) any {
 	return blocks
 }
 
-func bedrockAnthropicTools(tools []core.Tool) []bedrockAnthropicTool {
-	if len(tools) == 0 {
-		return nil
-	}
-	out := make([]bedrockAnthropicTool, 0, len(tools))
-	for _, t := range tools {
-		schema := t.Function.Parameters
-		if len(schema) == 0 {
-			schema = json.RawMessage(`{"type":"object","properties":{}}`)
-		}
-		out = append(out, bedrockAnthropicTool{
-			Name:        t.Function.Name,
-			Description: t.Function.Description,
-			InputSchema: schema,
-		})
-	}
-	return out
-}
-
 func bedrockAnthropicToolChoice(choice any, tools []core.Tool) any {
 	// tool_choice is only valid alongside tools; Anthropic-on-Bedrock 400s otherwise.
 	if len(tools) == 0 {
@@ -624,7 +600,7 @@ func (p *Provider) completeAnthropic(ctx context.Context, req core.Request) (*co
 		AnthropicVersion: "bedrock-2023-05-31",
 		MaxTokens:        maxTokens,
 		Messages:         messages,
-		Tools:            bedrockAnthropicTools(req.Tools),
+		Tools:            anthropicwire.MapTools(req.Tools),
 		ToolChoice:       bedrockAnthropicToolChoice(req.ToolChoice, req.Tools),
 		Temperature:      req.Temperature,
 		TopP:             req.TopP,
@@ -823,7 +799,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 		AnthropicVersion: "bedrock-2023-05-31",
 		MaxTokens:        maxTokens,
 		Messages:         messages,
-		Tools:            bedrockAnthropicTools(req.Tools),
+		Tools:            anthropicwire.MapTools(req.Tools),
 		ToolChoice:       bedrockAnthropicToolChoice(req.ToolChoice, req.Tools),
 		Temperature:      req.Temperature,
 		TopP:             req.TopP,

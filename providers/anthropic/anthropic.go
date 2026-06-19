@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/ferro-labs/ai-gateway/internal/anthropicwire"
 	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
@@ -131,22 +132,16 @@ type anthropicImageSource struct {
 }
 
 type anthropicRequest struct {
-	Model         string             `json:"model"`
-	MaxTokens     int                `json:"max_tokens"`
-	System        string             `json:"system,omitempty"`
-	Messages      []anthropicMessage `json:"messages"`
-	Tools         []anthropicTool    `json:"tools,omitempty"`
-	ToolChoice    any                `json:"tool_choice,omitempty"`
-	Temperature   *float64           `json:"temperature,omitempty"`
-	TopP          *float64           `json:"top_p,omitempty"`
-	StopSequences []string           `json:"stop_sequences,omitempty"`
-	Stream        bool               `json:"stream,omitempty"`
-}
-
-type anthropicTool struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description,omitempty"`
-	InputSchema json.RawMessage `json:"input_schema,omitempty"`
+	Model         string               `json:"model"`
+	MaxTokens     int                  `json:"max_tokens"`
+	System        string               `json:"system,omitempty"`
+	Messages      []anthropicMessage   `json:"messages"`
+	Tools         []anthropicwire.Tool `json:"tools,omitempty"`
+	ToolChoice    any                  `json:"tool_choice,omitempty"`
+	Temperature   *float64             `json:"temperature,omitempty"`
+	TopP          *float64             `json:"top_p,omitempty"`
+	StopSequences []string             `json:"stop_sequences,omitempty"`
+	Stream        bool                 `json:"stream,omitempty"`
 }
 
 // blockTypeToolUse is the Anthropic content-block type for a tool call.
@@ -273,25 +268,6 @@ func buildContent(msg core.Message) any {
 	return blocks
 }
 
-func anthropicTools(tools []core.Tool) []anthropicTool {
-	if len(tools) == 0 {
-		return nil
-	}
-	out := make([]anthropicTool, 0, len(tools))
-	for _, t := range tools {
-		schema := t.Function.Parameters
-		if len(schema) == 0 {
-			schema = json.RawMessage(`{"type":"object","properties":{}}`)
-		}
-		out = append(out, anthropicTool{
-			Name:        t.Function.Name,
-			Description: t.Function.Description,
-			InputSchema: schema,
-		})
-	}
-	return out
-}
-
 func anthropicToolChoice(choice any, tools []core.Tool) any {
 	// tool_choice is only valid alongside tools; Anthropic rejects it otherwise.
 	if len(tools) == 0 {
@@ -368,7 +344,7 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 		TopP:          req.TopP,
 		StopSequences: req.Stop,
 		System:        system,
-		Tools:         anthropicTools(req.Tools),
+		Tools:         anthropicwire.MapTools(req.Tools),
 		ToolChoice:    anthropicToolChoice(req.ToolChoice, req.Tools),
 	}
 
@@ -517,7 +493,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 		TopP:          req.TopP,
 		StopSequences: req.Stop,
 		System:        system,
-		Tools:         anthropicTools(req.Tools),
+		Tools:         anthropicwire.MapTools(req.Tools),
 		ToolChoice:    anthropicToolChoice(req.ToolChoice, req.Tools),
 		Stream:        true,
 	}
