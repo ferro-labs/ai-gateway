@@ -107,19 +107,6 @@ type errorResponse struct {
 	Error errorDetail `json:"error"`
 }
 
-type streamResponse struct {
-	ID      string `json:"id"`
-	Model   string `json:"model"`
-	Choices []struct {
-		Index int `json:"index"`
-		Delta struct {
-			Role    string `json:"role,omitempty"`
-			Content string `json:"content,omitempty"`
-		} `json:"delta"`
-		FinishReason string `json:"finish_reason,omitempty"`
-	} `json:"choices"`
-}
-
 // Complete sends a chat completion request to Perplexity.
 func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
 	bodyReader, _, release, err := openaicompat.BuildBody(req, false)
@@ -214,23 +201,12 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 				return
 			}
 
-			var chunk streamResponse
-			if json.Unmarshal([]byte(data), &chunk) != nil {
+			chunk, err := openaicompat.DecodeStreamChunk([]byte(data))
+			if err != nil {
 				continue
 			}
 
-			sc := core.StreamChunk{ID: chunk.ID, Model: chunk.Model}
-			for _, c := range chunk.Choices {
-				sc.Choices = append(sc.Choices, core.StreamChoice{
-					Index: c.Index,
-					Delta: core.MessageDelta{
-						Role:    c.Delta.Role,
-						Content: c.Delta.Content,
-					},
-					FinishReason: c.FinishReason,
-				})
-			}
-			ch <- sc
+			ch <- chunk
 		}
 		if err := scanner.Err(); err != nil {
 			ch <- core.StreamChunk{Error: err}

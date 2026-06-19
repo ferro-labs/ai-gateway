@@ -92,16 +92,18 @@ func (p *Provider) Models() []core.ModelInfo {
 }
 
 type cohereRequest struct {
-	Model            string         `json:"model"`
-	Messages         []core.Message `json:"messages"`
-	Temperature      *float64       `json:"temperature,omitempty"`
-	MaxTokens        *int           `json:"max_tokens,omitempty"`
-	P                *float64       `json:"p,omitempty"`
-	Seed             *int64         `json:"seed,omitempty"`
-	PresencePenalty  *float64       `json:"presence_penalty,omitempty"`
-	FrequencyPenalty *float64       `json:"frequency_penalty,omitempty"`
-	StopSequences    []string       `json:"stop_sequences,omitempty"`
-	Stream           bool           `json:"stream,omitempty"`
+	Model            string                 `json:"model"`
+	Messages         []cohereRequestMessage `json:"messages"`
+	Tools            []core.Tool            `json:"tools,omitempty"`
+	ToolChoice       string                 `json:"tool_choice,omitempty"`
+	Temperature      *float64               `json:"temperature,omitempty"`
+	MaxTokens        *int                   `json:"max_tokens,omitempty"`
+	P                *float64               `json:"p,omitempty"`
+	Seed             *int64                 `json:"seed,omitempty"`
+	PresencePenalty  *float64               `json:"presence_penalty,omitempty"`
+	FrequencyPenalty *float64               `json:"frequency_penalty,omitempty"`
+	StopSequences    []string               `json:"stop_sequences,omitempty"`
+	Stream           bool                   `json:"stream,omitempty"`
 }
 
 // cohereSupportedParams lists the OpenAI parameters mappable onto the Cohere v2
@@ -109,7 +111,23 @@ type cohereRequest struct {
 // tool calling is tracked separately in #139.
 var cohereSupportedParams = []string{
 	"temperature", "top_p", "max_tokens", "stop",
-	"seed", "presence_penalty", "frequency_penalty",
+	"seed", "presence_penalty", "frequency_penalty", "tools", "tool_choice",
+}
+
+type cohereRequestMessage struct {
+	Role       string          `json:"role"`
+	Content    any             `json:"content,omitempty"`
+	ToolCalls  []core.ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string          `json:"tool_call_id,omitempty"`
+}
+
+type cohereToolResultBlock struct {
+	Type     string                   `json:"type"`
+	Document cohereToolResultDocument `json:"document"`
+}
+
+type cohereToolResultDocument struct {
+	Data string `json:"data"`
 }
 
 type cohereContentBlock struct {
@@ -118,8 +136,9 @@ type cohereContentBlock struct {
 }
 
 type cohereMessage struct {
-	Role    string               `json:"role"`
-	Content []cohereContentBlock `json:"content"`
+	Role      string               `json:"role"`
+	Content   []cohereContentBlock `json:"content"`
+	ToolCalls []core.ToolCall      `json:"tool_calls,omitempty"`
 }
 
 type cohereBilledUnits struct {
@@ -148,13 +167,56 @@ type cohereErrorResponse struct {
 	Message string `json:"message"`
 }
 
+func cohereToolChoice(choice interface{}) string {
+	switch v := choice.(type) {
+	case nil:
+		return ""
+	case string:
+		switch v {
+		case "required":
+			return "REQUIRED"
+		case "none":
+			return "NONE"
+		default:
+			return ""
+		}
+	default:
+		return "REQUIRED"
+	}
+}
+
+func cohereMessages(messages []core.Message) []cohereRequestMessage {
+	out := make([]cohereRequestMessage, 0, len(messages))
+	for _, msg := range messages {
+		cohMsg := cohereRequestMessage{
+			Role:       msg.Role,
+			ToolCalls:  msg.ToolCalls,
+			ToolCallID: msg.ToolCallID,
+		}
+		if msg.Role == core.RoleTool {
+			cohMsg.Content = []cohereToolResultBlock{{
+				Type: "document",
+				Document: cohereToolResultDocument{
+					Data: msg.Content,
+				},
+			}}
+		} else {
+			cohMsg.Content = msg.Content
+		}
+		out = append(out, cohMsg)
+	}
+	return out
+}
+
 // Complete sends a chat completion request to Cohere.
 func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
 	core.WarnUnsupportedParams(ctx, p.Name(), req.Model, req, cohereSupportedParams...)
 
 	cohReq := cohereRequest{
 		Model:            req.Model,
-		Messages:         req.Messages,
+		Messages:         cohereMessages(req.Messages),
+		Tools:            req.Tools,
+		ToolChoice:       cohereToolChoice(req.ToolChoice),
 		Temperature:      req.Temperature,
 		MaxTokens:        req.MaxTokens,
 		P:                req.TopP,
@@ -216,8 +278,9 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 			{
 				Index: 0,
 				Message: core.Message{
-					Role:    cohResp.Message.Role,
-					Content: strings.Join(contentParts, ""),
+					Role:      cohResp.Message.Role,
+					Content:   strings.Join(contentParts, ""),
+					ToolCalls: cohResp.Message.ToolCalls,
 				},
 				FinishReason: core.NormalizeFinishReason(cohResp.FinishReason),
 			},
@@ -232,6 +295,8 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 
 type cohereStreamEvent struct {
 	Type  string          `json:"type"`
+	ID    string          `json:"id,omitempty"`
+	Index int             `json:"index,omitempty"`
 	Delta json.RawMessage `json:"delta"`
 }
 
@@ -248,13 +313,75 @@ type cohereMessageEndDelta struct {
 	Usage        cohereUsage `json:"usage"`
 }
 
+type cohereToolCallStartDelta struct {
+	Message struct {
+		ToolCalls json.RawMessage `json:"tool_calls"`
+	} `json:"message"`
+}
+
+type cohereToolCallDelta struct {
+	Message struct {
+		ToolCalls json.RawMessage `json:"tool_calls"`
+	} `json:"message"`
+}
+
+type cohereToolCallDeltaPayload struct {
+	Function struct {
+		Arguments string `json:"arguments"`
+	} `json:"function"`
+}
+
+func intPtr(i int) *int {
+	return &i
+}
+
+func cohereStreamToolCallStart(raw json.RawMessage, index int) (core.ToolCall, bool) {
+	var calls []core.ToolCall
+	if err := json.Unmarshal(raw, &calls); err == nil && len(calls) > 0 {
+		calls[0].Index = intPtr(index)
+		return calls[0], true
+	}
+	var call core.ToolCall
+	if err := json.Unmarshal(raw, &call); err == nil && (call.ID != "" || call.Function.Name != "") {
+		call.Index = intPtr(index)
+		return call, true
+	}
+	return core.ToolCall{}, false
+}
+
+func cohereStreamToolCallDelta(raw json.RawMessage, index int) (core.ToolCall, bool) {
+	var payload cohereToolCallDeltaPayload
+	if err := json.Unmarshal(raw, &payload); err == nil && payload.Function.Arguments != "" {
+		return core.ToolCall{
+			Index: intPtr(index),
+			Type:  "function",
+			Function: core.FunctionCall{
+				Arguments: payload.Function.Arguments,
+			},
+		}, true
+	}
+	var payloads []cohereToolCallDeltaPayload
+	if err := json.Unmarshal(raw, &payloads); err == nil && len(payloads) > 0 && payloads[0].Function.Arguments != "" {
+		return core.ToolCall{
+			Index: intPtr(index),
+			Type:  "function",
+			Function: core.FunctionCall{
+				Arguments: payloads[0].Function.Arguments,
+			},
+		}, true
+	}
+	return core.ToolCall{}, false
+}
+
 // CompleteStream sends a streaming chat completion request to Cohere.
 func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan core.StreamChunk, error) {
 	core.WarnUnsupportedParams(ctx, p.Name(), req.Model, req, cohereSupportedParams...)
 
 	cohReq := cohereRequest{
 		Model:            req.Model,
-		Messages:         req.Messages,
+		Messages:         cohereMessages(req.Messages),
+		Tools:            req.Tools,
+		ToolChoice:       cohereToolChoice(req.ToolChoice),
 		Temperature:      req.Temperature,
 		MaxTokens:        req.MaxTokens,
 		P:                req.TopP,
@@ -323,6 +450,46 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 							Index: 0,
 							Delta: core.MessageDelta{
 								Content: delta.Message.Content.Text,
+							},
+						},
+					},
+				}
+			case "tool-call-start":
+				var delta cohereToolCallStartDelta
+				if json.Unmarshal(event.Delta, &delta) != nil {
+					continue
+				}
+				tc, ok := cohereStreamToolCallStart(delta.Message.ToolCalls, event.Index)
+				if !ok {
+					continue
+				}
+				ch <- core.StreamChunk{
+					ID: event.ID,
+					Choices: []core.StreamChoice{
+						{
+							Index: 0,
+							Delta: core.MessageDelta{
+								ToolCalls: []core.ToolCall{tc},
+							},
+						},
+					},
+				}
+			case "tool-call-delta":
+				var delta cohereToolCallDelta
+				if json.Unmarshal(event.Delta, &delta) != nil {
+					continue
+				}
+				tc, ok := cohereStreamToolCallDelta(delta.Message.ToolCalls, event.Index)
+				if !ok {
+					continue
+				}
+				ch <- core.StreamChunk{
+					ID: event.ID,
+					Choices: []core.StreamChoice{
+						{
+							Index: 0,
+							Delta: core.MessageDelta{
+								ToolCalls: []core.ToolCall{tc},
 							},
 						},
 					},

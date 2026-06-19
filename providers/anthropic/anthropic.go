@@ -135,20 +135,31 @@ type anthropicRequest struct {
 	MaxTokens     int                `json:"max_tokens"`
 	System        string             `json:"system,omitempty"`
 	Messages      []anthropicMessage `json:"messages"`
+	Tools         []anthropicTool    `json:"tools,omitempty"`
+	ToolChoice    interface{}        `json:"tool_choice,omitempty"`
 	Temperature   *float64           `json:"temperature,omitempty"`
 	TopP          *float64           `json:"top_p,omitempty"`
 	StopSequences []string           `json:"stop_sequences,omitempty"`
 	Stream        bool               `json:"stream,omitempty"`
 }
 
+type anthropicTool struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	InputSchema json.RawMessage `json:"input_schema,omitempty"`
+}
+
 // anthropicSupportedParams lists the OpenAI parameters the Anthropic Messages
 // API can express. Anything else the caller sets is warn-and-dropped (#140).
 // Native tool calling is tracked separately in #139.
-var anthropicSupportedParams = []string{"temperature", "top_p", "max_tokens", "stop"}
+var anthropicSupportedParams = []string{"temperature", "top_p", "max_tokens", "stop", "tools", "tool_choice"}
 
 type anthropicContentBlock struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
+	Type  string          `json:"type"`
+	Text  string          `json:"text"`
+	ID    string          `json:"id"`
+	Name  string          `json:"name"`
+	Input json.RawMessage `json:"input"`
 }
 
 type anthropicUsage struct {
@@ -260,6 +271,56 @@ func buildContent(msg core.Message) any {
 	return blocks
 }
 
+func anthropicTools(tools []core.Tool) []anthropicTool {
+	if len(tools) == 0 {
+		return nil
+	}
+	out := make([]anthropicTool, 0, len(tools))
+	for _, t := range tools {
+		schema := t.Function.Parameters
+		if len(schema) == 0 {
+			schema = json.RawMessage(`{"type":"object","properties":{}}`)
+		}
+		out = append(out, anthropicTool{
+			Name:        t.Function.Name,
+			Description: t.Function.Description,
+			InputSchema: schema,
+		})
+	}
+	return out
+}
+
+func anthropicToolChoice(choice interface{}) interface{} {
+	switch v := choice.(type) {
+	case nil:
+		return nil
+	case string:
+		switch v {
+		case "auto", "none":
+			return map[string]string{"type": v}
+		case "required":
+			return map[string]string{"type": "any"}
+		default:
+			return nil
+		}
+	default:
+		raw, err := json.Marshal(v)
+		if err != nil {
+			return nil
+		}
+		var named struct {
+			Type     string `json:"type"`
+			Function struct {
+				Name string `json:"name"`
+			} `json:"function"`
+		}
+		if err := json.Unmarshal(raw, &named); err == nil && named.Type == "function" && named.Function.Name != "" {
+			return map[string]string{"type": "tool", "name": named.Function.Name}
+		}
+		return v
+	}
+}
+
 // imageBlock maps an OpenAI image_url (data URI or remote URL) to an Anthropic
 // image content block.
 func imageBlock(url string) anthropicReqBlock {
@@ -317,6 +378,8 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 		TopP:          req.TopP,
 		StopSequences: req.Stop,
 		System:        system,
+		Tools:         anthropicTools(req.Tools),
+		ToolChoice:    anthropicToolChoice(req.ToolChoice),
 	}
 
 	bodyReader, _, release, err := core.JSONBodyReader(aReq)
@@ -358,9 +421,25 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 	}
 
 	var content strings.Builder
+	var toolCalls []core.ToolCall
 	for _, block := range aResp.Content {
 		if block.Type == "text" {
 			content.WriteString(block.Text)
+			continue
+		}
+		if block.Type == "tool_use" {
+			args := string(block.Input)
+			if args == "" {
+				args = "{}"
+			}
+			toolCalls = append(toolCalls, core.ToolCall{
+				ID:   block.ID,
+				Type: "function",
+				Function: core.FunctionCall{
+					Name:      block.Name,
+					Arguments: args,
+				},
+			})
 		}
 	}
 
@@ -373,8 +452,9 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 			{
 				Index: 0,
 				Message: core.Message{
-					Role:    aResp.Role,
-					Content: content.String(),
+					Role:      aResp.Role,
+					Content:   content.String(),
+					ToolCalls: toolCalls,
 				},
 				FinishReason: core.NormalizeFinishReason(aResp.StopReason),
 			},
@@ -403,9 +483,21 @@ type anthropicStreamContentDelta struct {
 	Type  string `json:"type"`
 	Index int    `json:"index"`
 	Delta struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
+		Type        string `json:"type"`
+		Text        string `json:"text"`
+		PartialJSON string `json:"partial_json"`
 	} `json:"delta"`
+}
+
+type anthropicStreamContentBlockStart struct {
+	Type         string `json:"type"`
+	Index        int    `json:"index"`
+	ContentBlock struct {
+		Type  string          `json:"type"`
+		ID    string          `json:"id"`
+		Name  string          `json:"name"`
+		Input json.RawMessage `json:"input"`
+	} `json:"content_block"`
 }
 
 type anthropicStreamMessageDelta struct {
@@ -414,6 +506,10 @@ type anthropicStreamMessageDelta struct {
 		StopReason string `json:"stop_reason"`
 	} `json:"delta"`
 	Usage anthropicUsage `json:"usage"`
+}
+
+func streamIndexPtr(i int) *int {
+	return &i
 }
 
 // CompleteStream sends a streaming chat completion request to Anthropic.
@@ -435,6 +531,8 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 		TopP:          req.TopP,
 		StopSequences: req.Stop,
 		System:        system,
+		Tools:         anthropicTools(req.Tools),
+		ToolChoice:    anthropicToolChoice(req.ToolChoice),
 		Stream:        true,
 	}
 
@@ -474,6 +572,8 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 
 		var msgID, model string
 		var promptTokens, cacheReadTokens, cacheWriteTokens int
+		toolCallIndexes := make(map[int]int)
+		nextToolCallIndex := 0
 		scanner := core.NewSSEScanner(httpResp.Body)
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -500,9 +600,67 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 					cacheReadTokens = evt.Message.Usage.CacheReadInputTokens
 					cacheWriteTokens = evt.Message.Usage.CacheCreationInputTokens
 				}
+			case "content_block_start":
+				var evt anthropicStreamContentBlockStart
+				if json.Unmarshal([]byte(data), &evt) == nil && evt.ContentBlock.Type == "tool_use" {
+					toolCallIndex := nextToolCallIndex
+					toolCallIndexes[evt.Index] = toolCallIndex
+					nextToolCallIndex++
+					ch <- core.StreamChunk{
+						ID:    msgID,
+						Model: model,
+						Choices: []core.StreamChoice{
+							{
+								Index: 0,
+								Delta: core.MessageDelta{
+									ToolCalls: []core.ToolCall{
+										{
+											Index: streamIndexPtr(toolCallIndex),
+											ID:    evt.ContentBlock.ID,
+											Type:  "function",
+											Function: core.FunctionCall{
+												Name: evt.ContentBlock.Name,
+											},
+										},
+									},
+								},
+							},
+						},
+					}
+				}
 			case "content_block_delta":
 				var evt anthropicStreamContentDelta
 				if json.Unmarshal([]byte(data), &evt) == nil {
+					if evt.Delta.Type == "input_json_delta" {
+						toolCallIndex, ok := toolCallIndexes[evt.Index]
+						if !ok {
+							toolCallIndex = evt.Index
+						}
+						ch <- core.StreamChunk{
+							ID:    msgID,
+							Model: model,
+							Choices: []core.StreamChoice{
+								{
+									Index: 0,
+									Delta: core.MessageDelta{
+										ToolCalls: []core.ToolCall{
+											{
+												Index: streamIndexPtr(toolCallIndex),
+												Type:  "function",
+												Function: core.FunctionCall{
+													Arguments: evt.Delta.PartialJSON,
+												},
+											},
+										},
+									},
+								},
+							},
+						}
+						continue
+					}
+					if evt.Delta.Type != "text_delta" {
+						continue
+					}
 					ch <- core.StreamChunk{
 						ID:    msgID,
 						Model: model,

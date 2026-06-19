@@ -94,7 +94,21 @@ func (p *Provider) Models() []core.ModelInfo {
 }
 
 type geminiPart struct {
-	Text string `json:"text"`
+	Text             string                  `json:"text,omitempty"`
+	FunctionCall     *geminiFunctionCall     `json:"functionCall,omitempty"`
+	FunctionResponse *geminiFunctionResponse `json:"functionResponse,omitempty"`
+}
+
+type geminiFunctionCall struct {
+	ID   string          `json:"id,omitempty"`
+	Name string          `json:"name"`
+	Args json.RawMessage `json:"args,omitempty"`
+}
+
+type geminiFunctionResponse struct {
+	ID       string          `json:"id,omitempty"`
+	Name     string          `json:"name"`
+	Response json.RawMessage `json:"response"`
 }
 
 type geminiContent struct {
@@ -126,6 +140,27 @@ type geminiRequest struct {
 	Contents          []geminiContent         `json:"contents"`
 	SystemInstruction *geminiContent          `json:"systemInstruction,omitempty"`
 	GenerationConfig  *geminiGenerationConfig `json:"generationConfig,omitempty"`
+	Tools             []geminiTool            `json:"tools,omitempty"`
+	ToolConfig        *geminiToolConfig       `json:"toolConfig,omitempty"`
+}
+
+type geminiTool struct {
+	FunctionDeclarations []geminiFunctionDeclaration `json:"functionDeclarations,omitempty"`
+}
+
+type geminiFunctionDeclaration struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	Parameters  json.RawMessage `json:"parameters,omitempty"`
+}
+
+type geminiToolConfig struct {
+	FunctionCallingConfig *geminiFunctionCallingConfig `json:"functionCallingConfig,omitempty"`
+}
+
+type geminiFunctionCallingConfig struct {
+	Mode                 string   `json:"mode,omitempty"`
+	AllowedFunctionNames []string `json:"allowedFunctionNames,omitempty"`
 }
 
 type geminiResponse struct {
@@ -197,6 +232,7 @@ type geminiStreamResponse struct {
 // rather than smuggling them into a user turn. Multiple system messages are
 // joined with newlines and preserved regardless of turn order (#144).
 func convertToGemini(messages []core.Message) (contents []geminiContent, systemText string) {
+	toolCallNames := make(map[string]string)
 	for _, msg := range messages {
 		if msg.Role == core.RoleSystem {
 			if systemText != "" {
@@ -209,29 +245,80 @@ func convertToGemini(messages []core.Message) (contents []geminiContent, systemT
 		role := msg.Role
 		if role == "assistant" {
 			role = "model"
+		} else if role == core.RoleTool {
+			role = core.RoleUser
 		}
 
 		contents = append(contents, geminiContent{
 			Role:  role,
-			Parts: []geminiPart{{Text: msg.Content}},
+			Parts: geminiParts(msg, toolCallNames),
 		})
+
+		for _, tc := range msg.ToolCalls {
+			if tc.ID != "" && tc.Function.Name != "" {
+				toolCallNames[tc.ID] = tc.Function.Name
+			}
+		}
 	}
 
 	return contents, systemText
+}
+
+func geminiParts(msg core.Message, toolCallNames map[string]string) []geminiPart {
+	if msg.Role == core.RoleTool {
+		trimmedContent := strings.TrimSpace(msg.Content)
+		response := json.RawMessage(trimmedContent)
+		if len(response) == 0 || !json.Valid(response) {
+			response, _ = json.Marshal(map[string]string{"result": msg.Content})
+		} else if !strings.HasPrefix(trimmedContent, "{") {
+			response, _ = json.Marshal(map[string]json.RawMessage{"result": response})
+		}
+		return []geminiPart{{FunctionResponse: &geminiFunctionResponse{
+			ID:       msg.ToolCallID,
+			Name:     toolCallNames[msg.ToolCallID],
+			Response: response,
+		}}}
+	}
+	var parts []geminiPart
+	if msg.Content != "" {
+		parts = append(parts, geminiPart{Text: msg.Content})
+	}
+	for _, tc := range msg.ToolCalls {
+		args := json.RawMessage(tc.Function.Arguments)
+		if len(args) == 0 || !json.Valid(args) {
+			args = json.RawMessage(`{}`)
+		}
+		parts = append(parts, geminiPart{FunctionCall: &geminiFunctionCall{
+			ID:   tc.ID,
+			Name: tc.Function.Name,
+			Args: args,
+		}})
+	}
+	if len(parts) == 0 {
+		return []geminiPart{{Text: ""}}
+	}
+	return parts
 }
 
 // mapFinishReason maps Gemini finish reasons to OpenAI-style reasons.
 func mapFinishReason(reason string) string {
 	switch reason {
 	case "STOP":
-		return "stop"
+		return core.FinishReasonStop
 	case "MAX_TOKENS":
-		return "length"
+		return core.FinishReasonLength
 	case "SAFETY":
-		return "content_filter"
+		return core.FinishReasonContentFilter
 	default:
 		return reason
 	}
+}
+
+func geminiFinishReason(reason string, toolCalls []core.ToolCall) string {
+	if len(toolCalls) > 0 {
+		return core.FinishReasonToolCalls
+	}
+	return mapFinishReason(reason)
 }
 
 func buildRequest(req core.Request) (geminiRequest, error) {
@@ -266,7 +353,71 @@ func buildRequest(req core.Request) (geminiRequest, error) {
 	if hasConfig {
 		r.GenerationConfig = &cfg
 	}
+	if tools := geminiTools(req.Tools); len(tools) > 0 {
+		r.Tools = tools
+	}
+	if tc := geminiToolConfigFor(req.ToolChoice); tc != nil {
+		r.ToolConfig = tc
+	}
 	return r, nil
+}
+
+func geminiTools(tools []core.Tool) []geminiTool {
+	if len(tools) == 0 {
+		return nil
+	}
+	decls := make([]geminiFunctionDeclaration, 0, len(tools))
+	for _, t := range tools {
+		params := t.Function.Parameters
+		if len(params) == 0 {
+			params = json.RawMessage(`{"type":"object","properties":{}}`)
+		}
+		decls = append(decls, geminiFunctionDeclaration{
+			Name:        t.Function.Name,
+			Description: t.Function.Description,
+			Parameters:  params,
+		})
+	}
+	return []geminiTool{{FunctionDeclarations: decls}}
+}
+
+func geminiToolConfigFor(choice interface{}) *geminiToolConfig {
+	switch v := choice.(type) {
+	case nil:
+		return nil
+	case string:
+		mode := ""
+		switch v {
+		case "auto":
+			mode = "AUTO"
+		case "none":
+			mode = "NONE"
+		case "required":
+			mode = "ANY"
+		}
+		if mode == "" {
+			return nil
+		}
+		return &geminiToolConfig{FunctionCallingConfig: &geminiFunctionCallingConfig{Mode: mode}}
+	default:
+		raw, err := json.Marshal(v)
+		if err != nil {
+			return nil
+		}
+		var named struct {
+			Type     string `json:"type"`
+			Function struct {
+				Name string `json:"name"`
+			} `json:"function"`
+		}
+		if err := json.Unmarshal(raw, &named); err == nil && named.Type == "function" && named.Function.Name != "" {
+			return &geminiToolConfig{FunctionCallingConfig: &geminiFunctionCallingConfig{
+				Mode:                 "ANY",
+				AllowedFunctionNames: []string{named.Function.Name},
+			}}
+		}
+		return nil
+	}
 }
 
 func embeddingInputs(input any) ([]string, error) {
@@ -436,16 +587,36 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 	var choices []core.Choice
 	for i, candidate := range geminiResp.Candidates {
 		var text string
+		var toolCalls []core.ToolCall
 		for _, part := range candidate.Content.Parts {
 			text += part.Text
+			if part.FunctionCall != nil {
+				args := string(part.FunctionCall.Args)
+				if args == "" {
+					args = "{}"
+				}
+				id := part.FunctionCall.ID
+				if id == "" {
+					id = fmt.Sprintf("call_%d_%d", i, len(toolCalls))
+				}
+				toolCalls = append(toolCalls, core.ToolCall{
+					ID:   id,
+					Type: "function",
+					Function: core.FunctionCall{
+						Name:      part.FunctionCall.Name,
+						Arguments: args,
+					},
+				})
+			}
 		}
 		choices = append(choices, core.Choice{
 			Index: i,
 			Message: core.Message{
-				Role:    "assistant",
-				Content: text,
+				Role:      "assistant",
+				Content:   text,
+				ToolCalls: toolCalls,
 			},
-			FinishReason: mapFinishReason(candidate.FinishReason),
+			FinishReason: geminiFinishReason(candidate.FinishReason, toolCalls),
 		})
 	}
 
@@ -519,16 +690,39 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 			}
 			for i, candidate := range chunk.Candidates {
 				var text string
+				var toolCalls []core.ToolCall
 				for _, part := range candidate.Content.Parts {
 					text += part.Text
+					if part.FunctionCall != nil {
+						toolCallIndex := len(toolCalls)
+						toolCallIndexPtr := toolCallIndex
+						args := string(part.FunctionCall.Args)
+						if args == "" {
+							args = "{}"
+						}
+						id := part.FunctionCall.ID
+						if id == "" {
+							id = fmt.Sprintf("call_%d_%d", i, len(toolCalls))
+						}
+						toolCalls = append(toolCalls, core.ToolCall{
+							Index: &toolCallIndexPtr,
+							ID:    id,
+							Type:  "function",
+							Function: core.FunctionCall{
+								Name:      part.FunctionCall.Name,
+								Arguments: args,
+							},
+						})
+					}
 				}
 				sc.Choices = append(sc.Choices, core.StreamChoice{
 					Index: i,
 					Delta: core.MessageDelta{
-						Role:    "assistant",
-						Content: text,
+						Role:      "assistant",
+						Content:   text,
+						ToolCalls: toolCalls,
 					},
-					FinishReason: mapFinishReason(candidate.FinishReason),
+					FinishReason: geminiFinishReason(candidate.FinishReason, toolCalls),
 				})
 			}
 			ch <- sc

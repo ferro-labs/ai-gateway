@@ -102,19 +102,6 @@ type errorResponse struct {
 	Error errorDetail `json:"error"`
 }
 
-type streamResponse struct {
-	ID      string `json:"id"`
-	Model   string `json:"model"`
-	Choices []struct {
-		Index int `json:"index"`
-		Delta struct {
-			Role    string `json:"role,omitempty"`
-			Content string `json:"content,omitempty"`
-		} `json:"delta"`
-		FinishReason string `json:"finish_reason,omitempty"`
-	} `json:"choices"`
-}
-
 // Complete sends a chat completion request to Cloudflare Workers AI.
 func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
 	bodyReader, _, release, err := openaicompat.BuildBody(req, false)
@@ -209,29 +196,13 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 				return
 			}
 
-			var sr streamResponse
-			if err := json.Unmarshal([]byte(data), &sr); err != nil {
-				ch <- core.StreamChunk{Error: fmt.Errorf("failed to unmarshal stream chunk: %w", err)}
+			chunk, err := openaicompat.DecodeStreamChunk([]byte(data))
+			if err != nil {
+				ch <- core.StreamChunk{Error: err}
 				return
 			}
 
-			choices := make([]core.StreamChoice, len(sr.Choices))
-			for i, c := range sr.Choices {
-				choices[i] = core.StreamChoice{
-					Index:        c.Index,
-					FinishReason: c.FinishReason,
-					Delta: core.MessageDelta{
-						Role:    c.Delta.Role,
-						Content: c.Delta.Content,
-					},
-				}
-			}
-
-			ch <- core.StreamChunk{
-				ID:      sr.ID,
-				Model:   sr.Model,
-				Choices: choices,
-			}
+			ch <- chunk
 		}
 		if err := scanner.Err(); err != nil {
 			ch <- core.StreamChunk{Error: fmt.Errorf("stream read error: %w", err)}

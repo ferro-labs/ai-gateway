@@ -151,6 +151,143 @@ data: {"type":"message_stop"}
 	}
 }
 
+func TestAnthropicProvider_CompleteStream_ForwardsToolUseDeltas(t *testing.T) {
+	sseData := `event: message_start
+data: {"type":"message_start","message":{"id":"msg_123","model":"claude-3-haiku-20240307","role":"assistant"}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"lookup","input":{}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"city\""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":":\"SF\"}"}}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}
+
+`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(sseData))
+	}))
+	defer srv.Close()
+
+	p, _ := New("sk-test-key", srv.URL)
+	ch, err := p.CompleteStream(context.Background(), core.Request{
+		Model:    "claude-3-haiku-20240307",
+		Messages: []core.Message{{Role: core.RoleUser, Content: "weather?"}},
+		Tools: []core.Tool{{
+			Type: "function",
+			Function: core.Function{
+				Name: "lookup",
+			},
+		}},
+		ToolChoice: "required",
+	})
+	if err != nil {
+		t.Fatalf("CompleteStream() error: %v", err)
+	}
+
+	var chunks []core.StreamChunk
+	for c := range ch {
+		chunks = append(chunks, c)
+	}
+
+	if len(chunks) != 4 {
+		t.Fatalf("chunks len = %d, want 4: %#v", len(chunks), chunks)
+	}
+	start := chunks[0].Choices[0].Delta.ToolCalls[0]
+	if start.Index == nil || *start.Index != 0 || start.ID != "toolu_1" || start.Function.Name != "lookup" {
+		t.Fatalf("start tool call = %#v, want lookup at index 0", start)
+	}
+	if chunks[1].Choices[0].Delta.ToolCalls[0].Function.Arguments != `{"city"` {
+		t.Fatalf("first args delta = %#v", chunks[1].Choices[0].Delta.ToolCalls)
+	}
+	if chunks[2].Choices[0].Delta.ToolCalls[0].Function.Arguments != `:"SF"}` {
+		t.Fatalf("second args delta = %#v", chunks[2].Choices[0].Delta.ToolCalls)
+	}
+	if chunks[3].Choices[0].FinishReason != core.FinishReasonToolCalls {
+		t.Fatalf("finish_reason = %q, want %q", chunks[3].Choices[0].FinishReason, core.FinishReasonToolCalls)
+	}
+}
+
+func TestAnthropicProvider_CompleteStream_MapsContentBlockIndexToToolCallIndex(t *testing.T) {
+	sseData := `event: message_start
+data: {"type":"message_start","message":{"id":"msg_123","model":"claude-3-haiku-20240307","role":"assistant"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Let me check."}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_1","name":"lookup","input":{}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"city\""}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"toolu_2","name":"lookup_time","input":{}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"city\""}}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}
+
+`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(sseData))
+	}))
+	defer srv.Close()
+
+	p, _ := New("sk-test-key", srv.URL)
+	ch, err := p.CompleteStream(context.Background(), core.Request{
+		Model:    "claude-3-haiku-20240307",
+		Messages: []core.Message{{Role: core.RoleUser, Content: "weather?"}},
+	})
+	if err != nil {
+		t.Fatalf("CompleteStream() error: %v", err)
+	}
+
+	var chunks []core.StreamChunk
+	for c := range ch {
+		chunks = append(chunks, c)
+	}
+
+	if len(chunks) != 6 {
+		t.Fatalf("chunks len = %d, want 6: %#v", len(chunks), chunks)
+	}
+	start := chunks[1].Choices[0].Delta.ToolCalls[0]
+	if chunks[1].Choices[0].Index != 0 {
+		t.Fatalf("choice index = %d, want sole completion index 0", chunks[1].Choices[0].Index)
+	}
+	if start.Index == nil || *start.Index != 0 {
+		t.Fatalf("tool call index = %#v, want OpenAI tool index 0", start.Index)
+	}
+	args := chunks[2].Choices[0].Delta.ToolCalls[0]
+	if args.Index == nil || *args.Index != 0 || args.Function.Arguments != `{"city"` {
+		t.Fatalf("args delta = %#v, want tool index 0 with city fragment", args)
+	}
+	secondStart := chunks[3].Choices[0].Delta.ToolCalls[0]
+	if chunks[3].Choices[0].Index != 0 {
+		t.Fatalf("second choice index = %d, want sole completion index 0", chunks[3].Choices[0].Index)
+	}
+	if secondStart.Index == nil || *secondStart.Index != 1 {
+		t.Fatalf("second tool call index = %#v, want OpenAI tool index 1", secondStart.Index)
+	}
+	secondArgs := chunks[4].Choices[0].Delta.ToolCalls[0]
+	if chunks[4].Choices[0].Index != 0 {
+		t.Fatalf("second args choice index = %d, want sole completion index 0", chunks[4].Choices[0].Index)
+	}
+	if secondArgs.Index == nil || *secondArgs.Index != 1 || secondArgs.Function.Arguments != `{"city"` {
+		t.Fatalf("second args delta = %#v, want tool index 1 with city fragment", secondArgs)
+	}
+}
+
 // TestAnthropicProvider_Complete_Integration tests actual API calls.
 // This test only runs if ANTHROPIC_API_KEY environment variable is set.
 func TestAnthropicProvider_Complete_Integration(t *testing.T) {

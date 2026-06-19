@@ -36,15 +36,16 @@ type Function struct {
 
 // ToolCall is a function invocation returned by the model in its response.
 type ToolCall struct {
-	ID       string       `json:"id"`
-	Type     string       `json:"type"` // "function"
+	Index    *int         `json:"index,omitempty"` // present on streaming deltas
+	ID       string       `json:"id,omitempty"`
+	Type     string       `json:"type,omitempty"` // "function"
 	Function FunctionCall `json:"function"`
 }
 
 // FunctionCall holds the name and arguments of a model-generated function call.
 type FunctionCall struct {
-	Name      string `json:"name"`
-	Arguments string `json:"arguments"` // JSON-encoded argument object
+	Name      string `json:"name,omitempty"`
+	Arguments string `json:"arguments,omitempty"` // JSON-encoded argument object
 }
 
 // ResponseFormat instructs the model how to format its output.
