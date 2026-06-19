@@ -72,18 +72,22 @@ type Message struct {
 	ReasoningContent string `json:"-"`
 }
 
+// messageWire is the JSON shape of a Message, shared by MarshalJSON and
+// UnmarshalJSON so the two never drift. omitempty only affects encoding, so the
+// same tags decode correctly.
+type messageWire struct {
+	Role             string          `json:"role"`
+	Content          json.RawMessage `json:"content,omitempty"`
+	Name             string          `json:"name,omitempty"`
+	ToolCalls        []ToolCall      `json:"tool_calls,omitempty"`
+	ToolCallID       string          `json:"tool_call_id,omitempty"`
+	ReasoningContent string          `json:"reasoning_content,omitempty"`
+}
+
 // MarshalJSON encodes a Message to JSON.  Content is written as a string unless
 // ContentParts is set, in which case it is encoded as an array.
 func (m Message) MarshalJSON() ([]byte, error) {
-	type wire struct {
-		Role             string          `json:"role"`
-		Content          json.RawMessage `json:"content,omitempty"`
-		Name             string          `json:"name,omitempty"`
-		ToolCalls        []ToolCall      `json:"tool_calls,omitempty"`
-		ToolCallID       string          `json:"tool_call_id,omitempty"`
-		ReasoningContent string          `json:"reasoning_content,omitempty"`
-	}
-	w := wire{
+	w := messageWire{
 		Role:             m.Role,
 		Name:             m.Name,
 		ToolCalls:        m.ToolCalls,
@@ -109,15 +113,7 @@ func (m Message) MarshalJSON() ([]byte, error) {
 // UnmarshalJSON decodes a Message from JSON.  The content field may be a plain
 // string or an array of ContentPart objects; both forms are handled.
 func (m *Message) UnmarshalJSON(b []byte) error {
-	type wire struct {
-		Role             string          `json:"role"`
-		Content          json.RawMessage `json:"content"`
-		Name             string          `json:"name"`
-		ToolCalls        []ToolCall      `json:"tool_calls"`
-		ToolCallID       string          `json:"tool_call_id"`
-		ReasoningContent string          `json:"reasoning_content"`
-	}
-	var w wire
+	var w messageWire
 	if err := json.Unmarshal(b, &w); err != nil {
 		return err
 	}

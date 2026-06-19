@@ -581,33 +581,17 @@ func bedrockAnthropicToolChoice(choice any, tools []core.Tool) any {
 	if len(tools) == 0 {
 		return nil
 	}
-	switch v := choice.(type) {
-	case nil:
-		return nil
-	case string:
-		switch v {
-		case "auto", "none":
-			return map[string]string{"type": v}
-		case "required":
-			return map[string]string{"type": "any"}
-		default:
-			return nil
-		}
+	switch kind, name := core.NormalizeToolChoice(choice); kind {
+	case core.ToolChoiceAuto:
+		return map[string]string{"type": "auto"}
+	case core.ToolChoiceNone:
+		return map[string]string{"type": "none"}
+	case core.ToolChoiceRequired:
+		return map[string]string{"type": "any"}
+	case core.ToolChoiceFunction:
+		return map[string]string{"type": "tool", "name": name}
 	default:
-		raw, err := json.Marshal(v)
-		if err != nil {
-			return nil
-		}
-		var named struct {
-			Type     string `json:"type"`
-			Function struct {
-				Name string `json:"name"`
-			} `json:"function"`
-		}
-		if err := json.Unmarshal(raw, &named); err == nil && named.Type == "function" && named.Function.Name != "" {
-			return map[string]string{"type": "tool", "name": named.Function.Name}
-		}
-		return v
+		return nil
 	}
 }
 
@@ -899,7 +883,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 							Index: 0,
 							Delta: core.MessageDelta{
 								ToolCalls: []core.ToolCall{{
-									Index: bedrockStreamIndexPtr(toolCallIndex),
+									Index: core.Ptr(toolCallIndex),
 									ID:    start.ContentBlock.ID,
 									Type:  "function",
 									Function: core.FunctionCall{
@@ -932,7 +916,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 								Index: 0,
 								Delta: core.MessageDelta{
 									ToolCalls: []core.ToolCall{{
-										Index: bedrockStreamIndexPtr(toolCallIndex),
+										Index: core.Ptr(toolCallIndex),
 										Type:  "function",
 										Function: core.FunctionCall{
 											Arguments: delta.Delta.PartialJSON,
@@ -978,8 +962,4 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 	}()
 
 	return ch, nil
-}
-
-func bedrockStreamIndexPtr(i int) *int {
-	return &i
 }

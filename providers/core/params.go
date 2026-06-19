@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"slices"
 
 	"github.com/ferro-labs/ai-gateway/internal/logging"
 )
@@ -74,13 +75,9 @@ func paramPopulated(req Request, name string) bool {
 // providers pass the list of parameters their upstream API can express; the
 // remainder is what gets silently dropped without intervention.
 func DroppedParams(req Request, supported ...string) []string {
-	sup := make(map[string]bool, len(supported))
-	for _, s := range supported {
-		sup[s] = true
-	}
 	var dropped []string
 	for _, name := range optionalParamOrder {
-		if !sup[name] && paramPopulated(req, name) {
+		if !slices.Contains(supported, name) && paramPopulated(req, name) {
 			dropped = append(dropped, name)
 		}
 	}

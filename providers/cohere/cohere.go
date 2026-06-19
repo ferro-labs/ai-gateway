@@ -141,19 +141,14 @@ type cohereMessage struct {
 	ToolCalls []core.ToolCall      `json:"tool_calls,omitempty"`
 }
 
-type cohereBilledUnits struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
-}
-
-type cohereTokens struct {
+type cohereTokenCounts struct {
 	InputTokens  int `json:"input_tokens"`
 	OutputTokens int `json:"output_tokens"`
 }
 
 type cohereUsage struct {
-	BilledUnits cohereBilledUnits `json:"billed_units"`
-	Tokens      cohereTokens      `json:"tokens"`
+	BilledUnits cohereTokenCounts `json:"billed_units"`
+	Tokens      cohereTokenCounts `json:"tokens"`
 }
 
 type cohereResponse struct {
@@ -174,22 +169,15 @@ const (
 )
 
 func cohereToolChoice(choice any) string {
-	switch v := choice.(type) {
-	case nil:
-		return ""
-	case string:
-		switch v {
-		case "required":
-			return cohereToolChoiceRequired
-		case "none":
-			return cohereToolChoiceNone
-		default:
-			return ""
-		}
-	default:
-		// A named function choice ({type:function,...}) — Cohere v2 has no
-		// per-function selection, so approximate with REQUIRED.
+	// Cohere v2 only supports REQUIRED/NONE; a named-function choice has no
+	// per-function selection, so it is approximated with REQUIRED.
+	switch kind, _ := core.NormalizeToolChoice(choice); kind {
+	case core.ToolChoiceRequired, core.ToolChoiceFunction:
 		return cohereToolChoiceRequired
+	case core.ToolChoiceNone:
+		return cohereToolChoiceNone
+	default:
+		return ""
 	}
 }
 
@@ -342,19 +330,15 @@ type cohereToolCallDeltaPayload struct {
 	} `json:"function"`
 }
 
-func intPtr(i int) *int {
-	return &i
-}
-
 func cohereStreamToolCallStart(raw json.RawMessage, index int) (core.ToolCall, bool) {
 	var calls []core.ToolCall
 	if err := json.Unmarshal(raw, &calls); err == nil && len(calls) > 0 {
-		calls[0].Index = intPtr(index)
+		calls[0].Index = core.Ptr(index)
 		return calls[0], true
 	}
 	var call core.ToolCall
 	if err := json.Unmarshal(raw, &call); err == nil && (call.ID != "" || call.Function.Name != "") {
-		call.Index = intPtr(index)
+		call.Index = core.Ptr(index)
 		return call, true
 	}
 	return core.ToolCall{}, false
@@ -364,7 +348,7 @@ func cohereStreamToolCallDelta(raw json.RawMessage, index int) (core.ToolCall, b
 	var payload cohereToolCallDeltaPayload
 	if err := json.Unmarshal(raw, &payload); err == nil && payload.Function.Arguments != "" {
 		return core.ToolCall{
-			Index: intPtr(index),
+			Index: core.Ptr(index),
 			Type:  "function",
 			Function: core.FunctionCall{
 				Arguments: payload.Function.Arguments,
@@ -374,7 +358,7 @@ func cohereStreamToolCallDelta(raw json.RawMessage, index int) (core.ToolCall, b
 	var payloads []cohereToolCallDeltaPayload
 	if err := json.Unmarshal(raw, &payloads); err == nil && len(payloads) > 0 && payloads[0].Function.Arguments != "" {
 		return core.ToolCall{
-			Index: intPtr(index),
+			Index: core.Ptr(index),
 			Type:  "function",
 			Function: core.FunctionCall{
 				Arguments: payloads[0].Function.Arguments,

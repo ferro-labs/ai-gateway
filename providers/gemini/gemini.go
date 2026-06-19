@@ -328,7 +328,7 @@ func geminiFinishReason(reason string, toolCalls []core.ToolCall) string {
 	return mapFinishReason(reason)
 }
 
-func buildRequest(req core.Request) (geminiRequest, error) {
+func buildRequest(req core.Request) geminiRequest {
 	contents, systemText := convertToGemini(req.Messages)
 	r := geminiRequest{
 		Contents: contents,
@@ -368,7 +368,7 @@ func buildRequest(req core.Request) (geminiRequest, error) {
 			r.ToolConfig = tc
 		}
 	}
-	return r, nil
+	return r
 }
 
 func geminiTools(tools []core.Tool) []geminiTool {
@@ -442,40 +442,22 @@ func stripSchemaKeys(v any) any {
 }
 
 func geminiToolConfigFor(choice any) *geminiToolConfig {
-	switch v := choice.(type) {
-	case nil:
-		return nil
-	case string:
-		mode := ""
-		switch v {
-		case "auto":
-			mode = "AUTO"
-		case "none":
-			mode = "NONE"
-		case "required":
-			mode = "ANY"
-		}
-		if mode == "" {
-			return nil
-		}
-		return &geminiToolConfig{FunctionCallingConfig: &geminiFunctionCallingConfig{Mode: mode}}
+	mode := func(m string) *geminiToolConfig {
+		return &geminiToolConfig{FunctionCallingConfig: &geminiFunctionCallingConfig{Mode: m}}
+	}
+	switch kind, name := core.NormalizeToolChoice(choice); kind {
+	case core.ToolChoiceAuto:
+		return mode("AUTO")
+	case core.ToolChoiceNone:
+		return mode("NONE")
+	case core.ToolChoiceRequired:
+		return mode("ANY")
+	case core.ToolChoiceFunction:
+		return &geminiToolConfig{FunctionCallingConfig: &geminiFunctionCallingConfig{
+			Mode:                 "ANY",
+			AllowedFunctionNames: []string{name},
+		}}
 	default:
-		raw, err := json.Marshal(v)
-		if err != nil {
-			return nil
-		}
-		var named struct {
-			Type     string `json:"type"`
-			Function struct {
-				Name string `json:"name"`
-			} `json:"function"`
-		}
-		if err := json.Unmarshal(raw, &named); err == nil && named.Type == "function" && named.Function.Name != "" {
-			return &geminiToolConfig{FunctionCallingConfig: &geminiFunctionCallingConfig{
-				Mode:                 "ANY",
-				AllowedFunctionNames: []string{named.Function.Name},
-			}}
-		}
 		return nil
 	}
 }
@@ -605,7 +587,7 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
 	core.WarnUnsupportedParams(ctx, p.Name(), req.Model, req, geminiSupportedParams...)
 
-	geminiReq, _ := buildRequest(req)
+	geminiReq := buildRequest(req)
 
 	bodyReader, _, release, err := core.JSONBodyReader(geminiReq)
 	if err != nil {
@@ -696,7 +678,7 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan core.StreamChunk, error) {
 	core.WarnUnsupportedParams(ctx, p.Name(), req.Model, req, geminiSupportedParams...)
 
-	geminiReq, _ := buildRequest(req)
+	geminiReq := buildRequest(req)
 
 	bodyReader, _, release, err := core.JSONBodyReader(geminiReq)
 	if err != nil {
