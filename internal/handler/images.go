@@ -30,7 +30,8 @@ func Images(gw *aigateway.Gateway) http.HandlerFunc {
 
 		resp, err := gw.GenerateImage(r.Context(), req)
 		if err != nil {
-			apierror.WriteOpenAI(w, http.StatusInternalServerError, err.Error(), "server_error", "routing_error")
+			status, errType, code := apierror.RouteErrorDetails(err)
+			apierror.WriteOpenAI(w, status, err.Error(), errType, code)
 			return
 		}
 

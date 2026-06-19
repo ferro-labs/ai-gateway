@@ -3,11 +3,13 @@ package apierror
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/ferro-labs/ai-gateway/plugin"
+	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
 const (
@@ -153,5 +155,32 @@ func TestRouteErrorDetails_NonRejectionError(t *testing.T) {
 	}
 	if code != "routing_error" {
 		t.Fatalf("expected routing_error, got %q", code)
+	}
+}
+
+func TestRouteErrorDetails_NoCapableProvider(t *testing.T) {
+	err := fmt.Errorf("%w: no embedding provider for %q", core.ErrNoCapableProvider, "unknown-model")
+	status, errType, code := RouteErrorDetails(err)
+	if status != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", status)
+	}
+	if errType != errTypeInvalidRequest {
+		t.Fatalf("expected invalid_request_error, got %q", errType)
+	}
+	if code != codeModelNotFound {
+		t.Fatalf("expected %s, got %q", codeModelNotFound, code)
+	}
+}
+
+func TestRouteErrorDetails_NoCapableProvider_DirectSentinel(t *testing.T) {
+	status, errType, code := RouteErrorDetails(core.ErrNoCapableProvider)
+	if status != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", status)
+	}
+	if errType != errTypeInvalidRequest {
+		t.Fatalf("expected invalid_request_error, got %q", errType)
+	}
+	if code != codeModelNotFound {
+		t.Fatalf("expected %s, got %q", codeModelNotFound, code)
 	}
 }
