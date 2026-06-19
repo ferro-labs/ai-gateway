@@ -2104,7 +2104,7 @@ func (g *Gateway) Embed(ctx context.Context, req providers.EmbeddingRequest) (*p
 	g.mu.RUnlock()
 
 	if !ok {
-		return nil, fmt.Errorf("no embedding provider found for model: %s", req.Model)
+		return nil, fmt.Errorf("%w: no embedding provider for %q", core.ErrNoCapableProvider, req.Model)
 	}
 
 	resp, err := ep.Embed(ctx, req)
@@ -2130,7 +2130,7 @@ func (g *Gateway) GenerateImage(ctx context.Context, req providers.ImageRequest)
 	g.mu.RUnlock()
 
 	if !ok {
-		return nil, fmt.Errorf("no image generation provider found for model: %s", req.Model)
+		return nil, fmt.Errorf("%w: no image generation provider for %q", core.ErrNoCapableProvider, req.Model)
 	}
 
 	resp, err := ip.GenerateImage(ctx, req)

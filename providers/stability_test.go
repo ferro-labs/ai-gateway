@@ -491,6 +491,66 @@ func TestProviderEmbedCapabilityMatchesInterface(t *testing.T) {
 	}
 }
 
+// TestProviderStreamCapabilityMatchesInterface keeps factory metadata aligned
+// with the optional StreamProvider interface used by streaming chat routing.
+func TestProviderStreamCapabilityMatchesInterface(t *testing.T) {
+	for _, tc := range providerNameStabilityCases() {
+		t.Run(tc.wantName, func(t *testing.T) {
+			p := tc.build(t)
+			_, implements := p.(StreamProvider)
+			declares := ProviderHasCapability(tc.wantName, CapabilityStream)
+			if implements != declares {
+				t.Errorf("provider %q stream capability mismatch: implements StreamProvider=%v, declares %q=%v", tc.wantName, implements, CapabilityStream, declares)
+			}
+		})
+	}
+}
+
+// TestProviderImageCapabilityMatchesInterface keeps factory metadata aligned
+// with the optional ImageProvider interface used by /v1/images/generations routing.
+func TestProviderImageCapabilityMatchesInterface(t *testing.T) {
+	for _, tc := range providerNameStabilityCases() {
+		t.Run(tc.wantName, func(t *testing.T) {
+			p := tc.build(t)
+			_, implements := p.(ImageProvider)
+			declares := ProviderHasCapability(tc.wantName, CapabilityImage)
+			if implements != declares {
+				t.Errorf("provider %q image capability mismatch: implements ImageProvider=%v, declares %q=%v", tc.wantName, implements, CapabilityImage, declares)
+			}
+		})
+	}
+}
+
+// TestProviderDiscoveryCapabilityMatchesInterface keeps factory metadata aligned
+// with the optional DiscoveryProvider interface used by auto-discovery refresh.
+func TestProviderDiscoveryCapabilityMatchesInterface(t *testing.T) {
+	for _, tc := range providerNameStabilityCases() {
+		t.Run(tc.wantName, func(t *testing.T) {
+			p := tc.build(t)
+			_, implements := p.(DiscoveryProvider)
+			declares := ProviderHasCapability(tc.wantName, CapabilityDiscovery)
+			if implements != declares {
+				t.Errorf("provider %q discovery capability mismatch: implements DiscoveryProvider=%v, declares %q=%v", tc.wantName, implements, CapabilityDiscovery, declares)
+			}
+		})
+	}
+}
+
+// TestProviderProxyCapabilityMatchesInterface keeps factory metadata aligned
+// with the optional ProxiableProvider interface used by /proxy passthrough.
+func TestProviderProxyCapabilityMatchesInterface(t *testing.T) {
+	for _, tc := range providerNameStabilityCases() {
+		t.Run(tc.wantName, func(t *testing.T) {
+			p := tc.build(t)
+			_, implements := p.(ProxiableProvider)
+			declares := ProviderHasCapability(tc.wantName, CapabilityProxy)
+			if implements != declares {
+				t.Errorf("provider %q proxy capability mismatch: implements ProxiableProvider=%v, declares %q=%v", tc.wantName, implements, CapabilityProxy, declares)
+			}
+		})
+	}
+}
+
 // TestProviderEnvMappingsHaveRequiredKey verifies that each provider entry has
 // a configured? gate: either at least one EnvMapping with Required=true, or a
 // ConfiguredFn (used for providers whose gate is an OR across multiple env vars,
