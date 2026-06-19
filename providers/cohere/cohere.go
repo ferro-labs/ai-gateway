@@ -173,7 +173,7 @@ const (
 	cohereToolChoiceNone     = "NONE"
 )
 
-func cohereToolChoice(choice interface{}) string {
+func cohereToolChoice(choice any) string {
 	switch v := choice.(type) {
 	case nil:
 		return ""
@@ -581,7 +581,7 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 		texts = []string{v}
 	case []string:
 		texts = v
-	case []interface{}:
+	case []any:
 		for i, item := range v {
 			s, ok := item.(string)
 			if !ok {

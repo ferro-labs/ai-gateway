@@ -441,7 +441,7 @@ func stripSchemaKeys(v any) any {
 	}
 }
 
-func geminiToolConfigFor(choice interface{}) *geminiToolConfig {
+func geminiToolConfigFor(choice any) *geminiToolConfig {
 	switch v := choice.(type) {
 	case nil:
 		return nil

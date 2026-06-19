@@ -153,7 +153,7 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 			return nil, fmt.Errorf("embed: Input must not be an empty array")
 		}
 		params.Input = oai.EmbeddingNewParamsInputUnion{OfArrayOfStrings: v}
-	case []interface{}:
+	case []any:
 		if len(v) == 0 {
 			return nil, fmt.Errorf("embed: Input must not be an empty array")
 		}
@@ -539,7 +539,7 @@ func applyParams(params *oai.ChatCompletionNewParams, req core.Request) {
 	}
 }
 
-func openAIToolChoice(choice interface{}) (oai.ChatCompletionToolChoiceOptionUnionParam, bool) {
+func openAIToolChoice(choice any) (oai.ChatCompletionToolChoiceOptionUnionParam, bool) {
 	switch v := choice.(type) {
 	case string:
 		return oai.ChatCompletionToolChoiceOptionUnionParam{OfAuto: oai.String(v)}, true

@@ -136,7 +136,7 @@ type anthropicRequest struct {
 	System        string             `json:"system,omitempty"`
 	Messages      []anthropicMessage `json:"messages"`
 	Tools         []anthropicTool    `json:"tools,omitempty"`
-	ToolChoice    interface{}        `json:"tool_choice,omitempty"`
+	ToolChoice    any                `json:"tool_choice,omitempty"`
 	Temperature   *float64           `json:"temperature,omitempty"`
 	TopP          *float64           `json:"top_p,omitempty"`
 	StopSequences []string           `json:"stop_sequences,omitempty"`
@@ -292,7 +292,7 @@ func anthropicTools(tools []core.Tool) []anthropicTool {
 	return out
 }
 
-func anthropicToolChoice(choice interface{}, tools []core.Tool) interface{} {
+func anthropicToolChoice(choice any, tools []core.Tool) any {
 	// tool_choice is only valid alongside tools; Anthropic rejects it otherwise.
 	if len(tools) == 0 {
 		return nil
@@ -589,7 +589,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 			}
 			data := strings.TrimPrefix(line, "data: ")
 
-			var raw map[string]interface{}
+			var raw map[string]any
 			if json.Unmarshal([]byte(data), &raw) != nil {
 				continue
 			}

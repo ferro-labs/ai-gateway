@@ -104,11 +104,11 @@ type response struct {
 }
 
 type embeddingRequest struct {
-	Model          string      `json:"model"`
-	Input          interface{} `json:"input"`
-	EncodingFormat string      `json:"encoding_format,omitempty"`
-	Dimensions     *int        `json:"dimensions,omitempty"`
-	User           string      `json:"user,omitempty"`
+	Model          string `json:"model"`
+	Input          any    `json:"input"`
+	EncodingFormat string `json:"encoding_format,omitempty"`
+	Dimensions     *int   `json:"dimensions,omitempty"`
+	User           string `json:"user,omitempty"`
 }
 
 type embeddingResponse struct {
@@ -237,7 +237,7 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 	}, nil
 }
 
-func normalizeEmbeddingInput(input interface{}) (interface{}, error) {
+func normalizeEmbeddingInput(input any) (any, error) {
 	switch v := input.(type) {
 	case string:
 		if strings.TrimSpace(v) == "" {
@@ -254,7 +254,7 @@ func normalizeEmbeddingInput(input interface{}) (interface{}, error) {
 			}
 		}
 		return v, nil
-	case []interface{}:
+	case []any:
 		if len(v) == 0 {
 			return nil, fmt.Errorf("embed: Input must not be an empty array")
 		}
@@ -307,34 +307,5 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 		return nil, fmt.Errorf("databricks API error (%d): %s", httpResp.StatusCode, string(respBody))
 	}
 
-	ch := make(chan core.StreamChunk)
-	go func() {
-		defer close(ch)
-		defer func() { _ = httpResp.Body.Close() }()
-
-		scanner := core.NewSSEScanner(httpResp.Body)
-		for scanner.Scan() {
-			line := scanner.Text()
-			if !strings.HasPrefix(line, "data: ") {
-				continue
-			}
-			data := strings.TrimPrefix(line, "data: ")
-			if data == core.SSEDone {
-				return
-			}
-
-			chunk, err := openaicompat.DecodeStreamChunk([]byte(data))
-			if err != nil {
-				ch <- core.StreamChunk{Error: err}
-				return
-			}
-
-			ch <- chunk
-		}
-		if err := scanner.Err(); err != nil {
-			ch <- core.StreamChunk{Error: fmt.Errorf("stream read error: %w", err)}
-		}
-	}()
-
-	return ch, nil
+	return openaicompat.StreamSSE(httpResp.Body), nil
 }

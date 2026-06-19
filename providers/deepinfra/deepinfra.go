@@ -173,34 +173,5 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 		return nil, fmt.Errorf("deepinfra API error (%d): %s", httpResp.StatusCode, string(respBody))
 	}
 
-	ch := make(chan core.StreamChunk)
-	go func() {
-		defer close(ch)
-		defer func() { _ = httpResp.Body.Close() }()
-
-		scanner := core.NewSSEScanner(httpResp.Body)
-		for scanner.Scan() {
-			line := scanner.Text()
-			if !strings.HasPrefix(line, "data: ") {
-				continue
-			}
-			data := strings.TrimPrefix(line, "data: ")
-			if data == core.SSEDone {
-				return
-			}
-
-			chunk, err := openaicompat.DecodeStreamChunk([]byte(data))
-			if err != nil {
-				ch <- core.StreamChunk{Error: err}
-				return
-			}
-
-			ch <- chunk
-		}
-		if err := scanner.Err(); err != nil {
-			ch <- core.StreamChunk{Error: fmt.Errorf("stream read error: %w", err)}
-		}
-	}()
-
-	return ch, nil
+	return openaicompat.StreamSSE(httpResp.Body), nil
 }

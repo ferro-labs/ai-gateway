@@ -177,8 +177,8 @@ type Request struct {
 	Stop []string `json:"stop,omitempty"`
 
 	// Tools / function calling
-	Tools      []Tool      `json:"tools,omitempty"`
-	ToolChoice interface{} `json:"tool_choice,omitempty"`
+	Tools      []Tool `json:"tools,omitempty"`
+	ToolChoice any    `json:"tool_choice,omitempty"`
 
 	// Structured output
 	ResponseFormat *ResponseFormat `json:"response_format,omitempty"`

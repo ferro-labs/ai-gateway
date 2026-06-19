@@ -183,7 +183,7 @@ func TestGeminiProvider_Embed_InvalidInput(t *testing.T) {
 	p, _ := New("test-key", "")
 	_, err := p.Embed(context.Background(), core.EmbeddingRequest{
 		Model: "gemini-embedding-001",
-		Input: []interface{}{"ok", 123},
+		Input: []any{"ok", 123},
 	})
 	if err == nil || !strings.Contains(err.Error(), "Input[1]") {
 		t.Fatalf("Embed() error = %v, want invalid input error", err)

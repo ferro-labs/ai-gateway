@@ -45,7 +45,7 @@ import (
 // EventHookFunc is called asynchronously after a gateway event (request
 // completed or failed). It replaces the old EventPublisher interface with a
 // simpler function-based hook pattern.
-type EventHookFunc func(ctx context.Context, subject string, data map[string]interface{})
+type EventHookFunc func(ctx context.Context, subject string, data map[string]any)
 
 // Gateway is the main entry point for routing LLM requests.
 type Gateway struct {

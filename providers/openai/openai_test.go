@@ -438,7 +438,7 @@ func TestOpenAIProvider_Embed_InvalidInputType(t *testing.T) {
 
 	badInputs := []struct {
 		name  string
-		input interface{}
+		input any
 	}{
 		{"nil", nil},
 		{"integer", 42},
@@ -465,7 +465,7 @@ func TestOpenAIProvider_Embed_EmptyArrayInput(t *testing.T) {
 		t.Error("Embed() with empty []string: expected error, got nil")
 	}
 
-	_, err = p.Embed(ctx, core.EmbeddingRequest{Model: "text-embedding-3-small", Input: []interface{}{}})
+	_, err = p.Embed(ctx, core.EmbeddingRequest{Model: "text-embedding-3-small", Input: []any{}})
 	if err == nil {
 		t.Error("Embed() with empty []interface{}: expected error, got nil")
 	}
@@ -477,7 +477,7 @@ func TestOpenAIProvider_Embed_SliceWithNonStringElement(t *testing.T) {
 
 	_, err := p.Embed(ctx, core.EmbeddingRequest{
 		Model: "text-embedding-3-small",
-		Input: []interface{}{"valid", 99, "also-valid"},
+		Input: []any{"valid", 99, "also-valid"},
 	})
 	if err == nil {
 		t.Error("expected error for []interface{} with non-string element, got nil")
@@ -509,9 +509,9 @@ func TestOpenAIProvider_Embed_InvalidEncodingFormat(t *testing.T) {
 func TestOpenAIProvider_Embed_ValidEncodingFormats(t *testing.T) {
 	// Mock server returns an OpenAI-compatible embedding response.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		resp := map[string]interface{}{
+		resp := map[string]any{
 			"object": "list",
-			"data": []map[string]interface{}{
+			"data": []map[string]any{
 				{"object": "embedding", "embedding": []float64{0.1, 0.2}, "index": 0},
 			},
 			"model": "text-embedding-3-small",

@@ -47,7 +47,7 @@ func TestBuildBody_ForwardsEverySamplingParam(t *testing.T) {
 				Parameters:  json.RawMessage(`{"type":"object","properties":{"city":{"type":"string"}}}`),
 			},
 		}},
-		ToolChoice:     map[string]interface{}{"type": "function", "function": map[string]interface{}{"name": "lookup"}},
+		ToolChoice:     map[string]any{"type": "function", "function": map[string]any{"name": "lookup"}},
 		ResponseFormat: &core.ResponseFormat{Type: "json_object"},
 		TopLogProbs:    ptrI(3),
 		LogProbs:       true,

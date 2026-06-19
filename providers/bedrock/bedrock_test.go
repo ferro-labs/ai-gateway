@@ -172,7 +172,7 @@ func TestBedrockProvider_Embed_CohereBatchesAndMapsArrayResponse(t *testing.T) {
 
 	resp, err := p.Embed(context.Background(), core.EmbeddingRequest{
 		Model: "cohere.embed-english-v3",
-		Input: []interface{}{"first", "second"},
+		Input: []any{"first", "second"},
 	})
 	if err != nil {
 		t.Fatalf("Embed() error: %v", err)
@@ -263,7 +263,7 @@ func TestBedrockProvider_CompleteAnthropic_ForwardsToolsAndDecodesToolUse(t *tes
 	if len(body.Tools) != 1 || body.Tools[0].Name != "lookup" {
 		t.Fatalf("tools = %#v, want lookup", body.Tools)
 	}
-	choice, ok := body.ToolChoice.(map[string]interface{})
+	choice, ok := body.ToolChoice.(map[string]any)
 	if !ok || choice["type"] != "any" {
 		t.Fatalf("tool_choice = %#v, want type any", body.ToolChoice)
 	}
@@ -512,11 +512,11 @@ func TestBedrockProvider_Embed_Validation(t *testing.T) {
 		},
 		{
 			name: "empty interface slice",
-			req:  core.EmbeddingRequest{Model: "amazon.titan-embed-text-v1", Input: []interface{}{}},
+			req:  core.EmbeddingRequest{Model: "amazon.titan-embed-text-v1", Input: []any{}},
 		},
 		{
 			name: "non-string interface item",
-			req:  core.EmbeddingRequest{Model: "amazon.titan-embed-text-v1", Input: []interface{}{"ok", 42}},
+			req:  core.EmbeddingRequest{Model: "amazon.titan-embed-text-v1", Input: []any{"ok", 42}},
 		},
 		{
 			name: "base64 encoding",
@@ -604,7 +604,7 @@ func (f fakeBedrockResponseStreamReader) Err() error {
 	return nil
 }
 
-func mustUnmarshalBody(t *testing.T, body []byte, out interface{}) {
+func mustUnmarshalBody(t *testing.T, body []byte, out any) {
 	t.Helper()
 	if err := json.Unmarshal(body, out); err != nil {
 		t.Fatalf("failed to unmarshal body %s: %v", string(body), err)

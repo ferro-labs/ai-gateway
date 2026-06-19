@@ -149,7 +149,7 @@ func TestGateway_Route_NormalizesCompletionTokenLimitsBeforePlugins(t *testing.T
 				Name:    "max-token",
 				Enabled: true,
 				Stage:   "before_request",
-				Config:  map[string]interface{}{"max_tokens": 100},
+				Config:  map[string]any{"max_tokens": 100},
 			},
 		},
 	})
@@ -1710,7 +1710,7 @@ func TestGateway_RouteStream_ResponseCacheHitSkipsProvider(t *testing.T) {
 		},
 	})
 	cache := &cacheplugin.ResponseCache{}
-	if err := cache.Init(map[string]interface{}{"max_age": 60}); err != nil {
+	if err := cache.Init(map[string]any{"max_age": 60}); err != nil {
 		t.Fatalf("cache init: %v", err)
 	}
 	_ = gw.RegisterPlugin(plugin.StageBeforeRequest, cache)
@@ -1949,7 +1949,7 @@ func newHookedGateway(t *testing.T, provider providers.Provider) (*Gateway, *gat
 		t.Fatalf("provider must be *gateMockProvider, got %T", provider)
 	}
 	gw.RegisterProvider(gate)
-	gw.AddHook(func(context.Context, string, map[string]interface{}) {})
+	gw.AddHook(func(context.Context, string, map[string]any) {})
 	return gw, gate
 }
 
@@ -1998,7 +1998,7 @@ func TestGateway_Close_DuringInFlightRouteStreamDoesNotPanic(t *testing.T) {
 
 	streamProvider := newGateStreamProvider()
 	gw.RegisterProvider(streamProvider)
-	gw.AddHook(func(context.Context, string, map[string]interface{}) {})
+	gw.AddHook(func(context.Context, string, map[string]any) {})
 
 	routeDone := make(chan any, 1)
 	go func() {
@@ -2085,7 +2085,7 @@ func TestGateway_PublishEvent_AfterCloseDoesNotPanic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	gw.AddHook(func(context.Context, string, map[string]interface{}) {})
+	gw.AddHook(func(context.Context, string, map[string]any) {})
 
 	if err := gw.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -2106,8 +2106,8 @@ func TestGateway_PublishEvent_AfterShutdownWithFullQueueDoesNotPanic(t *testing.
 	gw.shutdownCtx = ctx
 	gw.shutdownCancel = cancel
 	gw.hookSnapshot.Store([]EventHookFunc{
-		func(context.Context, string, map[string]interface{}) {},
-		func(context.Context, string, map[string]interface{}) {},
+		func(context.Context, string, map[string]any) {},
+		func(context.Context, string, map[string]any) {},
 	})
 	gw.startHookWorkers()
 	t.Cleanup(cancel)
@@ -2133,7 +2133,7 @@ func TestGateway_Close_ConcurrentPublishEventStress(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	gw.AddHook(func(context.Context, string, map[string]interface{}) {
+	gw.AddHook(func(context.Context, string, map[string]any) {
 		time.Sleep(2 * time.Millisecond)
 	})
 
@@ -2182,7 +2182,7 @@ func TestGateway_Close_DuringConcurrentRoutesDoesNotPanic(t *testing.T) {
 
 	provider := newGateMockProvider(&providers.Response{ID: "ok", Model: "gpt-4o"}, nil)
 	gw.RegisterProvider(provider)
-	gw.AddHook(func(context.Context, string, map[string]interface{}) {
+	gw.AddHook(func(context.Context, string, map[string]any) {
 		time.Sleep(time.Millisecond)
 	})
 
@@ -2234,7 +2234,7 @@ func TestGateway_Close_MultipleHooksDuringRouteDoesNotPanic(t *testing.T) {
 	}
 	gw.RegisterProvider(provider)
 	for range 3 {
-		gw.AddHook(func(context.Context, string, map[string]interface{}) {})
+		gw.AddHook(func(context.Context, string, map[string]any) {})
 	}
 
 	routeDone := make(chan error, 1)
@@ -2303,7 +2303,7 @@ func TestGateway_Route_HookPanicIsRecovered(t *testing.T) {
 	})
 
 	hookCalled := make(chan struct{}, 1)
-	gw.AddHook(func(context.Context, string, map[string]interface{}) {
+	gw.AddHook(func(context.Context, string, map[string]any) {
 		hookCalled <- struct{}{}
 		panic("boom")
 	})
@@ -2327,10 +2327,10 @@ func TestGateway_PublishEvent_CallsAllHooks(t *testing.T) {
 	gw, _ := New(Config{})
 
 	called := make(chan string, 2)
-	gw.AddHook(func(context.Context, string, map[string]interface{}) {
+	gw.AddHook(func(context.Context, string, map[string]any) {
 		called <- "first"
 	})
-	gw.AddHook(func(context.Context, string, map[string]interface{}) {
+	gw.AddHook(func(context.Context, string, map[string]any) {
 		called <- "second"
 	})
 
@@ -2364,8 +2364,8 @@ func TestGateway_PublishEvent_EnqueuesEachHookIndividually(t *testing.T) {
 	}
 
 	gw.hookSnapshot.Store([]EventHookFunc{
-		func(context.Context, string, map[string]interface{}) {},
-		func(context.Context, string, map[string]interface{}) {},
+		func(context.Context, string, map[string]any) {},
+		func(context.Context, string, map[string]any) {},
 	})
 
 	gw.publishEvent(context.Background(), events.CompletedRequest(
@@ -2398,11 +2398,11 @@ func TestRunHookDispatch_CreatesFreshPayloadMapPerHook(t *testing.T) {
 		true,
 	)
 
-	var firstData map[string]interface{}
+	var firstData map[string]any
 	runHookDispatch(hookDispatch{
 		ctx:   context.Background(),
 		event: event,
-		hook: func(_ context.Context, _ string, data map[string]interface{}) {
+		hook: func(_ context.Context, _ string, data map[string]any) {
 			firstData = data
 			data["provider"] = "mutated"
 		},
@@ -2412,7 +2412,7 @@ func TestRunHookDispatch_CreatesFreshPayloadMapPerHook(t *testing.T) {
 	runHookDispatch(hookDispatch{
 		ctx:   context.Background(),
 		event: event,
-		hook: func(_ context.Context, _ string, data map[string]interface{}) {
+		hook: func(_ context.Context, _ string, data map[string]any) {
 			secondProvider, _ = data["provider"].(string)
 		},
 	})
@@ -2433,7 +2433,7 @@ func TestGateway_PublishEvent_IncrementsDropMetricWhenQueueFull(t *testing.T) {
 		hookDispatchQ: make(chan hookDispatch, 1),
 	}
 	gw.hookSnapshot.Store([]EventHookFunc{
-		func(context.Context, string, map[string]interface{}) {},
+		func(context.Context, string, map[string]any) {},
 	})
 
 	// Fill the queue.
@@ -2458,9 +2458,9 @@ type testPlugin struct {
 	execFn func(ctx context.Context, pctx *plugin.Context) error
 }
 
-func (p *testPlugin) Name() string                      { return p.name }
-func (p *testPlugin) Type() plugin.PluginType           { return p.typ }
-func (p *testPlugin) Init(map[string]interface{}) error { return nil }
+func (p *testPlugin) Name() string              { return p.name }
+func (p *testPlugin) Type() plugin.PluginType   { return p.typ }
+func (p *testPlugin) Init(map[string]any) error { return nil }
 func (p *testPlugin) Execute(ctx context.Context, pctx *plugin.Context) error {
 	if p.execFn != nil {
 		return p.execFn(ctx, pctx)
@@ -2547,7 +2547,7 @@ func TestGateway_LoadPlugins(t *testing.T) {
 				Type:    "guardrail",
 				Stage:   "before_request",
 				Enabled: true,
-				Config:  map[string]interface{}{},
+				Config:  map[string]any{},
 			},
 		},
 	})
@@ -2575,7 +2575,7 @@ func TestGateway_LoadPlugins_UnknownPlugin(t *testing.T) {
 				Type:    "guardrail",
 				Stage:   "before_request",
 				Enabled: true,
-				Config:  map[string]interface{}{},
+				Config:  map[string]any{},
 			},
 		},
 	})
@@ -3181,8 +3181,8 @@ func BenchmarkRoute_WithPlugins(b *testing.B) {
 		Strategy: StrategyConfig{Mode: ModeSingle},
 		Targets:  []Target{{VirtualKey: "bench-plugins"}},
 		Plugins: []PluginConfig{
-			{Name: "word-filter", Enabled: true, Stage: "before_request", Config: map[string]interface{}{"blocked_words": []interface{}{}}},
-			{Name: "max-token", Enabled: true, Stage: "before_request", Config: map[string]interface{}{"max_input_tokens": 1000}},
+			{Name: "word-filter", Enabled: true, Stage: "before_request", Config: map[string]any{"blocked_words": []any{}}},
+			{Name: "max-token", Enabled: true, Stage: "before_request", Config: map[string]any{"max_input_tokens": 1000}},
 		},
 	}
 	gw, err := New(cfg)
@@ -3232,7 +3232,7 @@ func BenchmarkRoute_WithHook(b *testing.B) {
 	})
 
 	var calls atomic.Int64
-	gw.AddHook(func(context.Context, string, map[string]interface{}) {
+	gw.AddHook(func(context.Context, string, map[string]any) {
 		calls.Add(1)
 	})
 
@@ -3297,7 +3297,7 @@ func BenchmarkPublishEvent(b *testing.B) {
 	var calls atomic.Int64
 	var wg sync.WaitGroup
 	wg.Add(b.N)
-	gw.AddHook(func(context.Context, string, map[string]interface{}) {
+	gw.AddHook(func(context.Context, string, map[string]any) {
 		calls.Add(1)
 		wg.Done()
 	})

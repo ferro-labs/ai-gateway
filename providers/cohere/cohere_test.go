@@ -457,7 +457,7 @@ func TestCohereProvider_Embed_InvalidInputType(t *testing.T) {
 	p, _ := New("test-key", "")
 	badInputs := []struct {
 		name  string
-		input interface{}
+		input any
 	}{
 		{"nil", nil},
 		{"integer", 42},
@@ -486,7 +486,7 @@ func TestCohereProvider_Embed_SliceWithNonStringElement(t *testing.T) {
 	p, _ := New("test-key", "")
 	_, err := p.Embed(context.Background(), core.EmbeddingRequest{
 		Model: "embed-english-v3.0",
-		Input: []interface{}{"valid", 99, "also-valid"},
+		Input: []any{"valid", 99, "also-valid"},
 	})
 	if err == nil {
 		t.Fatal("expected error for []interface{} with non-string element, got nil")
@@ -500,10 +500,10 @@ func TestCohereProvider_Embed_EmptyInput(t *testing.T) {
 	p, _ := New("test-key", "")
 	inputs := []struct {
 		name  string
-		input interface{}
+		input any
 	}{
 		{"empty string slice", []string{}},
-		{"empty interface slice", []interface{}{}},
+		{"empty interface slice", []any{}},
 	}
 
 	for _, tc := range inputs {

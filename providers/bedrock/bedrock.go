@@ -188,7 +188,7 @@ type bedrockAnthropicRequest struct {
 	MaxTokens        int                       `json:"max_tokens"`
 	Messages         []bedrockAnthropicMessage `json:"messages"`
 	Tools            []bedrockAnthropicTool    `json:"tools,omitempty"`
-	ToolChoice       interface{}               `json:"tool_choice,omitempty"`
+	ToolChoice       any                       `json:"tool_choice,omitempty"`
 	Temperature      *float64                  `json:"temperature,omitempty"`
 	TopP             *float64                  `json:"top_p,omitempty"`
 	StopSequences    []string                  `json:"stop_sequences,omitempty"`
@@ -196,8 +196,8 @@ type bedrockAnthropicRequest struct {
 }
 
 type bedrockAnthropicMessage struct {
-	Role    string      `json:"role"`
-	Content interface{} `json:"content"`
+	Role    string `json:"role"`
+	Content any    `json:"content"`
 }
 
 type bedrockAnthropicBlock struct {
@@ -342,7 +342,7 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 	}
 }
 
-func bedrockEmbeddingTexts(input interface{}) ([]string, error) {
+func bedrockEmbeddingTexts(input any) ([]string, error) {
 	switch v := input.(type) {
 	case string:
 		return []string{v}, nil
@@ -351,7 +351,7 @@ func bedrockEmbeddingTexts(input interface{}) ([]string, error) {
 			return nil, fmt.Errorf("embed: Input must not be an empty array")
 		}
 		return v, nil
-	case []interface{}:
+	case []any:
 		if len(v) == 0 {
 			return nil, fmt.Errorf("embed: Input must not be an empty array")
 		}
@@ -447,7 +447,7 @@ func (p *Provider) embedCohere(ctx context.Context, req core.EmbeddingRequest, m
 	}, nil
 }
 
-func (p *Provider) invokeModelJSON(ctx context.Context, modelID string, payload interface{}, out interface{}) error {
+func (p *Provider) invokeModelJSON(ctx context.Context, modelID string, payload any, out any) error {
 	body, err := core.MarshalJSON(payload)
 	if err != nil {
 		return fmt.Errorf("failed to marshal request: %w", err)
@@ -534,7 +534,7 @@ func bedrockBuildAnthropicMessages(req core.Request) ([]bedrockAnthropicMessage,
 	return messages, strings.Join(systemParts, "\n")
 }
 
-func bedrockAnthropicContent(msg core.Message) interface{} {
+func bedrockAnthropicContent(msg core.Message) any {
 	var blocks []bedrockAnthropicBlock
 	if msg.Content != "" {
 		blocks = append(blocks, bedrockAnthropicBlock{Type: "text", Text: msg.Content})
@@ -576,7 +576,7 @@ func bedrockAnthropicTools(tools []core.Tool) []bedrockAnthropicTool {
 	return out
 }
 
-func bedrockAnthropicToolChoice(choice interface{}, tools []core.Tool) interface{} {
+func bedrockAnthropicToolChoice(choice any, tools []core.Tool) any {
 	// tool_choice is only valid alongside tools; Anthropic-on-Bedrock 400s otherwise.
 	if len(tools) == 0 {
 		return nil
