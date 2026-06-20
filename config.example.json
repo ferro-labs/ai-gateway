@@ -131,6 +131,9 @@
       "virtual_key": "qwen"
     },
     {
+      "virtual_key": "requesty"
+    },
+    {
       "virtual_key": "sambanova"
     }
   ],

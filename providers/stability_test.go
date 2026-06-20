@@ -27,6 +27,7 @@ import (
 	perplexitypkg "github.com/ferro-labs/ai-gateway/providers/perplexity"
 	qwenpkg "github.com/ferro-labs/ai-gateway/providers/qwen"
 	replicatepkg "github.com/ferro-labs/ai-gateway/providers/replicate"
+	requestypkg "github.com/ferro-labs/ai-gateway/providers/requesty"
 	sambanovapkg "github.com/ferro-labs/ai-gateway/providers/sambanova"
 	togetherpkg "github.com/ferro-labs/ai-gateway/providers/together"
 	vertexaipkg "github.com/ferro-labs/ai-gateway/providers/vertex_ai"
@@ -312,6 +313,17 @@ func providerNameStabilityExtensionCases() []providerNameStabilityCase {
 				p, err := openrouterpkg.New(testAPIKey, "")
 				if err != nil {
 					t.Fatalf("NewOpenRouter: %v", err)
+				}
+				return p
+			},
+		},
+		{
+			wantName: NameRequesty,
+			build: func(t *testing.T) Provider {
+				t.Helper()
+				p, err := requestypkg.New(testAPIKey, "")
+				if err != nil {
+					t.Fatalf("NewRequesty: %v", err)
 				}
 				return p
 			},
