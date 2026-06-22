@@ -83,6 +83,46 @@ func TestXAIProvider_Complete_MockHTTP(t *testing.T) {
 	}
 }
 
+func TestXAIProvider_GenerateImage_Interface(_ *testing.T) {
+	p, _ := New("test-key", "")
+	var _ core.ImageProvider = p
+}
+
+func TestXAIProvider_GenerateImage_MockHTTP(t *testing.T) {
+	respBody := `{"data":[{"b64_json":"aGVsbG8=","revised_prompt":"x"}]}`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/images/generations" {
+			t.Errorf("request path = %q, want /images/generations", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
+			t.Errorf("Authorization = %q, want Bearer test-key", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(respBody))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	resp, err := p.GenerateImage(context.Background(), core.ImageRequest{
+		Model:  "grok-2-image",
+		Prompt: "a red apple",
+	})
+	if err != nil {
+		t.Fatalf("GenerateImage() error: %v", err)
+	}
+	if len(resp.Data) == 0 {
+		t.Fatal("expected at least one image in response")
+	}
+	if resp.Data[0].B64JSON != "aGVsbG8=" {
+		t.Errorf("Data[0].B64JSON = %q, want aGVsbG8=", resp.Data[0].B64JSON)
+	}
+	if resp.Data[0].RevisedPrompt != "x" {
+		t.Errorf("Data[0].RevisedPrompt = %q, want x", resp.Data[0].RevisedPrompt)
+	}
+}
+
 func TestXAIProvider_CompleteStream_MockSSE(t *testing.T) {
 	sseData := "data: {\"id\":\"chatcmpl-1\",\"model\":\"grok-2-latest\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":\"\"}]}\n\n" +
 		"data: {\"id\":\"chatcmpl-1\",\"model\":\"grok-2-latest\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello\"},\"finish_reason\":\"\"}]}\n\n" +

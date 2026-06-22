@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Capability parity with upstream provider APIs** (issue [#148](https://github.com/ferro-labs/ai-gateway/issues/148)): implemented missing optional interfaces — embeddings on `deepinfra`, `qwen`, `nvidia-nim`, and `ollama`; live model discovery (`/v1/models`) on `anthropic`, `mistral`, `groq`, and `together`; `azure-openai` embeddings and image generation; and image generation on `bedrock` (Nova Canvas / Titan Image / SDXL), `gemini` and `vertex-ai` (Imagen), and `xai` (grok image). The shared discovery helper now supports custom auth headers (for Anthropic's `x-api-key`) and tolerates both wrapped and bare-array `/models` responses. (AI21 embeddings were excluded — AI21 exposes no embeddings endpoint.)
+
 ### Changed
 
 - **`/v1/models` and model routing now derive from the model catalog** (issue [#146](https://github.com/ferro-labs/ai-gateway/issues/146)): the model list reported per provider is sourced from the model catalog instead of hand-maintained `SupportedModels()` slices, eliminating drift. Precedence is live discovery > catalog > hardcoded fallback. Opt-in periodic live refresh from providers exposing a `/models` endpoint is enabled by setting `FERRO_MODEL_DISCOVERY_INTERVAL` to a positive Go duration (e.g. `6h`); unset or `0` disables it (default).
