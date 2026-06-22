@@ -104,21 +104,25 @@ var allProviders = []ProviderEntry{
 		//   1. Instance-role / credential-chain auth: only AWS_REGION is set.
 		//   2. Static credentials: AWS_ACCESS_KEY_ID (+ secret) are set;
 		//      region may be absent and defaults to us-east-1 inside NewWithOptions.
+		//   3. API-key auth: AWS_BEARER_TOKEN_BEDROCK is set and the SDK uses
+		//      httpBearerAuth instead of SigV4.
 		// The ConfiguredFn below mirrors the dual-key gate used in main.go:
-		// Bedrock is considered configured when AWS_REGION OR AWS_ACCESS_KEY_ID
-		// is present.
+		// Bedrock is considered configured when AWS_REGION, AWS_ACCESS_KEY_ID,
+		// or AWS_BEARER_TOKEN_BEDROCK is present.
 		EnvMappings: []EnvMapping{
+			{CfgKeyAPIKey, "AWS_BEARER_TOKEN_BEDROCK", false},
 			{CfgKeyRegion, "AWS_REGION", false},
 			{CfgKeyAccessKeyID, "AWS_ACCESS_KEY_ID", false},
 			{CfgKeySecretAccessKey, "AWS_SECRET_ACCESS_KEY", false},
 			{CfgKeySessionToken, "AWS_SESSION_TOKEN", false},
 		},
 		ConfiguredFn: func(cfg ProviderConfig) bool {
-			return cfg[CfgKeyRegion] != "" || cfg[CfgKeyAccessKeyID] != ""
+			return cfg[CfgKeyAPIKey] != "" || cfg[CfgKeyRegion] != "" || cfg[CfgKeyAccessKeyID] != ""
 		},
 		Build: func(cfg ProviderConfig) (Provider, error) {
 			return bedrockpkg.NewWithOptions(bedrockpkg.Options{
 				Region:          cfg[CfgKeyRegion],
+				BearerToken:     cfg[CfgKeyAPIKey],
 				AccessKeyID:     cfg[CfgKeyAccessKeyID],
 				SecretAccessKey: cfg[CfgKeySecretAccessKey],
 				SessionToken:    cfg[CfgKeySessionToken],

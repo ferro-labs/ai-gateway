@@ -513,3 +513,24 @@ func TestProviderEnvMappingsHaveRequiredKey(t *testing.T) {
 		}
 	}
 }
+
+func TestBedrockProviderConfigFromEnv_BearerTokenOnly(t *testing.T) {
+	t.Setenv("AWS_REGION", "")
+	t.Setenv("AWS_ACCESS_KEY_ID", "")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "")
+	t.Setenv("AWS_SESSION_TOKEN", "")
+	t.Setenv("AWS_BEARER_TOKEN_BEDROCK", "test-bearer-token")
+
+	entry, ok := GetProviderEntry(NameBedrock)
+	if !ok {
+		t.Fatal("Bedrock provider entry missing")
+	}
+
+	cfg := ProviderConfigFromEnv(entry)
+	if cfg == nil {
+		t.Fatal("ProviderConfigFromEnv() = nil, want bearer-only Bedrock config")
+	}
+	if got := cfg[CfgKeyAPIKey]; got != "test-bearer-token" {
+		t.Errorf("api_key = %q, want test-bearer-token", got)
+	}
+}

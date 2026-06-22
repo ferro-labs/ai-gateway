@@ -46,6 +46,32 @@ func TestNewBedrockWithOptions_StaticCredentials(t *testing.T) {
 	}
 }
 
+func TestNewBedrockWithOptions_BearerTokenAuthHeaders(t *testing.T) {
+	t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
+
+	p, err := NewWithOptions(Options{
+		BearerToken: " test-bearer-token ",
+	})
+	if err != nil {
+		t.Fatalf("NewBedrockWithOptions() error: %v", err)
+	}
+	if p.Region() != "us-east-1" {
+		t.Errorf("region = %q, want us-east-1", p.Region())
+	}
+
+	headers := p.AuthHeaders()
+	if got := headers["Authorization"]; got != "Bearer test-bearer-token" {
+		t.Errorf("Authorization = %q, want Bearer test-bearer-token", got)
+	}
+}
+
+func TestBedrockProvider_AuthHeaders_SigV4Default(t *testing.T) {
+	p := &Provider{name: Name}
+	if headers := p.AuthHeaders(); len(headers) != 0 {
+		t.Errorf("AuthHeaders() = %#v, want empty map for SigV4 auth", headers)
+	}
+}
+
 func TestNewBedrockWithOptions_InvalidStaticCredentials(t *testing.T) {
 	t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
 
