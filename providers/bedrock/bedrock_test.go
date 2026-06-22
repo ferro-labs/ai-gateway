@@ -85,6 +85,7 @@ func TestBedrockProvider_SupportedEmbeddingModels(t *testing.T) {
 
 	for _, wantSupported := range []string{
 		"us.amazon.titan-embed-text-v2:0",
+		"global.amazon.titan-embed-text-v2:0",
 		"us-gov-east-1/amazon.titan-embed-text-v1",
 		"cohere.embed-future:0",
 	} {
@@ -101,6 +102,173 @@ func TestBedrockProvider_SupportedEmbeddingModels(t *testing.T) {
 		if p.SupportsModel(wantRejected) {
 			t.Errorf("SupportsModel(%q) = true, want false", wantRejected)
 		}
+	}
+}
+
+func TestBedrockProvider_SupportsModel_CrossRegionInferenceProfiles(t *testing.T) {
+	p := &Provider{name: Name}
+
+	for _, model := range []string{
+		"us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+		"eu.amazon.titan-text-express-v1",
+		"apac.meta.llama3-1-70b-instruct-v1:0",
+		"global.anthropic.claude-sonnet-4-20250514-v1:0",
+		"us.amazon.nova-lite-v1:0",
+		"global.amazon.nova-pro-v1:0",
+		"global.amazon.nova-2-lite-v1:0",
+		"us-gov-west-1/amazon.nova-pro-v1:0",
+		"us-gov-west-1/amazon.titan-text-premier-v1:0",
+	} {
+		t.Run(model, func(t *testing.T) {
+			if !p.SupportsModel(model) {
+				t.Errorf("SupportsModel(%q) = false, want true", model)
+			}
+		})
+	}
+}
+
+func TestBedrockProvider_SupportsModel_NovaTextModels(t *testing.T) {
+	p := &Provider{name: Name}
+
+	for _, model := range []string{
+		"amazon.nova-micro-v1:0",
+		"amazon.nova-lite-v1:0",
+		"amazon.nova-pro-v1:0",
+		"amazon.nova-premier-v1:0",
+		"amazon.nova-2-lite-v1:0",
+		"amazon.nova-2-pro-preview-20251202-v1:0",
+		"us.amazon.nova-lite-v1:0",
+		"eu.amazon.nova-micro-v1:0",
+		"apac.amazon.nova-pro-v1:0",
+		"global.amazon.nova-2-lite-v1:0",
+		"us-gov-west-1/amazon.nova-pro-v1:0",
+	} {
+		t.Run(model, func(t *testing.T) {
+			if !p.SupportsModel(model) {
+				t.Errorf("SupportsModel(%q) = false, want true", model)
+			}
+		})
+	}
+
+	for _, model := range []string{
+		"amazon.nova-canvas-v1:0",
+		"amazon.nova-reel-v1:0",
+		"amazon.nova-2-multimodal-embeddings-v1:0",
+	} {
+		t.Run(model, func(t *testing.T) {
+			if p.SupportsModel(model) {
+				t.Errorf("SupportsModel(%q) = true, want false", model)
+			}
+		})
+	}
+}
+
+func TestBedrockProvider_Complete_CrossRegionInferenceProfileDispatchesWithOriginalModelID(t *testing.T) {
+	fake := &fakeBedrockRuntimeClient{
+		responses: [][]byte{
+			[]byte(`{"id":"msg-1","type":"message","role":"assistant","content":[{"type":"text","text":"hello"}],"stop_reason":"end_turn","usage":{"input_tokens":2,"output_tokens":1}}`),
+		},
+	}
+	p := &Provider{name: Name, client: fake}
+
+	resp, err := p.Complete(context.Background(), core.Request{
+		Model: "global.anthropic.claude-sonnet-4-20250514-v1:0",
+		Messages: []core.Message{
+			{Role: core.RoleUser, Content: "hello"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete() error: %v", err)
+	}
+	if len(fake.invokeCalls) != 1 {
+		t.Fatalf("InvokeModel calls = %d, want 1", len(fake.invokeCalls))
+	}
+	if got := aws.ToString(fake.invokeCalls[0].ModelId); got != "global.anthropic.claude-sonnet-4-20250514-v1:0" {
+		t.Errorf("ModelId = %q, want original inference profile ID", got)
+	}
+	if resp.Model != "global.anthropic.claude-sonnet-4-20250514-v1:0" {
+		t.Errorf("response Model = %q, want original inference profile ID", resp.Model)
+	}
+}
+
+func TestBedrockProvider_Complete_NovaDispatchesWithOriginalModelID(t *testing.T) {
+	fake := &fakeBedrockRuntimeClient{
+		responses: [][]byte{
+			[]byte(`{"output":{"message":{"role":"assistant","content":[{"text":"hello"},{"text":" world"}]}},"stopReason":"end_turn","usage":{"inputTokens":3,"outputTokens":2,"totalTokens":5}}`),
+		},
+	}
+	p := &Provider{name: Name, client: fake}
+	maxTokens := 64
+	temperature := 0.3
+	topP := 0.9
+
+	resp, err := p.Complete(context.Background(), core.Request{
+		Model:       "global.amazon.nova-pro-v1:0",
+		MaxTokens:   &maxTokens,
+		Temperature: &temperature,
+		TopP:        &topP,
+		Stop:        []string{"STOP"},
+		Messages: []core.Message{
+			{Role: core.RoleSystem, Content: "be concise"},
+			{Role: core.RoleUser, Content: "hello"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete() error: %v", err)
+	}
+	if len(fake.invokeCalls) != 1 {
+		t.Fatalf("InvokeModel calls = %d, want 1", len(fake.invokeCalls))
+	}
+	if got := aws.ToString(fake.invokeCalls[0].ModelId); got != "global.amazon.nova-pro-v1:0" {
+		t.Errorf("ModelId = %q, want original inference profile ID", got)
+	}
+	var body bedrockNovaRequest
+	mustUnmarshalBody(t, fake.invokeCalls[0].Body, &body)
+	if body.SchemaVersion != "messages-v1" {
+		t.Errorf("schemaVersion = %q, want messages-v1", body.SchemaVersion)
+	}
+	if len(body.System) != 1 || body.System[0].Text != "be concise" {
+		t.Errorf("system = %#v, want system prompt", body.System)
+	}
+	if len(body.Messages) != 1 || body.Messages[0].Role != "user" || len(body.Messages[0].Content) != 1 || body.Messages[0].Content[0].Text != "hello" {
+		t.Errorf("messages = %#v, want user text message", body.Messages)
+	}
+	if body.InferenceConfig == nil {
+		t.Fatal("inferenceConfig = nil, want configured sampling params")
+	}
+	if body.InferenceConfig.MaxTokens != maxTokens || body.InferenceConfig.Temperature == nil || *body.InferenceConfig.Temperature != temperature || body.InferenceConfig.TopP == nil || *body.InferenceConfig.TopP != topP {
+		t.Errorf("inferenceConfig = %+v, want configured sampling params", body.InferenceConfig)
+	}
+	if len(body.InferenceConfig.StopSequences) != 1 || body.InferenceConfig.StopSequences[0] != "STOP" {
+		t.Errorf("stopSequences = %#v, want STOP", body.InferenceConfig.StopSequences)
+	}
+	if resp.Model != "global.amazon.nova-pro-v1:0" || resp.Choices[0].Message.Content != "hello world" || resp.Choices[0].FinishReason != "end_turn" {
+		t.Errorf("response = %+v, want mapped Nova response", resp)
+	}
+	if resp.Usage.PromptTokens != 3 || resp.Usage.CompletionTokens != 2 || resp.Usage.TotalTokens != 5 {
+		t.Errorf("usage = %+v, want Nova usage", resp.Usage)
+	}
+}
+
+func TestBedrockProvider_Complete_NovaUsageFallsBackToInputPlusOutputTokens(t *testing.T) {
+	fake := &fakeBedrockRuntimeClient{
+		responses: [][]byte{
+			[]byte(`{"output":{"message":{"role":"assistant","content":[{"text":"ok"}]}},"stopReason":"end_turn","usage":{"inputTokens":1,"outputTokens":2}}`),
+		},
+	}
+	p := &Provider{name: Name, client: fake}
+
+	resp, err := p.Complete(context.Background(), core.Request{
+		Model: "amazon.nova-micro-v1:0",
+		Messages: []core.Message{
+			{Role: core.RoleUser, Content: "hello"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete() error: %v", err)
+	}
+	if resp.Usage.TotalTokens != 3 {
+		t.Errorf("TotalTokens = %d, want input+output fallback 3", resp.Usage.TotalTokens)
 	}
 }
 
