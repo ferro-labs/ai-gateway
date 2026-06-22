@@ -2,6 +2,7 @@ package otel
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -123,26 +124,42 @@ func Init(ctx context.Context, cfg Config) (observability.Provider, ShutdownFunc
 		shutdownGrace = 10 * time.Second
 	}
 	shutdown := func(ctx context.Context) error {
-		// Apply an internal deadline so callers can pass context.Background()
-		// and the closure still drains within ShutdownGrace.
-		innerCtx, cancel := context.WithTimeout(ctx, shutdownGrace)
-		defer cancel()
 		// Drain plugin exporters first, then the OTel pipeline.
-		exporterErr := prov.Shutdown(innerCtx)
-		tpErr := tpShutdown(innerCtx)
+		err := shutdownWithIndependentDeadlines(ctx, shutdownGrace, prov.Shutdown, tpShutdown)
 		// Restore the global TracerProvider to a no-op so any late
 		// otel.Tracer(...) calls after shutdown don't hit the drained
 		// pipeline, and so re-initialisation (tests, embedders) starts clean.
 		if globalTPSet {
 			otel.SetTracerProvider(noop.NewTracerProvider())
 		}
-		if tpErr != nil {
-			return tpErr
-		}
-		return exporterErr
+		return err
 	}
 
 	return prov, shutdown, nil
+}
+
+func shutdownWithIndependentDeadlines(
+	ctx context.Context,
+	shutdownGrace time.Duration,
+	exporterShutdown func(context.Context) error,
+	tpShutdown func(context.Context) error,
+) error {
+	if shutdownGrace <= 0 {
+		shutdownGrace = 10 * time.Second
+	}
+
+	// Give each shutdown stage its own grace window. A slow plugin exporter
+	// may use its full deadline, but that must not hand the TracerProvider an
+	// already-expired context and silently drop buffered spans.
+	exporterCtx, exporterCancel := context.WithTimeout(ctx, shutdownGrace)
+	exporterErr := exporterShutdown(exporterCtx)
+	exporterCancel()
+
+	tpCtx, tpCancel := context.WithTimeout(ctx, shutdownGrace)
+	tpErr := tpShutdown(tpCtx)
+	tpCancel()
+
+	return errors.Join(exporterErr, tpErr)
 }
 
 // resolveExporters instantiates and initialises each enabled exporter.

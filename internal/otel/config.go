@@ -32,8 +32,8 @@ type Config struct {
 	// One of: "none", "metadata" (default), "full".
 	PrivacyLevel string `yaml:"privacy_level" json:"privacy_level"`
 
-	// ShutdownGrace is the maximum time Shutdown will block waiting for
-	// in-flight exports to drain.
+	// ShutdownGrace is the maximum time each shutdown stage will block waiting
+	// for in-flight exports to drain.
 	ShutdownGrace time.Duration `yaml:"shutdown_grace" json:"shutdown_grace"`
 
 	// Exporters is the list of plugin exporter configurations.  Each

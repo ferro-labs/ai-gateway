@@ -134,6 +134,63 @@ func TestInitRegistersGlobalTracerProvider(t *testing.T) {
 	span2.End()
 }
 
+func TestShutdownUsesIndependentDeadlinesForExporterAndTracerProvider(t *testing.T) {
+	grace := 25 * time.Millisecond
+	exporterDone := make(chan struct{})
+	tpCtxErr := make(chan error, 1)
+
+	err := shutdownWithIndependentDeadlines(
+		context.Background(),
+		grace,
+		func(ctx context.Context) error {
+			<-ctx.Done()
+			close(exporterDone)
+			return ctx.Err()
+		},
+		func(ctx context.Context) error {
+			select {
+			case <-exporterDone:
+			case <-time.After(time.Second):
+				t.Fatal("tracer provider shutdown was not called after exporter shutdown")
+			}
+
+			select {
+			case <-ctx.Done():
+				tpCtxErr <- ctx.Err()
+			default:
+				tpCtxErr <- nil
+			}
+			return nil
+		},
+	)
+
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("shutdown error = %v, want context deadline exceeded", err)
+	}
+	if err := <-tpCtxErr; err != nil {
+		t.Fatalf("tracer provider received expired context: %v", err)
+	}
+}
+
+func TestShutdownJoinsExporterAndTracerProviderErrors(t *testing.T) {
+	exporterErr := errors.New("exporter shutdown failed")
+	tpErr := errors.New("tracer provider shutdown failed")
+
+	err := shutdownWithIndependentDeadlines(
+		context.Background(),
+		time.Second,
+		func(context.Context) error { return exporterErr },
+		func(context.Context) error { return tpErr },
+	)
+
+	if !errors.Is(err, exporterErr) {
+		t.Fatalf("shutdown error %v does not include exporter error", err)
+	}
+	if !errors.Is(err, tpErr) {
+		t.Fatalf("shutdown error %v does not include tracer provider error", err)
+	}
+}
+
 func TestEffectiveEndpointEnvWins(t *testing.T) {
 	// OTEL_EXPORTER_OTLP_ENDPOINT takes precedence over a configured endpoint
 	// so container deployments can redirect telemetry by env var.
