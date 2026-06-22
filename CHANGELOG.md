@@ -5,6 +5,27 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.4] — 2026-06-19
+
+Provider-translation correctness release. Tool/function calling, sampling parameters, completion-token limits, finish-reason normalization, multimodal input, and streaming fidelity are now correctly translated across native and OpenAI-compatible providers. Bundles an 11-bump dependency sweep and an internal shared-helper refactor (~1,800 lines of duplication removed) with no public API breaks. Fixes every issue labelled [`release-1.1.4`](https://github.com/ferro-labs/ai-gateway/issues?q=label%3Arelease-1.1.4): [#139](https://github.com/ferro-labs/ai-gateway/issues/139), [#140](https://github.com/ferro-labs/ai-gateway/issues/140), [#141](https://github.com/ferro-labs/ai-gateway/issues/141), [#142](https://github.com/ferro-labs/ai-gateway/issues/142), [#143](https://github.com/ferro-labs/ai-gateway/issues/143), [#144](https://github.com/ferro-labs/ai-gateway/issues/144), and [#145](https://github.com/ferro-labs/ai-gateway/issues/145).
+
+### Fixed
+
+- **Tool / function calling dropped on native non-OpenAI providers** (issue [#139](https://github.com/ferro-labs/ai-gateway/issues/139), PR [#214](https://github.com/ferro-labs/ai-gateway/pull/214)): Anthropic, Gemini, Bedrock (Claude), and Cohere now forward `tools` / `tool_choice` in each provider's native shape, parse `tool_use` / `tool_calls` responses (JSON-object arguments → JSON string), assemble streaming tool-call deltas with index remapping, and handle multi-turn tool round-trips. OpenAI-compatible providers preserve streamed `tool_calls` deltas via a shared decoder.
+- **Sampling / output params silently dropped** (issue [#140](https://github.com/ferro-labs/ai-gateway/issues/140)): a shared `internal/openaicompat` request builder forwards the full OpenAI-shaped body (`top_p`, `stop`, `seed`, penalties, `response_format`, `n`, …); native providers translate to upstream field names and warn-and-drop only what an API cannot express.
+- **`max_completion_tokens` ignored by non-OpenAI providers** (issue [#141](https://github.com/ferro-labs/ai-gateway/issues/141), PR [#213](https://github.com/ferro-labs/ai-gateway/pull/213)): the limit is normalized at the gateway seam so every provider honors it, and OpenAI / Azure o-series reasoning models receive `max_completion_tokens` instead of the rejected `max_tokens`.
+- **`finish_reason` not normalized to OpenAI values** (issue [#142](https://github.com/ferro-labs/ai-gateway/issues/142)): Anthropic / Bedrock / Cohere native stop reasons now map to `stop | length | tool_calls | content_filter`, so clients can detect truncation and tool use.
+- **Anthropic multimodal images dropped and tool-role messages malformed** (issue [#143](https://github.com/ferro-labs/ai-gateway/issues/143)): image content maps to Anthropic content blocks (vision no longer degrades to text-only) and tool results emit `tool_result` blocks inside a user turn instead of a bare `{"role":"tool"}` object the API rejects.
+- **Gemini system prompt prepended to the user message** (issue [#144](https://github.com/ferro-labs/ai-gateway/issues/144)): routed through the dedicated top-level `systemInstruction` field (Gemini 1.5+) instead of being smuggled into the first user turn, and no longer lost when a system message has no following user turn.
+- **Streaming and per-provider translation fidelity** (issue [#145](https://github.com/ferro-labs/ai-gateway/issues/145)): Anthropic streaming usage is parsed (non-zero token / cost metrics); DeepSeek `reasoning_content` and prompt-cache tokens are surfaced; Cohere embeddings `input_type` is configurable (defaults to `search_document`).
+
+### Changed
+
+- **Dependency sweep (11 bumps):** aws-sdk-go-v2 (config / credentials / bedrockruntime), OpenTelemetry (otel + otlptracegrpc), go-chi/chi v5, modernc.org/sqlite, lib/pq, codecov-action, and upload-artifact, plus SA1019 deprecation fixes surfaced by the bumps.
+- **Internal shared-helper refactor:** `openaicompat.StreamSSE` / `PostChat` / `PostStream` collapse ~23 OpenAI-compatible providers' duplicated request and stream plumbing; new `core.NormalizeToolChoice` / `NormalizeFinishReason` / `Ptr` helpers and a shared `anthropicwire` tool mapper; `interface{}` → `any` modernization. ~1,800 net lines removed with no behavior change beyond unifying SSE decode-error handling.
+
+---
+
 ## [1.1.3] — 2026-06-15
 
 Streaming-correctness release. Brings the streaming routing path (`RouteStream`) to parity with non-streaming `Route`: the post-request plugin pipeline, the per-provider circuit breaker, and least-latency / cost-optimized ordering now all apply to `stream: true` traffic. Also tightens fallback retry semantics and async-context propagation. No public API breaks. Fixes every issue labelled [`release-1.1.3`](https://github.com/ferro-labs/ai-gateway/issues?q=label%3Arelease-1.1.3): [#135](https://github.com/ferro-labs/ai-gateway/issues/135), [#136](https://github.com/ferro-labs/ai-gateway/issues/136), [#137](https://github.com/ferro-labs/ai-gateway/issues/137), and [#138](https://github.com/ferro-labs/ai-gateway/issues/138), plus enhancement [#181](https://github.com/ferro-labs/ai-gateway/issues/181).
