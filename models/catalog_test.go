@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -547,6 +549,144 @@ func TestIsDeprecated(t *testing.T) {
 		if got := m.IsDeprecated(); got != tc.want {
 			t.Errorf("IsDeprecated(%q) = %v, want %v", tc.status, got, tc.want)
 		}
+	}
+}
+
+// assertSortedDeduped fails the test if s is not sorted ascending or contains
+// adjacent duplicates.
+func assertSortedDeduped(t *testing.T, s []string) {
+	t.Helper()
+	if !sort.StringsAreSorted(s) {
+		t.Fatalf("result is not sorted ascending: %v", s)
+	}
+	for i := 1; i < len(s); i++ {
+		if s[i] == s[i-1] {
+			t.Fatalf("result contains adjacent duplicate %q: %v", s[i], s)
+		}
+	}
+}
+
+// TestCatalogPrefixesFor verifies the gateway-provider-ID → catalog-prefix-chain
+// mapping, including aliased and identity providers.
+func TestCatalogPrefixesFor(t *testing.T) {
+	cases := []struct {
+		providerID string
+		want       []string
+	}{
+		{"azure-openai", []string{"azure_openai", "azure"}},
+		{"azure-foundry", []string{"azure_foundry", "azure"}},
+		{"vertex-ai", []string{"vertex_ai"}},
+		{"anthropic", []string{"anthropic"}},
+		{"does-not-exist", []string{"does-not-exist"}},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.providerID, func(t *testing.T) {
+			got := CatalogPrefixesFor(tc.providerID)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("CatalogPrefixesFor(%q) = %v, want %v", tc.providerID, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestCatalogPrefixesForDoesNotExposeInternalSlice verifies the returned slice
+// is a copy — mutating it must not corrupt the package-level alias map.
+func TestCatalogPrefixesForDoesNotExposeInternalSlice(t *testing.T) {
+	got := CatalogPrefixesFor("azure-openai")
+	if len(got) == 0 {
+		t.Fatal("expected non-empty prefix chain")
+	}
+	got[0] = "MUTATED"
+
+	again := CatalogPrefixesFor("azure-openai")
+	if !reflect.DeepEqual(again, []string{"azure_openai", "azure"}) {
+		t.Fatalf("internal alias slice was mutated: got %v", again)
+	}
+}
+
+// TestModelsForProvider verifies the catalog→provider listing helper against the
+// bundled catalog: correct counts, sorted/deduped output, and identity vs alias
+// resolution.
+func TestModelsForProvider(t *testing.T) {
+	c, err := parse(bundledCatalog)
+	if err != nil {
+		t.Fatalf("parse bundled catalog: %v", err)
+	}
+
+	cases := []struct {
+		providerID string
+		wantLen    int
+	}{
+		{"anthropic", 26},
+		{"xai", 32},
+		{"does-not-exist", 0},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.providerID, func(t *testing.T) {
+			got := c.ModelsForProvider(tc.providerID)
+			if len(got) != tc.wantLen {
+				t.Fatalf("ModelsForProvider(%q) returned %d models, want %d",
+					tc.providerID, len(got), tc.wantLen)
+			}
+			assertSortedDeduped(t, got)
+		})
+	}
+}
+
+// TestModelsForProviderAliasUnion verifies that an aliased gateway provider ID
+// returns the deduped union of model IDs across every catalog prefix in its
+// alias chain (azure-openai → azure_openai + azure).
+func TestModelsForProviderAliasUnion(t *testing.T) {
+	c, err := parse(bundledCatalog)
+	if err != nil {
+		t.Fatalf("parse bundled catalog: %v", err)
+	}
+
+	// Compute the expected union directly from the parsed catalog.
+	wantSet := make(map[string]struct{})
+	for _, m := range c {
+		if m.Provider == "azure_openai" || m.Provider == "azure" {
+			wantSet[m.ModelID] = struct{}{}
+		}
+	}
+
+	got := c.ModelsForProvider("azure-openai")
+	if len(got) != len(wantSet) {
+		t.Fatalf("ModelsForProvider(azure-openai) returned %d models, want %d (union of azure_openai + azure)",
+			len(got), len(wantSet))
+	}
+	assertSortedDeduped(t, got)
+	for _, id := range got {
+		if _, ok := wantSet[id]; !ok {
+			t.Fatalf("unexpected model %q not in azure_openai/azure union", id)
+		}
+	}
+}
+
+// TestModelsForProviderIncludesDeprecated verifies deprecated entries are NOT
+// filtered out (the /v1/models response flags deprecation separately).
+func TestModelsForProviderIncludesDeprecated(t *testing.T) {
+	deprecated := Catalog{
+		"toy/active-model": {
+			Provider:  "toy",
+			ModelID:   "active-model",
+			Mode:      ModeChat,
+			Lifecycle: Lifecycle{Status: "ga"},
+		},
+		"toy/old-model": {
+			Provider:  "toy",
+			ModelID:   "old-model",
+			Mode:      ModeChat,
+			Lifecycle: Lifecycle{Status: "deprecated"},
+		},
+	}
+
+	got := deprecated.ModelsForProvider("toy")
+	want := []string{"active-model", "old-model"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ModelsForProvider(toy) = %v, want %v (deprecated must be included)", got, want)
 	}
 }
 
