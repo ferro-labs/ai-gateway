@@ -1752,6 +1752,35 @@ func appendRemainingTargetKeys(keys []string, targets []Target) []string {
 	return keys
 }
 
+// modelsForRoutingLocked returns the model IDs used to build the exact-match
+// routing index for a provider: the union of its hardcoded SupportedModels()
+// and the catalog's models for that provider (issue #146). Deriving from the
+// catalog lets exact-match providers route valid models their hand-maintained
+// slices omit, without per-provider edits. Falls back to the hardcoded slice
+// when the catalog has no entries for the provider (e.g. self-hosted Ollama).
+func (g *Gateway) modelsForRoutingLocked(name string, p providers.Provider) []string {
+	hardcoded := p.SupportedModels()
+	catModels := g.catalog.ModelsForProvider(name)
+	if len(catModels) == 0 {
+		return hardcoded
+	}
+	seen := make(map[string]struct{}, len(hardcoded)+len(catModels))
+	out := make([]string, 0, len(hardcoded)+len(catModels))
+	for _, m := range hardcoded {
+		if _, ok := seen[m]; !ok {
+			seen[m] = struct{}{}
+			out = append(out, m)
+		}
+	}
+	for _, m := range catModels {
+		if _, ok := seen[m]; !ok {
+			seen[m] = struct{}{}
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
 func (g *Gateway) rebuildModelIndexesLocked() {
 	g.modelIndex.exactProviders = make(map[string][]string)
 	g.modelIndex.exactStreamProviders = make(map[string][]string)
@@ -1763,7 +1792,7 @@ func (g *Gateway) rebuildModelIndexesLocked() {
 		if !ok {
 			continue
 		}
-		models := p.SupportedModels()
+		models := g.modelsForRoutingLocked(name, p)
 		for _, model := range models {
 			g.modelIndex.exactProviders[model] = append(g.modelIndex.exactProviders[model], name)
 		}
@@ -1993,8 +2022,11 @@ func (g *Gateway) AllModels() []providers.ModelInfo {
 		if !ok {
 			continue
 		}
+		// Precedence (issue #146): live discovery > catalog > hardcoded fallback.
 		if discovered, ok := g.discoveredModels[name]; ok && len(discovered) > 0 {
 			models = append(models, discovered...)
+		} else if catModels := g.catalog.ModelsForProvider(name); len(catModels) > 0 {
+			models = append(models, core.ModelsFromList(name, catModels)...)
 		} else {
 			models = append(models, p.Models()...)
 		}

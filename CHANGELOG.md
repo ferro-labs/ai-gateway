@@ -5,6 +5,14 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **`/v1/models` and model routing now derive from the model catalog** (issue [#146](https://github.com/ferro-labs/ai-gateway/issues/146)): the model list reported per provider is sourced from the model catalog instead of hand-maintained `SupportedModels()` slices, eliminating drift. Precedence is live discovery > catalog > hardcoded fallback. Opt-in periodic live refresh from providers exposing a `/models` endpoint is enabled by setting `FERRO_MODEL_DISCOVERY_INTERVAL` to a positive Go duration (e.g. `6h`); unset or `0` disables it (default).
+
+---
+
 ## [1.1.4] — 2026-06-19
 
 Provider-translation correctness release. Tool/function calling, sampling parameters, completion-token limits, finish-reason normalization, multimodal input, and streaming fidelity are now correctly translated across native and OpenAI-compatible providers. Bundles an 11-bump dependency sweep and an internal shared-helper refactor (~1,800 lines of duplication removed) with no public API breaks. Fixes every issue labelled [`release-1.1.4`](https://github.com/ferro-labs/ai-gateway/issues?q=label%3Arelease-1.1.4): [#139](https://github.com/ferro-labs/ai-gateway/issues/139), [#140](https://github.com/ferro-labs/ai-gateway/issues/140), [#141](https://github.com/ferro-labs/ai-gateway/issues/141), [#142](https://github.com/ferro-labs/ai-gateway/issues/142), [#143](https://github.com/ferro-labs/ai-gateway/issues/143), [#144](https://github.com/ferro-labs/ai-gateway/issues/144), and [#145](https://github.com/ferro-labs/ai-gateway/issues/145).

@@ -10,7 +10,7 @@
 
 ### Current Development Snapshot
 
-- **29 provider subpackages** — each provider lives in `providers/<id>/<id>.go` with its own test file. No root-level constructor shims remain.
+- **29 provider subpackages** — each provider lives in `providers/<id>/<id>.go` with its own test file. No root-level constructor shims remain. <!-- drift-ok: pre-existing subpackage count, not the canonical provider count -->
 - **Unified factory** — `providers/factory.go` holds types/constants; `providers/providers_list.go` holds all built-in `ProviderEntry` records. Auto-registration via `AllProviders()` means `main.go` never needs editing for new providers.
 - **`providers/core/` split** — interfaces in `contracts.go`; shared types split into `chat.go`, `stream.go`, `embedding.go`, `image.go`, `model.go`, `constants.go`, `errors.go`.
 - **Single source of truth for name constants** — `providers/names.go` re-exports `NameXxx` from each subpackage's `const Name`.
@@ -210,6 +210,8 @@ observability:
 | `MASTER_KEY` | Single admin credential for all auth (use `ferrogw init` to generate) |
 | `GATEWAY_CONFIG` | Path to config YAML/JSON |
 | `PORT` | Server port (default: 8080) |
+| `FERRO_MODEL_CATALOG_URL` | Override the model catalog source URL (used by `/v1/models` and model routing) |
+| `FERRO_MODEL_DISCOVERY_INTERVAL` | Opt-in interval (Go duration, e.g. 6h) to live-refresh model lists from provider /models endpoints; unset disables |
 | `OPENAI_API_KEY` | OpenAI API key |
 | `ANTHROPIC_API_KEY` | Anthropic API key |
 | `GEMINI_API_KEY` | Google Gemini API key |
