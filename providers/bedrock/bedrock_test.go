@@ -150,8 +150,9 @@ func TestBedrockProvider_SupportsModel_NovaTextModels(t *testing.T) {
 		})
 	}
 
+	// amazon.nova-canvas is an image-generation model (see image.go); it is
+	// intentionally not in the Nova-text set but IS a supported image model.
 	for _, model := range []string{
-		"amazon.nova-canvas-v1:0",
 		"amazon.nova-reel-v1:0",
 		"amazon.nova-2-multimodal-embeddings-v1:0",
 	} {

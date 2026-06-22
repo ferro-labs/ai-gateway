@@ -34,6 +34,8 @@ var (
 	_ core.Provider          = (*Provider)(nil)
 	_ core.StreamProvider    = (*Provider)(nil)
 	_ core.ProxiableProvider = (*Provider)(nil)
+	_ core.EmbeddingProvider = (*Provider)(nil)
+	_ core.ImageProvider     = (*Provider)(nil)
 )
 
 // New creates a new Azure OpenAI provider.
@@ -88,6 +90,29 @@ func (p *Provider) Models() []core.ModelInfo {
 func (p *Provider) endpoint() string {
 	return fmt.Sprintf("%s/openai/deployments/%s/chat/completions?api-version=%s",
 		p.baseURL, p.deploymentName, p.apiVersion)
+}
+
+// opEndpoint builds an Azure OpenAI URL for an arbitrary deployment+operation,
+// e.g. op "embeddings" or "images/generations".
+func (p *Provider) opEndpoint(deployment, op string) string {
+	return fmt.Sprintf("%s/openai/deployments/%s/%s?api-version=%s",
+		p.baseURL, deployment, op, p.apiVersion)
+}
+
+// deploymentFor selects the deployment to target for a request. Azure routes
+// by deployment name in the URL (not by a body "model" field), so callers may
+// override the configured deployment per request by setting req.Model.
+//
+// NOTE: Complete/CompleteStream intentionally keep using p.deploymentName
+// (via endpoint()) rather than deploymentFor — the chat path is pinned to the
+// single configured chat deployment, whereas Embed/GenerateImage allow the
+// caller to target a different embedding/image deployment by model. This
+// asymmetry is deliberate.
+func (p *Provider) deploymentFor(model string) string {
+	if model != "" {
+		return model
+	}
+	return p.deploymentName
 }
 
 type azureOpenAIResponse struct {

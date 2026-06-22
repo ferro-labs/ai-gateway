@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/ferro-labs/ai-gateway/internal/discovery"
 	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
 	"github.com/ferro-labs/ai-gateway/internal/openaicompat"
 	"github.com/ferro-labs/ai-gateway/providers/core"
@@ -34,6 +35,7 @@ var (
 	_ core.StreamProvider    = (*Provider)(nil)
 	_ core.EmbeddingProvider = (*Provider)(nil)
 	_ core.ProxiableProvider = (*Provider)(nil)
+	_ core.DiscoveryProvider = (*Provider)(nil)
 )
 
 // New creates a new Together AI provider.
@@ -87,6 +89,13 @@ func (p *Provider) SupportsModel(_ string) bool {
 // Models returns structured model metadata.
 func (p *Provider) Models() []core.ModelInfo {
 	return core.ModelsFromList(p.name, p.SupportedModels())
+}
+
+// DiscoverModels fetches the live model list from the Together AI /v1/models
+// endpoint. Together returns a bare JSON array whose items omit owned_by, so the
+// shared helper's dual-shape parser applies and owned_by falls back to "together".
+func (p *Provider) DiscoverModels(ctx context.Context) ([]core.ModelInfo, error) {
+	return discovery.DiscoverOpenAICompatibleModels(ctx, p.httpClient, p.baseURL+"/v1/models", p.apiKey, p.name)
 }
 
 // ------------------------------------------------------------------ types ---

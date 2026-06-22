@@ -2,8 +2,10 @@ package ollama
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 
 	"github.com/ferro-labs/ai-gateway/providers/core"
@@ -99,5 +101,78 @@ func TestOllamaProvider_CompleteStream_MockSSE(t *testing.T) {
 	}
 	if chunks[2].Choices[0].Delta.Content != " there" {
 		t.Errorf("delta content = %q, want ' there'", chunks[2].Choices[0].Delta.Content)
+	}
+}
+
+func TestOllamaProvider_Embed_Interface(_ *testing.T) {
+	p, _ := New("", nil)
+	var _ core.EmbeddingProvider = p
+}
+
+func TestOllamaProvider_Embed_MockHTTP(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %s, want POST", r.Method)
+		}
+		if r.URL.Path != "/api/embed" {
+			t.Errorf("path = %q, want /api/embed", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Errorf("Authorization = %q, want empty (no auth)", got)
+		}
+		var body map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if body["model"] != "nomic-embed-text" {
+			t.Errorf("model = %v, want nomic-embed-text", body["model"])
+		}
+		arr, ok := body["input"].([]interface{})
+		if !ok || len(arr) != 2 || arr[0] != "hello" || arr[1] != "world" {
+			t.Errorf("input = %v, want [hello world]", body["input"])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"model":"nomic-embed-text","embeddings":[[0.1,0.2],[0.3,0.4]],"prompt_eval_count":6}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New(srv.URL, []string{"nomic-embed-text"})
+	resp, err := p.Embed(context.Background(), core.EmbeddingRequest{
+		Model: "nomic-embed-text",
+		Input: []string{"hello", "world"},
+	})
+	if err != nil {
+		t.Fatalf("Embed() error: %v", err)
+	}
+	if resp.Object != "list" {
+		t.Errorf("Object = %q, want list", resp.Object)
+	}
+	if resp.Model != "nomic-embed-text" {
+		t.Errorf("Model = %q, want nomic-embed-text", resp.Model)
+	}
+	if len(resp.Data) != 2 {
+		t.Fatalf("Data length = %d, want 2", len(resp.Data))
+	}
+	if resp.Data[0].Object != "embedding" || resp.Data[0].Index != 0 || !reflect.DeepEqual(resp.Data[0].Embedding, []float64{0.1, 0.2}) {
+		t.Errorf("Data[0] = %+v, want embedding at index 0", resp.Data[0])
+	}
+	if resp.Data[1].Index != 1 || !reflect.DeepEqual(resp.Data[1].Embedding, []float64{0.3, 0.4}) {
+		t.Errorf("Data[1] = %+v, want embedding at index 1", resp.Data[1])
+	}
+	if resp.Usage.PromptTokens != 6 || resp.Usage.TotalTokens != 6 {
+		t.Errorf("Usage = %+v, want prompt=6 total=6", resp.Usage)
+	}
+}
+
+func TestOllamaProvider_Embed_RejectsNonFloatEncoding(t *testing.T) {
+	p, _ := New("http://127.0.0.1:0", []string{"nomic-embed-text"})
+	_, err := p.Embed(context.Background(), core.EmbeddingRequest{
+		Model:          "nomic-embed-text",
+		Input:          "hi",
+		EncodingFormat: "base64",
+	})
+	if err == nil {
+		t.Fatal("Embed() error = nil, want unsupported encoding_format error")
 	}
 }

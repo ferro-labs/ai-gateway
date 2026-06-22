@@ -31,6 +31,7 @@ var (
 	_ core.Provider          = (*Provider)(nil)
 	_ core.StreamProvider    = (*Provider)(nil)
 	_ core.EmbeddingProvider = (*Provider)(nil)
+	_ core.ImageProvider     = (*Provider)(nil)
 	_ core.ProxiableProvider = (*Provider)(nil)
 )
 
@@ -71,13 +72,16 @@ func (p *Provider) SupportedModels() []string {
 		"gemini-embedding-001",
 		"text-embedding-004",
 		"embedding-001",
+		"imagen-4.0-generate-001",
+		"imagen-4.0-ultra-generate-001",
+		"imagen-4.0-fast-generate-001",
 	}
 }
 
-// SupportsModel returns true if the model is a known Gemini chat or embedding model.
+// SupportsModel returns true if the model is a known Gemini chat, embedding, or image model.
 func (p *Provider) SupportsModel(model string) bool {
 	model = strings.TrimPrefix(model, "models/")
-	if strings.HasPrefix(model, "gemini-") {
+	if strings.HasPrefix(model, "gemini-") || strings.HasPrefix(model, "imagen-") {
 		return true
 	}
 	switch model {

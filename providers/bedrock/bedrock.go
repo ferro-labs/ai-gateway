@@ -70,6 +70,7 @@ var (
 	_ core.Provider          = (*Provider)(nil)
 	_ core.StreamProvider    = (*Provider)(nil)
 	_ core.EmbeddingProvider = (*Provider)(nil)
+	_ core.ImageProvider     = (*Provider)(nil)
 	_ core.ProxiableProvider = (*Provider)(nil)
 )
 
@@ -155,6 +156,10 @@ func (p *Provider) SupportedModels() []string {
 		"cohere.embed-english-v3",
 		"cohere.embed-multilingual-v3",
 		"cohere.embed-v4:0",
+		"amazon.nova-canvas-v1:0",
+		"amazon.titan-image-generator-v1",
+		"amazon.titan-image-generator-v2:0",
+		"stability.stable-diffusion-xl-v1",
 	}
 }
 
@@ -166,6 +171,12 @@ func (p *Provider) SupportsModel(model string) bool {
 		if model == supported {
 			return true
 		}
+	}
+	// Image families are matched here so the Nova-text exclusion guard below does
+	// not reject amazon.nova-canvas. The "amazon.titan-image-" prefix is distinct
+	// from the "amazon.titan-embed-image-" embeddings family.
+	if isBedrockImageModel(model) {
+		return true
 	}
 	for _, prefix := range []string{
 		"anthropic.claude-",
