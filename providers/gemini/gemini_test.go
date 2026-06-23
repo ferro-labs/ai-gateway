@@ -3,13 +3,37 @@ package gemini
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
+
+func TestSanitizeRequestErr(t *testing.T) {
+	urlErr := &url.Error{
+		Op:  "Post",
+		URL: "https://x/v1beta/models/m:predict?key=SECRETKEY",
+		Err: errors.New("dial tcp: timeout"),
+	}
+
+	got := sanitizeRequestErr(urlErr).Error()
+	if strings.Contains(got, "SECRETKEY") {
+		t.Errorf("sanitizeRequestErr leaked API key: %q", got)
+	}
+	if !strings.Contains(got, "dial tcp") {
+		t.Errorf("sanitizeRequestErr dropped underlying cause: %q", got)
+	}
+
+	// Non-url errors must pass through unchanged.
+	plain := errors.New("boom")
+	if sanitizeRequestErr(plain) != plain {
+		t.Errorf("sanitizeRequestErr altered non-url error")
+	}
+}
 
 func TestNewGemini(t *testing.T) {
 	p, err := New("test-key", "")

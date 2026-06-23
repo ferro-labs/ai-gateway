@@ -48,6 +48,28 @@ func TestBedrockProvider_SupportsImageModels(t *testing.T) {
 	}
 }
 
+func TestIsBedrockImageModel_StabilityOnlySDXL(t *testing.T) {
+	// Only stability.stable-diffusion-xl is actually dispatched, so the
+	// capability claim must not cover unimplemented stability.* families.
+	if isBedrockImageModel("stability.stable-image-ultra-v1:0") {
+		t.Error("isBedrockImageModel(stability.stable-image-ultra-v1:0) = true, want false (not dispatched)")
+	}
+	if isBedrockImageModel("stability.sd3-large-v1:0") {
+		t.Error("isBedrockImageModel(stability.sd3-large-v1:0) = true, want false (not dispatched)")
+	}
+	if !isBedrockImageModel("stability.stable-diffusion-xl-v1") {
+		t.Error("isBedrockImageModel(stability.stable-diffusion-xl-v1) = false, want true")
+	}
+
+	p := &Provider{name: Name}
+	if p.SupportsModel("stability.stable-image-ultra-v1:0") {
+		t.Error("SupportsModel(stability.stable-image-ultra-v1:0) = true, want false")
+	}
+	if !p.SupportsModel("stability.stable-diffusion-xl-v1") {
+		t.Error("SupportsModel(stability.stable-diffusion-xl-v1) = false, want true")
+	}
+}
+
 func TestBedrockProvider_GenerateImage_NovaCanvas(t *testing.T) {
 	fake := &fakeBedrockRuntimeClient{
 		responses: [][]byte{[]byte(`{"images":["aGk="]}`)},
@@ -146,7 +168,7 @@ func TestBedrockProvider_GenerateImage_StabilitySDXL(t *testing.T) {
 	}
 }
 
-func TestBedrockProvider_GenerateImage_StabilityContentFilteredErrors(t *testing.T) {
+func TestBedrockProvider_GenerateImage_StabilityAllFilteredReturnsNoImages(t *testing.T) {
 	fake := &fakeBedrockRuntimeClient{
 		responses: [][]byte{[]byte(`{"artifacts":[{"base64":"","finishReason":"CONTENT_FILTERED"}]}`)},
 	}
@@ -157,10 +179,37 @@ func TestBedrockProvider_GenerateImage_StabilityContentFilteredErrors(t *testing
 		Prompt: "blocked",
 	})
 	if err == nil {
-		t.Fatal("GenerateImage() error = nil, want content-filtered error")
+		t.Fatal("GenerateImage() error = nil, want no-images error")
 	}
-	if !strings.Contains(err.Error(), "CONTENT_FILTERED") {
-		t.Errorf("error = %q, want CONTENT_FILTERED mention", err.Error())
+	if !strings.Contains(err.Error(), "no images") {
+		t.Errorf("error = %q, want no-images error after all artifacts filtered", err.Error())
+	}
+}
+
+func TestBedrockProvider_GenerateImage_StabilitySamplesAndSkipsFiltered(t *testing.T) {
+	fake := &fakeBedrockRuntimeClient{
+		responses: [][]byte{[]byte(`{"artifacts":[{"base64":"aGk=","finishReason":"SUCCESS"},{"base64":"","finishReason":"CONTENT_FILTERED"}]}`)},
+	}
+	p := &Provider{name: Name, client: fake}
+	n := 2
+
+	resp, err := p.GenerateImage(context.Background(), core.ImageRequest{
+		Model:  "stability.stable-diffusion-xl-v1",
+		Prompt: "two cats",
+		N:      &n,
+	})
+	if err != nil {
+		t.Fatalf("GenerateImage() error: %v", err)
+	}
+
+	var body bedrockImageStabilityRequest
+	mustUnmarshalBody(t, fake.invokeCalls[0].Body, &body)
+	if body.Samples == nil || *body.Samples != 2 {
+		t.Errorf("samples = %v, want 2 from req.N", body.Samples)
+	}
+
+	if len(resp.Data) != 1 || resp.Data[0].B64JSON != "aGk=" {
+		t.Errorf("data = %+v, want single good image with filtered artifact skipped", resp.Data)
 	}
 }
 

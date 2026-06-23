@@ -99,6 +99,9 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 func normalizeEmbeddingInput(input interface{}) (interface{}, error) {
 	switch v := input.(type) {
 	case string:
+		if v == "" {
+			return nil, fmt.Errorf("embed: input string must not be empty")
+		}
 		return v, nil
 	case []string:
 		if len(v) == 0 {

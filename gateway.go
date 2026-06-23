@@ -270,6 +270,11 @@ func (g *Gateway) refreshCatalog() {
 
 	g.mu.Lock()
 	g.catalog = result.Catalog
+	// The exact-match routing index is derived from the catalog (issue #146),
+	// so it must be rebuilt whenever the catalog is replaced — otherwise the
+	// 24h refresh would leave routing frozen at the startup catalog while
+	// /v1/models reflects the new one.
+	g.rebuildModelIndexesLocked()
 	if g.config.Strategy.Mode == ModeCostOptimized {
 		g.strategy = nil
 	}

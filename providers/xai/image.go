@@ -24,7 +24,8 @@ type xaiImageRequest struct {
 // xaiImageResponse is the OpenAI-compatible response body for xAI image
 // generation.
 type xaiImageResponse struct {
-	Data []struct {
+	Created int64 `json:"created"`
+	Data    []struct {
 		URL           string `json:"url"`
 		B64JSON       string `json:"b64_json"`
 		RevisedPrompt string `json:"revised_prompt"`
@@ -94,8 +95,13 @@ func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*c
 		}
 	}
 
+	created := decoded.Created
+	if created == 0 {
+		created = time.Now().Unix()
+	}
+
 	return &core.ImageResponse{
-		Created: time.Now().Unix(),
+		Created: created,
 		Data:    images,
 	}, nil
 }

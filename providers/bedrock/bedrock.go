@@ -571,6 +571,8 @@ func bedrockSupportedParams(modelID string) []string {
 		return []string{"temperature", "top_p", "max_tokens", "stop", "tools", "tool_choice"}
 	case strings.HasPrefix(modelID, "amazon.titan"):
 		return []string{"temperature", "top_p", "max_tokens", "stop"}
+	case isBedrockNovaTextModel(modelID):
+		return []string{"temperature", "top_p", "max_tokens", "stop"}
 	case strings.HasPrefix(modelID, "meta.llama"):
 		return []string{"temperature", "top_p", "max_tokens"}
 	default:
@@ -795,7 +797,7 @@ func (p *Provider) completeNova(ctx context.Context, req core.Request) (*core.Re
 		Choices: []core.Choice{{
 			Index:        0,
 			Message:      core.Message{Role: core.RoleAssistant, Content: text.String()},
-			FinishReason: novaResp.StopReason,
+			FinishReason: core.NormalizeFinishReason(novaResp.StopReason),
 		}},
 		Usage: core.Usage{
 			PromptTokens:     novaResp.Usage.InputTokens,

@@ -243,8 +243,8 @@ func TestBedrockProvider_Complete_NovaDispatchesWithOriginalModelID(t *testing.T
 	if len(body.InferenceConfig.StopSequences) != 1 || body.InferenceConfig.StopSequences[0] != "STOP" {
 		t.Errorf("stopSequences = %#v, want STOP", body.InferenceConfig.StopSequences)
 	}
-	if resp.Model != "global.amazon.nova-pro-v1:0" || resp.Choices[0].Message.Content != "hello world" || resp.Choices[0].FinishReason != "end_turn" {
-		t.Errorf("response = %+v, want mapped Nova response", resp)
+	if resp.Model != "global.amazon.nova-pro-v1:0" || resp.Choices[0].Message.Content != "hello world" || resp.Choices[0].FinishReason != "stop" {
+		t.Errorf("response = %+v, want mapped Nova response with normalized finish reason", resp)
 	}
 	if resp.Usage.PromptTokens != 3 || resp.Usage.CompletionTokens != 2 || resp.Usage.TotalTokens != 5 {
 		t.Errorf("usage = %+v, want Nova usage", resp.Usage)
@@ -270,6 +270,36 @@ func TestBedrockProvider_Complete_NovaUsageFallsBackToInputPlusOutputTokens(t *t
 	}
 	if resp.Usage.TotalTokens != 3 {
 		t.Errorf("TotalTokens = %d, want input+output fallback 3", resp.Usage.TotalTokens)
+	}
+}
+
+func TestBedrockProvider_Complete_NovaNormalizesFinishReason(t *testing.T) {
+	cases := []struct {
+		name       string
+		stopReason string
+		want       string
+	}{
+		{name: "end_turn -> stop", stopReason: "end_turn", want: "stop"},
+		{name: "max_tokens -> length", stopReason: "max_tokens", want: "length"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := fmt.Sprintf(`{"output":{"message":{"role":"assistant","content":[{"text":"hi"}]}},"stopReason":%q,"usage":{"inputTokens":1,"outputTokens":1}}`, tc.stopReason)
+			fake := &fakeBedrockRuntimeClient{responses: [][]byte{[]byte(body)}}
+			p := &Provider{name: Name, client: fake}
+
+			resp, err := p.Complete(context.Background(), core.Request{
+				Model:    "amazon.nova-micro-v1:0",
+				Messages: []core.Message{{Role: core.RoleUser, Content: "hi"}},
+			})
+			if err != nil {
+				t.Fatalf("Complete() error: %v", err)
+			}
+			if got := resp.Choices[0].FinishReason; got != tc.want {
+				t.Errorf("finish_reason = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

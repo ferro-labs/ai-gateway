@@ -118,6 +118,31 @@ func TestAzureOpenAIProvider_CompleteStream_MockSSE(t *testing.T) {
 	}
 }
 
+func TestAzureOpenAIProvider_opEndpoint_PathEscapesDeployment(t *testing.T) {
+	p, _ := New("test-key", "https://myresource.openai.azure.com", "gpt-4o", "2024-10-21")
+
+	cases := []struct {
+		name       string
+		deployment string
+		wantSeg    string
+	}{
+		{"space", "my deploy", "/deployments/my%20deploy/"},
+		{"slash", "a/b", "/deployments/a%2Fb/"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := p.opEndpoint(tc.deployment, "embeddings")
+			if !strings.Contains(got, tc.wantSeg) {
+				t.Errorf("opEndpoint(%q) = %q, want it to contain %q", tc.deployment, got, tc.wantSeg)
+			}
+			// The raw (unescaped) deployment must not leak into the URL path.
+			if strings.Contains(got, "/deployments/"+tc.deployment+"/") {
+				t.Errorf("opEndpoint(%q) = %q, deployment was not escaped", tc.deployment, got)
+			}
+		})
+	}
+}
+
 func TestAzureOpenAIProvider_Embed(t *testing.T) {
 	var gotPath, gotQuery, gotAPIKey string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -192,6 +217,7 @@ func TestAzureOpenAIProvider_Embed_InputValidation(t *testing.T) {
 		req  core.EmbeddingRequest
 	}{
 		{"nil input", core.EmbeddingRequest{Input: nil}},
+		{"empty string", core.EmbeddingRequest{Input: ""}},
 		{"empty slice", core.EmbeddingRequest{Input: []string{}}},
 		{"non-string element", core.EmbeddingRequest{Input: []interface{}{1}}},
 		{"bad encoding_format", core.EmbeddingRequest{Input: "x", EncodingFormat: "binary"}},

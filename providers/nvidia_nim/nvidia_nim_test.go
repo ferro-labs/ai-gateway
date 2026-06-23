@@ -166,6 +166,9 @@ func TestNVIDIANIMProvider_Embed_MockHTTP(t *testing.T) {
 		if body["input_type"] != "query" {
 			t.Errorf("input_type = %v, want query", body["input_type"])
 		}
+		if _, present := body["truncate"]; present {
+			t.Errorf("truncate present = %v, want field removed from request", body["truncate"])
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"object":"list","data":[{"object":"embedding","embedding":[0.5,0.6],"index":0}],"model":"` + testEmbeddingModel + `","usage":{"prompt_tokens":2,"total_tokens":2}}`))

@@ -163,14 +163,15 @@ func Serve() {
 // discoveryIntervalFromEnv reads the FERRO_MODEL_DISCOVERY_INTERVAL env var and
 // returns the opt-in refresh interval for live model discovery. It is pure: it
 // performs no logging. Returns (0, false) when the var is unset/empty, fails to
-// parse, or resolves to a non-positive duration; otherwise (interval, true).
+// parse, or resolves to a duration below the 1-minute minimum (which guards
+// against a hot-loop of provider API calls); otherwise (interval, true).
 func discoveryIntervalFromEnv() (time.Duration, bool) {
 	raw := strings.TrimSpace(os.Getenv("FERRO_MODEL_DISCOVERY_INTERVAL"))
 	if raw == "" {
 		return 0, false
 	}
 	d, err := time.ParseDuration(raw)
-	if err != nil || d <= 0 {
+	if err != nil || d < time.Minute {
 		return 0, false
 	}
 	return d, true

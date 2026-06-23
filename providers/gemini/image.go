@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -82,7 +83,7 @@ func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*c
 	defer release()
 
 	model := strings.TrimPrefix(req.Model, "models/")
-	url := fmt.Sprintf("%s/v1beta/models/%s:predict?key=%s", p.baseURL, model, p.apiKey)
+	url := fmt.Sprintf("%s/v1beta/models/%s:predict?key=%s", p.baseURL, url.PathEscape(model), p.apiKey)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bodyReader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create image request: %w", err)
@@ -91,7 +92,7 @@ func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*c
 
 	httpResp, err := p.httpClient.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("image request failed: %w", err)
+		return nil, fmt.Errorf("image request failed: %w", sanitizeRequestErr(err))
 	}
 	defer func() { _ = httpResp.Body.Close() }()
 

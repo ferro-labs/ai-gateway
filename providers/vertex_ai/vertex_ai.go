@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"golang.org/x/oauth2"
@@ -198,7 +199,7 @@ func (p *Provider) endpoint() string {
 func (p *Provider) predictionEndpoint(model string) string {
 	baseURL := strings.TrimRight(p.baseURL, "/")
 	baseURL = strings.TrimSuffix(baseURL, "/endpoints/openapi")
-	return fmt.Sprintf("%s/publishers/google/models/%s:predict", baseURL, vertexAIModelID(model))
+	return fmt.Sprintf("%s/publishers/google/models/%s:predict", baseURL, url.PathEscape(vertexAIModelID(model)))
 }
 
 func (p *Provider) authorizeRequest(req *http.Request) error {

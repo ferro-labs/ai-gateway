@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
 	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
@@ -96,7 +97,7 @@ func (p *Provider) endpoint() string {
 // e.g. op "embeddings" or "images/generations".
 func (p *Provider) opEndpoint(deployment, op string) string {
 	return fmt.Sprintf("%s/openai/deployments/%s/%s?api-version=%s",
-		p.baseURL, deployment, op, p.apiVersion)
+		p.baseURL, url.PathEscape(deployment), op, p.apiVersion)
 }
 
 // deploymentFor selects the deployment to target for a request. Azure routes

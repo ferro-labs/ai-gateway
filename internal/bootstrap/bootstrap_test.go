@@ -21,6 +21,9 @@ func TestDiscoveryIntervalFromEnv(t *testing.T) {
 		{name: "zero duration", set: true, value: "0s", wantDur: 0, wantOK: false},
 		{name: "negative", set: true, value: "-5m", wantDur: 0, wantOK: false},
 		{name: "invalid", set: true, value: "invalid", wantDur: 0, wantOK: false},
+		{name: "below minimum seconds", set: true, value: "30s", wantDur: 0, wantOK: false},
+		{name: "below minimum nanos", set: true, value: "1ns", wantDur: 0, wantOK: false},
+		{name: "five minutes", set: true, value: "5m", wantDur: 5 * time.Minute, wantOK: true},
 		{name: "thirty minutes", set: true, value: "30m", wantDur: 30 * time.Minute, wantOK: true},
 		{name: "six hours", set: true, value: "6h", wantDur: 6 * time.Hour, wantOK: true},
 	}

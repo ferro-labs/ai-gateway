@@ -19,8 +19,6 @@ type embeddingRequest struct {
 	// InputType distinguishes embedding intent for NeMo retriever models
 	// (e.g. "query" / "passage"). Required by some models or they return 400.
 	InputType string `json:"input_type,omitempty"`
-	// Truncate controls truncation behaviour ("NONE", "START", "END").
-	Truncate string `json:"truncate,omitempty"`
 }
 
 type embeddingResponse struct {

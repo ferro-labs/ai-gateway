@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
@@ -89,7 +90,7 @@ func TestXAIProvider_GenerateImage_Interface(_ *testing.T) {
 }
 
 func TestXAIProvider_GenerateImage_MockHTTP(t *testing.T) {
-	respBody := `{"data":[{"b64_json":"aGVsbG8=","revised_prompt":"x"}]}`
+	respBody := `{"created":1700000000,"data":[{"b64_json":"aGVsbG8=","revised_prompt":"x"}]}`
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/images/generations" {
@@ -112,6 +113,9 @@ func TestXAIProvider_GenerateImage_MockHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateImage() error: %v", err)
 	}
+	if resp.Created != 1700000000 {
+		t.Errorf("Created = %d, want 1700000000 (from upstream created, not time.Now)", resp.Created)
+	}
 	if len(resp.Data) == 0 {
 		t.Fatal("expected at least one image in response")
 	}
@@ -120,6 +124,32 @@ func TestXAIProvider_GenerateImage_MockHTTP(t *testing.T) {
 	}
 	if resp.Data[0].RevisedPrompt != "x" {
 		t.Errorf("Data[0].RevisedPrompt = %q, want x", resp.Data[0].RevisedPrompt)
+	}
+}
+
+func TestXAIProvider_GenerateImage_CreatedFallback(t *testing.T) {
+	// Upstream omits "created" (decoded value 0); the provider falls back to
+	// the current time so Created is still populated.
+	respBody := `{"data":[{"b64_json":"aGVsbG8="}]}`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(respBody))
+	}))
+	defer srv.Close()
+
+	before := time.Now().Unix()
+	p, _ := New("test-key", srv.URL)
+	resp, err := p.GenerateImage(context.Background(), core.ImageRequest{
+		Model:  "grok-2-image",
+		Prompt: "a red apple",
+	})
+	if err != nil {
+		t.Fatalf("GenerateImage() error: %v", err)
+	}
+	if resp.Created < before {
+		t.Errorf("Created = %d, want >= %d (time.Now fallback)", resp.Created, before)
 	}
 }
 

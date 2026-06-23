@@ -43,6 +43,7 @@ type bedrockImageStabilityRequest struct {
 	CfgScale    *float64                      `json:"cfg_scale,omitempty"`
 	Seed        *int                          `json:"seed,omitempty"`
 	Steps       *int                          `json:"steps,omitempty"`
+	Samples     *int                          `json:"samples,omitempty"`
 }
 
 type bedrockImageStabilityPrompt struct {
@@ -63,7 +64,7 @@ func isBedrockImageModel(model string) bool {
 	for _, prefix := range []string{
 		"amazon.nova-canvas",
 		"amazon.titan-image-",
-		"stability.",
+		"stability.stable-diffusion-xl",
 	} {
 		if strings.HasPrefix(model, prefix) {
 			return true
@@ -125,6 +126,9 @@ func (p *Provider) generateImageStability(ctx context.Context, req core.ImageReq
 	body := bedrockImageStabilityRequest{
 		TextPrompts: []bedrockImageStabilityPrompt{{Text: req.Prompt}},
 	}
+	if req.N != nil {
+		body.Samples = req.N
+	}
 
 	var resp bedrockImageStabilityResponse
 	if err := p.invokeModelJSON(ctx, req.Model, body, &resp); err != nil {
@@ -133,8 +137,10 @@ func (p *Provider) generateImageStability(ctx context.Context, req core.ImageReq
 
 	images := make([]string, 0, len(resp.Artifacts))
 	for _, artifact := range resp.Artifacts {
+		// Skip filtered/errored artifacts rather than aborting the whole batch;
+		// only the good artifacts are collected and returned.
 		if artifact.FinishReason == "CONTENT_FILTERED" || artifact.FinishReason == "ERROR" {
-			return nil, fmt.Errorf("bedrock image generation failed: finish reason %s", artifact.FinishReason)
+			continue
 		}
 		images = append(images, artifact.Base64)
 	}
