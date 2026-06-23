@@ -9,6 +9,8 @@ package http_test
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"net/http/httptest"
 	"os"
 	"testing"
@@ -26,6 +28,7 @@ const (
 	stubModelName  = "stub-model-v1"
 	stubModelName2 = "stub-model-v2"
 	stubEmbedModel = "stub-embed-v1"
+	stubImageModel = "stub-image-v1"
 )
 
 // testEnv holds a fully wired test server and its dependencies.
@@ -54,7 +57,7 @@ func newTestServer(t *testing.T, opts ...testOption) *testEnv {
 	// Ensure ALLOW_UNAUTHENTICATED_PROXY is not set so auth middleware is active.
 	t.Setenv("ALLOW_UNAUTHENTICATED_PROXY", "false")
 
-	stub := newStubProvider("stub", []string{stubModelName, stubModelName2, stubEmbedModel})
+	stub := newStubProvider("stub", []string{stubModelName, stubModelName2, stubEmbedModel, stubImageModel})
 
 	registry := providers.NewRegistry()
 	registry.Register(stub)
@@ -108,6 +111,29 @@ func withCORSOrigins(origins ...string) testOption {
 
 func withRateLimit(rps, burst float64) testOption {
 	return func(c *testConfig) { c.rlStore = ratelimit.NewStore(rps, burst) }
+}
+
+// assertOpenAIError decodes an OpenAI-style error envelope and asserts its
+// type and code fields, so error-mapping regressions (e.g. capability-miss
+// returning 500 instead of 404/model_not_found) are caught at the HTTP layer.
+func assertOpenAIError(t *testing.T, body io.Reader, wantType, wantCode string) {
+	t.Helper()
+	var env struct {
+		Error struct {
+			Message string `json:"message"`
+			Type    string `json:"type"`
+			Code    string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(body).Decode(&env); err != nil {
+		t.Fatalf("decode error envelope: %v", err)
+	}
+	if env.Error.Type != wantType {
+		t.Errorf("error.type = %q, want %q", env.Error.Type, wantType)
+	}
+	if env.Error.Code != wantCode {
+		t.Errorf("error.code = %q, want %q", env.Error.Code, wantCode)
+	}
 }
 
 // noopReader satisfies requestlog.Reader without a database.
