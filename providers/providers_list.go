@@ -21,6 +21,7 @@ import (
 	huggingfacepkg "github.com/ferro-labs/ai-gateway/providers/hugging_face"
 	mistralpkg "github.com/ferro-labs/ai-gateway/providers/mistral"
 	moonshotpkg "github.com/ferro-labs/ai-gateway/providers/moonshot"
+	nanogptpkg "github.com/ferro-labs/ai-gateway/providers/nanogpt"
 	novitapkg "github.com/ferro-labs/ai-gateway/providers/novita"
 	nvidianimpkg "github.com/ferro-labs/ai-gateway/providers/nvidia_nim"
 	ollamapkg "github.com/ferro-labs/ai-gateway/providers/ollama"
@@ -34,6 +35,7 @@ import (
 	togetherpkg "github.com/ferro-labs/ai-gateway/providers/together"
 	vertexaipkg "github.com/ferro-labs/ai-gateway/providers/vertex_ai"
 	xaipkg "github.com/ferro-labs/ai-gateway/providers/xai"
+	zaipkg "github.com/ferro-labs/ai-gateway/providers/zai"
 )
 
 // allProviders is the canonical ordered registry of all built-in providers.
@@ -259,6 +261,17 @@ var allProviders = []ProviderEntry{
 		},
 	},
 	{
+		ID:           NameNanoGPT,
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityDiscovery, CapabilityProxy},
+		EnvMappings: []EnvMapping{
+			{CfgKeyAPIKey, "NANOGPT_API_KEY", true},
+			{CfgKeyBaseURL, "NANOGPT_BASE_URL", false},
+		},
+		Build: func(cfg ProviderConfig) (Provider, error) {
+			return nanogptpkg.New(cfg[CfgKeyAPIKey], cfg[CfgKeyBaseURL])
+		},
+	},
+	{
 		ID:           NameNovita,
 		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityDiscovery, CapabilityProxy},
 		EnvMappings: []EnvMapping{
@@ -435,6 +448,17 @@ var allProviders = []ProviderEntry{
 		},
 		Build: func(cfg ProviderConfig) (Provider, error) {
 			return xaipkg.New(cfg[CfgKeyAPIKey], cfg[CfgKeyBaseURL])
+		},
+	},
+	{
+		ID:           NameZAI,
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityDiscovery, CapabilityProxy},
+		EnvMappings: []EnvMapping{
+			{CfgKeyAPIKey, "ZAI_API_KEY", true},
+			{CfgKeyBaseURL, "ZAI_BASE_URL", false},
+		},
+		Build: func(cfg ProviderConfig) (Provider, error) {
+			return zaipkg.New(cfg[CfgKeyAPIKey], cfg[CfgKeyBaseURL])
 		},
 	},
 }
