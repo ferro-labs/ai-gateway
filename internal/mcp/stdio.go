@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 
 	mcpclient "github.com/mark3labs/mcp-go/client"
+	"github.com/mark3labs/mcp-go/client/transport"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/ferro-labs/ai-gateway/internal/version"
@@ -21,24 +23,38 @@ type stdioClient struct {
 
 // newStdioClient creates a stdio MCP client by launching command with args.
 // The subprocess receives a minimal base environment (PATH, HOME, LANG, TMPDIR)
-// plus any KEY=VALUE pairs from envOverrides, so that gateway credentials
-// (OPENAI_API_KEY, MASTER_KEY, etc.) are never inherited by child processes.
+// plus any KEY=VALUE pairs from envOverrides. We use a custom CommandFunc so
+// that gateway credentials (OPENAI_API_KEY, MASTER_KEY, etc.) are never
+// inherited: the default mark3labs transport unconditionally prepends
+// os.Environ() to whatever env slice is passed, so the only way to fully
+// replace the environment is to supply a CommandFunc that sets cmd.Env
+// directly without calling os.Environ().
 // Returns an errClient instead of an error so that the Registry API (which has
 // no error return) can defer the failure to InitializeAll, where it will be
 // logged by the normal error path.
 func newStdioClient(command string, args []string, envOverrides map[string]string) mcpClient {
 	// Build a minimal base env — safe inherited variables only.
-	var merged []string
+	var env []string
 	for _, key := range []string{"PATH", "HOME", "LANG", "TMPDIR"} {
 		if val := os.Getenv(key); val != "" {
-			merged = append(merged, key+"="+val)
+			env = append(env, key+"="+val)
 		}
 	}
 	for k, v := range envOverrides {
-		merged = append(merged, k+"="+v)
+		env = append(env, k+"="+v)
 	}
 
-	c, err := mcpclient.NewStdioMCPClient(command, merged, args...)
+	// Capture env for the closure so the CommandFunc does not need to call
+	// os.Environ(). The library passes c.env to cmdFunc, but we ignore that
+	// parameter and use our already-built slice to keep the logic self-contained.
+	isolatedEnv := env
+	cmdFunc := transport.CommandFunc(func(_ context.Context, command string, _ []string, args []string) (*exec.Cmd, error) {
+		cmd := exec.Command(command, args...) //nolint:gosec // command comes from gateway config, not user input
+		cmd.Env = isolatedEnv
+		return cmd, nil
+	})
+
+	c, err := mcpclient.NewStdioMCPClientWithOptions(command, nil, args, transport.WithCommandFunc(cmdFunc))
 	if err != nil {
 		return &errClient{err: fmt.Errorf("mcp stdio: start %q: %w", command, err)}
 	}
