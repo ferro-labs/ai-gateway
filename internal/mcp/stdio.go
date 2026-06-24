@@ -20,12 +20,20 @@ type stdioClient struct {
 }
 
 // newStdioClient creates a stdio MCP client by launching command with args.
-// Additional env pairs from envOverrides (KEY → VALUE) are merged on top of the
-// current process environment. Returns an errClient instead of an error so that
-// the Registry API (which has no error return) can defer the failure to
-// InitializeAll, where it will be logged by the normal error path.
+// The subprocess receives a minimal base environment (PATH, HOME, LANG, TMPDIR)
+// plus any KEY=VALUE pairs from envOverrides, so that gateway credentials
+// (OPENAI_API_KEY, MASTER_KEY, etc.) are never inherited by child processes.
+// Returns an errClient instead of an error so that the Registry API (which has
+// no error return) can defer the failure to InitializeAll, where it will be
+// logged by the normal error path.
 func newStdioClient(command string, args []string, envOverrides map[string]string) mcpClient {
-	merged := os.Environ()
+	// Build a minimal base env — safe inherited variables only.
+	var merged []string
+	for _, key := range []string{"PATH", "HOME", "LANG", "TMPDIR"} {
+		if val := os.Getenv(key); val != "" {
+			merged = append(merged, key+"="+val)
+		}
+	}
 	for k, v := range envOverrides {
 		merged = append(merged, k+"="+v)
 	}

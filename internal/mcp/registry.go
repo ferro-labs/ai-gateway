@@ -316,3 +316,15 @@ func (r *Registry) serverNameForTool(toolName string) string {
 	defer r.mu.RUnlock()
 	return r.toolMap[toolName]
 }
+
+// timeoutForServer returns the configured per-call timeout for the named server.
+// Falls back to 30 s when the server is not found or TimeoutSeconds is unset.
+func (r *Registry) timeoutForServer(name string) time.Duration {
+	r.mu.RLock()
+	entry, ok := r.servers[name]
+	r.mu.RUnlock()
+	if ok && entry.config.TimeoutSeconds > 0 {
+		return time.Duration(entry.config.TimeoutSeconds) * time.Second
+	}
+	return 30 * time.Second
+}

@@ -48,8 +48,9 @@ type ServerConfig struct {
 	// servers with MaxCallDepth ≤ 0 are excluded from the minimum.
 	// Defaults to 5 when all servers leave MaxCallDepth unset or zero.
 	MaxCallDepth int `json:"max_call_depth,omitempty" yaml:"max_call_depth,omitempty"`
-	// TimeoutSeconds is the per-request timeout for calls to this server.
-	// Applies to HTTP transport only. Defaults to 30 when unset or zero.
+	// TimeoutSeconds is the per-request timeout for individual tool calls to
+	// this server. Applies to both HTTP and stdio transports. Defaults to 30
+	// when unset or zero.
 	TimeoutSeconds int `json:"timeout_seconds,omitempty" yaml:"timeout_seconds,omitempty"`
 }
 

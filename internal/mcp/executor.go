@@ -176,12 +176,17 @@ func (e *Executor) ResolvePendingToolCalls(ctx context.Context, resp *core.Respo
 				),
 			)
 
+			// Guard against hung subprocesses (stdio) or slow servers (HTTP).
+			callTimeout := e.registry.timeoutForServer(serverName)
+			toolCtx, cancelCall := context.WithTimeout(toolCtx, callTimeout)
+
 			callStart := time.Now()
 			var result *ToolCallResult
 			var err error
 			rtrace.WithRegion(toolCtx, "mcp.call_tool", func() {
 				result, err = client.CallTool(toolCtx, toolName, args)
 			})
+			cancelCall()
 			elapsed := time.Since(callStart)
 			metricToolCallDuration.WithLabelValues(serverName, toolName).Observe(elapsed.Seconds())
 			latencyMs := int(elapsed.Milliseconds())
