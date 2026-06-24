@@ -526,9 +526,9 @@ func (g *Gateway) Close() error {
 		case <-done:
 		case <-time.After(5 * time.Second):
 		}
+		if g.mcpRegistry != nil {
+			_ = g.mcpRegistry.Close()
+		}
 	})
-	if g.mcpRegistry != nil {
-		_ = g.mcpRegistry.Close()
-	}
 	return nil
 }
