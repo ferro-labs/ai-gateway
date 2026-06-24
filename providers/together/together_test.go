@@ -17,6 +17,41 @@ import (
 
 const testEmbeddingModel = "BAAI/bge-base-en-v1.5"
 
+func TestTogetherProvider_DiscoverModels(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("method = %q, want GET", r.Method)
+		}
+		if r.URL.Path != "/v1/models" {
+			t.Errorf("path = %q, want /v1/models", r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer test-key" {
+			t.Errorf("Authorization = %q, want Bearer test-key", r.Header.Get("Authorization"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		// Together AI returns a BARE JSON ARRAY whose items omit owned_by.
+		// This is a regression guard for the dual-shape parser + fallback.
+		_, _ = w.Write([]byte(`[{"id":"meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo","object":"model","created":1700000000},{"id":"Qwen/Qwen2.5-72B-Instruct-Turbo","object":"model"}]`))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	models, err := p.DiscoverModels(context.Background())
+	if err != nil {
+		t.Fatalf("DiscoverModels() error: %v", err)
+	}
+	if len(models) != 2 {
+		t.Fatalf("expected 2 models, got %d", len(models))
+	}
+	if models[0].ID != "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo" || models[0].OwnedBy != "together" {
+		t.Errorf("unexpected model[0] (bare-array fallback): %+v", models[0])
+	}
+	if models[1].ID != "Qwen/Qwen2.5-72B-Instruct-Turbo" || models[1].OwnedBy != "together" {
+		t.Errorf("unexpected model[1] (bare-array fallback): %+v", models[1])
+	}
+}
+
 func TestNewTogether(t *testing.T) {
 	p, err := New("test-key", "")
 	if err != nil {

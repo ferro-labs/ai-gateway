@@ -2,7 +2,6 @@
 package ai21
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -11,6 +10,7 @@ import (
 	"strings"
 
 	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
+	"github.com/ferro-labs/ai-gateway/internal/openaicompat"
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
@@ -88,14 +88,6 @@ func IsJambaModel(model string) bool {
 
 // ── Jamba models (OpenAI-compatible) ─────────────────────────────────────────
 
-type ai21ChatRequest struct {
-	Model       string         `json:"model"`
-	Messages    []core.Message `json:"messages"`
-	Temperature *float64       `json:"temperature,omitempty"`
-	MaxTokens   *int           `json:"max_tokens,omitempty"`
-	Stream      bool           `json:"stream,omitempty"`
-}
-
 type ai21ChatResponse struct {
 	ID      string        `json:"id"`
 	Model   string        `json:"model"`
@@ -144,14 +136,7 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 }
 
 func (p *Provider) completeJamba(ctx context.Context, req core.Request) (*core.Response, error) {
-	chatReq := ai21ChatRequest{
-		Model:       req.Model,
-		Messages:    req.Messages,
-		Temperature: req.Temperature,
-		MaxTokens:   req.MaxTokens,
-	}
-
-	bodyReader, _, release, err := core.JSONBodyReader(chatReq)
+	bodyReader, _, release, err := openaicompat.BuildBody(req, false)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
@@ -204,6 +189,9 @@ func (p *Provider) completeJurassic(ctx context.Context, req core.Request) (*cor
 			prompt = msg.Content
 		}
 	}
+
+	core.WarnUnsupportedParams(ctx, p.Name(), req.Model, req,
+		"max_tokens", "temperature", "top_p", "stop")
 
 	completeReq := ai21CompleteRequest{
 		Prompt:        prompt,
@@ -271,19 +259,6 @@ func (p *Provider) completeJurassic(ctx context.Context, req core.Request) (*cor
 	}, nil
 }
 
-type ai21StreamResponse struct {
-	ID      string `json:"id"`
-	Model   string `json:"model"`
-	Choices []struct {
-		Index int `json:"index"`
-		Delta struct {
-			Role    string `json:"role,omitempty"`
-			Content string `json:"content,omitempty"`
-		} `json:"delta"`
-		FinishReason string `json:"finish_reason,omitempty"`
-	} `json:"choices"`
-}
-
 // CompleteStream sends a streaming chat completion request to AI21.
 // Only Jamba models support streaming via the OpenAI-compatible endpoint.
 func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan core.StreamChunk, error) {
@@ -291,15 +266,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 		return nil, fmt.Errorf("streaming is only supported for Jamba models; use a jamba-* model for streaming")
 	}
 
-	chatReq := ai21ChatRequest{
-		Model:       req.Model,
-		Messages:    req.Messages,
-		Temperature: req.Temperature,
-		MaxTokens:   req.MaxTokens,
-		Stream:      true,
-	}
-
-	bodyReader, _, release, err := core.JSONBodyReader(chatReq)
+	bodyReader, _, release, err := openaicompat.BuildBody(req, true)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
@@ -327,44 +294,5 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 		return nil, fmt.Errorf("ai21 API error (%d): %s", httpResp.StatusCode, string(respBody))
 	}
 
-	ch := make(chan core.StreamChunk)
-	go func() {
-		defer close(ch)
-		defer func() { _ = httpResp.Body.Close() }()
-
-		scanner := bufio.NewScanner(httpResp.Body)
-		for scanner.Scan() {
-			line := scanner.Text()
-			if !strings.HasPrefix(line, "data: ") {
-				continue
-			}
-			data := strings.TrimPrefix(line, "data: ")
-			if data == core.SSEDone {
-				return
-			}
-
-			var chunk ai21StreamResponse
-			if json.Unmarshal([]byte(data), &chunk) != nil {
-				continue
-			}
-
-			sc := core.StreamChunk{ID: chunk.ID, Model: chunk.Model}
-			for _, c := range chunk.Choices {
-				sc.Choices = append(sc.Choices, core.StreamChoice{
-					Index: c.Index,
-					Delta: core.MessageDelta{
-						Role:    c.Delta.Role,
-						Content: c.Delta.Content,
-					},
-					FinishReason: c.FinishReason,
-				})
-			}
-			ch <- sc
-		}
-		if err := scanner.Err(); err != nil {
-			ch <- core.StreamChunk{Error: err}
-		}
-	}()
-
-	return ch, nil
+	return openaicompat.StreamSSE(httpResp.Body), nil
 }

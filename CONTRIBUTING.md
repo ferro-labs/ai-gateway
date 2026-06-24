@@ -44,7 +44,7 @@ git push origin release/v1.0.0
 2. Add `const Name = "<id>"` and re-export in `providers/names.go`
 3. Add a `ProviderEntry` to `providers/providers_list.go`
 4. Add `providers/<id>/<id>_test.go` — run `go test ./providers/...`
-5. Add models to `models/catalog.json`
+5. Add or update model metadata in `ferro-labs/model-catalog`
 6. Update the provider table in README.md
 7. Add a `{ "virtual_key": "<id>" }` entry to `config.example.json` and a `- virtual_key: <id>` line to `config.example.yaml`
 8. Add the provider's env var(s) (commented out) to `docker-compose.yml`

@@ -2,18 +2,19 @@
 package vertexai
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 
 	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
+	"github.com/ferro-labs/ai-gateway/internal/openaicompat"
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
@@ -42,6 +43,7 @@ var (
 	_ core.Provider          = (*Provider)(nil)
 	_ core.StreamProvider    = (*Provider)(nil)
 	_ core.EmbeddingProvider = (*Provider)(nil)
+	_ core.ImageProvider     = (*Provider)(nil)
 	_ core.ProxiableProvider = (*Provider)(nil)
 )
 
@@ -118,29 +120,26 @@ func (p *Provider) SupportedModels() []string {
 		"text-multilingual-embedding-002",
 		"textembedding-gecko@003",
 		"textembedding-gecko-multilingual@001",
+		"imagen-4.0-generate-001",
+		"imagen-4.0-ultra-generate-001",
+		"imagen-4.0-fast-generate-001",
+		"imagen-3.0-generate-002",
 	}
 }
 
-// SupportsModel returns true for known Vertex AI chat and text embedding model families.
+// SupportsModel returns true for known Vertex AI chat, text embedding, and image model families.
 func (p *Provider) SupportsModel(model string) bool {
 	model = vertexAIModelID(model)
 	return strings.HasPrefix(model, "gemini-") ||
 		strings.HasPrefix(model, "text-embedding-") ||
 		strings.HasPrefix(model, "textembedding-gecko") ||
-		strings.HasPrefix(model, "text-multilingual-embedding-")
+		strings.HasPrefix(model, "text-multilingual-embedding-") ||
+		strings.HasPrefix(model, "imagen-")
 }
 
 // Models returns structured model metadata.
 func (p *Provider) Models() []core.ModelInfo {
 	return core.ModelsFromList(p.name, p.SupportedModels())
-}
-
-type vertexAIRequest struct {
-	Model       string         `json:"model"`
-	Messages    []core.Message `json:"messages"`
-	Temperature *float64       `json:"temperature,omitempty"`
-	MaxTokens   *int           `json:"max_tokens,omitempty"`
-	Stream      bool           `json:"stream,omitempty"`
 }
 
 type vertexAIResponse struct {
@@ -200,7 +199,7 @@ func (p *Provider) endpoint() string {
 func (p *Provider) predictionEndpoint(model string) string {
 	baseURL := strings.TrimRight(p.baseURL, "/")
 	baseURL = strings.TrimSuffix(baseURL, "/endpoints/openapi")
-	return fmt.Sprintf("%s/publishers/google/models/%s:predict", baseURL, vertexAIModelID(model))
+	return fmt.Sprintf("%s/publishers/google/models/%s:predict", baseURL, url.PathEscape(vertexAIModelID(model)))
 }
 
 func (p *Provider) authorizeRequest(req *http.Request) error {
@@ -219,7 +218,7 @@ func (p *Provider) authorizeRequest(req *http.Request) error {
 	return nil
 }
 
-func vertexAIEmbeddingInputs(input interface{}) ([]string, error) {
+func vertexAIEmbeddingInputs(input any) ([]string, error) {
 	switch v := input.(type) {
 	case string:
 		return []string{v}, nil
@@ -228,7 +227,7 @@ func vertexAIEmbeddingInputs(input interface{}) ([]string, error) {
 			return nil, fmt.Errorf("embed: Input must not be an empty array")
 		}
 		return v, nil
-	case []interface{}:
+	case []any:
 		if len(v) == 0 {
 			return nil, fmt.Errorf("embed: Input must not be an empty array")
 		}
@@ -371,14 +370,7 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 
 // Complete sends a chat completion request to Vertex AI.
 func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
-	vertexReq := vertexAIRequest{
-		Model:       req.Model,
-		Messages:    req.Messages,
-		Temperature: req.Temperature,
-		MaxTokens:   req.MaxTokens,
-	}
-
-	bodyReader, _, release, err := core.JSONBodyReader(vertexReq)
+	bodyReader, _, release, err := openaicompat.BuildBody(req, false)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
@@ -426,30 +418,9 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 	}, nil
 }
 
-type vertexAIStreamResponse struct {
-	ID      string `json:"id"`
-	Model   string `json:"model"`
-	Choices []struct {
-		Index int `json:"index"`
-		Delta struct {
-			Role    string `json:"role,omitempty"`
-			Content string `json:"content,omitempty"`
-		} `json:"delta"`
-		FinishReason string `json:"finish_reason,omitempty"`
-	} `json:"choices"`
-}
-
 // CompleteStream sends a streaming chat completion request to Vertex AI.
 func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan core.StreamChunk, error) {
-	vertexReq := vertexAIRequest{
-		Model:       req.Model,
-		Messages:    req.Messages,
-		Temperature: req.Temperature,
-		MaxTokens:   req.MaxTokens,
-		Stream:      true,
-	}
-
-	bodyReader, _, release, err := core.JSONBodyReader(vertexReq)
+	bodyReader, _, release, err := openaicompat.BuildBody(req, true)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
@@ -479,44 +450,5 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 		return nil, fmt.Errorf("vertex ai API error (%d): %s", httpResp.StatusCode, string(respBody))
 	}
 
-	ch := make(chan core.StreamChunk)
-	go func() {
-		defer close(ch)
-		defer func() { _ = httpResp.Body.Close() }()
-
-		scanner := bufio.NewScanner(httpResp.Body)
-		for scanner.Scan() {
-			line := scanner.Text()
-			if !strings.HasPrefix(line, "data: ") {
-				continue
-			}
-			data := strings.TrimPrefix(line, "data: ")
-			if data == core.SSEDone {
-				return
-			}
-
-			var chunk vertexAIStreamResponse
-			if json.Unmarshal([]byte(data), &chunk) != nil {
-				continue
-			}
-
-			sc := core.StreamChunk{ID: chunk.ID, Model: chunk.Model}
-			for _, c := range chunk.Choices {
-				sc.Choices = append(sc.Choices, core.StreamChoice{
-					Index: c.Index,
-					Delta: core.MessageDelta{
-						Role:    c.Delta.Role,
-						Content: c.Delta.Content,
-					},
-					FinishReason: c.FinishReason,
-				})
-			}
-			ch <- sc
-		}
-		if err := scanner.Err(); err != nil {
-			ch <- core.StreamChunk{Error: err}
-		}
-	}()
-
-	return ch, nil
+	return openaicompat.StreamSSE(httpResp.Body), nil
 }

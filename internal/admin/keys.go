@@ -38,6 +38,28 @@ func NewKeyStore() *KeyStore {
 	}
 }
 
+func cloneAPIKey(k *APIKey) *APIKey {
+	if k == nil {
+		return nil
+	}
+
+	cp := *k
+	cp.Scopes = append([]string(nil), k.Scopes...)
+	cp.RevokedAt = cloneTime(k.RevokedAt)
+	cp.ExpiresAt = cloneTime(k.ExpiresAt)
+	cp.RotatedAt = cloneTime(k.RotatedAt)
+	cp.LastUsedAt = cloneTime(k.LastUsedAt)
+	return &cp
+}
+
+func cloneTime(t *time.Time) *time.Time {
+	if t == nil {
+		return nil
+	}
+	cp := *t
+	return &cp
+}
+
 // Create generates a new API key with the given name, scopes, and optional expiration.
 func (s *KeyStore) Create(name string, scopes []string, expiresAt *time.Time) (*APIKey, error) {
 	keyBytes := make([]byte, 32)
@@ -61,9 +83,9 @@ func (s *KeyStore) Create(name string, scopes []string, expiresAt *time.Time) (*
 		ID:         id,
 		Key:        key,
 		Name:       name,
-		Scopes:     scopes,
+		Scopes:     append([]string(nil), scopes...),
 		CreatedAt:  time.Now(),
-		ExpiresAt:  expiresAt,
+		ExpiresAt:  cloneTime(expiresAt),
 		UsageCount: 0,
 		Active:     true,
 	}
@@ -72,7 +94,7 @@ func (s *KeyStore) Create(name string, scopes []string, expiresAt *time.Time) (*
 	defer s.mu.Unlock()
 	s.byID[id] = apiKey
 	s.byKey[key] = id
-	return apiKey, nil
+	return cloneAPIKey(apiKey), nil
 }
 
 // Get retrieves an API key by ID.
@@ -80,7 +102,10 @@ func (s *KeyStore) Get(id string) (*APIKey, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	k, ok := s.byID[id]
-	return k, ok
+	if !ok {
+		return nil, false
+	}
+	return cloneAPIKey(k), true
 }
 
 // List returns all keys with the Key field masked.
@@ -89,11 +114,11 @@ func (s *KeyStore) List() []*APIKey {
 	defer s.mu.RUnlock()
 	keys := make([]*APIKey, 0, len(s.byID))
 	for _, k := range s.byID {
-		masked := *k
+		masked := cloneAPIKey(k)
 		if len(masked.Key) > 8 {
 			masked.Key = masked.Key[:8] + "..."
 		}
-		keys = append(keys, &masked)
+		keys = append(keys, masked)
 	}
 	return keys
 }
@@ -124,13 +149,13 @@ func (s *KeyStore) Update(id string, name string, scopes []string) (*APIKey, err
 		k.Name = name
 	}
 	if len(scopes) > 0 {
-		k.Scopes = scopes
+		k.Scopes = append([]string(nil), scopes...)
 	}
-	masked := *k
+	masked := cloneAPIKey(k)
 	if len(masked.Key) > 8 {
 		masked.Key = masked.Key[:8] + "..."
 	}
-	return &masked, nil
+	return masked, nil
 }
 
 // SetExpiration updates the expiration time for an API key.
@@ -186,7 +211,7 @@ func (s *KeyStore) RotateKey(id string) (*APIKey, error) {
 	now := time.Now()
 	k.RotatedAt = &now
 
-	return k, nil
+	return cloneAPIKey(k), nil
 }
 
 // ValidateKey looks up a key by its full string and returns it if active.
@@ -208,5 +233,5 @@ func (s *KeyStore) ValidateKey(key string) (*APIKey, bool) {
 	lastUsedAt := now
 	k.LastUsedAt = &lastUsedAt
 	k.UsageCount++
-	return k, true
+	return cloneAPIKey(k), true
 }

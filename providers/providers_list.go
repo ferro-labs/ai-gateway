@@ -53,7 +53,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameAnthropic,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityDiscovery, CapabilityProxy},
 		EnvMappings: []EnvMapping{
 			{CfgKeyAPIKey, "ANTHROPIC_API_KEY", true},
 			{CfgKeyBaseURL, "ANTHROPIC_BASE_URL", false},
@@ -79,7 +79,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameAzureOpenAI,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityImage, CapabilityProxy},
 		EnvMappings: []EnvMapping{
 			{CfgKeyAPIKey, "AZURE_OPENAI_API_KEY", true},
 			{CfgKeyBaseURL, "AZURE_OPENAI_ENDPOINT", true},
@@ -98,7 +98,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameBedrock,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityImage, CapabilityProxy},
 		// All Bedrock env mappings are optional because the provider can be
 		// configured in two different ways:
 		//   1. Instance-role / credential-chain auth: only AWS_REGION is set.
@@ -172,7 +172,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameDeepInfra,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityProxy},
 		EnvMappings: []EnvMapping{
 			{CfgKeyAPIKey, "DEEPINFRA_API_KEY", true},
 			{CfgKeyBaseURL, "DEEPINFRA_BASE_URL", false},
@@ -205,7 +205,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameGemini,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityImage, CapabilityProxy},
 		EnvMappings: []EnvMapping{
 			{CfgKeyAPIKey, "GEMINI_API_KEY", true},
 			{CfgKeyBaseURL, "GEMINI_BASE_URL", false},
@@ -216,7 +216,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameGroq,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityDiscovery, CapabilityProxy},
 		EnvMappings: []EnvMapping{
 			{CfgKeyAPIKey, "GROQ_API_KEY", true},
 			{CfgKeyBaseURL, "GROQ_BASE_URL", false},
@@ -238,7 +238,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameMistral,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityDiscovery, CapabilityProxy},
 		EnvMappings: []EnvMapping{
 			{CfgKeyAPIKey, "MISTRAL_API_KEY", true},
 			{CfgKeyBaseURL, "MISTRAL_BASE_URL", false},
@@ -271,7 +271,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameNVIDIANIM,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityProxy},
 		EnvMappings: []EnvMapping{
 			{CfgKeyAPIKey, "NVIDIA_NIM_API_KEY", true},
 			{CfgKeyBaseURL, "NVIDIA_NIM_BASE_URL", false},
@@ -282,7 +282,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameOllama,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityProxy},
 		// Ollama has no API key; CfgKeyHost acts as the "configured?" gate.
 		EnvMappings: []EnvMapping{
 			{CfgKeyHost, "OLLAMA_HOST", true},
@@ -347,7 +347,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameQwen,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityProxy},
 		EnvMappings: []EnvMapping{
 			{CfgKeyAPIKey, "QWEN_API_KEY", true},
 			{CfgKeyBaseURL, "QWEN_BASE_URL", false},
@@ -358,7 +358,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameReplicate,
-		Capabilities: []string{CapabilityChat, CapabilityImage, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityImage, CapabilityProxy},
 		// Replicate uses api_token (not api_key) as its primary key.
 		EnvMappings: []EnvMapping{
 			{CfgKeyAPIToken, "REPLICATE_API_TOKEN", true},
@@ -390,7 +390,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameTogether,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityDiscovery, CapabilityProxy},
 		EnvMappings: []EnvMapping{
 			{CfgKeyAPIKey, "TOGETHER_API_KEY", true},
 			{CfgKeyBaseURL, "TOGETHER_BASE_URL", false},
@@ -401,7 +401,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameVertexAI,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityImage, CapabilityProxy},
 		// project_id is the gate: if unset, skip silently.
 		// region plus one of api_key / service_account_json are required once
 		// project_id is present.
@@ -428,7 +428,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameXAI,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityDiscovery, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityDiscovery, CapabilityImage, CapabilityProxy},
 		EnvMappings: []EnvMapping{
 			{CfgKeyAPIKey, "XAI_API_KEY", true},
 			{CfgKeyBaseURL, "XAI_BASE_URL", false},

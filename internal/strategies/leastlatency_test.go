@@ -62,6 +62,39 @@ func TestLeastLatency_SkipsUnsupportedModel(t *testing.T) {
 	}
 }
 
+func TestLeastLatency_UnresolvableUnseenTargetReturnsError(t *testing.T) {
+	mp := &mockProvider{name: "p1", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "ok"}}
+
+	tr := latency.New(10)
+	s := NewLeastLatency(
+		[]Target{{VirtualKey: "p1"}},
+		lookupMissingAfterFirstHit(mp),
+		tr,
+	)
+
+	_, err := s.Execute(context.Background(), providers.Request{Model: "gpt-4o"})
+	if err == nil {
+		t.Fatal("expected error when selected unseen provider is no longer resolvable")
+	}
+}
+
+func TestLeastLatency_UnresolvableSampledTargetReturnsError(t *testing.T) {
+	mp := &mockProvider{name: "p1", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "ok"}}
+
+	tr := latency.New(10)
+	tr.Record("p1", 20*time.Millisecond)
+	s := NewLeastLatency(
+		[]Target{{VirtualKey: "p1"}},
+		lookupMissingAfterFirstHit(mp),
+		tr,
+	)
+
+	_, err := s.Execute(context.Background(), providers.Request{Model: "gpt-4o"})
+	if err == nil {
+		t.Fatal("expected error when selected sampled provider is no longer resolvable")
+	}
+}
+
 func TestLeastLatency_NoTargets(t *testing.T) {
 	tr := latency.New(10)
 	s := NewLeastLatency(nil, newLookup(), tr)

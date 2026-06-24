@@ -20,6 +20,7 @@ import (
 	"regexp"
 	"runtime"
 	"runtime/trace"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -44,25 +45,30 @@ import (
 // EventHookFunc is called asynchronously after a gateway event (request
 // completed or failed). It replaces the old EventPublisher interface with a
 // simpler function-based hook pattern.
-type EventHookFunc func(ctx context.Context, subject string, data map[string]interface{})
+type EventHookFunc func(ctx context.Context, subject string, data map[string]any)
 
 // Gateway is the main entry point for routing LLM requests.
 type Gateway struct {
-	mu               sync.RWMutex
-	config           Config
-	catalog          models.Catalog
-	providers        map[string]providers.Provider
-	providerNames    []string
-	strategy         strategies.Strategy
-	plugins          *plugin.Manager
-	closeOnce        sync.Once
-	hooks            []EventHookFunc
-	hookSnapshot     atomic.Value
-	hookDispatchQ    chan hookDispatch
-	circuitBreakers  map[string]*circuitbreaker.CircuitBreaker
-	discoveredModels map[string][]providers.ModelInfo
-	latencyTracker   *latency.Tracker
-	modelIndex       modelLookupIndex
+	mu                 sync.RWMutex
+	config             Config
+	catalog            models.Catalog
+	providers          map[string]providers.Provider
+	providerNames      []string
+	strategy           strategies.Strategy
+	streamingContent   []streamingContentCondition
+	plugins            *plugin.Manager
+	closeOnce          sync.Once
+	hooks              []EventHookFunc
+	hookSnapshot       atomic.Value
+	hookDispatchQ      chan hookDispatch
+	hookWorkersDone    sync.WaitGroup
+	catalogRefreshDone sync.WaitGroup
+	shutdownCtx        context.Context
+	shutdownCancel     context.CancelFunc
+	circuitBreakers    map[string]*circuitbreaker.CircuitBreaker
+	discoveredModels   map[string][]providers.ModelInfo
+	latencyTracker     *latency.Tracker
+	modelIndex         modelLookupIndex
 
 	// obs is the observability provider used to emit per-request spans.
 	// Defaults to observability.NoOp() when SetObservability has not
@@ -90,26 +96,43 @@ type modelLookupIndex struct {
 	exactImageProviders  map[string][]string
 }
 
+type streamingContentCondition struct {
+	ContentCondition
+	re *regexp.Regexp
+}
+
 type hookDispatch struct {
 	ctx   context.Context
 	event events.HookEvent
 	hook  EventHookFunc
 }
 
-const hookDispatchQueueSize = 256
+const (
+	hookDispatchQueueSize  = 256
+	catalogRefreshInterval = 24 * time.Hour
+)
 
 // New creates a new Gateway instance with the given configuration.
 func New(cfg Config) (*Gateway, error) {
-	catalog, err := models.Load()
+	catalogResult, err := models.LoadWithInfo()
+	recordCatalogLoad(catalogResult.Source, err)
+	catalog := catalogResult.Catalog
 	if err != nil {
 		// Non-fatal: operate without model metadata (no enrichment / cost reporting).
+		slog.Error("model catalog unavailable; continuing without catalog metadata", "url", catalogResult.URLForLog(), "error", err)
 		catalog = models.Catalog{}
+	}
+
+	streamingContent, err := compileStreamingContentConditions(cfg.Strategy.Mode, cfg.Strategy.ContentConditions)
+	if err != nil {
+		return nil, err
 	}
 
 	gw := &Gateway{
 		config:           cfg,
 		catalog:          catalog,
 		providers:        make(map[string]providers.Provider),
+		streamingContent: streamingContent,
 		plugins:          plugin.NewManager(),
 		circuitBreakers:  make(map[string]*circuitbreaker.CircuitBreaker),
 		discoveredModels: make(map[string][]providers.ModelInfo),
@@ -123,8 +146,10 @@ func New(cfg Config) (*Gateway, error) {
 		hookDispatchQ: make(chan hookDispatch, hookDispatchQueueSize),
 		obs:           observability.NoOp(),
 	}
+	gw.shutdownCtx, gw.shutdownCancel = context.WithCancel(context.Background()) //nolint:gosec // canceled by Gateway.Close()
 	gw.hookSnapshot.Store([]EventHookFunc{})
 	gw.startHookWorkers()
+	gw.startCatalogRefresh()
 
 	// Wire MCP if any servers are configured.
 	if len(cfg.MCPServers) > 0 {
@@ -152,7 +177,10 @@ func New(cfg Config) (*Gateway, error) {
 		gw.mcpInitDone = done
 		go func() {
 			defer close(done)
-			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			// Parent the init timeout on the gateway shutdown context so a slow
+			// MCP handshake is cancelled by Close() instead of lingering up to
+			// the full timeout after shutdown.
+			ctx, cancel := context.WithTimeout(gw.shutdownCtx, 60*time.Second)
 			defer cancel()
 			reg.InitializeAll(ctx, func(name string, initErr error) {
 				slog.Error("mcp: server initialization failed",
@@ -162,6 +190,10 @@ func New(cfg Config) (*Gateway, error) {
 			})
 		}()
 	}
+
+	gw.mu.Lock()
+	gw.ensureCircuitBreakersLocked()
+	gw.mu.Unlock()
 
 	return gw, nil
 }
@@ -205,6 +237,61 @@ func (g *Gateway) Catalog() models.Catalog {
 	cp := make(models.Catalog, len(g.catalog))
 	maps.Copy(cp, g.catalog)
 	return cp
+}
+
+func (g *Gateway) startCatalogRefresh() {
+	g.catalogRefreshDone.Add(1)
+	go func() {
+		defer g.catalogRefreshDone.Done()
+		ticker := time.NewTicker(catalogRefreshInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-g.shutdownCtx.Done():
+				return
+			case <-ticker.C:
+				g.refreshCatalog()
+			}
+		}
+	}()
+}
+
+func (g *Gateway) refreshCatalog() {
+	result, err := models.LoadWithInfo()
+	recordCatalogLoad(result.Source, err)
+	if err != nil {
+		slog.Error("model catalog refresh failed", "url", result.URLForLog(), "error", err)
+		return
+	}
+	if result.Source != models.LoadSourceRemote {
+		slog.Warn("model catalog refresh skipped; keeping current catalog", "url", result.URLForLog(), "source", result.Source)
+		return
+	}
+
+	g.mu.Lock()
+	g.catalog = result.Catalog
+	// The exact-match routing index is derived from the catalog (issue #146),
+	// so it must be rebuilt whenever the catalog is replaced — otherwise the
+	// 24h refresh would leave routing frozen at the startup catalog while
+	// /v1/models reflects the new one.
+	g.rebuildModelIndexesLocked()
+	if g.config.Strategy.Mode == ModeCostOptimized {
+		g.strategy = nil
+	}
+	g.mu.Unlock()
+
+	slog.Info("model catalog refreshed", "url", result.URLForLog(), "models", len(result.Catalog))
+}
+
+func recordCatalogLoad(source models.LoadSource, err error) {
+	if source == "" {
+		source = models.LoadSourceFallback
+	}
+	result := "success"
+	if err != nil {
+		result = "error"
+	}
+	metrics.CatalogLoadsTotal.WithLabelValues(string(source), result).Inc()
 }
 
 // Event subject constants used when invoking gateway hooks.
@@ -318,6 +405,7 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 
 	start := time.Now()
 	hooksEnabled := g.hasHooks()
+	req.NormalizeCompletionTokenLimits()
 
 	// Start the observability root span. NoOp provider makes this a
 	// zero-allocation call when tracing is disabled.
@@ -325,6 +413,8 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	strategyMode := string(g.config.Strategy.Mode)
 	obs := g.obs
 	obsEventsActive := g.obsEventsActive
+	mcpRegistrySnapshot := g.mcpRegistry
+	mcpExecutorSnapshot := g.mcpExecutor
 	g.mu.RUnlock()
 	ctx, span := obs.StartRequestSpan(ctx, observability.RequestAttrs{
 		Operation:       "chat",
@@ -365,8 +455,8 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 
 	// Inject MCP tool definitions into the request when servers are ready.
 	var mcpTools []mcp.Tool
-	if g.mcpRegistry != nil {
-		mcpTools = g.mcpRegistry.AllTools()
+	if mcpRegistrySnapshot != nil {
+		mcpTools = mcpRegistrySnapshot.AllTools()
 	}
 	if len(mcpTools) > 0 {
 		// Build a set of tool names already present in the request so we do not
@@ -460,15 +550,15 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	// Agentic MCP tool-call loop. Runs only when MCP is active and the LLM
 	// returned tool_calls. Each iteration executes the tools and re-contacts
 	// the LLM until no more tool_calls are present or the depth limit is hit.
-	if g.mcpExecutor != nil && len(mcpTools) > 0 {
+	if mcpExecutorSnapshot != nil && len(mcpTools) > 0 {
 		depth := 0
 		trace.WithRegion(ctx, "gateway.route.mcp.loop", func() {
-			for g.mcpExecutor.ShouldContinueLoop(resp, depth) {
+			for mcpExecutorSnapshot.ShouldContinueLoop(resp, depth) {
 				depth++
 
 				// ResolvePendingToolCalls returns the assistant message (with tool_calls)
 				// plus one tool-result message per call — append all at once.
-				toolMsgs, toolErr := g.mcpExecutor.ResolvePendingToolCalls(ctx, resp)
+				toolMsgs, toolErr := mcpExecutorSnapshot.ResolvePendingToolCalls(ctx, resp)
 				if toolErr != nil {
 					err = fmt.Errorf("mcp tool execution at depth %d: %w", depth, toolErr)
 					return
@@ -604,13 +694,42 @@ func (g *Gateway) publishEvent(ctx context.Context, event events.HookEvent) {
 		return
 	}
 
+	// Detach from the request lifecycle: hooks are dispatched asynchronously
+	// and usually run after the HTTP handler has returned and ctx is already
+	// cancelled. WithoutCancel drops cancellation (so ctx-aware hook work like
+	// DB writes / outbound calls is not dead-on-arrival) while preserving the
+	// request's trace context and values. Worker shutdown is governed by
+	// g.shutdownCtx, not this context.
+	detachedCtx := context.WithoutCancel(ctx)
+
 	for _, hook := range hooks {
 		dispatch := hookDispatch{
-			ctx:   ctx,
+			ctx:   detachedCtx,
 			event: event,
 			hook:  hook,
 		}
 
+		// Bias toward the shutdown check first so we never race a Close()
+		// that has already cancelled. Once shutdownCtx is Done we drop the
+		// event rather than risk a send on what used to be a closed channel
+		// (we no longer close hookDispatchQ — workers exit via shutdownCtx).
+		// The nil-shutdownCtx branch supports a handful of unit tests that
+		// build Gateway literals directly without going through New().
+		if g.shutdownCtx != nil {
+			select {
+			case <-g.shutdownCtx.Done():
+				return
+			default:
+			}
+			select {
+			case g.hookDispatchQ <- dispatch:
+			case <-g.shutdownCtx.Done():
+				return
+			default:
+				metrics.HookEventsDroppedTotal.WithLabelValues(event.Subject).Inc()
+			}
+			continue
+		}
 		select {
 		case g.hookDispatchQ <- dispatch:
 		default:
@@ -635,9 +754,25 @@ func (g *Gateway) startHookWorkers() {
 	}
 
 	for range workerCount {
+		g.hookWorkersDone.Add(1)
 		go func() {
-			for dispatch := range g.hookDispatchQ {
-				runHookDispatch(dispatch)
+			defer g.hookWorkersDone.Done()
+			for {
+				select {
+				case <-g.shutdownCtx.Done():
+					// Best-effort drain anything queued before exiting so we
+					// don't lose events that were already enqueued.
+					for {
+						select {
+						case dispatch := <-g.hookDispatchQ:
+							runHookDispatch(dispatch)
+						default:
+							return
+						}
+					}
+				case dispatch := <-g.hookDispatchQ:
+					runHookDispatch(dispatch)
+				}
 			}
 		}()
 	}
@@ -698,11 +833,17 @@ func (g *Gateway) ReloadConfig(cfg Config) error {
 	if err := ValidateConfig(cfg); err != nil {
 		return fmt.Errorf("invalid config: %w", err)
 	}
+	streamingContent, err := compileStreamingContentConditions(cfg.Strategy.Mode, cfg.Strategy.ContentConditions)
+	if err != nil {
+		return fmt.Errorf("invalid config: %w", err)
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.config = cfg
+	g.streamingContent = streamingContent
 	g.strategy = nil // force rebuild on next request
 	g.circuitBreakers = make(map[string]*circuitbreaker.CircuitBreaker)
+	g.ensureCircuitBreakersLocked()
 
 	// Re-register MCP servers from the new config.
 	if len(cfg.MCPServers) > 0 {
@@ -722,7 +863,10 @@ func (g *Gateway) ReloadConfig(cfg Config) error {
 		g.mcpInitDone = done
 		go func() {
 			defer close(done)
-			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			// Parent the init timeout on the gateway shutdown context so a slow
+			// MCP handshake is cancelled by Close() instead of lingering up to
+			// the full timeout after shutdown.
+			ctx, cancel := context.WithTimeout(g.shutdownCtx, 60*time.Second)
 			defer cancel()
 			reg.InitializeAll(ctx, func(name string, initErr error) {
 				slog.Error("mcp: server initialization failed after reload",
@@ -756,26 +900,27 @@ func (g *Gateway) getStrategy() (strategies.Strategy, error) {
 		return g.strategy, nil
 	}
 
-	// Build circuit breakers for targets that have them configured.
-	for _, t := range g.config.Targets {
-		if t.CircuitBreaker == nil {
-			continue
-		}
-		if _, exists := g.circuitBreakers[t.VirtualKey]; exists {
-			continue
-		}
-		timeout, _ := time.ParseDuration(t.CircuitBreaker.Timeout)
-		cb := circuitbreaker.New(t.CircuitBreaker.FailureThreshold, t.CircuitBreaker.SuccessThreshold, timeout)
-		g.circuitBreakers[t.VirtualKey] = cb
-	}
+	g.ensureCircuitBreakersLocked()
+
+	// Snapshot both maps under the write lock already held. The lookup closure
+	// runs inside Strategy.Execute with no lock held, so capturing local copies
+	// here is the only safe access pattern.
+	// maps.Clone is a shallow copy — safe because map values (Provider, *CB) are
+	// themselves immutable references; we never mutate through them in the closure.
+	providerSnap := maps.Clone(g.providers)
+	cbSnap := maps.Clone(g.circuitBreakers)
 
 	// Provider lookup with transparent circuit-breaker wrapping.
+	//
+	// The closure is captured into the strategy and invoked later from the
+	// request hot path, AFTER Route/RouteStream have released g.mu. It reads
+	// from the snapshots captured above, so no lock is needed in the closure.
 	lookup := func(name string) (providers.Provider, bool) {
-		p, ok := g.providers[name]
+		p, ok := providerSnap[name]
 		if !ok {
 			return nil, false
 		}
-		if cb, hasCB := g.circuitBreakers[name]; hasCB {
+		if cb, hasCB := cbSnap[name]; hasCB {
 			return &cbProvider{Provider: p, cb: cb, name: name}, true
 		}
 		return p, ok
@@ -816,7 +961,7 @@ func (g *Gateway) getStrategy() (strategies.Strategy, error) {
 		if len(targets) == 0 {
 			return nil, fmt.Errorf("no targets configured for cost-optimized strategy")
 		}
-		s = strategies.NewCostOptimized(targets, lookup, g.catalog)
+		s = strategies.NewCostOptimized(targets, lookup, g.catalog, g.config.Strategy.UnpricedStrategy)
 	case ModeConditional:
 		if len(g.config.Strategy.Conditions) == 0 {
 			return nil, fmt.Errorf("no conditions configured for conditional strategy")
@@ -902,7 +1047,7 @@ func (p *cbProvider) Complete(ctx context.Context, req providers.Request) (*prov
 	}
 	resp, err := p.Provider.Complete(ctx, req)
 	if err != nil {
-		if !isRateLimitError(err) {
+		if shouldRecordCircuitBreakerFailure(ctx, err) {
 			p.cb.RecordFailure()
 			metrics.CircuitBreakerState.WithLabelValues(p.name).Set(float64(p.cb.State()))
 		}
@@ -924,15 +1069,63 @@ func (p *cbProvider) CompleteStream(ctx context.Context, req providers.Request) 
 	}
 	ch, err := sp.CompleteStream(ctx, req)
 	if err != nil {
-		if !isRateLimitError(err) {
+		if shouldRecordCircuitBreakerFailure(ctx, err) {
 			p.cb.RecordFailure()
 			metrics.CircuitBreakerState.WithLabelValues(p.name).Set(float64(p.cb.State()))
 		}
 		return nil, err
 	}
-	p.cb.RecordSuccess()
-	metrics.CircuitBreakerState.WithLabelValues(p.name).Set(0)
 	return ch, nil
+}
+
+// shouldRecordCircuitBreakerFailure reports whether an error should count toward
+// opening the circuit. Caller-side cancellation/deadlines and rate limits are
+// excluded so transient client behavior does not block healthy traffic.
+// Provider-side timeouts that surface as context.DeadlineExceeded while the
+// request context is still active are counted as failures.
+func shouldRecordCircuitBreakerFailure(ctx context.Context, err error) bool {
+	if err == nil {
+		return false
+	}
+	if ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+		return false
+	}
+	return !isRateLimitError(err)
+}
+
+// recordStreamCircuitBreakerOutcome updates breaker state when a stream
+// finishes. Startup failures are recorded in cbProvider.CompleteStream;
+// this handles stream completion only.
+func recordStreamCircuitBreakerOutcome(ctx context.Context, cb *circuitbreaker.CircuitBreaker, name string, err error) {
+	if err != nil {
+		if !shouldRecordCircuitBreakerFailure(ctx, err) {
+			return
+		}
+		cb.RecordFailure()
+		metrics.CircuitBreakerState.WithLabelValues(name).Set(float64(cb.State()))
+		return
+	}
+	cb.RecordSuccess()
+	metrics.CircuitBreakerState.WithLabelValues(name).Set(0)
+}
+
+// ensureCircuitBreakersLocked creates circuit breakers for configured targets.
+// Caller must hold g.mu.
+func (g *Gateway) ensureCircuitBreakersLocked() {
+	for _, t := range g.config.Targets {
+		if t.CircuitBreaker == nil {
+			continue
+		}
+		if _, exists := g.circuitBreakers[t.VirtualKey]; exists {
+			continue
+		}
+		timeout, _ := time.ParseDuration(t.CircuitBreaker.Timeout)
+		g.circuitBreakers[t.VirtualKey] = circuitbreaker.New(
+			t.CircuitBreaker.FailureThreshold,
+			t.CircuitBreaker.SuccessThreshold,
+			timeout,
+		)
+	}
 }
 
 // isRateLimitError checks if the error is a 429 rate limit response.
@@ -979,6 +1172,7 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 
 	start := time.Now()
 	hooksEnabled := g.hasHooks()
+	req.NormalizeCompletionTokenLimits()
 	var err error
 
 	// Start the observability root span. End() is normally called by
@@ -989,6 +1183,7 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 	strategyMode := string(g.config.Strategy.Mode)
 	obs := g.obs
 	obsEventsActive := g.obsEventsActive
+	mcpRegistrySnapshot := g.mcpRegistry
 	g.mu.RUnlock()
 	ctx, span := obs.StartRequestSpan(ctx, observability.RequestAttrs{
 		Operation:       "chat",
@@ -1012,9 +1207,7 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 	// MCP redirect: when tool servers are registered, the agentic loop must
 	// run to completion before any response is sent. Route() handles this
 	// entirely; we wrap its non-streaming result into a channel here.
-	g.mu.RLock()
-	hasMCP := g.mcpRegistry != nil && g.mcpRegistry.HasServers()
-	g.mu.RUnlock()
+	hasMCP := mcpRegistrySnapshot != nil && mcpRegistrySnapshot.HasServers()
 	if hasMCP {
 		// Do not force req.Stream = false here: let Route() capture the
 		// original stream flag via its own originalStream variable so that
@@ -1023,92 +1216,58 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 		if err != nil {
 			return nil, err
 		}
-		// Convert the completed Response into a buffered single-chunk channel.
-		// Preserve all choices so n>1 requests are handled correctly, and use
-		// the real FinishReason from each choice rather than hardcoding "stop".
-		ch := make(chan providers.StreamChunk, 1)
-		streamChoices := make([]providers.StreamChoice, len(resp.Choices))
-		for i, c := range resp.Choices {
-			streamChoices[i] = providers.StreamChoice{
-				Index: c.Index,
-				Delta: providers.MessageDelta{
-					Role:      c.Message.Role,
-					Content:   c.Message.Content,
-					ToolCalls: c.Message.ToolCalls,
-				},
-				FinishReason: c.FinishReason,
-			}
-		}
-		ch <- providers.StreamChunk{
-			ID:      resp.ID,
-			Object:  "chat.completion.chunk",
-			Created: resp.Created,
-			Model:   resp.Model,
-			Choices: streamChoices,
-			Usage:   &resp.Usage,
-		}
-		close(ch)
 		_ = start // latency already recorded inside Route()
-		return ch, nil
+		return responseStream(resp), nil
 	}
 
 	// Run before-request plugins (word-filter, max-token, rate-limit, etc.).
+	var pctx *plugin.Context
 	if g.plugins.HasPlugins() {
-		pctx := plugin.NewContext(&req)
+		pctx = plugin.NewContext(&req)
+		var early *providers.Response
 		trace.WithRegion(ctx, "gateway.route_stream.plugins.before", func() {
-			err = g.plugins.RunBefore(ctx, pctx)
+			early, err = g.runBeforePlugins(ctx, pctx, &req)
 		})
 		if err != nil {
 			plugin.PutContext(pctx)
+			pctx = nil
 			metrics.ForRequest("", req.Model).Rejected.Inc()
 			return nil, err
 		}
-		if pctx.Reject {
-			reason := pctx.Reason
+		if early != nil {
 			plugin.PutContext(pctx)
-			metrics.ForRequest("", req.Model).Rejected.Inc()
-			return nil, fmt.Errorf("request rejected by plugin: %s", reason)
+			pctx = nil
+			return responseStream(early), nil
 		}
-		// Propagate any modifications made by plugins (e.g., capped max_tokens).
-		if pctx.Request != nil {
-			req = *pctx.Request
-		}
-		plugin.PutContext(pctx)
 	}
 
 	// Resolve provider according to strategy mode.
+	g.mu.Lock()
+	g.ensureCircuitBreakersLocked()
+	g.mu.Unlock()
 	g.mu.RLock()
-	orderedKeys := g.streamingTargetOrderLocked(req)
-	var sp providers.StreamProvider
-	for _, key := range orderedKeys {
-		p, ok := g.providers[key]
-		if !ok || !p.SupportsModel(req.Model) {
-			continue
-		}
-		// Apply circuit breaker if configured.
-		candidate := p
-		if cb, hasCB := g.circuitBreakers[key]; hasCB {
-			candidate = &cbProvider{Provider: p, cb: cb, name: key}
-		}
-		if casted, ok := candidate.(providers.StreamProvider); ok {
-			sp = casted
-			break
-		}
-	}
-	// Fallback: any registered provider that supports this model and streaming.
-	if sp == nil {
-		if name, fallback, ok := g.findStreamingProviderMatchByModelLocked(req.Model); ok {
-			sp = fallback
-			if cb, hasCB := g.circuitBreakers[name]; hasCB {
-				sp = &cbProvider{Provider: g.providers[name], cb: cb, name: name}
-			}
-		}
-	}
+	sp, orderErr := g.resolveStreamingProviderLocked(req)
 	g.mu.RUnlock()
+
+	if orderErr != nil {
+		err = orderErr
+		span.SetError(err)
+		if pctx != nil {
+			pctx.Error = err
+			g.plugins.RunOnError(ctx, pctx)
+			plugin.PutContext(pctx)
+		}
+		return nil, err
+	}
 
 	if sp == nil {
 		err = fmt.Errorf("no streaming-capable provider found for model: %s", req.Model)
 		span.SetError(err)
+		if pctx != nil {
+			pctx.Error = err
+			g.plugins.RunOnError(ctx, pctx)
+			plugin.PutContext(pctx)
+		}
 		return nil, err
 	}
 
@@ -1130,6 +1289,11 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 		errType := "provider_error"
 		if errors.Is(err, circuitbreaker.ErrCircuitOpen) {
 			errType = "circuit_open"
+		}
+		if pctx != nil {
+			pctx.Error = err
+			g.plugins.RunOnError(ctx, pctx)
+			plugin.PutContext(pctx)
 		}
 		metrics.ForRequest(providerName, req.Model).Error.Inc()
 		metrics.ForProviderError(providerName, errType).Inc()
@@ -1155,13 +1319,46 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 	g.mu.RUnlock()
 
 	meta := streamwrap.MeterMeta{
-		Provider: providerName,
-		Model:    req.Model,
-		Catalog:  catalog,
-		TraceID:  logging.TraceIDFromContext(ctx),
+		Provider:        providerName,
+		Model:           req.Model,
+		Catalog:         catalog,
+		TraceID:         logging.TraceIDFromContext(ctx),
+		LatencyRecorder: g.latencyTracker.Record,
 	}
 	if hooksEnabled {
 		meta.PublishFn = g.publishEvent
+	}
+	if wrapped, ok := sp.(*cbProvider); ok {
+		cb := wrapped.cb
+		cbName := wrapped.name
+		meta.CircuitBreakerOutcome = func(err error) {
+			recordStreamCircuitBreakerOutcome(ctx, cb, cbName, err)
+		}
+	}
+	if pctx != nil {
+		meta.CompletionFn = func(ctx context.Context, resp *providers.Response) error {
+			pctx.Response = resp
+			err := g.plugins.RunAfter(ctx, pctx)
+			if pctx.Response != nil {
+				*resp = *pctx.Response
+			}
+			if err != nil {
+				pctx.Error = err
+				g.plugins.RunOnError(ctx, pctx)
+			}
+			plugin.PutContext(pctx)
+			pctx = nil
+			return err
+		}
+		meta.ErrorFn = func(ctx context.Context, err error) {
+			if pctx == nil {
+				return
+			}
+			pctx.Error = err
+			g.plugins.RunOnError(ctx, pctx)
+			plugin.PutContext(pctx)
+			pctx = nil
+		}
 	}
 
 	// Hand the root span off to streamwrap so token, cost, and timing
@@ -1216,30 +1413,108 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 					false,
 				)
 			}
-			// Use a detached context: this closure runs in the streamwrap
-			// goroutine after the HTTP handler has returned and the
-			// request ctx is already cancelled.
-			obsProvider.RecordEvent(context.Background(), obsEventFromHook(he))
+			// Detach from the request lifecycle: this closure runs in the
+			// streamwrap goroutine after the HTTP handler has returned and the
+			// request ctx is already cancelled. WithoutCancel drops cancellation
+			// while preserving the request's trace context, so the recorded
+			// event stays linked to the originating trace.
+			obsProvider.RecordEvent(context.WithoutCancel(ctx), obsEventFromHook(he))
 		}
 	})
 	return streamwrap.Meter(ctx, rawCh, start, meta), nil
 }
 
-func (g *Gateway) streamingTargetOrderLocked(req providers.Request) []string {
+func responseStream(resp *providers.Response) <-chan providers.StreamChunk {
+	ch := make(chan providers.StreamChunk, 1)
+	streamChoices := make([]providers.StreamChoice, len(resp.Choices))
+	for i, c := range resp.Choices {
+		streamChoices[i] = providers.StreamChoice{
+			Index: c.Index,
+			Delta: providers.MessageDelta{
+				Role:      c.Message.Role,
+				Content:   c.Message.Content,
+				ToolCalls: c.Message.ToolCalls,
+			},
+			FinishReason: c.FinishReason,
+		}
+	}
+	ch <- providers.StreamChunk{
+		ID:      resp.ID,
+		Object:  "chat.completion.chunk",
+		Created: resp.Created,
+		Model:   resp.Model,
+		Choices: streamChoices,
+		Usage:   &resp.Usage,
+	}
+	close(ch)
+	return ch
+}
+
+func (g *Gateway) resolveStreamingProviderLocked(req providers.Request) (providers.StreamProvider, error) {
+	orderedKeys, err := g.streamingTargetOrderLocked(req)
+	if err != nil {
+		return nil, err
+	}
+	var openCircuitTarget providers.StreamProvider
+	for _, key := range orderedKeys {
+		sp, ok := g.streamingProviderForTargetLocked(key, req.Model)
+		if !ok {
+			continue
+		}
+		if wrapped, isCB := sp.(*cbProvider); isCB && !wrapped.cb.Allow() {
+			openCircuitTarget = sp
+			continue
+		}
+		return sp, nil
+	}
+	if openCircuitTarget != nil {
+		return openCircuitTarget, nil
+	}
+
+	// Fallback: any registered provider that supports this model and streaming.
+	name, fallback, ok := g.findStreamingProviderMatchByModelLocked(req.Model)
+	if !ok {
+		return nil, nil
+	}
+	if cb, hasCB := g.circuitBreakers[name]; hasCB {
+		return &cbProvider{Provider: g.providers[name], cb: cb, name: name}, nil
+	}
+	return fallback, nil
+}
+
+func (g *Gateway) streamingProviderForTargetLocked(key, model string) (providers.StreamProvider, bool) {
+	p, ok := g.providers[key]
+	if !ok || !p.SupportsModel(model) {
+		return nil, false
+	}
+
+	sp, ok := p.(providers.StreamProvider)
+	if !ok {
+		return nil, false
+	}
+
+	// Apply circuit breaker if configured.
+	if cb, hasCB := g.circuitBreakers[key]; hasCB {
+		return &cbProvider{Provider: p, cb: cb, name: key}, true
+	}
+	return sp, true
+}
+
+func (g *Gateway) streamingTargetOrderLocked(req providers.Request) ([]string, error) {
 	targets := g.config.Targets
 	if len(targets) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	switch g.config.Strategy.Mode {
 	case ModeSingle, "":
-		return []string{targets[0].VirtualKey}
+		return []string{targets[0].VirtualKey}, nil
 	case ModeFallback:
 		keys := make([]string, 0, len(targets))
 		for _, t := range targets {
 			keys = append(keys, t.VirtualKey)
 		}
-		return keys
+		return keys, nil
 	case ModeConditional:
 		keys := make([]string, 0, len(targets))
 		for _, cond := range g.config.Strategy.Conditions {
@@ -1251,17 +1526,17 @@ func (g *Gateway) streamingTargetOrderLocked(req providers.Request) []string {
 		for _, t := range targets {
 			keys = appendUniqueKey(keys, t.VirtualKey)
 		}
-		return keys
+		return keys, nil
 	case ModeContentBased:
 		// Evaluate content rules in order; first match wins, fallback is targets[0].
-		for _, cond := range g.config.Strategy.ContentConditions {
+		for _, cond := range g.streamingContent {
 			if streamingContentConditionMatches(cond, req) {
 				// Matched target first, then remaining targets as fallback.
 				keys := []string{cond.TargetKey}
 				for _, t := range targets {
 					keys = appendUniqueKey(keys, t.VirtualKey)
 				}
-				return keys
+				return keys, nil
 			}
 		}
 		// No rule matched — use declared target order (targets[0] is the fallback).
@@ -1269,7 +1544,7 @@ func (g *Gateway) streamingTargetOrderLocked(req providers.Request) []string {
 		for _, t := range targets {
 			keys = append(keys, t.VirtualKey)
 		}
-		return keys
+		return keys, nil
 	case ModeABTest:
 		// Weighted random variant selection mirrors ABTest.selectVariant.
 		total := 0.0
@@ -1294,7 +1569,7 @@ func (g *Gateway) streamingTargetOrderLocked(req providers.Request) []string {
 					for _, t := range targets {
 						keys = appendUniqueKey(keys, t.VirtualKey)
 					}
-					return keys
+					return keys, nil
 				}
 			}
 			// Floating-point safety net — use last variant.
@@ -1303,28 +1578,212 @@ func (g *Gateway) streamingTargetOrderLocked(req providers.Request) []string {
 			for _, t := range targets {
 				keys = appendUniqueKey(keys, t.VirtualKey)
 			}
-			return keys
+			return keys, nil
 		}
 		// No variants configured — fall through to raw order.
 		keys := make([]string, 0, len(targets))
 		for _, t := range targets {
 			keys = append(keys, t.VirtualKey)
 		}
-		return keys
+		return keys, nil
 	case ModeLoadBalance:
 		startIdx := weightedStartIndex(targets)
 		keys := make([]string, 0, len(targets))
 		for i := 0; i < len(targets); i++ {
 			keys = append(keys, targets[(startIdx+i)%len(targets)].VirtualKey)
 		}
-		return keys
+		return keys, nil
+	case ModeLatency:
+		return g.streamingLatencyOrderLocked(targets, req), nil
+	case ModeCostOptimized:
+		return g.streamingCostOrderLocked(targets, req)
 	default:
 		keys := make([]string, 0, len(targets))
 		for _, t := range targets {
 			keys = append(keys, t.VirtualKey)
 		}
-		return keys
+		return keys, nil
 	}
+}
+
+type streamingLatencyCandidate struct {
+	key        string
+	p50        time.Duration
+	hasSamples bool
+}
+
+func (g *Gateway) streamingLatencyOrderLocked(targets []Target, req providers.Request) []string {
+	var unseen []streamingLatencyCandidate
+	var sampled []streamingLatencyCandidate
+	for _, t := range targets {
+		if !g.isStreamingTargetCandidateLocked(t, req.Model) {
+			continue
+		}
+		candidate := streamingLatencyCandidate{
+			key:        t.VirtualKey,
+			p50:        g.latencyTracker.P50(t.VirtualKey),
+			hasSamples: g.latencyTracker.HasSamples(t.VirtualKey),
+		}
+		if candidate.hasSamples {
+			sampled = append(sampled, candidate)
+		} else {
+			unseen = append(unseen, candidate)
+		}
+	}
+
+	if len(unseen) == 0 && len(sampled) == 0 {
+		return targetKeys(targets)
+	}
+
+	if len(unseen) > 1 {
+		rand.Shuffle(len(unseen), func(i, j int) {
+			unseen[i], unseen[j] = unseen[j], unseen[i]
+		}) //nolint:gosec
+	}
+	sort.SliceStable(sampled, func(i, j int) bool {
+		return sampled[i].p50 < sampled[j].p50
+	})
+
+	keys := make([]string, 0, len(targets))
+	for _, candidate := range unseen {
+		keys = appendUniqueKey(keys, candidate.key)
+	}
+	for _, candidate := range sampled {
+		keys = appendUniqueKey(keys, candidate.key)
+	}
+	return appendRemainingTargetKeys(keys, targets)
+}
+
+type streamingCostCandidate struct {
+	key        string
+	costUSD    float64
+	hasPrice   bool
+	modelFound bool
+}
+
+func (g *Gateway) streamingCostOrderLocked(targets []Target, req providers.Request) ([]string, error) {
+	estimatedPromptTokens := estimatePromptTokens(req)
+	candidates := make([]streamingCostCandidate, 0, len(targets))
+	for _, t := range targets {
+		if !g.isStreamingTargetCandidateLocked(t, req.Model) {
+			continue
+		}
+		result := models.Calculate(g.catalog, t.VirtualKey+"/"+req.Model, models.Usage{
+			PromptTokens: estimatedPromptTokens,
+		})
+		candidates = append(candidates, streamingCostCandidate{
+			key:        t.VirtualKey,
+			costUSD:    result.InputUSD,
+			hasPrice:   result.Priced,
+			modelFound: result.ModelFound,
+		})
+	}
+	if len(candidates) == 0 {
+		return targetKeys(targets), nil
+	}
+
+	ranked := make([]streamingCostCandidate, 0, len(candidates))
+	switch g.config.Strategy.UnpricedStrategy {
+	case unpricedStrategyAllow:
+		for _, candidate := range candidates {
+			if candidate.modelFound {
+				ranked = append(ranked, candidate)
+			}
+		}
+	case unpricedStrategySkip:
+		for _, candidate := range candidates {
+			if candidate.modelFound && candidate.hasPrice {
+				ranked = append(ranked, candidate)
+			}
+		}
+	default:
+		for _, candidate := range candidates {
+			if candidate.modelFound && candidate.hasPrice {
+				ranked = append(ranked, candidate)
+			}
+		}
+	}
+
+	if len(ranked) == 0 {
+		if g.config.Strategy.UnpricedStrategy == unpricedStrategySkip {
+			return nil, fmt.Errorf("no priced provider supports model %s", req.Model)
+		}
+		return targetKeys(targets), nil
+	}
+
+	sort.SliceStable(ranked, func(i, j int) bool {
+		return ranked[i].costUSD < ranked[j].costUSD
+	})
+
+	keys := make([]string, 0, len(targets))
+	for _, candidate := range ranked {
+		keys = appendUniqueKey(keys, candidate.key)
+	}
+	for _, candidate := range candidates {
+		keys = appendUniqueKey(keys, candidate.key)
+	}
+	return appendRemainingTargetKeys(keys, targets), nil
+}
+
+func (g *Gateway) isStreamingTargetCandidateLocked(t Target, model string) bool {
+	p, ok := g.providers[t.VirtualKey]
+	if !ok || !p.SupportsModel(model) {
+		return false
+	}
+	_, ok = p.(providers.StreamProvider)
+	return ok
+}
+
+func estimatePromptTokens(req providers.Request) int {
+	promptChars := 0
+	for _, msg := range req.Messages {
+		promptChars += len(msg.Content)
+	}
+	return promptChars/4 + 1
+}
+
+func targetKeys(targets []Target) []string {
+	keys := make([]string, 0, len(targets))
+	for _, t := range targets {
+		keys = append(keys, t.VirtualKey)
+	}
+	return keys
+}
+
+func appendRemainingTargetKeys(keys []string, targets []Target) []string {
+	for _, t := range targets {
+		keys = appendUniqueKey(keys, t.VirtualKey)
+	}
+	return keys
+}
+
+// modelsForRoutingLocked returns the model IDs used to build the exact-match
+// routing index for a provider: the union of its hardcoded SupportedModels()
+// and the catalog's models for that provider (issue #146). Deriving from the
+// catalog lets exact-match providers route valid models their hand-maintained
+// slices omit, without per-provider edits. Falls back to the hardcoded slice
+// when the catalog has no entries for the provider (e.g. self-hosted Ollama).
+func (g *Gateway) modelsForRoutingLocked(name string, p providers.Provider) []string {
+	hardcoded := p.SupportedModels()
+	catModels := g.catalog.ModelsForProvider(name)
+	if len(catModels) == 0 {
+		return hardcoded
+	}
+	seen := make(map[string]struct{}, len(hardcoded)+len(catModels))
+	out := make([]string, 0, len(hardcoded)+len(catModels))
+	for _, m := range hardcoded {
+		if _, ok := seen[m]; !ok {
+			seen[m] = struct{}{}
+			out = append(out, m)
+		}
+	}
+	for _, m := range catModels {
+		if _, ok := seen[m]; !ok {
+			seen[m] = struct{}{}
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 func (g *Gateway) rebuildModelIndexesLocked() {
@@ -1338,7 +1797,7 @@ func (g *Gateway) rebuildModelIndexesLocked() {
 		if !ok {
 			continue
 		}
-		models := p.SupportedModels()
+		models := g.modelsForRoutingLocked(name, p)
 		for _, model := range models {
 			g.modelIndex.exactProviders[model] = append(g.modelIndex.exactProviders[model], name)
 		}
@@ -1452,9 +1911,28 @@ func conditionMatches(cond Condition, model string) bool {
 	}
 }
 
+func compileStreamingContentConditions(mode StrategyMode, conditions []ContentCondition) ([]streamingContentCondition, error) {
+	if mode != ModeContentBased {
+		return nil, nil
+	}
+	compiled := make([]streamingContentCondition, len(conditions))
+	for i, cond := range conditions {
+		compiled[i].ContentCondition = cond
+		if cond.Type != "prompt_regex" {
+			continue
+		}
+		re, err := regexp.Compile(cond.Value)
+		if err != nil {
+			return nil, fmt.Errorf("streaming content-based routing: invalid regex %q in rule %d: %w", cond.Value, i, err)
+		}
+		compiled[i].re = re
+	}
+	return compiled, nil
+}
+
 // streamingContentConditionMatches evaluates a single ContentCondition against
 // a request, mirroring the logic in internal/strategies/contentbased.go.
-func streamingContentConditionMatches(cond ContentCondition, req providers.Request) bool {
+func streamingContentConditionMatches(cond streamingContentCondition, req providers.Request) bool {
 	switch cond.Type {
 	case "prompt_contains":
 		lower := strings.ToLower(cond.Value)
@@ -1473,12 +1951,11 @@ func streamingContentConditionMatches(cond ContentCondition, req providers.Reque
 		}
 		return true
 	case "prompt_regex":
-		re, err := regexp.Compile(cond.Value)
-		if err != nil {
+		if cond.re == nil {
 			return false
 		}
 		for _, msg := range req.Messages {
-			if msg.Role == roleUser && re.MatchString(msg.Content) {
+			if msg.Role == roleUser && cond.re.MatchString(msg.Content) {
 				return true
 			}
 		}
@@ -1550,8 +2027,11 @@ func (g *Gateway) AllModels() []providers.ModelInfo {
 		if !ok {
 			continue
 		}
+		// Precedence (issue #146): live discovery > catalog > hardcoded fallback.
 		if discovered, ok := g.discoveredModels[name]; ok && len(discovered) > 0 {
 			models = append(models, discovered...)
+		} else if catModels := g.catalog.ModelsForProvider(name); len(catModels) > 0 {
+			models = append(models, core.ModelsFromList(name, catModels)...)
 		} else {
 			models = append(models, p.Models()...)
 		}
@@ -1602,9 +2082,27 @@ func (g *Gateway) FindStreamingByModel(model string) (providers.StreamProvider, 
 }
 
 // Close cleans up resources.
+//
+// Cancels the gateway shutdown context (which signals hook workers and the
+// catalog refresh worker to exit) and waits up to 5s for workers to finish so
+// in-flight hook dispatches are not abruptly killed. Returns nil even if the worker drain
+// times out — Close must never block indefinitely (a panicking hook could
+// otherwise wedge shutdown).
+//
+// Safe to call multiple times; subsequent calls are no-ops.
 func (g *Gateway) Close() error {
 	g.closeOnce.Do(func() {
-		close(g.hookDispatchQ)
+		g.shutdownCancel()
+		done := make(chan struct{})
+		go func() {
+			g.hookWorkersDone.Wait()
+			g.catalogRefreshDone.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+		}
 	})
 	return nil
 }
@@ -1643,7 +2141,7 @@ func (g *Gateway) Embed(ctx context.Context, req providers.EmbeddingRequest) (*p
 	g.mu.RUnlock()
 
 	if !ok {
-		return nil, fmt.Errorf("no embedding provider found for model: %s", req.Model)
+		return nil, fmt.Errorf("%w: no embedding provider for %q", core.ErrNoCapableProvider, req.Model)
 	}
 
 	resp, err := ep.Embed(ctx, req)
@@ -1669,7 +2167,7 @@ func (g *Gateway) GenerateImage(ctx context.Context, req providers.ImageRequest)
 	g.mu.RUnlock()
 
 	if !ok {
-		return nil, fmt.Errorf("no image generation provider found for model: %s", req.Model)
+		return nil, fmt.Errorf("%w: no image generation provider for %q", core.ErrNoCapableProvider, req.Model)
 	}
 
 	resp, err := ip.GenerateImage(ctx, req)

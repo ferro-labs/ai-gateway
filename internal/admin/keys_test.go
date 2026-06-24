@@ -226,3 +226,58 @@ func TestSetExpiration_StoresUTCCopyWithoutAliasing(t *testing.T) {
 		t.Fatalf("expected stored expiration %v, got %v", expectedUTC, *stored.ExpiresAt)
 	}
 }
+
+func TestGet_ReturnsDefensiveCopy(t *testing.T) {
+	store := NewKeyStore()
+	expiresAt := time.Now().Add(time.Hour)
+	created, _ := store.Create("copy-me", []string{ScopeReadOnly}, &expiresAt)
+
+	got, ok := store.Get(created.ID)
+	if !ok {
+		t.Fatal("expected key to exist")
+	}
+	got.Name = "mutated"
+	got.Scopes[0] = ScopeAdmin
+	*got.ExpiresAt = got.ExpiresAt.Add(time.Hour)
+
+	again, ok := store.Get(created.ID)
+	if !ok {
+		t.Fatal("expected key to exist")
+	}
+	if again.Name != "copy-me" {
+		t.Fatalf("stored name = %q, want copy-me", again.Name)
+	}
+	if again.Scopes[0] != ScopeReadOnly {
+		t.Fatalf("stored scope = %q, want %q", again.Scopes[0], ScopeReadOnly)
+	}
+	if !again.ExpiresAt.Equal(expiresAt.UTC()) {
+		t.Fatalf("stored expiration = %v, want %v", *again.ExpiresAt, expiresAt.UTC())
+	}
+}
+
+func TestValidateKey_ReturnsDefensiveCopy(t *testing.T) {
+	store := NewKeyStore()
+	created, _ := store.Create("validate-copy", []string{ScopeReadOnly}, nil)
+
+	validated, ok := store.ValidateKey(created.Key)
+	if !ok {
+		t.Fatal("expected key to validate")
+	}
+	validated.UsageCount = 100
+	validated.LastUsedAt = nil
+	validated.Scopes[0] = ScopeAdmin
+
+	stored, ok := store.Get(created.ID)
+	if !ok {
+		t.Fatal("expected key to exist")
+	}
+	if stored.UsageCount != 1 {
+		t.Fatalf("stored usage count = %d, want 1", stored.UsageCount)
+	}
+	if stored.LastUsedAt == nil {
+		t.Fatal("stored last-used timestamp was cleared through returned key")
+	}
+	if stored.Scopes[0] != ScopeReadOnly {
+		t.Fatalf("stored scope = %q, want %q", stored.Scopes[0], ScopeReadOnly)
+	}
+}

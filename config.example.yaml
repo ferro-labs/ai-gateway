@@ -3,6 +3,10 @@
 
 strategy:
   mode: fallback  # single | fallback | loadbalance | conditional | content-based | ab-test | least-latency | cost-optimized
+  # For cost-optimized mode only: fallback (default) | skip | allow.
+  # fallback prefers priced candidates, then first compatible unpriced target.
+  # skip rejects unpriced candidates; allow treats missing prices as zero cost.
+  # unpriced_strategy: fallback
 
 # --- conditional routing example ---
 # strategy:

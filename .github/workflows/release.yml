@@ -31,7 +31,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: "1.25.x"
+          go-version: "1.25.11"
           cache: true
 
       - name: Set up QEMU (for cross-platform Docker builds)
@@ -47,7 +47,14 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Verify embedded catalog backup
+        run: go test ./models -run TestCatalogBackupParseable -count=1
+
       - name: Generate release notes
+        env:
+          # Used by scripts/generate_release_notes.sh to query the GitHub
+          # compare API for the per-PR author list (Contributors section).
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bash scripts/generate_release_notes.sh "${GITHUB_REF_NAME}" "${RUNNER_TEMP}/release-notes.md"
 
       - name: Run GoReleaser
@@ -68,6 +75,8 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Generate release notes
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bash scripts/generate_release_notes.sh "${GITHUB_REF_NAME}" "${RUNNER_TEMP}/release-notes.md"
 
       - name: Send Discord notification

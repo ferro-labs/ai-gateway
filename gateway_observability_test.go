@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/ferro-labs/ai-gateway/observability"
 	"github.com/ferro-labs/ai-gateway/providers"
@@ -19,13 +20,24 @@ type eventCapturingProvider struct {
 	fakeProvider
 	mu              sync.Mutex
 	events          []observability.Event
+	eventCtxs       []context.Context
 	recordingActive bool
 }
 
-func (p *eventCapturingProvider) RecordEvent(_ context.Context, evt observability.Event) {
+func (p *eventCapturingProvider) RecordEvent(ctx context.Context, evt observability.Event) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.events = append(p.events, evt)
+	p.eventCtxs = append(p.eventCtxs, ctx)
+}
+
+func (p *eventCapturingProvider) lastEventCtx() context.Context {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.eventCtxs) == 0 {
+		return nil
+	}
+	return p.eventCtxs[len(p.eventCtxs)-1]
 }
 
 func (p *eventCapturingProvider) RecordingEnabled() bool {
@@ -280,6 +292,60 @@ func TestGateway_RouteStream_StampsRoutingAttrs(t *testing.T) {
 	}
 	if s, ok := got.(string); !ok || s == "" {
 		t.Errorf("ferro.routing.target_key must be a non-empty string, got %T(%v)", got, got)
+	}
+}
+
+// TestGateway_RouteStream_EventContextDetachedButTraced covers issue #181: the
+// observability event recorded from the streamwrap goroutine must be detached
+// from request cancellation (so it is not dead-on-arrival once the HTTP handler
+// returns) while still carrying the request's trace context / values via
+// context.WithoutCancel.
+func TestGateway_RouteStream_EventContextDetachedButTraced(t *testing.T) {
+	gw, _ := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: "mock"}},
+	})
+	ep := &eventCapturingProvider{recordingActive: true}
+	gw.SetObservability(ep)
+
+	gw.RegisterProvider(&mockStreamProvider{
+		mockProvider: mockProvider{name: "mock", models: []string{testModel}},
+	})
+
+	type ctxKey string
+	const marker ctxKey = "trace-marker"
+	reqCtx, cancel := context.WithCancel(context.WithValue(context.Background(), marker, "trace-xyz"))
+
+	ch, err := gw.RouteStream(reqCtx, providers.Request{
+		Model:    testModel,
+		Stream:   true,
+		Messages: []providers.Message{{Role: "user", Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("RouteStream: %v", err)
+	}
+	// Simulate the HTTP handler returning before the streamwrap goroutine
+	// records its completion event.
+	cancel()
+	//nolint:revive // intentionally draining the stream channel to completion
+	for range ch {
+	}
+
+	var evtCtx context.Context
+	for range 200 {
+		if evtCtx = ep.lastEventCtx(); evtCtx != nil {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if evtCtx == nil {
+		t.Fatal("no observability event was recorded")
+	}
+	if err := evtCtx.Err(); err != nil {
+		t.Fatalf("event ctx should be detached from cancellation, got %v", err)
+	}
+	if v, _ := evtCtx.Value(marker).(string); v != "trace-xyz" {
+		t.Fatalf("event ctx lost request trace value: got %q, want trace-xyz", v)
 	}
 }
 

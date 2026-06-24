@@ -2,6 +2,7 @@ package strategies
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 
@@ -40,6 +41,20 @@ func newLookup(pp ...providers.Provider) ProviderLookup {
 	return func(name string) (providers.Provider, bool) {
 		p, ok := m[name]
 		return p, ok
+	}
+}
+
+func lookupMissingAfterFirstHit(p providers.Provider) ProviderLookup {
+	calls := 0
+	return func(name string) (providers.Provider, bool) {
+		if name != p.Name() {
+			return nil, false
+		}
+		calls++
+		if calls == 1 {
+			return p, true
+		}
+		return nil, false
 	}
 }
 
@@ -234,8 +249,11 @@ func TestFallback_ContextCancelled(t *testing.T) {
 	cancel() // cancel immediately
 
 	_, err := f.Execute(ctx, providers.Request{Model: "gpt-4o", Messages: []providers.Message{{Role: "user", Content: "hi"}}})
-	if err == nil {
-		t.Fatal("expected error on cancelled context")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+	if bad.calls != 0 {
+		t.Fatalf("cancelled context should not call provider, got %d calls", bad.calls)
 	}
 }
 
@@ -382,6 +400,19 @@ func TestLoadBalance_MissingProvider(t *testing.T) {
 	_, err := lb.Execute(context.Background(), providers.Request{Model: "gpt-4o", Messages: []providers.Message{{Role: "user", Content: "hi"}}})
 	if err == nil {
 		t.Fatal("expected error when provider is not registered")
+	}
+}
+
+func TestLoadBalance_UnresolvableSelectedTargetReturnsError(t *testing.T) {
+	mp := &mockProvider{name: "a", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "a"}}
+	lb := NewLoadBalance(
+		[]Target{{VirtualKey: "a", Weight: 100}},
+		lookupMissingAfterFirstHit(mp),
+	)
+
+	_, err := lb.Execute(context.Background(), providers.Request{Model: "gpt-4o", Messages: []providers.Message{{Role: "user", Content: "hi"}}})
+	if err == nil {
+		t.Fatal("expected error when selected provider is no longer resolvable")
 	}
 }
 

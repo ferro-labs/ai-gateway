@@ -2,10 +2,12 @@ package strategies
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"time"
 
+	"github.com/ferro-labs/ai-gateway/internal/circuitbreaker"
 	"github.com/ferro-labs/ai-gateway/internal/logging"
 	"github.com/ferro-labs/ai-gateway/providers"
 )
@@ -77,10 +79,16 @@ func (f *Fallback) resolveRetry(virtualKey string) targetRetry {
 }
 
 // shouldRetry returns true if the error is eligible for another attempt given
-// the configured onStatusCodes list. When onStatusCodes is empty every error
-// is retryable. When it is non-empty, only errors whose embedded HTTP status
-// code appears in the list are retried.
+// the configured onStatusCodes list. Cancellation and open-circuit sentinel
+// errors are never retryable. When onStatusCodes is empty, other errors are
+// retryable. When it is non-empty, only errors whose embedded HTTP status code
+// appears in the list are retried.
 func shouldRetry(err error, onStatusCodes []int) bool {
+	if errors.Is(err, context.Canceled) ||
+		errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, circuitbreaker.ErrCircuitOpen) {
+		return false
+	}
 	if len(onStatusCodes) == 0 {
 		return true
 	}
@@ -123,6 +131,9 @@ func (f *Fallback) Execute(ctx context.Context, req providers.Request) (*provide
 		retry := f.resolveRetry(target.VirtualKey)
 
 		for attempt := 0; attempt < retry.attempts; attempt++ {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			if attempt > 0 {
 				backoff := time.Duration(math.Pow(2, float64(attempt-1))) *
 					time.Duration(retry.initialBackoffMs) * time.Millisecond

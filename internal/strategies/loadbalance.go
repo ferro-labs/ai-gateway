@@ -48,7 +48,10 @@ func (lb *LoadBalance) Execute(ctx context.Context, req providers.Request) (*pro
 		return nil, err
 	}
 
-	p, _ := lb.lookup(target.VirtualKey)
+	p, ok := lb.lookup(target.VirtualKey)
+	if !ok {
+		return nil, fmt.Errorf("load balancing based routing: provider not found: %s", target.VirtualKey)
+	}
 	resp, err := p.Complete(ctx, req)
 	if err != nil {
 		return nil, err

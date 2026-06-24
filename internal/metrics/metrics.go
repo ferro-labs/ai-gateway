@@ -114,6 +114,14 @@ var (
 		},
 		[]string{"subject"},
 	)
+
+	CatalogLoadsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "gateway_catalog_loads_total",
+			Help: "Total model catalog load attempts by source and result.",
+		},
+		[]string{"source", "result"},
+	)
 )
 
 // RequestMetricHandles stores cached Prometheus handles for a provider/model

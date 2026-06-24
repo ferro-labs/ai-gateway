@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ferro-labs/ai-gateway/internal/circuitbreaker"
 	"github.com/ferro-labs/ai-gateway/providers"
 )
 
@@ -16,6 +17,7 @@ type errProvider struct {
 	name   string
 	models []string
 	errMsg string
+	err    error
 	calls  int
 }
 
@@ -32,6 +34,9 @@ func (e *errProvider) SupportsModel(m string) bool {
 }
 func (e *errProvider) Complete(_ context.Context, _ providers.Request) (*providers.Response, error) {
 	e.calls++
+	if e.err != nil {
+		return nil, e.err
+	}
 	return nil, fmt.Errorf("%s", e.errMsg)
 }
 
@@ -103,6 +108,34 @@ func TestFallback_FallsThrough_ToNextTarget(t *testing.T) {
 	}
 }
 
+func TestFallback_CircuitOpenMovesToNextTargetWithoutRetry(t *testing.T) {
+	open := &errProvider{
+		name:   "open",
+		models: []string{"gpt-4o"},
+		err:    circuitbreaker.ErrCircuitOpen,
+	}
+	good := &mockProvider{name: "good", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "ok"}}
+
+	fb := NewFallback(
+		[]Target{{VirtualKey: "open"}, {VirtualKey: "good"}},
+		newLookup(open, good),
+	).WithTargetRetry("open", 3, nil, 0)
+
+	resp, err := fb.Execute(context.Background(), providers.Request{Model: "gpt-4o"})
+	if err != nil {
+		t.Fatalf("expected success from fallback target, got error: %v", err)
+	}
+	if resp.ID != "ok" {
+		t.Fatalf("got response ID %q, want ok", resp.ID)
+	}
+	if open.calls != 1 {
+		t.Fatalf("open circuit target calls = %d, want 1", open.calls)
+	}
+	if good.calls != 1 {
+		t.Fatalf("fallback target calls = %d, want 1", good.calls)
+	}
+}
+
 func TestFallback_NoTargets_RetryPolicy(t *testing.T) {
 	fb := NewFallback(nil, newLookup())
 	_, err := fb.Execute(context.Background(), providers.Request{Model: "gpt-4o"})
@@ -154,4 +187,14 @@ func TestShouldRetry(t *testing.T) {
 			}
 		})
 	}
+	nonRetryable := []error{context.Canceled, context.DeadlineExceeded, circuitbreaker.ErrCircuitOpen}
+	for _, err := range nonRetryable {
+		if shouldRetry(err, nil) {
+			t.Fatalf("shouldRetry(%v, nil) = true, want false", err)
+		}
+		if shouldRetry(err, []int{429}) {
+			t.Fatalf("shouldRetry(%v, [429]) = true, want false", err)
+		}
+	}
+
 }
