@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/ferro-labs/ai-gateway/providers"
 )
@@ -181,8 +182,8 @@ func TestManager_RunBefore_PanicReturnsError(t *testing.T) {
 	if !strings.Contains(err.Error(), "plugin panic-guard panicked") {
 		t.Fatalf("error = %q, want plugin panic context", err.Error())
 	}
-	if !strings.Contains(err.Error(), "runtime/debug.Stack") {
-		t.Fatalf("error = %q, want panic stack", err.Error())
+	if strings.Contains(err.Error(), "runtime/debug.Stack") {
+		t.Fatalf("error = %q, should not expose panic stack", err.Error())
 	}
 }
 
@@ -339,6 +340,48 @@ func TestManager_CloseClosesDistinctInstances(t *testing.T) {
 	}
 	if closed != 2 {
 		t.Fatalf("closed = %d, want 2 distinct instances closed", closed)
+	}
+}
+
+func TestManager_CloseReturnsWhileActiveAndClosesAfterRelease(t *testing.T) {
+	m := NewManager()
+	closed := make(chan struct{})
+	var closeOnce sync.Once
+	_ = m.Register(StageAfterRequest, &mockPlugin{
+		name: "deferred-close",
+		typ:  TypeLogging,
+		closeFn: func() error {
+			closeOnce.Do(func() { close(closed) })
+			return nil
+		},
+	})
+	release := m.Acquire()
+
+	closeReturned := make(chan error, 1)
+	go func() {
+		closeReturned <- m.Close()
+	}()
+
+	select {
+	case err := <-closeReturned:
+		if err != nil {
+			t.Fatalf("Close() error: %v", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("Close blocked while manager was active")
+	}
+	select {
+	case <-closed:
+		t.Fatal("plugin closed before active manager user released")
+	default:
+	}
+
+	release()
+
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for deferred plugin close")
 	}
 }
 

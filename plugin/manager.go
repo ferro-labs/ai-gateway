@@ -183,7 +183,14 @@ func (m *Manager) executePlugin(ctx context.Context, p Plugin, pctx *Context, st
 	))
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			err = fmt.Errorf("plugin %s panicked at %s: %v\n%s", p.Name(), stage, recovered, debug.Stack())
+			stack := debug.Stack()
+			err = fmt.Errorf("plugin %s panicked at %s", p.Name(), stage)
+			logging.Logger.Error("plugin panicked",
+				"plugin", p.Name(),
+				"stage", stage,
+				"panic", recovered,
+				"stack", string(stack),
+			)
 			span.SetAttributes(attribute.String(observability.AttrFerroPluginOutcome, "error"))
 			span.SetStatus(codes.Error, err.Error())
 		}
@@ -207,21 +214,41 @@ func (m *Manager) executePlugin(ctx context.Context, p Plugin, pctx *Context, st
 	return err
 }
 
-// Close waits for active users, releases each registered plugin instance once,
-// and clears the manager.
+// Close starts closing the manager, releases each registered plugin instance
+// once, and clears the manager. If requests are still using this manager, Close
+// returns immediately and cleanup runs after the active users drain.
 func (m *Manager) Close() error {
 	m.lifecycleMu.Lock()
 	m.ensureLifecycleLocked()
-	for m.active > 0 {
-		m.lifecycle.Wait()
-	}
 	if m.closed {
 		m.lifecycleMu.Unlock()
 		return nil
 	}
 	m.closed = true
+	if m.active > 0 {
+		m.lifecycleMu.Unlock()
+		go m.closeWhenDrained()
+		return nil
+	}
 	m.lifecycleMu.Unlock()
 
+	return m.closePlugins()
+}
+
+func (m *Manager) closeWhenDrained() {
+	m.lifecycleMu.Lock()
+	m.ensureLifecycleLocked()
+	for m.active > 0 {
+		m.lifecycle.Wait()
+	}
+	m.lifecycleMu.Unlock()
+
+	if err := m.closePlugins(); err != nil {
+		logging.Logger.Warn("deferred plugin close failed", "error", err)
+	}
+}
+
+func (m *Manager) closePlugins() error {
 	m.mu.Lock()
 	plugins := make([]Plugin, 0, len(m.before)+len(m.after)+len(m.onErr))
 	plugins = append(plugins, m.before...)

@@ -2686,7 +2686,7 @@ func TestGateway_ReloadConfig_ClosesOldPlugins(t *testing.T) {
 	}
 }
 
-func TestGateway_ReloadConfig_WaitsForInFlightRoutePlugins(t *testing.T) {
+func TestGateway_ReloadConfig_DefersOldPluginCloseUntilInFlightRouteFinishes(t *testing.T) {
 	provider := newGateMockProvider(&providers.Response{ID: "ok", Model: "gpt-4o"}, nil)
 	gw, err := New(Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
@@ -2736,9 +2736,17 @@ func TestGateway_ReloadConfig_WaitsForInFlightRoutePlugins(t *testing.T) {
 	}()
 
 	select {
+	case err := <-reloadDone:
+		if err != nil {
+			t.Fatalf("ReloadConfig: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("reload blocked behind in-flight route")
+	}
+	select {
 	case <-oldClosed:
 		t.Fatal("old plugin manager closed while an in-flight route could still run after/error plugins")
-	case <-time.After(200 * time.Millisecond):
+	default:
 	}
 
 	provider.releaseAll()
@@ -2755,14 +2763,6 @@ func TestGateway_ReloadConfig_WaitsForInFlightRoutePlugins(t *testing.T) {
 	case <-afterRan:
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for after plugin")
-	}
-	select {
-	case err := <-reloadDone:
-		if err != nil {
-			t.Fatalf("ReloadConfig: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for reload")
 	}
 	select {
 	case <-oldClosed:
