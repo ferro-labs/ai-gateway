@@ -128,9 +128,10 @@ type ProviderEntry struct {
 	//
 	// Use this for providers whose activation depends on an OR condition across
 	// multiple env vars — for example, Bedrock is considered configured when
-	// either AWS_REGION or AWS_ACCESS_KEY_ID is set (allowing instance-role auth
-	// with an explicit region, or explicit static credentials without a region
-	// env var). When ConfiguredFn is set, no EnvMapping needs Required=true.
+	// AWS_BEARER_TOKEN_BEDROCK, AWS_REGION, or AWS_ACCESS_KEY_ID is set
+	// (allowing bearer auth, instance-role auth with an explicit region, or
+	// explicit static credentials without a region env var). When ConfiguredFn
+	// is set, no EnvMapping needs Required=true.
 	ConfiguredFn func(cfg ProviderConfig) bool
 }
 

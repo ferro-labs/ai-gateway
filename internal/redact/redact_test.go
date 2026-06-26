@@ -37,6 +37,25 @@ func TestDefaultRedactorJWT(t *testing.T) {
 	}
 }
 
+func TestDefaultRedactorBearerToken(t *testing.T) {
+	r := DefaultRedactor()
+	got := r.Redact("Authorization: Bearer bedrock-token_123.abc/def")
+	want := "Authorization: Bearer [REDACTED_BEARER_TOKEN]"
+	if got != want {
+		t.Errorf("Redact bearer token\n got: %q\nwant: %q", got, want)
+	}
+}
+
+func TestDefaultRedactorBearerJWTUsesBearerPolicy(t *testing.T) {
+	r := DefaultRedactor()
+	jwt := "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+	got := r.Redact("Authorization: Bearer " + jwt)
+	want := "Authorization: Bearer [REDACTED_BEARER_TOKEN]"
+	if got != want {
+		t.Errorf("Redact bearer JWT\n got: %q\nwant: %q", got, want)
+	}
+}
+
 func TestDefaultRedactorAWSKey(t *testing.T) {
 	r := DefaultRedactor()
 	in := "key=" + awsKeyFixture("example") + " found"
@@ -91,10 +110,10 @@ func TestCustomPolicy(t *testing.T) {
 func TestPoliciesReturnsConfiguredList(t *testing.T) {
 	r := DefaultRedactor()
 	got := r.Policies()
-	if len(got) != 3 {
-		t.Fatalf("expected 3 default policies, got %d", len(got))
+	if len(got) != 4 {
+		t.Fatalf("expected 4 default policies, got %d", len(got))
 	}
-	wantNames := map[string]bool{"email": true, "jwt": true, "aws_access_key": true}
+	wantNames := map[string]bool{"email": true, "bearer_token": true, "jwt": true, "aws_access_key": true}
 	for _, p := range got {
 		if !wantNames[p.Name] {
 			t.Errorf("unexpected policy name %q", p.Name)

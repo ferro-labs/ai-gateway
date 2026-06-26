@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -62,6 +63,36 @@ func TestNewBedrockWithOptions_BearerTokenAuthHeaders(t *testing.T) {
 	headers := p.AuthHeaders()
 	if got := headers["Authorization"]; got != "Bearer test-bearer-token" {
 		t.Errorf("Authorization = %q, want Bearer test-bearer-token", got)
+	}
+}
+
+func TestNewBedrockWithOptions_BearerTokenConfiguresSDKAuthScheme(t *testing.T) {
+	t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
+
+	p, err := NewWithOptions(Options{
+		BearerToken: "test-sdk-bearer-token",
+	})
+	if err != nil {
+		t.Fatalf("NewBedrockWithOptions() error: %v", err)
+	}
+
+	client, ok := p.client.(realBedrockClient)
+	if !ok {
+		t.Fatalf("client type = %T, want realBedrockClient", p.client)
+	}
+	opts := client.Options()
+	if !slices.Contains(opts.AuthSchemePreference, "httpBearerAuth") {
+		t.Fatalf("AuthSchemePreference = %#v, want httpBearerAuth", opts.AuthSchemePreference)
+	}
+	if opts.BearerAuthTokenProvider == nil {
+		t.Fatal("BearerAuthTokenProvider = nil, want configured provider")
+	}
+	token, err := opts.BearerAuthTokenProvider.RetrieveBearerToken(context.Background())
+	if err != nil {
+		t.Fatalf("RetrieveBearerToken() error: %v", err)
+	}
+	if token.Value != "test-sdk-bearer-token" {
+		t.Errorf("bearer token = %q, want test-sdk-bearer-token", token.Value)
 	}
 }
 
