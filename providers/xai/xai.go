@@ -33,6 +33,7 @@ var (
 	_ core.StreamProvider    = (*Provider)(nil)
 	_ core.DiscoveryProvider = (*Provider)(nil)
 	_ core.ProxiableProvider = (*Provider)(nil)
+	_ core.ImageProvider     = (*Provider)(nil)
 )
 
 // New creates a new xAI provider.
@@ -66,6 +67,9 @@ func (p *Provider) SupportedModels() []string {
 		"grok-2-latest",
 		"grok-2-vision-latest",
 		"grok-beta",
+		"grok-2-image",
+		"grok-2-image-1212",
+		"grok-2-image-latest",
 	}
 }
 

@@ -4,14 +4,26 @@ package gemini
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
 	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
+
+// sanitizeRequestErr strips the request URL (which carries the ?key= API key)
+// from *url.Error so the key never reaches logs or client-facing error bodies.
+func sanitizeRequestErr(err error) error {
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return fmt.Errorf("%s %s: %w", urlErr.Op, "[redacted]", urlErr.Err)
+	}
+	return err
+}
 
 // Name is the canonical provider identifier.
 const Name = "gemini"
@@ -31,6 +43,7 @@ var (
 	_ core.Provider          = (*Provider)(nil)
 	_ core.StreamProvider    = (*Provider)(nil)
 	_ core.EmbeddingProvider = (*Provider)(nil)
+	_ core.ImageProvider     = (*Provider)(nil)
 	_ core.ProxiableProvider = (*Provider)(nil)
 )
 
@@ -71,13 +84,16 @@ func (p *Provider) SupportedModels() []string {
 		"gemini-embedding-001",
 		"text-embedding-004",
 		"embedding-001",
+		"imagen-4.0-generate-001",
+		"imagen-4.0-ultra-generate-001",
+		"imagen-4.0-fast-generate-001",
 	}
 }
 
-// SupportsModel returns true if the model is a known Gemini chat or embedding model.
+// SupportsModel returns true if the model is a known Gemini chat, embedding, or image model.
 func (p *Provider) SupportsModel(model string) bool {
 	model = strings.TrimPrefix(model, "models/")
-	if strings.HasPrefix(model, "gemini-") {
+	if strings.HasPrefix(model, "gemini-") || strings.HasPrefix(model, "imagen-") {
 		return true
 	}
 	switch model {
@@ -525,7 +541,7 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 	}
 	defer release()
 
-	url := fmt.Sprintf("%s/v1beta/models/%s:batchEmbedContents?key=%s", p.baseURL, model, p.apiKey)
+	url := fmt.Sprintf("%s/v1beta/models/%s:batchEmbedContents?key=%s", p.baseURL, url.PathEscape(model), p.apiKey)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bodyReader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create embed request: %w", err)
@@ -534,7 +550,7 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 
 	httpResp, err := p.httpClient.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("embed request failed: %w", err)
+		return nil, fmt.Errorf("embed request failed: %w", sanitizeRequestErr(err))
 	}
 	defer func() { _ = httpResp.Body.Close() }()
 
@@ -595,7 +611,7 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 	}
 	defer release()
 
-	url := fmt.Sprintf("%s/v1beta/models/%s:generateContent?key=%s", p.baseURL, req.Model, p.apiKey)
+	url := fmt.Sprintf("%s/v1beta/models/%s:generateContent?key=%s", p.baseURL, url.PathEscape(req.Model), p.apiKey)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bodyReader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
@@ -604,7 +620,7 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 
 	httpResp, err := p.httpClient.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
+		return nil, fmt.Errorf("request failed: %w", sanitizeRequestErr(err))
 	}
 	defer func() { _ = httpResp.Body.Close() }()
 
@@ -686,7 +702,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 	}
 	defer release()
 
-	url := fmt.Sprintf("%s/v1beta/models/%s:streamGenerateContent?key=%s&alt=sse", p.baseURL, req.Model, p.apiKey)
+	url := fmt.Sprintf("%s/v1beta/models/%s:streamGenerateContent?key=%s&alt=sse", p.baseURL, url.PathEscape(req.Model), p.apiKey)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bodyReader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
@@ -695,7 +711,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 
 	httpResp, err := p.httpClient.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
+		return nil, fmt.Errorf("request failed: %w", sanitizeRequestErr(err))
 	}
 
 	if httpResp.StatusCode != http.StatusOK {

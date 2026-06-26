@@ -10,6 +10,47 @@ import (
 	"time"
 )
 
+// TestAnthropicProvider_DiscoverModels verifies live model discovery uses the
+// x-api-key + anthropic-version headers (not Bearer) and maps the response.
+func TestAnthropicProvider_DiscoverModels(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("method = %q, want GET", r.Method)
+		}
+		if r.URL.Path != "/v1/models" {
+			t.Errorf("path = %q, want /v1/models", r.URL.Path)
+		}
+		if r.Header.Get("x-api-key") != "sk-test-key" {
+			t.Errorf("x-api-key = %q, want sk-test-key", r.Header.Get("x-api-key"))
+		}
+		if r.Header.Get("anthropic-version") != "2023-06-01" {
+			t.Errorf("anthropic-version = %q, want 2023-06-01", r.Header.Get("anthropic-version"))
+		}
+		if r.Header.Get("Authorization") != "" {
+			t.Errorf("Authorization = %q, want empty (anthropic uses x-api-key)", r.Header.Get("Authorization"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"claude-sonnet-4-20250514","object":"model","created":1700000000,"owned_by":"anthropic"},{"id":"claude-3-haiku-20240307","object":"model"}]}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New("sk-test-key", srv.URL)
+	models, err := p.DiscoverModels(context.Background())
+	if err != nil {
+		t.Fatalf("DiscoverModels() error: %v", err)
+	}
+	if len(models) != 2 {
+		t.Fatalf("expected 2 models, got %d", len(models))
+	}
+	if models[0].ID != "claude-sonnet-4-20250514" || models[0].OwnedBy != "anthropic" {
+		t.Errorf("unexpected model[0]: %+v", models[0])
+	}
+	if models[1].ID != "claude-3-haiku-20240307" || models[1].OwnedBy != "anthropic" {
+		t.Errorf("model[1] owned_by fallback = %q, want anthropic", models[1].OwnedBy)
+	}
+}
+
 // TestNewAnthropic tests the Anthropic provider constructor.
 func TestNewAnthropic(t *testing.T) {
 	provider, err := New("sk-test-key", "")

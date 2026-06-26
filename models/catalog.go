@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -405,6 +406,48 @@ func (c Catalog) resolve(key string, forPricing bool) (Model, bool) {
 		}
 	}
 	return Model{}, false
+}
+
+// CatalogPrefixesFor returns the catalog key-prefix chain for a gateway provider
+// ID. Gateway provider IDs (azure-openai, azure-foundry, vertex-ai) differ from
+// model-catalog key prefixes (azure_openai, azure, …); aliased IDs return their
+// full chain while every other ID maps to itself. The returned slice is always a
+// fresh copy, so callers may mutate it without corrupting catalogProviderAliases.
+func CatalogPrefixesFor(providerID string) []string {
+	if chain, ok := catalogProviderAliases[providerID]; ok {
+		out := make([]string, len(chain))
+		copy(out, chain)
+		return out
+	}
+	return []string{providerID}
+}
+
+// ModelsForProvider returns the sorted, de-duplicated bare model IDs of every
+// catalog entry whose Provider matches any prefix in the gateway provider's
+// catalog prefix chain (see [CatalogPrefixesFor]). All lifecycle states are
+// included — deprecation is surfaced separately by the /v1/models response.
+// An unknown provider with no entries yields an empty slice.
+func (c Catalog) ModelsForProvider(providerID string) []string {
+	prefixes := CatalogPrefixesFor(providerID)
+	wanted := make(map[string]struct{}, len(prefixes))
+	for _, p := range prefixes {
+		wanted[p] = struct{}{}
+	}
+
+	seen := make(map[string]struct{})
+	ids := make([]string, 0)
+	for _, m := range c {
+		if _, ok := wanted[m.Provider]; !ok {
+			continue
+		}
+		if _, dup := seen[m.ModelID]; dup {
+			continue
+		}
+		seen[m.ModelID] = struct{}{}
+		ids = append(ids, m.ModelID)
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 // IsDeprecated returns true when the model's lifecycle status is deprecated or legacy.

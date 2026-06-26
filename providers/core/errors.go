@@ -1,9 +1,16 @@
 package core
 
 import (
+	"errors"
 	"regexp"
 	"strconv"
 )
+
+// ErrNoCapableProvider signals that no registered provider supports the
+// requested model for a given capability (embeddings, image generation, etc.).
+// Handlers wrap this with errors.Is to distinguish "model not found / capability
+// unsupported" (HTTP 404, invalid_request_error) from upstream server faults.
+var ErrNoCapableProvider = errors.New("no capable provider for model")
 
 // statusCodePattern matches HTTP status codes formatted as "(NNN)" inside
 // provider error messages (e.g. "provider API error (429): ...").

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"golang.org/x/oauth2"
@@ -42,6 +43,7 @@ var (
 	_ core.Provider          = (*Provider)(nil)
 	_ core.StreamProvider    = (*Provider)(nil)
 	_ core.EmbeddingProvider = (*Provider)(nil)
+	_ core.ImageProvider     = (*Provider)(nil)
 	_ core.ProxiableProvider = (*Provider)(nil)
 )
 
@@ -118,16 +120,21 @@ func (p *Provider) SupportedModels() []string {
 		"text-multilingual-embedding-002",
 		"textembedding-gecko@003",
 		"textembedding-gecko-multilingual@001",
+		"imagen-4.0-generate-001",
+		"imagen-4.0-ultra-generate-001",
+		"imagen-4.0-fast-generate-001",
+		"imagen-3.0-generate-002",
 	}
 }
 
-// SupportsModel returns true for known Vertex AI chat and text embedding model families.
+// SupportsModel returns true for known Vertex AI chat, text embedding, and image model families.
 func (p *Provider) SupportsModel(model string) bool {
 	model = vertexAIModelID(model)
 	return strings.HasPrefix(model, "gemini-") ||
 		strings.HasPrefix(model, "text-embedding-") ||
 		strings.HasPrefix(model, "textembedding-gecko") ||
-		strings.HasPrefix(model, "text-multilingual-embedding-")
+		strings.HasPrefix(model, "text-multilingual-embedding-") ||
+		strings.HasPrefix(model, "imagen-")
 }
 
 // Models returns structured model metadata.
@@ -192,7 +199,7 @@ func (p *Provider) endpoint() string {
 func (p *Provider) predictionEndpoint(model string) string {
 	baseURL := strings.TrimRight(p.baseURL, "/")
 	baseURL = strings.TrimSuffix(baseURL, "/endpoints/openapi")
-	return fmt.Sprintf("%s/publishers/google/models/%s:predict", baseURL, vertexAIModelID(model))
+	return fmt.Sprintf("%s/publishers/google/models/%s:predict", baseURL, url.PathEscape(vertexAIModelID(model)))
 }
 
 func (p *Provider) authorizeRequest(req *http.Request) error {

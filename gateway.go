@@ -270,6 +270,11 @@ func (g *Gateway) refreshCatalog() {
 
 	g.mu.Lock()
 	g.catalog = result.Catalog
+	// The exact-match routing index is derived from the catalog (issue #146),
+	// so it must be rebuilt whenever the catalog is replaced — otherwise the
+	// 24h refresh would leave routing frozen at the startup catalog while
+	// /v1/models reflects the new one.
+	g.rebuildModelIndexesLocked()
 	if g.config.Strategy.Mode == ModeCostOptimized {
 		g.strategy = nil
 	}
@@ -1752,6 +1757,35 @@ func appendRemainingTargetKeys(keys []string, targets []Target) []string {
 	return keys
 }
 
+// modelsForRoutingLocked returns the model IDs used to build the exact-match
+// routing index for a provider: the union of its hardcoded SupportedModels()
+// and the catalog's models for that provider (issue #146). Deriving from the
+// catalog lets exact-match providers route valid models their hand-maintained
+// slices omit, without per-provider edits. Falls back to the hardcoded slice
+// when the catalog has no entries for the provider (e.g. self-hosted Ollama).
+func (g *Gateway) modelsForRoutingLocked(name string, p providers.Provider) []string {
+	hardcoded := p.SupportedModels()
+	catModels := g.catalog.ModelsForProvider(name)
+	if len(catModels) == 0 {
+		return hardcoded
+	}
+	seen := make(map[string]struct{}, len(hardcoded)+len(catModels))
+	out := make([]string, 0, len(hardcoded)+len(catModels))
+	for _, m := range hardcoded {
+		if _, ok := seen[m]; !ok {
+			seen[m] = struct{}{}
+			out = append(out, m)
+		}
+	}
+	for _, m := range catModels {
+		if _, ok := seen[m]; !ok {
+			seen[m] = struct{}{}
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
 func (g *Gateway) rebuildModelIndexesLocked() {
 	g.modelIndex.exactProviders = make(map[string][]string)
 	g.modelIndex.exactStreamProviders = make(map[string][]string)
@@ -1763,7 +1797,7 @@ func (g *Gateway) rebuildModelIndexesLocked() {
 		if !ok {
 			continue
 		}
-		models := p.SupportedModels()
+		models := g.modelsForRoutingLocked(name, p)
 		for _, model := range models {
 			g.modelIndex.exactProviders[model] = append(g.modelIndex.exactProviders[model], name)
 		}
@@ -1993,8 +2027,11 @@ func (g *Gateway) AllModels() []providers.ModelInfo {
 		if !ok {
 			continue
 		}
+		// Precedence (issue #146): live discovery > catalog > hardcoded fallback.
 		if discovered, ok := g.discoveredModels[name]; ok && len(discovered) > 0 {
 			models = append(models, discovered...)
+		} else if catModels := g.catalog.ModelsForProvider(name); len(catModels) > 0 {
+			models = append(models, core.ModelsFromList(name, catModels)...)
 		} else {
 			models = append(models, p.Models()...)
 		}
@@ -2104,7 +2141,7 @@ func (g *Gateway) Embed(ctx context.Context, req providers.EmbeddingRequest) (*p
 	g.mu.RUnlock()
 
 	if !ok {
-		return nil, fmt.Errorf("no embedding provider found for model: %s", req.Model)
+		return nil, fmt.Errorf("%w: no embedding provider for %q", core.ErrNoCapableProvider, req.Model)
 	}
 
 	resp, err := ep.Embed(ctx, req)
@@ -2130,7 +2167,7 @@ func (g *Gateway) GenerateImage(ctx context.Context, req providers.ImageRequest)
 	g.mu.RUnlock()
 
 	if !ok {
-		return nil, fmt.Errorf("no image generation provider found for model: %s", req.Model)
+		return nil, fmt.Errorf("%w: no image generation provider for %q", core.ErrNoCapableProvider, req.Model)
 	}
 
 	resp, err := ip.GenerateImage(ctx, req)

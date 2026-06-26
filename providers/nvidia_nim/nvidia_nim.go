@@ -31,6 +31,7 @@ var (
 	_ core.Provider          = (*Provider)(nil)
 	_ core.StreamProvider    = (*Provider)(nil)
 	_ core.ProxiableProvider = (*Provider)(nil)
+	_ core.EmbeddingProvider = (*Provider)(nil)
 )
 
 // New creates a new NVIDIA NIM provider.

@@ -333,3 +333,21 @@ func TestVertexAIProvider_CompleteStream_MockSSE(t *testing.T) {
 		t.Errorf("delta content = %q, want Hello", chunks[1].Choices[0].Delta.Content)
 	}
 }
+
+func TestPredictionEndpointPathEscapesModel(t *testing.T) {
+	p, err := New(Options{ProjectID: "proj", Region: "us-central1", APIKey: testAPIKey})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	got := p.predictionEndpoint("imagen/../etc passwd@001")
+	if strings.Contains(got, " ") {
+		t.Errorf("predictionEndpoint left raw space in URL path: %q", got)
+	}
+	if !strings.HasSuffix(got, ":predict") {
+		t.Errorf("predictionEndpoint dropped :predict suffix: %q", got)
+	}
+	if !strings.Contains(got, "/publishers/google/models/") {
+		t.Errorf("predictionEndpoint malformed path: %q", got)
+	}
+}

@@ -105,6 +105,16 @@ func Serve() {
 	// Block until OS signal or a fatal server error.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 
+	// Opt-in live model discovery: refreshes provider model lists in the
+	// background and stops when the lifecycle ctx is cancelled on shutdown.
+	if interval, ok := discoveryIntervalFromEnv(); ok {
+		if err := gw.StartDiscovery(ctx, interval); err != nil {
+			logging.Logger.Warn("model discovery not started", "error", err)
+		} else {
+			logging.Logger.Info("model discovery enabled", "interval", interval.String())
+		}
+	}
+
 	var listenErr error
 	select {
 	case <-ctx.Done():
@@ -148,6 +158,23 @@ func Serve() {
 	if listenErr != nil && listenErr != http.ErrServerClosed {
 		os.Exit(1)
 	}
+}
+
+// discoveryIntervalFromEnv reads the FERRO_MODEL_DISCOVERY_INTERVAL env var and
+// returns the opt-in refresh interval for live model discovery. It is pure: it
+// performs no logging. Returns (0, false) when the var is unset/empty, fails to
+// parse, or resolves to a duration below the 1-minute minimum (which guards
+// against a hot-loop of provider API calls); otherwise (interval, true).
+func discoveryIntervalFromEnv() (time.Duration, bool) {
+	raw := strings.TrimSpace(os.Getenv("FERRO_MODEL_DISCOVERY_INTERVAL"))
+	if raw == "" {
+		return 0, false
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d < time.Minute {
+		return 0, false
+	}
+	return d, true
 }
 
 // ResolveMasterKey returns the master key from the MASTER_KEY env var.

@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/ferro-labs/ai-gateway/internal/anthropicwire"
+	"github.com/ferro-labs/ai-gateway/internal/discovery"
 	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
@@ -28,6 +29,10 @@ const Name = "anthropic"
 
 const defaultBaseURL = "https://api.anthropic.com"
 
+// anthropicVersion is the API version sent on every request via the
+// anthropic-version header.
+const anthropicVersion = "2023-06-01"
+
 // Provider implements the Anthropic API client.
 type Provider struct {
 	name       string
@@ -41,6 +46,7 @@ var (
 	_ core.Provider          = (*Provider)(nil)
 	_ core.StreamProvider    = (*Provider)(nil)
 	_ core.ProxiableProvider = (*Provider)(nil)
+	_ core.DiscoveryProvider = (*Provider)(nil)
 )
 
 // New creates a new Anthropic provider.
@@ -70,8 +76,18 @@ func (p *Provider) BaseURL() string { return p.baseURL }
 func (p *Provider) AuthHeaders() map[string]string {
 	return map[string]string{
 		"x-api-key":         p.apiKey,
-		"anthropic-version": "2023-06-01",
+		"anthropic-version": anthropicVersion,
 	}
+}
+
+// DiscoverModels fetches the live model list from the Anthropic /v1/models
+// endpoint, which uses x-api-key + anthropic-version headers rather than Bearer.
+func (p *Provider) DiscoverModels(ctx context.Context) ([]core.ModelInfo, error) {
+	headers := map[string]string{
+		"x-api-key":         p.apiKey,
+		"anthropic-version": anthropicVersion,
+	}
+	return discovery.DiscoverModelsWithHeaders(ctx, p.httpClient, p.baseURL+"/v1/models", headers, p.name)
 }
 
 // SupportedModels returns the list of models supported by this provider.
@@ -359,7 +375,7 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 	httpReq.Header.Set("x-api-key", p.apiKey)
-	httpReq.Header.Set("anthropic-version", "2023-06-01")
+	httpReq.Header.Set("anthropic-version", anthropicVersion)
 	httpReq.Header.Set("content-type", "application/json")
 
 	httpResp, err := p.httpClient.Do(httpReq) //nolint:gosec // baseURL validated in New()
@@ -509,7 +525,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 	httpReq.Header.Set("x-api-key", p.apiKey)
-	httpReq.Header.Set("anthropic-version", "2023-06-01")
+	httpReq.Header.Set("anthropic-version", anthropicVersion)
 	httpReq.Header.Set("content-type", "application/json")
 
 	httpResp, err := p.httpClient.Do(httpReq) //nolint:gosec // baseURL validated in New()
