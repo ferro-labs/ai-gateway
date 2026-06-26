@@ -197,7 +197,7 @@ func TestStress_ReloadUnderLoad_NoRace(t *testing.T) {
 			default:
 			}
 			gw.mu.Lock()
-			gw.circuitBreakers["stub"] = circuitbreaker.New(5, 1, time.Second)
+			gw.circuitBreakers["stub"] = circuitbreaker.New(5, 1, 1, time.Second)
 			gw.providers["stub"] = &stressStubProvider{name: "stub", models: []string{"gpt-4o"}}
 			gw.mu.Unlock()
 			mutations.Add(1)

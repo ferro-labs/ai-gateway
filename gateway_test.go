@@ -1212,6 +1212,78 @@ func TestShouldRecordCircuitBreakerFailure(t *testing.T) {
 	}
 }
 
+func TestGateway_CircuitBreaker_ReleasesHalfOpenProbeForIgnoredRateLimit(t *testing.T) {
+	var calls atomic.Int32
+	gw, err := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets: []Target{
+			{
+				VirtualKey: mockProviderName,
+				CircuitBreaker: &CircuitBreakerConfig{
+					FailureThreshold: 1,
+					SuccessThreshold: 1,
+					MaxHalfThreshold: 1,
+					Timeout:          "1ms",
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+	gw.RegisterProvider(&mockProvider{
+		name:   mockProviderName,
+		models: []string{"gpt-4o"},
+		completeFn: func(context.Context, providers.Request) (*providers.Response, error) {
+			switch calls.Add(1) {
+			case 1:
+				return nil, errors.New("provider API error (500): unavailable")
+			case 2:
+				return nil, errors.New("provider API error (429): rate limited")
+			default:
+				return &providers.Response{ID: "recovered", Model: "gpt-4o"}, nil
+			}
+		},
+	})
+
+	req := providers.Request{Model: "gpt-4o", Messages: []providers.Message{{Role: "user", Content: "hi"}}}
+	if _, err := gw.Route(context.Background(), req); err == nil {
+		t.Fatal("expected first provider failure to open the circuit")
+	}
+	time.Sleep(5 * time.Millisecond)
+	if _, err := gw.Route(context.Background(), req); err == nil || !isRateLimitError(err) {
+		t.Fatalf("expected ignored 429 from half-open probe, got %v", err)
+	}
+	resp, err := gw.Route(context.Background(), req)
+	if err != nil {
+		t.Fatalf("expected released half-open slot to allow recovery probe, got %v", err)
+	}
+	if resp.ID != "recovered" {
+		t.Fatalf("response ID = %q, want recovered", resp.ID)
+	}
+}
+
+func TestRecordStreamCircuitBreakerOutcome_ReleasesHalfOpenProbeForClientCancel(t *testing.T) {
+	cb := circuitbreaker.New(1, 1, 1, 1*time.Millisecond)
+	cb.RecordFailure()
+	time.Sleep(5 * time.Millisecond)
+	_ = cb.State()
+	if !cb.Allow() {
+		t.Fatal("expected first half-open stream probe allowed")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	recordStreamCircuitBreakerOutcome(ctx, cb, mockProviderName, context.Canceled)
+
+	if cb.State() != circuitbreaker.StateHalfOpen {
+		t.Fatalf("expected ignored client cancel to keep half-open state, got %s", cb.State())
+	}
+	if !cb.Allow() {
+		t.Fatal("expected ignored stream outcome to release half-open probe slot")
+	}
+}
+
 func TestGateway_RouteStream_FallbackSkipsOpenCircuitBreakerTarget(t *testing.T) {
 	var selected atomic.Value
 	gw, err := New(Config{
@@ -3466,6 +3538,97 @@ func BenchmarkFindByModel(b *testing.B) {
 		if _, ok := gw.FindByModel("gpt-4o"); !ok {
 			b.Fatal("expected model lookup to succeed")
 		}
+	}
+}
+
+// blockAfterFirstMock fails on its first Complete call (to trip the circuit
+// breaker) and blocks on the second call until release is closed — used to
+// hold a half-open probe slot while a concurrent request tests the cap.
+type blockAfterFirstMock struct {
+	mockProvider
+	callN   atomic.Int32
+	ready   chan struct{} // closed when the second call enters Complete
+	release chan struct{} // closed to let the second call return
+}
+
+func (m *blockAfterFirstMock) Complete(_ context.Context, _ providers.Request) (*providers.Response, error) {
+	if n := m.callN.Add(1); n == 1 {
+		return nil, errors.New("provider down")
+	}
+	close(m.ready)
+	<-m.release
+	return m.resp, nil
+}
+
+// TestGateway_CircuitBreaker_MaxHalfThreshold_FromConfig verifies that the
+// MaxHalfThreshold value in CircuitBreakerConfig is wired into the circuit
+// breaker: while one half-open probe is in-flight, a concurrent request must
+// be rejected with ErrCircuitOpen.
+func TestGateway_CircuitBreaker_MaxHalfThreshold_FromConfig(t *testing.T) {
+	mock := &blockAfterFirstMock{
+		mockProvider: mockProvider{
+			name:   "mock-cb",
+			models: []string{"gpt-4o"},
+			resp:   &providers.Response{ID: "ok", Model: "gpt-4o"},
+		},
+		ready:   make(chan struct{}),
+		release: make(chan struct{}),
+	}
+
+	gw, _ := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets: []Target{{
+			VirtualKey: "mock-cb",
+			CircuitBreaker: &CircuitBreakerConfig{
+				FailureThreshold: 1,
+				SuccessThreshold: 1,
+				MaxHalfThreshold: 1,
+				Timeout:          "1ms",
+			},
+		}},
+	})
+	gw.RegisterProvider(mock)
+
+	req := providers.Request{
+		Model:    "gpt-4o",
+		Messages: []providers.Message{{Role: "user", Content: "hi"}},
+	}
+
+	// Trip the circuit: first call fails → circuit opens.
+	_, _ = gw.Route(context.Background(), req)
+
+	// Wait for half-open transition.
+	time.Sleep(5 * time.Millisecond)
+
+	// Probe 1: admitted into half-open, blocks inside provider holding the slot.
+	probe1Err := make(chan error, 1)
+	go func() {
+		_, err := gw.Route(context.Background(), req)
+		probe1Err <- err
+	}()
+
+	// Wait until probe 1 is holding the in-flight slot (halfOpenProbes=1).
+	select {
+	case <-mock.ready:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for probe 1 to enter provider")
+	}
+
+	// Probe 2: cap=1 already consumed → must be rejected.
+	_, err := gw.Route(context.Background(), req)
+	if !errors.Is(err, circuitbreaker.ErrCircuitOpen) {
+		t.Errorf("expected ErrCircuitOpen for second concurrent half-open probe, got %v", err)
+	}
+
+	// Release probe 1 and verify it succeeds.
+	close(mock.release)
+	select {
+	case err := <-probe1Err:
+		if err != nil {
+			t.Errorf("probe 1 expected success, got %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for probe 1 to complete")
 	}
 }
 

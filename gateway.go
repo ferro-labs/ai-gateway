@@ -1078,6 +1078,8 @@ func (p *cbProvider) Complete(ctx context.Context, req providers.Request) (*prov
 		if shouldRecordCircuitBreakerFailure(ctx, err) {
 			p.cb.RecordFailure()
 			metrics.CircuitBreakerState.WithLabelValues(p.name).Set(float64(p.cb.State()))
+		} else {
+			p.cb.ReleaseProbe()
 		}
 		return nil, err
 	}
@@ -1093,6 +1095,7 @@ func (p *cbProvider) CompleteStream(ctx context.Context, req providers.Request) 
 	}
 	sp, ok := p.Provider.(providers.StreamProvider)
 	if !ok {
+		p.cb.ReleaseProbe()
 		return nil, fmt.Errorf("provider %s does not support streaming", p.name)
 	}
 	ch, err := sp.CompleteStream(ctx, req)
@@ -1100,6 +1103,8 @@ func (p *cbProvider) CompleteStream(ctx context.Context, req providers.Request) 
 		if shouldRecordCircuitBreakerFailure(ctx, err) {
 			p.cb.RecordFailure()
 			metrics.CircuitBreakerState.WithLabelValues(p.name).Set(float64(p.cb.State()))
+		} else {
+			p.cb.ReleaseProbe()
 		}
 		return nil, err
 	}
@@ -1127,6 +1132,7 @@ func shouldRecordCircuitBreakerFailure(ctx context.Context, err error) bool {
 func recordStreamCircuitBreakerOutcome(ctx context.Context, cb *circuitbreaker.CircuitBreaker, name string, err error) {
 	if err != nil {
 		if !shouldRecordCircuitBreakerFailure(ctx, err) {
+			cb.ReleaseProbe()
 			return
 		}
 		cb.RecordFailure()
@@ -1151,6 +1157,7 @@ func (g *Gateway) ensureCircuitBreakersLocked() {
 		g.circuitBreakers[t.VirtualKey] = circuitbreaker.New(
 			t.CircuitBreaker.FailureThreshold,
 			t.CircuitBreaker.SuccessThreshold,
+			t.CircuitBreaker.MaxHalfThreshold,
 			timeout,
 		)
 	}

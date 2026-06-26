@@ -17,8 +17,8 @@ type memoryEntry struct {
 // Memory is a thread-safe in-memory LRU cache with TTL expiration.
 type Memory struct {
 	mu        sync.Mutex
-	capacity  int
-	ttl       time.Duration
+	Capacity  int
+	TTL       time.Duration
 	items     map[string]*list.Element
 	evictList *list.List
 }
@@ -26,8 +26,8 @@ type Memory struct {
 // NewMemory creates a new in-memory LRU cache.
 func NewMemory(capacity int, ttl time.Duration) *Memory {
 	return &Memory{
-		capacity:  capacity,
-		ttl:       ttl,
+		Capacity:  capacity,
+		TTL:       ttl,
 		items:     make(map[string]*list.Element),
 		evictList: list.New(),
 	}
@@ -62,18 +62,18 @@ func (m *Memory) Set(key string, resp *providers.Response) {
 		m.evictList.MoveToFront(elem)
 		entry := elem.Value.(*memoryEntry)
 		entry.response = resp
-		entry.expiresAt = time.Now().Add(m.ttl)
+		entry.expiresAt = time.Now().Add(m.TTL)
 		return
 	}
 
-	if m.evictList.Len() >= m.capacity {
+	if m.evictList.Len() >= m.Capacity {
 		m.removeOldest()
 	}
 
 	entry := &memoryEntry{
 		key:       key,
 		response:  resp,
-		expiresAt: time.Now().Add(m.ttl),
+		expiresAt: time.Now().Add(m.TTL),
 	}
 	elem := m.evictList.PushFront(entry)
 	m.items[key] = elem
