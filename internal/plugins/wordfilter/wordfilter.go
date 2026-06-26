@@ -75,3 +75,6 @@ func (w *WordFilter) Execute(_ context.Context, pctx *plugin.Context) error {
 	}
 	return nil
 }
+
+// Close releases plugin resources.
+func (w *WordFilter) Close() error { return nil }

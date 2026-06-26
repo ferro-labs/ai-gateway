@@ -16,6 +16,7 @@ func (m *registryMockPlugin) Name() string                                { retu
 func (m *registryMockPlugin) Type() PluginType                            { return m.typ }
 func (m *registryMockPlugin) Init(_ map[string]interface{}) error         { return nil }
 func (m *registryMockPlugin) Execute(_ context.Context, _ *Context) error { return nil }
+func (m *registryMockPlugin) Close() error                                { return nil }
 
 func TestRegisterFactory(t *testing.T) {
 	// Clean up after test.

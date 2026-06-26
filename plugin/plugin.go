@@ -22,6 +22,9 @@ type Plugin interface {
 	Type() PluginType
 	Init(config map[string]interface{}) error
 	Execute(ctx context.Context, pctx *Context) error
+	// Close releases resources owned by the plugin. Implementations should be
+	// safe to close more than once across reload and shutdown paths.
+	Close() error
 }
 
 // PluginType categorizes plugins.

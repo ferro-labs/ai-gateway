@@ -98,3 +98,6 @@ func (m *MaxToken) Execute(_ context.Context, pctx *plugin.Context) error {
 
 	return nil
 }
+
+// Close releases plugin resources.
+func (m *MaxToken) Close() error { return nil }

@@ -235,6 +235,9 @@ func (p *Plugin) Execute(_ context.Context, pctx *plugin.Context) error {
 	return nil
 }
 
+// Close releases plugin resources.
+func (p *Plugin) Close() error { return nil }
+
 func (p *Plugin) checkBudget(pctx *plugin.Context, key string) error {
 	if p.spendLimitUSD <= 0 {
 		return nil // unlimited

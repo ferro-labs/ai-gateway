@@ -128,6 +128,9 @@ func (c *ResponseCache) Execute(_ context.Context, pctx *plugin.Context) error {
 	return nil
 }
 
+// Close releases plugin resources.
+func (c *ResponseCache) Close() error { return nil }
+
 func cacheKey(req *providers.Request) string {
 	h := sha256.New()
 	writeCacheKeyString(h, req.Model)

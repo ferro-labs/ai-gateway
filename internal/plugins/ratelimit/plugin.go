@@ -134,6 +134,9 @@ func (p *Plugin) Execute(_ context.Context, pctx *plugin.Context) error {
 	return nil
 }
 
+// Close releases plugin resources.
+func (p *Plugin) Close() error { return nil }
+
 // toFloat64 converts an interface{} value to float64, accepting float64 or int.
 func toFloat64(v interface{}) (float64, error) {
 	switch val := v.(type) {

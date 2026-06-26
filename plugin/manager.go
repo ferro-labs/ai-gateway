@@ -2,7 +2,10 @@ package plugin
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"reflect"
+	"runtime/debug"
 	"sync"
 
 	"github.com/ferro-labs/ai-gateway/internal/logging"
@@ -36,15 +39,46 @@ func pluginAttrs(name, kind, stage string) []attribute.KeyValue {
 
 // Manager manages plugin lifecycle and execution.
 type Manager struct {
-	before []Plugin
-	after  []Plugin
-	onErr  []Plugin
-	mu     sync.RWMutex
+	before      []Plugin
+	after       []Plugin
+	onErr       []Plugin
+	mu          sync.RWMutex
+	lifecycleMu sync.Mutex
+	lifecycle   *sync.Cond
+	active      int
+	closed      bool
 }
 
 // NewManager creates a new plugin manager.
 func NewManager() *Manager {
-	return &Manager{}
+	m := &Manager{}
+	m.lifecycle = sync.NewCond(&m.lifecycleMu)
+	return m
+}
+
+// Acquire marks the manager as in use until the returned release function is
+// called. Close waits for active users before releasing plugin resources.
+func (m *Manager) Acquire() func() {
+	m.lifecycleMu.Lock()
+	m.ensureLifecycleLocked()
+	if m.closed {
+		m.lifecycleMu.Unlock()
+		return func() {}
+	}
+	m.active++
+	m.lifecycleMu.Unlock()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			m.lifecycleMu.Lock()
+			m.active--
+			if m.active == 0 {
+				m.lifecycle.Broadcast()
+			}
+			m.lifecycleMu.Unlock()
+		})
+	}
 }
 
 // Register registers a plugin at the given stage.
@@ -142,14 +176,28 @@ func (m *Manager) RunOnError(ctx context.Context, pctx *Context) {
 // global TracerProvider is installed the span is a no-op and adds
 // effectively zero overhead. The span records the rejection outcome
 // via ferro.plugin.outcome / ferro.plugin.reason attributes.
-func (m *Manager) executePlugin(ctx context.Context, p Plugin, pctx *Context, stage string) error {
+func (m *Manager) executePlugin(ctx context.Context, p Plugin, pctx *Context, stage string) (err error) {
 	spanName := "plugin." + stage + "." + p.Name()
 	ctx, span := pluginTracer().Start(ctx, spanName, trace.WithAttributes(
 		pluginAttrs(p.Name(), string(p.Type()), stage)...,
 	))
-	defer span.End()
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			stack := debug.Stack()
+			err = fmt.Errorf("plugin %s panicked at %s", p.Name(), stage)
+			logging.Logger.Error("plugin panicked",
+				"plugin", p.Name(),
+				"stage", stage,
+				"panic", recovered,
+				"stack", string(stack),
+			)
+			span.SetAttributes(attribute.String(observability.AttrFerroPluginOutcome, "error"))
+			span.SetStatus(codes.Error, err.Error())
+		}
+		span.End()
+	}()
 
-	err := p.Execute(ctx, pctx)
+	err = p.Execute(ctx, pctx)
 
 	switch {
 	case pctx.Reject:
@@ -164,6 +212,90 @@ func (m *Manager) executePlugin(ctx context.Context, p Plugin, pctx *Context, st
 		span.SetAttributes(attribute.String(observability.AttrFerroPluginOutcome, "ok"))
 	}
 	return err
+}
+
+// Close starts closing the manager, releases each registered plugin instance
+// once, and clears the manager. If requests are still using this manager, Close
+// returns immediately and cleanup runs after the active users drain.
+func (m *Manager) Close() error {
+	m.lifecycleMu.Lock()
+	m.ensureLifecycleLocked()
+	if m.closed {
+		m.lifecycleMu.Unlock()
+		return nil
+	}
+	m.closed = true
+	if m.active > 0 {
+		m.lifecycleMu.Unlock()
+		go m.closeWhenDrained()
+		return nil
+	}
+	m.lifecycleMu.Unlock()
+
+	return m.closePlugins()
+}
+
+func (m *Manager) closeWhenDrained() {
+	m.lifecycleMu.Lock()
+	m.ensureLifecycleLocked()
+	for m.active > 0 {
+		m.lifecycle.Wait()
+	}
+	m.lifecycleMu.Unlock()
+
+	if err := m.closePlugins(); err != nil {
+		logging.Logger.Warn("deferred plugin close failed", "error", err)
+	}
+}
+
+func (m *Manager) closePlugins() error {
+	m.mu.Lock()
+	plugins := make([]Plugin, 0, len(m.before)+len(m.after)+len(m.onErr))
+	plugins = append(plugins, m.before...)
+	plugins = append(plugins, m.after...)
+	plugins = append(plugins, m.onErr...)
+	m.before = nil
+	m.after = nil
+	m.onErr = nil
+	m.mu.Unlock()
+
+	var err error
+	for _, p := range uniquePluginInstances(plugins) {
+		if closeErr := p.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("plugin %s close failed: %w", p.Name(), closeErr))
+		}
+	}
+	return err
+}
+
+func (m *Manager) ensureLifecycleLocked() {
+	if m.lifecycle == nil {
+		m.lifecycle = sync.NewCond(&m.lifecycleMu)
+	}
+}
+
+func uniquePluginInstances(plugins []Plugin) []Plugin {
+	unique := make([]Plugin, 0, len(plugins))
+	seen := make(map[pluginInstanceKey]struct{}, len(plugins))
+	for _, p := range plugins {
+		v := reflect.ValueOf(p)
+		if v.Kind() != reflect.Pointer || v.IsNil() {
+			unique = append(unique, p)
+			continue
+		}
+		key := pluginInstanceKey{typ: v.Type(), ptr: v.Pointer()}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		unique = append(unique, p)
+	}
+	return unique
+}
+
+type pluginInstanceKey struct {
+	typ reflect.Type
+	ptr uintptr
 }
 
 // HasPlugins returns true if any plugins are registered.

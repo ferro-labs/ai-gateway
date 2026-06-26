@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/ferro-labs/ai-gateway/providers"
 )
@@ -14,6 +16,7 @@ type mockPlugin struct {
 	name    string
 	typ     PluginType
 	execFn  func(ctx context.Context, pctx *Context) error
+	closeFn func() error
 	initErr error
 }
 
@@ -23,6 +26,12 @@ func (m *mockPlugin) Init(_ map[string]interface{}) error { return m.initErr }
 func (m *mockPlugin) Execute(ctx context.Context, pctx *Context) error {
 	if m.execFn != nil {
 		return m.execFn(ctx, pctx)
+	}
+	return nil
+}
+func (m *mockPlugin) Close() error {
+	if m.closeFn != nil {
+		return m.closeFn()
 	}
 	return nil
 }
@@ -155,6 +164,29 @@ func TestManager_RunBefore_RejectWithError_FallsBackToErrorMessage(t *testing.T)
 	}
 }
 
+func TestManager_RunBefore_PanicReturnsError(t *testing.T) {
+	m := NewManager()
+	_ = m.Register(StageBeforeRequest, &mockPlugin{
+		name: "panic-guard",
+		typ:  TypeGuardrail,
+		execFn: func(context.Context, *Context) error {
+			panic("boom")
+		},
+	})
+
+	pctx := NewContext(&providers.Request{Model: "gpt-4o"})
+	err := m.RunBefore(context.Background(), pctx)
+	if err == nil {
+		t.Fatal("expected panic to be converted to an error")
+	}
+	if !strings.Contains(err.Error(), "plugin panic-guard panicked") {
+		t.Fatalf("error = %q, want plugin panic context", err.Error())
+	}
+	if strings.Contains(err.Error(), "runtime/debug.Stack") {
+		t.Fatalf("error = %q, should not expose panic stack", err.Error())
+	}
+}
+
 func TestManager_RunAfter(t *testing.T) {
 	m := NewManager()
 	called := false
@@ -226,6 +258,130 @@ func TestManager_RunAfter_RejectWithErrorAndEmptyReason_UsesErrorMessage(t *test
 	}
 	if rejection.Reason != "schema mismatch" {
 		t.Fatalf("reason = %q, want %q", rejection.Reason, "schema mismatch")
+	}
+}
+
+func TestManager_RunOnError_PanicDoesNotPropagate(t *testing.T) {
+	m := NewManager()
+	called := false
+	_ = m.Register(StageOnError, &mockPlugin{
+		name: "panic-reporter",
+		typ:  TypeLogging,
+		execFn: func(context.Context, *Context) error {
+			called = true
+			panic("reporter failed")
+		},
+	})
+
+	m.RunOnError(context.Background(), NewContext(&providers.Request{Model: "gpt-4o"}))
+	if !called {
+		t.Fatal("expected on-error plugin to run")
+	}
+}
+
+func TestManager_CloseClosesRegisteredPlugins(t *testing.T) {
+	m := NewManager()
+	var closed int
+	_ = m.Register(StageBeforeRequest, &mockPlugin{
+		name: "closer",
+		typ:  TypeLogging,
+		closeFn: func() error {
+			closed++
+			return nil
+		},
+	})
+
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close() error: %v", err)
+	}
+	if closed != 1 {
+		t.Fatalf("closed = %d, want 1", closed)
+	}
+}
+
+func TestManager_CloseCallsCloseOncePerInstance(t *testing.T) {
+	m := NewManager()
+	var closed int
+	p := &mockPlugin{
+		name: "multi-stage",
+		typ:  TypeLogging,
+		closeFn: func() error {
+			closed++
+			return nil
+		},
+	}
+	_ = m.Register(StageBeforeRequest, p)
+	_ = m.Register(StageAfterRequest, p)
+
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close() error: %v", err)
+	}
+	if closed != 1 {
+		t.Fatalf("closed = %d, want 1 because Close is deduplicated per plugin instance", closed)
+	}
+}
+
+func TestManager_CloseClosesDistinctInstances(t *testing.T) {
+	m := NewManager()
+	var closed int
+	for _, name := range []string{"first", "second"} {
+		_ = m.Register(StageBeforeRequest, &mockPlugin{
+			name: name,
+			typ:  TypeLogging,
+			closeFn: func() error {
+				closed++
+				return nil
+			},
+		})
+	}
+
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close() error: %v", err)
+	}
+	if closed != 2 {
+		t.Fatalf("closed = %d, want 2 distinct instances closed", closed)
+	}
+}
+
+func TestManager_CloseReturnsWhileActiveAndClosesAfterRelease(t *testing.T) {
+	m := NewManager()
+	closed := make(chan struct{})
+	var closeOnce sync.Once
+	_ = m.Register(StageAfterRequest, &mockPlugin{
+		name: "deferred-close",
+		typ:  TypeLogging,
+		closeFn: func() error {
+			closeOnce.Do(func() { close(closed) })
+			return nil
+		},
+	})
+	release := m.Acquire()
+
+	closeReturned := make(chan error, 1)
+	go func() {
+		closeReturned <- m.Close()
+	}()
+
+	select {
+	case err := <-closeReturned:
+		if err != nil {
+			t.Fatalf("Close() error: %v", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("Close blocked while manager was active")
+	}
+	select {
+	case <-closed:
+		t.Fatal("plugin closed before active manager user released")
+	default:
+	}
+
+	release()
+
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for deferred plugin close")
 	}
 }
 

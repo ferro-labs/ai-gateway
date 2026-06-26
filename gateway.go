@@ -384,15 +384,19 @@ func (g *Gateway) MCPInitDone() <-chan struct{} {
 // when a plugin (e.g. response-cache) sets Skip=true. It also propagates any
 // request mutations the plugins made. RunAfter is called before returning the
 // early response so logging/metrics plugins still fire.
-func (g *Gateway) runBeforePlugins(ctx context.Context, pctx *plugin.Context, req *providers.Request) (*providers.Response, error) {
-	if err := g.plugins.RunBefore(ctx, pctx); err != nil {
+func (g *Gateway) runBeforePlugins(ctx context.Context, plugins *plugin.Manager, pctx *plugin.Context, req *providers.Request) (*providers.Response, error) {
+	if err := plugins.RunBefore(ctx, pctx); err != nil {
 		return nil, err
 	}
 	if pctx.Request != nil {
 		*req = *pctx.Request
 	}
 	if pctx.Skip && pctx.Response != nil {
-		_ = g.plugins.RunAfter(ctx, pctx)
+		if err := plugins.RunAfter(ctx, pctx); err != nil {
+			pctx.Error = err
+			plugins.RunOnError(ctx, pctx)
+			return nil, err
+		}
 		return pctx.Response, nil
 	}
 	return nil, nil
@@ -415,7 +419,10 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	obsEventsActive := g.obsEventsActive
 	mcpRegistrySnapshot := g.mcpRegistry
 	mcpExecutorSnapshot := g.mcpExecutor
+	plugins := g.plugins
+	releasePlugins := acquirePluginManager(plugins)
 	g.mu.RUnlock()
+	defer releasePlugins()
 	ctx, span := obs.StartRequestSpan(ctx, observability.RequestAttrs{
 		Operation:       "chat",
 		RequestModel:    req.Model,
@@ -437,12 +444,12 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 
 	// Run before-request plugins (guardrails, transforms, rate-limit).
 	var pctx *plugin.Context
-	if g.plugins.HasPlugins() {
+	if plugins.HasPlugins() {
 		pctx = plugin.NewContext(&req)
 		defer plugin.PutContext(pctx)
 		var early *providers.Response
 		trace.WithRegion(ctx, "gateway.route.plugins.before", func() {
-			early, err = g.runBeforePlugins(ctx, pctx, &req)
+			early, err = g.runBeforePlugins(ctx, plugins, pctx, &req)
 		})
 		if err != nil {
 			metrics.ForRequest("", req.Model).Rejected.Inc()
@@ -501,7 +508,7 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	if err != nil {
 		if pctx != nil {
 			pctx.Error = err
-			g.plugins.RunOnError(ctx, pctx)
+			plugins.RunOnError(ctx, pctx)
 		}
 
 		provider := ""
@@ -586,10 +593,12 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	if pctx != nil {
 		pctx.Response = resp
 		trace.WithRegion(ctx, "gateway.route.plugins.after", func() {
-			err = g.plugins.RunAfter(ctx, pctx)
+			err = plugins.RunAfter(ctx, pctx)
 		})
 		if err != nil {
 			metrics.ForRequest(resp.Provider, resp.Model).Rejected.Inc()
+			pctx.Error = err
+			plugins.RunOnError(ctx, pctx)
 			return nil, err
 		}
 		if pctx.Response != nil {
@@ -837,10 +846,25 @@ func (g *Gateway) ReloadConfig(cfg Config) error {
 	if err != nil {
 		return fmt.Errorf("invalid config: %w", err)
 	}
+	plugins, err := buildPluginManager(cfg.Plugins)
+	if err != nil {
+		return err
+	}
+	pluginsInstalled := false
+	defer func() {
+		if pluginsInstalled {
+			return
+		}
+		if closeErr := closePluginManager(plugins); closeErr != nil {
+			slog.Warn("plugin close failed after config reload error", "error", closeErr)
+		}
+	}()
 	g.mu.Lock()
-	defer g.mu.Unlock()
+	oldPlugins := g.plugins
 	g.config = cfg
 	g.streamingContent = streamingContent
+	g.plugins = plugins
+	pluginsInstalled = true
 	g.strategy = nil // force rebuild on next request
 	g.circuitBreakers = make(map[string]*circuitbreaker.CircuitBreaker)
 	g.ensureCircuitBreakersLocked()
@@ -881,6 +905,10 @@ func (g *Gateway) ReloadConfig(cfg Config) error {
 		g.mcpInitDone = nil
 	}
 
+	g.mu.Unlock()
+	if err := closePluginManager(oldPlugins); err != nil {
+		slog.Warn("plugin close failed during config reload", "error", err)
+	}
 	return nil
 }
 
@@ -1136,24 +1164,63 @@ func isRateLimitError(err error) bool {
 
 // LoadPlugins initializes and registers plugins from the gateway configuration.
 func (g *Gateway) LoadPlugins() error {
-	for _, pc := range g.config.Plugins {
+	g.mu.RLock()
+	configs := append([]PluginConfig(nil), g.config.Plugins...)
+	g.mu.RUnlock()
+	plugins, err := buildPluginManager(configs)
+	if err != nil {
+		return err
+	}
+
+	g.mu.Lock()
+	oldPlugins := g.plugins
+	g.plugins = plugins
+	g.mu.Unlock()
+	if err := closePluginManager(oldPlugins); err != nil {
+		return err
+	}
+	return nil
+}
+
+func buildPluginManager(configs []PluginConfig) (*plugin.Manager, error) {
+	plugins := plugin.NewManager()
+	for _, pc := range configs {
 		if !pc.Enabled {
 			continue
 		}
 		factory, ok := plugin.GetFactory(pc.Name)
 		if !ok {
-			return fmt.Errorf("unknown plugin: %s", pc.Name)
+			_ = plugins.Close()
+			return nil, fmt.Errorf("unknown plugin: %s", pc.Name)
 		}
 		p := factory()
 		if err := p.Init(pc.Config); err != nil {
-			return fmt.Errorf("plugin %s init failed: %w", pc.Name, err)
+			_ = plugins.Close()
+			_ = p.Close()
+			return nil, fmt.Errorf("plugin %s init failed: %w", pc.Name, err)
 		}
 		stage := plugin.Stage(pc.Stage)
-		if err := g.RegisterPlugin(stage, p); err != nil {
-			return fmt.Errorf("plugin %s register failed: %w", pc.Name, err)
+		if err := plugins.Register(stage, p); err != nil {
+			_ = plugins.Close()
+			_ = p.Close()
+			return nil, fmt.Errorf("plugin %s register failed: %w", pc.Name, err)
 		}
 	}
-	return nil
+	return plugins, nil
+}
+
+func closePluginManager(plugins *plugin.Manager) error {
+	if plugins == nil {
+		return nil
+	}
+	return plugins.Close()
+}
+
+func acquirePluginManager(plugins *plugin.Manager) func() {
+	if plugins == nil || !plugins.HasPlugins() {
+		return func() {}
+	}
+	return plugins.Acquire()
 }
 
 // RouteStream runs before-request plugins then returns a metered streaming
@@ -1184,7 +1251,13 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 	obs := g.obs
 	obsEventsActive := g.obsEventsActive
 	mcpRegistrySnapshot := g.mcpRegistry
+	plugins := g.plugins
+	releasePlugins := acquirePluginManager(plugins)
 	g.mu.RUnlock()
+	var releasePluginsOnce sync.Once
+	releasePluginManager := func() {
+		releasePluginsOnce.Do(releasePlugins)
+	}
 	ctx, span := obs.StartRequestSpan(ctx, observability.RequestAttrs{
 		Operation:       "chat",
 		RequestModel:    req.Model,
@@ -1209,6 +1282,7 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 	// entirely; we wrap its non-streaming result into a channel here.
 	hasMCP := mcpRegistrySnapshot != nil && mcpRegistrySnapshot.HasServers()
 	if hasMCP {
+		releasePluginManager()
 		// Do not force req.Stream = false here: let Route() capture the
 		// original stream flag via its own originalStream variable so that
 		// emitted events correctly reflect stream: true for RouteStream callers.
@@ -1222,23 +1296,27 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 
 	// Run before-request plugins (word-filter, max-token, rate-limit, etc.).
 	var pctx *plugin.Context
-	if g.plugins.HasPlugins() {
+	if plugins.HasPlugins() {
 		pctx = plugin.NewContext(&req)
 		var early *providers.Response
 		trace.WithRegion(ctx, "gateway.route_stream.plugins.before", func() {
-			early, err = g.runBeforePlugins(ctx, pctx, &req)
+			early, err = g.runBeforePlugins(ctx, plugins, pctx, &req)
 		})
 		if err != nil {
 			plugin.PutContext(pctx)
 			pctx = nil
+			releasePluginManager()
 			metrics.ForRequest("", req.Model).Rejected.Inc()
 			return nil, err
 		}
 		if early != nil {
 			plugin.PutContext(pctx)
 			pctx = nil
+			releasePluginManager()
 			return responseStream(early), nil
 		}
+	} else {
+		releasePluginManager()
 	}
 
 	// Resolve provider according to strategy mode.
@@ -1254,8 +1332,9 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 		span.SetError(err)
 		if pctx != nil {
 			pctx.Error = err
-			g.plugins.RunOnError(ctx, pctx)
+			plugins.RunOnError(ctx, pctx)
 			plugin.PutContext(pctx)
+			releasePluginManager()
 		}
 		return nil, err
 	}
@@ -1265,8 +1344,9 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 		span.SetError(err)
 		if pctx != nil {
 			pctx.Error = err
-			g.plugins.RunOnError(ctx, pctx)
+			plugins.RunOnError(ctx, pctx)
 			plugin.PutContext(pctx)
+			releasePluginManager()
 		}
 		return nil, err
 	}
@@ -1292,8 +1372,9 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 		}
 		if pctx != nil {
 			pctx.Error = err
-			g.plugins.RunOnError(ctx, pctx)
+			plugins.RunOnError(ctx, pctx)
 			plugin.PutContext(pctx)
+			releasePluginManager()
 		}
 		metrics.ForRequest(providerName, req.Model).Error.Inc()
 		metrics.ForProviderError(providerName, errType).Inc()
@@ -1338,16 +1419,17 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 	if pctx != nil {
 		meta.CompletionFn = func(ctx context.Context, resp *providers.Response) error {
 			pctx.Response = resp
-			err := g.plugins.RunAfter(ctx, pctx)
+			err := plugins.RunAfter(ctx, pctx)
 			if pctx.Response != nil {
 				*resp = *pctx.Response
 			}
 			if err != nil {
 				pctx.Error = err
-				g.plugins.RunOnError(ctx, pctx)
+				plugins.RunOnError(ctx, pctx)
 			}
 			plugin.PutContext(pctx)
 			pctx = nil
+			releasePluginManager()
 			return err
 		}
 		meta.ErrorFn = func(ctx context.Context, err error) {
@@ -1355,9 +1437,10 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 				return
 			}
 			pctx.Error = err
-			g.plugins.RunOnError(ctx, pctx)
+			plugins.RunOnError(ctx, pctx)
 			plugin.PutContext(pctx)
 			pctx = nil
+			releasePluginManager()
 		}
 	}
 
@@ -2093,6 +2176,13 @@ func (g *Gateway) FindStreamingByModel(model string) (providers.StreamProvider, 
 func (g *Gateway) Close() error {
 	g.closeOnce.Do(func() {
 		g.shutdownCancel()
+		g.mu.Lock()
+		plugins := g.plugins
+		g.plugins = plugin.NewManager()
+		g.mu.Unlock()
+		if err := closePluginManager(plugins); err != nil {
+			slog.Warn("plugin close failed during gateway shutdown", "error", err)
+		}
 		done := make(chan struct{})
 		go func() {
 			g.hookWorkersDone.Wait()

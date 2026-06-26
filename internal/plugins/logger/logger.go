@@ -141,3 +141,12 @@ func (l *RequestLogger) Execute(ctx context.Context, pctx *plugin.Context) error
 
 	return nil
 }
+
+// Close releases the persistent request-log writer, when one is configured.
+func (l *RequestLogger) Close() error {
+	closer, ok := l.writer.(interface{ Close() error })
+	if !ok {
+		return nil
+	}
+	return closer.Close()
+}
