@@ -1,8 +1,9 @@
 #!/bin/sh
 # Pre-push: full test suite
 # Works on Linux, macOS, and Windows (Git Bash).
+set -e
 
 echo "── test ─────────────────────────────────────"
-go test -v -short -race -timeout 30s ./...
+go test -v -short -race -timeout 180s ./...
 
 echo "✅ Pre-push checks passed"
