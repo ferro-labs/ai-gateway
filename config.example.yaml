@@ -216,7 +216,7 @@ observability:
     service_name: ferrogw
     sample_ratio: 1.0
     privacy_level: metadata  # none | metadata | full
-    shutdown_grace: 10s      # max time to drain in-flight OTel exports on shutdown
+    shutdown_grace: 10s      # per OTel shutdown stage; total can take up to 2x this value
     # headers:                       # OTLP export headers (e.g. vendor API keys)
     #   dd-api-key: "${DATADOG_API_KEY}"   # values support ${ENV} interpolation
 

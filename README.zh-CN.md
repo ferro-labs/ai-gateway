@@ -365,7 +365,7 @@ observability:
     service_name: ferrogw
     sample_ratio: 1.0
     privacy_level: metadata    # none | metadata | full（见下文）
-    shutdown_grace: 10s        # 关闭时排空 OTel 导出的最长等待时间
+    shutdown_grace: 10s        # 每个 OTel 关闭阶段的等待时间；总耗时最多可达该值的 2 倍
     # headers:                          # 认证后端所需的 OTLP 导出请求头
     #   dd-api-key: "${DATADOG_API_KEY}"  # 值支持 ${ENV_VAR} 环境变量插值
 

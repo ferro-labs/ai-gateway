@@ -95,10 +95,11 @@ type TracingConfig struct {
 	// PrivacyLevel controls whether prompt/response content is exported.
 	// One of: "none", "metadata" (default), "full".
 	PrivacyLevel string `json:"privacy_level,omitempty" yaml:"privacy_level,omitempty"`
-	// ShutdownGrace is the maximum time the gateway waits for in-flight
-	// OTel exports to drain during graceful shutdown. Accepts any Go
-	// duration string, e.g. "10s", "500ms". Defaults to 10s when empty
-	// or unparseable.
+	// ShutdownGrace is the maximum time each OTel shutdown stage waits.
+	// Exporter shutdown and TracerProvider shutdown each receive this
+	// budget, so total telemetry shutdown may take up to twice this value.
+	// Accepts any Go duration string, e.g. "10s", "500ms". Defaults to 10s
+	// when empty or unparseable.
 	ShutdownGrace string `json:"shutdown_grace,omitempty" yaml:"shutdown_grace,omitempty"`
 	// Headers are additional HTTP/gRPC metadata headers sent with every OTLP
 	// export request. Use this to authenticate with managed backends such as
