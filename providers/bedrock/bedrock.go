@@ -85,12 +85,16 @@ func New(region string) (*Provider, error) {
 }
 
 // NewWithOptions creates a new AWS Bedrock provider from options.
-// Region defaults to us-east-1. If static credentials are not provided,
-// the AWS default credential chain is used.
+// defaultBedrockRegion is used when no region is configured via options or env.
+const defaultBedrockRegion = "us-east-1"
+
+// NewWithOptions builds a Bedrock provider from explicit options. Region
+// defaults to us-east-1. If static credentials are not provided, the AWS
+// default credential chain is used.
 func NewWithOptions(opts Options) (*Provider, error) {
 	region := strings.TrimSpace(opts.Region)
 	if region == "" {
-		region = "us-east-1"
+		region = defaultBedrockRegion
 	}
 
 	cfgOpts := []func(*awsconfig.LoadOptions) error{
