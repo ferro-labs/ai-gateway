@@ -23,7 +23,7 @@ func runPlugins(cmd *cobra.Command, _ []string) error {
 		Type    string `json:"type" yaml:"type"`
 		Enabled bool   `json:"enabled" yaml:"enabled"`
 	}
-	if err := c.Get("/admin/plugins", &plugins); err != nil {
+	if err := c.Get(cmd.Context(), "/admin/plugins", &plugins); err != nil {
 		return err
 	}
 

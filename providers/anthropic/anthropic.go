@@ -384,12 +384,13 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 	}
 	defer func() { _ = httpResp.Body.Close() }()
 
-	respBody, err := io.ReadAll(httpResp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
-
 	if httpResp.StatusCode != http.StatusOK {
+		// Error branch keeps ReadAll: the raw body is needed verbatim for the
+		// fallback error message when it is not valid Anthropic error JSON.
+		respBody, err := io.ReadAll(httpResp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read response: %w", err)
+		}
 		var errResp anthropicErrorResponse
 		if json.Unmarshal(respBody, &errResp) == nil && errResp.Error.Message != "" {
 			return nil, fmt.Errorf("anthropic API error (%d): %s", httpResp.StatusCode, errResp.Error.Message)
@@ -397,8 +398,10 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 		return nil, fmt.Errorf("anthropic API error (%d): %s", httpResp.StatusCode, string(respBody))
 	}
 
+	// Success path streams the decode straight off the response body, avoiding
+	// the extra full-body copy that io.ReadAll + Unmarshal incurs per request.
 	var aResp anthropicResponse
-	if err := json.Unmarshal(respBody, &aResp); err != nil {
+	if err := json.NewDecoder(httpResp.Body).Decode(&aResp); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 

@@ -2,7 +2,9 @@ package plugin
 
 import (
 	"context"
+	"fmt"
 	"sort"
+	"sync"
 	"testing"
 )
 
@@ -44,6 +46,52 @@ func TestGetFactory_NotFound(t *testing.T) {
 	_, ok := GetFactory("nonexistent-plugin")
 	if ok {
 		t.Fatal("expected factory not to be found")
+	}
+}
+
+// TestRegistryConcurrentAccess exercises RegisterFactory, GetFactory, and
+// RegisteredPlugins concurrently to prove the registry mutex prevents the
+// data race / "concurrent map read and map write" panic. Run under -race.
+func TestRegistryConcurrentAccess(t *testing.T) {
+	const goroutines = 32
+
+	keys := make([]string, goroutines)
+	for i := range keys {
+		keys[i] = fmt.Sprintf("concurrent-plugin-%d", i)
+	}
+	defer func() {
+		registryMu.Lock()
+		for _, k := range keys {
+			delete(pluginRegistry, k)
+		}
+		registryMu.Unlock()
+	}()
+
+	var wg sync.WaitGroup
+	for i := 0; i < goroutines; i++ {
+		name := keys[i]
+		wg.Add(2)
+		// Writer.
+		go func() {
+			defer wg.Done()
+			RegisterFactory(name, func() Plugin {
+				return &registryMockPlugin{name: name, typ: TypeGuardrail}
+			})
+		}()
+		// Concurrent reader.
+		go func() {
+			defer wg.Done()
+			_, _ = GetFactory(name)
+			_ = RegisteredPlugins()
+		}()
+	}
+	wg.Wait()
+
+	// All writers committed; every key must now be present.
+	for _, k := range keys {
+		if _, ok := GetFactory(k); !ok {
+			t.Errorf("expected factory %q to be registered after concurrent writes", k)
+		}
 	}
 }
 

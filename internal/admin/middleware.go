@@ -76,7 +76,7 @@ func AuthMiddleware(store Store, masterKey string) func(http.Handler) http.Handl
 			}
 
 			// 2. Bootstrap key check (only when store is empty and no master key is configured).
-			if masterKey == "" && bootstrapEnabled && len(store.List()) == 0 {
+			if masterKey == "" && bootstrapEnabled && len(store.List(r.Context())) == 0 {
 				if bootstrapAdminKey != "" && subtle.ConstantTimeCompare([]byte(key), []byte(bootstrapAdminKey)) == 1 {
 					ctx := context.WithValue(r.Context(), apiKeyContextKey, bootstrapAdminAPIKey)
 					next.ServeHTTP(w, r.WithContext(ctx))
@@ -91,7 +91,7 @@ func AuthMiddleware(store Store, masterKey string) func(http.Handler) http.Handl
 			}
 
 			// 3. Key store lookup.
-			apiKey, ok := store.ValidateKey(key)
+			apiKey, ok := store.ValidateKey(r.Context(), key)
 			if !ok {
 				writeError(w, http.StatusUnauthorized, "invalid or revoked API key", "authentication_error", "invalid_api_key")
 				return

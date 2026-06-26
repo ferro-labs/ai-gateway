@@ -71,6 +71,11 @@ func New(opts Options) (*Provider, error) {
 		if err != nil {
 			return nil, fmt.Errorf("invalid Vertex AI service account JSON: %w", err)
 		}
+		// context.Background() is intentional: this token source lives for the
+		// whole lifetime of the provider and refreshes OAuth tokens on demand
+		// across many requests. It is a construction-time/lifetime construct,
+		// not request-scoped, so binding it to any single request's context
+		// would wrongly cancel token refresh when that request completes.
 		tokenSource = cfg.TokenSource(context.Background())
 	}
 

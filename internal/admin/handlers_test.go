@@ -187,7 +187,7 @@ func setupTestRouterWithLogs(reader requestlog.Reader) (*Handlers, chi.Router) {
 
 func createAdminKey(t *testing.T, h *Handlers) *APIKey {
 	t.Helper()
-	key, err := h.Keys.Create("admin-key", []string{ScopeAdmin}, nil)
+	key, err := h.Keys.Create(context.Background(), "admin-key", []string{ScopeAdmin}, nil)
 	if err != nil {
 		t.Fatalf("failed to create admin key: %v", err)
 	}
@@ -196,7 +196,7 @@ func createAdminKey(t *testing.T, h *Handlers) *APIKey {
 
 func createReadOnlyKey(t *testing.T, h *Handlers) *APIKey {
 	t.Helper()
-	key, err := h.Keys.Create("readonly-key", []string{ScopeReadOnly}, nil)
+	key, err := h.Keys.Create(context.Background(), "readonly-key", []string{ScopeReadOnly}, nil)
 	if err != nil {
 		t.Fatalf("failed to create readonly key: %v", err)
 	}
@@ -274,8 +274,8 @@ func TestCreateKeyMissingName(t *testing.T) {
 func TestListKeys(t *testing.T) {
 	h, r := setupTestRouter()
 	key := createAdminKey(t, h)
-	_, _ = h.Keys.Create("key-1", nil, nil)
-	_, _ = h.Keys.Create("key-2", nil, nil)
+	_, _ = h.Keys.Create(context.Background(), "key-1", nil, nil)
+	_, _ = h.Keys.Create(context.Background(), "key-2", nil, nil)
 
 	req := authedRequest(http.MethodGet, "/admin/keys", "", key)
 	w := httptest.NewRecorder()
@@ -300,7 +300,7 @@ func TestListKeys(t *testing.T) {
 func TestGetKeyByID(t *testing.T) {
 	h, r := setupTestRouter()
 	adminKey := createAdminKey(t, h)
-	created, _ := h.Keys.Create("key-1", nil, nil)
+	created, _ := h.Keys.Create(context.Background(), "key-1", nil, nil)
 
 	req := authedRequest(http.MethodGet, "/admin/keys/"+created.ID, "", adminKey)
 	w := httptest.NewRecorder()
@@ -338,7 +338,7 @@ func TestGetKeyByIDNotFound(t *testing.T) {
 func TestUpdateKey(t *testing.T) {
 	h, r := setupTestRouter()
 	adminKey := createAdminKey(t, h)
-	target, _ := h.Keys.Create("original", nil, nil)
+	target, _ := h.Keys.Create(context.Background(), "original", nil, nil)
 
 	body := `{"name":"updated","scopes":["read_only"]}`
 	req := authedRequest(http.MethodPut, "/admin/keys/"+target.ID, body, adminKey)
@@ -376,7 +376,7 @@ func TestUpdateKeyNotFound(t *testing.T) {
 func TestUpdateKeyExpiration(t *testing.T) {
 	h, r := setupTestRouter()
 	adminKey := createAdminKey(t, h)
-	target, _ := h.Keys.Create("expirable", nil, nil)
+	target, _ := h.Keys.Create(context.Background(), "expirable", nil, nil)
 
 	expiresAt := time.Now().Add(10 * time.Minute).UTC().Format(time.RFC3339)
 	body := `{"expires_at":"` + expiresAt + `"}`
@@ -388,7 +388,7 @@ func TestUpdateKeyExpiration(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
-	fresh, ok := h.Keys.Get(target.ID)
+	fresh, ok := h.Keys.Get(context.Background(), target.ID)
 	if !ok {
 		t.Fatal("expected key to exist")
 	}
@@ -401,7 +401,7 @@ func TestUpdateKeyClearExpiration(t *testing.T) {
 	h, r := setupTestRouter()
 	adminKey := createAdminKey(t, h)
 	expiry := time.Now().Add(10 * time.Minute)
-	target, _ := h.Keys.Create("expirable", nil, &expiry)
+	target, _ := h.Keys.Create(context.Background(), "expirable", nil, &expiry)
 
 	body := `{"clear_expiration":true}`
 	req := authedRequest(http.MethodPut, "/admin/keys/"+target.ID, body, adminKey)
@@ -412,7 +412,7 @@ func TestUpdateKeyClearExpiration(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
-	fresh, ok := h.Keys.Get(target.ID)
+	fresh, ok := h.Keys.Get(context.Background(), target.ID)
 	if !ok {
 		t.Fatal("expected key to exist")
 	}
@@ -424,7 +424,7 @@ func TestUpdateKeyClearExpiration(t *testing.T) {
 func TestUpdateKeyInvalidExpiration(t *testing.T) {
 	h, r := setupTestRouter()
 	adminKey := createAdminKey(t, h)
-	target, _ := h.Keys.Create("expirable", nil, nil)
+	target, _ := h.Keys.Create(context.Background(), "expirable", nil, nil)
 
 	body := `{"expires_at":"not-a-timestamp"}`
 	req := authedRequest(http.MethodPut, "/admin/keys/"+target.ID, body, adminKey)
@@ -439,7 +439,7 @@ func TestUpdateKeyInvalidExpiration(t *testing.T) {
 func TestDeleteKey(t *testing.T) {
 	h, r := setupTestRouter()
 	adminKey := createAdminKey(t, h)
-	target, _ := h.Keys.Create("to-delete", nil, nil)
+	target, _ := h.Keys.Create(context.Background(), "to-delete", nil, nil)
 
 	req := authedRequest(http.MethodDelete, "/admin/keys/"+target.ID, "", adminKey)
 	w := httptest.NewRecorder()
@@ -449,7 +449,7 @@ func TestDeleteKey(t *testing.T) {
 		t.Fatalf("expected 204, got %d: %s", w.Code, w.Body.String())
 	}
 
-	if _, ok := h.Keys.Get(target.ID); ok {
+	if _, ok := h.Keys.Get(context.Background(), target.ID); ok {
 		t.Error("expected key to be deleted")
 	}
 }
@@ -470,7 +470,7 @@ func TestDeleteKeyNotFound(t *testing.T) {
 func TestRevokeKey(t *testing.T) {
 	h, r := setupTestRouter()
 	adminKey := createAdminKey(t, h)
-	target, _ := h.Keys.Create("to-revoke", nil, nil)
+	target, _ := h.Keys.Create(context.Background(), "to-revoke", nil, nil)
 
 	req := authedRequest(http.MethodPost, "/admin/keys/"+target.ID+"/revoke", "", adminKey)
 	w := httptest.NewRecorder()
@@ -480,7 +480,7 @@ func TestRevokeKey(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
-	k, ok := h.Keys.Get(target.ID)
+	k, ok := h.Keys.Get(context.Background(), target.ID)
 	if !ok {
 		t.Fatal("expected key to exist")
 	}
@@ -515,7 +515,7 @@ func TestRBACReadOnlyCannotCreateKey(t *testing.T) {
 	h, r := setupTestRouter()
 	// Create an admin key first to bootstrap, then create a read-only key.
 	adminKey := createAdminKey(t, h)
-	roKey, _ := h.Keys.Create("ro-key", []string{ScopeReadOnly}, nil)
+	roKey, _ := h.Keys.Create(context.Background(), "ro-key", []string{ScopeReadOnly}, nil)
 
 	// Read-only key should be able to list keys.
 	req := authedRequest(http.MethodGet, "/admin/keys", "", roKey)
@@ -896,14 +896,14 @@ func TestReadOnlyCannotRollbackConfig(t *testing.T) {
 func TestKeyUsageEndpoint(t *testing.T) {
 	h, r := setupTestRouter()
 	adminKey := createAdminKey(t, h)
-	keyA, _ := h.Keys.Create("key-a", []string{ScopeReadOnly}, nil)
-	keyB, _ := h.Keys.Create("key-b", []string{ScopeReadOnly}, nil)
+	keyA, _ := h.Keys.Create(context.Background(), "key-a", []string{ScopeReadOnly}, nil)
+	keyB, _ := h.Keys.Create(context.Background(), "key-b", []string{ScopeReadOnly}, nil)
 
-	_, _ = h.Keys.ValidateKey(keyA.Key)
-	_, _ = h.Keys.ValidateKey(keyA.Key)
-	_, _ = h.Keys.ValidateKey(keyA.Key)
-	_, _ = h.Keys.ValidateKey(keyB.Key)
-	_, _ = h.Keys.ValidateKey(keyB.Key)
+	_, _ = h.Keys.ValidateKey(context.Background(), keyA.Key)
+	_, _ = h.Keys.ValidateKey(context.Background(), keyA.Key)
+	_, _ = h.Keys.ValidateKey(context.Background(), keyA.Key)
+	_, _ = h.Keys.ValidateKey(context.Background(), keyB.Key)
+	_, _ = h.Keys.ValidateKey(context.Background(), keyB.Key)
 
 	req := authedRequest(http.MethodGet, "/admin/keys/usage?limit=2", "", adminKey)
 	w := httptest.NewRecorder()
@@ -956,10 +956,10 @@ func TestKeyUsageInvalidLimit(t *testing.T) {
 func TestKeyUsageFilterActive(t *testing.T) {
 	h, r := setupTestRouter()
 	adminKey := createAdminKey(t, h)
-	activeKey, _ := h.Keys.Create("active-key", []string{ScopeReadOnly}, nil)
-	inactiveKey, _ := h.Keys.Create("inactive-key", []string{ScopeReadOnly}, nil)
-	_ = h.Keys.Revoke(inactiveKey.ID)
-	_, _ = h.Keys.ValidateKey(activeKey.Key)
+	activeKey, _ := h.Keys.Create(context.Background(), "active-key", []string{ScopeReadOnly}, nil)
+	inactiveKey, _ := h.Keys.Create(context.Background(), "inactive-key", []string{ScopeReadOnly}, nil)
+	_ = h.Keys.Revoke(context.Background(), inactiveKey.ID)
+	_, _ = h.Keys.ValidateKey(context.Background(), activeKey.Key)
 
 	req := authedRequest(http.MethodGet, "/admin/keys/usage?active=true", "", adminKey)
 	w := httptest.NewRecorder()
@@ -983,9 +983,9 @@ func TestKeyUsageFilterActive(t *testing.T) {
 func TestKeyUsageFilterSince(t *testing.T) {
 	h, r := setupTestRouter()
 	adminKey := createAdminKey(t, h)
-	usedKey, _ := h.Keys.Create("used-key", []string{ScopeReadOnly}, nil)
-	idleKey, _ := h.Keys.Create("idle-key", []string{ScopeReadOnly}, nil)
-	_, _ = h.Keys.ValidateKey(usedKey.Key)
+	usedKey, _ := h.Keys.Create(context.Background(), "used-key", []string{ScopeReadOnly}, nil)
+	idleKey, _ := h.Keys.Create(context.Background(), "idle-key", []string{ScopeReadOnly}, nil)
+	_, _ = h.Keys.ValidateKey(context.Background(), usedKey.Key)
 
 	since := time.Now().Add(-1 * time.Minute).UTC().Format(time.RFC3339)
 	req := authedRequest(http.MethodGet, "/admin/keys/usage?since="+since, "", adminKey)
@@ -1045,16 +1045,16 @@ func TestKeyUsageInvalidFilters(t *testing.T) {
 
 func TestKeyUsageOffsetAndSort(t *testing.T) {
 	h, _ := setupTestRouter()
-	keyA, _ := h.Keys.Create("key-a", []string{ScopeReadOnly}, nil)
-	keyB, _ := h.Keys.Create("key-b", []string{ScopeReadOnly}, nil)
-	keyC, _ := h.Keys.Create("key-c", []string{ScopeReadOnly}, nil)
+	keyA, _ := h.Keys.Create(context.Background(), "key-a", []string{ScopeReadOnly}, nil)
+	keyB, _ := h.Keys.Create(context.Background(), "key-b", []string{ScopeReadOnly}, nil)
+	keyC, _ := h.Keys.Create(context.Background(), "key-c", []string{ScopeReadOnly}, nil)
 
-	_, _ = h.Keys.ValidateKey(keyA.Key)
-	_, _ = h.Keys.ValidateKey(keyA.Key)
+	_, _ = h.Keys.ValidateKey(context.Background(), keyA.Key)
+	_, _ = h.Keys.ValidateKey(context.Background(), keyA.Key)
 	time.Sleep(5 * time.Millisecond)
-	_, _ = h.Keys.ValidateKey(keyB.Key)
+	_, _ = h.Keys.ValidateKey(context.Background(), keyB.Key)
 	time.Sleep(5 * time.Millisecond)
-	_, _ = h.Keys.ValidateKey(keyC.Key)
+	_, _ = h.Keys.ValidateKey(context.Background(), keyC.Key)
 
 	req := httptest.NewRequest(http.MethodGet, "/admin/keys/usage?sort=usage&limit=4", nil)
 	w := httptest.NewRecorder()
@@ -1226,9 +1226,9 @@ func TestDashboardEndpoint(t *testing.T) {
 	adminKey := createAdminKey(t, h)
 
 	expiredAt := now.Add(-10 * time.Minute)
-	_, _ = h.Keys.Create("expired-key", []string{ScopeReadOnly}, &expiredAt)
-	active, _ := h.Keys.Create("active-key", []string{ScopeReadOnly}, nil)
-	_, _ = h.Keys.ValidateKey(active.Key)
+	_, _ = h.Keys.Create(context.Background(), "expired-key", []string{ScopeReadOnly}, &expiredAt)
+	active, _ := h.Keys.Create(context.Background(), "active-key", []string{ScopeReadOnly}, nil)
+	_, _ = h.Keys.ValidateKey(context.Background(), active.Key)
 
 	req := authedRequest(http.MethodGet, "/admin/dashboard", "", adminKey)
 	w := httptest.NewRecorder()
@@ -1618,7 +1618,7 @@ func TestRotateKey(t *testing.T) {
 	adminKey := createAdminKey(t, h)
 
 	// Create a key to rotate, save its original key string before rotation mutates it.
-	key, err := h.Keys.Create("rotatable-key", []string{ScopeReadOnly}, nil)
+	key, err := h.Keys.Create(context.Background(), "rotatable-key", []string{ScopeReadOnly}, nil)
 	if err != nil {
 		t.Fatalf("failed to create key: %v", err)
 	}

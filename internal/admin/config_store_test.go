@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -11,11 +12,11 @@ type failingConfigStore struct {
 	saveErr error
 }
 
-func (s *failingConfigStore) Save(aigateway.Config) error { return s.saveErr }
-func (s *failingConfigStore) Load() (aigateway.Config, bool, error) {
+func (s *failingConfigStore) Save(context.Context, aigateway.Config) error { return s.saveErr }
+func (s *failingConfigStore) Load(context.Context) (aigateway.Config, bool, error) {
 	return aigateway.Config{}, false, nil
 }
-func (s *failingConfigStore) Delete() error { return nil }
+func (s *failingConfigStore) Delete(context.Context) error { return nil }
 
 func TestGatewayConfigManager_ReloadConfig_RollsBackWhenSaveFails(t *testing.T) {
 	initial := aigateway.Config{
@@ -109,11 +110,11 @@ type successConfigStore struct {
 	cfg aigateway.Config
 }
 
-func (s *successConfigStore) Save(c aigateway.Config) error { s.cfg = c; return nil }
-func (s *successConfigStore) Load() (aigateway.Config, bool, error) {
+func (s *successConfigStore) Save(_ context.Context, c aigateway.Config) error { s.cfg = c; return nil }
+func (s *successConfigStore) Load(context.Context) (aigateway.Config, bool, error) {
 	return s.cfg, s.cfg.Strategy.Mode != "", nil
 }
-func (s *successConfigStore) Delete() error { s.cfg = aigateway.Config{}; return nil }
+func (s *successConfigStore) Delete(context.Context) error { s.cfg = aigateway.Config{}; return nil }
 
 func TestGatewayConfigManager_WithPersistedConfig(t *testing.T) {
 	initial := aigateway.Config{

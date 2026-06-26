@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
 	"github.com/ferro-labs/ai-gateway/internal/openaicompat"
@@ -33,6 +34,7 @@ var (
 	_ core.StreamProvider    = (*Provider)(nil)
 	_ core.ProxiableProvider = (*Provider)(nil)
 	_ core.EmbeddingProvider = (*Provider)(nil)
+	_ core.DiscoveryProvider = (*Provider)(nil)
 )
 
 // New creates a new Ollama provider.
@@ -146,4 +148,81 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 		Label:      "ollama",
 		Headers:    map[string]string{"Content-Type": "application/json"},
 	}, req)
+}
+
+type tagsResponse struct {
+	Models []struct {
+		Name       string `json:"name"`
+		Model      string `json:"model"`
+		ModifiedAt string `json:"modified_at"`
+	} `json:"models"`
+}
+
+// DiscoverModels fetches the live model list from the self-hosted Ollama
+// server's /api/tags endpoint. Ollama is unauthenticated, so no Authorization
+// header is sent.
+func (p *Provider) DiscoverModels(ctx context.Context) ([]core.ModelInfo, error) {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, p.baseURL+"/api/tags", nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	httpResp, err := p.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer func() { _ = httpResp.Body.Close() }()
+
+	respBody, err := io.ReadAll(httpResp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if httpResp.StatusCode != http.StatusOK {
+		var errResp ollamaErrorResponse
+		if json.Unmarshal(respBody, &errResp) == nil && errResp.Error.Message != "" {
+			return nil, fmt.Errorf("ollama API error (%d): %s", httpResp.StatusCode, errResp.Error.Message)
+		}
+		return nil, fmt.Errorf("ollama API error (%d): %s", httpResp.StatusCode, string(respBody))
+	}
+
+	var tags tagsResponse
+	if err := json.Unmarshal(respBody, &tags); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal models response: %w", err)
+	}
+
+	seen := make(map[string]struct{}, len(tags.Models))
+	models := make([]core.ModelInfo, 0, len(tags.Models))
+	for _, m := range tags.Models {
+		id := strings.TrimSpace(m.Name)
+		if id == "" {
+			id = strings.TrimSpace(m.Model)
+		}
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		models = append(models, core.ModelInfo{
+			ID:      id,
+			Object:  "model",
+			Created: parseCreatedAt(m.ModifiedAt),
+			OwnedBy: p.name,
+		})
+	}
+
+	return models, nil
+}
+
+func parseCreatedAt(value string) int64 {
+	if value == "" {
+		return 0
+	}
+	t, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return 0
+	}
+	return t.Unix()
 }

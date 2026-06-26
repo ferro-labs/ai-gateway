@@ -35,7 +35,7 @@ var keysListCmd = &cobra.Command{
 		flagKey, _ := cmd.Root().PersistentFlags().GetString("api-key")
 		c := NewAdminClient(flagURL, flagKey)
 		var result any
-		if err := c.Get("/admin/keys", &result); err != nil {
+		if err := c.Get(cmd.Context(), "/admin/keys", &result); err != nil {
 			return err
 		}
 		format, _ := cmd.Root().PersistentFlags().GetString("format")
@@ -62,7 +62,7 @@ var keysGetCmd = &cobra.Command{
 		flagKey, _ := cmd.Root().PersistentFlags().GetString("api-key")
 		c := NewAdminClient(flagURL, flagKey)
 		var result any
-		if err := c.Get("/admin/keys/"+args[0], &result); err != nil {
+		if err := c.Get(cmd.Context(), "/admin/keys/"+args[0], &result); err != nil {
 			return err
 		}
 		format, _ := cmd.Root().PersistentFlags().GetString("format")
@@ -95,7 +95,7 @@ var keysCreateCmd = &cobra.Command{
 		flagKey, _ := cmd.Root().PersistentFlags().GetString("api-key")
 		c := NewAdminClient(flagURL, flagKey)
 		var result any
-		if err := c.Post("/admin/keys", body, &result); err != nil {
+		if err := c.Post(cmd.Context(), "/admin/keys", body, &result); err != nil {
 			return err
 		}
 		format, _ := cmd.Root().PersistentFlags().GetString("format")
@@ -112,7 +112,7 @@ var keysRevokeCmd = &cobra.Command{
 		flagURL, _ := cmd.Root().PersistentFlags().GetString("gateway-url")
 		flagKey, _ := cmd.Root().PersistentFlags().GetString("api-key")
 		c := NewAdminClient(flagURL, flagKey)
-		if err := c.Post("/admin/keys/"+args[0]+"/revoke", nil, nil); err != nil {
+		if err := c.Post(cmd.Context(), "/admin/keys/"+args[0]+"/revoke", nil, nil); err != nil {
 			return err
 		}
 		PrintSuccess("Key revoked.")
@@ -129,7 +129,7 @@ var keysRotateCmd = &cobra.Command{
 		flagKey, _ := cmd.Root().PersistentFlags().GetString("api-key")
 		c := NewAdminClient(flagURL, flagKey)
 		var result any
-		if err := c.Post("/admin/keys/"+args[0]+"/rotate", nil, &result); err != nil {
+		if err := c.Post(cmd.Context(), "/admin/keys/"+args[0]+"/rotate", nil, &result); err != nil {
 			return err
 		}
 		format, _ := cmd.Root().PersistentFlags().GetString("format")
@@ -153,7 +153,7 @@ var configGetCmd = &cobra.Command{
 		flagKey, _ := cmd.Root().PersistentFlags().GetString("api-key")
 		c := NewAdminClient(flagURL, flagKey)
 		var result any
-		if err := c.Get("/admin/config", &result); err != nil {
+		if err := c.Get(cmd.Context(), "/admin/config", &result); err != nil {
 			return err
 		}
 		format, _ := cmd.Root().PersistentFlags().GetString("format")
@@ -170,7 +170,7 @@ var configHistoryCmd = &cobra.Command{
 		flagKey, _ := cmd.Root().PersistentFlags().GetString("api-key")
 		c := NewAdminClient(flagURL, flagKey)
 		var result any
-		if err := c.Get("/admin/config/history", &result); err != nil {
+		if err := c.Get(cmd.Context(), "/admin/config/history", &result); err != nil {
 			return err
 		}
 		format, _ := cmd.Root().PersistentFlags().GetString("format")
@@ -210,7 +210,7 @@ var configSetCmd = &cobra.Command{
 		flagKey, _ := cmd.Root().PersistentFlags().GetString("api-key")
 		c := NewAdminClient(flagURL, flagKey)
 		var result any
-		if err := c.Put("/admin/config", body, &result); err != nil {
+		if err := c.Put(cmd.Context(), "/admin/config", body, &result); err != nil {
 			return err
 		}
 		PrintSuccess("Configuration updated.")
@@ -227,7 +227,7 @@ var configRollbackCmd = &cobra.Command{
 		flagKey, _ := cmd.Root().PersistentFlags().GetString("api-key")
 		c := NewAdminClient(flagURL, flagKey)
 		var result any
-		if err := c.Post("/admin/config/rollback/"+args[0], nil, &result); err != nil {
+		if err := c.Post(cmd.Context(), "/admin/config/rollback/"+args[0], nil, &result); err != nil {
 			return err
 		}
 		PrintSuccess("Rolled back to version " + args[0] + ".")
@@ -252,7 +252,7 @@ var logsListCmd = &cobra.Command{
 		limit, _ := cmd.Flags().GetInt("limit")
 		path := fmt.Sprintf("/admin/logs?limit=%d", limit)
 		var result any
-		if err := c.Get(path, &result); err != nil {
+		if err := c.Get(cmd.Context(), path, &result); err != nil {
 			return err
 		}
 		format, _ := cmd.Root().PersistentFlags().GetString("format")
@@ -280,7 +280,7 @@ var logsStatsCmd = &cobra.Command{
 		flagKey, _ := cmd.Root().PersistentFlags().GetString("api-key")
 		c := NewAdminClient(flagURL, flagKey)
 		var result any
-		if err := c.Get("/admin/logs/stats", &result); err != nil {
+		if err := c.Get(cmd.Context(), "/admin/logs/stats", &result); err != nil {
 			return err
 		}
 		format, _ := cmd.Root().PersistentFlags().GetString("format")
@@ -304,7 +304,7 @@ var providersListCmd = &cobra.Command{
 		flagKey, _ := cmd.Root().PersistentFlags().GetString("api-key")
 		c := NewAdminClient(flagURL, flagKey)
 		var result any
-		if err := c.Get("/admin/providers", &result); err != nil {
+		if err := c.Get(cmd.Context(), "/admin/providers", &result); err != nil {
 			return err
 		}
 		format, _ := cmd.Root().PersistentFlags().GetString("format")
@@ -327,7 +327,7 @@ var providersHealthCmd = &cobra.Command{
 		flagKey, _ := cmd.Root().PersistentFlags().GetString("api-key")
 		c := NewAdminClient(flagURL, flagKey)
 		var result any
-		if err := c.Get("/admin/health", &result); err != nil {
+		if err := c.Get(cmd.Context(), "/admin/health", &result); err != nil {
 			return err
 		}
 		format, _ := cmd.Root().PersistentFlags().GetString("format")

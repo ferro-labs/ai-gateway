@@ -93,7 +93,7 @@ func Write(ctx context.Context, w http.ResponseWriter, ch <-chan providers.Strea
 			idleTimer.Reset(idleTimeout)
 
 			if err := writeAndFlush(ctx, controller, bw, func() error {
-				return writeEvent(bw, enc, chunk)
+				return writeChunk(bw, enc, &chunk)
 			}); err != nil {
 				if !errors.Is(err, context.Canceled) {
 					logging.FromContext(ctx).Debug("stream response write failed", "error", err)
@@ -127,6 +127,23 @@ func writeAndFlush(ctx context.Context, controller *http.ResponseController, bw 
 	return flush(controller)
 }
 
+// writeChunk writes a single stream chunk as an SSE event using a
+// concrete-typed argument. This is the highest-frequency write in the gateway
+// (once per token delta); taking *providers.StreamChunk instead of the any
+// parameter of writeEvent avoids heap-boxing the chunk on every write.
+func writeChunk(bw *bufio.Writer, enc *json.Encoder, chunk *providers.StreamChunk) error {
+	if _, err := bw.WriteString("data: "); err != nil {
+		return err
+	}
+	if err := enc.Encode(chunk); err != nil {
+		return err
+	}
+	return bw.WriteByte('\n')
+}
+
+// writeEvent writes an arbitrary payload as an SSE event. It is used for
+// low-frequency control events (errors, timeouts) where the any boxing is
+// negligible; per-chunk writes use writeChunk instead.
 func writeEvent(bw *bufio.Writer, enc *json.Encoder, payload any) error {
 	if _, err := bw.WriteString("data: "); err != nil {
 		return err
@@ -134,10 +151,7 @@ func writeEvent(bw *bufio.Writer, enc *json.Encoder, payload any) error {
 	if err := enc.Encode(payload); err != nil {
 		return err
 	}
-	if err := bw.WriteByte('\n'); err != nil {
-		return err
-	}
-	return nil
+	return bw.WriteByte('\n')
 }
 
 func flush(controller *http.ResponseController) error {

@@ -4,6 +4,7 @@
 package integration
 
 import (
+	"context"
 	"testing"
 
 	aigateway "github.com/ferro-labs/ai-gateway"
@@ -24,11 +25,11 @@ func TestPostgresConfigStore_SaveLoadRoundtrip(t *testing.T) {
 			{VirtualKey: "anthropic"},
 		},
 	}
-	if err := store.Save(cfg); err != nil {
+	if err := store.Save(context.Background(), cfg); err != nil {
 		t.Fatalf("save: %v", err)
 	}
 
-	loaded, found, err := store.Load()
+	loaded, found, err := store.Load(context.Background())
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -54,14 +55,14 @@ func TestPostgresConfigStore_Delete(t *testing.T) {
 		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeSingle},
 		Targets:  []aigateway.Target{{VirtualKey: "openai"}},
 	}
-	if err := store.Save(cfg); err != nil {
+	if err := store.Save(context.Background(), cfg); err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	if err := store.Delete(); err != nil {
+	if err := store.Delete(context.Background()); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 
-	_, found, err := store.Load()
+	_, found, err := store.Load(context.Background())
 	if err != nil {
 		t.Fatalf("load after delete: %v", err)
 	}
@@ -102,7 +103,7 @@ func TestPostgresConfigManager_ReloadPersists(t *testing.T) {
 		t.Fatalf("expected fallback in manager, got %q", mgr.GetConfig().Strategy.Mode)
 	}
 
-	loaded, found, err := store.Load()
+	loaded, found, err := store.Load(context.Background())
 	if err != nil {
 		t.Fatalf("load from store: %v", err)
 	}

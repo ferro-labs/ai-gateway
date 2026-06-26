@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 
 	"github.com/ferro-labs/ai-gateway/providers"
@@ -153,11 +154,13 @@ func (m routeChatMessage) toProviderMessage() (providers.Message, error) {
 		return providers.Message{}, err
 	}
 	msg.ContentParts = parts
+	var text strings.Builder
 	for _, part := range parts {
 		if part.Type == providers.ContentTypeText {
-			msg.Content += part.Text
+			text.WriteString(part.Text)
 		}
 	}
+	msg.Content = text.String()
 	return msg, nil
 }
 

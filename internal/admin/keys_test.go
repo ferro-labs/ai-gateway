@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -8,7 +9,7 @@ import (
 
 func TestCreate(t *testing.T) {
 	store := NewKeyStore()
-	key, err := store.Create("test-key", nil, nil)
+	key, err := store.Create(context.Background(), "test-key", nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -28,9 +29,9 @@ func TestCreate(t *testing.T) {
 
 func TestGet_Existing(t *testing.T) {
 	store := NewKeyStore()
-	created, _ := store.Create("my-key", nil, nil)
+	created, _ := store.Create(context.Background(), "my-key", nil, nil)
 
-	got, ok := store.Get(created.ID)
+	got, ok := store.Get(context.Background(), created.ID)
 	if !ok {
 		t.Fatal("expected to find key")
 	}
@@ -41,7 +42,7 @@ func TestGet_Existing(t *testing.T) {
 
 func TestGet_NonExisting(t *testing.T) {
 	store := NewKeyStore()
-	_, ok := store.Get("does-not-exist")
+	_, ok := store.Get(context.Background(), "does-not-exist")
 	if ok {
 		t.Error("expected key not found")
 	}
@@ -49,10 +50,10 @@ func TestGet_NonExisting(t *testing.T) {
 
 func TestList_KeysMasked(t *testing.T) {
 	store := NewKeyStore()
-	_, _ = store.Create("key-1", nil, nil)
-	_, _ = store.Create("key-2", nil, nil)
+	_, _ = store.Create(context.Background(), "key-1", nil, nil)
+	_, _ = store.Create(context.Background(), "key-2", nil, nil)
 
-	keys := store.List()
+	keys := store.List(context.Background())
 	if len(keys) != 2 {
 		t.Fatalf("got %d keys, want 2", len(keys))
 	}
@@ -68,13 +69,13 @@ func TestList_KeysMasked(t *testing.T) {
 
 func TestRevoke(t *testing.T) {
 	store := NewKeyStore()
-	created, _ := store.Create("revoke-me", nil, nil)
+	created, _ := store.Create(context.Background(), "revoke-me", nil, nil)
 
-	if err := store.Revoke(created.ID); err != nil {
+	if err := store.Revoke(context.Background(), created.ID); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	got, ok := store.Get(created.ID)
+	got, ok := store.Get(context.Background(), created.ID)
 	if !ok {
 		t.Fatal("expected to find key")
 	}
@@ -85,7 +86,7 @@ func TestRevoke(t *testing.T) {
 		t.Error("expected RevokedAt to be set")
 	}
 
-	_, valid := store.ValidateKey(created.Key)
+	_, valid := store.ValidateKey(context.Background(), created.Key)
 	if valid {
 		t.Error("expected revoked key to fail validation")
 	}
@@ -93,19 +94,19 @@ func TestRevoke(t *testing.T) {
 
 func TestDelete(t *testing.T) {
 	store := NewKeyStore()
-	created, _ := store.Create("delete-me", nil, nil)
+	created, _ := store.Create(context.Background(), "delete-me", nil, nil)
 	fullKey := created.Key
 
-	if err := store.Delete(created.ID); err != nil {
+	if err := store.Delete(context.Background(), created.ID); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	_, ok := store.Get(created.ID)
+	_, ok := store.Get(context.Background(), created.ID)
 	if ok {
 		t.Error("expected key to be deleted")
 	}
 
-	_, valid := store.ValidateKey(fullKey)
+	_, valid := store.ValidateKey(context.Background(), fullKey)
 	if valid {
 		t.Error("expected deleted key to fail validation")
 	}
@@ -113,9 +114,9 @@ func TestDelete(t *testing.T) {
 
 func TestValidateKey_Valid(t *testing.T) {
 	store := NewKeyStore()
-	created, _ := store.Create("valid-key", nil, nil)
+	created, _ := store.Create(context.Background(), "valid-key", nil, nil)
 
-	got, ok := store.ValidateKey(created.Key)
+	got, ok := store.ValidateKey(context.Background(), created.Key)
 	if !ok {
 		t.Fatal("expected key to be valid")
 	}
@@ -135,13 +136,13 @@ func TestValidateKey_Valid(t *testing.T) {
 
 func TestValidateKey_IncrementsUsage(t *testing.T) {
 	store := NewKeyStore()
-	created, _ := store.Create("usage-key", nil, nil)
+	created, _ := store.Create(context.Background(), "usage-key", nil, nil)
 
-	_, ok := store.ValidateKey(created.Key)
+	_, ok := store.ValidateKey(context.Background(), created.Key)
 	if !ok {
 		t.Fatal("expected first validation to pass")
 	}
-	second, ok := store.ValidateKey(created.Key)
+	second, ok := store.ValidateKey(context.Background(), created.Key)
 	if !ok {
 		t.Fatal("expected second validation to pass")
 	}
@@ -152,10 +153,10 @@ func TestValidateKey_IncrementsUsage(t *testing.T) {
 
 func TestValidateKey_RevokedFails(t *testing.T) {
 	store := NewKeyStore()
-	created, _ := store.Create("will-revoke", nil, nil)
-	_ = store.Revoke(created.ID)
+	created, _ := store.Create(context.Background(), "will-revoke", nil, nil)
+	_ = store.Revoke(context.Background(), created.ID)
 
-	_, ok := store.ValidateKey(created.Key)
+	_, ok := store.ValidateKey(context.Background(), created.Key)
 	if ok {
 		t.Error("expected revoked key to fail validation")
 	}
@@ -163,7 +164,7 @@ func TestValidateKey_RevokedFails(t *testing.T) {
 
 func TestValidateKey_UnknownFails(t *testing.T) {
 	store := NewKeyStore()
-	_, ok := store.ValidateKey("gw-unknown-key")
+	_, ok := store.ValidateKey(context.Background(), "gw-unknown-key")
 	if ok {
 		t.Error("expected unknown key to fail validation")
 	}
@@ -171,14 +172,14 @@ func TestValidateKey_UnknownFails(t *testing.T) {
 
 func TestSetExpiration_ExpiredFailsValidation(t *testing.T) {
 	store := NewKeyStore()
-	created, _ := store.Create("expires-soon", nil, nil)
+	created, _ := store.Create(context.Background(), "expires-soon", nil, nil)
 
 	expiresAt := time.Now().Add(-1 * time.Minute)
-	if err := store.SetExpiration(created.ID, &expiresAt); err != nil {
+	if err := store.SetExpiration(context.Background(), created.ID, &expiresAt); err != nil {
 		t.Fatalf("set expiration: %v", err)
 	}
 
-	if _, ok := store.ValidateKey(created.Key); ok {
+	if _, ok := store.ValidateKey(context.Background(), created.Key); ok {
 		t.Fatal("expected expired key to fail validation")
 	}
 }
@@ -186,30 +187,30 @@ func TestSetExpiration_ExpiredFailsValidation(t *testing.T) {
 func TestSetExpiration_ClearAllowsValidation(t *testing.T) {
 	store := NewKeyStore()
 	expiresAt := time.Now().Add(-1 * time.Minute)
-	created, _ := store.Create("expired", nil, &expiresAt)
+	created, _ := store.Create(context.Background(), "expired", nil, &expiresAt)
 
-	if err := store.SetExpiration(created.ID, nil); err != nil {
+	if err := store.SetExpiration(context.Background(), created.ID, nil); err != nil {
 		t.Fatalf("clear expiration: %v", err)
 	}
 
-	if _, ok := store.ValidateKey(created.Key); !ok {
+	if _, ok := store.ValidateKey(context.Background(), created.Key); !ok {
 		t.Fatal("expected key to validate after clearing expiration")
 	}
 }
 
 func TestSetExpiration_StoresUTCCopyWithoutAliasing(t *testing.T) {
 	store := NewKeyStore()
-	created, _ := store.Create("copy-expiration", nil, nil)
+	created, _ := store.Create(context.Background(), "copy-expiration", nil, nil)
 
 	loc := time.FixedZone("UTC+5", 5*60*60)
 	input := time.Date(2026, 2, 28, 10, 30, 0, 0, loc)
 	originalInput := input
 
-	if err := store.SetExpiration(created.ID, &input); err != nil {
+	if err := store.SetExpiration(context.Background(), created.ID, &input); err != nil {
 		t.Fatalf("set expiration: %v", err)
 	}
 
-	stored, ok := store.Get(created.ID)
+	stored, ok := store.Get(context.Background(), created.ID)
 	if !ok {
 		t.Fatal("expected key to exist")
 	}
@@ -230,9 +231,9 @@ func TestSetExpiration_StoresUTCCopyWithoutAliasing(t *testing.T) {
 func TestGet_ReturnsDefensiveCopy(t *testing.T) {
 	store := NewKeyStore()
 	expiresAt := time.Now().Add(time.Hour)
-	created, _ := store.Create("copy-me", []string{ScopeReadOnly}, &expiresAt)
+	created, _ := store.Create(context.Background(), "copy-me", []string{ScopeReadOnly}, &expiresAt)
 
-	got, ok := store.Get(created.ID)
+	got, ok := store.Get(context.Background(), created.ID)
 	if !ok {
 		t.Fatal("expected key to exist")
 	}
@@ -240,7 +241,7 @@ func TestGet_ReturnsDefensiveCopy(t *testing.T) {
 	got.Scopes[0] = ScopeAdmin
 	*got.ExpiresAt = got.ExpiresAt.Add(time.Hour)
 
-	again, ok := store.Get(created.ID)
+	again, ok := store.Get(context.Background(), created.ID)
 	if !ok {
 		t.Fatal("expected key to exist")
 	}
@@ -257,9 +258,9 @@ func TestGet_ReturnsDefensiveCopy(t *testing.T) {
 
 func TestValidateKey_ReturnsDefensiveCopy(t *testing.T) {
 	store := NewKeyStore()
-	created, _ := store.Create("validate-copy", []string{ScopeReadOnly}, nil)
+	created, _ := store.Create(context.Background(), "validate-copy", []string{ScopeReadOnly}, nil)
 
-	validated, ok := store.ValidateKey(created.Key)
+	validated, ok := store.ValidateKey(context.Background(), created.Key)
 	if !ok {
 		t.Fatal("expected key to validate")
 	}
@@ -267,7 +268,7 @@ func TestValidateKey_ReturnsDefensiveCopy(t *testing.T) {
 	validated.LastUsedAt = nil
 	validated.Scopes[0] = ScopeAdmin
 
-	stored, ok := store.Get(created.ID)
+	stored, ok := store.Get(context.Background(), created.ID)
 	if !ok {
 		t.Fatal("expected key to exist")
 	}

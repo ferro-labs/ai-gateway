@@ -586,11 +586,11 @@ func TestCreateKeyStoreFromEnv_SQLite(t *testing.T) {
 		t.Fatalf("backend = %s, want sqlite", backend)
 	}
 
-	created, err := store.Create("test", nil, nil)
+	created, err := store.Create(context.Background(), "test", nil, nil)
 	if err != nil {
 		t.Fatalf("create key on sqlite store: %v", err)
 	}
-	if _, ok := store.ValidateKey(created.Key); !ok {
+	if _, ok := store.ValidateKey(context.Background(), created.Key); !ok {
 		t.Fatalf("expected created sqlite key to validate")
 	}
 }

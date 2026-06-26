@@ -8,17 +8,20 @@ Thank you for contributing to Ferro Labs AI Gateway.
 
 ```
 main          — stable, always releasable, protected
-develop       — integration branch for next release
-feature/*     — new features (branch from develop)
-fix/*         — bug fixes (branch from develop)
-release/*     — release preparation (branch from develop)
+release/*     — integration branch for the next release (branch from main)
+feature/*     — new features (branch from the active release/* branch)
+fix/*         — bug fixes (branch from the active release/* branch)
 hotfix/*      — critical production fixes (branch from main)
 ```
 
-### Creating the v1.0.0 Release Branch
+Work for a release lands on its `release/*` branch via short-lived
+`feature/*` or `fix/*` branches; the release branch is merged into `main`
+when the release ships.
+
+### Creating a Release Branch
 
 ```bash
-git checkout develop || git checkout main
+git checkout main
 git checkout -b release/v1.0.0
 git push origin release/v1.0.0
 ```
@@ -27,7 +30,7 @@ git push origin release/v1.0.0
 
 ## Pull Request Guidelines
 
-- All PRs must target `develop` (never `main` directly)
+- All PRs must target the active `release/*` branch (never `main` directly)
 - New providers: OSS repo ONLY — never add to FerroCloud
 - Every PR requires:
   - Clear description of what and why
@@ -35,6 +38,46 @@ git push origin release/v1.0.0
   - Documentation update if behavior changes
 - Breaking changes require an RFC issue first
 - Keep commits atomic — one logical change per commit
+
+---
+
+## Local Development
+
+### Prerequisites
+
+- **Go 1.25+** — the toolchain version is pinned in [`go.mod`](go.mod) (`go 1.25.0`).
+- **golangci-lint** — install via the [official instructions](https://golangci-lint.run/welcome/install/). CI pins v2; match that locally.
+
+### Running Checks
+
+All checks are wrapped as Make targets (see the [`Makefile`](Makefile)) — run them rather than memorising the exact commands:
+
+- `make fmt` — formats the tree with `gofmt -s -w`.
+- `make vet` — runs `go vet ./...`.
+- `make lint` — runs `golangci-lint`.
+- `make lint-fix` — runs `golangci-lint run --fix` to auto-apply fixable lint issues.
+- `make test` — unit tests with the race detector (`-short -race`). See [Running Tests](#running-tests) for the integration/live suites.
+- `make precommit` — convenience target: `fmt` + `test`.
+
+### Pre-Commit Hook
+
+The repo ships git hooks in [`.husky/`](.husky) (plain POSIX shell scripts — no Node/husky tooling required). They are **not** active until you point git at them once per clone:
+
+```bash
+git config core.hooksPath .husky
+```
+
+- `pre-commit` runs **fmt → vet → lint** (fast, no tests).
+- `pre-push` runs the **unit test suite** (`go test -short -race`).
+
+### CI Checks
+
+`.github/workflows/ci.yml` runs on every push and PR to `main` and must pass before merge:
+
+- **Test** — `go mod verify`, a `gofmt -l` formatting gate, `go build ./...`, `go test -short -race`, and a coverage upload to Codecov.
+- **Integration** — `make test-integration`.
+- **Vulnerability** — `govulncheck ./...`.
+- **Lint** — `golangci-lint` (v2).
 
 ---
 

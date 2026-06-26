@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -8,7 +9,7 @@ import (
 
 func TestAuthMiddleware_ValidKey(t *testing.T) {
 	store := NewKeyStore()
-	created, _ := store.Create("valid", nil, nil)
+	created, _ := store.Create(context.Background(), "valid", nil, nil)
 
 	handler := AuthMiddleware(store, "")(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -59,8 +60,8 @@ func TestAuthMiddleware_InvalidKey(t *testing.T) {
 
 func TestAuthMiddleware_RevokedKey(t *testing.T) {
 	store := NewKeyStore()
-	created, _ := store.Create("will-revoke", nil, nil)
-	_ = store.Revoke(created.ID)
+	created, _ := store.Create(context.Background(), "will-revoke", nil, nil)
+	_ = store.Revoke(context.Background(), created.ID)
 
 	handler := AuthMiddleware(store, "")(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		t.Error("handler should not be called")
@@ -184,7 +185,7 @@ func TestAuthMiddleware_BootstrapDisabled(t *testing.T) {
 func TestAuthMiddleware_BootstrapOnlyWhenStoreEmpty(t *testing.T) {
 	t.Setenv("ADMIN_BOOTSTRAP_KEY", "bootstrap-secret")
 	store := NewKeyStore()
-	_, _ = store.Create("existing-key", []string{ScopeAdmin}, nil)
+	_, _ = store.Create(context.Background(), "existing-key", []string{ScopeAdmin}, nil)
 
 	handler := AuthMiddleware(store, "")(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		t.Error("handler should not be called")

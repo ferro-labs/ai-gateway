@@ -160,10 +160,11 @@ func Completions(registry *providers.Registry) http.HandlerFunc {
 		}
 
 		legacy := legacyResponse{
-			ID:     chatResp.ID,
-			Object: "text_completion",
-			Model:  chatResp.Model,
-			Usage:  chatResp.Usage,
+			ID:      chatResp.ID,
+			Object:  "text_completion",
+			Model:   chatResp.Model,
+			Usage:   chatResp.Usage,
+			Choices: make([]legacyChoice, 0, len(chatResp.Choices)),
 		}
 		for _, c := range chatResp.Choices {
 			legacy.Choices = append(legacy.Choices, legacyChoice{

@@ -286,7 +286,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameOllama,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityProxy, CapabilityDiscovery},
 		// Ollama has no API key; CfgKeyHost acts as the "configured?" gate.
 		EnvMappings: []EnvMapping{
 			{CfgKeyHost, "OLLAMA_HOST", true},

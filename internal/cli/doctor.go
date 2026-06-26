@@ -84,7 +84,7 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 		Status string `json:"status"`
 	}
 	start := time.Now()
-	err := c.Get("/health", &h)
+	err := c.Get(cmd.Context(), "/health", &h)
 	latency := time.Since(start)
 	if err != nil {
 		fmt.Printf("    %s %s: %v\n", Clr(ColorRed, SymFAIL), c.BaseURL, err)

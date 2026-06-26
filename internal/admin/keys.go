@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -61,7 +62,7 @@ func cloneTime(t *time.Time) *time.Time {
 }
 
 // Create generates a new API key with the given name, scopes, and optional expiration.
-func (s *KeyStore) Create(name string, scopes []string, expiresAt *time.Time) (*APIKey, error) {
+func (s *KeyStore) Create(_ context.Context, name string, scopes []string, expiresAt *time.Time) (*APIKey, error) {
 	keyBytes := make([]byte, 32)
 	if _, err := rand.Read(keyBytes); err != nil {
 		return nil, fmt.Errorf("generating key: %w", err)
@@ -98,7 +99,7 @@ func (s *KeyStore) Create(name string, scopes []string, expiresAt *time.Time) (*
 }
 
 // Get retrieves an API key by ID.
-func (s *KeyStore) Get(id string) (*APIKey, bool) {
+func (s *KeyStore) Get(_ context.Context, id string) (*APIKey, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	k, ok := s.byID[id]
@@ -109,7 +110,7 @@ func (s *KeyStore) Get(id string) (*APIKey, bool) {
 }
 
 // List returns all keys with the Key field masked.
-func (s *KeyStore) List() []*APIKey {
+func (s *KeyStore) List(_ context.Context) []*APIKey {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	keys := make([]*APIKey, 0, len(s.byID))
@@ -124,7 +125,7 @@ func (s *KeyStore) List() []*APIKey {
 }
 
 // Revoke marks an API key as revoked and inactive.
-func (s *KeyStore) Revoke(id string) error {
+func (s *KeyStore) Revoke(_ context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	k, ok := s.byID[id]
@@ -138,7 +139,7 @@ func (s *KeyStore) Revoke(id string) error {
 }
 
 // Update updates the name and scopes of an API key.
-func (s *KeyStore) Update(id string, name string, scopes []string) (*APIKey, error) {
+func (s *KeyStore) Update(_ context.Context, id string, name string, scopes []string) (*APIKey, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	k, ok := s.byID[id]
@@ -159,7 +160,7 @@ func (s *KeyStore) Update(id string, name string, scopes []string) (*APIKey, err
 }
 
 // SetExpiration updates the expiration time for an API key.
-func (s *KeyStore) SetExpiration(id string, expiresAt *time.Time) error {
+func (s *KeyStore) SetExpiration(_ context.Context, id string, expiresAt *time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	k, ok := s.byID[id]
@@ -178,7 +179,7 @@ func (s *KeyStore) SetExpiration(id string, expiresAt *time.Time) error {
 }
 
 // Delete removes an API key from the store.
-func (s *KeyStore) Delete(id string) error {
+func (s *KeyStore) Delete(_ context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	k, ok := s.byID[id]
@@ -191,7 +192,7 @@ func (s *KeyStore) Delete(id string) error {
 }
 
 // RotateKey generates a new key string for an existing API key.
-func (s *KeyStore) RotateKey(id string) (*APIKey, error) {
+func (s *KeyStore) RotateKey(_ context.Context, id string) (*APIKey, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	k, ok := s.byID[id]
@@ -215,7 +216,7 @@ func (s *KeyStore) RotateKey(id string) (*APIKey, error) {
 }
 
 // ValidateKey looks up a key by its full string and returns it if active.
-func (s *KeyStore) ValidateKey(key string) (*APIKey, bool) {
+func (s *KeyStore) ValidateKey(_ context.Context, key string) (*APIKey, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	id, ok := s.byKey[key]

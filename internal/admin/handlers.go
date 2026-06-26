@@ -98,7 +98,7 @@ func (h *Handlers) dashboard(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	keys := h.Keys.List()
+	keys := h.Keys.List(r.Context())
 	activeKeys := 0
 	expiredKeys := 0
 	totalUsage := int64(0)
@@ -168,7 +168,7 @@ func (h *Handlers) createKey(w http.ResponseWriter, r *http.Request) {
 		expiresAt = &t
 	}
 
-	key, err := h.Keys.Create(body.Name, body.Scopes, expiresAt)
+	key, err := h.Keys.Create(r.Context(), body.Name, body.Scopes, expiresAt)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error(), "server_error", "internal_error")
 		return
@@ -179,15 +179,15 @@ func (h *Handlers) createKey(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(key)
 }
 
-func (h *Handlers) listKeys(w http.ResponseWriter, _ *http.Request) {
-	keys := h.Keys.List()
+func (h *Handlers) listKeys(w http.ResponseWriter, r *http.Request) {
+	keys := h.Keys.List(r.Context())
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(keys)
 }
 
 func (h *Handlers) getKey(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	key, ok := h.Keys.Get(id)
+	key, ok := h.Keys.Get(r.Context(), id)
 	if !ok {
 		writeError(w, http.StatusNotFound, "key not found", "not_found_error", "resource_not_found")
 		return
@@ -257,7 +257,7 @@ func (h *Handlers) keyUsage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	filteredKeys := make([]*APIKey, 0)
-	for _, key := range h.Keys.List() {
+	for _, key := range h.Keys.List(r.Context()) {
 		if activeFilter != "" {
 			requireActive := activeFilter == "true"
 			if key.Active != requireActive {
@@ -620,14 +620,14 @@ func (h *Handlers) updateKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	key, err := h.Keys.Update(id, body.Name, body.Scopes)
+	key, err := h.Keys.Update(r.Context(), id, body.Name, body.Scopes)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error(), "not_found_error", "resource_not_found")
 		return
 	}
 
 	if body.ClearExpiration {
-		if err := h.Keys.SetExpiration(id, nil); err != nil {
+		if err := h.Keys.SetExpiration(r.Context(), id, nil); err != nil {
 			writeError(w, http.StatusNotFound, err.Error(), "not_found_error", "resource_not_found")
 			return
 		}
@@ -638,7 +638,7 @@ func (h *Handlers) updateKey(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid expires_at: must be RFC3339 format", "invalid_request_error", "invalid_request")
 			return
 		}
-		if err := h.Keys.SetExpiration(id, &expiresAt); err != nil {
+		if err := h.Keys.SetExpiration(r.Context(), id, &expiresAt); err != nil {
 			writeError(w, http.StatusNotFound, err.Error(), "not_found_error", "resource_not_found")
 			return
 		}
@@ -652,7 +652,7 @@ func (h *Handlers) updateKey(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handlers) deleteKey(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if err := h.Keys.Delete(id); err != nil {
+	if err := h.Keys.Delete(r.Context(), id); err != nil {
 		writeError(w, http.StatusNotFound, err.Error(), "not_found_error", "resource_not_found")
 		return
 	}
@@ -661,7 +661,7 @@ func (h *Handlers) deleteKey(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handlers) revokeKey(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if err := h.Keys.Revoke(id); err != nil {
+	if err := h.Keys.Revoke(r.Context(), id); err != nil {
 		writeError(w, http.StatusNotFound, err.Error(), "not_found_error", "resource_not_found")
 		return
 	}
@@ -671,7 +671,7 @@ func (h *Handlers) revokeKey(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handlers) rotateKey(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	key, err := h.Keys.RotateKey(id)
+	key, err := h.Keys.RotateKey(r.Context(), id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error(), "not_found_error", "resource_not_found")
 		return

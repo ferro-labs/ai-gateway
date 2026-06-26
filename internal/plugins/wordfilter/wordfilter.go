@@ -21,6 +21,7 @@ func init() {
 // configurable blocked words or phrases.
 type WordFilter struct {
 	blockedWords  []string
+	loweredWords  []string
 	caseSensitive bool
 }
 
@@ -47,6 +48,15 @@ func (w *WordFilter) Init(config map[string]interface{}) error {
 	if cs, ok := config["case_sensitive"].(bool); ok {
 		w.caseSensitive = cs
 	}
+	// Pre-lowercase the blocked words once so case-insensitive Execute calls
+	// compare against the cached list instead of calling strings.ToLower per
+	// blocked-word × message × request.
+	if !w.caseSensitive {
+		w.loweredWords = make([]string, len(w.blockedWords))
+		for i, word := range w.blockedWords {
+			w.loweredWords[i] = strings.ToLower(word)
+		}
+	}
 	return nil
 }
 
@@ -61,10 +71,10 @@ func (w *WordFilter) Execute(_ context.Context, pctx *plugin.Context) error {
 		if !w.caseSensitive {
 			content = strings.ToLower(content)
 		}
-		for _, word := range w.blockedWords {
+		for i, word := range w.blockedWords {
 			check := word
 			if !w.caseSensitive {
-				check = strings.ToLower(check)
+				check = w.loweredWords[i]
 			}
 			if strings.Contains(content, check) {
 				pctx.Reject = true

@@ -10,11 +10,18 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strconv"
+	"time"
 
 	"github.com/ferro-labs/ai-gateway/internal/apierror"
 	"github.com/ferro-labs/ai-gateway/internal/httpclient"
 	"github.com/ferro-labs/ai-gateway/providers"
 )
+
+// proxyFlushInterval forces the reverse proxy to flush buffered bytes to the
+// client immediately after each write. A negative value disables write
+// buffering, which is required for incremental delivery of streamed
+// pass-through endpoints (e.g. /v1/responses, /v1/audio/*, /v1/realtime).
+const proxyFlushInterval = -1 * time.Nanosecond
 
 // Handler returns an http.HandlerFunc that transparently forwards
 // any /v1/* request to the matching upstream provider.
@@ -61,7 +68,11 @@ func Handler(registry *providers.Registry) http.HandlerFunc {
 		providerName := p.Name()
 
 		proxy := &httputil.ReverseProxy{
-			Transport: httpclient.SharedTransport(),
+			// Use the SSE-tuned transport (no ResponseHeaderTimeout) so slow or
+			// streaming pass-through endpoints are not cut off at 30s while
+			// waiting for the upstream's first response header.
+			Transport:     httpclient.SharedStreaming().Transport,
+			FlushInterval: proxyFlushInterval,
 			Rewrite: func(pr *httputil.ProxyRequest) {
 				pr.SetURL(target)
 				pr.Out.Header.Del("X-Provider")

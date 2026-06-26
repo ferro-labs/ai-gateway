@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -17,10 +18,13 @@ import (
 )
 
 // ConfigStore persists the gateway config for runtime management APIs.
+//
+// Every method accepts a context.Context as its first parameter so request
+// cancellation and deadlines propagate down to the underlying storage layer.
 type ConfigStore interface {
-	Save(cfg aigateway.Config) error
-	Load() (aigateway.Config, bool, error)
-	Delete() error
+	Save(ctx context.Context, cfg aigateway.Config) error
+	Load(ctx context.Context) (aigateway.Config, bool, error)
+	Delete(ctx context.Context) error
 }
 
 // ConfigResetter provides reset semantics for config CRUD APIs.
@@ -112,7 +116,7 @@ CREATE TABLE IF NOT EXISTS gateway_config (
 }
 
 // Save persists the current gateway config snapshot.
-func (s *SQLConfigStore) Save(cfg aigateway.Config) error {
+func (s *SQLConfigStore) Save(ctx context.Context, cfg aigateway.Config) error {
 	data, err := json.Marshal(cfg)
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
@@ -130,16 +134,16 @@ VALUES(1, $1, $2)
 ON CONFLICT(id) DO UPDATE SET config_json = EXCLUDED.config_json, updated_at = EXCLUDED.updated_at`
 	}
 
-	if _, err := s.db.Exec(upsert, string(data), time.Now().UTC()); err != nil {
+	if _, err := s.db.ExecContext(ctx, upsert, string(data), time.Now().UTC()); err != nil {
 		return fmt.Errorf("save config: %w", err)
 	}
 	return nil
 }
 
 // Load returns the persisted config snapshot when one exists.
-func (s *SQLConfigStore) Load() (aigateway.Config, bool, error) {
+func (s *SQLConfigStore) Load(ctx context.Context) (aigateway.Config, bool, error) {
 	query := `SELECT config_json FROM gateway_config WHERE id = 1`
-	row := s.db.QueryRow(query)
+	row := s.db.QueryRowContext(ctx, query)
 	var raw string
 	if err := row.Scan(&raw); err != nil {
 		if err == sql.ErrNoRows {
@@ -156,9 +160,9 @@ func (s *SQLConfigStore) Load() (aigateway.Config, bool, error) {
 }
 
 // Delete removes the persisted config snapshot.
-func (s *SQLConfigStore) Delete() error {
+func (s *SQLConfigStore) Delete(ctx context.Context) error {
 	query := `DELETE FROM gateway_config WHERE id = 1`
-	if _, err := s.db.Exec(query); err != nil {
+	if _, err := s.db.ExecContext(ctx, query); err != nil {
 		return fmt.Errorf("delete config: %w", err)
 	}
 	return nil
@@ -194,7 +198,7 @@ func NewGatewayConfigManager(gw *aigateway.Gateway, store ConfigStore) (*Gateway
 	}
 
 	if store != nil {
-		persisted, ok, err := store.Load()
+		persisted, ok, err := store.Load(context.Background())
 		if err != nil {
 			return nil, err
 		}
@@ -221,8 +225,13 @@ func (m *GatewayConfigManager) ReloadConfig(cfg aigateway.Config) error {
 
 	previousCfg := m.gw.GetConfig()
 
+	// ConfigManager.ReloadConfig has no ctx parameter (out of scope for the
+	// store-context threading); use a background context for the persistence
+	// layer here.
+	ctx := context.Background()
+
 	if m.store != nil {
-		if err := m.store.Save(cfg); err != nil {
+		if err := m.store.Save(ctx, cfg); err != nil {
 			return errors.Join(errConfigPersistence, err)
 		}
 	}
@@ -231,7 +240,7 @@ func (m *GatewayConfigManager) ReloadConfig(cfg aigateway.Config) error {
 		if m.store != nil {
 			// Save happened before apply. If apply fails, attempt to restore
 			// persisted state so runtime and storage remain aligned.
-			if rollbackErr := m.store.Save(previousCfg); rollbackErr != nil {
+			if rollbackErr := m.store.Save(ctx, previousCfg); rollbackErr != nil {
 				return errors.Join(
 					errConfigValidation,
 					errConfigPersistence,
@@ -256,7 +265,7 @@ func (m *GatewayConfigManager) ResetConfig() error {
 		return err
 	}
 	if m.store != nil {
-		if err := m.store.Delete(); err != nil {
+		if err := m.store.Delete(context.Background()); err != nil {
 			return err
 		}
 	}

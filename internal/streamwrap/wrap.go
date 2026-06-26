@@ -2,6 +2,26 @@
 // It transparently forwards SSE chunks while accumulating token-usage data and
 // emitting the same Prometheus metrics and event hooks that non-streaming
 // requests emit via Gateway.Route().
+//
+// # Stream-send drain contract (load-bearing invariant)
+//
+// Provider CompleteStream implementations spawn a goroutine that produces
+// chunks with an UNGUARDED, blocking send: `ch <- chunk` (no select on
+// ctx.Done(), no buffering guarantee). That goroutine therefore only stays
+// leak-free as long as SOMETHING keeps reading ch until the provider closes
+// it. Meter is that something: on consumer abandonment or context
+// cancellation it does not simply stop — it ALWAYS continues to drain src to
+// completion (`for range src`) so the blocked provider send can proceed and
+// the provider goroutine can run to its `close(ch)` and exit.
+//
+// Consequence: any consumer that reads a provider stream channel DIRECTLY
+// (bypassing Meter) and stops reading early — on client disconnect, an error,
+// an early break, or a panic — will permanently block the provider's
+// `ch <- chunk`, leaking that goroutine (and whatever it holds: the HTTP
+// response body, connections, buffers) for the life of the process. Always
+// route provider streams through Meter, or replicate its full drain-on-abort
+// behaviour. Do not "optimise" Meter to stop draining src early; that would
+// reintroduce the leak.
 package streamwrap
 
 import (
@@ -85,6 +105,15 @@ func (f SpanFinisherFunc) Finish(o StreamOutcome) { f(o) }
 // closes, the goroutine emits request duration, token, and cost metrics then
 // closes the returned channel. On an error chunk the loop exits immediately
 // after forwarding it; any further chunks queued in src are not consumed.
+//
+// Drain-on-abort invariant (do not remove): when the consumer goes away
+// (ctx.Done) Meter stops forwarding to out but keeps draining src to
+// completion. This is load-bearing — provider CompleteStream goroutines do an
+// unguarded blocking `src <- chunk`, so they only avoid leaking because Meter
+// guarantees src is read until the provider closes it. See the package doc
+// "Stream-send drain contract" for the full rationale. A consumer reading a
+// provider stream directly and stopping early would deadlock that provider
+// goroutine.
 //
 // start should be the time.Now() captured immediately before the upstream
 // CompleteStream call so that latency includes provider connection time.

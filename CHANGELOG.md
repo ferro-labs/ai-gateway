@@ -5,6 +5,29 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.7] — 2026-06-29
+
+Small-enhancements release: context propagation, concurrency safety, and hot-path performance. No public API breaks. Closes [#48](https://github.com/ferro-labs/ai-gateway/issues/48), [#180](https://github.com/ferro-labs/ai-gateway/issues/180), [#182](https://github.com/ferro-labs/ai-gateway/issues/182), [#184](https://github.com/ferro-labs/ai-gateway/issues/184), [#186](https://github.com/ferro-labs/ai-gateway/issues/186), [#187](https://github.com/ferro-labs/ai-gateway/issues/187), and [#203](https://github.com/ferro-labs/ai-gateway/issues/203).
+
+### Added
+
+- **Ollama model discovery** ([#203](https://github.com/ferro-labs/ai-gateway/issues/203)): `ollama` now implements live discovery via `/api/tags` and advertises the `discovery` capability.
+
+### Changed
+
+- **`context.Context` propagation** ([#180](https://github.com/ferro-labs/ai-gateway/issues/180), [#182](https://github.com/ferro-labs/ai-gateway/issues/182)): threaded request context through the admin key/config stores and the CLI HTTP client so cancellation and timeouts flow end-to-end.
+- **Plugin registry concurrency** ([#184](https://github.com/ferro-labs/ai-gateway/issues/184)): the plugin factory registry is now guarded by a mutex, matching the observability registry.
+
+### Performance
+
+- **Hot-path allocations** ([#186](https://github.com/ferro-labs/ai-gateway/issues/186), [#187](https://github.com/ferro-labs/ai-gateway/issues/187)): memoized least-latency P50 reads, concrete-typed SSE chunk writes, streaming JSON decode on the Anthropic success path, a shared streaming transport in the proxy, and removal of dead transport code.
+
+### Documentation
+
+- **Contributing guide** ([#48](https://github.com/ferro-labs/ai-gateway/issues/48)): added a Local Development section (Make targets, git hooks) and switched the branching model from `develop` to `release/*`.
+
+---
+
 ## [1.1.6] — 2026-06-26
 
 Correctness & robustness release. Hardens the plugin pipeline lifecycle, fixes OpenTelemetry span loss on shutdown, corrects response-cache and circuit-breaker behavior, and adds AWS Bedrock API-key (bearer) authentication. No public API breaks. Fixes [#150](https://github.com/ferro-labs/ai-gateway/issues/150), [#151](https://github.com/ferro-labs/ai-gateway/issues/151), [#152](https://github.com/ferro-labs/ai-gateway/issues/152), and [#204](https://github.com/ferro-labs/ai-gateway/issues/204).

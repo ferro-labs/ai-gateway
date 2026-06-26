@@ -126,6 +126,11 @@ func NewWithOptions(opts Options) (*Provider, error) {
 		cfgOpts = append(cfgOpts, awsconfig.WithCredentialsProvider(aws.NewCredentialsCache(staticCreds)))
 	}
 
+	// context.Background() is intentional: this loads the AWS config once at
+	// provider construction time and the resulting credential providers live for
+	// the whole lifetime of the provider (refreshing credentials as needed). It
+	// is not request-scoped, so binding it to a request's context would wrongly
+	// cancel config loading / credential refresh when that request completes.
 	cfg, err := awsconfig.LoadDefaultConfig(context.Background(), cfgOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load AWS config: %w", err)

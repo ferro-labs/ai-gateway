@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -41,7 +42,7 @@ func TestPostgresStoreContract(t *testing.T) {
 func runStoreContract(t *testing.T, store Store) {
 	t.Helper()
 
-	created, err := store.Create("store-key", []string{ScopeAdmin}, nil)
+	created, err := store.Create(context.Background(), "store-key", []string{ScopeAdmin}, nil)
 	if err != nil {
 		t.Fatalf("create key: %v", err)
 	}
@@ -49,7 +50,7 @@ func runStoreContract(t *testing.T, store Store) {
 		t.Fatalf("expected created key to have id and key")
 	}
 
-	fetched, ok := store.Get(created.ID)
+	fetched, ok := store.Get(context.Background(), created.ID)
 	if !ok {
 		t.Fatalf("expected to fetch created key")
 	}
@@ -60,7 +61,7 @@ func runStoreContract(t *testing.T, store Store) {
 		t.Fatalf("expected initial usage_count 0, got %d", fetched.UsageCount)
 	}
 
-	validated, valid := store.ValidateKey(created.Key)
+	validated, valid := store.ValidateKey(context.Background(), created.Key)
 	if !valid {
 		t.Fatalf("expected created key to validate")
 	}
@@ -71,7 +72,7 @@ func runStoreContract(t *testing.T, store Store) {
 		t.Fatalf("expected last_used_at to be set after validate")
 	}
 
-	listed := store.List()
+	listed := store.List(context.Background())
 	if len(listed) != 1 {
 		t.Fatalf("expected 1 key in list, got %d", len(listed))
 	}
@@ -79,7 +80,7 @@ func runStoreContract(t *testing.T, store Store) {
 		t.Fatalf("expected listed key to be masked, got %s", listed[0].Key)
 	}
 
-	updated, err := store.Update(created.ID, "store-key-updated", []string{ScopeReadOnly})
+	updated, err := store.Update(context.Background(), created.ID, "store-key-updated", []string{ScopeReadOnly})
 	if err != nil {
 		t.Fatalf("update key: %v", err)
 	}
@@ -91,20 +92,20 @@ func runStoreContract(t *testing.T, store Store) {
 	}
 
 	expiresAt := time.Now().Add(-1 * time.Minute)
-	if err := store.SetExpiration(created.ID, &expiresAt); err != nil {
+	if err := store.SetExpiration(context.Background(), created.ID, &expiresAt); err != nil {
 		t.Fatalf("set expiration: %v", err)
 	}
-	if _, valid := store.ValidateKey(created.Key); valid {
+	if _, valid := store.ValidateKey(context.Background(), created.Key); valid {
 		t.Fatalf("expected expired key to be invalid")
 	}
-	if err := store.SetExpiration(created.ID, nil); err != nil {
+	if err := store.SetExpiration(context.Background(), created.ID, nil); err != nil {
 		t.Fatalf("clear expiration: %v", err)
 	}
-	if _, valid := store.ValidateKey(created.Key); !valid {
+	if _, valid := store.ValidateKey(context.Background(), created.Key); !valid {
 		t.Fatalf("expected key to validate after clearing expiration")
 	}
 
-	rotated, err := store.RotateKey(created.ID)
+	rotated, err := store.RotateKey(context.Background(), created.ID)
 	if err != nil {
 		t.Fatalf("rotate key: %v", err)
 	}
@@ -112,24 +113,24 @@ func runStoreContract(t *testing.T, store Store) {
 		t.Fatalf("expected rotated key to change")
 	}
 
-	if _, valid := store.ValidateKey(created.Key); valid {
+	if _, valid := store.ValidateKey(context.Background(), created.Key); valid {
 		t.Fatalf("expected old key to be invalid after rotation")
 	}
-	if _, valid := store.ValidateKey(rotated.Key); !valid {
+	if _, valid := store.ValidateKey(context.Background(), rotated.Key); !valid {
 		t.Fatalf("expected rotated key to validate")
 	}
 
-	if err := store.Revoke(created.ID); err != nil {
+	if err := store.Revoke(context.Background(), created.ID); err != nil {
 		t.Fatalf("revoke key: %v", err)
 	}
-	if _, valid := store.ValidateKey(rotated.Key); valid {
+	if _, valid := store.ValidateKey(context.Background(), rotated.Key); valid {
 		t.Fatalf("expected revoked key to be invalid")
 	}
 
-	if err := store.Delete(created.ID); err != nil {
+	if err := store.Delete(context.Background(), created.ID); err != nil {
 		t.Fatalf("delete key: %v", err)
 	}
-	if _, ok := store.Get(created.ID); ok {
+	if _, ok := store.Get(context.Background(), created.ID); ok {
 		t.Fatalf("expected key deleted")
 	}
 }
@@ -138,12 +139,12 @@ func TestSQLiteStoreExpiration(t *testing.T) {
 	store := newSQLiteTestStore(t)
 
 	expiresAt := time.Now().Add(-2 * time.Minute)
-	created, err := store.Create("expired", []string{ScopeAdmin}, &expiresAt)
+	created, err := store.Create(context.Background(), "expired", []string{ScopeAdmin}, &expiresAt)
 	if err != nil {
 		t.Fatalf("create key: %v", err)
 	}
 
-	if _, valid := store.ValidateKey(created.Key); valid {
+	if _, valid := store.ValidateKey(context.Background(), created.Key); valid {
 		t.Fatalf("expected expired key to be invalid")
 	}
 }
