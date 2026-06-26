@@ -54,7 +54,10 @@ jobs:
         run: go build ./...
 
       - name: Test (race + short)
-        run: go test -v -short -race -timeout 60s ./...
+        # Per-package binary timeout. The gateway package's -race suite has grown
+        # past the old 60s budget (runs ~2min under -race on slower runners), so a
+        # legitimate, passing run was being killed mid-test. Raised to 180s.
+        run: go test -v -short -race -timeout 180s ./...
 
       - name: Test coverage
         if: matrix.go == '1.25.11'
