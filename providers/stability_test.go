@@ -573,3 +573,67 @@ func TestProviderEnvMappingsHaveRequiredKey(t *testing.T) {
 		}
 	}
 }
+
+func TestBedrockProviderConfigFromEnv_BearerTokenOnly(t *testing.T) {
+	t.Setenv("AWS_REGION", "")
+	t.Setenv("AWS_ACCESS_KEY_ID", "")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "")
+	t.Setenv("AWS_SESSION_TOKEN", "")
+	t.Setenv("AWS_BEARER_TOKEN_BEDROCK", "test-bearer-token")
+
+	entry, ok := GetProviderEntry(NameBedrock)
+	if !ok {
+		t.Fatal("Bedrock provider entry missing")
+	}
+
+	cfg := ProviderConfigFromEnv(entry)
+	if cfg == nil {
+		t.Fatal("ProviderConfigFromEnv() = nil, want bearer-only Bedrock config")
+	}
+	if got := cfg[CfgKeyAPIKey]; got != "test-bearer-token" {
+		t.Errorf("api_key = %q, want test-bearer-token", got)
+	}
+}
+
+func TestBedrockProviderConfiguredFnAcceptsBearerRegionOrAccessKey(t *testing.T) {
+	entry, ok := GetProviderEntry(NameBedrock)
+	if !ok {
+		t.Fatal("Bedrock provider entry missing")
+	}
+	if entry.ConfiguredFn == nil {
+		t.Fatal("Bedrock ConfiguredFn = nil")
+	}
+
+	for _, tc := range []struct {
+		name string
+		cfg  ProviderConfig
+		want bool
+	}{
+		{
+			name: "bearer token",
+			cfg:  ProviderConfig{CfgKeyAPIKey: "test-bearer-token"},
+			want: true,
+		},
+		{
+			name: "region",
+			cfg:  ProviderConfig{CfgKeyRegion: "us-west-2"},
+			want: true,
+		},
+		{
+			name: "access key",
+			cfg:  ProviderConfig{CfgKeyAccessKeyID: "test-access-key"},
+			want: true,
+		},
+		{
+			name: "empty",
+			cfg:  ProviderConfig{},
+			want: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := entry.ConfiguredFn(tc.cfg); got != tc.want {
+				t.Errorf("ConfiguredFn(%#v) = %v, want %v", tc.cfg, got, tc.want)
+			}
+		})
+	}
+}

@@ -12,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
+	"github.com/aws/smithy-go/auth/bearer"
 
 	"github.com/ferro-labs/ai-gateway/internal/anthropicwire"
 	"github.com/ferro-labs/ai-gateway/providers/core"
@@ -21,10 +22,12 @@ import (
 const Name = "bedrock"
 
 // Options configures AWS Bedrock provider initialization.
+// If BearerToken is set, bearer auth is used instead of SigV4.
 // If AccessKeyID and SecretAccessKey are set, static credentials are used.
 // Otherwise the default AWS credential chain is used.
 type Options struct {
 	Region          string
+	BearerToken     string
 	AccessKeyID     string
 	SecretAccessKey string
 	SessionToken    string
@@ -60,9 +63,10 @@ func (c realBedrockClient) InvokeModelWithResponseStream(ctx context.Context, in
 
 // Provider implements the AWS Bedrock API client.
 type Provider struct {
-	name   string
-	client bedrockRuntimeClient
-	region string
+	name        string
+	client      bedrockRuntimeClient
+	region      string
+	bearerToken string
 }
 
 // Compile-time interface assertions.
@@ -81,22 +85,40 @@ func New(region string) (*Provider, error) {
 }
 
 // NewWithOptions creates a new AWS Bedrock provider from options.
-// Region defaults to us-east-1. If static credentials are not provided,
-// the AWS default credential chain is used.
+// defaultBedrockRegion is used when no region is configured via options or env.
+const defaultBedrockRegion = "us-east-1"
+
+// NewWithOptions builds a Bedrock provider from explicit options. Region
+// defaults to us-east-1. If static credentials are not provided, the AWS
+// default credential chain is used.
 func NewWithOptions(opts Options) (*Provider, error) {
 	region := strings.TrimSpace(opts.Region)
 	if region == "" {
-		region = "us-east-1"
+		region = defaultBedrockRegion
 	}
 
 	cfgOpts := []func(*awsconfig.LoadOptions) error{
 		awsconfig.WithRegion(region),
 	}
+	var clientOpts []func(*bedrockruntime.Options)
 
 	accessKeyID := strings.TrimSpace(opts.AccessKeyID)
 	secretAccessKey := strings.TrimSpace(opts.SecretAccessKey)
 	sessionToken := strings.TrimSpace(opts.SessionToken)
-	if accessKeyID != "" || secretAccessKey != "" || sessionToken != "" {
+	bearerToken := strings.TrimSpace(opts.BearerToken)
+	if bearerToken != "" {
+		tokenProvider := bearer.StaticTokenProvider{
+			Token: bearer.Token{Value: bearerToken},
+		}
+		cfgOpts = append(cfgOpts,
+			awsconfig.WithBearerAuthTokenProvider(tokenProvider),
+			awsconfig.WithAuthSchemePreference("httpBearerAuth"),
+		)
+		clientOpts = append(clientOpts, func(o *bedrockruntime.Options) {
+			o.BearerAuthTokenProvider = tokenProvider
+			o.AuthSchemePreference = []string{"httpBearerAuth"}
+		})
+	} else if accessKeyID != "" || secretAccessKey != "" || sessionToken != "" {
 		if accessKeyID == "" || secretAccessKey == "" {
 			return nil, fmt.Errorf("bedrock static credentials require both access key ID and secret access key")
 		}
@@ -109,11 +131,12 @@ func NewWithOptions(opts Options) (*Provider, error) {
 		return nil, fmt.Errorf("failed to load AWS config: %w", err)
 	}
 
-	client := realBedrockClient{bedrockruntime.NewFromConfig(cfg)}
+	client := realBedrockClient{bedrockruntime.NewFromConfig(cfg, clientOpts...)}
 	return &Provider{
-		name:   Name,
-		client: client,
-		region: region,
+		name:        Name,
+		client:      client,
+		region:      region,
+		bearerToken: bearerToken,
 	}, nil
 }
 
@@ -128,8 +151,13 @@ func (p *Provider) BaseURL() string {
 	return fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com", p.region)
 }
 
-// AuthHeaders satisfies ProxiableProvider (Bedrock uses AWS Sig4, not Bearer).
-func (p *Provider) AuthHeaders() map[string]string { return map[string]string{} }
+// AuthHeaders satisfies ProxiableProvider.
+func (p *Provider) AuthHeaders() map[string]string {
+	if p.bearerToken == "" {
+		return map[string]string{}
+	}
+	return map[string]string{"Authorization": "Bearer " + p.bearerToken}
+}
 
 // SupportedModels returns well-known Bedrock model IDs.
 func (p *Provider) SupportedModels() []string {

@@ -239,10 +239,14 @@ func RegisterProviders() *providers.Registry {
 		logging.Logger.Info("provider registered", "provider", entry.ID)
 	}
 
-	// AWS Bedrock: register if AWS_REGION or AWS_ACCESS_KEY_ID is set.
-	if region := os.Getenv("AWS_REGION"); region != "" || os.Getenv("AWS_ACCESS_KEY_ID") != "" {
+	// AWS Bedrock: register if AWS_REGION, AWS_ACCESS_KEY_ID, or
+	// AWS_BEARER_TOKEN_BEDROCK is set.
+	if region := os.Getenv("AWS_REGION"); region != "" ||
+		os.Getenv("AWS_ACCESS_KEY_ID") != "" ||
+		os.Getenv("AWS_BEARER_TOKEN_BEDROCK") != "" {
 		p, err := bedrockpkg.NewWithOptions(bedrockpkg.Options{
 			Region:          os.Getenv("AWS_REGION"),
+			BearerToken:     os.Getenv("AWS_BEARER_TOKEN_BEDROCK"),
 			AccessKeyID:     os.Getenv("AWS_ACCESS_KEY_ID"),
 			SecretAccessKey: os.Getenv("AWS_SECRET_ACCESS_KEY"),
 			SessionToken:    os.Getenv("AWS_SESSION_TOKEN"),

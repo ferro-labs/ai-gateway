@@ -7,6 +7,7 @@ import "regexp"
 //
 // Coverage in this scaffolding revision:
 //   - email addresses
+//   - bearer tokens
 //   - JWTs (header.payload.signature)
 //   - AWS access key IDs (AKIA…)
 //
@@ -20,6 +21,11 @@ func DefaultPolicies() []Policy {
 			Name:        "email",
 			Pattern:     regexp.MustCompile(`[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}`),
 			Replacement: "[REDACTED_EMAIL]",
+		},
+		{
+			Name:        "bearer_token",
+			Pattern:     regexp.MustCompile(`(?i)\bBearer\s+[A-Za-z0-9._~+/\-]+=*`),
+			Replacement: "Bearer [REDACTED_BEARER_TOKEN]",
 		},
 		{
 			Name:        "jwt",

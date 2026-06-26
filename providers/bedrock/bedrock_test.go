@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -24,7 +25,7 @@ func TestNewBedrock_DefaultRegion(t *testing.T) {
 	if p.Name() != "bedrock" {
 		t.Errorf("Name() = %q, want bedrock", p.Name())
 	}
-	if p.Region() != "us-east-1" {
+	if p.Region() != defaultBedrockRegion {
 		t.Errorf("region = %q, want us-east-1", p.Region())
 	}
 }
@@ -46,11 +47,98 @@ func TestNewBedrockWithOptions_StaticCredentials(t *testing.T) {
 	}
 }
 
+func TestNewBedrockWithOptions_BearerTokenAuthHeaders(t *testing.T) {
+	t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
+
+	p, err := NewWithOptions(Options{
+		BearerToken: " test-bearer-token ",
+	})
+	if err != nil {
+		t.Fatalf("NewBedrockWithOptions() error: %v", err)
+	}
+	if p.Region() != defaultBedrockRegion {
+		t.Errorf("region = %q, want us-east-1", p.Region())
+	}
+
+	headers := p.AuthHeaders()
+	if got := headers["Authorization"]; got != "Bearer test-bearer-token" {
+		t.Errorf("Authorization = %q, want Bearer test-bearer-token", got)
+	}
+}
+
+func TestNewBedrockWithOptions_BearerTokenConfiguresSDKAuthScheme(t *testing.T) {
+	t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
+
+	p, err := NewWithOptions(Options{ //nolint:gosec // G101: static fake bearer token for tests, not a real credential
+		BearerToken: "test-sdk-bearer-token",
+	})
+	if err != nil {
+		t.Fatalf("NewBedrockWithOptions() error: %v", err)
+	}
+
+	client, ok := p.client.(realBedrockClient)
+	if !ok {
+		t.Fatalf("client type = %T, want realBedrockClient", p.client)
+	}
+	opts := client.Options()
+	if !slices.Contains(opts.AuthSchemePreference, "httpBearerAuth") {
+		t.Fatalf("AuthSchemePreference = %#v, want httpBearerAuth", opts.AuthSchemePreference)
+	}
+	if opts.BearerAuthTokenProvider == nil {
+		t.Fatal("BearerAuthTokenProvider = nil, want configured provider")
+	}
+	token, err := opts.BearerAuthTokenProvider.RetrieveBearerToken(context.Background())
+	if err != nil {
+		t.Fatalf("RetrieveBearerToken() error: %v", err)
+	}
+	if token.Value != "test-sdk-bearer-token" {
+		t.Errorf("bearer token = %q, want test-sdk-bearer-token", token.Value)
+	}
+}
+
+func TestNewBedrockWithOptions_ExplicitBearerTokenOverridesSDKEnvToken(t *testing.T) {
+	t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
+	t.Setenv("AWS_BEARER_TOKEN_BEDROCK", "env-bearer-token")
+
+	p, err := NewWithOptions(Options{
+		BearerToken: "explicit-bearer-token",
+	})
+	if err != nil {
+		t.Fatalf("NewBedrockWithOptions() error: %v", err)
+	}
+
+	client, ok := p.client.(realBedrockClient)
+	if !ok {
+		t.Fatalf("client type = %T, want realBedrockClient", p.client)
+	}
+	opts := client.Options()
+	if !slices.Contains(opts.AuthSchemePreference, "httpBearerAuth") {
+		t.Fatalf("AuthSchemePreference = %#v, want httpBearerAuth", opts.AuthSchemePreference)
+	}
+	token, err := opts.BearerAuthTokenProvider.RetrieveBearerToken(context.Background())
+	if err != nil {
+		t.Fatalf("RetrieveBearerToken() error: %v", err)
+	}
+	if token.Value != "explicit-bearer-token" {
+		t.Errorf("bearer token = %q, want explicit-bearer-token", token.Value)
+	}
+	if got := p.AuthHeaders()["Authorization"]; got != "Bearer explicit-bearer-token" {
+		t.Errorf("Authorization = %q, want Bearer explicit-bearer-token", got)
+	}
+}
+
+func TestBedrockProvider_AuthHeaders_SigV4Default(t *testing.T) {
+	p := &Provider{name: Name}
+	if headers := p.AuthHeaders(); len(headers) != 0 {
+		t.Errorf("AuthHeaders() = %#v, want empty map for SigV4 auth", headers)
+	}
+}
+
 func TestNewBedrockWithOptions_InvalidStaticCredentials(t *testing.T) {
 	t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
 
 	_, err := NewWithOptions(Options{
-		Region:      "us-east-1",
+		Region:      defaultBedrockRegion,
 		AccessKeyID: "test-access-key",
 	})
 	if err == nil {
