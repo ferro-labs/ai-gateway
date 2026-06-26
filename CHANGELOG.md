@@ -5,6 +5,22 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.6] — 2026-06-26
+
+Correctness & robustness release. Hardens the plugin pipeline lifecycle, fixes OpenTelemetry span loss on shutdown, corrects response-cache and circuit-breaker behavior, and adds AWS Bedrock API-key (bearer) authentication. No public API breaks. Fixes [#150](https://github.com/ferro-labs/ai-gateway/issues/150), [#151](https://github.com/ferro-labs/ai-gateway/issues/151), [#152](https://github.com/ferro-labs/ai-gateway/issues/152), and [#204](https://github.com/ferro-labs/ai-gateway/issues/204).
+
+### Fixed
+
+- **Plugin pipeline robustness** (issue [#150](https://github.com/ferro-labs/ai-gateway/issues/150), PR [#234](https://github.com/ferro-labs/ai-gateway/pull/234)): a panicking plugin is now recovered and isolated (the request returns a clean error and the panic stack is logged, not leaked into the response), `RunOnError` fires when a plugin *rejects* a request, and `Close()` was added to the `Plugin` interface and is called on every plugin instance (deduped) at config reload so resources like the request-logger's writer are released. A reference-counted `Acquire`/`Close` lifecycle ensures a reload never frees plugins out from under an in-flight request.
+- **OTel span loss on shutdown** (issue [#151](https://github.com/ferro-labs/ai-gateway/issues/151), PR [#233](https://github.com/ferro-labs/ai-gateway/pull/233)): the span-exporter drain and the `TracerProvider` flush shared a single shutdown deadline, so a slow exporter handed the provider an already-expired context and spans were silently dropped. Each stage now gets its own deadline (`shutdown_grace` per stage), and both errors are surfaced via `errors.Join`.
+- **Response-cache & circuit-breaker correctness** (issue [#152](https://github.com/ferro-labs/ai-gateway/issues/152), PR [#169](https://github.com/ferro-labs/ai-gateway/pull/169)): the cache key now includes `logprobs` / `top_logprobs` (so requests that differ only in those no longer cross-serve), in-memory eviction is now proper LRU (recency-based) instead of earliest-expiry, and the circuit-breaker half-open probe cap releases its slot on non-recorded outcomes (rate-limit / client cancellation) so a single ignored failure can no longer wedge the breaker open.
+
+### Added
+
+- **AWS Bedrock API-key (bearer) authentication** (issue [#204](https://github.com/ferro-labs/ai-gateway/issues/204), PR [#235](https://github.com/ferro-labs/ai-gateway/pull/235)): Bedrock can now authenticate with a short-term API key via `AWS_BEARER_TOKEN_BEDROCK`, using the AWS SDK's native `httpBearerAuth` scheme. SigV4 (static credentials and the default credential chain) remains the default; bearer takes precedence when set. A `bearer_token` redaction policy keeps the key out of logs and error messages.
+
+---
+
 ## [1.1.5] — 2026-06-23
 
 ### Added
