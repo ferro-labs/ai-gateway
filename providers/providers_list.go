@@ -300,7 +300,7 @@ var allProviders = []ProviderEntry{
 		ID:           NameOllamaCloud,
 		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityDiscovery},
 		EnvMappings: []EnvMapping{
-			{CfgKeyAPIKey, "OLLAMA_API_KEY", true},
+			{CfgKeyAPIKey, "OLLAMA_CLOUD_API_KEY", true},
 			{CfgKeyBaseURL, "OLLAMA_CLOUD_BASE_URL", false},
 			{CfgKeyModels, "OLLAMA_CLOUD_MODELS", false},
 		},
