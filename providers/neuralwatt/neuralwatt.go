@@ -60,26 +60,23 @@ func (p *Provider) AuthHeaders() map[string]string {
 	return map[string]string{"Authorization": "Bearer " + p.apiKey}
 }
 
-// SupportedModels returns a static list of known NeuralWatt models.
-func (p *Provider) SupportedModels() []string {
-	return []string{
-		"meta-llama/Llama-3.3-70B-Instruct",
-		"zai-org/GLM-5.1-FP8",
-		"meta-llama/Llama-3.1-8B-Instruct",
-	}
+var supportedModels = []string{
+	"meta-llama/Llama-3.3-70B-Instruct",
+	"zai-org/GLM-5.1-FP8",
+	"meta-llama/Llama-3.1-8B-Instruct",
 }
 
-// SupportsModel returns true if the model is in the known list or when live
-// discovery is used (all models are accepted via passthrough).
+// SupportedModels returns a static list of known NeuralWatt models.
+func (p *Provider) SupportedModels() []string { return supportedModels }
+
+// SupportsModel returns true if the model is in the known NeuralWatt model list.
 func (p *Provider) SupportsModel(model string) bool {
-	for _, m := range p.SupportedModels() {
+	for _, m := range supportedModels {
 		if m == model {
 			return true
 		}
 	}
-	// Accept any model name — live discovery may surface models not in the
-	// static list above.
-	return true
+	return false
 }
 
 // Models returns structured model metadata.
@@ -88,7 +85,6 @@ func (p *Provider) Models() []core.ModelInfo {
 }
 
 // DiscoverModels fetches the live model list from the NeuralWatt /models endpoint.
-// The /models endpoint is publicly accessible without authentication.
 func (p *Provider) DiscoverModels(ctx context.Context) ([]core.ModelInfo, error) {
 	return discov.DiscoverOpenAICompatibleModels(ctx, p.httpClient, p.baseURL+"/models", p.apiKey, p.name)
 }

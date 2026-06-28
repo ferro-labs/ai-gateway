@@ -46,8 +46,11 @@ func TestNeuralWattProvider_SupportsModel(t *testing.T) {
 	if !p.SupportsModel("zai-org/GLM-5.1-FP8") {
 		t.Error("expected zai-org/GLM-5.1-FP8 to be supported")
 	}
-	if !p.SupportsModel("custom-model") {
-		t.Error("passthrough: expected all models to return true")
+	if p.SupportsModel("gpt-4o") {
+		t.Error("expected gpt-4o (not a NeuralWatt model) to return false")
+	}
+	if p.SupportsModel("claude-3-opus") {
+		t.Error("expected claude-3-opus (not a NeuralWatt model) to return false")
 	}
 }
 
@@ -81,7 +84,10 @@ func TestNeuralWattProvider_CompleteStream_MockSSE(t *testing.T) {
 		"data: {\"id\":\"cmpl-1\",\"model\":\"meta-llama/Llama-3.3-70B-Instruct\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
 		"data: [DONE]\n\n"
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != testBearerAPIKey {
+			t.Errorf("Authorization header = %q, want %s", r.Header.Get("Authorization"), testBearerAPIKey)
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(sseData))
@@ -116,7 +122,10 @@ func TestNeuralWattProvider_CompleteStream_MockSSE(t *testing.T) {
 func TestNeuralWattProvider_Complete_MockHTTP(t *testing.T) {
 	respBody := `{"id":"cmpl-1","model":"meta-llama/Llama-3.3-70B-Instruct","choices":[{"index":0,"message":{"role":"assistant","content":"Hello!"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}`
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != testBearerAPIKey {
+			t.Errorf("Authorization header = %q, want %s", r.Header.Get("Authorization"), testBearerAPIKey)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(respBody))
@@ -136,5 +145,37 @@ func TestNeuralWattProvider_Complete_MockHTTP(t *testing.T) {
 	}
 	if len(resp.Choices) == 0 {
 		t.Error("expected at least one choice")
+	}
+}
+
+func TestNeuralWattProvider_DiscoverModels_MockHTTP(t *testing.T) {
+	modelsBody := `{"object":"list","data":[{"id":"meta-llama/Llama-3.3-70B-Instruct","object":"model","owned_by":"neuralwatt"},{"id":"zai-org/GLM-5.1-FP8","object":"model","owned_by":"neuralwatt"}]}`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models" {
+			t.Errorf("unexpected path %q, want /models", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(modelsBody))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	models, err := p.DiscoverModels(context.Background())
+	if err != nil {
+		t.Fatalf("DiscoverModels() error: %v", err)
+	}
+	if len(models) == 0 {
+		t.Error("expected at least one model from DiscoverModels")
+	}
+	found := false
+	for _, m := range models {
+		if m.ID == "meta-llama/Llama-3.3-70B-Instruct" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("meta-llama/Llama-3.3-70B-Instruct not found in discovered models")
 	}
 }
