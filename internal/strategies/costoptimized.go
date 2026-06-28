@@ -33,10 +33,11 @@ const (
 )
 
 type priced struct {
-	target   Target
-	costUSD  float64
-	hasPrice bool
-	isModel  bool
+	target       Target
+	costUSD      float64
+	hasPrice     bool
+	isModel      bool
+	isAggregator bool
 }
 
 // NewCostOptimized creates a new cost-optimized strategy.
@@ -87,10 +88,13 @@ func (c *CostOptimized) Execute(ctx context.Context, req providers.Request) (*pr
 			hasPrice: result.Priced,
 			isModel:  result.ModelFound,
 		}
-		// Aggregator providers are forced to unpriced treatment: their catalog
-		// prices do not include the aggregator's own platform markup, so
-		// including them in cost ranking would cause silent misrouting.
+		// Aggregator providers are never selected by cost ranking: their catalog
+		// prices do not include the aggregator's own platform markup. They are
+		// kept in the candidate pool only for positional fallback (when no direct
+		// priced provider is available) and are marked so selectCostOptimizedCandidate
+		// can skip them in the ranking loop regardless of unpricedStrategy.
 		if c.isAggregator != nil && c.isAggregator(t.VirtualKey) {
+			candidate.isAggregator = true
 			candidate.hasPrice = false
 			candidate.costUSD = 0.0
 		}
@@ -152,6 +156,11 @@ func selectCostOptimizedCandidate(candidates []priced, strategy unpricedStrategy
 		if !candidate.isModel {
 			continue
 		}
+		// Aggregators are excluded from cost ranking in all modes; their catalog
+		// prices omit platform markup so they must not win by appearing cheapest.
+		if candidate.isAggregator {
+			continue
+		}
 		if !strategy.ranksUnpricedCandidates() && !candidate.hasPrice {
 			continue
 		}
@@ -166,7 +175,12 @@ func selectCostOptimizedCandidate(candidates []priced, strategy unpricedStrategy
 		// No cataloged/priced candidate is selectable; return an error.
 		return nil, fmt.Errorf("no priced provider supports model %s", model)
 	}
-	// Preserve historical fallback behavior: when no cataloged/priced candidate
-	// is selectable, fallback and allow route to the first compatible target.
+	// Positional fallback: prefer the first non-aggregator target, so aggregators
+	// are only used when they are the only available option.
+	for i := range candidates {
+		if !candidates[i].isAggregator {
+			return &candidates[i], nil
+		}
+	}
 	return &candidates[0], nil
 }

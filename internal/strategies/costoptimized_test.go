@@ -429,6 +429,58 @@ func TestCostOptimized_AggregatorUsedAsFallbackWhenOnlyProvider(t *testing.T) {
 // TestCostOptimized_NilAggregatorPredicateDoesNotPanic verifies that the zero
 // value of isAggregator (nil predicate, no WithAggregatorPredicate call) does
 // not cause a panic and that cost routing continues to work normally.
+// TestCostOptimized_AggregatorExcludedUnderAllowMode ensures that
+// unpricedStrategy=allow does not let an aggregator win by being forced to
+// costUSD=0.0 — it must be excluded from ranking regardless of mode.
+func TestCostOptimized_AggregatorExcludedUnderAllowMode(t *testing.T) {
+	agg := &mockProvider{name: "agg", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "agg"}}
+	direct := &mockProvider{name: "direct", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "direct"}}
+
+	catalog := buildCatalog() // direct has pricing, agg has pricing (aggregator markup ignored)
+	targets := []Target{{VirtualKey: "agg"}, {VirtualKey: "direct"}}
+	s := NewCostOptimized(targets, newLookup(agg, direct), catalog, "allow").
+		WithAggregatorPredicate(func(vk string) bool { return vk == "agg" })
+
+	resp, err := s.Execute(context.Background(), providers.Request{
+		Model:    "gpt-4o",
+		Messages: []providers.Message{{Role: "user", Content: "hello"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// agg must NOT win even though allow mode would normally rank it at $0.00.
+	if resp.ID == "agg" {
+		t.Errorf("allow mode: aggregator won cost ranking despite isAggregator=true; expected direct provider")
+	}
+}
+
+// TestCostOptimized_AggregatorPositionalFallbackSkippedWhenDirectExists ensures
+// the candidates[0] positional fallback does not select an aggregator when a
+// non-aggregator direct provider is also available.
+func TestCostOptimized_AggregatorPositionalFallbackSkippedWhenDirectExists(t *testing.T) {
+	agg := &mockProvider{name: "agg", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "agg"}}
+	// direct has no catalog entry (isModel=false) so it normally falls to positional fallback.
+	direct := &mockProvider{name: "direct-unpriced", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "direct-unpriced"}}
+
+	catalog := buildCatalog() // only "agg" in catalog; direct-unpriced has no entry
+	targets := []Target{{VirtualKey: "agg"}, {VirtualKey: "direct-unpriced"}}
+	s := NewCostOptimized(targets, newLookup(agg, direct), catalog).
+		WithAggregatorPredicate(func(vk string) bool { return vk == "agg" })
+
+	resp, err := s.Execute(context.Background(), providers.Request{
+		Model:    "gpt-4o",
+		Messages: []providers.Message{{Role: "user", Content: "hello"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// agg is listed first but must not win the positional fallback when a direct
+	// provider exists.
+	if resp.ID == "agg" {
+		t.Errorf("positional fallback selected aggregator even though direct-unpriced was available")
+	}
+}
+
 func TestCostOptimized_NilAggregatorPredicateDoesNotPanic(t *testing.T) {
 	cheap := &mockProvider{name: "cheap", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "cheap"}}
 	expensive := &mockProvider{name: "expensive", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "expensive"}}

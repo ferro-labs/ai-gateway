@@ -60,31 +60,20 @@ func (p *Provider) AuthHeaders() map[string]string {
 	return map[string]string{"Authorization": "Bearer " + p.apiKey}
 }
 
-// SupportedModels returns a static list of known NanoGPT models.
+// SupportedModels returns a representative static list of NanoGPT models.
+// NanoGPT is an aggregator; the live /v1/models endpoint is the authoritative
+// source. Use DiscoverModels to enumerate the full current catalog.
 func (p *Provider) SupportedModels() []string {
 	return []string{
-		"anthropic/claude-opus-4.7",
-		"anthropic/claude-opus-latest",
-		"anthropic/claude-sonnet-latest",
-		"anthropic/claude-haiku-latest",
-		"anthropic/claude-opus-4.6",
-		"anthropic/claude-sonnet-4.6",
-		"openai/gpt-5.5",
-		"openai/gpt-chat-latest",
-		"openai/gpt-latest",
-		"x-ai/grok-4.20",
-		"x-ai/grok-4.3",
-		"x-ai/grok-latest",
-		"deepseek/deepseek-v4-pro",
-		"deepseek/deepseek-v4-flash",
-		"deepseek/deepseek-latest",
-		"moonshotai/kimi-k2.6",
-		"moonshotai/kimi-latest",
-		"google/gemini-flash-latest",
-		"google/gemini-pro-latest",
-		"google/gemini-3.5-flash",
-		"google/gemini-3-flash-preview",
-		"mistral/mistral-medium-3.5",
+		"anthropic/claude-sonnet-4-5",
+		"anthropic/claude-haiku-3-5",
+		"openai/gpt-4o",
+		"openai/gpt-4o-mini",
+		"x-ai/grok-2",
+		"deepseek/deepseek-r1",
+		"google/gemini-2-5-flash",
+		"google/gemini-2-5-pro",
+		"mistral/mistral-large-latest",
 	}
 }
 
