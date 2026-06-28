@@ -31,6 +31,7 @@ import (
 	togetherpkg "github.com/ferro-labs/ai-gateway/providers/together"
 	vertexaipkg "github.com/ferro-labs/ai-gateway/providers/vertex_ai"
 	xaipkg "github.com/ferro-labs/ai-gateway/providers/xai"
+	zaipkg "github.com/ferro-labs/ai-gateway/providers/zai"
 	"slices"
 	"testing"
 )
@@ -393,6 +394,17 @@ func providerNameStabilityExtensionCases() []providerNameStabilityCase {
 				p, err := xaipkg.New(testAPIKey, "")
 				if err != nil {
 					t.Fatalf("NewXAI: %v", err)
+				}
+				return p
+			},
+		},
+		{
+			wantName: NameZAI,
+			build: func(t *testing.T) Provider {
+				t.Helper()
+				p, err := zaipkg.New(testAPIKey, "")
+				if err != nil {
+					t.Fatalf("NewZAI: %v", err)
 				}
 				return p
 			},
