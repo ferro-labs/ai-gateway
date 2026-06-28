@@ -18,6 +18,7 @@ import (
 	huggingfacepkg "github.com/ferro-labs/ai-gateway/providers/hugging_face"
 	mistralpkg "github.com/ferro-labs/ai-gateway/providers/mistral"
 	moonshotpkg "github.com/ferro-labs/ai-gateway/providers/moonshot"
+	neuralwattpkg "github.com/ferro-labs/ai-gateway/providers/neuralwatt"
 	novitapkg "github.com/ferro-labs/ai-gateway/providers/novita"
 	nvidianimpkg "github.com/ferro-labs/ai-gateway/providers/nvidia_nim"
 	ollamapkg "github.com/ferro-labs/ai-gateway/providers/ollama"
@@ -246,6 +247,17 @@ func providerNameStabilityExtensionCases() []providerNameStabilityCase {
 				p, err := moonshotpkg.New(testAPIKey, "")
 				if err != nil {
 					t.Fatalf("NewMoonshot: %v", err)
+				}
+				return p
+			},
+		},
+		{
+			wantName: NameNeuralWatt,
+			build: func(t *testing.T) Provider {
+				t.Helper()
+				p, err := neuralwattpkg.New(testAPIKey, "")
+				if err != nil {
+					t.Fatalf("NewNeuralWatt: %v", err)
 				}
 				return p
 			},

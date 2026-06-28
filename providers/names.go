@@ -18,6 +18,7 @@ import (
 	huggingfacepkg "github.com/ferro-labs/ai-gateway/providers/hugging_face"
 	mistralpkg "github.com/ferro-labs/ai-gateway/providers/mistral"
 	moonshotpkg "github.com/ferro-labs/ai-gateway/providers/moonshot"
+	neuralwattpkg "github.com/ferro-labs/ai-gateway/providers/neuralwatt"
 	novitapkg "github.com/ferro-labs/ai-gateway/providers/novita"
 	nvidianimpkg "github.com/ferro-labs/ai-gateway/providers/nvidia_nim"
 	ollamapkg "github.com/ferro-labs/ai-gateway/providers/ollama"
@@ -118,6 +119,9 @@ const (
 	// NameDeepInfra is the canonical name for the DeepInfra provider.
 	NameDeepInfra = deepinfrapkg.Name
 
+	// NameNeuralWatt is the canonical name for the NeuralWatt provider.
+	NameNeuralWatt = neuralwattpkg.Name
+
 	// NameNovita is the canonical name for the Novita provider.
 	NameNovita = novitapkg.Name
 
@@ -162,6 +166,7 @@ func AllProviderNames() []string {
 		NameHuggingFace,
 		NameMistral,
 		NameMoonshot,
+		NameNeuralWatt,
 		NameNovita,
 		NameNVIDIANIM,
 		NameOllama,
