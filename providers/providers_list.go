@@ -261,7 +261,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameNanoGPT,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityDiscovery, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityDiscovery, CapabilityProxy, CapabilityAggregator},
 		EnvMappings: []EnvMapping{
 			{CfgKeyAPIKey, "NANOGPT_API_KEY", true},
 			{CfgKeyBaseURL, "NANOGPT_BASE_URL", false},
@@ -337,7 +337,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameOpenRouter,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityDiscovery, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityDiscovery, CapabilityProxy, CapabilityAggregator},
 		EnvMappings: []EnvMapping{
 			{CfgKeyAPIKey, "OPENROUTER_API_KEY", true},
 			{CfgKeyBaseURL, "OPENROUTER_BASE_URL", false},

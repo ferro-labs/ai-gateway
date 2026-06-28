@@ -347,3 +347,105 @@ func TestCostOptimized_NoTargets(t *testing.T) {
 		t.Fatal("expected error for no targets")
 	}
 }
+
+// TestCostOptimized_AggregatorExcludedWhenPricedDirectProviderExists verifies
+// that a provider marked as an aggregator is not selected over a direct
+// provider with known catalog pricing, even if the aggregator's catalog price
+// appears cheaper (the apparent lower price is misleading because it excludes
+// the aggregator's own platform markup).
+func TestCostOptimized_AggregatorExcludedWhenPricedDirectProviderExists(t *testing.T) {
+	agg := &mockProvider{name: "agg", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "agg"}}
+	direct := &mockProvider{name: "direct", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "direct"}}
+
+	catalog := models.Catalog{
+		"agg/gpt-4o": {
+			Provider: "agg",
+			ModelID:  "gpt-4o",
+			Mode:     models.ModeChat,
+			Pricing: models.Pricing{
+				InputPerMTokens:  ptrF(0.01), // appears cheapest but excludes aggregator markup
+				OutputPerMTokens: ptrF(0.02),
+			},
+		},
+		"direct/gpt-4o": {
+			Provider: "direct",
+			ModelID:  "gpt-4o",
+			Mode:     models.ModeChat,
+			Pricing: models.Pricing{
+				InputPerMTokens:  ptrF(1.0),
+				OutputPerMTokens: ptrF(2.0),
+			},
+		},
+	}
+	targets := []Target{{VirtualKey: "agg"}, {VirtualKey: "direct"}}
+	s := NewCostOptimized(targets, newLookup(agg, direct), catalog).
+		WithAggregatorPredicate(func(vk string) bool { return vk == "agg" })
+
+	resp, err := s.Execute(context.Background(), providers.Request{
+		Model:    "gpt-4o",
+		Messages: []providers.Message{{Role: "user", Content: "hello"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.ID != "direct" {
+		t.Errorf("expected aggregator to be excluded in favour of direct provider, got %q", resp.ID)
+	}
+}
+
+// TestCostOptimized_AggregatorUsedAsFallbackWhenOnlyProvider verifies that an
+// aggregator IS used (as fallback) when it is the only available provider for
+// the requested model — the default unpricedStrategy is "fallback".
+func TestCostOptimized_AggregatorUsedAsFallbackWhenOnlyProvider(t *testing.T) {
+	agg := &mockProvider{name: "agg", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "agg"}}
+
+	catalog := models.Catalog{
+		"agg/gpt-4o": {
+			Provider: "agg",
+			ModelID:  "gpt-4o",
+			Mode:     models.ModeChat,
+			Pricing: models.Pricing{
+				InputPerMTokens:  ptrF(0.01),
+				OutputPerMTokens: ptrF(0.02),
+			},
+		},
+	}
+	targets := []Target{{VirtualKey: "agg"}}
+	s := NewCostOptimized(targets, newLookup(agg), catalog).
+		WithAggregatorPredicate(func(vk string) bool { return vk == "agg" })
+
+	resp, err := s.Execute(context.Background(), providers.Request{
+		Model:    "gpt-4o",
+		Messages: []providers.Message{{Role: "user", Content: "hello"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.ID != "agg" {
+		t.Errorf("expected aggregator to be used as fallback when only provider available, got %q", resp.ID)
+	}
+}
+
+// TestCostOptimized_NilAggregatorPredicateDoesNotPanic verifies that the zero
+// value of isAggregator (nil predicate, no WithAggregatorPredicate call) does
+// not cause a panic and that cost routing continues to work normally.
+func TestCostOptimized_NilAggregatorPredicateDoesNotPanic(t *testing.T) {
+	cheap := &mockProvider{name: "cheap", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "cheap"}}
+	expensive := &mockProvider{name: "expensive", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "expensive"}}
+
+	catalog := buildCatalog()
+	targets := []Target{{VirtualKey: "cheap"}, {VirtualKey: "expensive"}}
+	// isAggregator stays nil — no WithAggregatorPredicate call.
+	s := NewCostOptimized(targets, newLookup(cheap, expensive), catalog)
+
+	resp, err := s.Execute(context.Background(), providers.Request{
+		Model:    "gpt-4o",
+		Messages: []providers.Message{{Role: "user", Content: "hello"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.ID != "cheap" {
+		t.Errorf("nil isAggregator: expected normal cost routing to pick cheap, got %q", resp.ID)
+	}
+}

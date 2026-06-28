@@ -961,7 +961,10 @@ func (g *Gateway) getStrategy() (strategies.Strategy, error) {
 		if len(targets) == 0 {
 			return nil, fmt.Errorf("no targets configured for cost-optimized strategy")
 		}
-		s = strategies.NewCostOptimized(targets, lookup, g.catalog, g.config.Strategy.UnpricedStrategy)
+		s = strategies.NewCostOptimized(targets, lookup, g.catalog, g.config.Strategy.UnpricedStrategy).
+			WithAggregatorPredicate(func(vk string) bool {
+				return providers.ProviderHasCapability(vk, providers.CapabilityAggregator)
+			})
 	case ModeConditional:
 		if len(g.config.Strategy.Conditions) == 0 {
 			return nil, fmt.Errorf("no conditions configured for conditional strategy")

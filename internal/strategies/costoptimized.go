@@ -11,11 +11,17 @@ import (
 // CostOptimized routes to the cheapest compatible provider based on estimated
 // input cost from the model catalog. By default, unpriced candidates are used
 // only when no compatible provider has known pricing.
+//
+// Providers tagged with CapabilityAggregator are treated as unpriced regardless
+// of catalog entries, because their catalog prices do not include the
+// aggregator's own platform markup. They fall through to unpricedStrategy
+// (default: fallback — used only when no direct priced provider is available).
 type CostOptimized struct {
 	targets          []Target
 	lookup           ProviderLookup
 	catalog          models.Catalog
 	unpricedStrategy unpricedStrategy
+	isAggregator     func(virtualKey string) bool
 }
 
 type unpricedStrategy string
@@ -34,9 +40,22 @@ type priced struct {
 }
 
 // NewCostOptimized creates a new cost-optimized strategy.
+//
+// unpricedStrategyConfig is an optional first variadic string ("fallback",
+// "skip", or "allow"). Use WithAggregatorPredicate to set the predicate that
+// identifies aggregator providers (which are excluded from cost ranking).
 func NewCostOptimized(targets []Target, lookup ProviderLookup, catalog models.Catalog, unpricedStrategyConfig ...string) *CostOptimized {
 	strategy := newUnpricedStrategy(unpricedStrategyConfig...)
 	return &CostOptimized{targets: targets, lookup: lookup, catalog: catalog, unpricedStrategy: strategy}
+}
+
+// WithAggregatorPredicate sets the predicate used to identify aggregator
+// providers. Aggregators are forced to unpriced treatment in cost ranking,
+// because their catalog prices do not include the aggregator's own markup.
+// Returns the receiver for chaining.
+func (c *CostOptimized) WithAggregatorPredicate(fn func(virtualKey string) bool) *CostOptimized {
+	c.isAggregator = fn
+	return c
 }
 
 // Execute selects the provider with the lowest estimated input cost for the
@@ -62,12 +81,20 @@ func (c *CostOptimized) Execute(ctx context.Context, req providers.Request) (*pr
 		result := models.Calculate(c.catalog, t.VirtualKey+"/"+req.Model, models.Usage{
 			PromptTokens: estimatedPromptTokens,
 		})
-		candidates = append(candidates, priced{
+		candidate := priced{
 			target:   t,
 			costUSD:  result.InputUSD,
 			hasPrice: result.Priced,
 			isModel:  result.ModelFound,
-		})
+		}
+		// Aggregator providers are forced to unpriced treatment: their catalog
+		// prices do not include the aggregator's own platform markup, so
+		// including them in cost ranking would cause silent misrouting.
+		if c.isAggregator != nil && c.isAggregator(t.VirtualKey) {
+			candidate.hasPrice = false
+			candidate.costUSD = 0.0
+		}
+		candidates = append(candidates, candidate)
 	}
 
 	if len(candidates) == 0 {
