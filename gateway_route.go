@@ -8,6 +8,7 @@ import (
 	"runtime/trace"
 	"time"
 
+	"github.com/ferro-labs/ai-gateway/internal/authctx"
 	"github.com/ferro-labs/ai-gateway/internal/circuitbreaker"
 	"github.com/ferro-labs/ai-gateway/internal/events"
 	"github.com/ferro-labs/ai-gateway/internal/logging"
@@ -91,6 +92,12 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	if plugins.HasPlugins() {
 		pctx = plugin.NewContext(&req)
 		defer plugin.PutContext(pctx)
+		// Propagate the opaque key identifier so per-key plugins (rate-limit,
+		// budget) can scope limits to the authenticated caller. The raw bearer
+		// secret is never exposed here — only the stable APIKey.ID.
+		if keyID, ok := authctx.KeyID(ctx); ok {
+			pctx.Metadata["api_key"] = keyID
+		}
 		var early *providers.Response
 		trace.WithRegion(ctx, "gateway.route.plugins.before", func() {
 			early, err = g.runBeforePlugins(ctx, plugins, pctx, &req)
