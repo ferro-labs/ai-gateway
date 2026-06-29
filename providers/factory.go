@@ -84,7 +84,8 @@ const (
 	CapabilityEmbed     = "embed"     // EmbeddingProvider
 	CapabilityImage     = "image"     // ImageProvider
 	CapabilityDiscovery = "discovery" // DiscoveryProvider
-	CapabilityProxy     = "proxy"     // ProxiableProvider
+	CapabilityProxy      = "proxy"      // ProxiableProvider
+	CapabilityAggregator = "aggregator" // Provider is a routing aggregator with opaque upstream costs; excluded from cost-optimized ranking by default.
 )
 
 // EnvMapping maps a single ProviderConfig key to its environment variable.

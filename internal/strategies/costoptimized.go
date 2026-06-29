@@ -11,11 +11,17 @@ import (
 // CostOptimized routes to the cheapest compatible provider based on estimated
 // input cost from the model catalog. By default, unpriced candidates are used
 // only when no compatible provider has known pricing.
+//
+// Providers tagged with CapabilityAggregator are treated as unpriced regardless
+// of catalog entries, because their catalog prices do not include the
+// aggregator's own platform markup. They fall through to unpricedStrategy
+// (default: fallback — used only when no direct priced provider is available).
 type CostOptimized struct {
 	targets          []Target
 	lookup           ProviderLookup
 	catalog          models.Catalog
 	unpricedStrategy unpricedStrategy
+	isAggregator     func(virtualKey string) bool
 }
 
 type unpricedStrategy string
@@ -27,16 +33,30 @@ const (
 )
 
 type priced struct {
-	target   Target
-	costUSD  float64
-	hasPrice bool
-	isModel  bool
+	target       Target
+	costUSD      float64
+	hasPrice     bool
+	isModel      bool
+	isAggregator bool
 }
 
 // NewCostOptimized creates a new cost-optimized strategy.
+//
+// unpricedStrategyConfig is an optional first variadic string ("fallback",
+// "skip", or "allow"). Use WithAggregatorPredicate to set the predicate that
+// identifies aggregator providers (which are excluded from cost ranking).
 func NewCostOptimized(targets []Target, lookup ProviderLookup, catalog models.Catalog, unpricedStrategyConfig ...string) *CostOptimized {
 	strategy := newUnpricedStrategy(unpricedStrategyConfig...)
 	return &CostOptimized{targets: targets, lookup: lookup, catalog: catalog, unpricedStrategy: strategy}
+}
+
+// WithAggregatorPredicate sets the predicate used to identify aggregator
+// providers. Aggregators are forced to unpriced treatment in cost ranking,
+// because their catalog prices do not include the aggregator's own markup.
+// Returns the receiver for chaining.
+func (c *CostOptimized) WithAggregatorPredicate(fn func(virtualKey string) bool) *CostOptimized {
+	c.isAggregator = fn
+	return c
 }
 
 // Execute selects the provider with the lowest estimated input cost for the
@@ -62,12 +82,23 @@ func (c *CostOptimized) Execute(ctx context.Context, req providers.Request) (*pr
 		result := models.Calculate(c.catalog, t.VirtualKey+"/"+req.Model, models.Usage{
 			PromptTokens: estimatedPromptTokens,
 		})
-		candidates = append(candidates, priced{
+		candidate := priced{
 			target:   t,
 			costUSD:  result.InputUSD,
 			hasPrice: result.Priced,
 			isModel:  result.ModelFound,
-		})
+		}
+		// Aggregator providers are never selected by cost ranking: their catalog
+		// prices do not include the aggregator's own platform markup. They are
+		// kept in the candidate pool only for positional fallback (when no direct
+		// priced provider is available) and are marked so selectCostOptimizedCandidate
+		// can skip them in the ranking loop regardless of unpricedStrategy.
+		if c.isAggregator != nil && c.isAggregator(t.VirtualKey) {
+			candidate.isAggregator = true
+			candidate.hasPrice = false
+			candidate.costUSD = 0.0
+		}
+		candidates = append(candidates, candidate)
 	}
 
 	if len(candidates) == 0 {
@@ -125,6 +156,11 @@ func selectCostOptimizedCandidate(candidates []priced, strategy unpricedStrategy
 		if !candidate.isModel {
 			continue
 		}
+		// Aggregators are excluded from cost ranking in all modes; their catalog
+		// prices omit platform markup so they must not win by appearing cheapest.
+		if candidate.isAggregator {
+			continue
+		}
 		if !strategy.ranksUnpricedCandidates() && !candidate.hasPrice {
 			continue
 		}
@@ -139,7 +175,12 @@ func selectCostOptimizedCandidate(candidates []priced, strategy unpricedStrategy
 		// No cataloged/priced candidate is selectable; return an error.
 		return nil, fmt.Errorf("no priced provider supports model %s", model)
 	}
-	// Preserve historical fallback behavior: when no cataloged/priced candidate
-	// is selectable, fallback and allow route to the first compatible target.
+	// Positional fallback: prefer the first non-aggregator target, so aggregators
+	// are only used when they are the only available option.
+	for i := range candidates {
+		if !candidates[i].isAggregator {
+			return &candidates[i], nil
+		}
+	}
 	return &candidates[0], nil
 }

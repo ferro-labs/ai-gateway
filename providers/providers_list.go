@@ -21,6 +21,7 @@ import (
 	huggingfacepkg "github.com/ferro-labs/ai-gateway/providers/hugging_face"
 	mistralpkg "github.com/ferro-labs/ai-gateway/providers/mistral"
 	moonshotpkg "github.com/ferro-labs/ai-gateway/providers/moonshot"
+	nanogptpkg "github.com/ferro-labs/ai-gateway/providers/nanogpt"
 	novitapkg "github.com/ferro-labs/ai-gateway/providers/novita"
 	nvidianimpkg "github.com/ferro-labs/ai-gateway/providers/nvidia_nim"
 	ollamapkg "github.com/ferro-labs/ai-gateway/providers/ollama"
@@ -263,6 +264,17 @@ var allProviders = []ProviderEntry{
 		},
 	},
 	{
+		ID:           NameNanoGPT,
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityDiscovery, CapabilityProxy, CapabilityAggregator},
+		EnvMappings: []EnvMapping{
+			{CfgKeyAPIKey, "NANOGPT_API_KEY", true},
+			{CfgKeyBaseURL, "NANOGPT_BASE_URL", false},
+		},
+		Build: func(cfg ProviderConfig) (Provider, error) {
+			return nanogptpkg.New(cfg[CfgKeyAPIKey], cfg[CfgKeyBaseURL])
+		},
+	},
+	{
 		ID:           NameNovita,
 		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityDiscovery, CapabilityProxy},
 		EnvMappings: []EnvMapping{
@@ -304,7 +316,7 @@ var allProviders = []ProviderEntry{
 		ID:           NameOllamaCloud,
 		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityDiscovery},
 		EnvMappings: []EnvMapping{
-			{CfgKeyAPIKey, "OLLAMA_API_KEY", true},
+			{CfgKeyAPIKey, "OLLAMA_CLOUD_API_KEY", true},
 			{CfgKeyBaseURL, "OLLAMA_CLOUD_BASE_URL", false},
 			{CfgKeyModels, "OLLAMA_CLOUD_MODELS", false},
 		},
@@ -329,7 +341,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameOpenRouter,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityDiscovery, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityDiscovery, CapabilityProxy, CapabilityAggregator},
 		EnvMappings: []EnvMapping{
 			{CfgKeyAPIKey, "OPENROUTER_API_KEY", true},
 			{CfgKeyBaseURL, "OPENROUTER_BASE_URL", false},

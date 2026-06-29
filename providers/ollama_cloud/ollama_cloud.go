@@ -20,7 +20,7 @@ import (
 const (
 	// Name is the canonical provider identifier.
 	Name           = "ollama-cloud"
-	defaultBaseURL = "https://ollama.com"
+	defaultBaseURL = "https://api.ollama.com"
 )
 
 var defaultModels = []string{

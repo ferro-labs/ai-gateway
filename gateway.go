@@ -1003,7 +1003,10 @@ func (g *Gateway) getStrategy() (strategies.Strategy, error) {
 		if len(targets) == 0 {
 			return nil, fmt.Errorf("no targets configured for cost-optimized strategy")
 		}
-		s = strategies.NewCostOptimized(targets, lookup, g.catalog, g.config.Strategy.UnpricedStrategy)
+		s = strategies.NewCostOptimized(targets, lookup, g.catalog, g.config.Strategy.UnpricedStrategy).
+			WithAggregatorPredicate(func(vk string) bool {
+				return providers.ProviderHasCapability(vk, providers.CapabilityAggregator)
+			})
 	case ModeConditional:
 		if len(g.config.Strategy.Conditions) == 0 {
 			return nil, fmt.Errorf("no conditions configured for conditional strategy")
@@ -1760,10 +1763,11 @@ func (g *Gateway) streamingLatencyOrderLocked(targets []Target, req providers.Re
 }
 
 type streamingCostCandidate struct {
-	key        string
-	costUSD    float64
-	hasPrice   bool
-	modelFound bool
+	key          string
+	costUSD      float64
+	hasPrice     bool
+	modelFound   bool
+	isAggregator bool
 }
 
 func (g *Gateway) streamingCostOrderLocked(targets []Target, req providers.Request) ([]string, error) {
@@ -1777,10 +1781,11 @@ func (g *Gateway) streamingCostOrderLocked(targets []Target, req providers.Reque
 			PromptTokens: estimatedPromptTokens,
 		})
 		candidates = append(candidates, streamingCostCandidate{
-			key:        t.VirtualKey,
-			costUSD:    result.InputUSD,
-			hasPrice:   result.Priced,
-			modelFound: result.ModelFound,
+			key:          t.VirtualKey,
+			costUSD:      result.InputUSD,
+			hasPrice:     result.Priced,
+			modelFound:   result.ModelFound,
+			isAggregator: providers.ProviderHasCapability(t.VirtualKey, providers.CapabilityAggregator),
 		})
 	}
 	if len(candidates) == 0 {
@@ -1791,19 +1796,21 @@ func (g *Gateway) streamingCostOrderLocked(targets []Target, req providers.Reque
 	switch g.config.Strategy.UnpricedStrategy {
 	case unpricedStrategyAllow:
 		for _, candidate := range candidates {
-			if candidate.modelFound {
+			// Aggregators are excluded from cost ranking in all modes; they fall
+			// to the unranked remainder returned after ranked keys.
+			if candidate.modelFound && !candidate.isAggregator {
 				ranked = append(ranked, candidate)
 			}
 		}
 	case unpricedStrategySkip:
 		for _, candidate := range candidates {
-			if candidate.modelFound && candidate.hasPrice {
+			if candidate.modelFound && candidate.hasPrice && !candidate.isAggregator {
 				ranked = append(ranked, candidate)
 			}
 		}
 	default:
 		for _, candidate := range candidates {
-			if candidate.modelFound && candidate.hasPrice {
+			if candidate.modelFound && candidate.hasPrice && !candidate.isAggregator {
 				ranked = append(ranked, candidate)
 			}
 		}
