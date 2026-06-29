@@ -18,6 +18,7 @@ import (
 	"github.com/ferro-labs/ai-gateway/internal/ratelimit"
 	"github.com/ferro-labs/ai-gateway/internal/version"
 	"github.com/ferro-labs/ai-gateway/providers"
+	"github.com/ferro-labs/ai-gateway/providers/concurrency"
 	bedrockpkg "github.com/ferro-labs/ai-gateway/providers/bedrock"
 )
 
@@ -234,6 +235,19 @@ func RegisterProviders() *providers.Registry {
 		if err != nil {
 			logging.Logger.Error("provider init failed", "provider", entry.ID, "error", err)
 			os.Exit(1)
+		}
+		if mc := cfg[providers.CfgKeyMaxConcurrency]; mc != "" {
+			workerCount, _ := strconv.Atoi(mc)
+			queueSize := 1000
+			if qs := cfg[providers.CfgKeyQueueSize]; qs != "" {
+				if n, err2 := strconv.Atoi(qs); err2 == nil && n > 0 {
+					queueSize = n
+				}
+			}
+			if workerCount > 0 {
+				p = concurrency.Wrap(p, workerCount, queueSize)
+				logging.Logger.Info("provider concurrency limit applied", "provider", entry.ID, "workers", workerCount, "queue", queueSize)
+			}
 		}
 		registry.Register(p)
 		logging.Logger.Info("provider registered", "provider", entry.ID)
