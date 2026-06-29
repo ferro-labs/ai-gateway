@@ -28,7 +28,7 @@ func Serve() {
 	logging.Setup(os.Getenv("LOG_LEVEL"), os.Getenv("LOG_FORMAT"))
 
 	cfg := LoadConfig()
-	registry := RegisterProviders()
+	registry, closeProviders := RegisterProviders()
 	masterKey := ResolveMasterKey()
 
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("ALLOW_UNAUTHENTICATED_PROXY")), "true") {
@@ -136,6 +136,8 @@ func Serve() {
 	}
 	cancel()
 
+	closeProviders()
+
 	if err := httpserver.CloseResources(
 		httpserver.NamedResource{Name: "gateway", Value: gw},
 		httpserver.NamedResource{Name: "config manager", Value: cfgManager},
@@ -217,8 +219,11 @@ func LoadConfig() *aigateway.Config {
 }
 
 // RegisterProviders auto-registers all providers found via environment variables.
-func RegisterProviders() *providers.Registry {
+// It returns the registry and a cleanup function that closes any concurrency-
+// limited provider wrappers; call the cleanup function during graceful shutdown.
+func RegisterProviders() (*providers.Registry, func()) {
 	registry := providers.NewRegistry()
+	var limitedProviders []*concurrency.LimitedProvider
 
 	// Register all providers whose required environment variables are set.
 	for _, entry := range providers.AllProviders() {
@@ -237,15 +242,19 @@ func RegisterProviders() *providers.Registry {
 			os.Exit(1)
 		}
 		if mc := cfg[providers.CfgKeyMaxConcurrency]; mc != "" {
-			workerCount, _ := strconv.Atoi(mc)
-			queueSize := 1000
-			if qs := cfg[providers.CfgKeyQueueSize]; qs != "" {
-				if n, err2 := strconv.Atoi(qs); err2 == nil && n > 0 {
-					queueSize = n
+			workerCount, wcErr := strconv.Atoi(mc)
+			if wcErr != nil || workerCount <= 0 {
+				logging.Logger.Warn("invalid max_concurrency value, skipping concurrency limit", "provider", entry.ID, "value", mc)
+			} else {
+				queueSize := 1000
+				if qs := cfg[providers.CfgKeyQueueSize]; qs != "" {
+					if n, err2 := strconv.Atoi(qs); err2 == nil && n > 0 {
+						queueSize = n
+					}
 				}
-			}
-			if workerCount > 0 {
-				p = concurrency.Wrap(p, workerCount, queueSize)
+				lp := concurrency.Wrap(p, workerCount, queueSize)
+				limitedProviders = append(limitedProviders, lp)
+				p = lp
 				logging.Logger.Info("provider concurrency limit applied", "provider", entry.ID, "workers", workerCount, "queue", queueSize)
 			}
 		}
@@ -273,7 +282,12 @@ func RegisterProviders() *providers.Registry {
 		}
 	}
 
-	return registry
+	cleanup := func() {
+		for _, lp := range limitedProviders {
+			lp.Close()
+		}
+	}
+	return registry, cleanup
 }
 
 // BuildGateway constructs the Gateway, wires providers, and loads plugins.

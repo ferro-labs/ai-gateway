@@ -134,6 +134,33 @@ func TestContextCancel_MidWait(t *testing.T) {
 	}
 }
 
+func TestQueueFull_ReturnsErrQueueFull(t *testing.T) {
+	blocker := make(chan struct{})
+	s := &stub{
+		name: "test",
+		resp: &core.Response{},
+		callsFn: func() { <-blocker },
+	}
+	// 1 worker, queue depth 1 — second request fills buffer, third is rejected immediately.
+	lp := concurrency.Wrap(s, 1, 1)
+	defer func() {
+		close(blocker)
+		lp.Close()
+	}()
+
+	// Fill the worker.
+	go lp.Complete(context.Background(), core.Request{}) //nolint:errcheck
+	// Fill the queue buffer.
+	go lp.Complete(context.Background(), core.Request{}) //nolint:errcheck
+	time.Sleep(20 * time.Millisecond)
+
+	// Third call must return ErrQueueFull immediately.
+	_, err := lp.Complete(context.Background(), core.Request{})
+	if !errors.Is(err, concurrency.ErrQueueFull) {
+		t.Fatalf("expected ErrQueueFull, got: %v", err)
+	}
+}
+
 func TestProviderError_PassedThrough(t *testing.T) {
 	want := errors.New("upstream unavailable")
 	s := &stub{name: "test", err: want}

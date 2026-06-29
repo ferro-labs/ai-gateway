@@ -3,20 +3,22 @@
 //
 // Pattern mirrors Bifrost (github.com/maximhq/bifrost): N worker goroutines
 // drain a buffered channel of jobs. The channel buffer is the queue; the
-// goroutine count is the concurrency cap. No explicit semaphore is needed —
-// the bounded goroutine pool + bounded channel act as a two-level gate.
+// goroutine count is the concurrency cap per operation type. No explicit
+// semaphore is needed — the bounded goroutine pool + bounded channel act as a
+// two-level gate.
 package concurrency
 
 import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
 // ErrQueueFull is returned when the provider queue is at capacity and the
-// request cannot be accepted without blocking indefinitely.
+// request cannot be accepted without blocking.
 var ErrQueueFull = errors.New("provider concurrency queue full")
 
 type completionResult struct {
@@ -53,8 +55,9 @@ type embedJob struct {
 }
 
 // LimitedProvider wraps a Provider and enforces per-provider concurrency limits.
-// It implements Provider (and optionally StreamProvider / EmbeddingProvider)
-// transparently — callers do not need to know a limit is in place.
+// It implements Provider (and optionally StreamProvider / EmbeddingProvider /
+// ProxiableProvider / DiscoveryProvider / ImageProvider) transparently —
+// callers do not need to know a limit is in place.
 type LimitedProvider struct {
 	inner core.Provider
 
@@ -62,14 +65,16 @@ type LimitedProvider struct {
 	streamQueue   chan streamJob
 	embedQueue    chan embedJob
 
-	done chan struct{}
-	once sync.Once
+	closing atomic.Bool
+	done    chan struct{}
+	once    sync.Once
 }
 
 // Wrap creates a LimitedProvider around inner with the given concurrency and
-// queue sizes. workerCount is the number of goroutines (= max simultaneous
-// upstream calls). queueSize is the channel buffer depth (= max waiting
-// requests). Call Close() to shut down workers cleanly.
+// queue sizes. workerCount is the number of worker goroutines per operation
+// type (complete / stream / embed each get their own pool of workerCount
+// goroutines). queueSize is the channel buffer depth per queue.
+// Call Close() to shut down workers cleanly.
 func Wrap(inner core.Provider, workerCount, queueSize int) *LimitedProvider {
 	lp := &LimitedProvider{
 		inner:         inner,
@@ -85,29 +90,40 @@ func Wrap(inner core.Provider, workerCount, queueSize int) *LimitedProvider {
 
 	for range workerCount {
 		go lp.completionWorker()
-		if lp.streamQueue != nil {
+	}
+	if lp.streamQueue != nil {
+		for range workerCount {
 			go lp.streamWorker()
 		}
-		if lp.embedQueue != nil {
+	}
+	if lp.embedQueue != nil {
+		for range workerCount {
 			go lp.embedWorker()
 		}
 	}
 	return lp
 }
 
-// Close signals all workers to stop after draining in-flight work.
+// Close signals all workers to stop. Jobs already enqueued are drained and
+// rejected with a shutdown error. New calls after Close() return immediately.
 func (lp *LimitedProvider) Close() {
-	lp.once.Do(func() { close(lp.done) })
+	lp.once.Do(func() {
+		lp.closing.Store(true)
+		close(lp.done)
+	})
 }
 
 // --- Provider interface ---
 
-func (lp *LimitedProvider) Name() string            { return lp.inner.Name() }
+func (lp *LimitedProvider) Name() string              { return lp.inner.Name() }
 func (lp *LimitedProvider) SupportedModels() []string { return lp.inner.SupportedModels() }
 func (lp *LimitedProvider) SupportsModel(m string) bool { return lp.inner.SupportsModel(m) }
-func (lp *LimitedProvider) Models() []core.ModelInfo   { return lp.inner.Models() }
+func (lp *LimitedProvider) Models() []core.ModelInfo  { return lp.inner.Models() }
 
 func (lp *LimitedProvider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
+	if lp.closing.Load() {
+		return nil, errors.New("provider shutting down")
+	}
 	job := completionJob{
 		ctx:      ctx,
 		req:      req,
@@ -120,14 +136,7 @@ func (lp *LimitedProvider) Complete(ctx context.Context, req core.Request) (*cor
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	default:
-		// Queue full — non-blocking fast path.
-		select {
-		case lp.completeQueue <- job:
-		case <-lp.done:
-			return nil, errors.New("provider shutting down")
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
+		return nil, ErrQueueFull
 	}
 	select {
 	case res := <-job.response:
@@ -143,6 +152,9 @@ func (lp *LimitedProvider) CompleteStream(ctx context.Context, req core.Request)
 	if lp.streamQueue == nil {
 		return nil, errors.New("inner provider does not support streaming")
 	}
+	if lp.closing.Load() {
+		return nil, errors.New("provider shutting down")
+	}
 	job := streamJob{
 		ctx:      ctx,
 		req:      req,
@@ -154,6 +166,8 @@ func (lp *LimitedProvider) CompleteStream(ctx context.Context, req core.Request)
 		return nil, errors.New("provider shutting down")
 	case <-ctx.Done():
 		return nil, ctx.Err()
+	default:
+		return nil, ErrQueueFull
 	}
 	select {
 	case res := <-job.response:
@@ -169,6 +183,9 @@ func (lp *LimitedProvider) Embed(ctx context.Context, req core.EmbeddingRequest)
 	if lp.embedQueue == nil {
 		return nil, errors.New("inner provider does not support embeddings")
 	}
+	if lp.closing.Load() {
+		return nil, errors.New("provider shutting down")
+	}
 	job := embedJob{
 		ctx:      ctx,
 		req:      req,
@@ -180,6 +197,8 @@ func (lp *LimitedProvider) Embed(ctx context.Context, req core.EmbeddingRequest)
 		return nil, errors.New("provider shutting down")
 	case <-ctx.Done():
 		return nil, ctx.Err()
+	default:
+		return nil, ErrQueueFull
 	}
 	select {
 	case res := <-job.response:
@@ -187,6 +206,40 @@ func (lp *LimitedProvider) Embed(ctx context.Context, req core.EmbeddingRequest)
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
+}
+
+// --- ProxiableProvider (forwarded directly — not queue-gated) ---
+
+func (lp *LimitedProvider) BaseURL() string {
+	if pp, ok := lp.inner.(core.ProxiableProvider); ok {
+		return pp.BaseURL()
+	}
+	return ""
+}
+
+func (lp *LimitedProvider) AuthHeaders() map[string]string {
+	if pp, ok := lp.inner.(core.ProxiableProvider); ok {
+		return pp.AuthHeaders()
+	}
+	return nil
+}
+
+// --- DiscoveryProvider (forwarded directly — not queue-gated) ---
+
+func (lp *LimitedProvider) DiscoverModels(ctx context.Context) ([]core.ModelInfo, error) {
+	if dp, ok := lp.inner.(core.DiscoveryProvider); ok {
+		return dp.DiscoverModels(ctx)
+	}
+	return nil, errors.New("inner provider does not support model discovery")
+}
+
+// --- ImageProvider (forwarded directly — not queue-gated) ---
+
+func (lp *LimitedProvider) GenerateImage(ctx context.Context, req core.ImageRequest) (*core.ImageResponse, error) {
+	if ip, ok := lp.inner.(core.ImageProvider); ok {
+		return ip.GenerateImage(ctx, req)
+	}
+	return nil, errors.New("inner provider does not support image generation")
 }
 
 // --- Workers ---
