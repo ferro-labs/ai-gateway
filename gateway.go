@@ -847,7 +847,12 @@ func obsEventFromHook(e events.HookEvent) observability.Event {
 }
 
 // ReloadConfig validates and applies a new configuration, forcing strategy rebuild on next request.
-func (g *Gateway) ReloadConfig(cfg Config) error {
+//
+// The context satisfies the admin ConfigManager seam; the in-memory reload below
+// performs no request-scoped store/IO of its own (MCP re-initialization is
+// parented on the gateway shutdown context), so ctx is accepted but not used here.
+func (g *Gateway) ReloadConfig(ctx context.Context, cfg Config) error {
+	_ = ctx
 	if err := ValidateConfig(cfg); err != nil {
 		return fmt.Errorf("invalid config: %w", err)
 	}
@@ -1718,10 +1723,11 @@ func (g *Gateway) streamingLatencyOrderLocked(targets []Target, req providers.Re
 		if !g.isStreamingTargetCandidateLocked(t, req.Model) {
 			continue
 		}
+		p50, hasSamples := g.latencyTracker.Stats(t.VirtualKey)
 		candidate := streamingLatencyCandidate{
 			key:        t.VirtualKey,
-			p50:        g.latencyTracker.P50(t.VirtualKey),
-			hasSamples: g.latencyTracker.HasSamples(t.VirtualKey),
+			p50:        p50,
+			hasSamples: hasSamples,
 		}
 		if candidate.hasSamples {
 			sampled = append(sampled, candidate)

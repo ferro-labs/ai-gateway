@@ -61,11 +61,6 @@ func (c *AdminClient) Put(ctx context.Context, path string, body, dest any) erro
 	return c.do(ctx, http.MethodPut, path, body, dest)
 }
 
-// Del performs a DELETE request.
-func (c *AdminClient) Del(ctx context.Context, path string, dest any) error {
-	return c.do(ctx, http.MethodDelete, path, nil, dest)
-}
-
 func (c *AdminClient) do(ctx context.Context, method, path string, body, dest any) error {
 	var bodyReader io.Reader
 	if body != nil {

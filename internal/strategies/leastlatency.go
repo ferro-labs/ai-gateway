@@ -43,10 +43,11 @@ func (l *LeastLatency) Execute(ctx context.Context, req providers.Request) (*pro
 		if !ok || !p.SupportsModel(req.Model) {
 			continue
 		}
+		p50, hasSeen := l.tracker.Stats(t.VirtualKey)
 		candidates = append(candidates, candidate{
 			target:  t,
-			p50:     l.tracker.P50(t.VirtualKey),
-			hasSeen: l.tracker.HasSamples(t.VirtualKey),
+			p50:     p50,
+			hasSeen: hasSeen,
 		})
 	}
 

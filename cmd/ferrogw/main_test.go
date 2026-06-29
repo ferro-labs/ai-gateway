@@ -659,7 +659,7 @@ func TestCreateConfigManagerFromEnv_SQLitePersistence(t *testing.T) {
 	if backend != "sqlite" {
 		t.Fatalf("backend = %s, want sqlite", backend)
 	}
-	if err := mgr1.ReloadConfig(updatedCfg); err != nil {
+	if err := mgr1.ReloadConfig(context.Background(), updatedCfg); err != nil {
 		t.Fatalf("reload config via manager: %v", err)
 	}
 

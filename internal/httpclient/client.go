@@ -61,6 +61,15 @@ func SharedTransport() *http.Transport {
 	return manager.DefaultTransport()
 }
 
+// SharedStreamingTransport exposes the raw SSE-tuned transport (no
+// ResponseHeaderTimeout) WITHOUT the otelhttp wrapper. Use for transparent
+// pass-through (e.g. the proxy) that needs the streaming tuning but must not
+// inject traceparent headers or emit an extra OTel CLIENT span. Callers that
+// want OTel propagation should use SharedStreaming instead.
+func SharedStreamingTransport() *http.Transport {
+	return manager.StreamTransport()
+}
+
 // Manager returns the underlying transport.Manager for direct access
 // (e.g. per-provider client registration, metrics).
 func Manager() *transport.Manager {

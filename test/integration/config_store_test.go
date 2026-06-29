@@ -96,7 +96,7 @@ func TestPostgresConfigManager_ReloadPersists(t *testing.T) {
 		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeFallback},
 		Targets:  []aigateway.Target{{VirtualKey: "openai"}, {VirtualKey: "anthropic"}},
 	}
-	if err := mgr.ReloadConfig(next); err != nil {
+	if err := mgr.ReloadConfig(context.Background(), next); err != nil {
 		t.Fatalf("reload: %v", err)
 	}
 	if mgr.GetConfig().Strategy.Mode != aigateway.ModeFallback {

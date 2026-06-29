@@ -436,7 +436,7 @@ func TestGateway_ReloadConfigRejectsInvalidStreamingPromptRegex(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = gw.ReloadConfig(Config{
+	err = gw.ReloadConfig(context.Background(), Config{
 		Strategy: StrategyConfig{
 			Mode: ModeContentBased,
 			ContentConditions: []ContentCondition{{
@@ -473,7 +473,7 @@ func TestGateway_ReloadConfigRebuildsStreamingContentRegex(t *testing.T) {
 		t.Fatalf("single strategy streaming content = %d, want 0", len(gw.streamingContent))
 	}
 
-	err = gw.ReloadConfig(Config{
+	err = gw.ReloadConfig(context.Background(), Config{
 		Strategy: StrategyConfig{
 			Mode: ModeContentBased,
 			ContentConditions: []ContentCondition{
@@ -2744,7 +2744,7 @@ func TestGateway_ReloadConfig_ClosesOldPlugins(t *testing.T) {
 		t.Fatalf("LoadPlugins failed: %v", err)
 	}
 
-	if err := gw.ReloadConfig(Config{
+	if err := gw.ReloadConfig(context.Background(), Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
 		Targets:  []Target{{VirtualKey: mockProviderName}},
 	}); err != nil {
@@ -2801,7 +2801,7 @@ func TestGateway_ReloadConfig_DefersOldPluginCloseUntilInFlightRouteFinishes(t *
 	provider.waitActive(t, 1)
 	reloadDone := make(chan error, 1)
 	go func() {
-		reloadDone <- gw.ReloadConfig(Config{
+		reloadDone <- gw.ReloadConfig(context.Background(), Config{
 			Strategy: StrategyConfig{Mode: ModeSingle},
 			Targets:  []Target{{VirtualKey: provider.Name()}},
 		})

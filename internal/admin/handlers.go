@@ -4,6 +4,7 @@
 package admin
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -21,7 +22,7 @@ import (
 // ConfigManager exposes the minimal gateway config operations needed by admin API.
 type ConfigManager interface {
 	GetConfig() aigateway.Config
-	ReloadConfig(cfg aigateway.Config) error
+	ReloadConfig(ctx context.Context, cfg aigateway.Config) error
 }
 
 // Handlers holds dependencies for admin HTTP handlers.
@@ -831,7 +832,7 @@ func (h *Handlers) applyConfigUpdate(w http.ResponseWriter, r *http.Request, sta
 		return
 	}
 
-	if err := h.Configs.ReloadConfig(cfg); err != nil {
+	if err := h.Configs.ReloadConfig(r.Context(), cfg); err != nil {
 		writeConfigReloadError(w, err)
 		return
 	}
@@ -843,7 +844,7 @@ func (h *Handlers) applyConfigUpdate(w http.ResponseWriter, r *http.Request, sta
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": statusText})
 }
 
-func (h *Handlers) deleteConfig(w http.ResponseWriter, _ *http.Request) {
+func (h *Handlers) deleteConfig(w http.ResponseWriter, r *http.Request) {
 	if h.Configs == nil {
 		writeError(w, http.StatusNotImplemented, "config management is not enabled", "not_implemented_error", "not_implemented")
 		return
@@ -855,7 +856,7 @@ func (h *Handlers) deleteConfig(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 
-	if err := resetter.ResetConfig(); err != nil {
+	if err := resetter.ResetConfig(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error(), "server_error", "internal_error")
 		return
 	}
@@ -898,7 +899,7 @@ func (h *Handlers) rollbackConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.Configs.ReloadConfig(target.Config); err != nil {
+	if err := h.Configs.ReloadConfig(r.Context(), target.Config); err != nil {
 		writeConfigReloadError(w, err)
 		return
 	}

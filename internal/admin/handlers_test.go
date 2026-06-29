@@ -110,7 +110,7 @@ func (m *testConfigManager) GetConfig() aigateway.Config {
 	return m.cfg
 }
 
-func (m *testConfigManager) ReloadConfig(cfg aigateway.Config) error {
+func (m *testConfigManager) ReloadConfig(_ context.Context, cfg aigateway.Config) error {
 	if err := aigateway.ValidateConfig(cfg); err != nil {
 		return err
 	}
@@ -118,7 +118,7 @@ func (m *testConfigManager) ReloadConfig(cfg aigateway.Config) error {
 	return nil
 }
 
-func (m *testConfigManager) ResetConfig() error {
+func (m *testConfigManager) ResetConfig(_ context.Context) error {
 	m.cfg = m.initial
 	return nil
 }
@@ -127,7 +127,7 @@ func (m *persistenceFailingConfigManager) GetConfig() aigateway.Config {
 	return m.cfg
 }
 
-func (m *persistenceFailingConfigManager) ReloadConfig(_ aigateway.Config) error {
+func (m *persistenceFailingConfigManager) ReloadConfig(_ context.Context, _ aigateway.Config) error {
 	return fmt.Errorf("%w: write failed", errConfigPersistence)
 }
 

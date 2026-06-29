@@ -12,15 +12,18 @@ Small-enhancements release: context propagation, concurrency safety, and hot-pat
 ### Added
 
 - **Ollama model discovery** ([#203](https://github.com/ferro-labs/ai-gateway/issues/203)): `ollama` now implements live discovery via `/api/tags` and advertises the `discovery` capability.
+- **`make lint-fix` target** ([#48](https://github.com/ferro-labs/ai-gateway/issues/48)): runs `golangci-lint run --fix` to auto-apply fixable lint issues locally.
 
 ### Changed
 
-- **`context.Context` propagation** ([#180](https://github.com/ferro-labs/ai-gateway/issues/180), [#182](https://github.com/ferro-labs/ai-gateway/issues/182)): threaded request context through the admin key/config stores and the CLI HTTP client so cancellation and timeouts flow end-to-end.
+- **`context.Context` propagation** ([#180](https://github.com/ferro-labs/ai-gateway/issues/180), [#182](https://github.com/ferro-labs/ai-gateway/issues/182)): threaded request context through the admin key/config stores and the CLI HTTP client so cancellation and timeouts flow end-to-end. Config writes now honor request context too, fully resolving the earlier key-store-only limitation.
 - **Plugin registry concurrency** ([#184](https://github.com/ferro-labs/ai-gateway/issues/184)): the plugin factory registry is now guarded by a mutex, matching the observability registry.
-
-### Performance
-
 - **Hot-path allocations** ([#186](https://github.com/ferro-labs/ai-gateway/issues/186), [#187](https://github.com/ferro-labs/ai-gateway/issues/187)): memoized least-latency P50 reads, concrete-typed SSE chunk writes, streaming JSON decode on the Anthropic success path, a shared streaming transport in the proxy, and removal of dead transport code.
+- **Local test timeout aligned with CI** ([#48](https://github.com/ferro-labs/ai-gateway/issues/48)): the `make test` target and the `.husky/pre-push` hook now run `go test` with `-timeout 180s` (raised from `30s`) to match the CI `Test` job — the root package's `-race` suite runs ~120s, so the old 30s budget timed out.
+
+### Fixed
+
+- **Git hooks did not gate commits/pushes** ([#48](https://github.com/ferro-labs/ai-gateway/issues/48)): `.husky/pre-commit` and `.husky/pre-push` lacked `set -e`, so a non-zero exit from `go vet`, `golangci-lint`, or `go test` was silently ignored — the hook still printed its "passed" line and exited 0, letting a broken commit or push through (false gate assurance). Both hooks now set `set -e` so any failed check aborts the commit/push.
 
 ### Documentation
 

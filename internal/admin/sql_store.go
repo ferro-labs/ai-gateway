@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -231,7 +232,7 @@ VALUES(?, ?, ?, ?, ?, NULL, ?, NULL, ?, ?, NULL)`)
 // Get retrieves an API key by ID from the SQL store.
 func (s *SQLStore) Get(ctx context.Context, id string) (*APIKey, bool) {
 	key, err := s.scanOne(ctx, s.stmtGetByID, id)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false
 	}
 	if err != nil {
@@ -347,7 +348,7 @@ func (s *SQLStore) Delete(ctx context.Context, id string) error {
 // ValidateKey validates a full API key value and updates usage counters.
 func (s *SQLStore) ValidateKey(ctx context.Context, key string) (*APIKey, bool) {
 	apiKey, err := s.scanOne(ctx, s.stmtGetByKey, key)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false
 	}
 	if err != nil {

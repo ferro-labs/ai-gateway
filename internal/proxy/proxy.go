@@ -68,10 +68,13 @@ func Handler(registry *providers.Registry) http.HandlerFunc {
 		providerName := p.Name()
 
 		proxy := &httputil.ReverseProxy{
-			// Use the SSE-tuned transport (no ResponseHeaderTimeout) so slow or
-			// streaming pass-through endpoints are not cut off at 30s while
-			// waiting for the upstream's first response header.
-			Transport:     httpclient.SharedStreaming().Transport,
+			// Use the raw SSE-tuned transport (no ResponseHeaderTimeout) so slow
+			// or streaming pass-through endpoints are not cut off at 30s while
+			// waiting for the upstream's first response header. The raw
+			// transport (not the otelhttp-wrapped client RoundTripper) keeps
+			// this a transparent proxy: no traceparent/tracestate injected into
+			// upstream requests and no extra OTel CLIENT span per proxied call.
+			Transport:     httpclient.SharedStreamingTransport(),
 			FlushInterval: proxyFlushInterval,
 			Rewrite: func(pr *httputil.ProxyRequest) {
 				pr.SetURL(target)

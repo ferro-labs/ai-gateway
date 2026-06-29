@@ -72,12 +72,16 @@ git config core.hooksPath .husky
 
 ### CI Checks
 
-`.github/workflows/ci.yml` runs on every push and PR to `main` and must pass before merge:
+`.github/workflows/ci.yml` runs on pushes and PRs to `main` and must pass before merge:
 
 - **Test** — `go mod verify`, a `gofmt -l` formatting gate, `go build ./...`, `go test -short -race`, and a coverage upload to Codecov.
 - **Integration** — `make test-integration`.
 - **Vulnerability** — `govulncheck ./...`.
 - **Lint** — `golangci-lint` (v2).
+
+The workflow sets `paths-ignore: ["**.md", "docs/**"]`, so Markdown- and docs-only
+changes do **not** trigger CI. A docs-only PR (for example, one touching only
+`*.md` files or `docs/`) will show no CI run — that is expected, not a failure.
 
 ---
 

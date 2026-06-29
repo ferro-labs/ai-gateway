@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -171,4 +172,23 @@ func newSQLiteTestStore(t *testing.T) *SQLStore {
 	})
 
 	return store
+}
+
+// TestSQLStore_RespectsCancelledContext guards that request-context cancellation
+// propagates through ExecContext/QueryContext to the underlying SQLite driver.
+// Create returns an error (Get/ValidateKey only return bool), so it is the
+// method that surfaces context.Canceled for assertion.
+func TestSQLStore_RespectsCancelledContext(t *testing.T) {
+	store := newSQLiteTestStore(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel before any work runs
+
+	_, err := store.Create(ctx, "cancelled", []string{ScopeAdmin}, nil)
+	if err == nil {
+		t.Fatal("expected error from Create with cancelled context, got nil")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got: %v", err)
+	}
 }

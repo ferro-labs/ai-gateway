@@ -72,8 +72,10 @@ func (w *WordFilter) Execute(_ context.Context, pctx *plugin.Context) error {
 			content = strings.ToLower(content)
 		}
 		for i, word := range w.blockedWords {
-			check := word
-			if !w.caseSensitive {
+			var check string
+			if w.caseSensitive {
+				check = word
+			} else {
 				check = w.loweredWords[i]
 			}
 			if strings.Contains(content, check) {

@@ -161,6 +161,11 @@ type tagsResponse struct {
 // DiscoverModels fetches the live model list from the self-hosted Ollama
 // server's /api/tags endpoint. Ollama is unauthenticated, so no Authorization
 // header is sent.
+//
+// Unlike ollama_cloud, this deliberately does NOT cache the discovered names
+// for use by SupportsModel: for self-hosted Ollama, SupportsModel always
+// returns true because the server validates model names itself, so there is
+// nothing to track. Do not "fix" this to mirror ollama_cloud.
 func (p *Provider) DiscoverModels(ctx context.Context) ([]core.ModelInfo, error) {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, p.baseURL+"/api/tags", nil)
 	if err != nil {

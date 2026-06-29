@@ -37,7 +37,7 @@ func TestGatewayConfigManager_ReloadConfig_RollsBackWhenSaveFails(t *testing.T) 
 		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeFallback},
 		Targets:  []aigateway.Target{{VirtualKey: "openai"}, {VirtualKey: "anthropic"}},
 	}
-	err = mgr.ReloadConfig(next)
+	err = mgr.ReloadConfig(context.Background(), next)
 	if err == nil {
 		t.Fatal("expected save failure")
 	}
@@ -72,7 +72,7 @@ func TestGatewayConfigManager_ReloadConfig_ClassifiesValidationErrors(t *testing
 		Strategy: aigateway.StrategyConfig{Mode: "invalid"},
 		Targets:  []aigateway.Target{{VirtualKey: "openai"}},
 	}
-	err = mgr.ReloadConfig(invalid)
+	err = mgr.ReloadConfig(context.Background(), invalid)
 	if err == nil {
 		t.Fatal("expected validation error")
 	}
@@ -158,7 +158,7 @@ func TestGatewayConfigManager_ReloadConfig_Success(t *testing.T) {
 		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeFallback},
 		Targets:  []aigateway.Target{{VirtualKey: "openai"}, {VirtualKey: "anthropic"}},
 	}
-	if err := mgr.ReloadConfig(next); err != nil {
+	if err := mgr.ReloadConfig(context.Background(), next); err != nil {
 		t.Fatalf("ReloadConfig failed: %v", err)
 	}
 	if mgr.GetConfig().Strategy.Mode != aigateway.ModeFallback {
@@ -186,12 +186,12 @@ func TestGatewayConfigManager_ResetConfig(t *testing.T) {
 		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeFallback},
 		Targets:  []aigateway.Target{{VirtualKey: "openai"}, {VirtualKey: "anthropic"}},
 	}
-	if err := mgr.ReloadConfig(next); err != nil {
+	if err := mgr.ReloadConfig(context.Background(), next); err != nil {
 		t.Fatalf("ReloadConfig failed: %v", err)
 	}
 
 	// Reset to initial.
-	if err := mgr.ResetConfig(); err != nil {
+	if err := mgr.ResetConfig(context.Background()); err != nil {
 		t.Fatalf("ResetConfig failed: %v", err)
 	}
 	if mgr.GetConfig().Strategy.Mode != aigateway.ModeSingle {

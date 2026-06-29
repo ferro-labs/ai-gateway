@@ -1,6 +1,9 @@
 package plugin
 
-import "sync"
+import (
+	"fmt"
+	"sync"
+)
 
 // PluginFactory creates a new instance of a plugin.
 //
@@ -18,10 +21,24 @@ var (
 	pluginRegistry = map[string]PluginFactory{}
 )
 
-// RegisterFactory registers a plugin factory by name.
+// RegisterFactory registers a plugin factory by name. Panics on an empty
+// name, a nil factory, or duplicate registration; duplicates indicate a
+// programming error (two plugins claim the same name).
+//
+// Plugins call this from their package init() function:
+//
+//	func init() {
+//	    plugin.RegisterFactory("word-filter", New)
+//	}
 func RegisterFactory(name string, factory PluginFactory) {
+	if name == "" || factory == nil {
+		panic("plugin: RegisterFactory requires a non-empty name and non-nil factory")
+	}
 	registryMu.Lock()
 	defer registryMu.Unlock()
+	if _, exists := pluginRegistry[name]; exists {
+		panic(fmt.Sprintf("plugin: factory %q already registered", name))
+	}
 	pluginRegistry[name] = factory
 }
 

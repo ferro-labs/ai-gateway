@@ -29,7 +29,7 @@ type ConfigStore interface {
 
 // ConfigResetter provides reset semantics for config CRUD APIs.
 type ConfigResetter interface {
-	ResetConfig() error
+	ResetConfig(ctx context.Context) error
 }
 
 type sqlConfigDialect string
@@ -146,7 +146,7 @@ func (s *SQLConfigStore) Load(ctx context.Context) (aigateway.Config, bool, erro
 	row := s.db.QueryRowContext(ctx, query)
 	var raw string
 	if err := row.Scan(&raw); err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return aigateway.Config{}, false, nil
 		}
 		return aigateway.Config{}, false, fmt.Errorf("load config: %w", err)
@@ -198,12 +198,14 @@ func NewGatewayConfigManager(gw *aigateway.Gateway, store ConfigStore) (*Gateway
 	}
 
 	if store != nil {
+		// Startup-scoped load: there is no request context at construction time,
+		// so a background context is the correct choice here.
 		persisted, ok, err := store.Load(context.Background())
 		if err != nil {
 			return nil, err
 		}
 		if ok {
-			if err := gw.ReloadConfig(persisted); err != nil {
+			if err := gw.ReloadConfig(context.Background(), persisted); err != nil {
 				return nil, fmt.Errorf("reload persisted config: %w", err)
 			}
 		}
@@ -218,17 +220,12 @@ func (m *GatewayConfigManager) GetConfig() aigateway.Config {
 }
 
 // ReloadConfig validates/applies config and persists it when a store is configured.
-func (m *GatewayConfigManager) ReloadConfig(cfg aigateway.Config) error {
+func (m *GatewayConfigManager) ReloadConfig(ctx context.Context, cfg aigateway.Config) error {
 	if err := aigateway.ValidateConfig(cfg); err != nil {
 		return errors.Join(errConfigValidation, err)
 	}
 
 	previousCfg := m.gw.GetConfig()
-
-	// ConfigManager.ReloadConfig has no ctx parameter (out of scope for the
-	// store-context threading); use a background context for the persistence
-	// layer here.
-	ctx := context.Background()
 
 	if m.store != nil {
 		if err := m.store.Save(ctx, cfg); err != nil {
@@ -236,7 +233,7 @@ func (m *GatewayConfigManager) ReloadConfig(cfg aigateway.Config) error {
 		}
 	}
 
-	if err := m.gw.ReloadConfig(cfg); err != nil {
+	if err := m.gw.ReloadConfig(ctx, cfg); err != nil {
 		if m.store != nil {
 			// Save happened before apply. If apply fails, attempt to restore
 			// persisted state so runtime and storage remain aligned.
@@ -256,16 +253,16 @@ func (m *GatewayConfigManager) ReloadConfig(cfg aigateway.Config) error {
 }
 
 // ResetConfig restores startup config and clears persisted overrides.
-func (m *GatewayConfigManager) ResetConfig() error {
+func (m *GatewayConfigManager) ResetConfig(ctx context.Context) error {
 	m.mu.RLock()
 	initial := m.initial
 	m.mu.RUnlock()
 
-	if err := m.gw.ReloadConfig(initial); err != nil {
+	if err := m.gw.ReloadConfig(ctx, initial); err != nil {
 		return err
 	}
 	if m.store != nil {
-		if err := m.store.Delete(context.Background()); err != nil {
+		if err := m.store.Delete(ctx); err != nil {
 			return err
 		}
 	}
