@@ -75,6 +75,10 @@ const (
 	CfgKeyAPIToken    = "api_token"    // Replicate API token (primary required key)
 	CfgKeyTextModels  = "text_models"  // comma-separated Replicate text model paths
 	CfgKeyImageModels = "image_models" // comma-separated Replicate image model paths
+
+	// Concurrency limiting (applies to any provider)
+	CfgKeyMaxConcurrency = "max_concurrency" // max simultaneous in-flight requests (0 = unlimited)
+	CfgKeyQueueSize      = "queue_size"      // max requests queued waiting for a worker (default 1000)
 )
 
 // Capability names for capability-based registry filtering.

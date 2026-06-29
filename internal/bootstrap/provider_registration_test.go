@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/ferro-labs/ai-gateway/providers"
+	"github.com/ferro-labs/ai-gateway/providers/concurrency"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -14,6 +15,7 @@ func TestRegisterProviderEntriesSkipsBrokenProviderAndKeepsGoodProvider(t *testi
 	t.Setenv("GOOD_PROVIDER_KEY", "set")
 
 	registry := providers.NewRegistry()
+	var limited []*concurrency.LimitedProvider
 	registerProviderEntries(registry, []providers.ProviderEntry{
 		{
 			ID: "broken-provider",
@@ -37,7 +39,7 @@ func TestRegisterProviderEntriesSkipsBrokenProviderAndKeepsGoodProvider(t *testi
 				return bootstrapProvider{name: "good-provider", models: []string{"good-model"}}, nil
 			},
 		},
-	})
+	}, &limited)
 
 	if _, ok := registry.Get("broken-provider"); ok {
 		t.Fatal("broken provider should be skipped")
