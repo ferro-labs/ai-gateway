@@ -29,7 +29,7 @@
 
 🔀 **30 个提供商，2,500+ 个模型 — 统一 API**<br/>
 ⚡ **1,000 并发用户下达 13,925 RPS**<br/>
-📦 **单一二进制文件，零依赖，32 MB 基础内存**
+📦 **单一静态二进制文件，无需外部服务，32 MB 基础内存**
 
 <img src="docs/architecture.svg" alt="Ferro Labs AI 网关架构" width="100%" />
 
@@ -44,7 +44,8 @@
 ### 方式 A — 二进制文件（最快）
 
 ```bash
-curl -fsSL https://github.com/ferro-labs/ai-gateway/releases/download/v1.0.6/ferrogw_1.0.6_linux_amd64.tar.gz | tar xz
+VER=$(curl -fsSL https://api.github.com/repos/ferro-labs/ai-gateway/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
+curl -fsSL "https://github.com/ferro-labs/ai-gateway/releases/download/${VER}/ferrogw_${VER#v}_linux_amd64.tar.gz" | tar xz
 chmod +x ferrogw
 ./ferrogw init          # 生成 config.yaml + MASTER_KEY
 ./ferrogw               # 启动服务器
@@ -339,6 +340,20 @@ mcp_servers:
 
 完整模板及所有选项，请参阅 [config.example.yaml](config.example.yaml) 和 [config.example.json](config.example.json)。
 
+### 关键环境变量
+
+| 变量 | 用途 |
+|------|------|
+| `MASTER_KEY` | 所有认证的单一管理凭证（由 `ferrogw init` 生成） |
+| `GATEWAY_CONFIG` | 配置文件路径（YAML/JSON） |
+| `GATEWAY_ENV` | 设置为 `production` 以启用生产模式安全守卫 |
+| `PORT` | 服务端口（默认：`8080`） |
+| `ALLOW_UNAUTHENTICATED_PROXY` | 设置为 `true` 以禁用代理路由认证（仅开发环境；当 `GATEWAY_ENV=production` 时被阻止） |
+| `CORS_ORIGINS` | 逗号分隔的允许 CORS 来源；未设置时拒绝跨域访问 |
+| `TRUSTED_PROXIES` | 逗号分隔的可信反向代理 CIDR；仅来自这些地址的 `X-Forwarded-For`/`X-Real-IP` 会被信任（默认：回环地址） |
+
+完整环境变量参考（含提供商 API 密钥和 OTel 配置），请参阅 [AGENTS.md](AGENTS.md)。
+
 ---
 
 ## 可观测性
@@ -499,7 +514,7 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up
 **生产**（固定发布标签——生产环境切勿使用 `latest`）：
 
 ```bash
-IMAGE_TAG=v1.0.6 CORS_ORIGINS=https://your-domain.com \
+IMAGE_TAG=v1.1.7 CORS_ORIGINS=https://your-domain.com \  # 替换为最新发布标签
   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 ```
 

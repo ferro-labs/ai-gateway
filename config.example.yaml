@@ -1,6 +1,12 @@
 # Ferro Labs AI Gateway Configuration Example
 # Copy to config.yaml and customize.
 
+# Maximum request body size in bytes for data-plane (/v1/*) and admin write
+# endpoints. Requests exceeding this limit receive HTTP 413.
+# Default: 10485760 (10 MiB). Set to a lower value to harden against large
+# POST attacks; set higher only if you need to send very large prompts.
+# max_request_bytes: 10485760
+
 strategy:
   mode: fallback  # single | fallback | loadbalance | conditional | content-based | ab-test | least-latency | cost-optimized
   # For cost-optimized mode only: fallback (default) | skip | allow.
