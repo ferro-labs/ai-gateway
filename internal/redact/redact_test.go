@@ -118,9 +118,16 @@ func TestPoliciesReturnsConfiguredList(t *testing.T) {
 		"anthropic_key": true, "openai_modern_key": true, "openai_key": true,
 		"gateway_key": true, "groq_key": true, "google_key": true,
 	}
+	seen := make(map[string]bool, len(got))
 	for _, p := range got {
 		if !wantNames[p.Name] {
 			t.Errorf("unexpected policy name %q", p.Name)
+		}
+		seen[p.Name] = true
+	}
+	for name := range wantNames {
+		if !seen[name] {
+			t.Errorf("missing expected policy %q", name)
 		}
 	}
 }

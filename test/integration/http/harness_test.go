@@ -70,6 +70,7 @@ func newTestServer(t *testing.T, opts ...testOption) *testEnv {
 	if err != nil {
 		t.Fatalf("newTestServer: create gateway: %v", err)
 	}
+	t.Cleanup(func() { _ = gw.Close() })
 	gw.RegisterProvider(stub)
 
 	keyStore := admin.NewKeyStore()

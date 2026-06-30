@@ -6,9 +6,6 @@ name: CI
 on:
   push:
     branches: ["main", "release/**"]
-    paths-ignore:
-      - "**.md"
-      - "docs/**"
   pull_request:
     branches: ["main", "release/**"]
     paths-ignore:

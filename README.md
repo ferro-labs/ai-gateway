@@ -557,7 +557,8 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up
 **Prod** (pin to a release tag — never use `latest` in production):
 
 ```bash
-IMAGE_TAG=v1.1.7 CORS_ORIGINS=https://your-domain.com \  # replace with the latest release tag
+# Replace IMAGE_TAG with the latest release tag before running.
+IMAGE_TAG=v1.1.7 CORS_ORIGINS=https://your-domain.com \
   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 ```
 

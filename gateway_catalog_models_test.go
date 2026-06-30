@@ -54,6 +54,7 @@ func TestAllModels_DerivesFromCatalog(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	t.Cleanup(func() { _ = gw.Close() })
 	// Intentionally stale hardcoded list — must NOT drive /v1/models.
 	gw.RegisterProvider(&mockProvider{name: "anthropic", models: []string{"claude-stale-only"}})
 
@@ -84,6 +85,7 @@ func TestAllModels_MatchesCatalogForRegisteredProviders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	t.Cleanup(func() { _ = gw.Close() })
 	for _, name := range []string{"anthropic", "xai", "gemini", "groq"} {
 		gw.RegisterProvider(&mockProvider{name: name, models: []string{name + "-stale"}})
 	}
@@ -108,6 +110,7 @@ func TestAllModels_FallsBackToHardcodedWhenCatalogEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	t.Cleanup(func() { _ = gw.Close() })
 	const name = "no-such-catalog-provider-xyz"
 	if len(gw.Catalog().ModelsForProvider(name)) != 0 {
 		t.Fatalf("precondition: %q unexpectedly present in catalog", name)
@@ -131,6 +134,7 @@ func TestRouting_AcceptsCatalogModelNotInHardcodedSlice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	t.Cleanup(func() { _ = gw.Close() })
 	gw.RegisterProvider(&mockProvider{name: "anthropic", models: []string{"claude-hardcoded-only"}})
 
 	catModels := gw.Catalog().ModelsForProvider("anthropic")
@@ -168,6 +172,7 @@ func TestRouting_RejectsUnknownModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	t.Cleanup(func() { _ = gw.Close() })
 	gw.RegisterProvider(&mockProvider{name: "anthropic", models: []string{"claude-hardcoded-only"}})
 
 	if _, ok := gw.FindByModel("definitely-not-a-real-model-zzz"); ok {

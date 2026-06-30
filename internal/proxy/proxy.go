@@ -5,6 +5,7 @@ package proxy
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -94,6 +95,11 @@ func Handler(registry *providers.Registry) http.HandlerFunc {
 				return nil
 			},
 			ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
+				var maxBytesErr *http.MaxBytesError
+				if errors.As(err, &maxBytesErr) {
+					apierror.WriteOpenAI(w, http.StatusRequestEntityTooLarge, "request body too large", "invalid_request_error", "request_too_large")
+					return
+				}
 				//nolint:gosec // G706: providerName comes from the configured registry, not raw user input.
 				slog.Error("proxy upstream error", "provider", providerName, "error", err)
 				apierror.WriteOpenAI(w, http.StatusBadGateway,

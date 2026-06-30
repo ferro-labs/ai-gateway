@@ -130,6 +130,11 @@ func New(cfg Config) (*Gateway, error) {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 
+	streamingContent, err := compileStreamingContentConditions(cfg.Strategy.Mode, cfg.Strategy.ContentConditions)
+	if err != nil {
+		return nil, err
+	}
+
 	catalogResult, err := models.LoadWithInfo()
 	recordCatalogLoad(catalogResult.Source, err)
 	catalog := catalogResult.Catalog
@@ -137,11 +142,6 @@ func New(cfg Config) (*Gateway, error) {
 		// Non-fatal: operate without model metadata (no enrichment / cost reporting).
 		slog.Error("model catalog unavailable; continuing without catalog metadata", "url", catalogResult.URLForLog(), "error", err)
 		catalog = models.Catalog{}
-	}
-
-	streamingContent, err := compileStreamingContentConditions(cfg.Strategy.Mode, cfg.Strategy.ContentConditions)
-	if err != nil {
-		return nil, err
 	}
 
 	gw := &Gateway{

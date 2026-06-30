@@ -22,6 +22,7 @@ func TestEmbeddings_NoCapableProvider_Returns404(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	t.Cleanup(func() { _ = gw.Close() })
 
 	body := `{"model":"no-such-embedding-model","input":"hello"}`
 	r := httptest.NewRequest(http.MethodPost, "/v1/embeddings", strings.NewReader(body))

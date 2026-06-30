@@ -17,6 +17,9 @@ import (
 // only when the direct TCP peer is within a trusted-proxy CIDR. That
 // middleware must be installed before this one in the chain.
 func RateLimit(store *ratelimit.Store) func(http.Handler) http.Handler {
+	if store == nil {
+		return func(next http.Handler) http.Handler { return next }
+	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Extract the host without the port so ephemeral port variation

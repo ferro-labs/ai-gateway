@@ -21,6 +21,7 @@ func TestChatCompletions_BodyTooLarge_Returns413(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	t.Cleanup(func() { _ = gw.Close() })
 
 	// Use valid JSON that starts correctly but is far larger than the tiny limit.
 	// The JSON decoder reads partial content then hits the MaxBytesReader limit.

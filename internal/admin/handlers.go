@@ -828,25 +828,45 @@ func scrubStringMap(m map[string]string) map[string]string {
 	return out
 }
 
+// scrubAnyValue returns a scrubbed copy of v. Strings are redacted unless they
+// are env-var references. map[string]any and slice values are recursively
+// scrubbed into new copies — originals are never aliased or mutated.
+// Non-string, non-map, non-slice values (bool, number, etc.) are copied as-is.
+func scrubAnyValue(v any) any {
+	switch val := v.(type) {
+	case string:
+		return scrubStringValue(val)
+	case map[string]any:
+		return scrubAnyMap(val)
+	case []string:
+		out := make([]string, len(val))
+		for i, s := range val {
+			out[i] = scrubStringValue(s)
+		}
+		return out
+	case []any:
+		out := make([]any, len(val))
+		for i, elem := range val {
+			out[i] = scrubAnyValue(elem)
+		}
+		return out
+	default:
+		return v
+	}
+}
+
 // scrubAnyMap returns a new map with every non-env-ref string value replaced
-// by "[REDACTED]". Nested map[string]any values are recursively scrubbed into
-// a new copy — the original inner maps are never aliased or mutated.
-// Non-string, non-map values (bool, number, etc.) are copied as-is.
-// The original map is not modified.
+// by "[REDACTED]". Nested map[string]any and slice values are recursively
+// scrubbed into new copies — the original maps and slices are never aliased or
+// mutated. Non-string, non-map, non-slice values (bool, number, etc.) are
+// copied as-is. The original map is not modified.
 func scrubAnyMap(m map[string]any) map[string]any {
 	if m == nil {
 		return nil
 	}
 	out := make(map[string]any, len(m))
 	for k, v := range m {
-		switch val := v.(type) {
-		case string:
-			out[k] = scrubStringValue(val)
-		case map[string]any:
-			out[k] = scrubAnyMap(val)
-		default:
-			out[k] = v
-		}
+		out[k] = scrubAnyValue(v)
 	}
 	return out
 }
