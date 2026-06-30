@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"bytes"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -58,14 +59,17 @@ func Handler(registry *providers.Registry) http.HandlerFunc {
 			return
 		}
 
+		providerName := p.Name()
+
 		target, err := url.Parse(pp.BaseURL())
 		if err != nil {
-			apierror.WriteOpenAI(w, http.StatusInternalServerError, "invalid provider base URL: "+err.Error(), "server_error", "internal_error")
+			//nolint:gosec // G706: providerName comes from the configured registry, not raw user input.
+			slog.Error("invalid provider base URL", "provider", providerName, "error", err)
+			apierror.WriteOpenAI(w, http.StatusInternalServerError, "upstream provider is unavailable", "server_error", "internal_error")
 			return
 		}
 
 		authHeaders := pp.AuthHeaders()
-		providerName := p.Name()
 
 		proxy := &httputil.ReverseProxy{
 			// Use the raw SSE-tuned transport (no ResponseHeaderTimeout) so slow
@@ -90,7 +94,13 @@ func Handler(registry *providers.Registry) http.HandlerFunc {
 				return nil
 			},
 			ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
-				http.Error(w, "proxy error: "+err.Error(), http.StatusBadGateway)
+				//nolint:gosec // G706: providerName comes from the configured registry, not raw user input.
+				slog.Error("proxy upstream error", "provider", providerName, "error", err)
+				apierror.WriteOpenAI(w, http.StatusBadGateway,
+					"upstream connection failed",
+					"server_error",
+					"upstream_error",
+				)
 			},
 		}
 

@@ -176,6 +176,7 @@ func (h *Handlers) createKey(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(key)
 }
@@ -678,6 +679,7 @@ func (h *Handlers) rotateKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
 	_ = json.NewEncoder(w).Encode(key)
 }
 
@@ -789,7 +791,99 @@ func (h *Handlers) getConfig(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(h.Configs.GetConfig())
+	_ = json.NewEncoder(w).Encode(scrubConfigSecrets(h.Configs.GetConfig()))
+}
+
+// isEnvRef reports whether s is a bare environment-variable reference of the
+// form "${VAR}" (start "${"  end "}"). These are template placeholders that
+// survive to the serialized config intentionally; the value they reference is
+// resolved from the process environment at runtime and never stored.
+func isEnvRef(s string) bool {
+	return len(s) > 3 && s[0] == '$' && s[1] == '{' && s[len(s)-1] == '}'
+}
+
+// redactedPlaceholder is substituted for any literal secret value when a Config
+// is serialized to an admin API response.
+const redactedPlaceholder = "[REDACTED]"
+
+// scrubStringValue returns redactedPlaceholder for any literal string value.
+// ${VAR} env references are preserved because they contain no secret material.
+func scrubStringValue(v string) string {
+	if isEnvRef(v) {
+		return v
+	}
+	return redactedPlaceholder
+}
+
+// scrubStringMap returns a new map with every non-env-ref string value replaced
+// by "[REDACTED]". The original map is not modified.
+func scrubStringMap(m map[string]string) map[string]string {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[k] = scrubStringValue(v)
+	}
+	return out
+}
+
+// scrubAnyMap returns a new map with every non-env-ref string value replaced
+// by "[REDACTED]". Nested map[string]any values are recursively scrubbed into
+// a new copy — the original inner maps are never aliased or mutated.
+// Non-string, non-map values (bool, number, etc.) are copied as-is.
+// The original map is not modified.
+func scrubAnyMap(m map[string]any) map[string]any {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]any, len(m))
+	for k, v := range m {
+		switch val := v.(type) {
+		case string:
+			out[k] = scrubStringValue(val)
+		case map[string]any:
+			out[k] = scrubAnyMap(val)
+		default:
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// scrubConfigSecrets returns a shallow copy of cfg with secret-bearing map
+// values replaced by "[REDACTED]". The live in-memory Config is never mutated.
+//
+// Fields scrubbed:
+//   - Observability.Tracing.Headers (map[string]string)
+//   - each Observability.Exporters[i].Config (map[string]any)
+//   - each Plugins[i].Config (map[string]interface{})
+//
+// Values that look like "${ENV_VAR}" references are preserved because they
+// contain no secret material; the actual secret is resolved from the process
+// environment at runtime.
+func scrubConfigSecrets(cfg aigateway.Config) aigateway.Config {
+	cfg.Observability.Tracing.Headers = scrubStringMap(cfg.Observability.Tracing.Headers)
+
+	if cfg.Observability.Exporters != nil {
+		exporters := make([]aigateway.ExporterConfig, len(cfg.Observability.Exporters))
+		for i, exp := range cfg.Observability.Exporters {
+			exp.Config = scrubAnyMap(exp.Config)
+			exporters[i] = exp
+		}
+		cfg.Observability.Exporters = exporters
+	}
+
+	if cfg.Plugins != nil {
+		plugins := make([]aigateway.PluginConfig, len(cfg.Plugins))
+		for i, p := range cfg.Plugins {
+			p.Config = scrubAnyMap(p.Config)
+			plugins[i] = p
+		}
+		cfg.Plugins = plugins
+	}
+
+	return cfg
 }
 
 func (h *Handlers) getConfigHistory(w http.ResponseWriter, _ *http.Request) {

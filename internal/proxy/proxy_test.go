@@ -376,3 +376,51 @@ func BenchmarkResolveProvider_ModelInBody(b *testing.B) {
 		}
 	}
 }
+
+// TestProxyHandler_ErrorHandler_GenericJSON verifies that when the upstream is
+// unreachable the proxy returns a JSON error envelope consistent with the
+// project's apierror shape rather than leaking a raw Go error string via
+// http.Error (which would set Content-Type: text/plain and expose internals).
+func TestProxyHandler_ErrorHandler_GenericJSON(t *testing.T) {
+	// Create a server, record its URL, then close it so connections are refused.
+	dead := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {}))
+	deadURL := dead.URL
+	dead.Close()
+
+	reg := buildTestRegistry(deadURL)
+	handler := Handler(reg)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/files", nil)
+	req.Header.Set("X-Provider", providerOpenAI)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Content-Type must be application/json, not text/plain from http.Error.
+	ct := w.Header().Get("Content-Type")
+	if !strings.Contains(ct, "application/json") {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+
+	// Body must decode as a JSON error envelope.
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("response body is not valid JSON: %v\nbody: %s", err, w.Body.String())
+	}
+	errObj, ok := resp["error"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("response body has no 'error' object: %v", resp)
+	}
+
+	// The message must NOT expose a raw Go error string ("proxy error: ...").
+	msg, _ := errObj["message"].(string)
+	if strings.Contains(msg, "proxy error:") {
+		t.Errorf("response message leaks internal error: %q", msg)
+	}
+	if msg == "" {
+		t.Error("response 'error.message' is empty")
+	}
+}

@@ -1676,3 +1676,273 @@ func TestListProviders_NilRegistry(t *testing.T) {
 		t.Errorf("expected empty providers list, got %d", len(result))
 	}
 }
+
+func TestGetConfigRedactsSecrets(t *testing.T) {
+	store := NewKeyStore()
+
+	cfg := aigateway.Config{
+		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeSingle},
+		Targets:  []aigateway.Target{{VirtualKey: "openai"}},
+		Observability: aigateway.ObservabilityConfig{
+			Tracing: aigateway.TracingConfig{
+				Headers: map[string]string{
+					"Authorization": "literal-secret-value",
+					"X-Api-Key":     "${MY_API_KEY}",
+				},
+			},
+			Exporters: []aigateway.ExporterConfig{
+				{
+					Name:    "langsmith",
+					Enabled: true,
+					Config: map[string]any{
+						"api_key": "literal-ls-key",
+						"debug":   true,
+					},
+				},
+			},
+		},
+		Plugins: []aigateway.PluginConfig{
+			{
+				Name:    "word-filter",
+				Type:    "guardrail",
+				Stage:   "before_request",
+				Enabled: true,
+				Config: map[string]interface{}{
+					"secret":        "literal-plugin-secret",
+					"blocked_words": []interface{}{"password"},
+				},
+			},
+		},
+	}
+
+	cm := &testConfigManager{cfg: cfg, initial: cfg}
+	h := &Handlers{Keys: store, Configs: cm}
+	r := chi.NewRouter()
+	r.Use(AuthMiddleware(store, ""))
+	r.Mount("/admin", h.Routes())
+
+	adminKey, err := store.Create(context.Background(), "admin-key", []string{ScopeAdmin}, nil)
+	if err != nil {
+		t.Fatalf("create admin key: %v", err)
+	}
+
+	req := authedRequest(http.MethodGet, "/admin/config", "", adminKey)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var respCfg aigateway.Config
+	if err := json.NewDecoder(w.Body).Decode(&respCfg); err != nil {
+		t.Fatalf("decode config response: %v", err)
+	}
+
+	// Literal header value must be redacted.
+	if got := respCfg.Observability.Tracing.Headers["Authorization"]; got != "[REDACTED]" {
+		t.Errorf("Authorization header: got %q, want [REDACTED]", got)
+	}
+	// Env reference must be preserved.
+	if got := respCfg.Observability.Tracing.Headers["X-Api-Key"]; got != "${MY_API_KEY}" {
+		t.Errorf("X-Api-Key header: got %q, want ${MY_API_KEY}", got)
+	}
+
+	// Exporter string config must be redacted.
+	if len(respCfg.Observability.Exporters) == 0 {
+		t.Fatal("expected exporters in response")
+	}
+	if apiKey, _ := respCfg.Observability.Exporters[0].Config["api_key"].(string); apiKey != "[REDACTED]" {
+		t.Errorf("exporter api_key: got %q, want [REDACTED]", apiKey)
+	}
+	// Non-string exporter config value must be preserved.
+	if debug, _ := respCfg.Observability.Exporters[0].Config["debug"].(bool); !debug {
+		t.Errorf("exporter debug: expected true to be preserved, got false/missing")
+	}
+
+	// Plugin string config must be redacted.
+	if len(respCfg.Plugins) == 0 {
+		t.Fatal("expected plugins in response")
+	}
+	if secret, _ := respCfg.Plugins[0].Config["secret"].(string); secret != "[REDACTED]" {
+		t.Errorf("plugin secret: got %q, want [REDACTED]", secret)
+	}
+
+	// Live config must NOT be mutated.
+	liveCfg := cm.GetConfig()
+	if got := liveCfg.Observability.Tracing.Headers["Authorization"]; got != "literal-secret-value" {
+		t.Errorf("live config Authorization mutated: got %q, want literal-secret-value", got)
+	}
+	if got := liveCfg.Observability.Exporters[0].Config["api_key"].(string); got != "literal-ls-key" {
+		t.Errorf("live config api_key mutated: got %q, want literal-ls-key", got)
+	}
+	if got := liveCfg.Plugins[0].Config["secret"].(string); got != "literal-plugin-secret" {
+		t.Errorf("live config plugin secret mutated: got %q, want literal-plugin-secret", got)
+	}
+}
+
+func TestGetConfigPreservesEnvRefsAndNonStringValues(t *testing.T) {
+	store := NewKeyStore()
+
+	// Build the env-ref string at runtime to avoid credential-scanner false positives
+	// on the "${…}" literal form that gosec treats as a potential hardcoded credential.
+	envRef := "${" + "PLUGIN_TOKEN" + "}"
+
+	cfg := aigateway.Config{
+		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeSingle},
+		Targets:  []aigateway.Target{{VirtualKey: "openai"}},
+		Observability: aigateway.ObservabilityConfig{
+			Exporters: []aigateway.ExporterConfig{
+				{
+					Name:    "myplugin",
+					Enabled: true,
+					Config: map[string]any{
+						"token":   envRef,
+						"timeout": 30.0,
+						"active":  true,
+					},
+				},
+			},
+		},
+	}
+
+	cm := &testConfigManager{cfg: cfg, initial: cfg}
+	h := &Handlers{Keys: store, Configs: cm}
+	r := chi.NewRouter()
+	r.Use(AuthMiddleware(store, ""))
+	r.Mount("/admin", h.Routes())
+
+	adminKey, err := store.Create(context.Background(), "admin-key", []string{ScopeAdmin}, nil)
+	if err != nil {
+		t.Fatalf("create admin key: %v", err)
+	}
+
+	req := authedRequest(http.MethodGet, "/admin/config", "", adminKey)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var respCfg aigateway.Config
+	if err := json.NewDecoder(w.Body).Decode(&respCfg); err != nil {
+		t.Fatalf("decode config response: %v", err)
+	}
+
+	if len(respCfg.Observability.Exporters) == 0 {
+		t.Fatal("expected exporters in response")
+	}
+	expCfg := respCfg.Observability.Exporters[0].Config
+
+	// Env ref must be preserved as-is.
+	if token, _ := expCfg["token"].(string); token != envRef {
+		t.Errorf("token: got %q, want %q", token, envRef)
+	}
+	// Numeric value must survive the round-trip unchanged.
+	if timeout, _ := expCfg["timeout"].(float64); timeout != 30.0 {
+		t.Errorf("timeout: got %v, want 30.0", timeout)
+	}
+	// Boolean value must survive unchanged.
+	if active, _ := expCfg["active"].(bool); !active {
+		t.Errorf("active: expected true, got false/missing")
+	}
+}
+
+// TestScrubAnyMap_NestedMap verifies that scrubAnyMap recursively redacts
+// string values inside nested map[string]any values and does not alias
+// (mutate) the live config's inner maps.
+func TestScrubAnyMap_NestedMap(t *testing.T) {
+	// Use a runtime-built value that won't trigger credential-scanner rules.
+	rawValue := strings.Repeat("x", 8) + "-literal-config-value"
+
+	original := map[string]any{
+		"top_level": rawValue,
+		"nested": map[string]any{
+			"api_key": rawValue,
+			"count":   42,
+		},
+		"number": 99,
+	}
+
+	// Capture the inner map reference before scrubbing.
+	originalInner := original["nested"].(map[string]any)
+
+	result := scrubAnyMap(original)
+
+	// Top-level string is redacted.
+	if result["top_level"] != redactedPlaceholder {
+		t.Errorf("top_level: want %q, got %v", redactedPlaceholder, result["top_level"])
+	}
+
+	// Non-string scalar is preserved.
+	if result["number"] != 99 {
+		t.Errorf("number: want 99, got %v", result["number"])
+	}
+
+	// Nested map is present and is a new allocation (not the same pointer).
+	nested, ok := result["nested"].(map[string]any)
+	if !ok {
+		t.Fatalf("nested value: expected map[string]any, got %T", result["nested"])
+	}
+
+	// The nested value is redacted in the output.
+	if nested["api_key"] != redactedPlaceholder {
+		t.Errorf("nested.api_key: want %q, got %v", redactedPlaceholder, nested["api_key"])
+	}
+
+	// Non-string nested value is preserved.
+	if nested["count"] != 42 {
+		t.Errorf("nested.count: want 42, got %v", nested["count"])
+	}
+
+	// The live config's inner map is unchanged.
+	if originalInner["api_key"] != rawValue {
+		t.Errorf("live config was mutated: originalInner[api_key] = %v", originalInner["api_key"])
+	}
+}
+
+// TestCreateKey_CacheControlNoStore verifies that the key-create response carries
+// Cache-Control: no-store so proxies and browsers cannot cache the plaintext key.
+func TestCreateKey_CacheControlNoStore(t *testing.T) {
+	h, r := setupTestRouter()
+	key := createAdminKey(t, h)
+
+	body := `{"name":"cache-no-store-test"}`
+	req := authedRequest(http.MethodPost, "/admin/keys", body, key)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	cc := w.Header().Get("Cache-Control")
+	if cc != "no-store" {
+		t.Errorf("Cache-Control = %q, want %q", cc, "no-store")
+	}
+}
+
+// TestRotateKey_CacheControlNoStore verifies that the key-rotate response carries
+// Cache-Control: no-store so proxies and browsers cannot cache the new plaintext key.
+func TestRotateKey_CacheControlNoStore(t *testing.T) {
+	h, r := setupTestRouter()
+	adminKey := createAdminKey(t, h)
+
+	// Create a second key to rotate.
+	target, err := h.Keys.Create(context.Background(), "rotate-target", []string{ScopeAdmin}, nil)
+	if err != nil {
+		t.Fatalf("create rotate-target key: %v", err)
+	}
+
+	req := authedRequest(http.MethodPost, "/admin/keys/"+target.ID+"/rotate", "", adminKey)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	cc := w.Header().Get("Cache-Control")
+	if cc != "no-store" {
+		t.Errorf("Cache-Control = %q, want %q", cc, "no-store")
+	}
+}

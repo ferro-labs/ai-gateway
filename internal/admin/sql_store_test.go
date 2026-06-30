@@ -174,6 +174,45 @@ func newSQLiteTestStore(t *testing.T) *SQLStore {
 	return store
 }
 
+// TestSQLStore_ValidateKey_CounterWriteFailure_AuthSucceeds verifies that a
+// transient failure of the usage-counter UPDATE does not convert auth success
+// into a 401. The key must still be returned as valid even when the counter
+// write errors, because dropping a usage increment is preferable to denying a
+// legitimate request.
+func TestSQLStore_ValidateKey_CounterWriteFailure_AuthSucceeds(t *testing.T) {
+	store := newSQLiteTestStore(t)
+
+	created, err := store.Create(context.Background(), "resilient-key", []string{ScopeAdmin}, nil)
+	if err != nil {
+		t.Fatalf("create key: %v", err)
+	}
+
+	// Close the prepared usage statement to simulate a transient DB write failure.
+	// ExecContext on a closed statement returns an error.
+	if err := store.stmtUsage.Close(); err != nil {
+		t.Fatalf("close stmtUsage: %v", err)
+	}
+
+	// Authentication must still succeed.
+	validated, ok := store.ValidateKey(context.Background(), created.Key)
+	if !ok {
+		t.Fatal("ValidateKey returned false despite counter-write failure; want true (auth must succeed)")
+	}
+	if validated == nil {
+		t.Fatal("ValidateKey returned nil key despite ok=true")
+	}
+	if validated.ID != created.ID {
+		t.Errorf("returned key ID = %q, want %q", validated.ID, created.ID)
+	}
+	// The counter increment must NOT have been applied when the write failed;
+	// a future refactor moving UsageCount++ out of the success branch would
+	// otherwise silently advance the count on error.
+	if validated.UsageCount != created.UsageCount {
+		t.Errorf("UsageCount = %d after counter-write failure, want %d (increment must be suppressed on error)",
+			validated.UsageCount, created.UsageCount)
+	}
+}
+
 // TestSQLStore_RespectsCancelledContext guards that request-context cancellation
 // propagates through ExecContext/QueryContext to the underlying SQLite driver.
 // Create returns an error (Get/ValidateKey only return bool), so it is the

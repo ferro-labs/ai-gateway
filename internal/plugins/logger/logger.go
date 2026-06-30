@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ferro-labs/ai-gateway/internal/logging"
+	"github.com/ferro-labs/ai-gateway/internal/redact"
 	"github.com/ferro-labs/ai-gateway/internal/requestlog"
 	"github.com/ferro-labs/ai-gateway/plugin"
 )
@@ -27,6 +28,7 @@ func init() {
 type RequestLogger struct {
 	logLevel slog.Level
 	writer   requestlog.Writer
+	redactor *redact.Redactor
 }
 
 // Name returns the plugin identifier.
@@ -39,6 +41,7 @@ func (l *RequestLogger) Type() plugin.PluginType { return plugin.TypeLogging }
 func (l *RequestLogger) Init(config map[string]interface{}) error {
 	l.logLevel = slog.LevelInfo
 	l.writer = requestlog.NoopWriter{}
+	l.redactor = redact.DefaultRedactor()
 	if level, ok := config["level"].(string); ok {
 		switch level {
 		case "debug":
@@ -119,22 +122,24 @@ func (l *RequestLogger) Execute(ctx context.Context, pctx *plugin.Context) error
 	}
 
 	if pctx.Error != nil {
-		// on_error stage
+		// on_error stage — route error text through the redactor before logging
+		// so provider API keys embedded in upstream error messages are not persisted.
 		now := time.Now().UTC()
 		model := ""
 		if pctx.Request != nil {
 			model = pctx.Request.Model
 		}
+		errMsg := l.redactor.Redact(pctx.Error.Error())
 		log.Log(ctx, slog.LevelError, "gateway error",
 			"model", model,
-			"error", pctx.Error.Error(),
+			"error", errMsg,
 			"timestamp", now.Format(time.RFC3339),
 		)
 		_ = l.writer.Write(ctx, requestlog.Entry{
 			TraceID:      logging.TraceIDFromContext(ctx),
 			Stage:        string(plugin.StageOnError),
 			Model:        model,
-			ErrorMessage: pctx.Error.Error(),
+			ErrorMessage: errMsg,
 			CreatedAt:    now,
 		})
 	}
