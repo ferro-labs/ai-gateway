@@ -246,6 +246,11 @@ func catalogLoadErrorForLog(err error, catalogURL string) string {
 	return safeLogValue(httpURLInLogMessage.ReplaceAllStringFunc(msg, CatalogURLForLog))
 }
 
+// maxCatalogResponseBytes guards against hostile or accidentally huge catalog
+// responses from exhausting gateway memory. 8 MiB is orders of magnitude
+// larger than any realistic catalog file.
+const maxCatalogResponseBytes = 8 * 1024 * 1024
+
 func fetchRemote(rawURL string) ([]byte, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
@@ -260,7 +265,7 @@ func fetchRemote(rawURL string) ([]byte, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("catalog fetch: HTTP %d", resp.StatusCode)
 	}
-	return io.ReadAll(resp.Body)
+	return io.ReadAll(io.LimitReader(resp.Body, maxCatalogResponseBytes))
 }
 
 func parse(data []byte) (Catalog, error) {

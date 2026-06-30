@@ -15,7 +15,10 @@ import (
 // invalid_request_error/model_not_found body rather than 500/routing_error.
 // Regression test for the capability-miss-as-server-error bug.
 func TestImages_NoCapableProvider_Returns404(t *testing.T) {
-	gw, err := aigateway.New(aigateway.Config{})
+	gw, err := aigateway.New(aigateway.Config{
+		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeSingle},
+		Targets:  []aigateway.Target{{VirtualKey: "unused"}},
+	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

@@ -21,17 +21,44 @@ import (
 	bedrockpkg "github.com/ferro-labs/ai-gateway/providers/bedrock"
 )
 
+// CheckProductionSafety returns an error if ALLOW_UNAUTHENTICATED_PROXY=true is
+// combined with GATEWAY_ENV=production.  Allowing unauthenticated proxy access
+// in a production environment silently removes all /v1/* data-plane auth, so
+// the gateway refuses to start rather than serve in an insecure state.
+//
+// Outside of production (GATEWAY_ENV unset or any value other than
+// "production"), the flag is honoured and a warning is emitted at startup
+// (existing dev-mode behaviour is preserved).
+func CheckProductionSafety() error {
+	allowUnauth := strings.EqualFold(strings.TrimSpace(os.Getenv("ALLOW_UNAUTHENTICATED_PROXY")), "true")
+	isProduction := strings.EqualFold(strings.TrimSpace(os.Getenv("GATEWAY_ENV")), "production")
+
+	if allowUnauth && isProduction {
+		return fmt.Errorf(
+			"ALLOW_UNAUTHENTICATED_PROXY=true is not allowed when GATEWAY_ENV=production: " +
+				"all /v1/* data-plane endpoints would be unauthenticated; " +
+				"unset ALLOW_UNAUTHENTICATED_PROXY or change GATEWAY_ENV to a non-production value",
+		)
+	}
+	return nil
+}
+
 // Serve runs the full gateway server startup sequence and blocks until the
 // server shuts down.  It exits the process on fatal errors.
 func Serve() {
 	logging.Setup(os.Getenv("LOG_LEVEL"), os.Getenv("LOG_FORMAT"))
+
+	if err := CheckProductionSafety(); err != nil {
+		logging.Logger.Error("startup blocked: unsafe configuration", "error", err)
+		os.Exit(1)
+	}
 
 	cfg := LoadConfig()
 	registry := RegisterProviders()
 	masterKey := ResolveMasterKey()
 
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("ALLOW_UNAUTHENTICATED_PROXY")), "true") {
-		logging.Logger.Warn("ALLOW_UNAUTHENTICATED_PROXY is set -- proxy routes are unauthenticated (not recommended for production)")
+		logging.Logger.Warn("ALLOW_UNAUTHENTICATED_PROXY is set -- proxy routes are unauthenticated (dev mode only; not for production)")
 	}
 
 	if len(registry.List()) == 0 {
@@ -72,6 +99,16 @@ func Serve() {
 		corsOrigins = strings.Split(origins, ",")
 	}
 
+	// TRUSTED_PROXIES is a comma-separated list of CIDR blocks whose
+	// X-Forwarded-For / X-Real-IP headers are trusted for client-IP resolution.
+	// An empty or unset value falls back to the loopback default
+	// (127.0.0.0/8, ::1/128), which is appropriate for a local reverse proxy.
+	trustedProxies, err := httpserver.ParseTrustedProxyCIDRs(os.Getenv("TRUSTED_PROXIES"))
+	if err != nil {
+		logging.Logger.Error("invalid TRUSTED_PROXIES", "error", err)
+		os.Exit(1)
+	}
+
 	rlStore := NewRateLimitStore()
 	logReader, logMaintainer, logReaderBackend, err := CreateRequestLogReaderFromEnv()
 	if err != nil {
@@ -79,7 +116,7 @@ func Serve() {
 		os.Exit(1)
 	}
 
-	r := httpserver.NewRouter(registry, keyStore, corsOrigins, gw, cfgManager, rlStore, logReader, logMaintainer, masterKey)
+	r := httpserver.NewRouter(registry, keyStore, corsOrigins, gw, cfgManager, rlStore, logReader, logMaintainer, masterKey, trustedProxies)
 
 	addr := ":8080"
 	if p := os.Getenv("PORT"); p != "" {
