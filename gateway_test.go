@@ -320,13 +320,10 @@ func TestGateway_Route_CostOptimizedPassesUnpricedStrategy(t *testing.T) {
 }
 
 func TestGateway_Route_NoTargets(t *testing.T) {
-	gw, _ := New(Config{
+	// After #256, New() validates the config eagerly, so the "no targets"
+	// error is now returned at construction time rather than at route time.
+	_, err := New(Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
-	})
-
-	_, err := gw.Route(context.Background(), providers.Request{
-		Model:    "gpt-4o",
-		Messages: []providers.Message{{Role: "user", Content: "hi"}},
 	})
 	if err == nil {
 		t.Fatal("expected error for no targets")
@@ -1877,7 +1874,10 @@ func TestGateway_RouteStream_ResponseCacheHitSkipsProvider(t *testing.T) {
 }
 
 func TestGatewayClose_IsIdempotent(t *testing.T) {
-	gw, err := New(Config{})
+	gw, err := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: "unused"}},
+	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -1997,7 +1997,10 @@ func completedHookEvent(traceID string) events.HookEvent {
 // request's cancellation (they fire after the HTTP handler returns) yet still
 // carry the request's trace context / values via context.WithoutCancel.
 func TestGateway_PublishEvent_DetachesCancellationButPreservesValues(t *testing.T) {
-	gw, err := New(Config{})
+	gw, err := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: "unused"}},
+	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -2199,7 +2202,10 @@ func TestGateway_Close_DuringFailedRouteDoesNotPanic(t *testing.T) {
 }
 
 func TestGateway_PublishEvent_AfterCloseDoesNotPanic(t *testing.T) {
-	gw, err := New(Config{})
+	gw, err := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: "unused"}},
+	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -2247,7 +2253,10 @@ func TestGateway_Close_ConcurrentPublishEventStress(t *testing.T) {
 		t.Skip("skipping concurrent hook shutdown stress in -short")
 	}
 
-	gw, err := New(Config{})
+	gw, err := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: "unused"}},
+	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -2442,7 +2451,10 @@ func TestGateway_Route_HookPanicIsRecovered(t *testing.T) {
 }
 
 func TestGateway_PublishEvent_CallsAllHooks(t *testing.T) {
-	gw, _ := New(Config{})
+	gw, _ := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: "unused"}},
+	})
 
 	called := make(chan string, 2)
 	gw.AddHook(func(context.Context, string, map[string]any) {
@@ -2949,7 +2961,10 @@ func TestGateway_GenerateImage_ResolvesAlias(t *testing.T) {
 // ── StartDiscovery interval validation tests ──────────────────────────────────
 
 func TestGateway_StartDiscovery_ZeroInterval(t *testing.T) {
-	gw, _ := New(Config{})
+	gw, _ := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: "unused"}},
+	})
 	err := gw.StartDiscovery(context.Background(), 0)
 	if err == nil {
 		t.Fatal("StartDiscovery(0) should return an error")
@@ -2957,7 +2972,10 @@ func TestGateway_StartDiscovery_ZeroInterval(t *testing.T) {
 }
 
 func TestGateway_StartDiscovery_NegativeInterval(t *testing.T) {
-	gw, _ := New(Config{})
+	gw, _ := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: "unused"}},
+	})
 	err := gw.StartDiscovery(context.Background(), -time.Second)
 	if err == nil {
 		t.Fatal("StartDiscovery(-1s) should return an error")
@@ -2965,7 +2983,10 @@ func TestGateway_StartDiscovery_NegativeInterval(t *testing.T) {
 }
 
 func TestGateway_StartDiscovery_ValidInterval(t *testing.T) {
-	gw, _ := New(Config{})
+	gw, _ := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: "unused"}},
+	})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -3517,7 +3538,10 @@ func BenchmarkRoute_WithHook(b *testing.B) {
 // built its lookup indexes and per-model cache.
 func BenchmarkFindByModel(b *testing.B) {
 	silenceLogs(b)
-	gw, err := New(Config{})
+	gw, err := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: "unused"}},
+	})
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -3634,7 +3658,10 @@ func TestGateway_CircuitBreaker_MaxHalfThreshold_FromConfig(t *testing.T) {
 
 func BenchmarkPublishEvent(b *testing.B) {
 	silenceLogs(b)
-	gw, err := New(Config{})
+	gw, err := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: "unused"}},
+	})
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -3763,4 +3790,32 @@ func TestRoute_ProviderLookup_NoDataRace(t *testing.T) {
 	}
 
 	wg.Wait()
+}
+
+// TestNew_ValidatesConfig verifies that New() runs the same fail-fast validation
+// that ReloadConfig already applies, so callers get a clear error at construction
+// time rather than a confusing failure at request time.
+func TestNew_ValidatesConfig(t *testing.T) {
+	t.Run("empty config (no targets) returns error", func(t *testing.T) {
+		_, err := New(Config{})
+		if err == nil {
+			t.Fatal("expected New(Config{}) to return an error, got nil")
+		}
+	})
+
+	t.Run("minimal valid config constructs without error", func(t *testing.T) {
+		gw, err := New(Config{
+			Strategy: StrategyConfig{Mode: ModeSingle},
+			Targets:  []Target{{VirtualKey: "any"}},
+		})
+		if err != nil {
+			t.Fatalf("expected nil error for valid config, got: %v", err)
+		}
+		if gw == nil {
+			t.Fatal("expected non-nil gateway")
+		}
+		if err := gw.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	})
 }

@@ -47,7 +47,10 @@ func equalStrings(a, b []string) bool {
 // with catalog entries reflects the catalog, not the (stale) hardcoded slice.
 // Regression guard for issue #146.
 func TestAllModels_DerivesFromCatalog(t *testing.T) {
-	gw, err := New(Config{})
+	gw, err := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: "unused"}},
+	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -74,7 +77,10 @@ func TestAllModels_DerivesFromCatalog(t *testing.T) {
 // every provider that has catalog entries, the exposed model set must equal the
 // catalog set exactly, regardless of the hardcoded SupportedModels() slice.
 func TestAllModels_MatchesCatalogForRegisteredProviders(t *testing.T) {
-	gw, err := New(Config{})
+	gw, err := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: "unused"}},
+	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -95,7 +101,10 @@ func TestAllModels_MatchesCatalogForRegisteredProviders(t *testing.T) {
 // TestAllModels_FallsBackToHardcodedWhenCatalogEmpty asserts a provider with no
 // catalog entries still exposes its hardcoded Models() (e.g. self-hosted Ollama).
 func TestAllModels_FallsBackToHardcodedWhenCatalogEmpty(t *testing.T) {
-	gw, err := New(Config{})
+	gw, err := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: "unused"}},
+	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -115,7 +124,10 @@ func TestAllModels_FallsBackToHardcodedWhenCatalogEmpty(t *testing.T) {
 // TestRouting_AcceptsCatalogModelNotInHardcodedSlice proves the routing index
 // now accepts valid catalog models an exact-match provider's slice omits.
 func TestRouting_AcceptsCatalogModelNotInHardcodedSlice(t *testing.T) {
-	gw, err := New(Config{})
+	gw, err := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: "unused"}},
+	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -149,7 +161,10 @@ func TestRouting_AcceptsCatalogModelNotInHardcodedSlice(t *testing.T) {
 // TestRouting_RejectsUnknownModel ensures the catalog fallback does not make
 // routing accept genuinely unknown models.
 func TestRouting_RejectsUnknownModel(t *testing.T) {
-	gw, err := New(Config{})
+	gw, err := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: "unused"}},
+	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

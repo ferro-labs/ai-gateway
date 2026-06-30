@@ -1,4 +1,4 @@
-// Package aigateway provides a high-performance, zero-dependency AI gateway
+// Package aigateway provides a high-performance, self-contained AI gateway
 // for routing requests to large language model (LLM) providers.
 //
 // The Gateway type is the main entry point: create one with New, register
@@ -122,7 +122,14 @@ const (
 )
 
 // New creates a new Gateway instance with the given configuration.
+// It validates cfg with ValidateConfig before initialising any resources,
+// returning an error immediately if the config is invalid. This matches the
+// fail-fast behaviour already present in ReloadConfig and the CLI.
 func New(cfg Config) (*Gateway, error) {
+	if err := ValidateConfig(cfg); err != nil {
+		return nil, fmt.Errorf("invalid config: %w", err)
+	}
+
 	catalogResult, err := models.LoadWithInfo()
 	recordCatalogLoad(catalogResult.Source, err)
 	catalog := catalogResult.Catalog
