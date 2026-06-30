@@ -2,6 +2,7 @@ package budget
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"github.com/ferro-labs/ai-gateway/plugin"
@@ -234,6 +235,96 @@ func TestBudget_ResetStoreKey(t *testing.T) {
 	ResetStoreKey("test-reset-key", apiKey)
 	if err := p.Execute(context.Background(), pctxWithKey(apiKey)); err != nil {
 		t.Errorf("after ResetStoreKey, request should pass: %v", err)
+	}
+}
+
+// TestBudget_ConcurrentAddNoLostUpdate fires N goroutines that each add the
+// same fixed cost to the store concurrently. The store's add must be a single
+// atomic read-modify-write under the mutex, so the final committed total must
+// equal exactly N*c with no lost increments.
+//
+// This is the real TOCTOU the Critical finding was about: a non-atomic
+// `spend[key] += c` (read, then write, without holding the lock across both)
+// drops increments under concurrency. Deliberately removing the mutex from
+// spendStore.add makes this test RED (and flags under -race); with the mutex
+// it is GREEN.
+//
+// Run with -race to also exercise the race detector on the store path.
+func TestBudget_ConcurrentAddNoLostUpdate(t *testing.T) {
+	const storeID = "test-concurrent-no-lost-update"
+	defer ResetStore(storeID)
+
+	store := getStore(storeID, defaultMaxKeys)
+	apiKey := "key-concurrent"
+
+	// c = 0.25 = 1/4 is exactly representable in float64, so N*c is exact and
+	// the equality assertion has no floating-point slack.
+	const (
+		N = 200
+		c = 0.25
+	)
+
+	var wg sync.WaitGroup
+	for i := 0; i < N; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			store.add(apiKey, c)
+		}()
+	}
+	wg.Wait()
+
+	got := store.get(apiKey)
+	want := float64(N) * c
+	if got != want {
+		t.Errorf("lost update: recorded $%.6f, want exactly $%.6f (N=%d × $%.2f)", got, want, N, c)
+	}
+}
+
+// TestBudget_CheckBudget_BoundaryAndReason verifies the read-only soft-cap
+// check: it passes while committed spend is below the limit, rejects once
+// spend reaches or exceeds it, and reports the real committed spend and the
+// limit in the rejection reason.
+func TestBudget_CheckBudget_BoundaryAndReason(t *testing.T) {
+	const storeID = "test-check-boundary"
+	defer ResetStore(storeID)
+
+	const limit = 1.0
+	p := makePlugin(t, map[string]interface{}{
+		"store_id":            storeID,
+		"spend_limit_usd":     limit,
+		"input_per_m_tokens":  1.0,
+		"output_per_m_tokens": 0.0,
+	})
+	apiKey := "key-boundary"
+	store := getStore(storeID, defaultMaxKeys)
+
+	// Below the limit: must pass.
+	store.add(apiKey, 0.75)
+	pass := pctxWithKey(apiKey)
+	if err := p.Execute(context.Background(), pass); err != nil {
+		t.Fatalf("below limit should pass, got: %v", err)
+	}
+	if pass.Reject {
+		t.Error("below limit should not reject")
+	}
+
+	// At exactly the limit: must reject (spend >= limit).
+	store.add(apiKey, 0.25) // committed now 1.00
+	reject := pctxWithKey(apiKey)
+	err := p.Execute(context.Background(), reject)
+	if err == nil {
+		t.Fatal("at limit (spend >= limit) should reject")
+	}
+	if !reject.Reject {
+		t.Error("pctx.Reject should be set at the limit")
+	}
+
+	// The reason must report the real committed spend ($1.0000) and limit ($1.00),
+	// not $0.0000 / a reservation artifact.
+	wantReason := "budget exceeded: spent $1.0000 of $1.00 limit"
+	if reject.Reason != wantReason {
+		t.Errorf("reason = %q, want %q", reject.Reason, wantReason)
 	}
 }
 
