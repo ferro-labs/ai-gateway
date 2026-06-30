@@ -2,12 +2,22 @@ package aigateway
 
 import "github.com/ferro-labs/ai-gateway/mcp"
 
+// DefaultMaxRequestBytes is the default per-request body-size cap (10 MiB).
+// Operators may lower or raise this via Config.MaxRequestBytes.
+const DefaultMaxRequestBytes int64 = 10 * 1024 * 1024
+
 // Config holds the configuration for the AI Gateway.
 type Config struct {
 	// Strategy defines how requests are routed (e.g., single, fallback, loadbalance).
 	Strategy StrategyConfig `json:"strategy" yaml:"strategy"`
 	// Targets is a list of provider targets to route requests to.
 	Targets []Target `json:"targets" yaml:"targets"`
+	// MaxRequestBytes caps the size of incoming request bodies on data-plane routes
+	// (/v1/*) and admin write endpoints. Requests that exceed the limit receive
+	// HTTP 413 Request Entity Too Large before any LLM call is attempted.
+	// 0 (the default when omitted) applies DefaultMaxRequestBytes (10 MiB), which
+	// is well above any realistic chat completion payload.
+	MaxRequestBytes int64 `json:"max_request_bytes,omitempty" yaml:"max_request_bytes,omitempty"`
 	// Plugins configuration (optional).
 	Plugins []PluginConfig `json:"plugins,omitempty" yaml:"plugins,omitempty"`
 	// Aliases maps friendly model names (e.g. "fast", "smart") to concrete model IDs.

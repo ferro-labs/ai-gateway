@@ -81,25 +81,27 @@ func TestRateLimit_Returns429WithOpenAIErrorBody(t *testing.T) {
 	}
 }
 
-func TestRateLimit_UsesXForwardedFor_WhenPresent(t *testing.T) {
-	// burst=1: use the forwarded IP as the rate-limit key.
+func TestRateLimit_UsesResolvedRemoteAddr(t *testing.T) {
+	// burst=1: the rate limiter keys on the resolved r.RemoteAddr (host only).
+	// RealIPMiddleware is responsible for resolving forwarded headers into
+	// r.RemoteAddr; this test verifies the rate limiter uses that resolved value.
 	store := ratelimit.NewStore(1, 1)
 	handler := makeRateLimitHandler(store)
 
 	makeReq := func() *httptest.ResponseRecorder {
 		r := httptest.NewRequest(http.MethodGet, "/", nil)
-		r.RemoteAddr = "10.0.0.1:9999"                           // proxy address
-		r.Header.Set("X-Forwarded-For", "203.0.113.5, 10.0.0.1") // real client first
+		// Simulate what RealIPMiddleware would produce: bare host, no port.
+		r.RemoteAddr = "203.0.113.5"
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, r)
 		return w
 	}
 
 	if makeReq().Code != http.StatusOK {
-		t.Fatal("first request via XFF should be allowed")
+		t.Fatal("first request should be allowed")
 	}
 	if makeReq().Code != http.StatusTooManyRequests {
-		t.Fatal("second request via XFF should be rate-limited")
+		t.Fatal("second request should be rate-limited (same resolved IP)")
 	}
 }
 
@@ -119,18 +121,21 @@ func TestRateLimit_DifferentIPs_IndependentBuckets(t *testing.T) {
 	}
 }
 
-func TestRateLimit_NilStore_Panics(t *testing.T) {
-	// Passing a nil store is a programmer error; document it panics rather than
-	// silently allowing all traffic.
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("expected panic with nil store, got none")
-		}
-	}()
-	RateLimit(nil)(dummyHandler).ServeHTTP(
+func TestRateLimit_NilStore_Passthrough(t *testing.T) {
+	// A nil store means no rate-limit store is configured; the middleware must
+	// be a transparent passthrough rather than panic-at-request-time.
+	called := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	})
+	RateLimit(nil)(next).ServeHTTP(
 		httptest.NewRecorder(),
 		httptest.NewRequest(http.MethodGet, "/", nil),
 	)
+	if !called {
+		t.Fatal("nil store: expected next handler to be called (passthrough), but it was not")
+	}
 }
 
 func TestRateLimit_NextHandler_NotCalledOnBlock(t *testing.T) {

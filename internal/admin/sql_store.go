@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -346,6 +347,10 @@ func (s *SQLStore) Delete(ctx context.Context, id string) error {
 }
 
 // ValidateKey validates a full API key value and updates usage counters.
+// Auth succeeds as long as the key lookup and validity checks pass.
+// A transient failure of the usage-counter UPDATE is logged but does not fail
+// authentication — dropping one increment is preferable to returning a 401 on a
+// legitimate request.
 func (s *SQLStore) ValidateKey(ctx context.Context, key string) (*APIKey, bool) {
 	apiKey, err := s.scanOne(ctx, s.stmtGetByKey, key)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -360,12 +365,17 @@ func (s *SQLStore) ValidateKey(ctx context.Context, key string) (*APIKey, bool) 
 	if apiKey.ExpiresAt != nil && time.Now().After(*apiKey.ExpiresAt) {
 		return nil, false
 	}
+
+	// Auth check passed. Attempt to update usage counters. A failure here is
+	// non-fatal: log the error and return the authenticated key anyway.
 	now := time.Now().UTC()
-	if _, err := s.stmtUsage.ExecContext(ctx, now, apiKey.ID); err != nil {
-		return nil, false
+	if _, counterErr := s.stmtUsage.ExecContext(ctx, now, apiKey.ID); counterErr != nil {
+		slog.Warn("failed to update key usage counter; authentication still succeeds",
+			"key_id", apiKey.ID, "error", counterErr)
+	} else {
+		apiKey.UsageCount++
+		apiKey.LastUsedAt = &now
 	}
-	apiKey.UsageCount++
-	apiKey.LastUsedAt = &now
 	return apiKey, true
 }
 

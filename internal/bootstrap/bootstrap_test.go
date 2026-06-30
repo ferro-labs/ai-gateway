@@ -8,6 +8,70 @@ import (
 	"github.com/ferro-labs/ai-gateway/providers"
 )
 
+func TestCheckProductionSafety(t *testing.T) {
+	tests := []struct {
+		name        string
+		allowUnauth string
+		gatewayEnv  string
+		wantErr     bool
+	}{
+		{
+			name:        "production + unauthenticated proxy enabled",
+			allowUnauth: "true",
+			gatewayEnv:  "production",
+			wantErr:     true,
+		},
+		{
+			name:        "production + unauthenticated proxy case insensitive",
+			allowUnauth: "TRUE",
+			gatewayEnv:  "PRODUCTION",
+			wantErr:     true,
+		},
+		{
+			name:        "development + unauthenticated proxy allowed",
+			allowUnauth: "true",
+			gatewayEnv:  "development",
+			wantErr:     false,
+		},
+		{
+			name:        "no GATEWAY_ENV + unauthenticated proxy allowed",
+			allowUnauth: "true",
+			gatewayEnv:  "",
+			wantErr:     false,
+		},
+		{
+			name:        "production + auth not bypassed",
+			allowUnauth: "false",
+			gatewayEnv:  "production",
+			wantErr:     false,
+		},
+		{
+			name:        "production + ALLOW_UNAUTHENTICATED_PROXY unset",
+			allowUnauth: "",
+			gatewayEnv:  "production",
+			wantErr:     false,
+		},
+		{
+			name:        "staging + unauthenticated proxy allowed",
+			allowUnauth: "true",
+			gatewayEnv:  "staging",
+			wantErr:     false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("ALLOW_UNAUTHENTICATED_PROXY", tt.allowUnauth)
+			t.Setenv("GATEWAY_ENV", tt.gatewayEnv)
+
+			err := CheckProductionSafety()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("CheckProductionSafety() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestRegisterProvidersRegistersBedrockWithBearerTokenOnly(t *testing.T) {
 	for _, entry := range providers.AllProviders() {
 		for _, mapping := range entry.EnvMappings {

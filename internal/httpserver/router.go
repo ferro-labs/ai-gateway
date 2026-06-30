@@ -4,6 +4,7 @@ import (
 	"expvar"
 	"html/template"
 	"io/fs"
+	"net"
 	"net/http"
 
 	aigateway "github.com/ferro-labs/ai-gateway"
@@ -28,6 +29,10 @@ import (
 var loginTemplate = template.Must(template.ParseFS(webassets.Assets, "templates/login.html"))
 
 // NewRouter builds the HTTP router for the gateway.
+//
+// trustedProxies lists the CIDR ranges whose X-Forwarded-For / X-Real-IP
+// headers are honored for client-IP resolution. Pass nil or an empty slice to
+// use only the loopback default (127.0.0.0/8, ::1/128).
 func NewRouter(
 	registry *providers.Registry,
 	keyStore admin.Store,
@@ -38,10 +43,25 @@ func NewRouter(
 	logReader requestlog.Reader,
 	logMaintainer requestlog.Maintainer,
 	masterKey string,
+	trustedProxies []*net.IPNet,
 ) http.Handler {
 	gw = ensureGateway(gw, registry)
 
 	r := chi.NewRouter()
+
+	// Resolve the trusted-proxy CIDR list. When the caller passes nil (e.g.
+	// tests), default to the loopback-only set so local reverse proxies are
+	// trusted but arbitrary callers cannot forge their source IP.
+	resolvedProxies := trustedProxies
+	if len(resolvedProxies) == 0 {
+		var err error
+		resolvedProxies, err = ParseTrustedProxyCIDRs("")
+		if err != nil {
+			// ParseTrustedProxyCIDRs("") uses hard-coded defaults and never
+			// returns an error; panic here would indicate a programmer bug.
+			panic("realip: failed to parse default trusted proxy CIDRs: " + err.Error())
+		}
+	}
 
 	// Core middleware stack.
 	// OTel middleware MUST come before logging.Middleware so any inbound
@@ -52,14 +72,17 @@ func NewRouter(
 	r.Use(gwotel.Middleware)
 	r.Use(logging.Middleware) // inject trace ID + X-Request-ID header
 	r.Use(chimw.Recoverer)
-	// RealIP rewrites RemoteAddr from X-Forwarded-For/X-Real-IP so per-IP rate
-	// limiting and request logs see the client IP rather than the load
-	// balancer's. chi v5.3.0 deprecated it as spoofable (GHSA-3fxj-6jh8-hvhx);
-	// that risk only applies when the gateway is exposed directly to clients —
-	// the intended deployment is behind a trusted proxy that sets these headers.
-	// Removing it would collapse all traffic into a single rate-limit bucket.
-	// TODO(v1.1.x): replace with a trusted-proxy-aware client-IP resolver.
-	r.Use(chimw.RealIP) //nolint:staticcheck // SA1019: deprecated but intentional behind a trusted proxy; see comment above
+	// SecurityHeaders applies baseline browser-hardening headers (X-Content-Type-Options,
+	// X-Frame-Options, Referrer-Policy, and HSTS on TLS connections) to every response.
+	// It must come before CORS so that security headers are present on all responses,
+	// including preflight rejections and error responses.
+	r.Use(middleware.SecurityHeaders)
+	// RealIPMiddleware resolves the client IP from X-Forwarded-For / X-Real-IP
+	// only when the direct TCP peer is within a trusted-proxy CIDR, writing the
+	// resolved host (no port) back into r.RemoteAddr. This replaces the
+	// deprecated chi middleware.RealIP, which honored those headers
+	// unconditionally and could be exploited by a caller that controlled them.
+	r.Use(RealIPMiddleware(resolvedProxies))
 	r.Use(middleware.CORS(corsOrigins...))
 
 	// Optional per-IP rate limiting middleware.
@@ -185,8 +208,18 @@ func mountAdminRoutes(
 		Logs:      logReader,
 		LogAdmin:  logMaintainer,
 	}
+
+	// Apply the same body-size cap to admin write routes.
+	maxBytes := aigateway.DefaultMaxRequestBytes
+	if gw != nil {
+		if cfg := gw.GetConfig(); cfg.MaxRequestBytes > 0 {
+			maxBytes = cfg.MaxRequestBytes
+		}
+	}
+
 	r.Route("/admin", func(r chi.Router) {
 		r.Use(admin.AuthMiddleware(keyStore, masterKey))
+		r.Use(middleware.MaxRequestBody(maxBytes))
 		r.Mount("/", adminHandlers.Routes())
 	})
 }
@@ -194,8 +227,17 @@ func mountAdminRoutes(
 func mountOpenAIRoutes(r chi.Router, gw *aigateway.Gateway, registry *providers.Registry, store admin.Store, masterKey string) {
 	auth := middleware.ProxyAuth(store, masterKey)
 
+	// Determine the body-size cap: use the operator's config or the safe default.
+	maxBytes := aigateway.DefaultMaxRequestBytes
+	if gw != nil {
+		if cfg := gw.GetConfig(); cfg.MaxRequestBytes > 0 {
+			maxBytes = cfg.MaxRequestBytes
+		}
+	}
+
 	r.Group(func(r chi.Router) {
 		r.Use(auth)
+		r.Use(middleware.MaxRequestBody(maxBytes))
 		r.Get("/v1/models", handler.Models(gw))
 		r.Post("/v1/chat/completions", handler.ChatCompletions(gw))
 

@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 
@@ -15,6 +16,11 @@ func ChatCompletions(gw *aigateway.Gateway) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		req, err := DecodeChatCompletionRequest(r.Body)
 		if err != nil {
+			var maxBytesErr *http.MaxBytesError
+			if errors.As(err, &maxBytesErr) {
+				apierror.WriteOpenAI(w, http.StatusRequestEntityTooLarge, "request body too large", "invalid_request_error", "request_too_large")
+				return
+			}
 			apierror.WriteOpenAI(w, http.StatusBadRequest, err.Error(), "invalid_request_error", "invalid_request")
 			return
 		}

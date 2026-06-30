@@ -5,6 +5,38 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.8] — Unreleased
+
+Security-hardening release. Adds baseline HTTP security headers, a configurable request body-size limit, trusted-proxy client-IP resolution, and expanded secret redaction. Strengthens config validation and admin key safety. No public API breaks. Closes [#252](https://github.com/ferro-labs/ai-gateway/issues/252)–[#257](https://github.com/ferro-labs/ai-gateway/issues/257).
+
+### Security
+
+- **CORS deny-by-default** ([#254](https://github.com/ferro-labs/ai-gateway/issues/254)): when `CORS_ORIGINS` is unset the gateway now emits **no** `Access-Control-Allow-Origin` header, blocking cross-origin access by default. Operators serving a dashboard or UI from a different origin must set `CORS_ORIGINS` explicitly (e.g. `CORS_ORIGINS=https://dashboard.example.com`). When `CORS_ORIGINS` is configured, behaviour is unchanged.
+- **Baseline HTTP security headers** ([#255](https://github.com/ferro-labs/ai-gateway/issues/255)): all gateway responses now include `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, and `Strict-Transport-Security (HSTS, only on TLS connections)` headers to reduce exposure to common web-layer risks.
+- **Request body-size limit** ([#253](https://github.com/ferro-labs/ai-gateway/issues/253)): `/v1/*` and admin write endpoints reject payloads larger than `Config.max_request_bytes` (default 10 MiB) with HTTP 413 before any LLM call is attempted. Operators can lower or raise the cap in `config.yaml`.
+- **Trusted-proxy client-IP resolution**: the deprecated chi `RealIP` middleware has been replaced by an explicit `TRUSTED_PROXIES` allowlist. `X-Forwarded-For` / `X-Real-IP` headers are honored only when the immediate peer IP falls within a configured CIDR (default: loopback). Unrecognized peers use the raw connection IP.
+- **Expanded secret redaction**: redaction now covers provider-specific and gateway key formats (in addition to the existing email / JWT / AWS key patterns) in structured-log fields and error messages, keeping credential material out of logs.
+- **Admin config secret masking**: `/admin/config` responses now replace secret-valued fields with a masked placeholder so credential material is not readable via the admin API.
+- **Production safety guard**: the gateway refuses to start when `GATEWAY_ENV=production` and `ALLOW_UNAUTHENTICATED_PROXY=true` are set together, preventing accidental unauthenticated exposure in production deployments.
+- **Admin key `Cache-Control: no-store`**: responses from admin key-management endpoints now include `Cache-Control: no-store` to prevent credential caching by intermediaries.
+
+### Changed
+
+- **`New()` validates config** ([#256](https://github.com/ferro-labs/ai-gateway/issues/256)): the `Gateway` constructor now runs full config validation (including embedder checks) and returns an error for invalid configuration rather than deferring the failure to request time.
+- **Resilient authentication on counter write failure**: a transient failure writing the usage counter no longer causes the gateway to return 401 to an otherwise-valid authenticated key; the error is logged and the request proceeds.
+- **Word-filter rejection reason**: content rejected by the word-filter plugin now returns a generic reason string rather than echoing the matched term.
+
+### Fixed
+
+- **Proxy error responses**: the pass-through proxy no longer includes raw internal error text in HTTP response bodies on base-URL handler failures; callers receive a clean, non-leaking error message.
+- **CI gates on `release/*` branches** ([#252](https://github.com/ferro-labs/ai-gateway/issues/252)): the `Test`, `Lint`, `CodeQL`, and `govulncheck` CI jobs now trigger on `release/*` pushes in addition to `main`, so release branches are validated before tagging.
+
+### Documentation
+
+- **SECURITY.md, example config, and quickstart** ([#257](https://github.com/ferro-labs/ai-gateway/issues/257)): corrected the supported-versions table in `SECURITY.md`; removed non-OSS example plugins from `config.example.json`; fixed the quickstart binary download URL (previously returned 404) to track the latest release; corrected the agent and contributor map.
+
+---
+
 ## [1.1.7] — 2026-06-29
 
 Small-enhancements release: context propagation, concurrency safety, and hot-path performance. No public API breaks. Closes [#48](https://github.com/ferro-labs/ai-gateway/issues/48), [#180](https://github.com/ferro-labs/ai-gateway/issues/180), [#182](https://github.com/ferro-labs/ai-gateway/issues/182), [#184](https://github.com/ferro-labs/ai-gateway/issues/184), [#186](https://github.com/ferro-labs/ai-gateway/issues/186), [#187](https://github.com/ferro-labs/ai-gateway/issues/187), and [#203](https://github.com/ferro-labs/ai-gateway/issues/203).

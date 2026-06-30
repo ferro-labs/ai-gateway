@@ -68,6 +68,8 @@ services:
       # - OLLAMA_API_KEY=...
       # - OLLAMA_CLOUD_MODELS=gpt-oss:20b,gpt-oss:120b
       # - OLLAMA_CLOUD_BASE_URL=https://ollama.com
+      # CORS — required if your dashboard or UI runs on a different origin:
+      # - CORS_ORIGINS=https://dashboard.example.com,https://app.example.com
       # Optional config file:
       # - GATEWAY_CONFIG=/etc/ferrogw/config.yaml
     # volumes:

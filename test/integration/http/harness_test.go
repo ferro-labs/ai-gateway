@@ -70,6 +70,7 @@ func newTestServer(t *testing.T, opts ...testOption) *testEnv {
 	if err != nil {
 		t.Fatalf("newTestServer: create gateway: %v", err)
 	}
+	t.Cleanup(func() { _ = gw.Close() })
 	gw.RegisterProvider(stub)
 
 	keyStore := admin.NewKeyStore()
@@ -84,6 +85,7 @@ func newTestServer(t *testing.T, opts ...testOption) *testEnv {
 		noopReader{},
 		noopMaintainer{},
 		testMasterKey,
+		nil, // trustedProxies — use loopback default
 	)
 
 	srv := httptest.NewServer(router)

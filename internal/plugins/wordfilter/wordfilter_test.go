@@ -2,6 +2,7 @@ package wordfilter
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/ferro-labs/ai-gateway/plugin"
@@ -50,8 +51,11 @@ func TestWordFilter_BlocksMessage(t *testing.T) {
 	if !pctx.Reject {
 		t.Error("expected request to be rejected")
 	}
-	if pctx.Reason != "blocked word detected: badword" {
-		t.Errorf("unexpected reason: %s", pctx.Reason)
+	if pctx.Reason != "request blocked by content policy" {
+		t.Errorf("unexpected reason: %q", pctx.Reason)
+	}
+	if strings.Contains(pctx.Reason, "badword") {
+		t.Errorf("rejection reason must not echo the blocked word: %q", pctx.Reason)
 	}
 }
 
@@ -81,6 +85,29 @@ func TestWordFilter_CaseInsensitive(t *testing.T) {
 	}
 	if !pctx.Reject {
 		t.Error("expected case-insensitive match to reject")
+	}
+}
+
+// TestWordFilter_ReasonDoesNotLeakBlockedWord asserts that the rejection
+// reason exposed to the caller is a generic policy message and does NOT
+// contain the operator-configured blocked word.
+func TestWordFilter_ReasonDoesNotLeakBlockedWord(t *testing.T) {
+	f := initFilter(t, map[string]interface{}{
+		"blocked_words": []interface{}{"supersecretword"},
+	})
+	pctx := plugin.NewContext(testRequest("this message contains supersecretword inside"))
+
+	if err := f.Execute(context.Background(), pctx); err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if !pctx.Reject {
+		t.Fatal("expected request to be rejected")
+	}
+	if strings.Contains(pctx.Reason, "supersecretword") {
+		t.Errorf("rejection reason leaks blocked word to caller: %q", pctx.Reason)
+	}
+	if pctx.Reason == "" {
+		t.Error("rejection reason must not be empty")
 	}
 }
 
