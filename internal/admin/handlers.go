@@ -791,6 +791,7 @@ func (h *Handlers) getConfig(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
 	_ = json.NewEncoder(w).Encode(scrubConfigSecrets(h.Configs.GetConfig()))
 }
 
@@ -799,7 +800,24 @@ func (h *Handlers) getConfig(w http.ResponseWriter, _ *http.Request) {
 // survive to the serialized config intentionally; the value they reference is
 // resolved from the process environment at runtime and never stored.
 func isEnvRef(s string) bool {
-	return len(s) > 3 && s[0] == '$' && s[1] == '{' && s[len(s)-1] == '}'
+	if len(s) <= 3 || s[0] != '$' || s[1] != '{' || s[len(s)-1] != '}' {
+		return false
+	}
+	name := s[2 : len(s)-1]
+	if len(name) == 0 {
+		return false
+	}
+	for i, r := range name {
+		switch {
+		case r == '_' || ('A' <= r && r <= 'Z') || ('a' <= r && r <= 'z'):
+			// valid at any position
+		case i > 0 && '0' <= r && r <= '9':
+			// digits valid after first char
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // redactedPlaceholder is substituted for any literal secret value when a Config
@@ -848,6 +866,14 @@ func scrubAnyValue(v any) any {
 		out := make([]any, len(val))
 		for i, elem := range val {
 			out[i] = scrubAnyValue(elem)
+		}
+		return out
+	case map[string]string:
+		return scrubStringMap(val)
+	case []map[string]any:
+		out := make([]map[string]any, len(val))
+		for i, elem := range val {
+			out[i] = scrubAnyMap(elem)
 		}
 		return out
 	default:

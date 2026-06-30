@@ -265,7 +265,15 @@ func fetchRemote(rawURL string) ([]byte, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("catalog fetch: HTTP %d", resp.StatusCode)
 	}
-	return io.ReadAll(io.LimitReader(resp.Body, maxCatalogResponseBytes))
+	limited := &io.LimitedReader{R: resp.Body, N: maxCatalogResponseBytes + 1}
+	body, err := io.ReadAll(limited)
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(body)) > maxCatalogResponseBytes {
+		return nil, fmt.Errorf("catalog fetch: response exceeds %d bytes", maxCatalogResponseBytes)
+	}
+	return body, nil
 }
 
 func parse(data []byte) (Catalog, error) {

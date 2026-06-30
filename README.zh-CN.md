@@ -514,7 +514,8 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up
 **生产**（固定发布标签——生产环境切勿使用 `latest`）：
 
 ```bash
-IMAGE_TAG=v1.1.7 CORS_ORIGINS=https://your-domain.com \  # 替换为最新发布标签
+# 替换为最新发布标签
+IMAGE_TAG=v1.1.7 CORS_ORIGINS=https://your-domain.com \
   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 ```
 

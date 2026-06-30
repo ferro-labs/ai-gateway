@@ -2451,10 +2451,14 @@ func TestGateway_Route_HookPanicIsRecovered(t *testing.T) {
 }
 
 func TestGateway_PublishEvent_CallsAllHooks(t *testing.T) {
-	gw, _ := New(Config{
+	gw, err := New(Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
 		Targets:  []Target{{VirtualKey: "unused"}},
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = gw.Close() })
 
 	called := make(chan string, 2)
 	gw.AddHook(func(context.Context, string, map[string]any) {
@@ -3354,6 +3358,7 @@ func BenchmarkRoute(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
+	b.Cleanup(func() { _ = gw.Close() })
 	gw.RegisterProvider(&mockProvider{
 		name:   "bench",
 		models: []string{"gpt-4o"},
@@ -3387,6 +3392,7 @@ func BenchmarkRouteParallel(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
+	b.Cleanup(func() { _ = gw.Close() })
 	gw.RegisterProvider(&mockProvider{
 		name:   "bench",
 		models: []string{"gpt-4o"},
@@ -3423,6 +3429,7 @@ func BenchmarkRouteStream(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
+	b.Cleanup(func() { _ = gw.Close() })
 	gw.RegisterProvider(&mockBenchStreamProvider{
 		mockProvider: mockProvider{
 			name:   "bench-stream",
@@ -3464,6 +3471,7 @@ func BenchmarkRoute_WithPlugins(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
+	b.Cleanup(func() { _ = gw.Close() })
 	gw.RegisterProvider(&mockProvider{
 		name:   "bench-plugins",
 		models: []string{"gpt-4o"},
@@ -3498,6 +3506,7 @@ func BenchmarkRoute_WithHook(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
+	b.Cleanup(func() { _ = gw.Close() })
 	gw.RegisterProvider(&mockProvider{
 		name:   "bench-hook",
 		models: []string{"gpt-4o"},
@@ -3545,6 +3554,7 @@ func BenchmarkFindByModel(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
+	b.Cleanup(func() { _ = gw.Close() })
 	gw.RegisterProvider(&mockProvider{
 		name:   "bench-find",
 		models: []string{"gpt-4o"},
@@ -3665,6 +3675,7 @@ func BenchmarkPublishEvent(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
+	b.Cleanup(func() { _ = gw.Close() })
 
 	var calls atomic.Int64
 	var wg sync.WaitGroup
