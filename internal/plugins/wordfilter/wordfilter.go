@@ -8,6 +8,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/ferro-labs/ai-gateway/internal/logging"
 	"github.com/ferro-labs/ai-gateway/plugin"
 )
 
@@ -61,7 +62,7 @@ func (w *WordFilter) Init(config map[string]interface{}) error {
 }
 
 // Execute runs the plugin logic for the current request context.
-func (w *WordFilter) Execute(_ context.Context, pctx *plugin.Context) error {
+func (w *WordFilter) Execute(ctx context.Context, pctx *plugin.Context) error {
 	if pctx.Request == nil || len(w.blockedWords) == 0 {
 		return nil
 	}
@@ -79,8 +80,13 @@ func (w *WordFilter) Execute(_ context.Context, pctx *plugin.Context) error {
 				check = w.loweredWords[i]
 			}
 			if strings.Contains(content, check) {
+				// Log the matched word server-side only; never surface it in
+				// the client-facing rejection reason to avoid leaking the
+				// operator's blocklist.
+				logging.FromContext(ctx).Info("word-filter: blocked request",
+					"matched_word", word)
 				pctx.Reject = true
-				pctx.Reason = "blocked word detected: " + word
+				pctx.Reason = "request blocked by content policy"
 				return nil
 			}
 		}
