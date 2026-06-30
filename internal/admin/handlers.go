@@ -876,6 +876,12 @@ func scrubAnyValue(v any) any {
 			out[i] = scrubAnyMap(elem)
 		}
 		return out
+	case []map[string]string:
+		out := make([]map[string]string, len(val))
+		for i, elem := range val {
+			out[i] = scrubStringMap(elem)
+		}
+		return out
 	default:
 		return v
 	}
