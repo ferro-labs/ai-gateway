@@ -84,6 +84,7 @@ func newTestServer(t *testing.T, opts ...testOption) *testEnv {
 		noopReader{},
 		noopMaintainer{},
 		testMasterKey,
+		nil, // trustedProxies — use loopback default
 	)
 
 	srv := httptest.NewServer(router)
