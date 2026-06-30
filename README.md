@@ -364,6 +364,38 @@ See [config.example.yaml](config.example.yaml) and [config.example.json](config.
 
 See [AGENTS.md](AGENTS.md) for the full environment variable reference including provider API keys and OTel settings.
 
+### Trusted proxy configuration
+
+By default the gateway only trusts `X-Forwarded-For` / `X-Real-IP` headers from loopback addresses (`127.0.0.0/8`, `::1/128`). This means per-IP rate limiting and request logs always see the real client IP — not the load balancer's IP — without being spoofable by an external caller.
+
+Set `TRUSTED_PROXIES` to the CIDR range(s) of your reverse proxy or load balancer:
+
+```bash
+# Single upstream proxy
+TRUSTED_PROXIES=10.0.0.1/32
+
+# Internal network range (e.g. AWS VPC, GCP VPC, k8s node CIDR)
+TRUSTED_PROXIES=10.0.0.0/8
+
+# Multiple ranges (comma-separated)
+TRUSTED_PROXIES=10.0.0.0/8,172.16.0.0/12
+```
+
+**Common deployment patterns:**
+
+| Deployment | Recommended value |
+|---|---|
+| Local dev (no proxy) | _(leave unset — loopback default)_ |
+| Docker Compose with nginx | `172.16.0.0/12` or the bridge subnet |
+| AWS ALB / NLB | Your VPC CIDR (e.g. `10.0.0.0/8`) |
+| GCP Load Balancer | `10.0.0.0/8` |
+| Kubernetes cluster-internal | Your pod/node CIDR |
+| Cloudflare Tunnel | Cloudflare's published IP ranges |
+
+> **Important:** Configure your proxy to **replace** `X-Forwarded-For` (not append to it). If the proxy appends, the leftmost entry — which the gateway trusts — can still be forged by a client.
+
+When a request arrives from an IP outside the trusted CIDR list, the gateway ignores all forwarded headers and uses the raw TCP peer IP. This prevents clients from injecting a fake source IP to bypass per-IP rate limits.
+
 ---
 
 ## Observability

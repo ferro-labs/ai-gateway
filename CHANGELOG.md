@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.1.8] — Unreleased
 
-Security-hardening release. Adds baseline HTTP security headers, a configurable request body-size limit, trusted-proxy client-IP resolution, and expanded secret redaction. Strengthens config validation and admin key safety. No public API breaks. Closes [#251](https://github.com/ferro-labs/ai-gateway/issues/251)–[#257](https://github.com/ferro-labs/ai-gateway/issues/257).
+Security-hardening release. Adds baseline HTTP security headers, a configurable request body-size limit, trusted-proxy client-IP resolution, and expanded secret redaction. Strengthens config validation and admin key safety. No public API breaks. Closes [#252](https://github.com/ferro-labs/ai-gateway/issues/252)–[#257](https://github.com/ferro-labs/ai-gateway/issues/257).
 
 ### Security
 
@@ -19,7 +19,6 @@ Security-hardening release. Adds baseline HTTP security headers, a configurable 
 - **Admin config secret masking**: `/admin/config` responses now replace secret-valued fields with a masked placeholder so credential material is not readable via the admin API.
 - **Production safety guard**: the gateway refuses to start when `GATEWAY_ENV=production` and `ALLOW_UNAUTHENTICATED_PROXY=true` are set together, preventing accidental unauthenticated exposure in production deployments.
 - **Admin key `Cache-Control: no-store`**: responses from admin key-management endpoints now include `Cache-Control: no-store` to prevent credential caching by intermediaries.
-- **Go toolchain updated to 1.25.11** ([#251](https://github.com/ferro-labs/ai-gateway/issues/251)): picks up current standard-library fixes.
 
 ### Changed
 
