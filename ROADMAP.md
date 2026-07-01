@@ -65,12 +65,15 @@ Weekly patch line. Each release is backward-compatible bug-fixing on a single th
 - **v1.1.1** — Concurrency & crash-safety hardening: data races, nil-pointer panics in routing, send-on-closed-channel on shutdown, oversized-SSE aborts, null-priced-model mispricing.
 - **v1.1.2** — Cost & catalog accuracy: external model-catalog cutover, Azure/Vertex `$0` pricing fix, O(n) catalog-scan removal, OpenAI response-body lifecycle.
 - **v1.1.3** — Streaming & async correctness: `RouteStream` brought to parity with `Route` (post-request plugins, circuit breaker, least-latency / cost ordering), tighter fallback retry semantics, `context.WithoutCancel` for detached goroutines.
+- **v1.1.4** — Provider-translation correctness: tool/function calling, sampling params, `max_completion_tokens`, `finish_reason` normalization, Anthropic multimodal/tool roles, and Gemini `systemInstruction` across native and OpenAI-compatible providers, plus a dependency sweep.
+- **v1.1.5** — Capability & model-support accuracy: capability-miss status codes (400/404), closed capability gaps (Azure embeddings/images, image generation, discovery), catalog-derived `/v1/models`.
+- **v1.1.6** — Runtime robustness: cache & circuit-breaker correctness (logprobs in cache key, true LRU, half-open probe cap), OTel shutdown span-loss fix, plugin-pipeline panic recovery / RunOnError-on-reject / Close-on-reload, Bedrock bearer auth.
+- **v1.1.7** — Small enhancements: end-to-end `context.Context` propagation, plugin-registry concurrency, hot-path allocation reductions, git-hook gating.
+- **v1.1.8** — Security & trust hardening: baseline HTTP security headers, request body-size limit, trusted-proxy client-IP resolution, expanded secret redaction, config-validation and admin-key safety.
 
 ### Planned
 
-- **v1.1.4 — Provider-translation correctness** (target 2026-06-19): stop silently dropping or mangling request fields on non-OpenAI providers — sampling params ([#140](https://github.com/ferro-labs/ai-gateway/issues/140)), tool/function calling ([#139](https://github.com/ferro-labs/ai-gateway/issues/139)), `max_completion_tokens` ([#141](https://github.com/ferro-labs/ai-gateway/issues/141)), `finish_reason` normalization ([#142](https://github.com/ferro-labs/ai-gateway/issues/142)), Anthropic multimodal/tool roles ([#143](https://github.com/ferro-labs/ai-gateway/issues/143)), Gemini `systemInstruction` ([#144](https://github.com/ferro-labs/ai-gateway/issues/144)) — plus a dependency sweep. Forwarding-only + warn-and-drop; explicit capability semantics land in v1.2.0.
-- **v1.1.5 — Capability & model-support accuracy** (target 2026-06-26): correct capability-miss status codes (400/404, not 500) with interface-alignment tests, close capability gaps vs upstream APIs (Azure embeddings/images, image gen, discovery), de-stale `SupportedModels()`.
-- **v1.1.6 — Runtime robustness** (target 2026-07-03): cache & circuit-breaker correctness (cache key includes logprobs, true LRU, half-open probe cap), OTel shutdown span-loss fix, plugin-pipeline panic recovery / RunOnError-on-reject / Close-on-reload.
+- **v1.1.9 — Quality & maintainability hardening**: per-key rate-limit / budget scoping, atomic budget soft cap, internal package restructuring (no API or behaviour changes), and CI supply-chain hardening (SHA-pinned actions).
 
 ## v1.2.0 — Provider Parameter Capability Matrix
 

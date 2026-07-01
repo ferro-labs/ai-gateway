@@ -1,12 +1,14 @@
 // Package strategies implements the routing strategies used by the gateway.
 //
 // Available strategies:
-//   - Single:       always routes to one configured target.
-//   - Fallback:     tries targets in order, retrying on failure.
-//   - LoadBalance:  distributes requests across targets by weight.
-//   - Conditional:  routes based on request field matching rules.
-//   - ContentBased: routes based on the textual content of prompt messages.
-//   - ABTest:       weighted random traffic splitting across labelled variants.
+//   - Single:        always routes to one configured target.
+//   - Fallback:      tries targets in order, retrying on failure.
+//   - LoadBalance:   distributes requests across targets by weight.
+//   - Conditional:   routes based on request field matching rules.
+//   - LeastLatency:  routes to the target with the lowest observed p50 latency.
+//   - CostOptimized: routes to the cheapest catalog-priced target.
+//   - ContentBased:  routes based on the textual content of prompt messages.
+//   - ABTest:        weighted random traffic splitting across labelled variants.
 package strategies
 
 import (
