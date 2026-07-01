@@ -56,10 +56,7 @@ func (lb *LoadBalance) selectFromTargets(targets []Target) (Target, error) {
 	defer lb.mu.Unlock()
 
 	t, ok := weightedPick(targets, func(t Target) float64 {
-		if t.Weight <= 0 {
-			return 1
-		}
-		return t.Weight
+		return effectiveWeight(t.Weight)
 	})
 	if !ok {
 		return Target{}, fmt.Errorf("no targets available")

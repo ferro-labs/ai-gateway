@@ -135,7 +135,7 @@ func (h *Handlers) logsStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	entries := make([]requestlog.Entry, 0, result.Total)
+	entries := make([]requestlog.Entry, 0, min(result.Total, logsStatsMaxScannedEntries))
 	entries = append(entries, result.Data...)
 	for len(entries) < result.Total && len(entries) < logsStatsMaxScannedEntries {
 		baseQuery.Offset = len(entries)

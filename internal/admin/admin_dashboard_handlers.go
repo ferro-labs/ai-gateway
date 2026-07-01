@@ -9,18 +9,35 @@ import (
 	"github.com/ferro-labs/ai-gateway/providers"
 )
 
-func (h *Handlers) dashboard(w http.ResponseWriter, r *http.Request) {
-	providersCount := 0
-	availableProviders := 0
-	if h.Providers != nil {
-		providers := h.Providers.List()
-		providersCount = len(providers)
-		for _, name := range providers {
-			if _, ok := h.Providers.Get(name); ok {
-				availableProviders++
-			}
-		}
+// providerNames holds a resolved provider along with its registered name.
+type providerNames struct {
+	name     string
+	provider providers.Provider
+}
+
+// listProviderStatus returns every registered provider name paired with the
+// resolved provider (nil when the name is not resolvable) plus the count of
+// names that resolved successfully. Centralizes the List()/Get() walk shared by
+// the dashboard, provider list, and health-check handlers.
+func (h *Handlers) listProviderStatus() (entries []providerNames, available int) {
+	if h.Providers == nil {
+		return nil, 0
 	}
+	names := h.Providers.List()
+	entries = make([]providerNames, 0, len(names))
+	for _, name := range names {
+		p, ok := h.Providers.Get(name)
+		if ok {
+			available++
+		}
+		entries = append(entries, providerNames{name: name, provider: p})
+	}
+	return entries, available
+}
+
+func (h *Handlers) dashboard(w http.ResponseWriter, r *http.Request) {
+	providerEntries, availableProviders := h.listProviderStatus()
+	providersCount := len(providerEntries)
 
 	keys := h.Keys.List(r.Context())
 	activeKeys := 0
@@ -74,17 +91,15 @@ func (h *Handlers) listProviders(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	var result []providerInfo
-	if h.Providers != nil {
-		for _, name := range h.Providers.List() {
-			p, ok := h.Providers.Get(name)
-			if !ok {
-				continue
-			}
-			result = append(result, providerInfo{
-				Name:   name,
-				Models: p.Models(),
-			})
+	entries, _ := h.listProviderStatus()
+	for _, e := range entries {
+		if e.provider == nil {
+			continue
 		}
+		result = append(result, providerInfo{
+			Name:   e.name,
+			Models: e.provider.Models(),
+		})
 	}
 	if result == nil {
 		result = []providerInfo{}
@@ -128,24 +143,22 @@ func (h *Handlers) healthCheck(w http.ResponseWriter, r *http.Request) {
 	var providerStatuses []providerHealth
 	overallStatus := "healthy"
 
-	if h.Providers != nil {
-		for _, name := range h.Providers.List() {
-			p, ok := h.Providers.Get(name)
-			if !ok {
-				providerStatuses = append(providerStatuses, providerHealth{
-					Name:    name,
-					Status:  "unavailable",
-					Message: "provider not found in registry",
-				})
-				overallStatus = "degraded"
-				continue
-			}
+	entries, _ := h.listProviderStatus()
+	for _, e := range entries {
+		if e.provider == nil {
 			providerStatuses = append(providerStatuses, providerHealth{
-				Name:   name,
-				Status: "available",
-				Models: len(p.Models()),
+				Name:    e.name,
+				Status:  "unavailable",
+				Message: "provider not found in registry",
 			})
+			overallStatus = "degraded"
+			continue
 		}
+		providerStatuses = append(providerStatuses, providerHealth{
+			Name:   e.name,
+			Status: "available",
+			Models: len(e.provider.Models()),
+		})
 	}
 
 	if providerStatuses == nil {
