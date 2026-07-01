@@ -5,7 +5,33 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.1.8] — Unreleased
+## [1.1.9] — 2026-07-02
+
+Quality & maintainability release. Scopes per-key rate-limit and budget enforcement to the authenticated key, hardens the budget soft cap against concurrent lost updates, and lands a large behaviour-preserving internal refactor plus CI supply-chain hardening. No public API breaks (verified with `apidiff` against v1.1.8). Closes [#261](https://github.com/ferro-labs/ai-gateway/issues/261).
+
+### Fixed
+
+- **Per-key rate-limit and budget scoping**: the authenticated key's stable identifier is now propagated from the auth layer into the plugin pipeline, so `key_rpm` and per-key budget limits apply per caller instead of sharing a single empty-key bucket. The raw bearer secret is never exposed — only the opaque `APIKey.ID` is used as the limit bucket. Both the non-streaming and streaming paths are covered.
+- **Budget soft-cap atomicity**: per-key spend is now recorded through a single atomic read-modify-write under the store lock, so concurrent completions for the same key can no longer lose an increment. The before-request check is a documented **soft** cap — a bounded number of in-flight requests may collectively overshoot by their actual costs, with no reservation and therefore no leak on error/cancel/circuit-open.
+- **MCP response size bound**: successful MCP JSON-RPC responses are now capped at 10 MiB. An MCP server is an untrusted-content boundary; without a limit a buggy, compromised, or MITM'd server could return an unbounded body and drive gateway memory exhaustion.
+- **Admin key error status**: a genuine not-found still returns HTTP 404, but a transient or internal key-store failure (e.g. a database outage) now returns 500 instead of being masked as 404, so callers can distinguish "no such key" from "store is down."
+
+### Security
+
+- **Redacted child-span errors**: error text on MCP and plugin child spans now passes through the configured `privacy_level` redaction (matching root-span behaviour) instead of being recorded raw, keeping credential-shaped material out of traces.
+
+### Changed
+
+- **Internal package restructuring**: several oversized files were decomposed into cohesive units and cross-provider duplication was consolidated into shared helpers, with tightened lint configuration. Behaviour-preserving — no public API, config, CLI, or HTTP contract changes (asserted by `apidiff` and the full `-race` suite).
+- **CI supply-chain hardening**: all GitHub Actions are pinned to commit SHAs (kept current by Dependabot), and CI now runs once per change — pushes trigger only on `main`, every other branch is covered by its pull request, and a concurrency group cancels superseded runs.
+
+### Documentation
+
+- **Docs sync** ([#261](https://github.com/ferro-labs/ai-gateway/issues/261)): ROADMAP marks v1.1.4–v1.1.8 as shipped; the routing-strategy list is now complete and consistent across the `strategies` package GoDoc and AGENTS.md (all 8 strategies); README links the documentation site; and the inaccurate "zero dependencies" phrasing was corrected.
+
+---
+
+## [1.1.8] — 2026-06-30
 
 Security-hardening release. Adds baseline HTTP security headers, a configurable request body-size limit, trusted-proxy client-IP resolution, and expanded secret redaction. Strengthens config validation and admin key safety. No public API breaks. Closes [#252](https://github.com/ferro-labs/ai-gateway/issues/252)–[#257](https://github.com/ferro-labs/ai-gateway/issues/257).
 
