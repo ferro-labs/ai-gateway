@@ -145,14 +145,7 @@ func Meter(ctx context.Context, src <-chan providers.StreamChunk, start time.Tim
 				// MUST close src eventually for this to terminate; that is
 				// the existing contract for every CompleteStream impl.
 				clientCanceled = true
-				if streamErr == nil {
-					streamErr = ctx.Err()
-				}
-				for chunk := range src {
-					if chunk.Error != nil {
-						streamErr = chunk.Error
-					}
-				}
+				streamErr = drainSrc(ctx, src, streamErr)
 				break loop
 			case chunk, ok := <-src:
 				if !ok {
@@ -181,14 +174,7 @@ func Meter(ctx context.Context, src <-chan providers.StreamChunk, start time.Tim
 				case out <- chunk:
 				case <-ctx.Done():
 					clientCanceled = true
-					if streamErr == nil {
-						streamErr = ctx.Err()
-					}
-					for chunk := range src {
-						if chunk.Error != nil {
-							streamErr = chunk.Error
-						}
-					}
+					streamErr = drainSrc(ctx, src, streamErr)
 					break loop
 				}
 
@@ -233,6 +219,23 @@ func Meter(ctx context.Context, src <-chan providers.StreamChunk, start time.Tim
 	}()
 
 	return out
+}
+
+// drainSrc drains src to completion after the consumer has abandoned the
+// stream, preserving the goroutine-leak guard: provider stream goroutines
+// block on an unguarded `src <- chunk`, so src MUST be read until the provider
+// closes it. streamErr is seeded from ctx.Err() when not already set, then
+// overwritten by the last error chunk observed while draining, and returned.
+func drainSrc(ctx context.Context, src <-chan providers.StreamChunk, streamErr error) error {
+	if streamErr == nil {
+		streamErr = ctx.Err()
+	}
+	for chunk := range src {
+		if chunk.Error != nil {
+			streamErr = chunk.Error
+		}
+	}
+	return streamErr
 }
 
 // finishStreamOnError emits error metrics, invokes error hooks, finalises the

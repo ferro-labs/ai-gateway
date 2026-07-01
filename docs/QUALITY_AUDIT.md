@@ -67,8 +67,9 @@ client-ritual copies.
       `RATE_LIMIT_RPS/BURST`; `ensureGateway` logs the `New()` error.
       ⚠️ **DEFERRED for owner decision:** uniform provider-init failure policy (env `os.Exit` vs Bedrock
       warn-only) — changes runtime behavior, so kept out of the hygiene commits.
-- [ ] **Phase 7 — transport & streaming hygiene** (M): remove/wire dead transport metrics + tracing
-      transport (~200 lines); extract `drainSrc` leak-guard; cache `ReverseProxy`.
+- [x] **Phase 7 — transport & streaming hygiene** ✅ (M): removed dead transport metrics + tracing
+      transport (3 files); extracted `drainSrc` leak-guard. (ReverseProxy caching skipped — not trivially
+      behavior-preserving.)
 - [ ] **Phase 8 — otel/mcp decomposition** (M): **span-error redaction bypass (from Phase 0)** —
       route MCP (`executor.go`) and plugin (`manager.go`) child-span errors through the privacy-aware
       redactor instead of raw `RecordError`/`SetStatus`; split `Init` + `ResolvePendingToolCalls`;
