@@ -474,6 +474,30 @@ func geminiModelResource(model string) string {
 	return "models/" + model
 }
 
+// doJSONRequest marshals body to JSON and performs an HTTP request against the
+// Gemini API. It returns the live response plus a release func the caller must
+// defer to return the pooled request buffer. The label is woven into error
+// messages so callers can distinguish operations.
+func (p *Provider) doJSONRequest(ctx context.Context, method, reqURL, label string, body any) (*http.Response, func(), error) {
+	bodyReader, _, release, err := core.JSONBodyReader(body)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to marshal %srequest: %w", label, err)
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, method, reqURL, bodyReader)
+	if err != nil {
+		release()
+		return nil, nil, fmt.Errorf("failed to create %srequest: %w", label, err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	httpResp, err := p.httpClient.Do(httpReq)
+	if err != nil {
+		release()
+		return nil, nil, fmt.Errorf("%srequest failed: %w", label, sanitizeRequestErr(err))
+	}
+	return httpResp, release, nil
+}
+
 // Embed sends a text embedding request to Gemini's batchEmbedContents endpoint.
 func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.EmbeddingResponse, error) {
 	if req.EncodingFormat != "" && req.EncodingFormat != "float" {
@@ -497,23 +521,12 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 		})
 	}
 
-	bodyReader, _, release, err := core.JSONBodyReader(geminiReq)
+	url := fmt.Sprintf("%s/v1beta/models/%s:batchEmbedContents?key=%s", p.baseURL, url.PathEscape(model), p.apiKey)
+	httpResp, release, err := p.doJSONRequest(ctx, http.MethodPost, url, "embed ", geminiReq)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal embed request: %w", err)
+		return nil, err
 	}
 	defer release()
-
-	url := fmt.Sprintf("%s/v1beta/models/%s:batchEmbedContents?key=%s", p.baseURL, url.PathEscape(model), p.apiKey)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bodyReader)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create embed request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	httpResp, err := p.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("embed request failed: %w", sanitizeRequestErr(err))
-	}
 	defer func() { _ = httpResp.Body.Close() }()
 
 	respBody, err := io.ReadAll(httpResp.Body)
@@ -557,29 +570,54 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 	}, nil
 }
 
+// parseCandidateParts accumulates text and tool calls from one candidate's
+// parts. When withIndex is set, each tool call carries its position index
+// (required for streaming deltas). candidateIndex seeds synthetic tool-call IDs
+// when the provider omits them.
+func parseCandidateParts(parts []geminiPart, candidateIndex int, withIndex bool) (string, []core.ToolCall) {
+	var text string
+	var toolCalls []core.ToolCall
+	for _, part := range parts {
+		text += part.Text
+		if part.FunctionCall != nil {
+			args := string(part.FunctionCall.Args)
+			if args == "" {
+				args = "{}"
+			}
+			id := part.FunctionCall.ID
+			if id == "" {
+				id = fmt.Sprintf("call_%d_%d", candidateIndex, len(toolCalls))
+			}
+			tc := core.ToolCall{
+				ID:   id,
+				Type: "function",
+				Function: core.FunctionCall{
+					Name:      part.FunctionCall.Name,
+					Arguments: args,
+				},
+			}
+			if withIndex {
+				idx := len(toolCalls)
+				tc.Index = &idx
+			}
+			toolCalls = append(toolCalls, tc)
+		}
+	}
+	return text, toolCalls
+}
+
 // Complete sends a chat completion request to Gemini.
 func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
 	core.WarnUnsupportedParams(ctx, p.Name(), req.Model, req, geminiSupportedParams...)
 
 	geminiReq := buildRequest(req)
 
-	bodyReader, _, release, err := core.JSONBodyReader(geminiReq)
+	url := fmt.Sprintf("%s/v1beta/models/%s:generateContent?key=%s", p.baseURL, url.PathEscape(req.Model), p.apiKey)
+	httpResp, release, err := p.doJSONRequest(ctx, http.MethodPost, url, "", geminiReq)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
+		return nil, err
 	}
 	defer release()
-
-	url := fmt.Sprintf("%s/v1beta/models/%s:generateContent?key=%s", p.baseURL, url.PathEscape(req.Model), p.apiKey)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bodyReader)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	httpResp, err := p.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", sanitizeRequestErr(err))
-	}
 	defer func() { _ = httpResp.Body.Close() }()
 
 	respBody, err := io.ReadAll(httpResp.Body)
@@ -598,29 +636,7 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 
 	var choices []core.Choice
 	for i, candidate := range geminiResp.Candidates {
-		var text string
-		var toolCalls []core.ToolCall
-		for _, part := range candidate.Content.Parts {
-			text += part.Text
-			if part.FunctionCall != nil {
-				args := string(part.FunctionCall.Args)
-				if args == "" {
-					args = "{}"
-				}
-				id := part.FunctionCall.ID
-				if id == "" {
-					id = fmt.Sprintf("call_%d_%d", i, len(toolCalls))
-				}
-				toolCalls = append(toolCalls, core.ToolCall{
-					ID:   id,
-					Type: "function",
-					Function: core.FunctionCall{
-						Name:      part.FunctionCall.Name,
-						Arguments: args,
-					},
-				})
-			}
-		}
+		text, toolCalls := parseCandidateParts(candidate.Content.Parts, i, false)
 		choices = append(choices, core.Choice{
 			Index: i,
 			Message: core.Message{
@@ -650,23 +666,12 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 
 	geminiReq := buildRequest(req)
 
-	bodyReader, _, release, err := core.JSONBodyReader(geminiReq)
+	url := fmt.Sprintf("%s/v1beta/models/%s:streamGenerateContent?key=%s&alt=sse", p.baseURL, url.PathEscape(req.Model), p.apiKey)
+	httpResp, release, err := p.doJSONRequest(ctx, http.MethodPost, url, "", geminiReq)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
+		return nil, err
 	}
 	defer release()
-
-	url := fmt.Sprintf("%s/v1beta/models/%s:streamGenerateContent?key=%s&alt=sse", p.baseURL, url.PathEscape(req.Model), p.apiKey)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bodyReader)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	httpResp, err := p.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", sanitizeRequestErr(err))
-	}
 
 	if httpResp.StatusCode != http.StatusOK {
 		defer func() { _ = httpResp.Body.Close() }()
@@ -692,32 +697,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 				Model: req.Model,
 			}
 			for i, candidate := range chunk.Candidates {
-				var text string
-				var toolCalls []core.ToolCall
-				for _, part := range candidate.Content.Parts {
-					text += part.Text
-					if part.FunctionCall != nil {
-						toolCallIndex := len(toolCalls)
-						toolCallIndexPtr := toolCallIndex
-						args := string(part.FunctionCall.Args)
-						if args == "" {
-							args = "{}"
-						}
-						id := part.FunctionCall.ID
-						if id == "" {
-							id = fmt.Sprintf("call_%d_%d", i, len(toolCalls))
-						}
-						toolCalls = append(toolCalls, core.ToolCall{
-							Index: &toolCallIndexPtr,
-							ID:    id,
-							Type:  "function",
-							Function: core.FunctionCall{
-								Name:      part.FunctionCall.Name,
-								Arguments: args,
-							},
-						})
-					}
-				}
+				text, toolCalls := parseCandidateParts(candidate.Content.Parts, i, true)
 				sc.Choices = append(sc.Choices, core.StreamChoice{
 					Index: i,
 					Delta: core.MessageDelta{

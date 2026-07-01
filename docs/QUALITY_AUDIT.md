@@ -54,8 +54,9 @@ client-ritual copies.
       `core.CoerceEmbeddingInput`; `core.APIError`; `anthropicwire` messages/tool-choice; `core.SSEDataLines`.
       Net −507 lines across 25 files; only byte-for-byte-compatible providers migrated (cohere/ai21/
       replicate/openai/databricks/nvidia_nim/azure/ollama deliberately left as-is).
-- [ ] **Phase 3 — Split big provider files** (M): bedrock→family files; shared request/stream builders;
-      `defaultMaxTokens` const; stray-godoc fixes.
+- [x] **Phase 3 — Split big provider files** ✅ (M): bedrock 1131→333 across 6 family files; shared
+      `buildBedrockAnthropicRequest`/`buildAnthropicRequest`/gemini `doJSONRequest`+`parseCandidateParts`
+      builders; named max-tokens consts. (invokeModelJSON routing skipped — would add an Accept header.)
 - [ ] **Phase 4 — admin split & dedup** (M): `handlers.go` by resource; shared query-param parsing; `maskKey`.
 - [ ] **Phase 5 — plugins + strategies dedup** (M): shared strategy `dispatch()`; shared plugin
       config decode+validate (**fixes silent maxtoken/cache config-fallback bug**); weighted-pick helper.

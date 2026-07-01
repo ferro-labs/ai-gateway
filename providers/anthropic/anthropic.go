@@ -33,6 +33,9 @@ const defaultBaseURL = "https://api.anthropic.com"
 // anthropic-version header.
 const anthropicVersion = "2023-06-01"
 
+// defaultMaxTokens is the max_tokens value used when the caller does not set one.
+const defaultMaxTokens = 1024
+
 // Provider implements the Anthropic API client.
 type Provider struct {
 	name       string
@@ -312,18 +315,17 @@ func parseDataURI(uri string) (mediaType, data string, ok bool) {
 	return mediaType, payload, true
 }
 
-// Complete sends a chat completion request to Anthropic.
-func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
+// buildAnthropicRequest maps a core.Request to an Anthropic Messages API request
+// body. stream toggles server-sent event streaming.
+func buildAnthropicRequest(req core.Request, stream bool) anthropicRequest {
 	messages, system := buildMessages(req)
 
-	maxTokens := 1024
+	maxTokens := defaultMaxTokens
 	if req.MaxTokens != nil {
 		maxTokens = *req.MaxTokens
 	}
 
-	core.WarnUnsupportedParams(ctx, p.Name(), req.Model, req, anthropicSupportedParams...)
-
-	aReq := anthropicRequest{
+	return anthropicRequest{
 		Model:         req.Model,
 		MaxTokens:     maxTokens,
 		Messages:      messages,
@@ -333,17 +335,23 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 		System:        system,
 		Tools:         anthropicwire.MapTools(req.Tools),
 		ToolChoice:    anthropicwire.MapToolChoice(req.ToolChoice, req.Tools),
+		Stream:        stream,
 	}
+}
 
+// newMessagesRequest sends a POST to the Anthropic /v1/messages endpoint with the
+// standard authentication and version headers. The returned release frees the
+// pooled request body and must be called by the caller.
+func (p *Provider) newMessagesRequest(ctx context.Context, aReq anthropicRequest) (*http.Response, func(), error) {
 	bodyReader, _, release, err := core.JSONBodyReader(aReq)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
+		return nil, nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
-	defer release()
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/v1/messages", bodyReader) //nolint:gosec // baseURL validated in New()
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+		release()
+		return nil, nil, fmt.Errorf("failed to create request: %w", err)
 	}
 	httpReq.Header.Set("x-api-key", p.apiKey)
 	httpReq.Header.Set("anthropic-version", anthropicVersion)
@@ -351,8 +359,23 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 
 	httpResp, err := p.httpClient.Do(httpReq) //nolint:gosec // baseURL validated in New()
 	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
+		release()
+		return nil, nil, fmt.Errorf("request failed: %w", err)
 	}
+	return httpResp, release, nil
+}
+
+// Complete sends a chat completion request to Anthropic.
+func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
+	core.WarnUnsupportedParams(ctx, p.Name(), req.Model, req, anthropicSupportedParams...)
+
+	aReq := buildAnthropicRequest(req, false)
+
+	httpResp, release, err := p.newMessagesRequest(ctx, aReq)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	defer func() { _ = httpResp.Body.Close() }()
 
 	if httpResp.StatusCode != http.StatusOK {
@@ -419,254 +442,4 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 			CacheWriteTokens: aResp.Usage.CacheCreationInputTokens,
 		},
 	}, nil
-}
-
-type anthropicStreamMessageStart struct {
-	Type    string `json:"type"`
-	Message struct {
-		ID    string         `json:"id"`
-		Model string         `json:"model"`
-		Role  string         `json:"role"`
-		Usage anthropicUsage `json:"usage"`
-	} `json:"message"`
-}
-
-type anthropicStreamContentDelta struct {
-	Type  string `json:"type"`
-	Index int    `json:"index"`
-	Delta struct {
-		Type        string `json:"type"`
-		Text        string `json:"text"`
-		PartialJSON string `json:"partial_json"`
-	} `json:"delta"`
-}
-
-type anthropicStreamContentBlockStart struct {
-	Type         string `json:"type"`
-	Index        int    `json:"index"`
-	ContentBlock struct {
-		Type  string          `json:"type"`
-		ID    string          `json:"id"`
-		Name  string          `json:"name"`
-		Input json.RawMessage `json:"input"`
-	} `json:"content_block"`
-}
-
-type anthropicStreamMessageDelta struct {
-	Type  string `json:"type"`
-	Delta struct {
-		StopReason string `json:"stop_reason"`
-	} `json:"delta"`
-	Usage anthropicUsage `json:"usage"`
-}
-
-// CompleteStream sends a streaming chat completion request to Anthropic.
-func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan core.StreamChunk, error) {
-	messages, system := buildMessages(req)
-
-	maxTokens := 1024
-	if req.MaxTokens != nil {
-		maxTokens = *req.MaxTokens
-	}
-
-	core.WarnUnsupportedParams(ctx, p.Name(), req.Model, req, anthropicSupportedParams...)
-
-	aReq := anthropicRequest{
-		Model:         req.Model,
-		MaxTokens:     maxTokens,
-		Messages:      messages,
-		Temperature:   req.Temperature,
-		TopP:          req.TopP,
-		StopSequences: req.Stop,
-		System:        system,
-		Tools:         anthropicwire.MapTools(req.Tools),
-		ToolChoice:    anthropicwire.MapToolChoice(req.ToolChoice, req.Tools),
-		Stream:        true,
-	}
-
-	bodyReader, _, release, err := core.JSONBodyReader(aReq)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
-	}
-	defer release()
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/v1/messages", bodyReader) //nolint:gosec // baseURL validated in New()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	httpReq.Header.Set("x-api-key", p.apiKey)
-	httpReq.Header.Set("anthropic-version", anthropicVersion)
-	httpReq.Header.Set("content-type", "application/json")
-
-	httpResp, err := p.httpClient.Do(httpReq) //nolint:gosec // baseURL validated in New()
-	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
-	}
-
-	if httpResp.StatusCode != http.StatusOK {
-		defer func() { _ = httpResp.Body.Close() }()
-		respBody, _ := io.ReadAll(httpResp.Body)
-		return nil, core.APIError("anthropic", httpResp.StatusCode, respBody)
-	}
-
-	ch := make(chan core.StreamChunk)
-	go func() {
-		defer close(ch)
-		defer func() { _ = httpResp.Body.Close() }()
-
-		var msgID, model string
-		var promptTokens, cacheReadTokens, cacheWriteTokens int
-		toolCallIndexes := make(map[int]int)
-		toolArgsSeen := make(map[int]bool) // tool-call index -> received any input_json_delta
-		nextToolCallIndex := 0
-		lines, scanErr := core.SSEDataLines(httpResp.Body)
-		for data := range lines {
-
-			var raw map[string]any
-			if json.Unmarshal([]byte(data), &raw) != nil {
-				continue
-			}
-
-			eventType, _ := raw["type"].(string)
-			switch eventType {
-			case "message_start":
-				var evt anthropicStreamMessageStart
-				if json.Unmarshal([]byte(data), &evt) == nil {
-					msgID = evt.Message.ID
-					model = evt.Message.Model
-					// Anthropic reports prompt + cache tokens once, on
-					// message_start; output_tokens arrive later on message_delta.
-					promptTokens = evt.Message.Usage.InputTokens
-					cacheReadTokens = evt.Message.Usage.CacheReadInputTokens
-					cacheWriteTokens = evt.Message.Usage.CacheCreationInputTokens
-				}
-			case "content_block_start":
-				var evt anthropicStreamContentBlockStart
-				if json.Unmarshal([]byte(data), &evt) == nil && evt.ContentBlock.Type == blockTypeToolUse {
-					toolCallIndex := nextToolCallIndex
-					toolCallIndexes[evt.Index] = toolCallIndex
-					nextToolCallIndex++
-					ch <- core.StreamChunk{
-						ID:    msgID,
-						Model: model,
-						Choices: []core.StreamChoice{
-							{
-								Index: 0,
-								Delta: core.MessageDelta{
-									ToolCalls: []core.ToolCall{
-										{
-											Index: core.Ptr(toolCallIndex),
-											ID:    evt.ContentBlock.ID,
-											Type:  "function",
-											Function: core.FunctionCall{
-												Name: evt.ContentBlock.Name,
-											},
-										},
-									},
-								},
-							},
-						},
-					}
-				}
-			case "content_block_delta":
-				var evt anthropicStreamContentDelta
-				if json.Unmarshal([]byte(data), &evt) == nil {
-					if evt.Delta.Type == "input_json_delta" {
-						toolCallIndex, ok := toolCallIndexes[evt.Index]
-						if !ok {
-							toolCallIndex = evt.Index
-						}
-						toolArgsSeen[toolCallIndex] = true
-						ch <- core.StreamChunk{
-							ID:    msgID,
-							Model: model,
-							Choices: []core.StreamChoice{
-								{
-									Index: 0,
-									Delta: core.MessageDelta{
-										ToolCalls: []core.ToolCall{
-											{
-												Index: core.Ptr(toolCallIndex),
-												Type:  "function",
-												Function: core.FunctionCall{
-													Arguments: evt.Delta.PartialJSON,
-												},
-											},
-										},
-									},
-								},
-							},
-						}
-						continue
-					}
-					if evt.Delta.Type != "text_delta" {
-						continue
-					}
-					ch <- core.StreamChunk{
-						ID:    msgID,
-						Model: model,
-						Choices: []core.StreamChoice{
-							{
-								// Single completion: the OpenAI choice index is
-								// always 0 (evt.Index is Anthropic's content-block
-								// index, not a choice index).
-								Index: 0,
-								Delta: core.MessageDelta{
-									Content: evt.Delta.Text,
-								},
-							},
-						},
-					}
-				}
-			case "message_delta":
-				// Emit "{}" arguments for any tool call that produced no
-				// input_json_delta (zero-argument tools), so clients that
-				// JSON.parse the arguments don't choke on an empty string.
-				for _, toolCallIndex := range toolCallIndexes {
-					if toolArgsSeen[toolCallIndex] {
-						continue
-					}
-					ch <- core.StreamChunk{
-						ID:    msgID,
-						Model: model,
-						Choices: []core.StreamChoice{{
-							Index: 0,
-							Delta: core.MessageDelta{
-								ToolCalls: []core.ToolCall{{
-									Index:    core.Ptr(toolCallIndex),
-									Type:     "function",
-									Function: core.FunctionCall{Arguments: "{}"},
-								}},
-							},
-						}},
-					}
-				}
-				var evt anthropicStreamMessageDelta
-				_ = json.Unmarshal([]byte(data), &evt)
-				completionTokens := evt.Usage.OutputTokens
-				ch <- core.StreamChunk{
-					ID:    msgID,
-					Model: model,
-					Choices: []core.StreamChoice{
-						{
-							Index:        0,
-							FinishReason: core.NormalizeFinishReason(evt.Delta.StopReason),
-						},
-					},
-					Usage: &core.Usage{
-						PromptTokens:     promptTokens,
-						CompletionTokens: completionTokens,
-						TotalTokens:      promptTokens + completionTokens,
-						CacheReadTokens:  cacheReadTokens,
-						CacheWriteTokens: cacheWriteTokens,
-					},
-				}
-			}
-		}
-		if err := scanErr(); err != nil {
-			ch <- core.StreamChunk{Error: err}
-		}
-	}()
-
-	return ch, nil
 }
