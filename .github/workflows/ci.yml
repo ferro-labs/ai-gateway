@@ -1,16 +1,22 @@
-# CI workflow — runs on every push and pull request.
-# Covers: build, test (with race detector), lint.
+# CI workflow — build, test (with race detector), lint.
+# Pushes run only on main; every other branch is covered once via its pull
+# request, so a push to a branch with an open PR does not run CI twice.
 
 name: CI
 
 on:
   push:
-    branches: ["main", "release/**"]
+    branches: ["main"]
   pull_request:
     branches: ["main", "release/**"]
     paths-ignore:
       - "**.md"
       - "docs/**"
+
+# Cancel superseded in-progress runs on the same ref (e.g. rapid pushes to a PR).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -23,10 +29,10 @@ jobs:
       matrix:
         go: ["1.25.11"]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
           go-version: ${{ matrix.go }}
           check-latest: true
@@ -73,7 +79,7 @@ jobs:
 
       - name: Upload coverage artifact
         if: matrix.go == '1.25.11'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: coverage-go-${{ matrix.go }}
           path: coverage.out
@@ -81,7 +87,7 @@ jobs:
 
       - name: Upload coverage to Codecov
         if: matrix.go == '1.25.11'
-        uses: codecov/codecov-action@v7
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: coverage.out
@@ -94,10 +100,10 @@ jobs:
     runs-on: ubuntu-latest
     needs: test
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
           go-version: "1.25.11"
           check-latest: true
@@ -113,10 +119,10 @@ jobs:
     name: Vulnerability Scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
           go-version: "1.25.11"
           check-latest: true
@@ -134,16 +140,16 @@ jobs:
     
     steps:
     - name: Checkout code
-      uses: actions/checkout@v6
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
     - name: Set up Go
-      uses: actions/setup-go@v6
+      uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
       with:
         go-version: '1.25.11'
         check-latest: true
 
     - name: Run golangci-lint (v2)
-      uses: golangci/golangci-lint-action@v9
+      uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
       with:
         version: v2.4.0
         args: --verbose
