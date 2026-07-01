@@ -57,7 +57,8 @@ client-ritual copies.
 - [x] **Phase 3 — Split big provider files** ✅ (M): bedrock 1131→333 across 6 family files; shared
       `buildBedrockAnthropicRequest`/`buildAnthropicRequest`/gemini `doJSONRequest`+`parseCandidateParts`
       builders; named max-tokens consts. (invokeModelJSON routing skipped — would add an Accept header.)
-- [ ] **Phase 4 — admin split & dedup** (M): `handlers.go` by resource; shared query-param parsing; `maskKey`.
+- [x] **Phase 4 — admin split & dedup** ✅ (M): `handlers.go` 1089→73 across 5 resource files; shared
+      `queryparams` helpers; `maskKey` (const prefix); reuse of `generateAPIKeyString`/`generateID`.
 - [ ] **Phase 5 — plugins + strategies dedup** (M): shared strategy `dispatch()`; shared plugin
       config decode+validate (**fixes silent maxtoken/cache config-fallback bug**); weighted-pick helper.
 - [ ] **Phase 6 — CLI/bootstrap/handler wiring** (M): `adminClientFromCmd`/`printResult`; break up

@@ -263,9 +263,7 @@ FROM api_keys`
 			continue
 		}
 		masked := *k
-		if len(masked.Key) > 8 {
-			masked.Key = masked.Key[:8] + "..."
-		}
+		masked.Key = maskKey(masked.Key)
 		keys = append(keys, &masked)
 	}
 	return keys
@@ -309,9 +307,7 @@ func (s *SQLStore) Update(ctx context.Context, id string, name string, scopes []
 	}
 
 	masked := *current
-	if len(masked.Key) > 8 {
-		masked.Key = masked.Key[:8] + "..."
-	}
+	masked.Key = maskKey(masked.Key)
 	return &masked, nil
 }
 

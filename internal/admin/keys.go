@@ -2,8 +2,6 @@ package admin
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"sync"
@@ -46,6 +44,18 @@ func NewKeyStore() *KeyStore {
 	}
 }
 
+const keyMaskPrefixLen = 8
+
+// maskKey truncates key to a short prefix followed by an ellipsis when it is
+// longer than keyMaskPrefixLen so full secret values never appear in admin API
+// responses; shorter values are returned unchanged.
+func maskKey(key string) string {
+	if len(key) > keyMaskPrefixLen {
+		return key[:keyMaskPrefixLen] + "..."
+	}
+	return key
+}
+
 func cloneAPIKey(k *APIKey) *APIKey {
 	if k == nil {
 		return nil
@@ -70,18 +80,14 @@ func cloneTime(t *time.Time) *time.Time {
 
 // Create generates a new API key with the given name, scopes, and optional expiration.
 func (s *KeyStore) Create(_ context.Context, name string, scopes []string, expiresAt *time.Time) (*APIKey, error) {
-	keyBytes := make([]byte, 32)
-	if _, err := rand.Read(keyBytes); err != nil {
-		return nil, fmt.Errorf("generating key: %w", err)
+	key, err := generateAPIKeyString()
+	if err != nil {
+		return nil, err
 	}
-	key := "fgw_" + hex.EncodeToString(keyBytes)
-
-	idBytes := make([]byte, 16)
-	if _, err := rand.Read(idBytes); err != nil {
-		return nil, fmt.Errorf("generating id: %w", err)
+	id, err := generateID()
+	if err != nil {
+		return nil, err
 	}
-	id := fmt.Sprintf("%x-%x-%x-%x-%x",
-		idBytes[0:4], idBytes[4:6], idBytes[6:8], idBytes[8:10], idBytes[10:16])
 
 	if len(scopes) == 0 {
 		scopes = []string{ScopeAdmin}
@@ -123,9 +129,7 @@ func (s *KeyStore) List(_ context.Context) []*APIKey {
 	keys := make([]*APIKey, 0, len(s.byID))
 	for _, k := range s.byID {
 		masked := cloneAPIKey(k)
-		if len(masked.Key) > 8 {
-			masked.Key = masked.Key[:8] + "..."
-		}
+		masked.Key = maskKey(masked.Key)
 		keys = append(keys, masked)
 	}
 	return keys
@@ -160,9 +164,7 @@ func (s *KeyStore) Update(_ context.Context, id string, name string, scopes []st
 		k.Scopes = append([]string(nil), scopes...)
 	}
 	masked := cloneAPIKey(k)
-	if len(masked.Key) > 8 {
-		masked.Key = masked.Key[:8] + "..."
-	}
+	masked.Key = maskKey(masked.Key)
 	return masked, nil
 }
 
@@ -207,11 +209,10 @@ func (s *KeyStore) RotateKey(_ context.Context, id string) (*APIKey, error) {
 		return nil, fmt.Errorf("%w: %s", ErrKeyNotFound, id)
 	}
 
-	keyBytes := make([]byte, 32)
-	if _, err := rand.Read(keyBytes); err != nil {
-		return nil, fmt.Errorf("generating key: %w", err)
+	newKey, err := generateAPIKeyString()
+	if err != nil {
+		return nil, err
 	}
-	newKey := "fgw_" + hex.EncodeToString(keyBytes)
 
 	delete(s.byKey, k.Key)
 	k.Key = newKey
