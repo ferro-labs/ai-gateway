@@ -98,17 +98,6 @@ func (p *Provider) DiscoverModels(ctx context.Context) ([]core.ModelInfo, error)
 	return discovery.DiscoverOpenAICompatibleModels(ctx, p.httpClient, p.baseURL+"/v1/models", p.apiKey, p.name)
 }
 
-// ------------------------------------------------------------------ types ---
-
-type errorDetail struct {
-	Message string `json:"message"`
-	Type    string `json:"type"`
-}
-
-type errorResponse struct {
-	Error errorDetail `json:"error"`
-}
-
 // Complete sends a chat completion request to Together AI.
 func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
 	return openaicompat.PostChat(ctx, openaicompat.ChatParams{

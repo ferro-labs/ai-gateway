@@ -420,13 +420,8 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 		defer close(ch)
 		defer func() { _ = httpResp.Body.Close() }()
 
-		scanner := core.NewSSEScanner(httpResp.Body)
-		for scanner.Scan() {
-			line := scanner.Text()
-			if !strings.HasPrefix(line, "data: ") {
-				continue
-			}
-			data := strings.TrimPrefix(line, "data: ")
+		lines, scanErr := core.SSEDataLines(httpResp.Body)
+		for data := range lines {
 
 			var event cohereStreamEvent
 			if json.Unmarshal([]byte(data), &event) != nil {
@@ -505,7 +500,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 				return
 			}
 		}
-		if err := scanner.Err(); err != nil {
+		if err := scanErr(); err != nil {
 			ch <- core.StreamChunk{Error: err}
 		}
 	}()

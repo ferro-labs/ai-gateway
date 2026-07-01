@@ -117,11 +117,7 @@ func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*c
 	}
 
 	if httpResp.StatusCode != http.StatusOK {
-		var errResp vertexAIError
-		if json.Unmarshal(respBody, &errResp) == nil && errResp.Error.Message != "" {
-			return nil, fmt.Errorf("vertex ai image API error (%d): %s", httpResp.StatusCode, errResp.Error.Message)
-		}
-		return nil, fmt.Errorf("vertex ai image API error (%d): %s", httpResp.StatusCode, string(respBody))
+		return nil, core.APIError("vertex ai image", httpResp.StatusCode, respBody)
 	}
 
 	var imagenResp imagenResponse

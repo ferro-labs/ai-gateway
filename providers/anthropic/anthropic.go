@@ -192,16 +192,6 @@ type anthropicResponse struct {
 	Usage      anthropicUsage          `json:"usage"`
 }
 
-type anthropicError struct {
-	Type    string `json:"type"`
-	Message string `json:"message"`
-}
-
-type anthropicErrorResponse struct {
-	Type  string         `json:"type"`
-	Error anthropicError `json:"error"`
-}
-
 func buildMessages(req core.Request) ([]anthropicMessage, string) {
 	var systemParts []string
 	var messages []anthropicMessage
@@ -284,25 +274,6 @@ func buildContent(msg core.Message) any {
 	return blocks
 }
 
-func anthropicToolChoice(choice any, tools []core.Tool) any {
-	// tool_choice is only valid alongside tools; Anthropic rejects it otherwise.
-	if len(tools) == 0 {
-		return nil
-	}
-	switch kind, name := core.NormalizeToolChoice(choice); kind {
-	case core.ToolChoiceAuto:
-		return map[string]string{"type": "auto"}
-	case core.ToolChoiceNone:
-		return map[string]string{"type": "none"}
-	case core.ToolChoiceRequired:
-		return map[string]string{"type": "any"}
-	case core.ToolChoiceFunction:
-		return map[string]string{"type": "tool", "name": name}
-	default:
-		return nil
-	}
-}
-
 // imageBlock maps an OpenAI image_url (data URI or remote URL) to an Anthropic
 // image content block.
 func imageBlock(url string) anthropicReqBlock {
@@ -361,7 +332,7 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 		StopSequences: req.Stop,
 		System:        system,
 		Tools:         anthropicwire.MapTools(req.Tools),
-		ToolChoice:    anthropicToolChoice(req.ToolChoice, req.Tools),
+		ToolChoice:    anthropicwire.MapToolChoice(req.ToolChoice, req.Tools),
 	}
 
 	bodyReader, _, release, err := core.JSONBodyReader(aReq)
@@ -391,11 +362,7 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 		if err != nil {
 			return nil, fmt.Errorf("failed to read response: %w", err)
 		}
-		var errResp anthropicErrorResponse
-		if json.Unmarshal(respBody, &errResp) == nil && errResp.Error.Message != "" {
-			return nil, fmt.Errorf("anthropic API error (%d): %s", httpResp.StatusCode, errResp.Error.Message)
-		}
-		return nil, fmt.Errorf("anthropic API error (%d): %s", httpResp.StatusCode, string(respBody))
+		return nil, core.APIError("anthropic", httpResp.StatusCode, respBody)
 	}
 
 	// Success path streams the decode straight off the response body, avoiding
@@ -513,7 +480,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 		StopSequences: req.Stop,
 		System:        system,
 		Tools:         anthropicwire.MapTools(req.Tools),
-		ToolChoice:    anthropicToolChoice(req.ToolChoice, req.Tools),
+		ToolChoice:    anthropicwire.MapToolChoice(req.ToolChoice, req.Tools),
 		Stream:        true,
 	}
 
@@ -539,11 +506,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 	if httpResp.StatusCode != http.StatusOK {
 		defer func() { _ = httpResp.Body.Close() }()
 		respBody, _ := io.ReadAll(httpResp.Body)
-		var errResp anthropicErrorResponse
-		if json.Unmarshal(respBody, &errResp) == nil && errResp.Error.Message != "" {
-			return nil, fmt.Errorf("anthropic API error (%d): %s", httpResp.StatusCode, errResp.Error.Message)
-		}
-		return nil, fmt.Errorf("anthropic API error (%d): %s", httpResp.StatusCode, string(respBody))
+		return nil, core.APIError("anthropic", httpResp.StatusCode, respBody)
 	}
 
 	ch := make(chan core.StreamChunk)
@@ -556,13 +519,8 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 		toolCallIndexes := make(map[int]int)
 		toolArgsSeen := make(map[int]bool) // tool-call index -> received any input_json_delta
 		nextToolCallIndex := 0
-		scanner := core.NewSSEScanner(httpResp.Body)
-		for scanner.Scan() {
-			line := scanner.Text()
-			if !strings.HasPrefix(line, "data: ") {
-				continue
-			}
-			data := strings.TrimPrefix(line, "data: ")
+		lines, scanErr := core.SSEDataLines(httpResp.Body)
+		for data := range lines {
 
 			var raw map[string]any
 			if json.Unmarshal([]byte(data), &raw) != nil {
@@ -705,7 +663,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 				}
 			}
 		}
-		if err := scanner.Err(); err != nil {
+		if err := scanErr(); err != nil {
 			ch <- core.StreamChunk{Error: err}
 		}
 	}()

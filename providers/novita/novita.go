@@ -88,16 +88,6 @@ func (p *Provider) DiscoverModels(ctx context.Context) ([]core.ModelInfo, error)
 	return discov.DiscoverOpenAICompatibleModels(ctx, p.httpClient, p.baseURL+"/models", p.apiKey, p.name)
 }
 
-// errorDetail and errorResponse are retained for embedding.go's error decoding.
-type errorDetail struct {
-	Message string `json:"message"`
-	Type    string `json:"type"`
-}
-
-type errorResponse struct {
-	Error errorDetail `json:"error"`
-}
-
 // Complete sends a chat completion request to Novita.
 func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
 	return openaicompat.PostChat(ctx, openaicompat.ChatParams{

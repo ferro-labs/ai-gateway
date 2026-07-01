@@ -2,12 +2,13 @@ package anthropic
 
 import (
 	"context"
-	"github.com/ferro-labs/ai-gateway/providers/core"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"testing"
 	"time"
+
+	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
 // TestAnthropicProvider_DiscoverModels verifies live model discovery uses the

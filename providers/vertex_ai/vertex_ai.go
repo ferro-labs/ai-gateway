@@ -154,13 +154,6 @@ type vertexAIResponse struct {
 	Usage   core.Usage    `json:"usage"`
 }
 
-type vertexAIError struct {
-	Error struct {
-		Message string `json:"message"`
-		Status  string `json:"status"`
-	} `json:"error"`
-}
-
 type vertexAIEmbeddingRequest struct {
 	Instances  []vertexAIEmbeddingInstance  `json:"instances"`
 	Parameters *vertexAIEmbeddingParameters `json:"parameters,omitempty"`
@@ -223,35 +216,6 @@ func (p *Provider) authorizeRequest(req *http.Request) error {
 	return nil
 }
 
-func vertexAIEmbeddingInputs(input any) ([]string, error) {
-	switch v := input.(type) {
-	case string:
-		return []string{v}, nil
-	case []string:
-		if len(v) == 0 {
-			return nil, fmt.Errorf("embed: Input must not be an empty array")
-		}
-		return v, nil
-	case []any:
-		if len(v) == 0 {
-			return nil, fmt.Errorf("embed: Input must not be an empty array")
-		}
-		texts := make([]string, 0, len(v))
-		for i, item := range v {
-			s, ok := item.(string)
-			if !ok {
-				return nil, fmt.Errorf("embed: Input[%d] is %T, want string", i, item)
-			}
-			texts = append(texts, s)
-		}
-		return texts, nil
-	case nil:
-		return nil, fmt.Errorf("embed: Input must not be nil")
-	default:
-		return nil, fmt.Errorf("embed: unsupported Input type %T; want string or []string", input)
-	}
-}
-
 func vertexAIModelID(model string) string {
 	model = strings.TrimPrefix(model, "publishers/google/models/")
 	model = strings.TrimPrefix(model, "models/")
@@ -289,7 +253,7 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 	if req.EncodingFormat != "" && req.EncodingFormat != "float" {
 		return nil, fmt.Errorf("embed: unsupported encoding_format %q; valid value is \"float\"", req.EncodingFormat)
 	}
-	texts, err := vertexAIEmbeddingInputs(req.Input)
+	texts, err := core.CoerceEmbeddingInput(req.Input)
 	if err != nil {
 		return nil, err
 	}
@@ -331,11 +295,7 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 	}
 
 	if httpResp.StatusCode != http.StatusOK {
-		var errResp vertexAIError
-		if json.Unmarshal(respBody, &errResp) == nil && errResp.Error.Message != "" {
-			return nil, fmt.Errorf("vertex ai embed API error (%d): %s", httpResp.StatusCode, errResp.Error.Message)
-		}
-		return nil, fmt.Errorf("vertex ai embed API error (%d): %s", httpResp.StatusCode, string(respBody))
+		return nil, core.APIError("vertex ai embed", httpResp.StatusCode, respBody)
 	}
 
 	var vertexResp vertexAIEmbeddingResponse
@@ -402,11 +362,7 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 	}
 
 	if httpResp.StatusCode != http.StatusOK {
-		var errResp vertexAIError
-		if json.Unmarshal(respBody, &errResp) == nil && errResp.Error.Message != "" {
-			return nil, fmt.Errorf("vertex ai API error (%d): %s", httpResp.StatusCode, errResp.Error.Message)
-		}
-		return nil, fmt.Errorf("vertex ai API error (%d): %s", httpResp.StatusCode, string(respBody))
+		return nil, core.APIError("vertex ai", httpResp.StatusCode, respBody)
 	}
 
 	var vertexResp vertexAIResponse
@@ -448,11 +404,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 	if httpResp.StatusCode != http.StatusOK {
 		defer func() { _ = httpResp.Body.Close() }()
 		respBody, _ := io.ReadAll(httpResp.Body)
-		var errResp vertexAIError
-		if json.Unmarshal(respBody, &errResp) == nil && errResp.Error.Message != "" {
-			return nil, fmt.Errorf("vertex ai API error (%d): %s", httpResp.StatusCode, errResp.Error.Message)
-		}
-		return nil, fmt.Errorf("vertex ai API error (%d): %s", httpResp.StatusCode, string(respBody))
+		return nil, core.APIError("vertex ai", httpResp.StatusCode, respBody)
 	}
 
 	return openaicompat.StreamSSE(httpResp.Body), nil

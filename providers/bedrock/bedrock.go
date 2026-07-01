@@ -409,7 +409,7 @@ type bedrockCohereEmbedResponse struct {
 
 // Embed sends a text embedding request to AWS Bedrock.
 func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.EmbeddingResponse, error) {
-	texts, err := bedrockEmbeddingTexts(req.Input)
+	texts, err := core.CoerceEmbeddingInput(req.Input)
 	if err != nil {
 		return nil, err
 	}
@@ -428,35 +428,6 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 		return p.embedCohere(ctx, req, modelID, texts)
 	default:
 		return nil, fmt.Errorf("unsupported Bedrock embedding model: %s", req.Model)
-	}
-}
-
-func bedrockEmbeddingTexts(input any) ([]string, error) {
-	switch v := input.(type) {
-	case string:
-		return []string{v}, nil
-	case []string:
-		if len(v) == 0 {
-			return nil, fmt.Errorf("embed: Input must not be an empty array")
-		}
-		return v, nil
-	case []any:
-		if len(v) == 0 {
-			return nil, fmt.Errorf("embed: Input must not be an empty array")
-		}
-		texts := make([]string, 0, len(v))
-		for i, item := range v {
-			s, ok := item.(string)
-			if !ok {
-				return nil, fmt.Errorf("embed: Input[%d] is %T, want string", i, item)
-			}
-			texts = append(texts, s)
-		}
-		return texts, nil
-	case nil:
-		return nil, fmt.Errorf("embed: Input must not be nil")
-	default:
-		return nil, fmt.Errorf("embed: unsupported Input type %T; want string or []string", input)
 	}
 }
 
@@ -664,25 +635,6 @@ func bedrockAnthropicContent(msg core.Message) any {
 	return blocks
 }
 
-func bedrockAnthropicToolChoice(choice any, tools []core.Tool) any {
-	// tool_choice is only valid alongside tools; Anthropic-on-Bedrock 400s otherwise.
-	if len(tools) == 0 {
-		return nil
-	}
-	switch kind, name := core.NormalizeToolChoice(choice); kind {
-	case core.ToolChoiceAuto:
-		return map[string]string{"type": "auto"}
-	case core.ToolChoiceNone:
-		return map[string]string{"type": "none"}
-	case core.ToolChoiceRequired:
-		return map[string]string{"type": "any"}
-	case core.ToolChoiceFunction:
-		return map[string]string{"type": "tool", "name": name}
-	default:
-		return nil
-	}
-}
-
 // Complete sends a non-streaming chat completion request to Bedrock, dispatching
 // to the model family (Anthropic, Titan, Llama) that matches the model prefix.
 func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
@@ -716,7 +668,7 @@ func (p *Provider) completeAnthropic(ctx context.Context, req core.Request) (*co
 		MaxTokens:        maxTokens,
 		Messages:         messages,
 		Tools:            anthropicwire.MapTools(req.Tools),
-		ToolChoice:       bedrockAnthropicToolChoice(req.ToolChoice, req.Tools),
+		ToolChoice:       anthropicwire.MapToolChoice(req.ToolChoice, req.Tools),
 		Temperature:      req.Temperature,
 		TopP:             req.TopP,
 		StopSequences:    req.Stop,
@@ -990,7 +942,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 		MaxTokens:        maxTokens,
 		Messages:         messages,
 		Tools:            anthropicwire.MapTools(req.Tools),
-		ToolChoice:       bedrockAnthropicToolChoice(req.ToolChoice, req.Tools),
+		ToolChoice:       anthropicwire.MapToolChoice(req.ToolChoice, req.Tools),
 		Temperature:      req.Temperature,
 		TopP:             req.TopP,
 		StopSequences:    req.Stop,

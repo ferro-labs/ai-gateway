@@ -50,8 +50,10 @@ client-ritual copies.
       - _Deferred (noted): Route's internal helper extraction — its blocks return mid-body / mutate
         shared locals, so not trivially behavior-preserving. Revisit if Route is touched again._
       - _Observed: root `-race` suite runs ~144s vs `make test`'s 180s timeout — flaky-timeout risk → Phase 10._
-- [ ] **Phase 2 — Provider cross-cutting dedup** (M): `openaicompat.PostEmbeddings`;
-      `core.CoerceEmbeddingInput`; promote `APIError` to `core`; extend `internal/anthropicwire`; shared SSE framing.
+- [x] **Phase 2 — Provider cross-cutting dedup** ✅ (M): `openaicompat.PostEmbeddings`;
+      `core.CoerceEmbeddingInput`; `core.APIError`; `anthropicwire` messages/tool-choice; `core.SSEDataLines`.
+      Net −507 lines across 25 files; only byte-for-byte-compatible providers migrated (cohere/ai21/
+      replicate/openai/databricks/nvidia_nim/azure/ollama deliberately left as-is).
 - [ ] **Phase 3 — Split big provider files** (M): bedrock→family files; shared request/stream builders;
       `defaultMaxTokens` const; stray-godoc fixes.
 - [ ] **Phase 4 — admin split & dedup** (M): `handlers.go` by resource; shared query-param parsing; `maskKey`.

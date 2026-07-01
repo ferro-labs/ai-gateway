@@ -195,15 +195,6 @@ type geminiResponse struct {
 	} `json:"usageMetadata"`
 }
 
-type geminiErrorDetail struct {
-	Message string `json:"message"`
-	Status  string `json:"status"`
-}
-
-type geminiErrorResponse struct {
-	Error geminiErrorDetail `json:"error"`
-}
-
 type geminiEmbeddingContent struct {
 	Parts []geminiPart `json:"parts"`
 }
@@ -478,35 +469,6 @@ func geminiToolConfigFor(choice any) *geminiToolConfig {
 	}
 }
 
-func embeddingInputs(input any) ([]string, error) {
-	switch v := input.(type) {
-	case string:
-		return []string{v}, nil
-	case []string:
-		if len(v) == 0 {
-			return nil, fmt.Errorf("embed: Input must not be an empty array")
-		}
-		return v, nil
-	case []any:
-		if len(v) == 0 {
-			return nil, fmt.Errorf("embed: Input must not be an empty array")
-		}
-		texts := make([]string, 0, len(v))
-		for i, item := range v {
-			s, ok := item.(string)
-			if !ok {
-				return nil, fmt.Errorf("embed: Input[%d] is %T, want string", i, item)
-			}
-			texts = append(texts, s)
-		}
-		return texts, nil
-	case nil:
-		return nil, fmt.Errorf("embed: Input must not be nil")
-	default:
-		return nil, fmt.Errorf("embed: unsupported Input type %T; want string or []string", input)
-	}
-}
-
 func geminiModelResource(model string) string {
 	model = strings.TrimPrefix(model, "models/")
 	return "models/" + model
@@ -517,7 +479,7 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 	if req.EncodingFormat != "" && req.EncodingFormat != "float" {
 		return nil, fmt.Errorf("embed: unsupported encoding_format %q; valid value is \"float\"", req.EncodingFormat)
 	}
-	texts, err := embeddingInputs(req.Input)
+	texts, err := core.CoerceEmbeddingInput(req.Input)
 	if err != nil {
 		return nil, err
 	}
@@ -560,11 +522,7 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 	}
 
 	if httpResp.StatusCode != http.StatusOK {
-		var errResp geminiErrorResponse
-		if json.Unmarshal(respBody, &errResp) == nil && errResp.Error.Message != "" {
-			return nil, fmt.Errorf("gemini embed API error (%d): %s", httpResp.StatusCode, errResp.Error.Message)
-		}
-		return nil, fmt.Errorf("gemini embed API error (%d): %s", httpResp.StatusCode, string(respBody))
+		return nil, core.APIError("gemini embed", httpResp.StatusCode, respBody)
 	}
 
 	var geminiResp geminiBatchEmbedResponse
@@ -630,11 +588,7 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 	}
 
 	if httpResp.StatusCode != http.StatusOK {
-		var errResp geminiErrorResponse
-		if json.Unmarshal(respBody, &errResp) == nil && errResp.Error.Message != "" {
-			return nil, fmt.Errorf("gemini API error (%d): %s", httpResp.StatusCode, errResp.Error.Message)
-		}
-		return nil, fmt.Errorf("gemini API error (%d): %s", httpResp.StatusCode, string(respBody))
+		return nil, core.APIError("gemini", httpResp.StatusCode, respBody)
 	}
 
 	var geminiResp geminiResponse
@@ -717,11 +671,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 	if httpResp.StatusCode != http.StatusOK {
 		defer func() { _ = httpResp.Body.Close() }()
 		respBody, _ := io.ReadAll(httpResp.Body)
-		var errResp geminiErrorResponse
-		if json.Unmarshal(respBody, &errResp) == nil && errResp.Error.Message != "" {
-			return nil, fmt.Errorf("gemini API error (%d): %s", httpResp.StatusCode, errResp.Error.Message)
-		}
-		return nil, fmt.Errorf("gemini API error (%d): %s", httpResp.StatusCode, string(respBody))
+		return nil, core.APIError("gemini", httpResp.StatusCode, respBody)
 	}
 
 	ch := make(chan core.StreamChunk)
@@ -729,13 +679,8 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 		defer close(ch)
 		defer func() { _ = httpResp.Body.Close() }()
 
-		scanner := core.NewSSEScanner(httpResp.Body)
-		for scanner.Scan() {
-			line := scanner.Text()
-			if !strings.HasPrefix(line, "data: ") {
-				continue
-			}
-			data := strings.TrimPrefix(line, "data: ")
+		lines, scanErr := core.SSEDataLines(httpResp.Body)
+		for data := range lines {
 
 			var chunk geminiStreamResponse
 			if json.Unmarshal([]byte(data), &chunk) != nil {
@@ -785,7 +730,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 			}
 			ch <- sc
 		}
-		if err := scanner.Err(); err != nil {
+		if err := scanErr(); err != nil {
 			ch <- core.StreamChunk{Error: err}
 		}
 	}()

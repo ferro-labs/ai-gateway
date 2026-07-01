@@ -1,6 +1,9 @@
 package providers
 
 import (
+	"slices"
+	"testing"
+
 	ai21pkg "github.com/ferro-labs/ai-gateway/providers/ai21"
 	anthropicpkg "github.com/ferro-labs/ai-gateway/providers/anthropic"
 	azurefoundrypkg "github.com/ferro-labs/ai-gateway/providers/azure_foundry"
@@ -31,8 +34,6 @@ import (
 	togetherpkg "github.com/ferro-labs/ai-gateway/providers/together"
 	vertexaipkg "github.com/ferro-labs/ai-gateway/providers/vertex_ai"
 	xaipkg "github.com/ferro-labs/ai-gateway/providers/xai"
-	"slices"
-	"testing"
 )
 
 // TestProviderNameStability verifies that every provider's Name() method returns

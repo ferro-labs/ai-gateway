@@ -18,21 +18,11 @@ type ChatResponse struct {
 	Usage   core.Usage    `json:"usage"`
 }
 
-type apiErrorEnvelope struct {
-	Error struct {
-		Message string `json:"message"`
-	} `json:"error"`
-}
-
-// APIError builds a provider error from a non-200 response body, using the
-// OpenAI {"error":{"message":…}} envelope when present and falling back to the
-// raw body. label is the human-facing provider name (e.g. "groq").
+// APIError builds a provider error from a non-200 response body. It delegates to
+// core.APIError, which uses the OpenAI {"error":{"message":…}} envelope when
+// present and falls back to the raw body. label is the human-facing provider name.
 func APIError(label string, status int, body []byte) error {
-	var e apiErrorEnvelope
-	if json.Unmarshal(body, &e) == nil && e.Error.Message != "" {
-		return fmt.Errorf("%s API error (%d): %s", label, status, e.Error.Message)
-	}
-	return fmt.Errorf("%s API error (%d): %s", label, status, string(body))
+	return core.APIError(label, status, body)
 }
 
 // ChatParams configures a request to an OpenAI-compatible chat endpoint.
