@@ -665,7 +665,6 @@ func TestNewSpanExporter_WithHeaders(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := DefaultConfig()
 			cfg.Endpoint = testEndpoint
@@ -708,7 +707,6 @@ func TestEndpointIsSecure(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.endpoint, func(t *testing.T) {
 			got := endpointIsSecure(tc.endpoint)
 			if got != tc.want {

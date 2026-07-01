@@ -5,6 +5,15 @@ import (
 	"time"
 )
 
+// fakeClock is a manually-advanced clock used to drive Open→HalfOpen timeout
+// transitions deterministically, replacing time.Sleep in breaker timing tests.
+// All breaker calls here run on the test goroutine, so no locking is needed.
+type fakeClock struct{ t time.Time }
+
+func newFakeClock() *fakeClock               { return &fakeClock{t: time.Unix(0, 0)} }
+func (c *fakeClock) Now() time.Time          { return c.t }
+func (c *fakeClock) Advance(d time.Duration) { c.t = c.t.Add(d) }
+
 func TestInitialStateClosed(t *testing.T) {
 	cb := New(3, 1, 1, 10*time.Second)
 	if cb.State() != StateClosed {
@@ -30,8 +39,10 @@ func TestOpensAfterThreshold(t *testing.T) {
 
 func TestTransitionsToHalfOpenAfterTimeout(t *testing.T) {
 	cb := New(1, 1, 1, 1*time.Millisecond)
+	clk := newFakeClock()
+	cb.SetNowForTest(clk.Now)
 	cb.RecordFailure()
-	time.Sleep(5 * time.Millisecond)
+	clk.Advance(5 * time.Millisecond)
 	if cb.State() != StateHalfOpen {
 		t.Fatalf("expected half_open after timeout, got %s", cb.State())
 	}
@@ -42,8 +53,10 @@ func TestTransitionsToHalfOpenAfterTimeout(t *testing.T) {
 
 func TestClosesAfterSuccessInHalfOpen(t *testing.T) {
 	cb := New(1, 1, 1, 1*time.Millisecond)
+	clk := newFakeClock()
+	cb.SetNowForTest(clk.Now)
 	cb.RecordFailure()
-	time.Sleep(5 * time.Millisecond)
+	clk.Advance(5 * time.Millisecond)
 	_ = cb.State() // trigger half-open transition
 	cb.Allow()
 	cb.RecordSuccess()
@@ -54,8 +67,10 @@ func TestClosesAfterSuccessInHalfOpen(t *testing.T) {
 
 func TestReopensOnFailureInHalfOpen(t *testing.T) {
 	cb := New(1, 1, 1, 1*time.Millisecond)
+	clk := newFakeClock()
+	cb.SetNowForTest(clk.Now)
 	cb.RecordFailure()
-	time.Sleep(5 * time.Millisecond)
+	clk.Advance(5 * time.Millisecond)
 	_ = cb.State() // trigger half-open transition
 	cb.Allow()
 	cb.RecordFailure()
@@ -78,8 +93,10 @@ func TestSuccessResetFailureCount(t *testing.T) {
 
 func TestHalfOpenProbeCap(t *testing.T) {
 	cb := New(1, 1, 2, 1*time.Millisecond)
+	clk := newFakeClock()
+	cb.SetNowForTest(clk.Now)
 	cb.RecordFailure()
-	time.Sleep(5 * time.Millisecond)
+	clk.Advance(5 * time.Millisecond)
 	_ = cb.State() // trigger half-open transition
 
 	// First two probes should be allowed (cap = 2)
@@ -105,8 +122,10 @@ func TestHalfOpenProbeCapReleasedOnFailure(t *testing.T) {
 	// cap=2: fill both slots, then one probe fails; after re-entering half-open
 	// both slots must be available again, proving RecordFailure decremented before reset.
 	cb := New(1, 1, 2, 1*time.Millisecond)
+	clk := newFakeClock()
+	cb.SetNowForTest(clk.Now)
 	cb.RecordFailure()
-	time.Sleep(5 * time.Millisecond)
+	clk.Advance(5 * time.Millisecond)
 	_ = cb.State()
 
 	if !cb.Allow() {
@@ -125,7 +144,7 @@ func TestHalfOpenProbeCapReleasedOnFailure(t *testing.T) {
 		t.Fatalf("expected open after failure, got %s", cb.State())
 	}
 
-	time.Sleep(5 * time.Millisecond)
+	clk.Advance(5 * time.Millisecond)
 	_ = cb.State() // re-enter half-open
 
 	// Both slots must be free — counter was cleanly reset by RecordFailure
@@ -142,8 +161,10 @@ func TestHalfOpenProbeCapReleasedOnFailure(t *testing.T) {
 
 func TestHalfOpenProbesResetOnReopen(t *testing.T) {
 	cb := New(1, 2, 1, 1*time.Millisecond)
+	clk := newFakeClock()
+	cb.SetNowForTest(clk.Now)
 	cb.RecordFailure()
-	time.Sleep(5 * time.Millisecond)
+	clk.Advance(5 * time.Millisecond)
 	_ = cb.State() // trigger half-open transition
 
 	cb.Allow()
@@ -153,7 +174,7 @@ func TestHalfOpenProbesResetOnReopen(t *testing.T) {
 		t.Fatalf("expected open, got %s", cb.State())
 	}
 	// Simulate timeout expiry and re-entry into half-open
-	time.Sleep(5 * time.Millisecond)
+	clk.Advance(5 * time.Millisecond)
 	_ = cb.State() // transition to half-open again
 
 	// Probe counter should be reset — first probe must be allowed
@@ -166,8 +187,10 @@ func TestHalfOpenProbesResetOnReopen(t *testing.T) {
 // normalized to 1, so a second concurrent probe is rejected.
 func TestDefaultMaxHalfThreshold(t *testing.T) {
 	cb := New(1, 1, 0, 1*time.Millisecond) // 0 → normalized to 1
+	clk := newFakeClock()
+	cb.SetNowForTest(clk.Now)
 	cb.RecordFailure()
-	time.Sleep(5 * time.Millisecond)
+	clk.Advance(5 * time.Millisecond)
 	_ = cb.State()
 
 	if !cb.Allow() {
@@ -180,8 +203,10 @@ func TestDefaultMaxHalfThreshold(t *testing.T) {
 
 func TestReleaseProbeFreesHalfOpenSlotWithoutRecordingOutcome(t *testing.T) {
 	cb := New(1, 1, 1, 1*time.Millisecond)
+	clk := newFakeClock()
+	cb.SetNowForTest(clk.Now)
 	cb.RecordFailure()
-	time.Sleep(5 * time.Millisecond)
+	clk.Advance(5 * time.Millisecond)
 	_ = cb.State()
 
 	if !cb.Allow() {
@@ -207,8 +232,10 @@ func TestReleaseProbeFreesHalfOpenSlotWithoutRecordingOutcome(t *testing.T) {
 func TestHalfOpenSuccessThresholdWithSlotRecycling(t *testing.T) {
 	// cap=2, need 2 successes to close
 	cb := New(1, 2, 2, 1*time.Millisecond)
+	clk := newFakeClock()
+	cb.SetNowForTest(clk.Now)
 	cb.RecordFailure()
-	time.Sleep(5 * time.Millisecond)
+	clk.Advance(5 * time.Millisecond)
 	_ = cb.State()
 
 	if !cb.Allow() {
@@ -249,8 +276,10 @@ func TestRecordSuccessAfterConcurrentReopenIsNoop(t *testing.T) {
 	// cap=2: probe A and probe B both admitted; probe B fails first (reopens);
 	// probe A's RecordSuccess arrives after the reopen.
 	cb := New(1, 1, 2, 1*time.Millisecond)
+	clk := newFakeClock()
+	cb.SetNowForTest(clk.Now)
 	cb.RecordFailure()
-	time.Sleep(5 * time.Millisecond)
+	clk.Advance(5 * time.Millisecond)
 	_ = cb.State()
 
 	cb.Allow() // probe A admitted
@@ -270,7 +299,7 @@ func TestRecordSuccessAfterConcurrentReopenIsNoop(t *testing.T) {
 	}
 
 	// After timeout the circuit should re-enter half-open cleanly
-	time.Sleep(5 * time.Millisecond)
+	clk.Advance(5 * time.Millisecond)
 	if cb.State() != StateHalfOpen {
 		t.Fatalf("expected half_open after timeout, got %s", cb.State())
 	}
@@ -284,10 +313,12 @@ func TestRecordSuccessAfterConcurrentReopenIsNoop(t *testing.T) {
 // half-open entry always starts with a clean counter.
 func TestHalfOpenProbesZeroOnClosedToOpenTransition(t *testing.T) {
 	cb := New(1, 1, 1, 1*time.Millisecond)
+	clk := newFakeClock()
+	cb.SetNowForTest(clk.Now)
 
 	// Drive through a full cycle: closed→open→half-open→closed
 	cb.RecordFailure()
-	time.Sleep(5 * time.Millisecond)
+	clk.Advance(5 * time.Millisecond)
 	_ = cb.State()     // →half-open
 	cb.Allow()         // probe admitted (halfOpenProbes=1)
 	cb.RecordSuccess() // closes (halfOpenProbes zeroed)
@@ -303,7 +334,7 @@ func TestHalfOpenProbesZeroOnClosedToOpenTransition(t *testing.T) {
 	}
 
 	// Re-enter half-open: both slots must be free
-	time.Sleep(5 * time.Millisecond)
+	clk.Advance(5 * time.Millisecond)
 	_ = cb.State()
 	if !cb.Allow() {
 		t.Fatal("expected probe allowed: halfOpenProbes must be 0 after Closed→Open transition")

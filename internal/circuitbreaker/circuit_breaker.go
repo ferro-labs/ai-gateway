@@ -56,6 +56,7 @@ type CircuitBreaker struct {
 	halfOpenProbes   int // current number of in-flight probes
 	timeout          time.Duration
 	openUntil        time.Time
+	now              func() time.Time // clock seam; defaults to time.Now, overridable in tests
 }
 
 // New creates a CircuitBreaker with the given thresholds and open timeout.
@@ -80,7 +81,20 @@ func New(failureThreshold, successThreshold int, maxHalfThreshold int, timeout t
 		successThreshold: successThreshold,
 		maxHalfThreshold: maxHalfThreshold,
 		timeout:          timeout,
+		now:              time.Now,
 	}
+}
+
+// SetNowForTest overrides the internal clock used for Open→HalfOpen timeout
+// transitions so tests (including those in other packages) can advance virtual
+// time deterministically instead of sleeping. Passing nil restores time.Now.
+func (cb *CircuitBreaker) SetNowForTest(fn func() time.Time) {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	if fn == nil {
+		fn = time.Now
+	}
+	cb.now = fn
 }
 
 // State returns the current state, transitioning Open→HalfOpen if the timeout
@@ -93,7 +107,7 @@ func (cb *CircuitBreaker) State() State {
 
 // resolveState must be called with cb.mu held.
 func (cb *CircuitBreaker) resolveState() State {
-	if cb.state == StateOpen && time.Now().After(cb.openUntil) {
+	if cb.state == StateOpen && cb.now().After(cb.openUntil) {
 		cb.state = StateHalfOpen
 		cb.successCount = 0
 		cb.halfOpenProbes = 0
@@ -159,11 +173,11 @@ func (cb *CircuitBreaker) RecordFailure() {
 		cb.failureCount++
 		if cb.failureCount >= cb.failureThreshold {
 			cb.state = StateOpen
-			cb.openUntil = time.Now().Add(cb.timeout)
+			cb.openUntil = cb.now().Add(cb.timeout)
 		}
 	case StateHalfOpen:
 		cb.state = StateOpen
-		cb.openUntil = time.Now().Add(cb.timeout)
+		cb.openUntil = cb.now().Add(cb.timeout)
 		cb.successCount = 0
 		cb.halfOpenProbes = 0
 	}

@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -191,7 +192,7 @@ func runUntilShutdown(gw *aigateway.Gateway, srv *http.Server) error {
 	case <-ctx.Done():
 		logging.Logger.Info("shutdown signal received")
 	case listenErr = <-serveErr:
-		if listenErr != nil && listenErr != http.ErrServerClosed {
+		if listenErr != nil && !errors.Is(listenErr, http.ErrServerClosed) {
 			logging.Logger.Error("server error", "error", listenErr)
 		}
 	}
@@ -240,7 +241,7 @@ func gracefulShutdown(
 
 	logging.Logger.Info("server stopped")
 
-	if listenErr != nil && listenErr != http.ErrServerClosed {
+	if listenErr != nil && !errors.Is(listenErr, http.ErrServerClosed) {
 		os.Exit(1)
 	}
 }

@@ -178,7 +178,7 @@ func (s *topLevelModelScanner) extract() (string, error) {
 	for {
 		tok, err = s.nextNonSpaceByte()
 		if err != nil {
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				return "", nil
 			}
 			return "", err
@@ -226,7 +226,7 @@ func (s *topLevelModelScanner) extract() (string, error) {
 
 		tok, err = s.nextNonSpaceByte()
 		if err != nil {
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				return "", nil
 			}
 			return "", err
@@ -343,7 +343,7 @@ func (s *topLevelModelScanner) skipScalar() error {
 	for {
 		b, err := s.reader.ReadByte()
 		if err != nil {
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				return nil
 			}
 			return err

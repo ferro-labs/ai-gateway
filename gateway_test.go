@@ -1262,8 +1262,12 @@ func TestGateway_CircuitBreaker_ReleasesHalfOpenProbeForIgnoredRateLimit(t *test
 
 func TestRecordStreamCircuitBreakerOutcome_ReleasesHalfOpenProbeForClientCancel(t *testing.T) {
 	cb := circuitbreaker.New(1, 1, 1, 1*time.Millisecond)
+	// Advance a virtual clock instead of sleeping; this test is single-goroutine
+	// and the write below happens-before the cb.State() read it gates.
+	fakeNow := time.Unix(0, 0)
+	cb.SetNowForTest(func() time.Time { return fakeNow })
 	cb.RecordFailure()
-	time.Sleep(5 * time.Millisecond)
+	fakeNow = fakeNow.Add(5 * time.Millisecond)
 	_ = cb.State()
 	if !cb.Allow() {
 		t.Fatal("expected first half-open stream probe allowed")

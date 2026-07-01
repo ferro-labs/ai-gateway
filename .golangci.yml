@@ -6,7 +6,9 @@ run:
 linters:
   enable:
     - bodyclose
+    - copyloopvar
     - errcheck
+    - errorlint
     - goconst
     - gocritic
     - gocyclo
@@ -29,3 +31,8 @@ linters:
       - path: _test\.go
         linters:
           - goconst
+      # Tests compare error values by identity on purpose; the wrapped-error
+      # checks apply to production code only.
+      - path: _test\.go
+        linters:
+          - errorlint

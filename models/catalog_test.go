@@ -312,7 +312,6 @@ func TestCatalogGetProviderAlias(t *testing.T) {
 			len(cases), len(catalogProviderAliases))
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.key, func(t *testing.T) {
 			got, ok := c.Get(tc.key)
 			if !ok {
@@ -326,7 +325,6 @@ func TestCatalogGetProviderAlias(t *testing.T) {
 	}
 
 	for gatewayID := range catalogProviderAliases {
-		gatewayID := gatewayID
 		t.Run(gatewayID+"/unknown", func(t *testing.T) {
 			if _, ok := c.Get(gatewayID + "/unknown-model"); ok {
 				t.Fatalf("Get(%q/unknown-model) should not succeed", gatewayID)
@@ -580,7 +578,6 @@ func TestCatalogPrefixesFor(t *testing.T) {
 		{"does-not-exist", []string{"does-not-exist"}},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.providerID, func(t *testing.T) {
 			got := CatalogPrefixesFor(tc.providerID)
 			if !reflect.DeepEqual(got, tc.want) {
@@ -623,7 +620,6 @@ func TestModelsForProvider(t *testing.T) {
 		{"does-not-exist", 0},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.providerID, func(t *testing.T) {
 			got := c.ModelsForProvider(tc.providerID)
 			if len(got) != tc.wantLen {

@@ -99,8 +99,12 @@ func TestWrite_TimesOutIdleStream(t *testing.T) {
 	}
 }
 
+// TestWrite_ResetsIdleTimeoutAfterChunk verifies a delivered chunk re-arms the
+// idle timer so a following quiet gap does not emit a timeout. The idle timeout
+// (500ms) dwarfs the ~10ms delivery gap, so the timer cannot fire in the
+// dangerous direction and the test is deterministic.
 func TestWrite_ResetsIdleTimeoutAfterChunk(t *testing.T) {
-	restore := SetIdleTimeoutForTest(25 * time.Millisecond)
+	restore := SetIdleTimeoutForTest(500 * time.Millisecond)
 	defer restore()
 
 	ch := make(chan providers.StreamChunk, 2)

@@ -368,7 +368,13 @@ func TestResolvePendingToolCallsAuditFnCalledOnError(t *testing.T) {
 }
 
 func TestResolvePendingToolCallsPanicInAuditFnDoesNotCrash(t *testing.T) {
+	// panicked closes as the audit goroutine unwinds through auditFn's panic
+	// (defer runs during unwinding, before the executor's recover), giving a
+	// deterministic signal that the panic-guard path was exercised. A missing
+	// recover would crash the test binary instead.
+	panicked := make(chan struct{})
 	auditFn := AuditFn(func(_ context.Context, _, _, _ string, _ int, _ string) {
+		defer close(panicked)
 		panic("boom — panic from user-supplied auditFn")
 	})
 
@@ -391,7 +397,11 @@ func TestResolvePendingToolCallsPanicInAuditFnDoesNotCrash(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Brief pause so the goroutine has a chance to panic (and recover) before
-	// the test exits, catching any race against the panic-guard path.
-	time.Sleep(50 * time.Millisecond)
+	// Wait deterministically for the audit goroutine to enter (and panic through)
+	// auditFn, instead of sleeping and hoping it scheduled in time.
+	select {
+	case <-panicked:
+	case <-time.After(time.Second):
+		t.Fatal("audit goroutine did not invoke auditFn")
+	}
 }

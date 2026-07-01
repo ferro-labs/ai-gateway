@@ -77,9 +77,10 @@ client-ritual copies.
 - [x] **Phase 9 — doc & style hygiene** ✅ (S): rewrote stale `redact/doc.go`; documented 4 metrics vars;
       `interface{}`→`any` project-wide (61 files); labelled unwired `Attr*` as Planned; godoc'd public
       `plugin` API; named `requestlog` pagination consts.
-- [ ] **Phase 10 — test determinism + lint hardening** (M): CircuitBreaker clock seam (kills 18
-      sleeps); fix `sse_test` race / mcp-executor sleep / strategy self-skip; enable
-      `dupl`/`funlen`/`file-length`/`nestif`/`errorlint`/`copyloopvar` in `.golangci.yml`.
+- [x] **Phase 10 — test determinism + lint hardening** ✅ (M): CircuitBreaker clock seam (removed the
+      timing sleeps); de-flaked `sse_test` / mcp-executor / strategy self-skip; enabled `copyloopvar` +
+      `errorlint` in `.golangci.yml`. (`funlen`/`mnd`/`wrapcheck`/`dupl`/`nestif` evaluated but deferred —
+      too noisy or require nesting refactors the linter would gate.)
 - [ ] **Phase 11 — completeness gaps** (—): `.github/workflows` action SHA-pinning + CodeQL;
       top-level `mcp/config.go`; release tooling (`.goreleaser.yaml`, `.husky/`, `scripts/`).
       _(`web/` dashboard is intentionally out of scope — owner has a separate plan for it.)_
