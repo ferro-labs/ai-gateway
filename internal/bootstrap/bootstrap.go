@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"os"
 	"os/signal"
@@ -394,13 +395,13 @@ func NewRateLimitStore() *ratelimit.Store {
 		return nil
 	}
 	rps, err := strconv.ParseFloat(rpsStr, 64)
-	if err != nil || rps <= 0 {
+	if err != nil || math.IsNaN(rps) || math.IsInf(rps, 0) || rps <= 0 {
 		logging.Logger.Warn("rate limiting disabled: RATE_LIMIT_RPS must be a positive number", "value", rpsStr)
 		return nil
 	}
 	var burst float64
 	if burstStr := os.Getenv("RATE_LIMIT_BURST"); burstStr != "" {
-		if v, err := strconv.ParseFloat(burstStr, 64); err == nil {
+		if v, err := strconv.ParseFloat(burstStr, 64); err == nil && !math.IsNaN(v) && !math.IsInf(v, 0) && v >= 0 {
 			burst = v
 		} else {
 			logging.Logger.Warn("ignoring invalid RATE_LIMIT_BURST; using 0", "value", burstStr)

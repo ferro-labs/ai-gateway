@@ -3,7 +3,6 @@ package mcp
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	rtrace "runtime/trace"
 	"time"
 
@@ -206,10 +205,11 @@ func (e *Executor) executeToolCall(ctx context.Context, tc core.ToolCall) core.M
 		e.callAuditFn(ctx, serverName, toolName, "error", latencyMs, err.Error())
 		gwotel.RecordSpanError(span, err)
 		span.End()
+		errPayload, _ := json.Marshal(map[string]string{"error": err.Error()})
 		return core.Message{
 			Role:       core.RoleTool,
 			ToolCallID: tc.ID,
-			Content:    fmt.Sprintf(`{"error":%q}`, err.Error()),
+			Content:    string(errPayload),
 		}
 	}
 
