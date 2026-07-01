@@ -159,14 +159,14 @@ func TestQwenProvider_Embed_MockHTTP(t *testing.T) {
 		if got := r.Header.Get("Authorization"); got != testBearerAPIKey {
 			t.Errorf("Authorization = %q, want %s", got, testBearerAPIKey)
 		}
-		var body map[string]interface{}
+		var body map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatalf("decode body: %v", err)
 		}
 		if body["model"] != testEmbeddingModel {
 			t.Errorf("model = %v, want %s", body["model"], testEmbeddingModel)
 		}
-		arr, ok := body["input"].([]interface{})
+		arr, ok := body["input"].([]any)
 		if !ok || len(arr) != 2 || arr[0] != "hello" || arr[1] != "world" {
 			t.Errorf("input = %v, want [hello world]", body["input"])
 		}

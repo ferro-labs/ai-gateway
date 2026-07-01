@@ -18,7 +18,7 @@ func testRequest(content string) *providers.Request {
 	}
 }
 
-func initFilter(t *testing.T, config map[string]interface{}) *WordFilter {
+func initFilter(t *testing.T, config map[string]any) *WordFilter {
 	t.Helper()
 	f := &WordFilter{}
 	if err := f.Init(config); err != nil {
@@ -28,8 +28,8 @@ func initFilter(t *testing.T, config map[string]interface{}) *WordFilter {
 }
 
 func TestWordFilter_Init(t *testing.T) {
-	f := initFilter(t, map[string]interface{}{
-		"blocked_words": []interface{}{"badword", "forbidden"},
+	f := initFilter(t, map[string]any{
+		"blocked_words": []any{"badword", "forbidden"},
 	})
 	if len(f.blockedWords) != 2 {
 		t.Errorf("expected 2 blocked words, got %d", len(f.blockedWords))
@@ -40,8 +40,8 @@ func TestWordFilter_Init(t *testing.T) {
 }
 
 func TestWordFilter_BlocksMessage(t *testing.T) {
-	f := initFilter(t, map[string]interface{}{
-		"blocked_words": []interface{}{"badword"},
+	f := initFilter(t, map[string]any{
+		"blocked_words": []any{"badword"},
 	})
 	pctx := plugin.NewContext(testRequest("this contains badword in it"))
 
@@ -60,8 +60,8 @@ func TestWordFilter_BlocksMessage(t *testing.T) {
 }
 
 func TestWordFilter_AllowsCleanMessage(t *testing.T) {
-	f := initFilter(t, map[string]interface{}{
-		"blocked_words": []interface{}{"badword"},
+	f := initFilter(t, map[string]any{
+		"blocked_words": []any{"badword"},
 	})
 	pctx := plugin.NewContext(testRequest("this is a clean message"))
 
@@ -74,8 +74,8 @@ func TestWordFilter_AllowsCleanMessage(t *testing.T) {
 }
 
 func TestWordFilter_CaseInsensitive(t *testing.T) {
-	f := initFilter(t, map[string]interface{}{
-		"blocked_words":  []interface{}{"BadWord"},
+	f := initFilter(t, map[string]any{
+		"blocked_words":  []any{"BadWord"},
 		"case_sensitive": false,
 	})
 	pctx := plugin.NewContext(testRequest("this has BADWORD in it"))
@@ -92,8 +92,8 @@ func TestWordFilter_CaseInsensitive(t *testing.T) {
 // reason exposed to the caller is a generic policy message and does NOT
 // contain the operator-configured blocked word.
 func TestWordFilter_ReasonDoesNotLeakBlockedWord(t *testing.T) {
-	f := initFilter(t, map[string]interface{}{
-		"blocked_words": []interface{}{"supersecretword"},
+	f := initFilter(t, map[string]any{
+		"blocked_words": []any{"supersecretword"},
 	})
 	pctx := plugin.NewContext(testRequest("this message contains supersecretword inside"))
 
@@ -112,8 +112,8 @@ func TestWordFilter_ReasonDoesNotLeakBlockedWord(t *testing.T) {
 }
 
 func TestWordFilter_CaseSensitive(t *testing.T) {
-	f := initFilter(t, map[string]interface{}{
-		"blocked_words":  []interface{}{"BadWord"},
+	f := initFilter(t, map[string]any{
+		"blocked_words":  []any{"BadWord"},
 		"case_sensitive": true,
 	})
 

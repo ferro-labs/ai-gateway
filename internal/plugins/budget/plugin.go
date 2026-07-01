@@ -159,7 +159,7 @@ func (p *Plugin) Name() string { return "budget" }
 func (p *Plugin) Type() plugin.PluginType { return plugin.TypeRateLimit }
 
 // Init reads the plugin configuration.
-func (p *Plugin) Init(config map[string]interface{}) error {
+func (p *Plugin) Init(config map[string]any) error {
 	p.storeID = "default"
 	if v, ok := config["store_id"].(string); ok && v != "" {
 		p.storeID = v

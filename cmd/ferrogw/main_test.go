@@ -82,7 +82,7 @@ func TestHealth(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200", w.Code)
 	}
-	var body map[string]interface{}
+	var body map[string]any
 	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
 		t.Fatalf("failed to decode health response: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestModels(t *testing.T) {
 		t.Errorf("status = %d, want 200", w.Code)
 	}
 
-	var body map[string]interface{}
+	var body map[string]any
 	_ = json.NewDecoder(w.Body).Decode(&body)
 	if body["object"] != "list" {
 		t.Errorf("object = %v", body["object"])

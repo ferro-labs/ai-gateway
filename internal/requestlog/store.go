@@ -17,6 +17,11 @@ import (
 const (
 	requestLogDialectSQLite   = "sqlite"
 	requestLogDialectPostgres = "postgres"
+
+	// defaultListLimit is the page size applied when a List query omits Limit.
+	defaultListLimit = 50
+	// maxListLimit caps the page size a List query may request.
+	maxListLimit = 200
 )
 
 // Entry represents a persistent request log event emitted by logging plugins.
@@ -193,17 +198,17 @@ func (w *SQLWriter) Write(ctx context.Context, entry Entry) error {
 // List returns paginated request log entries with optional filters.
 func (w *SQLWriter) List(ctx context.Context, query Query) (ListResult, error) {
 	if query.Limit <= 0 {
-		query.Limit = 50
+		query.Limit = defaultListLimit
 	}
-	if query.Limit > 200 {
-		query.Limit = 200
+	if query.Limit > maxListLimit {
+		query.Limit = maxListLimit
 	}
 	if query.Offset < 0 {
 		query.Offset = 0
 	}
 
 	whereClauses := make([]string, 0)
-	args := make([]interface{}, 0)
+	args := make([]any, 0)
 
 	if query.Stage != "" {
 		whereClauses = append(whereClauses, "stage = ?")
@@ -239,7 +244,7 @@ func (w *SQLWriter) List(ctx context.Context, query Query) (ListResult, error) {
 
 	// #nosec G202 -- whereSQL is built only from fixed predicates and bound placeholders.
 	listQuery := "SELECT trace_id, stage, model, provider, prompt_tokens, completion_tokens, total_tokens, error_message, created_at FROM request_logs" + whereSQL + " ORDER BY created_at DESC LIMIT ? OFFSET ?"
-	listArgs := make([]interface{}, 0, len(args)+2)
+	listArgs := make([]any, 0, len(args)+2)
 	listArgs = append(listArgs, args...)
 	listArgs = append(listArgs, query.Limit, query.Offset)
 	if w.dialect == requestLogDialectPostgres {
@@ -295,7 +300,7 @@ func (w *SQLWriter) Delete(ctx context.Context, query MaintenanceQuery) (int, er
 	}
 
 	whereClauses := []string{"created_at < ?"}
-	args := []interface{}{query.Before.UTC()}
+	args := []any{query.Before.UTC()}
 
 	if query.Stage != "" {
 		whereClauses = append(whereClauses, "stage = ?")

@@ -62,7 +62,7 @@ func TestChatStream_HappyPath(t *testing.T) {
 			chunks = append(chunks, data)
 
 			// Validate each chunk is valid JSON.
-			var chunk map[string]interface{}
+			var chunk map[string]any
 			if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 				t.Fatalf("invalid JSON chunk: %s — %v", data, err)
 			}

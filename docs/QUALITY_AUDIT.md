@@ -74,8 +74,9 @@ client-ritual copies.
       child-span errors now go through the privacy redactor (`otel.RecordSpanError`); `Init` +
       `ResolvePendingToolCalls` decomposed; single `observability.ValidatePrivacyLevel`;
       `defaultShutdownGrace` const. (Audit-goroutine bound left documented, not pooled.)
-- [ ] **Phase 9 — doc & style hygiene** (S): rewrite stale `redact/doc.go`; document 4 metrics vars;
-      `interface{}`→`any`; label unwired `Attr*` as Planned; godoc public `plugin` API.
+- [x] **Phase 9 — doc & style hygiene** ✅ (S): rewrote stale `redact/doc.go`; documented 4 metrics vars;
+      `interface{}`→`any` project-wide (61 files); labelled unwired `Attr*` as Planned; godoc'd public
+      `plugin` API; named `requestlog` pagination consts.
 - [ ] **Phase 10 — test determinism + lint hardening** (M): CircuitBreaker clock seam (kills 18
       sleeps); fix `sse_test` race / mcp-executor sleep / strategy self-skip; enable
       `dupl`/`funlen`/`file-length`/`nestif`/`errorlint`/`copyloopvar` in `.golangci.yml`.

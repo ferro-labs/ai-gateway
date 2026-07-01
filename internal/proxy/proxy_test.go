@@ -300,7 +300,7 @@ func TestProxyHandler_NoProvider_Returns400(t *testing.T) {
 		t.Errorf("status = %d, want 400", w.Code)
 	}
 
-	var body map[string]interface{}
+	var body map[string]any
 	_ = json.NewDecoder(w.Body).Decode(&body)
 	if _, ok := body["error"]; !ok {
 		t.Error("expected error field in response body")
@@ -406,11 +406,11 @@ func TestProxyHandler_ErrorHandler_GenericJSON(t *testing.T) {
 	}
 
 	// Body must decode as a JSON error envelope.
-	var resp map[string]interface{}
+	var resp map[string]any
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("response body is not valid JSON: %v\nbody: %s", err, w.Body.String())
 	}
-	errObj, ok := resp["error"].(map[string]interface{})
+	errObj, ok := resp["error"].(map[string]any)
 	if !ok {
 		t.Fatalf("response body has no 'error' object: %v", resp)
 	}

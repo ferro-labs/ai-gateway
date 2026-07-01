@@ -54,7 +54,7 @@ func (p *Plugin) Name() string { return "rate-limit" }
 func (p *Plugin) Type() plugin.PluginType { return plugin.TypeRateLimit }
 
 // Init reads the plugin configuration and initialises limiters.
-func (p *Plugin) Init(config map[string]interface{}) error {
+func (p *Plugin) Init(config map[string]any) error {
 	rps := 100.0
 	burst := 0.0
 

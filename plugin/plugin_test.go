@@ -20,9 +20,9 @@ type mockPlugin struct {
 	initErr error
 }
 
-func (m *mockPlugin) Name() string                        { return m.name }
-func (m *mockPlugin) Type() PluginType                    { return m.typ }
-func (m *mockPlugin) Init(_ map[string]interface{}) error { return m.initErr }
+func (m *mockPlugin) Name() string                { return m.name }
+func (m *mockPlugin) Type() PluginType            { return m.typ }
+func (m *mockPlugin) Init(_ map[string]any) error { return m.initErr }
 func (m *mockPlugin) Execute(ctx context.Context, pctx *Context) error {
 	if m.execFn != nil {
 		return m.execFn(ctx, pctx)

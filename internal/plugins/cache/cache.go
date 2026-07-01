@@ -45,7 +45,7 @@ func (c *ResponseCache) Type() plugin.PluginType {
 }
 
 // Init configures the plugin from the provided options map.
-func (c *ResponseCache) Init(config map[string]interface{}) error {
+func (c *ResponseCache) Init(config map[string]any) error {
 	maxAge := 300
 	// JSON delivers numeric values as float64; YAML may deliver int. Handle both.
 	switch v := config["max_age"].(type) {

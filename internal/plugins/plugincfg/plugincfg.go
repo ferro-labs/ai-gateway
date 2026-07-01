@@ -5,7 +5,7 @@ package plugincfg
 import "fmt"
 
 // ToFloat64 converts a configuration value to float64, accepting float64 or int.
-func ToFloat64(v interface{}) (float64, error) {
+func ToFloat64(v any) (float64, error) {
 	switch val := v.(type) {
 	case float64:
 		return val, nil

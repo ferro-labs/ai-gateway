@@ -61,7 +61,7 @@ func TestMeter_ForwardsAllChunks(t *testing.T) {
 
 func TestMeter_CallsPublishFn_OnSuccess(t *testing.T) {
 	var mu sync.Mutex
-	var published []map[string]interface{}
+	var published []map[string]any
 
 	publishFn := func(_ context.Context, event events.HookEvent) {
 		mu.Lock()

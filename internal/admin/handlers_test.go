@@ -501,7 +501,7 @@ func TestHealthCheck(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
-	var result map[string]interface{}
+	var result map[string]any
 	_ = json.NewDecoder(w.Body).Decode(&result)
 	if _, ok := result["status"]; !ok {
 		t.Error("expected status field")
@@ -1183,7 +1183,7 @@ func TestLogsEndpointUsesSnakeCaseFields(t *testing.T) {
 	}
 
 	var payload struct {
-		Data []map[string]interface{} `json:"data"`
+		Data []map[string]any `json:"data"`
 	}
 	if err := json.NewDecoder(w.Body).Decode(&payload); err != nil {
 		t.Fatalf("decode logs response: %v", err)
@@ -1668,7 +1668,7 @@ func TestListProviders_NilRegistry(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
-	var result []interface{}
+	var result []any
 	if err := json.NewDecoder(w.Body).Decode(&result); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
@@ -1707,9 +1707,9 @@ func TestGetConfigRedactsSecrets(t *testing.T) {
 				Type:    "guardrail",
 				Stage:   "before_request",
 				Enabled: true,
-				Config: map[string]interface{}{
+				Config: map[string]any{
 					"secret":        "literal-plugin-secret",
-					"blocked_words": []interface{}{"password"},
+					"blocked_words": []any{"password"},
 				},
 			},
 		},

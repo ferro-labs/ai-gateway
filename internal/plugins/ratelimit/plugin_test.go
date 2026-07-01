@@ -8,7 +8,7 @@ import (
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
-func newPlugin(t *testing.T, cfg map[string]interface{}) *Plugin {
+func newPlugin(t *testing.T, cfg map[string]any) *Plugin {
 	t.Helper()
 	p := &Plugin{}
 	if err := p.Init(cfg); err != nil {
@@ -32,7 +32,7 @@ func TestPlugin_Type(t *testing.T) {
 }
 
 func TestPlugin_Init_Defaults(t *testing.T) {
-	p := newPlugin(t, map[string]interface{}{})
+	p := newPlugin(t, map[string]any{})
 	if p.limiter == nil {
 		t.Error("expected global limiter to be set")
 	}
@@ -45,7 +45,7 @@ func TestPlugin_Init_Defaults(t *testing.T) {
 }
 
 func TestPlugin_Init_AllKeys(t *testing.T) {
-	p := newPlugin(t, map[string]interface{}{
+	p := newPlugin(t, map[string]any{
 		"requests_per_second": 50.0,
 		"burst":               100.0,
 		"key_rpm":             600.0,
@@ -64,51 +64,51 @@ func TestPlugin_Init_AllKeys(t *testing.T) {
 
 func TestPlugin_Init_InvalidRPS(t *testing.T) {
 	p := &Plugin{}
-	if p.Init(map[string]interface{}{"requests_per_second": "bad"}) == nil {
+	if p.Init(map[string]any{"requests_per_second": "bad"}) == nil {
 		t.Error("expected error for invalid requests_per_second")
 	}
 }
 
 func TestPlugin_Init_InvalidBurst(t *testing.T) {
 	p := &Plugin{}
-	if p.Init(map[string]interface{}{"burst": "bad"}) == nil {
+	if p.Init(map[string]any{"burst": "bad"}) == nil {
 		t.Error("expected error for invalid burst")
 	}
 }
 
 func TestPlugin_Init_InvalidKeyRPM(t *testing.T) {
 	p := &Plugin{}
-	if p.Init(map[string]interface{}{"key_rpm": "bad"}) == nil {
+	if p.Init(map[string]any{"key_rpm": "bad"}) == nil {
 		t.Error("expected error for invalid key_rpm type")
 	}
 }
 
 func TestPlugin_Init_ZeroKeyRPM(t *testing.T) {
 	p := &Plugin{}
-	if p.Init(map[string]interface{}{"key_rpm": 0.0}) == nil {
+	if p.Init(map[string]any{"key_rpm": 0.0}) == nil {
 		t.Error("expected error for key_rpm=0")
 	}
 }
 
 func TestPlugin_Init_InvalidUserRPM(t *testing.T) {
 	p := &Plugin{}
-	if p.Init(map[string]interface{}{"user_rpm": "bad"}) == nil {
+	if p.Init(map[string]any{"user_rpm": "bad"}) == nil {
 		t.Error("expected error for invalid user_rpm type")
 	}
 }
 
 func TestPlugin_Init_ZeroUserRPM(t *testing.T) {
 	p := &Plugin{}
-	if p.Init(map[string]interface{}{"user_rpm": 0.0}) == nil {
+	if p.Init(map[string]any{"user_rpm": 0.0}) == nil {
 		t.Error("expected error for user_rpm=0")
 	}
 }
 
 func TestPlugin_Execute_Allow(t *testing.T) {
-	p := newPlugin(t, map[string]interface{}{"requests_per_second": 1000.0, "burst": 1000.0})
+	p := newPlugin(t, map[string]any{"requests_per_second": 1000.0, "burst": 1000.0})
 	pctx := &plugin.Context{
 		Request:  &core.Request{},
-		Metadata: map[string]interface{}{},
+		Metadata: map[string]any{},
 	}
 	if err := p.Execute(context.Background(), pctx); err != nil {
 		t.Errorf("Execute returned unexpected error: %v", err)
@@ -119,10 +119,10 @@ func TestPlugin_Execute_Allow(t *testing.T) {
 }
 
 func TestPlugin_Execute_GlobalDeny(t *testing.T) {
-	p := newPlugin(t, map[string]interface{}{"requests_per_second": 0.0, "burst": 0.0})
+	p := newPlugin(t, map[string]any{"requests_per_second": 0.0, "burst": 0.0})
 	pctx := &plugin.Context{
 		Request:  &core.Request{},
-		Metadata: map[string]interface{}{},
+		Metadata: map[string]any{},
 	}
 	if p.Execute(context.Background(), pctx) == nil {
 		t.Error("expected error from Execute for exhausted global limiter")
@@ -133,7 +133,7 @@ func TestPlugin_Execute_GlobalDeny(t *testing.T) {
 }
 
 func TestPlugin_Execute_PerKeyDeny(t *testing.T) {
-	p := newPlugin(t, map[string]interface{}{
+	p := newPlugin(t, map[string]any{
 		"requests_per_second": 1000.0,
 		"burst":               1000.0,
 		"key_rpm":             0.001,
@@ -141,7 +141,7 @@ func TestPlugin_Execute_PerKeyDeny(t *testing.T) {
 	mkCtx := func() *plugin.Context {
 		return &plugin.Context{
 			Request:  &core.Request{},
-			Metadata: map[string]interface{}{"api_key": "client-key"},
+			Metadata: map[string]any{"api_key": "client-key"},
 		}
 	}
 	var gotDeny bool
@@ -162,7 +162,7 @@ func TestPlugin_Execute_PerKeyDeny(t *testing.T) {
 }
 
 func TestPlugin_Execute_PerUserDeny(t *testing.T) {
-	p := newPlugin(t, map[string]interface{}{
+	p := newPlugin(t, map[string]any{
 		"requests_per_second": 1000.0,
 		"burst":               1000.0,
 		"user_rpm":            0.001,
@@ -171,7 +171,7 @@ func TestPlugin_Execute_PerUserDeny(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		pctx := &plugin.Context{
 			Request:  &core.Request{User: "user-abc"},
-			Metadata: map[string]interface{}{},
+			Metadata: map[string]any{},
 		}
 		_ = p.Execute(context.Background(), pctx)
 		if pctx.Reject {
@@ -188,7 +188,7 @@ func TestPlugin_Execute_PerUserDeny(t *testing.T) {
 }
 
 func TestPlugin_Execute_NoKeyOrUser_SkipsStores(t *testing.T) {
-	p := newPlugin(t, map[string]interface{}{
+	p := newPlugin(t, map[string]any{
 		"requests_per_second": 1000.0,
 		"burst":               1000.0,
 		"key_rpm":             0.001,
@@ -196,7 +196,7 @@ func TestPlugin_Execute_NoKeyOrUser_SkipsStores(t *testing.T) {
 	})
 	pctx := &plugin.Context{
 		Request:  &core.Request{User: ""},
-		Metadata: map[string]interface{}{"api_key": ""},
+		Metadata: map[string]any{"api_key": ""},
 	}
 	if err := p.Execute(context.Background(), pctx); err != nil {
 		t.Errorf("unexpected error: %v", err)

@@ -12,8 +12,8 @@ import (
 
 // ollamaEmbedRequest is the native Ollama /api/embed request schema.
 type ollamaEmbedRequest struct {
-	Model string      `json:"model"`
-	Input interface{} `json:"input"` // string or []string
+	Model string `json:"model"`
+	Input any    `json:"input"` // string or []string
 }
 
 // ollamaEmbedResponse is the native Ollama /api/embed response schema.
@@ -94,7 +94,7 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 	}, nil
 }
 
-func normalizeEmbeddingInput(input interface{}) (interface{}, error) {
+func normalizeEmbeddingInput(input any) (any, error) {
 	switch v := input.(type) {
 	case string:
 		return v, nil
@@ -103,7 +103,7 @@ func normalizeEmbeddingInput(input interface{}) (interface{}, error) {
 			return nil, fmt.Errorf("embed: Input must not be an empty array")
 		}
 		return v, nil
-	case []interface{}:
+	case []any:
 		if len(v) == 0 {
 			return nil, fmt.Errorf("embed: Input must not be an empty array")
 		}

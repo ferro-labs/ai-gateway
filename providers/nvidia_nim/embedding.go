@@ -11,11 +11,11 @@ import (
 )
 
 type embeddingRequest struct {
-	Model          string      `json:"model"`
-	Input          interface{} `json:"input"`
-	EncodingFormat string      `json:"encoding_format,omitempty"`
-	Dimensions     *int        `json:"dimensions,omitempty"`
-	User           string      `json:"user,omitempty"`
+	Model          string `json:"model"`
+	Input          any    `json:"input"`
+	EncodingFormat string `json:"encoding_format,omitempty"`
+	Dimensions     *int   `json:"dimensions,omitempty"`
+	User           string `json:"user,omitempty"`
 	// InputType distinguishes embedding intent for NeMo retriever models
 	// (e.g. "query" / "passage"). Required by some models or they return 400.
 	InputType string `json:"input_type,omitempty"`
@@ -100,7 +100,7 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 	}, nil
 }
 
-func normalizeEmbeddingInput(input interface{}) (interface{}, error) {
+func normalizeEmbeddingInput(input any) (any, error) {
 	switch v := input.(type) {
 	case string:
 		return v, nil
@@ -109,7 +109,7 @@ func normalizeEmbeddingInput(input interface{}) (interface{}, error) {
 			return nil, fmt.Errorf("embed: Input must not be an empty array")
 		}
 		return v, nil
-	case []interface{}:
+	case []any:
 		if len(v) == 0 {
 			return nil, fmt.Errorf("embed: Input must not be an empty array")
 		}

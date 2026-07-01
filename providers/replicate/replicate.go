@@ -139,11 +139,11 @@ func ModelVersion(path string) string {
 
 // Prediction represents a Replicate API prediction result.
 type Prediction struct {
-	ID        string      `json:"id"`
-	Status    string      `json:"status"`
-	Output    interface{} `json:"output"`
-	Error     string      `json:"error,omitempty"`
-	StreamURL string      `json:"stream_url,omitempty"`
+	ID        string `json:"id"`
+	Status    string `json:"status"`
+	Output    any    `json:"output"`
+	Error     string `json:"error,omitempty"`
+	StreamURL string `json:"stream_url,omitempty"`
 	URLs      struct {
 		Stream string `json:"stream,omitempty"`
 	} `json:"urls,omitempty"`
@@ -218,7 +218,7 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 	switch v := pred.Output.(type) {
 	case string:
 		text = v
-	case []interface{}:
+	case []any:
 		var parts []string
 		for _, item := range v {
 			if s, ok := item.(string); ok {
@@ -360,7 +360,7 @@ func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*c
 	switch v := pred.Output.(type) {
 	case string:
 		images = append(images, core.GeneratedImage{URL: v})
-	case []interface{}:
+	case []any:
 		for _, item := range v {
 			if s, ok := item.(string); ok {
 				images = append(images, core.GeneratedImage{URL: s})

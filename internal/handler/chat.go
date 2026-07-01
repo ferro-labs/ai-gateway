@@ -100,7 +100,7 @@ func Health(gw *aigateway.Gateway) http.HandlerFunc {
 			status = "no_providers"
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"status":    status,
 			"providers": providerStatuses,
 		})

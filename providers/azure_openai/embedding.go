@@ -14,11 +14,11 @@ import (
 // /embeddings endpoint. The deployment in the URL is authoritative, so "model"
 // is ignored by Azure but harmless to send.
 type embeddingRequest struct {
-	Model          string      `json:"model,omitempty"`
-	Input          interface{} `json:"input"`
-	EncodingFormat string      `json:"encoding_format,omitempty"`
-	Dimensions     *int        `json:"dimensions,omitempty"`
-	User           string      `json:"user,omitempty"`
+	Model          string `json:"model,omitempty"`
+	Input          any    `json:"input"`
+	EncodingFormat string `json:"encoding_format,omitempty"`
+	Dimensions     *int   `json:"dimensions,omitempty"`
+	User           string `json:"user,omitempty"`
 }
 
 // embeddingResponse mirrors the OpenAI-shaped embedding response.
@@ -96,7 +96,7 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 
 // normalizeEmbeddingInput validates and normalizes the polymorphic Input field
 // into a string or []string, rejecting empty/nil/non-string inputs.
-func normalizeEmbeddingInput(input interface{}) (interface{}, error) {
+func normalizeEmbeddingInput(input any) (any, error) {
 	switch v := input.(type) {
 	case string:
 		if v == "" {
@@ -108,7 +108,7 @@ func normalizeEmbeddingInput(input interface{}) (interface{}, error) {
 			return nil, fmt.Errorf("embed: Input must not be an empty array")
 		}
 		return v, nil
-	case []interface{}:
+	case []any:
 		if len(v) == 0 {
 			return nil, fmt.Errorf("embed: Input must not be an empty array")
 		}

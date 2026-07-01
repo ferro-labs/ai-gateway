@@ -13,8 +13,8 @@ import (
 // per-word strings.ToLower allocations are gone from the hot path.
 func BenchmarkWordFilter_Execute(b *testing.B) {
 	f := &WordFilter{}
-	if err := f.Init(map[string]interface{}{
-		"blocked_words":  []interface{}{"Password", "Secret", "ApiKey", "Token", "Credential"},
+	if err := f.Init(map[string]any{
+		"blocked_words":  []any{"Password", "Secret", "ApiKey", "Token", "Credential"},
 		"case_sensitive": false,
 	}); err != nil {
 		b.Fatalf("Init failed: %v", err)

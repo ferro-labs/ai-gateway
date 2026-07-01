@@ -404,7 +404,7 @@ func (s *SQLStore) scanOne(ctx context.Context, stmt *sql.Stmt, arg any) (*APIKe
 }
 
 func scanAPIKey(scanner interface {
-	Scan(dest ...interface{}) error
+	Scan(dest ...any) error
 }) (*APIKey, error) {
 	var (
 		k         APIKey

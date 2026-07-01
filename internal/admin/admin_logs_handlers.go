@@ -46,13 +46,13 @@ func (h *Handlers) listLogs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+	_ = json.NewEncoder(w).Encode(map[string]any{
 		"data": result.Data,
-		"summary": map[string]interface{}{
+		"summary": map[string]any{
 			"total_entries":    result.Total,
 			"returned_entries": len(result.Data),
 		},
-		"filters": map[string]interface{}{
+		"filters": map[string]any{
 			"limit":    limit,
 			"offset":   offset,
 			"stage":    query.Stage,
@@ -93,9 +93,9 @@ func (h *Handlers) deleteLogs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+	_ = json.NewEncoder(w).Encode(map[string]any{
 		"deleted": deleted,
-		"filters": map[string]interface{}{
+		"filters": map[string]any{
 			"before":   beforeRaw,
 			"stage":    r.URL.Query().Get("stage"),
 			"model":    r.URL.Query().Get("model"),
@@ -192,8 +192,8 @@ func (h *Handlers) logsStats(w http.ResponseWriter, r *http.Request) {
 	byModel = limitCounts(byModel, limit)
 
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
-		"summary": map[string]interface{}{
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"summary": map[string]any{
 			"total_entries":     len(entries),
 			"error_entries":     errorCount,
 			"total_tokens":      tokens,
@@ -204,7 +204,7 @@ func (h *Handlers) logsStats(w http.ResponseWriter, r *http.Request) {
 		"by_stage":    byStage,
 		"by_provider": byProvider,
 		"by_model":    byModel,
-		"filters": map[string]interface{}{
+		"filters": map[string]any{
 			"limit":    limit,
 			"stage":    baseQuery.Stage,
 			"model":    baseQuery.Model,

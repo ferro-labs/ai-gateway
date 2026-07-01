@@ -32,7 +32,7 @@ func (m *MaxToken) Name() string { return "max-token" }
 func (m *MaxToken) Type() plugin.PluginType { return plugin.TypeGuardrail }
 
 // Init configures the plugin from the provided options map.
-func (m *MaxToken) Init(config map[string]interface{}) error {
+func (m *MaxToken) Init(config map[string]any) error {
 	m.maxTokens = 4096 // default
 	if v, ok := config["max_tokens"]; ok {
 		switch val := v.(type) {

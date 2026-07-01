@@ -94,7 +94,7 @@ func newWordFilterGateway(t *testing.T, blockedWords []string, completeFunc func
 				Type:    "guardrail",
 				Stage:   "before_request",
 				Enabled: true,
-				Config:  map[string]interface{}{"blocked_words": wordsToInterface(blockedWords)},
+				Config:  map[string]any{"blocked_words": wordsToInterface(blockedWords)},
 			},
 		},
 	}
@@ -109,8 +109,8 @@ func newWordFilterGateway(t *testing.T, blockedWords []string, completeFunc func
 	return gw
 }
 
-func wordsToInterface(words []string) []interface{} {
-	out := make([]interface{}, len(words))
+func wordsToInterface(words []string) []any {
+	out := make([]any, len(words))
 	for i, w := range words {
 		out[i] = w
 	}
@@ -199,7 +199,7 @@ func TestPluginChain_ResponseCache_Hit(t *testing.T) {
 		t.Fatal("response-cache factory not found — missing blank import?")
 	}
 	cachePlugin := factory()
-	if initErr := cachePlugin.Init(map[string]interface{}{"max_age": 60, "max_entries": 10}); initErr != nil {
+	if initErr := cachePlugin.Init(map[string]any{"max_age": 60, "max_entries": 10}); initErr != nil {
 		t.Fatalf("cache Init: %v", initErr)
 	}
 	if regErr := gw.RegisterPlugin(plugin.StageBeforeRequest, cachePlugin); regErr != nil {
@@ -240,7 +240,7 @@ func TestPluginChain_OnError_Fires(t *testing.T) {
 			Type:    "logging",
 			Stage:   "after_request",
 			Enabled: true,
-			Config:  map[string]interface{}{},
+			Config:  map[string]any{},
 		},
 	}
 	prov := &stubProv{name: "errstub", models: []string{pluginTestModel}}

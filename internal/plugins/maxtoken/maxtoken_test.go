@@ -21,7 +21,7 @@ func testRequest(model string, messages ...string) *providers.Request {
 	}
 }
 
-func initMaxToken(t *testing.T, config map[string]interface{}) *MaxToken {
+func initMaxToken(t *testing.T, config map[string]any) *MaxToken {
 	t.Helper()
 	m := &MaxToken{}
 	if err := m.Init(config); err != nil {
@@ -31,7 +31,7 @@ func initMaxToken(t *testing.T, config map[string]interface{}) *MaxToken {
 }
 
 func TestMaxToken_MaxTokensEnforcement(t *testing.T) {
-	m := initMaxToken(t, map[string]interface{}{"max_tokens": 100})
+	m := initMaxToken(t, map[string]any{"max_tokens": 100})
 
 	t.Run("exceeds limit", func(t *testing.T) {
 		req := testRequest("gpt-4", "hello")
@@ -61,7 +61,7 @@ func TestMaxToken_MaxTokensEnforcement(t *testing.T) {
 }
 
 func TestMaxToken_MaxMessagesEnforcement(t *testing.T) {
-	m := initMaxToken(t, map[string]interface{}{"max_messages": 2})
+	m := initMaxToken(t, map[string]any{"max_messages": 2})
 
 	t.Run("exceeds limit", func(t *testing.T) {
 		req := testRequest("gpt-4", "msg1", "msg2", "msg3")
@@ -89,7 +89,7 @@ func TestMaxToken_MaxMessagesEnforcement(t *testing.T) {
 }
 
 func TestMaxToken_MaxInputLengthEnforcement(t *testing.T) {
-	m := initMaxToken(t, map[string]interface{}{"max_input_length": 10})
+	m := initMaxToken(t, map[string]any{"max_input_length": 10})
 
 	t.Run("exceeds limit", func(t *testing.T) {
 		req := testRequest("gpt-4", "this is a long message")
@@ -117,7 +117,7 @@ func TestMaxToken_MaxInputLengthEnforcement(t *testing.T) {
 }
 
 func TestMaxToken_AllowedRequestPassesThrough(t *testing.T) {
-	m := initMaxToken(t, map[string]interface{}{})
+	m := initMaxToken(t, map[string]any{})
 	req := testRequest("gpt-4", "hello")
 	req.MaxTokens = intPtr(100)
 	pctx := plugin.NewContext(req)

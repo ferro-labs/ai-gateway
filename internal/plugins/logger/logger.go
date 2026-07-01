@@ -38,7 +38,7 @@ func (l *RequestLogger) Name() string { return "request-logger" }
 func (l *RequestLogger) Type() plugin.PluginType { return plugin.TypeLogging }
 
 // Init configures the plugin from the provided options map.
-func (l *RequestLogger) Init(config map[string]interface{}) error {
+func (l *RequestLogger) Init(config map[string]any) error {
 	l.logLevel = slog.LevelInfo
 	l.writer = requestlog.NoopWriter{}
 	l.redactor = redact.DefaultRedactor()

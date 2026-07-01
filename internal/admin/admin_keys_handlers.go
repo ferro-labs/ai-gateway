@@ -189,15 +189,15 @@ func (h *Handlers) keyUsage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+	_ = json.NewEncoder(w).Encode(map[string]any{
 		"data": keys,
-		"summary": map[string]interface{}{
+		"summary": map[string]any{
 			"total_keys":    len(filteredKeys),
 			"active_keys":   activeKeys,
 			"total_usage":   totalUsage,
 			"returned_keys": len(keys),
 		},
-		"filters": map[string]interface{}{
+		"filters": map[string]any{
 			"limit":  limit,
 			"offset": offset,
 			"sort":   sortBy,

@@ -31,7 +31,7 @@ func testResponse() *providers.Response {
 	}
 }
 
-func initCache(t *testing.T, config map[string]interface{}) *ResponseCache {
+func initCache(t *testing.T, config map[string]any) *ResponseCache {
 	t.Helper()
 	c := &ResponseCache{}
 	if err := c.Init(config); err != nil {
@@ -42,7 +42,7 @@ func initCache(t *testing.T, config map[string]interface{}) *ResponseCache {
 
 func TestCachePlugin_Init(t *testing.T) {
 	t.Run("default config", func(t *testing.T) {
-		c := initCache(t, map[string]interface{}{})
+		c := initCache(t, map[string]any{})
 		if c.TTL != 300*time.Second {
 			t.Errorf("expected default TTL 300s, got %v", c.TTL)
 		}
@@ -52,14 +52,14 @@ func TestCachePlugin_Init(t *testing.T) {
 	})
 
 	t.Run("custom max_age", func(t *testing.T) {
-		c := initCache(t, map[string]interface{}{"max_age": 60})
+		c := initCache(t, map[string]any{"max_age": 60})
 		if c.TTL != 60*time.Second {
 			t.Errorf("expected TTL 60s, got %v", c.TTL)
 		}
 	})
 
 	t.Run("custom max_entries", func(t *testing.T) {
-		c := initCache(t, map[string]interface{}{"max_entries": 50})
+		c := initCache(t, map[string]any{"max_entries": 50})
 		if c.Capacity != 50 {
 			t.Errorf("expected Capacity 50, got %d", c.Capacity)
 		}
@@ -67,7 +67,7 @@ func TestCachePlugin_Init(t *testing.T) {
 }
 
 func TestCachePlugin_CacheMiss(t *testing.T) {
-	c := initCache(t, map[string]interface{}{})
+	c := initCache(t, map[string]any{})
 	pctx := plugin.NewContext(testRequest("gpt-4", "hello"))
 
 	if err := c.Execute(context.Background(), pctx); err != nil {
@@ -82,7 +82,7 @@ func TestCachePlugin_CacheMiss(t *testing.T) {
 }
 
 func TestCachePlugin_CacheHitAfterStore(t *testing.T) {
-	c := initCache(t, map[string]interface{}{})
+	c := initCache(t, map[string]any{})
 	req := testRequest("gpt-4", "hello")
 	resp := testResponse()
 
@@ -107,7 +107,7 @@ func TestCachePlugin_CacheHitAfterStore(t *testing.T) {
 }
 
 func TestCachePlugin_DifferentKeys(t *testing.T) {
-	c := initCache(t, map[string]interface{}{})
+	c := initCache(t, map[string]any{})
 	resp := testResponse()
 
 	// Store with model "gpt-4"
@@ -137,7 +137,7 @@ func TestCachePlugin_DifferentKeys(t *testing.T) {
 }
 
 func TestCachePlugin_MessageOrderAffectsCacheKey(t *testing.T) {
-	c := initCache(t, map[string]interface{}{})
+	c := initCache(t, map[string]any{})
 	resp := testResponse()
 
 	reqA := &providers.Request{
@@ -171,7 +171,7 @@ func TestCachePlugin_MessageOrderAffectsCacheKey(t *testing.T) {
 }
 
 func TestCachePlugin_DelimiterCharactersDoNotCollide(t *testing.T) {
-	c := initCache(t, map[string]interface{}{})
+	c := initCache(t, map[string]any{})
 	resp := testResponse()
 
 	reqA := &providers.Request{
@@ -208,7 +208,7 @@ func TestCachePlugin_DelimiterCharactersDoNotCollide(t *testing.T) {
 
 func TestCachePlugin_Expiration(t *testing.T) {
 	// Use a 10ms TTL so we can let it expire without a long sleep.
-	c := initCache(t, map[string]interface{}{"max_age": float64(0)})
+	c := initCache(t, map[string]any{"max_age": float64(0)})
 	// Override TTL directly since Init clamps 0 to 0s (immediate expiry isn't
 	// easily configurable via the int config; set a short but nonzero duration).
 	c.TTL = 10 * time.Millisecond
@@ -236,7 +236,7 @@ func TestCachePlugin_Expiration(t *testing.T) {
 // TestCachePlugin_LRUEviction verifies that adding a new entry beyond capacity
 // evicts the least-recently-used entry, not the earliest-expiring one.
 func TestCachePlugin_LRUEviction(t *testing.T) {
-	c := initCache(t, map[string]interface{}{"max_entries": 2})
+	c := initCache(t, map[string]any{"max_entries": 2})
 	resp := testResponse()
 
 	store := func(content string) {
@@ -277,7 +277,7 @@ func TestCachePlugin_LRUEviction(t *testing.T) {
 }
 
 func TestCachePlugin_MaxEntriesUpdateDoesNotEvict(t *testing.T) {
-	c := initCache(t, map[string]interface{}{"max_entries": 2})
+	c := initCache(t, map[string]any{"max_entries": 2})
 
 	store := func(content, id string) {
 		resp := testResponse()
@@ -314,7 +314,7 @@ func TestCachePlugin_MaxEntriesUpdateDoesNotEvict(t *testing.T) {
 }
 
 func TestCachePlugin_MaxEntriesZeroDisablesStore(t *testing.T) {
-	c := initCache(t, map[string]interface{}{"max_entries": 0})
+	c := initCache(t, map[string]any{"max_entries": 0})
 	pctx := plugin.NewContext(testRequest("gpt-4", "hello"))
 	pctx.Response = testResponse()
 	if err := c.Execute(context.Background(), pctx); err != nil {
@@ -334,7 +334,7 @@ func TestCachePlugin_MaxEntriesZeroDisablesStore(t *testing.T) {
 }
 
 func TestCachePlugin_CacheHitMetadata(t *testing.T) {
-	c := initCache(t, map[string]interface{}{})
+	c := initCache(t, map[string]any{})
 	req := testRequest("gpt-4", "hello")
 	resp := testResponse()
 
@@ -482,7 +482,7 @@ func TestCacheKey_LogProbsNilTopLogProbsDoesNotPanic(_ *testing.T) {
 // response from a logprobs=true request is not served to a logprobs=false
 // request for the same model/messages.
 func TestCachePlugin_LogProbsCacheMissWithoutLogprobs(t *testing.T) {
-	c := initCache(t, map[string]interface{}{})
+	c := initCache(t, map[string]any{})
 	top := 5
 
 	withLogprobs := &providers.Request{
@@ -517,7 +517,7 @@ func TestCachePlugin_LogProbsCacheMissWithoutLogprobs(t *testing.T) {
 // TestCachePlugin_LogProbsCacheHit verifies that a cached response from a
 // logprobs=true request is served to an identical logprobs=true request.
 func TestCachePlugin_LogProbsCacheHit(t *testing.T) {
-	c := initCache(t, map[string]interface{}{})
+	c := initCache(t, map[string]any{})
 	top := 5
 
 	withLogprobs := func() *providers.Request {
@@ -546,7 +546,7 @@ func TestCachePlugin_LogProbsCacheHit(t *testing.T) {
 
 func TestCachePlugin_MaxEntriesMany(t *testing.T) {
 	const maxEntries = 5
-	c := initCache(t, map[string]interface{}{"max_entries": maxEntries})
+	c := initCache(t, map[string]any{"max_entries": maxEntries})
 	resp := testResponse()
 
 	for i := 0; i < maxEntries; i++ {

@@ -27,7 +27,7 @@ func (w *recordingWriter) Write(_ context.Context, entry requestlog.Entry) error
 func TestRequestLogger_Init(t *testing.T) {
 	t.Run("default level", func(t *testing.T) {
 		l := &RequestLogger{}
-		if err := l.Init(map[string]interface{}{}); err != nil {
+		if err := l.Init(map[string]any{}); err != nil {
 			t.Fatalf("Init failed: %v", err)
 		}
 		if l.logLevel != slog.LevelInfo {
@@ -37,7 +37,7 @@ func TestRequestLogger_Init(t *testing.T) {
 
 	t.Run("debug level", func(t *testing.T) {
 		l := &RequestLogger{}
-		if err := l.Init(map[string]interface{}{"level": "debug"}); err != nil {
+		if err := l.Init(map[string]any{"level": "debug"}); err != nil {
 			t.Fatalf("Init failed: %v", err)
 		}
 		if l.logLevel != slog.LevelDebug {
@@ -48,7 +48,7 @@ func TestRequestLogger_Init(t *testing.T) {
 
 func TestRequestLogger_ExecuteRequest(t *testing.T) {
 	l := &RequestLogger{}
-	if err := l.Init(map[string]interface{}{}); err != nil {
+	if err := l.Init(map[string]any{}); err != nil {
 		t.Fatalf("Init failed: %v", err)
 	}
 
@@ -67,7 +67,7 @@ func TestRequestLogger_ExecuteRequest(t *testing.T) {
 
 func TestRequestLogger_ExecuteResponse(t *testing.T) {
 	l := &RequestLogger{}
-	if err := l.Init(map[string]interface{}{}); err != nil {
+	if err := l.Init(map[string]any{}); err != nil {
 		t.Fatalf("Init failed: %v", err)
 	}
 
@@ -94,7 +94,7 @@ func TestRequestLogger_ExecuteResponse(t *testing.T) {
 
 func TestRequestLogger_ExecuteError(t *testing.T) {
 	l := &RequestLogger{}
-	if err := l.Init(map[string]interface{}{}); err != nil {
+	if err := l.Init(map[string]any{}); err != nil {
 		t.Fatalf("Init failed: %v", err)
 	}
 
@@ -114,7 +114,7 @@ func TestRequestLogger_ExecuteError(t *testing.T) {
 
 func TestRequestLogger_ExecuteErrorWithoutRequest(t *testing.T) {
 	l := &RequestLogger{}
-	if err := l.Init(map[string]interface{}{}); err != nil {
+	if err := l.Init(map[string]any{}); err != nil {
 		t.Fatalf("Init failed: %v", err)
 	}
 
@@ -142,7 +142,7 @@ func TestRequestLogger_Type(t *testing.T) {
 
 func TestRequestLogger_Init_WarnLevel(t *testing.T) {
 	l := &RequestLogger{}
-	if err := l.Init(map[string]interface{}{"level": "warn"}); err != nil {
+	if err := l.Init(map[string]any{"level": "warn"}); err != nil {
 		t.Fatalf("Init failed: %v", err)
 	}
 	if l.logLevel != slog.LevelWarn {
@@ -152,7 +152,7 @@ func TestRequestLogger_Init_WarnLevel(t *testing.T) {
 
 func TestRequestLogger_Init_ErrorLevel(t *testing.T) {
 	l := &RequestLogger{}
-	if err := l.Init(map[string]interface{}{"level": "error"}); err != nil {
+	if err := l.Init(map[string]any{"level": "error"}); err != nil {
 		t.Fatalf("Init failed: %v", err)
 	}
 	if l.logLevel != slog.LevelError {
@@ -162,7 +162,7 @@ func TestRequestLogger_Init_ErrorLevel(t *testing.T) {
 
 func TestRequestLogger_Init_UnsupportedBackend(t *testing.T) {
 	l := &RequestLogger{}
-	err := l.Init(map[string]interface{}{
+	err := l.Init(map[string]any{
 		"persist": true,
 		"backend": "cassandra",
 		"dsn":     "",
@@ -182,7 +182,7 @@ func TestRequestLogger_ExecuteErrorRedactsKeyInLog(t *testing.T) {
 	logging.Logger = slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	l := &RequestLogger{}
-	if err := l.Init(map[string]interface{}{}); err != nil {
+	if err := l.Init(map[string]any{}); err != nil {
 		t.Fatalf("Init failed: %v", err)
 	}
 
@@ -210,7 +210,7 @@ func TestRequestLogger_ExecuteErrorRedactsKeyInLog(t *testing.T) {
 // the assertion is made against the persisted Entry directly.
 func TestRequestLogger_ExecuteErrorRedactsKeyInEntry(t *testing.T) {
 	l := &RequestLogger{}
-	if err := l.Init(map[string]interface{}{}); err != nil {
+	if err := l.Init(map[string]any{}); err != nil {
 		t.Fatalf("Init failed: %v", err)
 	}
 

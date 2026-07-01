@@ -61,9 +61,9 @@ func NewClient(endpoint string, headers map[string]string, timeout time.Duration
 // notifications/initialized) and stores the Mcp-Session-Id for subsequent
 // requests. Safe to call again — it will re-initialize the session.
 func (c *Client) Initialize(ctx context.Context) (*ServerInfo, error) {
-	params := map[string]interface{}{
+	params := map[string]any{
 		"protocolVersion": "2025-11-25",
-		"capabilities":    map[string]interface{}{},
+		"capabilities":    map[string]any{},
 		"clientInfo": map[string]string{
 			"name":    "ferro-ai-gateway",
 			"version": version.Short(),
@@ -106,7 +106,7 @@ func (c *Client) ListTools(ctx context.Context) ([]Tool, error) {
 // CallTool invokes a named tool on the MCP server with the given JSON-encoded
 // arguments. Safe for concurrent use from multiple goroutines.
 func (c *Client) CallTool(ctx context.Context, name string, arguments json.RawMessage) (*ToolCallResult, error) {
-	params := map[string]interface{}{
+	params := map[string]any{
 		"name":      name,
 		"arguments": arguments,
 	}
@@ -125,7 +125,7 @@ func (c *Client) CallTool(ctx context.Context, name string, arguments json.RawMe
 
 // call sends a JSON-RPC 2.0 request and returns the decoded response.
 // It sets all required headers including the session ID once established.
-func (c *Client) call(ctx context.Context, method string, params interface{}) (*JSONRPCResponse, error) {
+func (c *Client) call(ctx context.Context, method string, params any) (*JSONRPCResponse, error) {
 	id := c.nextID.Add(1)
 
 	var rawParams json.RawMessage
@@ -196,7 +196,7 @@ func (c *Client) call(ctx context.Context, method string, params interface{}) (*
 }
 
 // notify sends a JSON-RPC 2.0 notification (no ID, no response expected).
-func (c *Client) notify(ctx context.Context, method string, params interface{}) error {
+func (c *Client) notify(ctx context.Context, method string, params any) error {
 	var rawParams json.RawMessage
 	if params != nil {
 		b, err := json.Marshal(params)

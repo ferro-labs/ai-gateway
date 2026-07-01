@@ -37,7 +37,7 @@ func (h *Handlers) dashboard(w http.ResponseWriter, r *http.Request) {
 		totalUsage += key.UsageCount
 	}
 
-	requestLogs := map[string]interface{}{
+	requestLogs := map[string]any{
 		"enabled": false,
 		"total":   0,
 	}
@@ -52,12 +52,12 @@ func (h *Handlers) dashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
-		"providers": map[string]interface{}{
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"providers": map[string]any{
 			"total":     providersCount,
 			"available": availableProviders,
 		},
-		"keys": map[string]interface{}{
+		"keys": map[string]any{
 			"total":       len(keys),
 			"active":      activeKeys,
 			"expired":     expiredKeys,
@@ -153,7 +153,7 @@ func (h *Handlers) healthCheck(w http.ResponseWriter, r *http.Request) {
 		overallStatus = "no_providers"
 	}
 
-	resp := map[string]interface{}{
+	resp := map[string]any{
 		"status":    overallStatus,
 		"providers": providerStatuses,
 	}

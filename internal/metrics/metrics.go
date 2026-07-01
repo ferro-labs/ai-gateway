@@ -91,6 +91,8 @@ var (
 		[]string{"provider", "model"},
 	)
 
+	// ServerConnectionsCurrent gauges current inbound HTTP connections, labelled
+	// by connection state ("active", "idle").
 	ServerConnectionsCurrent = promauto.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "gateway_server_connections_current",
@@ -99,6 +101,8 @@ var (
 		[]string{"state"},
 	)
 
+	// ServerConnectionTransitionsTotal counts inbound HTTP connection state
+	// transitions, labelled by connection state ("active", "idle", "closed").
 	ServerConnectionTransitionsTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "gateway_server_connection_transitions_total",
@@ -107,6 +111,8 @@ var (
 		[]string{"state"},
 	)
 
+	// HookEventsDroppedTotal counts hook dispatches dropped because the hook
+	// worker queue was full, labelled by hook subject.
 	HookEventsDroppedTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "gateway_hook_events_dropped_total",
@@ -115,6 +121,8 @@ var (
 		[]string{"subject"},
 	)
 
+	// CatalogLoadsTotal counts model catalog load attempts, labelled by source
+	// ("remote", "fallback") and result ("success", "error").
 	CatalogLoadsTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "gateway_catalog_loads_total",

@@ -211,13 +211,13 @@ func TestTogetherProvider_Embed_InvalidInput(t *testing.T) {
 	p, _ := New("test-key", srv.URL)
 	badInputs := []struct {
 		name  string
-		input interface{}
+		input any
 	}{
 		{"nil", nil},
 		{"integer", 42},
 		{"empty-string-slice", []string{}},
-		{"empty-interface-slice", []interface{}{}},
-		{"non-string-array-member", []interface{}{"ok", 42}},
+		{"empty-interface-slice", []any{}},
+		{"non-string-array-member", []any{"ok", 42}},
 	}
 	for _, tc := range badInputs {
 		t.Run(tc.name, func(t *testing.T) {
@@ -259,7 +259,7 @@ func TestTogetherProvider_Embed_UpstreamError(t *testing.T) {
 	}
 }
 
-func testTogetherEmbedSuccess(t *testing.T, input interface{}) {
+func testTogetherEmbedSuccess(t *testing.T, input any) {
 	t.Helper()
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -276,7 +276,7 @@ func testTogetherEmbedSuccess(t *testing.T, input interface{}) {
 			t.Errorf("Content-Type = %q, want application/json", got)
 		}
 
-		var body map[string]interface{}
+		var body map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatalf("failed to decode request body: %v", err)
 		}
@@ -319,7 +319,7 @@ func testTogetherEmbedSuccess(t *testing.T, input interface{}) {
 	}
 }
 
-func assertTogetherEmbeddingInput(t *testing.T, got interface{}, want interface{}) {
+func assertTogetherEmbeddingInput(t *testing.T, got any, want any) {
 	t.Helper()
 
 	switch w := want.(type) {
@@ -328,7 +328,7 @@ func assertTogetherEmbeddingInput(t *testing.T, got interface{}, want interface{
 			t.Fatalf("input = %#v, want %q", got, w)
 		}
 	case []string:
-		arr, ok := got.([]interface{})
+		arr, ok := got.([]any)
 		if !ok {
 			t.Fatalf("input type = %T, want JSON array", got)
 		}

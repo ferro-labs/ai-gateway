@@ -242,9 +242,9 @@ type CircuitBreakerConfig struct {
 
 // PluginConfig holds plugin configuration.
 type PluginConfig struct {
-	Name    string                 `json:"name" yaml:"name"`
-	Type    string                 `json:"type" yaml:"type"`
-	Stage   string                 `json:"stage" yaml:"stage"`
-	Enabled bool                   `json:"enabled" yaml:"enabled"`
-	Config  map[string]interface{} `json:"config" yaml:"config"`
+	Name    string         `json:"name" yaml:"name"`
+	Type    string         `json:"type" yaml:"type"`
+	Stage   string         `json:"stage" yaml:"stage"`
+	Enabled bool           `json:"enabled" yaml:"enabled"`
+	Config  map[string]any `json:"config" yaml:"config"`
 }

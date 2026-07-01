@@ -45,7 +45,7 @@ type routeChatMessage struct {
 // pressure. Every chat completion request through the gateway allocates one
 // of these — pooling eliminates that allocation from the hot path entirely.
 var chatRequestPool = sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		return &routeChatCompletionRequest{}
 	},
 }
@@ -101,7 +101,7 @@ func DecodeChatCompletionRequest(r io.Reader) (providers.Request, error) {
 		messages[i] = decoded
 	}
 
-	var toolChoice interface{}
+	var toolChoice any
 	if len(wire.ToolChoice) > 0 && !rawJSONNull(wire.ToolChoice) {
 		if err := json.Unmarshal(wire.ToolChoice, &toolChoice); err != nil {
 			return providers.Request{}, fmt.Errorf("tool_choice: %w", err)

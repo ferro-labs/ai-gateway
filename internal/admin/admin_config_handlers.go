@@ -42,9 +42,9 @@ func (h *Handlers) getConfigHistory(w http.ResponseWriter, _ *http.Request) {
 	h.historyMu.Unlock()
 
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+	_ = json.NewEncoder(w).Encode(map[string]any{
 		"data": history,
-		"summary": map[string]interface{}{
+		"summary": map[string]any{
 			"total_versions": len(history),
 		},
 	})
@@ -146,7 +146,7 @@ func (h *Handlers) rollbackConfig(w http.ResponseWriter, r *http.Request) {
 	h.appendConfigHistory(target.Config, &rollbackFrom)
 
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+	_ = json.NewEncoder(w).Encode(map[string]any{
 		"status":               "rolled_back",
 		"rolled_back_to":       requestedVersion,
 		"current_history_size": len(h.getConfigHistorySnapshot()),

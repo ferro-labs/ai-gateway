@@ -159,7 +159,7 @@ func TestDeepInfraProvider_Embed_MockHTTP(t *testing.T) {
 		if got := r.Header.Get("Authorization"); got != testBearerAPIKey {
 			t.Errorf("Authorization = %q, want %s", got, testBearerAPIKey)
 		}
-		var body map[string]interface{}
+		var body map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatalf("decode body: %v", err)
 		}

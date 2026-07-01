@@ -18,9 +18,15 @@ import (
 
 // Plugin is the interface all plugins must implement.
 type Plugin interface {
+	// Name returns the plugin's unique registered name.
 	Name() string
+	// Type reports the plugin's category (guardrail, logging, transform, ...).
 	Type() PluginType
-	Init(config map[string]interface{}) error
+	// Init configures the plugin from its config map before first use.
+	Init(config map[string]any) error
+	// Execute runs the plugin for the current stage against the request and
+	// response carried by pctx. It may mutate them or set pctx.Reject / pctx.Skip
+	// to influence the pipeline (see Context).
 	Execute(ctx context.Context, pctx *Context) error
 	// Close releases resources owned by the plugin. Implementations should be
 	// safe to close more than once across reload and shutdown paths.
@@ -56,20 +62,32 @@ const (
 type Context struct {
 	Request  *providers.Request
 	Response *providers.Response
-	Metadata map[string]interface{}
-	Error    error
-	Skip     bool
-	Reject   bool
-	Reason   string
+	// Metadata carries key/value data shared between plugins and stages (for
+	// example "api_key" or "cache_hit"). Writing Metadata never alters pipeline
+	// control flow; it only passes information along.
+	Metadata map[string]any
+	// Error holds the provider or pipeline error surfaced to the after_request
+	// and on_error stages so plugins can observe it. Setting it does not by
+	// itself abort the request.
+	Error error
+	// Skip, when set true by a plugin, stops the remaining plugins in the current
+	// stage from running. The request itself continues normally.
+	Skip bool
+	// Reject, when set true, aborts the request and returns a rejection error to
+	// the client. Reason supplies the human-readable cause.
+	Reject bool
+	// Reason is the human-readable explanation reported to the client when
+	// Reject is set.
+	Reason string
 }
 
 // pluginContextPool recycles Context objects to reduce GC pressure.
 // Every request through the gateway that has plugins registered allocates
 // one of these — pooling eliminates that allocation from the hot path.
 var pluginContextPool = sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		return &Context{
-			Metadata: make(map[string]interface{}, 8),
+			Metadata: make(map[string]any, 8),
 		}
 	},
 }

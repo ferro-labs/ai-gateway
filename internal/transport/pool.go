@@ -16,7 +16,7 @@ type bufferPool struct {
 func newBufferPool() *bufferPool {
 	return &bufferPool{
 		p: sync.Pool{
-			New: func() interface{} {
+			New: func() any {
 				// 32KB is a good default for LLM request/response bodies.
 				return bytes.NewBuffer(make([]byte, 0, 32*1024))
 			},

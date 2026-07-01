@@ -86,7 +86,7 @@ func TestReplicateProvider_Complete_PinnedVersion(t *testing.T) {
 	// sends the request to /predictions with a "version" field in the body,
 	// instead of /models/{owner}/{name}/predictions.
 	var gotPath string
-	var gotBody map[string]interface{}
+	var gotBody map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		_ = json.NewDecoder(r.Body).Decode(&gotBody)
@@ -121,11 +121,11 @@ func TestReplicateProvider_Complete_PinnedVersion(t *testing.T) {
 func TestReplicateProvider_GenerateImage_PinnedVersion(t *testing.T) {
 	// Same check as above but for GenerateImage().
 	var gotPath string
-	var gotBody map[string]interface{}
+	var gotBody map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		_ = json.NewDecoder(r.Body).Decode(&gotBody)
-		pred := Prediction{ID: "img-ver", Status: "succeeded", Output: []interface{}{"https://example.com/img.png"}}
+		pred := Prediction{ID: "img-ver", Status: "succeeded", Output: []any{"https://example.com/img.png"}}
 		data, _ := json.Marshal(pred)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
@@ -202,7 +202,7 @@ func TestReplicateProvider_Complete_MockHTTP(t *testing.T) {
 		pred := Prediction{
 			ID:     "pred-123",
 			Status: "succeeded",
-			Output: []interface{}{"Hello", " world"},
+			Output: []any{"Hello", " world"},
 		}
 		data, _ := json.Marshal(pred)
 		w.Header().Set("Content-Type", "application/json")
@@ -239,7 +239,7 @@ func TestReplicateProvider_CompleteStream_MockSSE(t *testing.T) {
 	var gotPath string
 	var gotAuth string
 	var gotAccept string
-	var gotBody map[string]interface{}
+	var gotBody map[string]any
 
 	var srv *httptest.Server
 	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -323,7 +323,7 @@ func TestReplicateProvider_GenerateImage_MockHTTP(t *testing.T) {
 		pred := Prediction{
 			ID:     "img-pred-1",
 			Status: "succeeded",
-			Output: []interface{}{"https://example.com/image.png"},
+			Output: []any{"https://example.com/image.png"},
 		}
 		data, _ := json.Marshal(pred)
 		w.Header().Set("Content-Type", "application/json")
@@ -421,7 +421,7 @@ func TestReplicateProvider_GenerateImage_InvalidSize(t *testing.T) {
 
 func TestReplicateProvider_GenerateImage_ValidSize(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		pred := Prediction{ID: "img-sz", Status: "succeeded", Output: []interface{}{"https://example.com/img.png"}}
+		pred := Prediction{ID: "img-sz", Status: "succeeded", Output: []any{"https://example.com/img.png"}}
 		data, _ := json.Marshal(pred)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)

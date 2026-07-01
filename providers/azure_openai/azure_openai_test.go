@@ -219,7 +219,7 @@ func TestAzureOpenAIProvider_Embed_InputValidation(t *testing.T) {
 		{"nil input", core.EmbeddingRequest{Input: nil}},
 		{"empty string", core.EmbeddingRequest{Input: ""}},
 		{"empty slice", core.EmbeddingRequest{Input: []string{}}},
-		{"non-string element", core.EmbeddingRequest{Input: []interface{}{1}}},
+		{"non-string element", core.EmbeddingRequest{Input: []any{1}}},
 		{"bad encoding_format", core.EmbeddingRequest{Input: "x", EncodingFormat: "binary"}},
 	}
 	for _, tc := range cases {
@@ -271,7 +271,7 @@ func TestAzureOpenAIProvider_GenerateImage(t *testing.T) {
 		gotQuery = r.URL.RawQuery
 		gotAPIKey = r.Header.Get("api-key")
 		body, _ := io.ReadAll(r.Body)
-		var m map[string]interface{}
+		var m map[string]any
 		_ = json.Unmarshal(body, &m)
 		_, sentModel = m["model"]
 		w.Header().Set("Content-Type", "application/json")

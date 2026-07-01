@@ -33,10 +33,10 @@ func (w *WordFilter) Name() string { return "word-filter" }
 func (w *WordFilter) Type() plugin.PluginType { return plugin.TypeGuardrail }
 
 // Init configures the plugin from the provided options map.
-func (w *WordFilter) Init(config map[string]interface{}) error {
+func (w *WordFilter) Init(config map[string]any) error {
 	if words, ok := config["blocked_words"]; ok {
 		switch list := words.(type) {
-		case []interface{}:
+		case []any:
 			for _, word := range list {
 				if s, ok := word.(string); ok {
 					w.blockedWords = append(w.blockedWords, s)

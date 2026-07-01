@@ -8,7 +8,7 @@ import (
 	"github.com/ferro-labs/ai-gateway/providers"
 )
 
-func makePlugin(t *testing.T, cfg map[string]interface{}) *Plugin {
+func makePlugin(t *testing.T, cfg map[string]any) *Plugin {
 	t.Helper()
 	p := &Plugin{}
 	if err := p.Init(cfg); err != nil {
@@ -24,7 +24,7 @@ func pctxWithKey(key string) *plugin.Context {
 }
 
 func TestBudget_Init_Defaults(t *testing.T) {
-	p := makePlugin(t, map[string]interface{}{})
+	p := makePlugin(t, map[string]any{})
 	if p.storeID != "default" {
 		t.Errorf("default store_id should be 'default', got %q", p.storeID)
 	}
@@ -35,7 +35,7 @@ func TestBudget_Init_Defaults(t *testing.T) {
 
 func TestBudget_Init_InvalidType(t *testing.T) {
 	p := &Plugin{}
-	err := p.Init(map[string]interface{}{"spend_limit_usd": "not-a-number"})
+	err := p.Init(map[string]any{"spend_limit_usd": "not-a-number"})
 	if err == nil {
 		t.Fatal("expected error for non-numeric spend_limit_usd")
 	}
@@ -43,7 +43,7 @@ func TestBudget_Init_InvalidType(t *testing.T) {
 
 func TestBudget_Init_NegativeLimit(t *testing.T) {
 	p := &Plugin{}
-	err := p.Init(map[string]interface{}{"spend_limit_usd": -1.0})
+	err := p.Init(map[string]any{"spend_limit_usd": -1.0})
 	if err == nil {
 		t.Fatal("expected error for negative spend_limit_usd")
 	}
@@ -52,7 +52,7 @@ func TestBudget_Init_NegativeLimit(t *testing.T) {
 func TestBudget_Init_ZeroPricingWithLimit(t *testing.T) {
 	// spend_limit_usd > 0 but both pricing rates are 0 → error at Init.
 	p := &Plugin{}
-	err := p.Init(map[string]interface{}{
+	err := p.Init(map[string]any{
 		"spend_limit_usd": 10.0,
 		// input_per_m_tokens and output_per_m_tokens default to 0
 	})
@@ -63,7 +63,7 @@ func TestBudget_Init_ZeroPricingWithLimit(t *testing.T) {
 
 func TestBudget_NoAPIKey_Skips(t *testing.T) {
 	// No api_key in metadata → plugin should not reject.
-	p := makePlugin(t, map[string]interface{}{
+	p := makePlugin(t, map[string]any{
 		"spend_limit_usd":     0.01,
 		"input_per_m_tokens":  1.0,
 		"output_per_m_tokens": 1.0,
@@ -79,7 +79,7 @@ func TestBudget_NoAPIKey_Skips(t *testing.T) {
 
 func TestBudget_BelowLimit_Passes(t *testing.T) {
 	// Use a unique store_id to avoid pollution from other tests.
-	p := makePlugin(t, map[string]interface{}{
+	p := makePlugin(t, map[string]any{
 		"store_id":            "test-below",
 		"spend_limit_usd":     10.0,
 		"input_per_m_tokens":  3.0,
@@ -95,7 +95,7 @@ func TestBudget_BelowLimit_Passes(t *testing.T) {
 }
 
 func TestBudget_RecordAndExceed(t *testing.T) {
-	p := makePlugin(t, map[string]interface{}{
+	p := makePlugin(t, map[string]any{
 		"store_id":            "test-exceed",
 		"spend_limit_usd":     0.001, // $0.001 limit
 		"input_per_m_tokens":  3.0,
@@ -129,7 +129,7 @@ func TestBudget_RecordAndExceed(t *testing.T) {
 
 func TestBudget_Unlimited_NeverRejects(t *testing.T) {
 	// spend_limit_usd = 0 means unlimited.
-	p := makePlugin(t, map[string]interface{}{
+	p := makePlugin(t, map[string]any{
 		"store_id":            "test-unlimited",
 		"input_per_m_tokens":  3.0,
 		"output_per_m_tokens": 15.0,
@@ -152,7 +152,7 @@ func TestBudget_Unlimited_NeverRejects(t *testing.T) {
 }
 
 func TestBudget_SharedStore_TwoInstances(t *testing.T) {
-	cfg := map[string]interface{}{
+	cfg := map[string]any{
 		"store_id":            "test-shared",
 		"spend_limit_usd":     0.001,
 		"input_per_m_tokens":  3.0,
@@ -177,7 +177,7 @@ func TestBudget_SharedStore_TwoInstances(t *testing.T) {
 
 func TestBudget_MaxKeys_EvictsMinSpend(t *testing.T) {
 	// max_keys=2 means at most 2 keys tracked; adding a 3rd evicts the lowest-spend one.
-	p := makePlugin(t, map[string]interface{}{
+	p := makePlugin(t, map[string]any{
 		"store_id":            "test-max-keys",
 		"spend_limit_usd":     10.0,
 		"input_per_m_tokens":  1.0,
@@ -210,7 +210,7 @@ func TestBudget_MaxKeys_EvictsMinSpend(t *testing.T) {
 }
 
 func TestBudget_ResetStoreKey(t *testing.T) {
-	p := makePlugin(t, map[string]interface{}{
+	p := makePlugin(t, map[string]any{
 		"store_id":            "test-reset-key",
 		"spend_limit_usd":     0.001,
 		"input_per_m_tokens":  3.0,
@@ -238,7 +238,7 @@ func TestBudget_ResetStoreKey(t *testing.T) {
 }
 
 func TestBudget_ResetStore(t *testing.T) {
-	p := makePlugin(t, map[string]interface{}{
+	p := makePlugin(t, map[string]any{
 		"store_id":            "test-reset-all",
 		"spend_limit_usd":     0.001,
 		"input_per_m_tokens":  3.0,
