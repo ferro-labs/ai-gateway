@@ -280,7 +280,7 @@ func (s *SQLStore) Revoke(ctx context.Context, id string) error {
 	}
 	affected, _ := res.RowsAffected()
 	if affected == 0 {
-		return fmt.Errorf("key not found: %s", id)
+		return fmt.Errorf("%w: %s", ErrKeyNotFound, id)
 	}
 	return nil
 }
@@ -289,7 +289,7 @@ func (s *SQLStore) Revoke(ctx context.Context, id string) error {
 func (s *SQLStore) Update(ctx context.Context, id string, name string, scopes []string) (*APIKey, error) {
 	current, ok := s.Get(ctx, id)
 	if !ok {
-		return nil, fmt.Errorf("key not found: %s", id)
+		return nil, fmt.Errorf("%w: %s", ErrKeyNotFound, id)
 	}
 
 	if name != "" {
@@ -328,7 +328,7 @@ func (s *SQLStore) SetExpiration(ctx context.Context, id string, expiresAt *time
 	}
 	affected, _ := res.RowsAffected()
 	if affected == 0 {
-		return fmt.Errorf("key not found: %s", id)
+		return fmt.Errorf("%w: %s", ErrKeyNotFound, id)
 	}
 	return nil
 }
@@ -341,7 +341,7 @@ func (s *SQLStore) Delete(ctx context.Context, id string) error {
 	}
 	affected, _ := res.RowsAffected()
 	if affected == 0 {
-		return fmt.Errorf("key not found: %s", id)
+		return fmt.Errorf("%w: %s", ErrKeyNotFound, id)
 	}
 	return nil
 }
@@ -393,12 +393,12 @@ func (s *SQLStore) RotateKey(ctx context.Context, id string) (*APIKey, error) {
 	}
 	affected, _ := res.RowsAffected()
 	if affected == 0 {
-		return nil, fmt.Errorf("key not found: %s", id)
+		return nil, fmt.Errorf("%w: %s", ErrKeyNotFound, id)
 	}
 
 	updated, ok := s.Get(ctx, id)
 	if !ok {
-		return nil, fmt.Errorf("key not found: %s", id)
+		return nil, fmt.Errorf("%w: %s", ErrKeyNotFound, id)
 	}
 	return updated, nil
 }

@@ -4,10 +4,17 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
 )
+
+// ErrKeyNotFound is returned by Store implementations when an operation targets
+// an API key ID that does not exist. Handlers use errors.Is to distinguish a
+// genuine not-found (HTTP 404) from an internal or transient store failure
+// (HTTP 500), so a database outage is never reported to callers as a 404.
+var ErrKeyNotFound = errors.New("key not found")
 
 // APIKey represents an API key for authenticating requests to the gateway.
 type APIKey struct {
@@ -130,7 +137,7 @@ func (s *KeyStore) Revoke(_ context.Context, id string) error {
 	defer s.mu.Unlock()
 	k, ok := s.byID[id]
 	if !ok {
-		return fmt.Errorf("key not found: %s", id)
+		return fmt.Errorf("%w: %s", ErrKeyNotFound, id)
 	}
 	now := time.Now()
 	k.RevokedAt = &now
@@ -144,7 +151,7 @@ func (s *KeyStore) Update(_ context.Context, id string, name string, scopes []st
 	defer s.mu.Unlock()
 	k, ok := s.byID[id]
 	if !ok {
-		return nil, fmt.Errorf("key not found: %s", id)
+		return nil, fmt.Errorf("%w: %s", ErrKeyNotFound, id)
 	}
 	if name != "" {
 		k.Name = name
@@ -165,7 +172,7 @@ func (s *KeyStore) SetExpiration(_ context.Context, id string, expiresAt *time.T
 	defer s.mu.Unlock()
 	k, ok := s.byID[id]
 	if !ok {
-		return fmt.Errorf("key not found: %s", id)
+		return fmt.Errorf("%w: %s", ErrKeyNotFound, id)
 	}
 	if expiresAt == nil {
 		k.ExpiresAt = nil
@@ -184,7 +191,7 @@ func (s *KeyStore) Delete(_ context.Context, id string) error {
 	defer s.mu.Unlock()
 	k, ok := s.byID[id]
 	if !ok {
-		return fmt.Errorf("key not found: %s", id)
+		return fmt.Errorf("%w: %s", ErrKeyNotFound, id)
 	}
 	delete(s.byKey, k.Key)
 	delete(s.byID, id)
@@ -197,7 +204,7 @@ func (s *KeyStore) RotateKey(_ context.Context, id string) (*APIKey, error) {
 	defer s.mu.Unlock()
 	k, ok := s.byID[id]
 	if !ok {
-		return nil, fmt.Errorf("key not found: %s", id)
+		return nil, fmt.Errorf("%w: %s", ErrKeyNotFound, id)
 	}
 
 	keyBytes := make([]byte, 32)

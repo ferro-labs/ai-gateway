@@ -14,10 +14,25 @@ import (
 	"time"
 
 	aigateway "github.com/ferro-labs/ai-gateway"
+	"github.com/ferro-labs/ai-gateway/internal/logging"
 	"github.com/ferro-labs/ai-gateway/internal/requestlog"
 	"github.com/ferro-labs/ai-gateway/providers"
 	"github.com/go-chi/chi/v5"
 )
+
+// writeKeyStoreError maps an API key store error to an HTTP response. A genuine
+// not-found (errors.Is(err, ErrKeyNotFound)) becomes 404 with the key id echoed;
+// any other error is an internal or transient store failure, reported as 500
+// with a generic message so wrapped database/internal text is never leaked to
+// callers, and logged server-side for operators.
+func writeKeyStoreError(w http.ResponseWriter, err error) {
+	if errors.Is(err, ErrKeyNotFound) {
+		writeError(w, http.StatusNotFound, err.Error(), "not_found_error", "resource_not_found")
+		return
+	}
+	logging.Logger.Error("admin key store operation failed", "error", err)
+	writeError(w, http.StatusInternalServerError, "internal server error", "server_error", "internal_error")
+}
 
 // ConfigManager exposes the minimal gateway config operations needed by admin API.
 type ConfigManager interface {
@@ -171,7 +186,8 @@ func (h *Handlers) createKey(w http.ResponseWriter, r *http.Request) {
 
 	key, err := h.Keys.Create(r.Context(), body.Name, body.Scopes, expiresAt)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error(), "server_error", "internal_error")
+		logging.Logger.Error("admin create key failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal server error", "server_error", "internal_error")
 		return
 	}
 
@@ -624,13 +640,13 @@ func (h *Handlers) updateKey(w http.ResponseWriter, r *http.Request) {
 
 	key, err := h.Keys.Update(r.Context(), id, body.Name, body.Scopes)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error(), "not_found_error", "resource_not_found")
+		writeKeyStoreError(w, err)
 		return
 	}
 
 	if body.ClearExpiration {
 		if err := h.Keys.SetExpiration(r.Context(), id, nil); err != nil {
-			writeError(w, http.StatusNotFound, err.Error(), "not_found_error", "resource_not_found")
+			writeKeyStoreError(w, err)
 			return
 		}
 		key.ExpiresAt = nil
@@ -641,7 +657,7 @@ func (h *Handlers) updateKey(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := h.Keys.SetExpiration(r.Context(), id, &expiresAt); err != nil {
-			writeError(w, http.StatusNotFound, err.Error(), "not_found_error", "resource_not_found")
+			writeKeyStoreError(w, err)
 			return
 		}
 		t := expiresAt
@@ -655,7 +671,7 @@ func (h *Handlers) updateKey(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) deleteKey(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if err := h.Keys.Delete(r.Context(), id); err != nil {
-		writeError(w, http.StatusNotFound, err.Error(), "not_found_error", "resource_not_found")
+		writeKeyStoreError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -664,7 +680,7 @@ func (h *Handlers) deleteKey(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) revokeKey(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if err := h.Keys.Revoke(r.Context(), id); err != nil {
-		writeError(w, http.StatusNotFound, err.Error(), "not_found_error", "resource_not_found")
+		writeKeyStoreError(w, err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -675,7 +691,7 @@ func (h *Handlers) rotateKey(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	key, err := h.Keys.RotateKey(r.Context(), id)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error(), "not_found_error", "resource_not_found")
+		writeKeyStoreError(w, err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")

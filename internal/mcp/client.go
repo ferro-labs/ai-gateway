@@ -15,6 +15,18 @@ import (
 	"github.com/ferro-labs/ai-gateway/internal/version"
 )
 
+const (
+	// maxErrorBodyBytes caps how many bytes of a non-2xx MCP response body are
+	// read into an error message.
+	maxErrorBodyBytes = 4096
+	// maxResponseBodyBytes caps the size of a successful MCP JSON-RPC response
+	// body. An MCP server is an untrusted-content boundary; without a limit a
+	// buggy, compromised, or MITM'd server could return an unbounded body and
+	// drive gateway memory exhaustion. The per-request HTTP timeout bounds time,
+	// not memory.
+	maxResponseBodyBytes = 10 << 20 // 10 MiB
+)
+
 // Client communicates with a single MCP server over Streamable HTTP transport.
 // All exported methods are safe for concurrent use.
 type Client struct {
@@ -159,13 +171,18 @@ func (c *Client) call(ctx context.Context, method string, params interface{}) (*
 	c.setSessionID(httpResp.Header.Get("Mcp-Session-Id"))
 
 	if httpResp.StatusCode != http.StatusOK {
-		errBody, _ := io.ReadAll(io.LimitReader(httpResp.Body, 4096))
+		errBody, _ := io.ReadAll(io.LimitReader(httpResp.Body, maxErrorBodyBytes))
 		return nil, fmt.Errorf("mcp server %s returned HTTP %d: %s", method, httpResp.StatusCode, errBody)
 	}
 
-	respBody, err := io.ReadAll(httpResp.Body)
+	// Bound the success-path read: read one byte past the cap so an
+	// over-limit body is detected rather than silently truncated.
+	respBody, err := io.ReadAll(io.LimitReader(httpResp.Body, maxResponseBodyBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("mcp read body: %w", err)
+	}
+	if len(respBody) > maxResponseBodyBytes {
+		return nil, fmt.Errorf("mcp response from %s exceeds %d byte limit", method, maxResponseBodyBytes)
 	}
 
 	var rpcResp JSONRPCResponse
