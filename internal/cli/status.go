@@ -15,9 +15,7 @@ var StatusCmd = &cobra.Command{
 }
 
 func runStatus(cmd *cobra.Command, _ []string) error {
-	flagURL, _ := cmd.Root().PersistentFlags().GetString("gateway-url")
-	flagKey, _ := cmd.Root().PersistentFlags().GetString("api-key")
-	c := NewAdminClient(flagURL, flagKey)
+	c := adminClientFromCmd(cmd)
 
 	start := time.Now()
 	var health map[string]any

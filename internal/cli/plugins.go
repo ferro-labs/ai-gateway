@@ -14,9 +14,7 @@ var PluginsCmd = &cobra.Command{
 }
 
 func runPlugins(cmd *cobra.Command, _ []string) error {
-	flagURL, _ := cmd.Root().PersistentFlags().GetString("gateway-url")
-	flagKey, _ := cmd.Root().PersistentFlags().GetString("api-key")
-	c := NewAdminClient(flagURL, flagKey)
+	c := adminClientFromCmd(cmd)
 
 	var plugins []struct {
 		Name    string `json:"name" yaml:"name"`

@@ -77,9 +77,7 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 	fmt.Println()
 	fmt.Println("  Gateway Connectivity")
 
-	flagURL, _ := cmd.Root().PersistentFlags().GetString("gateway-url")
-	flagKey, _ := cmd.Root().PersistentFlags().GetString("api-key")
-	c := NewAdminClient(flagURL, flagKey)
+	c := adminClientFromCmd(cmd)
 	var h struct {
 		Status string `json:"status"`
 	}

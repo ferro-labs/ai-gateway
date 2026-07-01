@@ -62,10 +62,11 @@ client-ritual copies.
 - [x] **Phase 5 — plugins + strategies dedup** ✅ (M): shared strategy `dispatch()` + generic
       `weightedPick[T]`; shared `plugincfg` numeric decode. _(maxtoken/cache silent-config-fallback is a
       real bug but a behavior change → left flagged for the owner, not silently "fixed" in a hygiene pass.)_
-- [ ] **Phase 6 — CLI/bootstrap/handler wiring** (M): `adminClientFromCmd`/`printResult`; break up
-      `Serve()`; shared `decodeJSONBody`; named consts. **+ from Phase 0:** uniform provider-init
-      failure policy (env `os.Exit` vs Bedrock warn-only); Warn on invalid `RATE_LIMIT_RPS/BURST`
-      instead of silently disabling; `router.ensureGateway` log/propagate the `New()` error.
+- [x] **Phase 6 — CLI/bootstrap/handler wiring** ✅ (M): `adminClientFromCmd`/`printResult`; `Serve()`
+      split into build/run/shutdown; shared `decodeJSONBody`; named listen/drain consts; Warn on invalid
+      `RATE_LIMIT_RPS/BURST`; `ensureGateway` logs the `New()` error.
+      ⚠️ **DEFERRED for owner decision:** uniform provider-init failure policy (env `os.Exit` vs Bedrock
+      warn-only) — changes runtime behavior, so kept out of the hygiene commits.
 - [ ] **Phase 7 — transport & streaming hygiene** (M): remove/wire dead transport metrics + tracing
       transport (~200 lines); extract `drainSrc` leak-guard; cache `ReverseProxy`.
 - [ ] **Phase 8 — otel/mcp decomposition** (M): **span-error redaction bypass (from Phase 0)** —

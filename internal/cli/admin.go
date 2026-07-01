@@ -31,16 +31,12 @@ var keysListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List all API keys",
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		flagURL, _ := cmd.Root().PersistentFlags().GetString("gateway-url")
-		flagKey, _ := cmd.Root().PersistentFlags().GetString("api-key")
-		c := NewAdminClient(flagURL, flagKey)
+		c := adminClientFromCmd(cmd)
 		var result any
 		if err := c.Get(cmd.Context(), "/admin/keys", &result); err != nil {
 			return err
 		}
-		format, _ := cmd.Root().PersistentFlags().GetString("format")
-		pr := NewPrinter(format)
-		return pr.Print(&jsonSlice{
+		return printResult(cmd, &jsonSlice{
 			headers: []string{"ID", "NAME", "SCOPE", "EXPIRES", "REVOKED"},
 			data:    toSlice(result),
 			rowFn: func(m map[string]any) []string {
@@ -58,16 +54,12 @@ var keysGetCmd = &cobra.Command{
 	Short: "Get details of an API key",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		flagURL, _ := cmd.Root().PersistentFlags().GetString("gateway-url")
-		flagKey, _ := cmd.Root().PersistentFlags().GetString("api-key")
-		c := NewAdminClient(flagURL, flagKey)
+		c := adminClientFromCmd(cmd)
 		var result any
 		if err := c.Get(cmd.Context(), "/admin/keys/"+args[0], &result); err != nil {
 			return err
 		}
-		format, _ := cmd.Root().PersistentFlags().GetString("format")
-		pr := NewPrinter(format)
-		return pr.Print(result)
+		return printResult(cmd, result)
 	},
 }
 
@@ -91,16 +83,12 @@ var keysCreateCmd = &cobra.Command{
 			body["expires_at"] = time.Now().UTC().Add(d).Format(time.RFC3339)
 		}
 
-		flagURL, _ := cmd.Root().PersistentFlags().GetString("gateway-url")
-		flagKey, _ := cmd.Root().PersistentFlags().GetString("api-key")
-		c := NewAdminClient(flagURL, flagKey)
+		c := adminClientFromCmd(cmd)
 		var result any
 		if err := c.Post(cmd.Context(), "/admin/keys", body, &result); err != nil {
 			return err
 		}
-		format, _ := cmd.Root().PersistentFlags().GetString("format")
-		pr := NewPrinter(format)
-		return pr.Print(result)
+		return printResult(cmd, result)
 	},
 }
 
@@ -109,9 +97,7 @@ var keysRevokeCmd = &cobra.Command{
 	Short: "Revoke an API key",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		flagURL, _ := cmd.Root().PersistentFlags().GetString("gateway-url")
-		flagKey, _ := cmd.Root().PersistentFlags().GetString("api-key")
-		c := NewAdminClient(flagURL, flagKey)
+		c := adminClientFromCmd(cmd)
 		if err := c.Post(cmd.Context(), "/admin/keys/"+args[0]+"/revoke", nil, nil); err != nil {
 			return err
 		}
@@ -125,16 +111,12 @@ var keysRotateCmd = &cobra.Command{
 	Short: "Rotate an API key (generates a new key value)",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		flagURL, _ := cmd.Root().PersistentFlags().GetString("gateway-url")
-		flagKey, _ := cmd.Root().PersistentFlags().GetString("api-key")
-		c := NewAdminClient(flagURL, flagKey)
+		c := adminClientFromCmd(cmd)
 		var result any
 		if err := c.Post(cmd.Context(), "/admin/keys/"+args[0]+"/rotate", nil, &result); err != nil {
 			return err
 		}
-		format, _ := cmd.Root().PersistentFlags().GetString("format")
-		pr := NewPrinter(format)
-		return pr.Print(result)
+		return printResult(cmd, result)
 	},
 }
 
@@ -149,16 +131,12 @@ var configGetCmd = &cobra.Command{
 	Use:   "get",
 	Short: "Print the current runtime configuration",
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		flagURL, _ := cmd.Root().PersistentFlags().GetString("gateway-url")
-		flagKey, _ := cmd.Root().PersistentFlags().GetString("api-key")
-		c := NewAdminClient(flagURL, flagKey)
+		c := adminClientFromCmd(cmd)
 		var result any
 		if err := c.Get(cmd.Context(), "/admin/config", &result); err != nil {
 			return err
 		}
-		format, _ := cmd.Root().PersistentFlags().GetString("format")
-		pr := NewPrinter(format)
-		return pr.Print(result)
+		return printResult(cmd, result)
 	},
 }
 
@@ -166,16 +144,12 @@ var configHistoryCmd = &cobra.Command{
 	Use:   "history",
 	Short: "Show configuration change history",
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		flagURL, _ := cmd.Root().PersistentFlags().GetString("gateway-url")
-		flagKey, _ := cmd.Root().PersistentFlags().GetString("api-key")
-		c := NewAdminClient(flagURL, flagKey)
+		c := adminClientFromCmd(cmd)
 		var result any
 		if err := c.Get(cmd.Context(), "/admin/config/history", &result); err != nil {
 			return err
 		}
-		format, _ := cmd.Root().PersistentFlags().GetString("format")
-		pr := NewPrinter(format)
-		return pr.Print(&jsonSlice{
+		return printResult(cmd, &jsonSlice{
 			headers: []string{"VERSION", "UPDATED_AT", "ROLLED_BACK_FROM"},
 			data:    toSlice(result),
 			rowFn: func(m map[string]any) []string {
@@ -206,9 +180,7 @@ var configSetCmd = &cobra.Command{
 		if err := json.Unmarshal(raw, &body); err != nil {
 			return fmt.Errorf("parse config file: %w (only JSON is accepted by this command; convert YAML first)", err)
 		}
-		flagURL, _ := cmd.Root().PersistentFlags().GetString("gateway-url")
-		flagKey, _ := cmd.Root().PersistentFlags().GetString("api-key")
-		c := NewAdminClient(flagURL, flagKey)
+		c := adminClientFromCmd(cmd)
 		var result any
 		if err := c.Put(cmd.Context(), "/admin/config", body, &result); err != nil {
 			return err
@@ -223,9 +195,7 @@ var configRollbackCmd = &cobra.Command{
 	Short: "Roll back to a previous configuration version",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		flagURL, _ := cmd.Root().PersistentFlags().GetString("gateway-url")
-		flagKey, _ := cmd.Root().PersistentFlags().GetString("api-key")
-		c := NewAdminClient(flagURL, flagKey)
+		c := adminClientFromCmd(cmd)
 		var result any
 		if err := c.Post(cmd.Context(), "/admin/config/rollback/"+args[0], nil, &result); err != nil {
 			return err
@@ -246,18 +216,14 @@ var logsListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List persisted request logs",
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		flagURL, _ := cmd.Root().PersistentFlags().GetString("gateway-url")
-		flagKey, _ := cmd.Root().PersistentFlags().GetString("api-key")
-		c := NewAdminClient(flagURL, flagKey)
+		c := adminClientFromCmd(cmd)
 		limit, _ := cmd.Flags().GetInt("limit")
 		path := fmt.Sprintf("/admin/logs?limit=%d", limit)
 		var result any
 		if err := c.Get(cmd.Context(), path, &result); err != nil {
 			return err
 		}
-		format, _ := cmd.Root().PersistentFlags().GetString("format")
-		pr := NewPrinter(format)
-		return pr.Print(&jsonSlice{
+		return printResult(cmd, &jsonSlice{
 			headers: []string{"TRACE_ID", "PROVIDER", "MODEL", "STATUS", "LATENCY_MS", "TIMESTAMP"},
 			data:    toSlice(result),
 			rowFn: func(m map[string]any) []string {
@@ -276,16 +242,12 @@ var logsStatsCmd = &cobra.Command{
 	Use:   "stats",
 	Short: "Show aggregated log statistics",
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		flagURL, _ := cmd.Root().PersistentFlags().GetString("gateway-url")
-		flagKey, _ := cmd.Root().PersistentFlags().GetString("api-key")
-		c := NewAdminClient(flagURL, flagKey)
+		c := adminClientFromCmd(cmd)
 		var result any
 		if err := c.Get(cmd.Context(), "/admin/logs/stats", &result); err != nil {
 			return err
 		}
-		format, _ := cmd.Root().PersistentFlags().GetString("format")
-		pr := NewPrinter(format)
-		return pr.Print(result)
+		return printResult(cmd, result)
 	},
 }
 
@@ -300,16 +262,12 @@ var providersListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List all registered providers and their model counts",
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		flagURL, _ := cmd.Root().PersistentFlags().GetString("gateway-url")
-		flagKey, _ := cmd.Root().PersistentFlags().GetString("api-key")
-		c := NewAdminClient(flagURL, flagKey)
+		c := adminClientFromCmd(cmd)
 		var result any
 		if err := c.Get(cmd.Context(), "/admin/providers", &result); err != nil {
 			return err
 		}
-		format, _ := cmd.Root().PersistentFlags().GetString("format")
-		pr := NewPrinter(format)
-		return pr.Print(&jsonSlice{
+		return printResult(cmd, &jsonSlice{
 			headers: []string{"PROVIDER", "MODELS"},
 			data:    toSlice(result),
 			rowFn: func(m map[string]any) []string {
@@ -323,16 +281,12 @@ var providersHealthCmd = &cobra.Command{
 	Use:   "health",
 	Short: "Show per-provider health status",
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		flagURL, _ := cmd.Root().PersistentFlags().GetString("gateway-url")
-		flagKey, _ := cmd.Root().PersistentFlags().GetString("api-key")
-		c := NewAdminClient(flagURL, flagKey)
+		c := adminClientFromCmd(cmd)
 		var result any
 		if err := c.Get(cmd.Context(), "/admin/health", &result); err != nil {
 			return err
 		}
-		format, _ := cmd.Root().PersistentFlags().GetString("format")
-		pr := NewPrinter(format)
-		return pr.Print(result)
+		return printResult(cmd, result)
 	},
 }
 

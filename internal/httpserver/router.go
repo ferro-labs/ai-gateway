@@ -115,6 +115,7 @@ func ensureGateway(gw *aigateway.Gateway, registry *providers.Registry) *aigatew
 	}
 	created, err := aigateway.New(cfg)
 	if err != nil {
+		logging.Logger.Error("failed to build fallback gateway", "error", err)
 		return nil
 	}
 	for _, name := range registry.List() {
