@@ -25,6 +25,9 @@ import (
 // deadline-bounded context during graceful shutdown.
 type ShutdownFunc func(ctx context.Context) error
 
+// defaultShutdownGrace bounds each shutdown stage when ShutdownGrace is unset.
+const defaultShutdownGrace = 10 * time.Second
+
 // Init constructs an observability.Provider. Returns observability.NoOp()
 // (zero-allocation fast-path) when:
 //   - cfg.Enabled is false, OR
@@ -62,56 +65,15 @@ func Init(ctx context.Context, cfg Config) (observability.Provider, ShutdownFunc
 		return observability.NoOp(), noopShutdown, nil
 	}
 
-	var prov *otelProvider
-	var tpShutdown func(context.Context) error
-	globalTPSet := false
-
-	if hasEndpoint {
-		// Full OTLP pipeline: real TracerProvider + span exporter.
-		exporter, err := newSpanExporter(ctx, cfg)
-		if err != nil {
-			return nil, nil, fmt.Errorf("otel: build span exporter: %w", err)
-		}
-
-		res, err := resource.New(ctx,
-			resource.WithAttributes(
-				semconv.ServiceName(serviceName(cfg)),
-				semconv.ServiceVersion(""), // populated later via build flag
-			),
-			resource.WithFromEnv(),
-			resource.WithProcess(),
-			resource.WithHost(),
-		)
-		if err != nil {
-			return nil, nil, fmt.Errorf("otel: build resource: %w", err)
-		}
-
-		tp := sdktrace.NewTracerProvider(
-			sdktrace.WithBatcher(exporter),
-			sdktrace.WithResource(res),
-			sdktrace.WithSampler(sampler(cfg)),
-			sdktrace.WithIDGenerator(newLoggingIDGen()),
-		)
-
-		installPropagator()
-
-		// Register tp as the global TracerProvider so instrumentation that
-		// uses the global otel.Tracer(...) API — plugin-stage spans
-		// (plugin/manager.go) and MCP tool spans (internal/mcp/executor.go) —
-		// records and exports child spans. Without this they silently no-op
-		// and only the gateway root span (which holds tp directly) is emitted.
-		otel.SetTracerProvider(tp)
-		globalTPSet = true
-
-		prov = newProvider(trace.TracerProvider(tp), cfg)
-		tpShutdown = tp.Shutdown
-	} else {
-		// Exporters-only path: no-op tracer so spans are free, but
-		// RecordEvent still fans events out to registered exporters.
-		noopTP := noop.NewTracerProvider()
-		prov = newProvider(trace.TracerProvider(noopTP), cfg)
-		tpShutdown = noopShutdown
+	prov, tpShutdown, globalTPSet, err := buildOTLPProvider(ctx, cfg, hasEndpoint)
+	if err != nil {
+		return nil, nil, err
 	}
+
+	// Publish the provider's privacy level and redactor so child spans created
+	// from the global tracer (plugin stages, MCP tool calls) redact error text
+	// with the same policy as the gateway root span.
+	setSpanErrorPolicy(prov.privacyLevel, prov.redactor)
 
 	// Resolve plugin exporters: look up factory, instantiate, Init.
 	resolvedExporters := resolveExporters(ctx, cfg.Exporters)
@@ -119,13 +81,71 @@ func Init(ctx context.Context, cfg Config) (observability.Provider, ShutdownFunc
 		prov.AttachExporters(resolvedExporters)
 	}
 
-	shutdownGrace := cfg.ShutdownGrace
-	if shutdownGrace <= 0 {
-		shutdownGrace = 10 * time.Second
+	return prov, makeShutdown(prov, tpShutdown, cfg.ShutdownGrace, globalTPSet), nil
+}
+
+// buildOTLPProvider constructs the otelProvider and its TracerProvider shutdown
+// function. With an OTLP endpoint it builds a real TracerProvider plus OTLP
+// span exporter and installs it as the global TracerProvider (so child spans
+// from the global tracer are exported), returning globalTPSet true. Otherwise
+// it returns a provider backed by a no-op TracerProvider so spans are free
+// while RecordEvent still fans events out to exporters.
+func buildOTLPProvider(ctx context.Context, cfg Config, hasEndpoint bool) (*otelProvider, func(context.Context) error, bool, error) {
+	if !hasEndpoint {
+		// Exporters-only path: no-op tracer so spans are free, but
+		// RecordEvent still fans events out to registered exporters.
+		noopTP := noop.NewTracerProvider()
+		return newProvider(trace.TracerProvider(noopTP), cfg), noopShutdown, false, nil
 	}
-	shutdown := func(ctx context.Context) error {
+
+	// Full OTLP pipeline: real TracerProvider + span exporter.
+	exporter, err := newSpanExporter(ctx, cfg)
+	if err != nil {
+		return nil, nil, false, fmt.Errorf("otel: build span exporter: %w", err)
+	}
+
+	res, err := resource.New(ctx,
+		resource.WithAttributes(
+			semconv.ServiceName(serviceName(cfg)),
+			semconv.ServiceVersion(""), // populated later via build flag
+		),
+		resource.WithFromEnv(),
+		resource.WithProcess(),
+		resource.WithHost(),
+	)
+	if err != nil {
+		return nil, nil, false, fmt.Errorf("otel: build resource: %w", err)
+	}
+
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithBatcher(exporter),
+		sdktrace.WithResource(res),
+		sdktrace.WithSampler(sampler(cfg)),
+		sdktrace.WithIDGenerator(newLoggingIDGen()),
+	)
+
+	installPropagator()
+
+	// Register tp as the global TracerProvider so instrumentation that
+	// uses the global otel.Tracer(...) API — plugin-stage spans
+	// (plugin/manager.go) and MCP tool spans (internal/mcp/executor.go) —
+	// records and exports child spans. Without this they silently no-op
+	// and only the gateway root span (which holds tp directly) is emitted.
+	otel.SetTracerProvider(tp)
+
+	return newProvider(trace.TracerProvider(tp), cfg), tp.Shutdown, true, nil
+}
+
+// makeShutdown builds the ShutdownFunc that drains plugin exporters and the
+// OTel pipeline within grace, then restores the global TracerProvider to a
+// no-op when this Init installed one.
+func makeShutdown(prov *otelProvider, tpShutdown func(context.Context) error, grace time.Duration, globalTPSet bool) ShutdownFunc {
+	if grace <= 0 {
+		grace = defaultShutdownGrace
+	}
+	return func(ctx context.Context) error {
 		// Drain plugin exporters first, then the OTel pipeline.
-		err := shutdownWithIndependentDeadlines(ctx, shutdownGrace, prov.Shutdown, tpShutdown)
+		err := shutdownWithIndependentDeadlines(ctx, grace, prov.Shutdown, tpShutdown)
 		// Restore the global TracerProvider to a no-op so any late
 		// otel.Tracer(...) calls after shutdown don't hit the drained
 		// pipeline, and so re-initialisation (tests, embedders) starts clean.
@@ -134,8 +154,6 @@ func Init(ctx context.Context, cfg Config) (observability.Provider, ShutdownFunc
 		}
 		return err
 	}
-
-	return prov, shutdown, nil
 }
 
 func shutdownWithIndependentDeadlines(
@@ -145,7 +163,7 @@ func shutdownWithIndependentDeadlines(
 	tpShutdown func(context.Context) error,
 ) error {
 	if shutdownGrace <= 0 {
-		shutdownGrace = 10 * time.Second
+		shutdownGrace = defaultShutdownGrace
 	}
 
 	// Give each shutdown stage its own grace window. A slow plugin exporter

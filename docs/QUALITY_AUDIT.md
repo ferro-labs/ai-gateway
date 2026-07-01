@@ -70,10 +70,10 @@ client-ritual copies.
 - [x] **Phase 7 — transport & streaming hygiene** ✅ (M): removed dead transport metrics + tracing
       transport (3 files); extracted `drainSrc` leak-guard. (ReverseProxy caching skipped — not trivially
       behavior-preserving.)
-- [ ] **Phase 8 — otel/mcp decomposition** (M): **span-error redaction bypass (from Phase 0)** —
-      route MCP (`executor.go`) and plugin (`manager.go`) child-span errors through the privacy-aware
-      redactor instead of raw `RecordError`/`SetStatus`; split `Init` + `ResolvePendingToolCalls`;
-      single privacy-level validator; `defaultShutdownGrace` const; bound audit goroutines.
+- [x] **Phase 8 — otel/mcp decomposition** ✅ (M): **span-error redaction bypass fixed** — MCP + plugin
+      child-span errors now go through the privacy redactor (`otel.RecordSpanError`); `Init` +
+      `ResolvePendingToolCalls` decomposed; single `observability.ValidatePrivacyLevel`;
+      `defaultShutdownGrace` const. (Audit-goroutine bound left documented, not pooled.)
 - [ ] **Phase 9 — doc & style hygiene** (S): rewrite stale `redact/doc.go`; document 4 metrics vars;
       `interface{}`→`any`; label unwired `Attr*` as Planned; godoc public `plugin` API.
 - [ ] **Phase 10 — test determinism + lint hardening** (M): CircuitBreaker clock seam (kills 18

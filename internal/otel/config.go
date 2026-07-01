@@ -1,8 +1,9 @@
 package otel
 
 import (
-	"fmt"
 	"time"
+
+	"github.com/ferro-labs/ai-gateway/observability"
 )
 
 // Config controls OpenTelemetry behaviour. The gateway exposes this as
@@ -73,31 +74,25 @@ func DefaultConfig() Config {
 		ServiceName:   "ferrogw",
 		SampleRatio:   1.0,
 		PrivacyLevel:  PrivacyLevelMetadata,
-		ShutdownGrace: 10 * time.Second,
+		ShutdownGrace: defaultShutdownGrace,
 	}
 }
 
-// PrivacyLevel constants.
+// PrivacyLevel constants, re-exported from the observability package — the
+// single source of truth also used by config validation.
 const (
-	PrivacyLevelNone     = "none"
-	PrivacyLevelMetadata = "metadata"
-	PrivacyLevelFull     = "full"
+	PrivacyLevelNone     = observability.PrivacyLevelNone
+	PrivacyLevelMetadata = observability.PrivacyLevelMetadata
+	PrivacyLevelFull     = observability.PrivacyLevelFull
 )
 
 // Validate returns an error when PrivacyLevel is set to an unrecognised
 // value. An empty string is accepted and treated as the default
 // ("metadata") by the provider. Callers should invoke this before
-// constructing a provider.
-//
-// NOTE: the same allowed set is mirrored in config_load.go ValidateConfig;
-// keep both in sync.
+// constructing a provider. The allowed set lives in the observability package
+// so this validator and the gateway config validator share one source of truth.
 func (c Config) Validate() error {
-	switch c.PrivacyLevel {
-	case "", PrivacyLevelNone, PrivacyLevelMetadata, PrivacyLevelFull:
-		return nil
-	default:
-		return fmt.Errorf("invalid privacy_level %q: must be one of none, metadata, full", c.PrivacyLevel)
-	}
+	return observability.ValidatePrivacyLevel(c.PrivacyLevel)
 }
 
 // effectiveEndpoint resolves the OTLP endpoint. The standard

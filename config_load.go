@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/ferro-labs/ai-gateway/observability"
 	"gopkg.in/yaml.v3"
 )
 
@@ -88,17 +89,10 @@ func ValidateConfig(cfg Config) error {
 		}
 	}
 
-	// Validate observability.tracing.privacy_level when explicitly set.
-	// Allowed values: "", "none", "metadata", "full".
-	// (Constants mirrored from internal/otel to avoid a root→internal import.)
-	switch cfg.Observability.Tracing.PrivacyLevel {
-	case "", "none", "metadata", "full":
-		// valid
-	default:
-		return fmt.Errorf(
-			"invalid observability.tracing.privacy_level %q: must be one of none, metadata, full",
-			cfg.Observability.Tracing.PrivacyLevel,
-		)
+	// Validate observability.tracing.privacy_level against the single source of
+	// truth in the observability package (shared with internal/otel).
+	if err := observability.ValidatePrivacyLevel(cfg.Observability.Tracing.PrivacyLevel); err != nil {
+		return fmt.Errorf("observability.tracing: %w", err)
 	}
 
 	// Validate aliases: no alias may point to another alias (no cycles/chains).

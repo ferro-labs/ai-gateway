@@ -9,10 +9,10 @@ import (
 	"sync"
 
 	"github.com/ferro-labs/ai-gateway/internal/logging"
+	gwotel "github.com/ferro-labs/ai-gateway/internal/otel"
 	"github.com/ferro-labs/ai-gateway/observability"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -192,7 +192,7 @@ func (m *Manager) executePlugin(ctx context.Context, p Plugin, pctx *Context, st
 				"stack", string(stack),
 			)
 			span.SetAttributes(attribute.String(observability.AttrFerroPluginOutcome, "error"))
-			span.SetStatus(codes.Error, err.Error())
+			gwotel.RecordSpanError(span, err)
 		}
 		span.End()
 	}()
@@ -207,7 +207,7 @@ func (m *Manager) executePlugin(ctx context.Context, p Plugin, pctx *Context, st
 		}
 	case err != nil:
 		span.SetAttributes(attribute.String(observability.AttrFerroPluginOutcome, "error"))
-		span.SetStatus(codes.Error, err.Error())
+		gwotel.RecordSpanError(span, err)
 	default:
 		span.SetAttributes(attribute.String(observability.AttrFerroPluginOutcome, "ok"))
 	}

@@ -9,8 +9,6 @@ import (
 	"github.com/ferro-labs/ai-gateway/internal/redact"
 	"github.com/ferro-labs/ai-gateway/observability"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
-	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -320,30 +318,7 @@ func (s *otelSpan) SetError(err error) {
 	if err == nil {
 		return
 	}
-	switch s.privacy {
-	case PrivacyLevelNone:
-		// Do not leak any message content — use only the static string "redacted".
-		// We call AddEvent directly (instead of RecordError) so we fully control
-		// the exception.type attribute. RecordError always appends the concrete Go
-		// type of the error value last, so it would override any attribute we pass
-		// as an option and expose the internal path "otel.redactedError", violating
-		// the maximum-opacity intent of the none level.
-		s.span.SetStatus(codes.Error, "redacted")
-		s.span.AddEvent(semconv.ExceptionEventName, trace.WithAttributes(
-			semconv.ExceptionTypeKey.String("error"),
-			semconv.ExceptionMessageKey.String("redacted"),
-		))
-	case PrivacyLevelFull:
-		// Attach the raw error message with no redaction.
-		raw := err.Error()
-		s.span.SetStatus(codes.Error, raw)
-		s.span.RecordError(redactedError(raw))
-	default:
-		// "metadata" and any unknown/empty value: apply redaction (safe default).
-		msg := s.redactor.Redact(err.Error())
-		s.span.SetStatus(codes.Error, msg)
-		s.span.RecordError(redactedError(msg))
-	}
+	recordSpanError(s.span, s.privacy, s.redactor, err)
 }
 
 // SetStreamTimings stamps the ferro.stream.* timing attributes.
