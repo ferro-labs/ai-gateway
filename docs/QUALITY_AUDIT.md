@@ -59,8 +59,9 @@ client-ritual copies.
       builders; named max-tokens consts. (invokeModelJSON routing skipped — would add an Accept header.)
 - [x] **Phase 4 — admin split & dedup** ✅ (M): `handlers.go` 1089→73 across 5 resource files; shared
       `queryparams` helpers; `maskKey` (const prefix); reuse of `generateAPIKeyString`/`generateID`.
-- [ ] **Phase 5 — plugins + strategies dedup** (M): shared strategy `dispatch()`; shared plugin
-      config decode+validate (**fixes silent maxtoken/cache config-fallback bug**); weighted-pick helper.
+- [x] **Phase 5 — plugins + strategies dedup** ✅ (M): shared strategy `dispatch()` + generic
+      `weightedPick[T]`; shared `plugincfg` numeric decode. _(maxtoken/cache silent-config-fallback is a
+      real bug but a behavior change → left flagged for the owner, not silently "fixed" in a hygiene pass.)_
 - [ ] **Phase 6 — CLI/bootstrap/handler wiring** (M): `adminClientFromCmd`/`printResult`; break up
       `Serve()`; shared `decodeJSONBody`; named consts. **+ from Phase 0:** uniform provider-init
       failure policy (env `os.Exit` vs Bedrock warn-only); Warn on invalid `RATE_LIMIT_RPS/BURST`

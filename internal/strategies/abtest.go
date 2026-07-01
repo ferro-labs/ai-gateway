@@ -3,7 +3,6 @@ package strategies
 import (
 	"context"
 	"fmt"
-	"math/rand"
 	"sync"
 
 	"github.com/ferro-labs/ai-gateway/internal/logging"
@@ -97,25 +96,13 @@ func (ab *ABTest) selectVariant() (ABTestVariant, error) {
 	ab.mu.Lock()
 	defer ab.mu.Unlock()
 
-	total := 0.0
-	for _, v := range ab.variants {
-		w := effectiveWeight(v.Weight)
-		total += w
-	}
-	if total == 0 {
+	v, ok := weightedPick(ab.variants, func(v ABTestVariant) float64 {
+		return effectiveWeight(v.Weight)
+	})
+	if !ok {
 		return ABTestVariant{}, fmt.Errorf("ab-test: no eligible variants")
 	}
-
-	r := rand.Float64() * total //nolint:gosec
-	cumulative := 0.0
-	for _, v := range ab.variants {
-		cumulative += effectiveWeight(v.Weight)
-		if r < cumulative {
-			return v, nil
-		}
-	}
-	// Floating-point rounding safety net — return last variant.
-	return ab.variants[len(ab.variants)-1], nil
+	return v, nil
 }
 
 // effectiveWeight returns the weight to use for a variant:

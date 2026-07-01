@@ -2,7 +2,6 @@ package strategies
 
 import (
 	"context"
-	"fmt"
 	"strings"
 
 	"github.com/ferro-labs/ai-gateway/providers"
@@ -36,16 +35,7 @@ func NewConditional(rules []ConditionRule, fallback Target, lookup ProviderLooku
 // Execute routes the request to the provider whose SupportedModels includes the requested model.
 func (c *Conditional) Execute(ctx context.Context, req providers.Request) (*providers.Response, error) {
 	target := c.matchTarget(req)
-
-	p, ok := c.lookup(target.VirtualKey)
-	if !ok {
-		return nil, fmt.Errorf("provider not found: %s", target.VirtualKey)
-	}
-	resp, err := p.Complete(ctx, req)
-	if err != nil {
-		return nil, err
-	}
-	return responseWithProvider(resp, target.VirtualKey), nil
+	return dispatch(ctx, c.lookup, target, req, "provider not found")
 }
 
 func (c *Conditional) matchTarget(req providers.Request) Target {

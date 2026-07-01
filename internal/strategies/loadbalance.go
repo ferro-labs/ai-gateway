@@ -3,7 +3,6 @@ package strategies
 import (
 	"context"
 	"fmt"
-	"math/rand"
 	"sync"
 
 	"github.com/ferro-labs/ai-gateway/providers"
@@ -48,15 +47,7 @@ func (lb *LoadBalance) Execute(ctx context.Context, req providers.Request) (*pro
 		return nil, err
 	}
 
-	p, ok := lb.lookup(target.VirtualKey)
-	if !ok {
-		return nil, fmt.Errorf("load balancing based routing: provider not found: %s", target.VirtualKey)
-	}
-	resp, err := p.Complete(ctx, req)
-	if err != nil {
-		return nil, err
-	}
-	return responseWithProvider(resp, target.VirtualKey), nil
+	return dispatch(ctx, lb.lookup, target, req, "load balancing based routing: provider not found")
 }
 
 // selectFromTargets picks a target from the given slice using weighted random selection.
@@ -64,33 +55,14 @@ func (lb *LoadBalance) selectFromTargets(targets []Target) (Target, error) {
 	lb.mu.Lock()
 	defer lb.mu.Unlock()
 
-	// Calculate total weight; treat 0 as 1 (equal distribution).
-	totalWeight := 0.0
-	for _, t := range targets {
-		w := t.Weight
-		if w <= 0 {
-			w = 1
+	t, ok := weightedPick(targets, func(t Target) float64 {
+		if t.Weight <= 0 {
+			return 1
 		}
-		totalWeight += w
-	}
-
-	if totalWeight == 0 {
+		return t.Weight
+	})
+	if !ok {
 		return Target{}, fmt.Errorf("no targets available")
 	}
-
-	r := rand.Float64() * totalWeight //nolint:gosec
-	cumulative := 0.0
-	for _, t := range targets {
-		w := t.Weight
-		if w <= 0 {
-			w = 1
-		}
-		cumulative += w
-		if r < cumulative {
-			return t, nil
-		}
-	}
-
-	// Should not happen, but return last target as safety net.
-	return targets[len(targets)-1], nil
+	return t, nil
 }

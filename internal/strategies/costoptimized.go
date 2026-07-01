@@ -83,15 +83,7 @@ func (c *CostOptimized) Execute(ctx context.Context, req providers.Request) (*pr
 		return nil, err
 	}
 
-	p, ok := c.lookup(best.target.VirtualKey)
-	if !ok {
-		return nil, fmt.Errorf("cost optimized routing: provider not found: %s", best.target.VirtualKey)
-	}
-	resp, err := p.Complete(ctx, req)
-	if err != nil {
-		return nil, err
-	}
-	return responseWithProvider(resp, best.target.VirtualKey), nil
+	return dispatch(ctx, c.lookup, best.target, req, "cost optimized routing: provider not found")
 }
 
 func newUnpricedStrategy(config ...string) unpricedStrategy {

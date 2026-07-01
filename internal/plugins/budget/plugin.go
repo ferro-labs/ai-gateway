@@ -49,6 +49,7 @@ import (
 	"math"
 	"sync"
 
+	"github.com/ferro-labs/ai-gateway/internal/plugins/plugincfg"
 	"github.com/ferro-labs/ai-gateway/plugin"
 )
 
@@ -165,7 +166,7 @@ func (p *Plugin) Init(config map[string]interface{}) error {
 	}
 
 	if v, ok := config["spend_limit_usd"]; ok {
-		f, err := toFloat64(v)
+		f, err := plugincfg.ToFloat64(v)
 		if err != nil {
 			return fmt.Errorf("budget: spend_limit_usd: %w", err)
 		}
@@ -176,7 +177,7 @@ func (p *Plugin) Init(config map[string]interface{}) error {
 	}
 
 	if v, ok := config["input_per_m_tokens"]; ok {
-		f, err := toFloat64(v)
+		f, err := plugincfg.ToFloat64(v)
 		if err != nil {
 			return fmt.Errorf("budget: input_per_m_tokens: %w", err)
 		}
@@ -184,7 +185,7 @@ func (p *Plugin) Init(config map[string]interface{}) error {
 	}
 
 	if v, ok := config["output_per_m_tokens"]; ok {
-		f, err := toFloat64(v)
+		f, err := plugincfg.ToFloat64(v)
 		if err != nil {
 			return fmt.Errorf("budget: output_per_m_tokens: %w", err)
 		}
@@ -193,7 +194,7 @@ func (p *Plugin) Init(config map[string]interface{}) error {
 
 	maxKeys := defaultMaxKeys
 	if v, ok := config["max_keys"]; ok {
-		n, err := toFloat64(v)
+		n, err := plugincfg.ToFloat64(v)
 		if err != nil {
 			return fmt.Errorf("budget: max_keys: %w", err)
 		}
@@ -260,17 +261,5 @@ func (p *Plugin) recordCost(pctx *plugin.Context, key string) {
 		(float64(usage.CompletionTokens)/1_000_000.0)*p.outputPerMTokens
 	if cost > 0 {
 		p.store.add(key, cost)
-	}
-}
-
-// toFloat64 converts an interface{} value (float64 or int) to float64.
-func toFloat64(v interface{}) (float64, error) {
-	switch val := v.(type) {
-	case float64:
-		return val, nil
-	case int:
-		return float64(val), nil
-	default:
-		return 0, fmt.Errorf("must be a number, got %T", v)
 	}
 }
