@@ -24,6 +24,7 @@ Quality & maintainability release. Scopes per-key rate-limit and budget enforcem
 
 - **Internal package restructuring**: several oversized files were decomposed into cohesive units and cross-provider duplication was consolidated into shared helpers, with tightened lint configuration. Behaviour-preserving — no public API, config, CLI, or HTTP contract changes (asserted by `apidiff` and the full `-race` suite).
 - **CI supply-chain hardening**: all GitHub Actions are pinned to commit SHAs (kept current by Dependabot), and CI now runs once per change — pushes trigger only on `main`, every other branch is covered by its pull request, and a concurrency group cancels superseded runs.
+- **Dependency hygiene**: dropped the stale `replace google.golang.org/grpc => v1.79.3` pin (added in v1.0.10 for CVE-2026-33186). The module graph already selects grpc **v1.81.1**, which retains that fix and picks up later patches; the pin was silently shipping the older v1.79.3 despite the manifest. `govulncheck` reports no vulnerabilities.
 
 ### Documentation
 
