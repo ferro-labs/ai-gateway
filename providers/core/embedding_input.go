@@ -1,6 +1,12 @@
 package core
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
+
+// errEmptyEmbeddingInput is returned when an embeddings "input" array is empty.
+var errEmptyEmbeddingInput = errors.New("embed: Input must not be an empty array")
 
 // CoerceEmbeddingInput flattens an OpenAI embeddings "input" value into a plain
 // []string for providers whose native API accepts only a list of texts. A bare
@@ -13,12 +19,12 @@ func CoerceEmbeddingInput(input any) ([]string, error) {
 		return []string{v}, nil
 	case []string:
 		if len(v) == 0 {
-			return nil, fmt.Errorf("embed: Input must not be an empty array")
+			return nil, errEmptyEmbeddingInput
 		}
 		return v, nil
 	case []any:
 		if len(v) == 0 {
-			return nil, fmt.Errorf("embed: Input must not be an empty array")
+			return nil, errEmptyEmbeddingInput
 		}
 		texts := make([]string, 0, len(v))
 		for i, item := range v {
