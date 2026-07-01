@@ -4,11 +4,12 @@
   <a href="README.md">English</a> | <a href="README.zh-CN.md">中文</a>
 </p>
 
-<h1 align="center">
-  <img src="docs/logo.png" alt="Ferro Labs AI 网关" height="60" align="absmiddle" /> Ferro Labs AI 网关
-</h1>
-
-**高性能 Go 语言 AI 网关。通过单一 OpenAI 兼容 API 路由 30+ 个提供商的 LLM 请求。**
+<table border="0" cellspacing="0" cellpadding="0"><tr>
+  <td rowspan="2"><img src="docs/logo.png" alt="Ferro Labs AI 网关" width="64" /></td>
+  <td align="center"><h1>Ferro Labs AI 网关</h1></td>
+</tr><tr>
+  <td align="center"><strong>高性能 Go 语言 AI 网关。通过单一 OpenAI 兼容 API 路由 30+ 个提供商的 LLM 请求。</strong></td>
+</tr></table>
 
 **一键部署**
 

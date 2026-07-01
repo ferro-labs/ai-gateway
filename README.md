@@ -4,11 +4,12 @@
   <a href="README.md">English</a> | <a href="README.zh-CN.md">中文</a>
 </p>
 
-<h1 align="center">
-  <img src="docs/logo.png" alt="Ferro Labs AI Gateway" height="60" align="absmiddle" /> Ferro Labs AI Gateway
-</h1>
-
-**High-performance AI gateway in Go. Route LLM requests across 30 providers via a single OpenAI-compatible API.**
+<table border="0" cellspacing="0" cellpadding="0"><tr>
+  <td rowspan="2"><img src="docs/logo.png" alt="Ferro Labs AI Gateway" width="64" /></td>
+  <td align="center"><h1>Ferro Labs AI Gateway</h1></td>
+</tr><tr>
+  <td align="center"><strong>High-performance AI gateway in Go. Route LLM requests across 30 providers via a single OpenAI-compatible API.</strong></td>
+</tr></table>
 
 **Deploy templates**
 
