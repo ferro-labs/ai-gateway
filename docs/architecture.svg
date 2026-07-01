@@ -37,7 +37,7 @@
 <use href="#icon-server" x="55" y="346" />
 <text x="95" y="356" class="text">Servers</text>
 <rect x="250" y="80" width="460" height="390" rx="12" class="gateway" />
-<text x="480.0" y="140" class="title">FERRO</text>
+<text x="480.0" y="140" class="title">FERRO<tspan font-weight="300"> LABS</tspan></text>
 <text x="480.0" y="165" class="subtitle">AI GATEWAY</text>
 <rect x="450.0" y="180" width="60" height="4" rx="2" fill="#3b82f6"/>
 <rect x="275" y="210" width="125" height="110" rx="8" class="comp" filter="url(#shadow)" />
