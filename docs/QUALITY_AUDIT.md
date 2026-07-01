@@ -35,8 +35,21 @@ client-ritual copies.
       _Re-scoped out for correct grouping:_ the MCP/plugin **span-error redaction bypass** moved to
       **Phase 8** (needs proper redaction routing + tests), and **bootstrap init/ratelimit + router
       `ensureGateway`** error handling moved to **Phase 6** (which already refactors that file).
-- [ ] **Phase 1 — Decompose `gateway.go`** (L): split 2351 → ~9 cohesive files <800; extract
-      Route/RouteStream helpers; generic model-lookup; dedup MCP wiring; named constants.
+- [x] **Phase 1 — Decompose `gateway.go`** ✅ (L): split into 8 cohesive files, all <800;
+      generic model-lookup; `targetKeys`/MCP-wiring dedup; named constants. **gateway.go 2351 → 482.**
+      - [x] 1/7 `gateway_modelindex.go` _(`2f694ad`)_ — model index + generic `findByModelLocked[T]`
+        / `indexModelsIfImplements[T]`. **2351 → 2201**.
+      - [x] 2/7 `gateway_hooks.go` _(`f284043`)_ — async hook workers + event builders +
+        `maxHookWorkers` const. **2201 → 2029**.
+      - [x] 3/7 `gateway_circuitbreaker.go` _(pure move)_ — cbProvider + CB helpers. **2029 → 1927**.
+      - [x] 4/7 `gateway_discovery.go` _(pure move)_ — alias/multimodal/discovery. **1927 → 1796**.
+      - [x] 5/7 `gateway_strategy.go` _(pure move)_ — strategy build + condition helpers. **1796 → 1582**.
+      - [x] 6/7 `gateway_stream.go` — RouteStream + streaming helpers; `targetKeys` dedup. **1582 → 916**.
+      - [x] 7/7 `gateway_route.go` (Route path) + `gateway_mcp.go` (`wireMCPLocked` dedup +
+        `mcpInitTimeout` const + stray-doc fix). **916 → 482.**
+      - _Deferred (noted): Route's internal helper extraction — its blocks return mid-body / mutate
+        shared locals, so not trivially behavior-preserving. Revisit if Route is touched again._
+      - _Observed: root `-race` suite runs ~144s vs `make test`'s 180s timeout — flaky-timeout risk → Phase 10._
 - [ ] **Phase 2 — Provider cross-cutting dedup** (M): `openaicompat.PostEmbeddings`;
       `core.CoerceEmbeddingInput`; promote `APIError` to `core`; extend `internal/anthropicwire`; shared SSE framing.
 - [ ] **Phase 3 — Split big provider files** (M): bedrock→family files; shared request/stream builders;
@@ -59,7 +72,8 @@ client-ritual copies.
 - [ ] **Phase 10 — test determinism + lint hardening** (M): CircuitBreaker clock seam (kills 18
       sleeps); fix `sse_test` race / mcp-executor sleep / strategy self-skip; enable
       `dupl`/`funlen`/`file-length`/`nestif`/`errorlint`/`copyloopvar` in `.golangci.yml`.
-- [ ] **Phase 11 — completeness gaps** (—): `web/` dashboard JS (~2,624 LOC, never audited) XSS/DOM
-      review; `.github/workflows` action SHA-pinning + CodeQL; top-level `mcp/config.go`; release tooling.
+- [ ] **Phase 11 — completeness gaps** (—): `.github/workflows` action SHA-pinning + CodeQL;
+      top-level `mcp/config.go`; release tooling (`.goreleaser.yaml`, `.husky/`, `scripts/`).
+      _(`web/` dashboard is intentionally out of scope — owner has a separate plan for it.)_
 
 _Tally: ~66 findings — 4 high (all file-size), ~26 medium, ~36 low._
