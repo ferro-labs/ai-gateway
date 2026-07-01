@@ -23,9 +23,14 @@ const (
 )
 
 // APIKeyFromContext retrieves the authenticated API key from the request context.
+// It reports ok=false when no key is present or a typed-nil *APIKey was stored,
+// so callers can safely dereference the returned key whenever ok is true.
 func APIKeyFromContext(ctx context.Context) (*APIKey, bool) {
 	key, ok := ctx.Value(apiKeyContextKey).(*APIKey)
-	return key, ok
+	if !ok || key == nil {
+		return nil, false
+	}
+	return key, true
 }
 
 // KeyIDFromContext returns the opaque identifier of the authenticated API key
@@ -176,8 +181,11 @@ func writeError(w http.ResponseWriter, status int, message, errType, code string
 // plugins). Using a private helper ensures both slots are always written
 // together and avoids drift between the two stores.
 func storeKeyInContext(ctx context.Context, key *APIKey) context.Context {
+	if key == nil {
+		return ctx
+	}
 	ctx = context.WithValue(ctx, apiKeyContextKey, key)
-	if key != nil && key.ID != "" {
+	if key.ID != "" {
 		ctx = authctx.WithKeyID(ctx, key.ID)
 	}
 	return ctx

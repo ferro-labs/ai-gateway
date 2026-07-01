@@ -1902,6 +1902,33 @@ func TestScrubAnyMap_NestedMap(t *testing.T) {
 	}
 }
 
+// TestScrubAnyValue_NestedTypedComposite verifies that typed maps/slices not
+// enumerated by the concrete fast-path cases (here map[string][]string) are
+// still recursively redacted via the reflection fallback, into new containers
+// that do not alias the live config.
+func TestScrubAnyValue_NestedTypedComposite(t *testing.T) {
+	rawValue := strings.Repeat("x", 8) + "-literal-config-value"
+
+	original := map[string][]string{
+		"auth": {rawValue, "${KEEP_ENV}"},
+	}
+
+	result, ok := scrubAnyValue(original).(map[string][]string)
+	if !ok {
+		t.Fatalf("expected map[string][]string, got %T", scrubAnyValue(original))
+	}
+
+	if result["auth"][0] != redactedPlaceholder {
+		t.Errorf("literal: want %q, got %q", redactedPlaceholder, result["auth"][0])
+	}
+	if result["auth"][1] != "${KEEP_ENV}" {
+		t.Errorf("env ref: want %q, got %q", "${KEEP_ENV}", result["auth"][1])
+	}
+	if original["auth"][0] != rawValue {
+		t.Errorf("live config mutated: original[auth][0] = %q", original["auth"][0])
+	}
+}
+
 // TestCreateKey_CacheControlNoStore verifies that the key-create response carries
 // Cache-Control: no-store so proxies and browsers cannot cache the plaintext key.
 func TestCreateKey_CacheControlNoStore(t *testing.T) {

@@ -242,6 +242,21 @@ func (s *SQLStore) Get(ctx context.Context, id string) (*APIKey, bool) {
 	return key, true
 }
 
+// lookupForMutate fetches a key by ID for lookup-before-mutate paths. Unlike
+// Get, it distinguishes a genuine not-found (wrapped ErrKeyNotFound → 404) from
+// a transient DB/scan failure (wrapped generic error → 500) so a database
+// outage is never reported to callers as a 404.
+func (s *SQLStore) lookupForMutate(ctx context.Context, id string) (*APIKey, error) {
+	key, err := s.scanOne(ctx, s.stmtGetByID, id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("%w: %s", ErrKeyNotFound, id)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("lookup key %s: %w", id, err)
+	}
+	return key, nil
+}
+
 // List returns all API keys with masked key values.
 func (s *SQLStore) List(ctx context.Context) []*APIKey {
 	q := `
@@ -285,9 +300,9 @@ func (s *SQLStore) Revoke(ctx context.Context, id string) error {
 
 // Update modifies API key metadata (name/scopes).
 func (s *SQLStore) Update(ctx context.Context, id string, name string, scopes []string) (*APIKey, error) {
-	current, ok := s.Get(ctx, id)
-	if !ok {
-		return nil, fmt.Errorf("%w: %s", ErrKeyNotFound, id)
+	current, err := s.lookupForMutate(ctx, id)
+	if err != nil {
+		return nil, err
 	}
 
 	if name != "" {
@@ -392,9 +407,9 @@ func (s *SQLStore) RotateKey(ctx context.Context, id string) (*APIKey, error) {
 		return nil, fmt.Errorf("%w: %s", ErrKeyNotFound, id)
 	}
 
-	updated, ok := s.Get(ctx, id)
-	if !ok {
-		return nil, fmt.Errorf("%w: %s", ErrKeyNotFound, id)
+	updated, err := s.lookupForMutate(ctx, id)
+	if err != nil {
+		return nil, err
 	}
 	return updated, nil
 }

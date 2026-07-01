@@ -1,6 +1,10 @@
 package admin
 
-import aigateway "github.com/ferro-labs/ai-gateway"
+import (
+	"reflect"
+
+	aigateway "github.com/ferro-labs/ai-gateway"
+)
 
 // isEnvRef reports whether s is a bare environment-variable reference of the
 // form "${VAR}" (start "${"  end "}"). These are template placeholders that
@@ -90,8 +94,46 @@ func scrubAnyValue(v any) any {
 		}
 		return out
 	default:
+		return scrubReflectValue(v)
+	}
+}
+
+// scrubReflectValue recursively scrubs typed maps and slices that the concrete
+// fast-path cases in scrubAnyValue do not enumerate (e.g. map[string][]string or
+// [][]string). It walks the value via reflection and returns newly-created
+// containers so nothing aliases the live config. Values that are neither maps
+// nor slices are returned unchanged.
+func scrubReflectValue(v any) any {
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Map:
+		out := reflect.MakeMapWithSize(rv.Type(), rv.Len())
+		iter := rv.MapRange()
+		for iter.Next() {
+			out.SetMapIndex(iter.Key(), reflectScrubbedElem(rv.Type().Elem(), iter.Value()))
+		}
+		return out.Interface()
+	case reflect.Slice:
+		out := reflect.MakeSlice(rv.Type(), rv.Len(), rv.Len())
+		for i := 0; i < rv.Len(); i++ {
+			out.Index(i).Set(reflectScrubbedElem(rv.Type().Elem(), rv.Index(i)))
+		}
+		return out.Interface()
+	default:
 		return v
 	}
+}
+
+// reflectScrubbedElem scrubs a single map/slice element and returns a
+// reflect.Value assignable to elemType, falling back to the element type's zero
+// value when the scrubbed result is an untyped nil.
+func reflectScrubbedElem(elemType reflect.Type, elem reflect.Value) reflect.Value {
+	scrubbed := scrubAnyValue(elem.Interface())
+	sv := reflect.ValueOf(scrubbed)
+	if !sv.IsValid() {
+		return reflect.Zero(elemType)
+	}
+	return sv
 }
 
 // scrubAnyMap returns a new map with every non-env-ref string value replaced

@@ -48,12 +48,16 @@ const keyMaskPrefixLen = 8
 
 // maskKey truncates key to a short prefix followed by an ellipsis when it is
 // longer than keyMaskPrefixLen so full secret values never appear in admin API
-// responses; shorter values are returned unchanged.
+// responses. A non-empty key at or below the prefix length is fully masked to
+// avoid leaking short secrets verbatim; the empty string is returned unchanged.
 func maskKey(key string) string {
 	if len(key) > keyMaskPrefixLen {
 		return key[:keyMaskPrefixLen] + "..."
 	}
-	return key
+	if key == "" {
+		return ""
+	}
+	return "..."
 }
 
 func cloneAPIKey(k *APIKey) *APIKey {

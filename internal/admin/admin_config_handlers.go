@@ -41,7 +41,14 @@ func (h *Handlers) getConfigHistory(w http.ResponseWriter, _ *http.Request) {
 	copy(history, h.configHistory)
 	h.historyMu.Unlock()
 
+	// Redact secret-bearing config values on each copied entry before encoding.
+	// scrubConfigSecrets operates on a copy so the live history is never mutated.
+	for i := range history {
+		history[i].Config = scrubConfigSecrets(history[i].Config)
+	}
+
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"data": history,
 		"summary": map[string]any{
