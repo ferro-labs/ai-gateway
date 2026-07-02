@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/ferro-labs/ai-gateway/observability"
+	"github.com/ferro-labs/ai-gateway/internal/tracingpolicy"
 	"gopkg.in/yaml.v3"
 )
 
@@ -90,8 +90,8 @@ func ValidateConfig(cfg Config) error {
 	}
 
 	// Validate observability.tracing.privacy_level against the single source of
-	// truth in the observability package (shared with internal/otel).
-	if err := observability.ValidatePrivacyLevel(cfg.Observability.Tracing.PrivacyLevel); err != nil {
+	// truth in the internal tracingpolicy package (shared with internal/otel).
+	if err := tracingpolicy.ValidatePrivacyLevel(cfg.Observability.Tracing.PrivacyLevel); err != nil {
 		return fmt.Errorf("observability.tracing: %w", err)
 	}
 

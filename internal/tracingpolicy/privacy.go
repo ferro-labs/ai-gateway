@@ -1,4 +1,7 @@
-package observability
+// Package tracingpolicy holds tracing-config validation helpers shared by the
+// root config validator and the internal/otel config validator. It is not
+// part of the public observability seam (Provider/Span/Exporter/Event).
+package tracingpolicy
 
 import "fmt"
 
