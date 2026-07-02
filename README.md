@@ -8,8 +8,10 @@
   <td rowspan="2"><img src="docs/logo.png" alt="Ferro Labs AI Gateway" width="64" /></td>
   <td align="center"><h1>Ferro Labs AI Gateway</h1></td>
 </tr><tr>
-  <td align="center"><strong>High-performance AI gateway in Go. Route LLM requests across 30 providers via a single OpenAI-compatible API.</strong></td>
+  <td align="center"><strong>Open-Source, OpenAI-Compatible LLM Gateway</strong></td>
 </tr></table>
+
+**High-performance AI gateway in Go. Route LLM requests across 30 providers via a single OpenAI-compatible API.**
 
 **Deploy templates**
 
@@ -134,7 +136,7 @@ curl http://localhost:8080/v1/chat/completions \
 
 ---
 
-## Why Ferro Labs
+## Why Ferro Labs AI Gateway
 
 Most AI gateways are Python proxies that crack under load or JavaScript services that eat memory. Ferro Labs AI Gateway is written in Go from the ground up for real-world throughput — a single binary that routes LLM requests with predictable latency and minimal resource usage.
 

@@ -8,8 +8,10 @@
   <td rowspan="2"><img src="docs/logo.png" alt="Ferro Labs AI 网关" width="64" /></td>
   <td align="center"><h1>Ferro Labs AI 网关</h1></td>
 </tr><tr>
-  <td align="center"><strong>高性能 Go 语言 AI 网关。通过单一 OpenAI 兼容 API 路由 30+ 个提供商的 LLM 请求。</strong></td>
+  <td align="center"><strong>开源、OpenAI 兼容的 LLM 网关</strong></td>
 </tr></table>
+
+**高性能 Go 语言 AI 网关。通过单一 OpenAI 兼容 API 路由 30+ 个提供商的 LLM 请求。**
 
 **一键部署**
 
@@ -131,7 +133,7 @@ curl http://localhost:8080/v1/chat/completions \
 
 ---
 
-## 为什么选择 Ferro Labs
+## 为什么选择 Ferro Labs AI 网关
 
 大多数 AI 网关是在高负载下崩溃的 Python 代理，或是占用大量内存的 JavaScript 服务。Ferro Labs AI 网关从头开始用 Go 编写，专为真实世界的吞吐量设计——单一二进制文件，以可预测的延迟和极低的资源消耗路由 LLM 请求。
 
