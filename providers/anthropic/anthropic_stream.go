@@ -3,6 +3,7 @@ package anthropic
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 
@@ -48,6 +49,16 @@ type anthropicStreamMessageDelta struct {
 	Usage anthropicUsage `json:"usage"`
 }
 
+// anthropicStreamError is the payload of a mid-stream "event: error" frame,
+// e.g. {"type":"error","error":{"type":"overloaded_error","message":"..."}}.
+type anthropicStreamError struct {
+	Type  string `json:"type"`
+	Error struct {
+		Type    string `json:"type"`
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
 // CompleteStream sends a streaming chat completion request to Anthropic.
 func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan core.StreamChunk, error) {
 	core.WarnUnsupportedParams(ctx, p.Name(), req.Model, req, anthropicSupportedParams...)
@@ -86,6 +97,14 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 
 			eventType, _ := raw["type"].(string)
 			switch eventType {
+			case "error":
+				var evt anthropicStreamError
+				if json.Unmarshal([]byte(data), &evt) == nil && evt.Error.Message != "" {
+					ch <- core.StreamChunk{Error: fmt.Errorf("anthropic stream error (%s): %s", evt.Error.Type, evt.Error.Message)}
+				} else {
+					ch <- core.StreamChunk{Error: fmt.Errorf("anthropic stream error: %s", data)}
+				}
+				return
 			case "message_start":
 				var evt anthropicStreamMessageStart
 				if json.Unmarshal([]byte(data), &evt) == nil {

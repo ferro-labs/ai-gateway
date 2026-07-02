@@ -113,54 +113,17 @@ func (p *Provider) Models() []core.ModelInfo {
 	return core.ModelsFromList(p.name, p.SupportedModels())
 }
 
-type anthropicMessage struct {
-	Role string `json:"role"`
-	// Content is either a plain string (text-only turns) or a []anthropicReqBlock
-	// (multimodal turns, tool_use on assistant turns, tool_result on user turns).
-	Content any `json:"content"`
-}
-
-// anthropicReqBlock is a single content block in an outbound message. Only the
-// fields relevant to Type are populated; omitempty keeps each block minimal.
-type anthropicReqBlock struct {
-	Type string `json:"type"`
-
-	// type=text
-	Text string `json:"text,omitempty"`
-
-	// type=image
-	Source *anthropicImageSource `json:"source,omitempty"`
-
-	// type=tool_use
-	ID    string          `json:"id,omitempty"`
-	Name  string          `json:"name,omitempty"`
-	Input json.RawMessage `json:"input,omitempty"`
-
-	// type=tool_result
-	ToolUseID string `json:"tool_use_id,omitempty"`
-	Content   string `json:"content,omitempty"`
-}
-
-// anthropicImageSource carries an image for an "image" content block. Anthropic
-// accepts either inlined base64 data or a remote URL.
-type anthropicImageSource struct {
-	Type      string `json:"type"`                 // "base64" | "url"
-	MediaType string `json:"media_type,omitempty"` // base64 only
-	Data      string `json:"data,omitempty"`       // base64 only
-	URL       string `json:"url,omitempty"`        // url only
-}
-
 type anthropicRequest struct {
-	Model         string               `json:"model"`
-	MaxTokens     int                  `json:"max_tokens"`
-	System        string               `json:"system,omitempty"`
-	Messages      []anthropicMessage   `json:"messages"`
-	Tools         []anthropicwire.Tool `json:"tools,omitempty"`
-	ToolChoice    any                  `json:"tool_choice,omitempty"`
-	Temperature   *float64             `json:"temperature,omitempty"`
-	TopP          *float64             `json:"top_p,omitempty"`
-	StopSequences []string             `json:"stop_sequences,omitempty"`
-	Stream        bool                 `json:"stream,omitempty"`
+	Model         string                  `json:"model"`
+	MaxTokens     int                     `json:"max_tokens"`
+	System        string                  `json:"system,omitempty"`
+	Messages      []anthropicwire.Message `json:"messages"`
+	Tools         []anthropicwire.Tool    `json:"tools,omitempty"`
+	ToolChoice    any                     `json:"tool_choice,omitempty"`
+	Temperature   *float64                `json:"temperature,omitempty"`
+	TopP          *float64                `json:"top_p,omitempty"`
+	StopSequences []string                `json:"stop_sequences,omitempty"`
+	Stream        bool                    `json:"stream,omitempty"`
 }
 
 // blockTypeToolUse is the Anthropic content-block type for a tool call.
@@ -195,57 +158,19 @@ type anthropicResponse struct {
 	Usage      anthropicUsage          `json:"usage"`
 }
 
-func buildMessages(req core.Request) ([]anthropicMessage, string) {
-	var systemParts []string
-	var messages []anthropicMessage
-
-	for _, msg := range req.Messages {
-		switch msg.Role {
-		case core.RoleSystem:
-			systemParts = append(systemParts, msg.Content)
-
-		case core.RoleTool:
-			// Anthropic requires tool results as tool_result blocks inside a
-			// user turn. Merge consecutive results into the preceding user turn
-			// so parallel tool calls land in a single message.
-			block := anthropicReqBlock{
-				Type:      "tool_result",
-				ToolUseID: msg.ToolCallID,
-				Content:   msg.Content,
-			}
-			if n := len(messages); n > 0 && messages[n-1].Role == core.RoleUser {
-				if blocks, ok := messages[n-1].Content.([]anthropicReqBlock); ok {
-					blocks = append(blocks, block)
-					messages[n-1].Content = blocks
-					continue
-				}
-			}
-			messages = append(messages, anthropicMessage{
-				Role:    core.RoleUser,
-				Content: []anthropicReqBlock{block},
-			})
-
-		default:
-			messages = append(messages, anthropicMessage{
-				Role:    msg.Role,
-				Content: buildContent(msg),
-			})
-		}
-	}
-	return messages, strings.Join(systemParts, "\n")
-}
-
 // buildContent renders a non-system message's content for the Anthropic API.
 // Plain text turns stay a JSON string (the common path); multimodal turns and
-// assistant tool calls become an array of content blocks.
+// assistant tool calls become an array of content blocks. It is passed to
+// anthropicwire.BuildMessages as the per-message content callback, so it MUST
+// return []anthropicwire.Block (not another slice type) when it emits blocks.
 func buildContent(msg core.Message) any {
-	var blocks []anthropicReqBlock
+	var blocks []anthropicwire.Block
 
 	if len(msg.ContentParts) > 0 {
 		for _, part := range msg.ContentParts {
 			switch part.Type {
 			case core.ContentTypeText:
-				blocks = append(blocks, anthropicReqBlock{Type: "text", Text: part.Text})
+				blocks = append(blocks, anthropicwire.Block{Type: "text", Text: part.Text})
 			case "image_url":
 				if part.ImageURL != nil {
 					blocks = append(blocks, imageBlock(part.ImageURL.URL))
@@ -253,7 +178,7 @@ func buildContent(msg core.Message) any {
 			}
 		}
 	} else if msg.Content != "" {
-		blocks = append(blocks, anthropicReqBlock{Type: "text", Text: msg.Content})
+		blocks = append(blocks, anthropicwire.Block{Type: "text", Text: msg.Content})
 	}
 
 	for _, tc := range msg.ToolCalls {
@@ -261,7 +186,7 @@ func buildContent(msg core.Message) any {
 		if len(input) == 0 {
 			input = json.RawMessage("{}")
 		}
-		blocks = append(blocks, anthropicReqBlock{
+		blocks = append(blocks, anthropicwire.Block{
 			Type:  blockTypeToolUse,
 			ID:    tc.ID,
 			Name:  tc.Function.Name,
@@ -279,20 +204,20 @@ func buildContent(msg core.Message) any {
 
 // imageBlock maps an OpenAI image_url (data URI or remote URL) to an Anthropic
 // image content block.
-func imageBlock(url string) anthropicReqBlock {
+func imageBlock(url string) anthropicwire.Block {
 	if mediaType, data, ok := parseDataURI(url); ok {
-		return anthropicReqBlock{
+		return anthropicwire.Block{
 			Type: "image",
-			Source: &anthropicImageSource{
+			Source: &anthropicwire.ImageSource{
 				Type:      "base64",
 				MediaType: mediaType,
 				Data:      data,
 			},
 		}
 	}
-	return anthropicReqBlock{
+	return anthropicwire.Block{
 		Type:   "image",
-		Source: &anthropicImageSource{Type: "url", URL: url},
+		Source: &anthropicwire.ImageSource{Type: "url", URL: url},
 	}
 }
 
@@ -318,7 +243,7 @@ func parseDataURI(uri string) (mediaType, data string, ok bool) {
 // buildAnthropicRequest maps a core.Request to an Anthropic Messages API request
 // body. stream toggles server-sent event streaming.
 func buildAnthropicRequest(req core.Request, stream bool) anthropicRequest {
-	messages, system := buildMessages(req)
+	messages, system := anthropicwire.BuildMessages(req, buildContent)
 
 	maxTokens := defaultMaxTokens
 	if req.MaxTokens != nil {
