@@ -13,30 +13,15 @@ import (
 )
 
 type bedrockAnthropicRequest struct {
-	AnthropicVersion string                    `json:"anthropic_version"`
-	MaxTokens        int                       `json:"max_tokens"`
-	Messages         []bedrockAnthropicMessage `json:"messages"`
-	Tools            []anthropicwire.Tool      `json:"tools,omitempty"`
-	ToolChoice       any                       `json:"tool_choice,omitempty"`
-	Temperature      *float64                  `json:"temperature,omitempty"`
-	TopP             *float64                  `json:"top_p,omitempty"`
-	StopSequences    []string                  `json:"stop_sequences,omitempty"`
-	System           string                    `json:"system,omitempty"`
-}
-
-type bedrockAnthropicMessage struct {
-	Role    string `json:"role"`
-	Content any    `json:"content"`
-}
-
-type bedrockAnthropicBlock struct {
-	Type      string          `json:"type"`
-	Text      string          `json:"text,omitempty"`
-	ID        string          `json:"id,omitempty"`
-	Name      string          `json:"name,omitempty"`
-	Input     json.RawMessage `json:"input,omitempty"`
-	ToolUseID string          `json:"tool_use_id,omitempty"`
-	Content   string          `json:"content,omitempty"`
+	AnthropicVersion string                  `json:"anthropic_version"`
+	MaxTokens        int                     `json:"max_tokens"`
+	Messages         []anthropicwire.Message `json:"messages"`
+	Tools            []anthropicwire.Tool    `json:"tools,omitempty"`
+	ToolChoice       any                     `json:"tool_choice,omitempty"`
+	Temperature      *float64                `json:"temperature,omitempty"`
+	TopP             *float64                `json:"top_p,omitempty"`
+	StopSequences    []string                `json:"stop_sequences,omitempty"`
+	System           string                  `json:"system,omitempty"`
 }
 
 type bedrockAnthropicResponse struct {
@@ -69,7 +54,7 @@ func buildBedrockAnthropicRequest(req core.Request) bedrockAnthropicRequest {
 		maxTokens = *req.MaxTokens
 	}
 
-	messages, system := bedrockBuildAnthropicMessages(req)
+	messages, system := anthropicwire.BuildMessages(req, bedrockAnthropicContent)
 
 	return bedrockAnthropicRequest{
 		AnthropicVersion: "bedrock-2023-05-31",
@@ -84,55 +69,87 @@ func buildBedrockAnthropicRequest(req core.Request) bedrockAnthropicRequest {
 	}
 }
 
-func bedrockBuildAnthropicMessages(req core.Request) ([]bedrockAnthropicMessage, string) {
-	var systemParts []string
-	var messages []bedrockAnthropicMessage
-	for _, msg := range req.Messages {
-		switch msg.Role {
-		case core.RoleSystem:
-			systemParts = append(systemParts, msg.Content)
-		case core.RoleTool:
-			block := bedrockAnthropicBlock{
-				Type:      "tool_result",
-				ToolUseID: msg.ToolCallID,
-				Content:   msg.Content,
-			}
-			if n := len(messages); n > 0 && messages[n-1].Role == core.RoleUser {
-				if blocks, ok := messages[n-1].Content.([]bedrockAnthropicBlock); ok {
-					blocks = append(blocks, block)
-					messages[n-1].Content = blocks
-					continue
+// bedrockAnthropicContent renders a non-system message's content for Bedrock's
+// Anthropic Messages API. Plain text turns stay a JSON string (the common
+// path); multimodal turns (ContentParts, including image_url parts) and
+// assistant tool calls become an array of content blocks. Bedrock Claude
+// models accept the same content-block schema as the native Anthropic API, so
+// this mirrors providers/anthropic's buildContent.
+func bedrockAnthropicContent(msg core.Message) any {
+	var blocks []anthropicwire.Block
+
+	if len(msg.ContentParts) > 0 {
+		for _, part := range msg.ContentParts {
+			switch part.Type {
+			case core.ContentTypeText:
+				blocks = append(blocks, anthropicwire.Block{Type: "text", Text: part.Text})
+			case "image_url":
+				if part.ImageURL != nil {
+					blocks = append(blocks, bedrockAnthropicImageBlock(part.ImageURL.URL))
 				}
 			}
-			messages = append(messages, bedrockAnthropicMessage{Role: core.RoleUser, Content: []bedrockAnthropicBlock{block}})
-		default:
-			messages = append(messages, bedrockAnthropicMessage{Role: msg.Role, Content: bedrockAnthropicContent(msg)})
 		}
+	} else if msg.Content != "" {
+		blocks = append(blocks, anthropicwire.Block{Type: "text", Text: msg.Content})
 	}
-	return messages, strings.Join(systemParts, "\n")
-}
 
-func bedrockAnthropicContent(msg core.Message) any {
-	var blocks []bedrockAnthropicBlock
-	if msg.Content != "" {
-		blocks = append(blocks, bedrockAnthropicBlock{Type: "text", Text: msg.Content})
-	}
 	for _, tc := range msg.ToolCalls {
 		input := json.RawMessage(tc.Function.Arguments)
 		if len(input) == 0 || !json.Valid(input) {
 			input = json.RawMessage(`{}`)
 		}
-		blocks = append(blocks, bedrockAnthropicBlock{
+		blocks = append(blocks, anthropicwire.Block{
 			Type:  "tool_use",
 			ID:    tc.ID,
 			Name:  tc.Function.Name,
 			Input: input,
 		})
 	}
-	if len(msg.ToolCalls) == 0 {
+
+	// Plain single-text turn: keep the lightweight string form so the common
+	// path is byte-for-byte unchanged.
+	if len(msg.ContentParts) == 0 && len(msg.ToolCalls) == 0 {
 		return msg.Content
 	}
 	return blocks
+}
+
+// bedrockAnthropicImageBlock maps an OpenAI image_url (data URI or remote URL)
+// to a Bedrock Anthropic image content block.
+func bedrockAnthropicImageBlock(url string) anthropicwire.Block {
+	if mediaType, data, ok := bedrockParseDataURI(url); ok {
+		return anthropicwire.Block{
+			Type: "image",
+			Source: &anthropicwire.ImageSource{
+				Type:      "base64",
+				MediaType: mediaType,
+				Data:      data,
+			},
+		}
+	}
+	return anthropicwire.Block{
+		Type:   "image",
+		Source: &anthropicwire.ImageSource{Type: "url", URL: url},
+	}
+}
+
+// bedrockParseDataURI splits a data URI of the form
+// "data:<media-type>;base64,<data>" into its media type and payload. ok is
+// false for any non-base64 data URI or a plain remote URL.
+func bedrockParseDataURI(uri string) (mediaType, data string, ok bool) {
+	const prefix = "data:"
+	if !strings.HasPrefix(uri, prefix) {
+		return "", "", false
+	}
+	meta, payload, found := strings.Cut(uri[len(prefix):], ",")
+	if !found {
+		return "", "", false
+	}
+	mt, encoding, _ := strings.Cut(meta, ";")
+	if encoding != "base64" {
+		return "", "", false
+	}
+	return mt, payload, true
 }
 
 func (p *Provider) completeAnthropic(ctx context.Context, req core.Request) (*core.Response, error) {

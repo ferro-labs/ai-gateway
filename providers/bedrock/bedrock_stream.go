@@ -42,6 +42,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 		defer func() { _ = stream.Close() }()
 
 		toolCallIndexes := make(map[int]int)
+		toolArgsSeen := make(map[int]bool)
 		nextToolCallIndex := 0
 		for event := range stream.Events() {
 			if e, ok := event.(*types.ResponseStreamMemberChunk); ok {
@@ -101,6 +102,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 						if !ok {
 							toolCallIndex = delta.Index
 						}
+						toolArgsSeen[toolCallIndex] = true
 						ch <- core.StreamChunk{
 							Model: req.Model,
 							Choices: []core.StreamChoice{{
@@ -124,7 +126,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 					ch <- core.StreamChunk{
 						Model: req.Model,
 						Choices: []core.StreamChoice{{
-							Index: delta.Index,
+							Index: 0,
 							Delta: core.MessageDelta{Content: delta.Delta.Text},
 						}},
 					}
@@ -136,6 +138,29 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 					}
 					if err := json.Unmarshal(e.Value.Bytes, &delta); err != nil {
 						continue
+					}
+					// Tool calls that never received an input_json_delta (zero-argument
+					// tool calls) still need valid empty-object arguments emitted before
+					// the finish chunk, matching the native Anthropic stream behavior.
+					for toolCallIndex := 0; toolCallIndex < nextToolCallIndex; toolCallIndex++ {
+						if toolArgsSeen[toolCallIndex] {
+							continue
+						}
+						ch <- core.StreamChunk{
+							Model: req.Model,
+							Choices: []core.StreamChoice{{
+								Index: 0,
+								Delta: core.MessageDelta{
+									ToolCalls: []core.ToolCall{{
+										Index: core.Ptr(toolCallIndex),
+										Type:  "function",
+										Function: core.FunctionCall{
+											Arguments: "{}",
+										},
+									}},
+								},
+							}},
+						}
 					}
 					ch <- core.StreamChunk{
 						Model: req.Model,

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -392,10 +393,25 @@ func TestBedrockProvider_Complete_NovaNormalizesFinishReason(t *testing.T) {
 }
 
 func TestBedrockProvider_Embed_TitanTextLoopsAndMapsResponse(t *testing.T) {
+	// embedTitan now issues one InvokeModel call per input text concurrently
+	// (bounded by bedrockTitanEmbedConcurrency), so call arrival order is not
+	// guaranteed. responseFor matches each response to its request by the
+	// InputText it carries instead of by call index.
+	responseByText := map[string][]byte{
+		"first":  []byte(`{"embedding":[0.1,0.2],"inputTextTokenCount":2}`),
+		"second": []byte(`{"embedding":[0.3,0.4],"inputTextTokenCount":3}`),
+	}
 	fake := &fakeBedrockRuntimeClient{
-		responses: [][]byte{
-			[]byte(`{"embedding":[0.1,0.2],"inputTextTokenCount":2}`),
-			[]byte(`{"embedding":[0.3,0.4],"inputTextTokenCount":3}`),
+		responseFor: func(input *bedrockruntime.InvokeModelInput) ([]byte, error) {
+			var req bedrockTitanEmbedRequest
+			if err := json.Unmarshal(input.Body, &req); err != nil {
+				return nil, err
+			}
+			body, ok := responseByText[req.InputText]
+			if !ok {
+				return nil, fmt.Errorf("no fake response for input text %q", req.InputText)
+			}
+			return body, nil
 		},
 	}
 	p := &Provider{name: Name, client: fake}
@@ -413,6 +429,7 @@ func TestBedrockProvider_Embed_TitanTextLoopsAndMapsResponse(t *testing.T) {
 	if len(fake.invokeCalls) != 2 {
 		t.Fatalf("InvokeModel calls = %d, want 2", len(fake.invokeCalls))
 	}
+	seenTexts := make(map[string]bool)
 	for i, call := range fake.invokeCalls {
 		if got := aws.ToString(call.ModelId); got != "amazon.titan-embed-text-v2:0" {
 			t.Errorf("call %d ModelId = %q", i, got)
@@ -423,16 +440,15 @@ func TestBedrockProvider_Embed_TitanTextLoopsAndMapsResponse(t *testing.T) {
 		if got := aws.ToString(call.Accept); got != "application/json" {
 			t.Errorf("call %d Accept = %q", i, got)
 		}
+		var body bedrockTitanEmbedRequest
+		mustUnmarshalBody(t, call.Body, &body)
+		seenTexts[body.InputText] = true
+		if body.Dimensions == nil || *body.Dimensions != dimensions {
+			t.Errorf("call %d Titan dimensions = %v, want %d", i, body.Dimensions, dimensions)
+		}
 	}
-
-	var firstReq, secondReq bedrockTitanEmbedRequest
-	mustUnmarshalBody(t, fake.invokeCalls[0].Body, &firstReq)
-	mustUnmarshalBody(t, fake.invokeCalls[1].Body, &secondReq)
-	if firstReq.InputText != "first" || secondReq.InputText != "second" {
-		t.Errorf("Titan inputText values = %q, %q; want first, second", firstReq.InputText, secondReq.InputText)
-	}
-	if firstReq.Dimensions == nil || *firstReq.Dimensions != dimensions {
-		t.Errorf("Titan dimensions = %v, want %d", firstReq.Dimensions, dimensions)
+	if !seenTexts["first"] || !seenTexts["second"] {
+		t.Errorf("Titan inputText values = %v, want both %q and %q present", seenTexts, "first", "second")
 	}
 
 	if resp.Object != "list" || resp.Model != "amazon.titan-embed-text-v2:0" {
@@ -839,25 +855,46 @@ func TestBedrockProvider_Embed_Validation(t *testing.T) {
 }
 
 type fakeBedrockRuntimeClient struct {
+	mu                sync.Mutex
 	invokeCalls       []*bedrockruntime.InvokeModelInput
 	invokeStreamCalls []*bedrockruntime.InvokeModelWithResponseStreamInput
 	responses         [][]byte
 	streamResponses   [][]byte
 	err               error
+	// responseFor, when set, selects the response body for a given call
+	// instead of the index-based responses slice. It lets tests that issue
+	// concurrent InvokeModel calls (e.g. bedrock_embed.go's parallel Titan
+	// requests) match a response to its request deterministically rather than
+	// relying on call arrival order, which is not guaranteed under concurrency.
+	responseFor func(*bedrockruntime.InvokeModelInput) ([]byte, error)
 }
 
 func (f *fakeBedrockRuntimeClient) InvokeModel(_ context.Context, input *bedrockruntime.InvokeModelInput, _ ...func(*bedrockruntime.Options)) (*bedrockruntime.InvokeModelOutput, error) {
 	copied := *input
 	copied.Body = append([]byte(nil), input.Body...)
+
+	f.mu.Lock()
 	f.invokeCalls = append(f.invokeCalls, &copied)
-	if f.err != nil {
-		return nil, f.err
-	}
 	idx := len(f.invokeCalls) - 1
-	if idx >= len(f.responses) {
+	responseFor := f.responseFor
+	callErr := f.err
+	responses := f.responses
+	f.mu.Unlock()
+
+	if callErr != nil {
+		return nil, callErr
+	}
+	if responseFor != nil {
+		body, err := responseFor(&copied)
+		if err != nil {
+			return nil, err
+		}
+		return &bedrockruntime.InvokeModelOutput{Body: body}, nil
+	}
+	if idx >= len(responses) {
 		return nil, fmt.Errorf("missing fake response for call %d", idx)
 	}
-	return &bedrockruntime.InvokeModelOutput{Body: f.responses[idx]}, nil
+	return &bedrockruntime.InvokeModelOutput{Body: responses[idx]}, nil
 }
 
 func (f *fakeBedrockRuntimeClient) InvokeModelWithResponseStream(_ context.Context, input *bedrockruntime.InvokeModelWithResponseStreamInput, _ ...func(*bedrockruntime.Options)) (bedrockEventStream, error) {

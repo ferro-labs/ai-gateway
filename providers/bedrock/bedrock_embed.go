@@ -6,8 +6,15 @@ import (
 	"fmt"
 	"strings"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
+
+// bedrockTitanEmbedConcurrency bounds the number of Titan embedding calls
+// issued in parallel for a single batch request, since Titan's API accepts
+// one input per call. Kept small to avoid Bedrock throttling.
+const bedrockTitanEmbedConcurrency = 4
 
 type bedrockTitanEmbedRequest struct {
 	InputText  string `json:"inputText"`
@@ -83,23 +90,37 @@ func (p *Provider) embedTitan(ctx context.Context, req core.EmbeddingRequest, mo
 		return nil, fmt.Errorf("embed: dimensions are only supported for amazon.titan-embed-text-v2 models")
 	}
 
-	data := make([]core.Embedding, 0, len(texts))
-	promptTokens := 0
+	data := make([]core.Embedding, len(texts))
+	tokenCounts := make([]int, len(texts))
+
+	g, gCtx := errgroup.WithContext(ctx)
+	g.SetLimit(bedrockTitanEmbedConcurrency)
 	for i, text := range texts {
-		titanReq := bedrockTitanEmbedRequest{
-			InputText:  text,
-			Dimensions: req.Dimensions,
-		}
-		var titanResp bedrockTitanEmbedResponse
-		if err := p.invokeModelJSON(ctx, req.Model, titanReq, &titanResp); err != nil {
-			return nil, err
-		}
-		data = append(data, core.Embedding{
-			Object:    "embedding",
-			Embedding: titanResp.Embedding,
-			Index:     i,
+		g.Go(func() error {
+			titanReq := bedrockTitanEmbedRequest{
+				InputText:  text,
+				Dimensions: req.Dimensions,
+			}
+			var titanResp bedrockTitanEmbedResponse
+			if err := p.invokeModelJSON(gCtx, req.Model, titanReq, &titanResp); err != nil {
+				return err
+			}
+			data[i] = core.Embedding{
+				Object:    "embedding",
+				Embedding: titanResp.Embedding,
+				Index:     i,
+			}
+			tokenCounts[i] = titanResp.InputTextTokenCount
+			return nil
 		})
-		promptTokens += titanResp.InputTextTokenCount
+	}
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
+
+	promptTokens := 0
+	for _, c := range tokenCounts {
+		promptTokens += c
 	}
 
 	return &core.EmbeddingResponse{

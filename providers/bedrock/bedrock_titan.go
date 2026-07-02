@@ -15,7 +15,7 @@ type bedrockTitanRequest struct {
 	InputText            string `json:"inputText"`
 	TextGenerationConfig struct {
 		MaxTokenCount int      `json:"maxTokenCount,omitempty"`
-		Temperature   float64  `json:"temperature,omitempty"`
+		Temperature   *float64 `json:"temperature,omitempty"`
 		TopP          *float64 `json:"topP,omitempty"`
 		StopSequences []string `json:"stopSequences,omitempty"`
 	} `json:"textGenerationConfig"`
@@ -41,9 +41,7 @@ func (p *Provider) completeTitan(ctx context.Context, req core.Request) (*core.R
 	if req.MaxTokens != nil {
 		titanReq.TextGenerationConfig.MaxTokenCount = *req.MaxTokens
 	}
-	if req.Temperature != nil {
-		titanReq.TextGenerationConfig.Temperature = *req.Temperature
-	}
+	titanReq.TextGenerationConfig.Temperature = req.Temperature
 	titanReq.TextGenerationConfig.TopP = req.TopP
 	titanReq.TextGenerationConfig.StopSequences = req.Stop
 

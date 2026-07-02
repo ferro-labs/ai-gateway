@@ -25,11 +25,32 @@ type bedrockLlamaResponse struct {
 	StopReason           string `json:"stop_reason"`
 }
 
+// bedrockLlamaMessageText returns the text content for a message's prompt
+// turn. It falls back to extracting text from ContentParts when Content is
+// empty (multi-part content arrays), mirroring bedrockNovaMessageTextContent
+// in bedrock_nova.go.
+func bedrockLlamaMessageText(msg core.Message) string {
+	if len(msg.ContentParts) == 0 {
+		return msg.Content
+	}
+
+	var sb strings.Builder
+	for _, part := range msg.ContentParts {
+		if part.Type == core.ContentTypeText {
+			sb.WriteString(part.Text)
+		}
+	}
+	if sb.Len() == 0 {
+		return msg.Content
+	}
+	return sb.String()
+}
+
 func (p *Provider) completeLlama(ctx context.Context, req core.Request) (*core.Response, error) {
 	var sb strings.Builder
 	sb.WriteString("<|begin_of_text|>")
 	for _, msg := range req.Messages {
-		fmt.Fprintf(&sb, "<|start_header_id|>%s<|end_header_id|>\n\n%s<|eot_id|>\n", msg.Role, msg.Content)
+		fmt.Fprintf(&sb, "<|start_header_id|>%s<|end_header_id|>\n\n%s<|eot_id|>\n", msg.Role, bedrockLlamaMessageText(msg))
 	}
 	sb.WriteString("<|start_header_id|>assistant<|end_header_id|>\n\n")
 
