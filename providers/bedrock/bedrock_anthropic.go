@@ -48,13 +48,26 @@ const bedrockAnthropicDefaultMaxTokens = 1024
 
 // buildBedrockAnthropicRequest translates an OpenAI-shaped request into the
 // Bedrock Anthropic invocation body, applying the default max_tokens when unset.
-func buildBedrockAnthropicRequest(req core.Request) bedrockAnthropicRequest {
+func buildBedrockAnthropicRequest(req core.Request) (bedrockAnthropicRequest, error) {
 	maxTokens := bedrockAnthropicDefaultMaxTokens
 	if req.MaxTokens != nil {
 		maxTokens = *req.MaxTokens
 	}
 
-	messages, system := anthropicwire.BuildMessages(req, bedrockAnthropicContent)
+	// bedrockAnthropicContent can reject unsupported content (e.g. remote image
+	// URLs); capture the first such error via the callback since
+	// anthropicwire.BuildMessages' content callback returns only a value.
+	var contentErr error
+	messages, system := anthropicwire.BuildMessages(req, func(msg core.Message) any {
+		blocks, err := bedrockAnthropicContent(msg)
+		if err != nil && contentErr == nil {
+			contentErr = err
+		}
+		return blocks
+	})
+	if contentErr != nil {
+		return bedrockAnthropicRequest{}, contentErr
+	}
 
 	return bedrockAnthropicRequest{
 		AnthropicVersion: "bedrock-2023-05-31",
@@ -66,7 +79,7 @@ func buildBedrockAnthropicRequest(req core.Request) bedrockAnthropicRequest {
 		TopP:             req.TopP,
 		StopSequences:    req.Stop,
 		System:           system,
-	}
+	}, nil
 }
 
 // bedrockAnthropicContent renders a non-system message's content for Bedrock's
@@ -75,7 +88,7 @@ func buildBedrockAnthropicRequest(req core.Request) bedrockAnthropicRequest {
 // assistant tool calls become an array of content blocks. Bedrock Claude
 // models accept the same content-block schema as the native Anthropic API, so
 // this mirrors providers/anthropic's buildContent.
-func bedrockAnthropicContent(msg core.Message) any {
+func bedrockAnthropicContent(msg core.Message) (any, error) {
 	var blocks []anthropicwire.Block
 
 	if len(msg.ContentParts) > 0 {
@@ -85,7 +98,11 @@ func bedrockAnthropicContent(msg core.Message) any {
 				blocks = append(blocks, anthropicwire.Block{Type: "text", Text: part.Text})
 			case "image_url":
 				if part.ImageURL != nil {
-					blocks = append(blocks, bedrockAnthropicImageBlock(part.ImageURL.URL))
+					block, err := bedrockAnthropicImageBlock(part.ImageURL.URL)
+					if err != nil {
+						return nil, err
+					}
+					blocks = append(blocks, block)
 				}
 			}
 		}
@@ -109,28 +126,29 @@ func bedrockAnthropicContent(msg core.Message) any {
 	// Plain single-text turn: keep the lightweight string form so the common
 	// path is byte-for-byte unchanged.
 	if len(msg.ContentParts) == 0 && len(msg.ToolCalls) == 0 {
-		return msg.Content
+		return msg.Content, nil
 	}
-	return blocks
+	return blocks, nil
 }
 
-// bedrockAnthropicImageBlock maps an OpenAI image_url (data URI or remote URL)
-// to a Bedrock Anthropic image content block.
-func bedrockAnthropicImageBlock(url string) anthropicwire.Block {
-	if mediaType, data, ok := bedrockParseDataURI(url); ok {
-		return anthropicwire.Block{
-			Type: "image",
-			Source: &anthropicwire.ImageSource{
-				Type:      "base64",
-				MediaType: mediaType,
-				Data:      data,
-			},
-		}
+// bedrockAnthropicImageBlock maps an OpenAI image_url (a base64 data URI) to a
+// Bedrock Anthropic image content block. Bedrock's Anthropic models accept only
+// base64-encoded images and do not fetch remote URLs (unlike the native
+// Anthropic API), so a non-data-URI image is rejected with a clear error rather
+// than emitting a "url" source block the Bedrock API would reject.
+func bedrockAnthropicImageBlock(url string) (anthropicwire.Block, error) {
+	mediaType, data, ok := bedrockParseDataURI(url)
+	if !ok {
+		return anthropicwire.Block{}, fmt.Errorf("bedrock anthropic: image inputs must be base64 data URIs; remote image URLs are not supported")
 	}
 	return anthropicwire.Block{
-		Type:   "image",
-		Source: &anthropicwire.ImageSource{Type: "url", URL: url},
-	}
+		Type: "image",
+		Source: &anthropicwire.ImageSource{
+			Type:      "base64",
+			MediaType: mediaType,
+			Data:      data,
+		},
+	}, nil
 }
 
 // bedrockParseDataURI splits a data URI of the form
@@ -153,7 +171,10 @@ func bedrockParseDataURI(uri string) (mediaType, data string, ok bool) {
 }
 
 func (p *Provider) completeAnthropic(ctx context.Context, req core.Request) (*core.Response, error) {
-	anthropicReq := buildBedrockAnthropicRequest(req)
+	anthropicReq, err := buildBedrockAnthropicRequest(req)
+	if err != nil {
+		return nil, err
+	}
 
 	body, err := core.MarshalJSON(anthropicReq)
 	if err != nil {

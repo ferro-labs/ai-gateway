@@ -20,7 +20,10 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 	}
 	core.WarnUnsupportedParams(ctx, p.Name(), req.Model, req, bedrockSupportedParams(bedrockModelRoutingID(req.Model))...)
 
-	anthropicReq := buildBedrockAnthropicRequest(req)
+	anthropicReq, err := buildBedrockAnthropicRequest(req)
+	if err != nil {
+		return nil, err
+	}
 
 	body, err := core.MarshalJSON(anthropicReq)
 	if err != nil {
