@@ -573,8 +573,13 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 // parseCandidateParts accumulates text and tool calls from one candidate's
 // parts. When withIndex is set, each tool call carries its position index
 // (required for streaming deltas). candidateIndex seeds synthetic tool-call IDs
-// when the provider omits them.
-func parseCandidateParts(parts []geminiPart, candidateIndex int, withIndex bool) (string, []core.ToolCall) {
+// when the provider omits them. toolCallCounter, when non-nil, tracks the
+// running tool-call count for this candidate across the whole stream: Gemini
+// delivers parallel tool calls as separate, cumulative SSE chunks, so a fresh
+// per-chunk counter would restart at 0 and misalign indices/IDs across chunks.
+// Pass nil for single-shot (non-streaming) parsing, where a fresh count is
+// correct.
+func parseCandidateParts(parts []geminiPart, candidateIndex int, withIndex bool, toolCallCounter *int) (string, []core.ToolCall) {
 	var text string
 	var toolCalls []core.ToolCall
 	for _, part := range parts {
@@ -584,9 +589,13 @@ func parseCandidateParts(parts []geminiPart, candidateIndex int, withIndex bool)
 			if args == "" {
 				args = "{}"
 			}
+			n := len(toolCalls)
+			if toolCallCounter != nil {
+				n = *toolCallCounter
+			}
 			id := part.FunctionCall.ID
 			if id == "" {
-				id = fmt.Sprintf("call_%d_%d", candidateIndex, len(toolCalls))
+				id = fmt.Sprintf("call_%d_%d", candidateIndex, n)
 			}
 			tc := core.ToolCall{
 				ID:   id,
@@ -597,8 +606,11 @@ func parseCandidateParts(parts []geminiPart, candidateIndex int, withIndex bool)
 				},
 			}
 			if withIndex {
-				idx := len(toolCalls)
+				idx := n
 				tc.Index = &idx
+			}
+			if toolCallCounter != nil {
+				*toolCallCounter++
 			}
 			toolCalls = append(toolCalls, tc)
 		}
@@ -636,7 +648,7 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 
 	var choices []core.Choice
 	for i, candidate := range geminiResp.Candidates {
-		text, toolCalls := parseCandidateParts(candidate.Content.Parts, i, false)
+		text, toolCalls := parseCandidateParts(candidate.Content.Parts, i, false, nil)
 		choices = append(choices, core.Choice{
 			Index: i,
 			Message: core.Message{
@@ -685,6 +697,10 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 		defer func() { _ = httpResp.Body.Close() }()
 
 		lines, scanErr := core.SSEDataLines(httpResp.Body)
+		// toolCallCounters tracks each candidate's running tool-call count
+		// across the entire stream, since Gemini can split parallel tool
+		// calls across multiple SSE chunks.
+		toolCallCounters := make(map[int]int)
 		for data := range lines {
 
 			var chunk geminiStreamResponse
@@ -697,7 +713,9 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 				Model: req.Model,
 			}
 			for i, candidate := range chunk.Candidates {
-				text, toolCalls := parseCandidateParts(candidate.Content.Parts, i, true)
+				counter := toolCallCounters[i]
+				text, toolCalls := parseCandidateParts(candidate.Content.Parts, i, true, &counter)
+				toolCallCounters[i] = counter
 				sc.Choices = append(sc.Choices, core.StreamChoice{
 					Index: i,
 					Delta: core.MessageDelta{
