@@ -11,6 +11,12 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
+// maxConfigHistoryEntries caps the in-memory config history so long-running
+// gateways with frequent reloads (e.g. GitOps/CI-driven sync) don't grow the
+// history slice — and the full aigateway.Config snapshots it holds — without
+// bound.
+const maxConfigHistoryEntries = 200
+
 // ConfigHistoryEntry captures a runtime config update snapshot.
 type ConfigHistoryEntry struct {
 	Version        int              `json:"version"`
@@ -163,12 +169,25 @@ func (h *Handlers) rollbackConfig(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) appendConfigHistory(cfg aigateway.Config, rolledBackFrom *int) {
 	h.historyMu.Lock()
 	defer h.historyMu.Unlock()
+
+	// Derive the next version from the last entry's Version rather than the
+	// slice length: once old entries are evicted below, length no longer
+	// tracks the cumulative version count.
+	nextVersion := 1
+	if n := len(h.configHistory); n > 0 {
+		nextVersion = h.configHistory[n-1].Version + 1
+	}
+
 	h.configHistory = append(h.configHistory, ConfigHistoryEntry{
-		Version:        len(h.configHistory) + 1,
+		Version:        nextVersion,
 		UpdatedAt:      time.Now().UTC(),
 		Config:         cfg,
 		RolledBackFrom: rolledBackFrom,
 	})
+
+	if len(h.configHistory) > maxConfigHistoryEntries {
+		h.configHistory = h.configHistory[len(h.configHistory)-maxConfigHistoryEntries:]
+	}
 }
 
 func writeConfigReloadError(w http.ResponseWriter, err error) {
