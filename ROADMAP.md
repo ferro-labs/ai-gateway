@@ -70,10 +70,7 @@ Weekly patch line. Each release is backward-compatible bug-fixing on a single th
 - **v1.1.6** — Runtime robustness: cache & circuit-breaker correctness (logprobs in cache key, true LRU, half-open probe cap), OTel shutdown span-loss fix, plugin-pipeline panic recovery / RunOnError-on-reject / Close-on-reload, Bedrock bearer auth.
 - **v1.1.7** — Small enhancements: end-to-end `context.Context` propagation, plugin-registry concurrency, hot-path allocation reductions, git-hook gating.
 - **v1.1.8** — Security & trust hardening: baseline HTTP security headers, request body-size limit, trusted-proxy client-IP resolution, expanded secret redaction, config-validation and admin-key safety.
-
-### Planned
-
-- **v1.1.9 — Quality & maintainability hardening**: per-key rate-limit / budget scoping, atomic budget soft cap, internal package restructuring (no API or behaviour changes), and CI supply-chain hardening (SHA-pinned actions).
+- **v1.1.9** — Quality & maintainability hardening: per-key rate-limit / budget scoping, atomic budget soft cap, internal package restructuring (no API or behaviour changes), and CI supply-chain hardening (SHA-pinned actions).
 
 ## v1.2.0 — Provider Parameter Capability Matrix
 
