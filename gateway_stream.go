@@ -120,6 +120,10 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 			return nil, err
 		}
 		if early != nil {
+			if early.Created == 0 {
+				early.Created = time.Now().Unix()
+			}
+			g.recordSuccess(ctx, span, obs, early, time.Since(start), true, hooksEnabled, obsEventsActive)
 			plugin.PutContext(pctx)
 			pctx = nil
 			releasePluginManager()

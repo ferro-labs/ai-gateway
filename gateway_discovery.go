@@ -127,6 +127,7 @@ func (g *Gateway) runDiscovery(ctx context.Context, log *slog.Logger) {
 		}
 		g.mu.Lock()
 		g.discoveredModels[name] = models
+		g.rebuildModelIndexesLocked()
 		g.mu.Unlock()
 		log.Info("model discovery completed", "provider", name, "models", len(models))
 	}

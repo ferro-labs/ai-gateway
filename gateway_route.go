@@ -82,6 +82,11 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 		req = g.resolveAlias(req)
 	})
 
+	// Captured before the agentic MCP loop forces req.Stream = false, and
+	// before any early plugin short-circuit, so hook/observability consumers
+	// always see the client's requested stream preference.
+	originalStream := req.Stream
+
 	s, err := g.getStrategy()
 	if err != nil {
 		return nil, err
@@ -107,6 +112,15 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 			return nil, err
 		}
 		if early != nil {
+			if early.Object == "" {
+				early.Object = "chat.completion"
+			}
+			if early.Created == 0 {
+				early.Created = time.Now().Unix()
+			}
+			earlyLatency := time.Since(start)
+			g.recordSuccess(ctx, span, obs, early, earlyLatency, originalStream, hooksEnabled, obsEventsActive)
+			early.OverheadMs = float64(earlyLatency.Microseconds()) / 1000.0
 			return early, nil
 		}
 	}
@@ -140,55 +154,24 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 
 	// During the agentic loop intermediate calls must be non-streaming so the
 	// full response can be inspected for tool_calls. The client's original
-	// stream preference is restored on the final response (Phase 1: always
-	// returns non-streaming for MCP requests).
-	originalStream := req.Stream
+	// stream preference (captured above) is restored on the final response
+	// (Phase 1: always returns non-streaming for MCP requests).
 	if len(mcpTools) > 0 {
 		req.Stream = false
 	}
 
 	// Execute the strategy (provider selection + actual call).
 	var resp *providers.Response
+	var providerDuration time.Duration
 	providerStart := time.Now()
 	trace.WithRegion(ctx, "gateway.route.provider.execute", func() {
 		resp, err = s.Execute(ctx, req)
 	})
-	providerDuration := time.Since(providerStart)
+	providerDuration += time.Since(providerStart)
 	latency := time.Since(start)
 
 	if err != nil {
-		if pctx != nil {
-			pctx.Error = err
-			plugins.RunOnError(ctx, pctx)
-		}
-
-		provider := ""
-		errType := "provider_error"
-		if errors.Is(err, circuitbreaker.ErrCircuitOpen) {
-			errType = "circuit_open"
-		}
-		metrics.ForRequest("", req.Model).Error.Inc()
-		metrics.ForProviderError(provider, errType).Inc()
-
-		span.SetError(err)
-
-		logging.FromContext(ctx).Error("request failed",
-			"model", req.Model,
-			"latency_ms", latency.Milliseconds(),
-			"error", err.Error(),
-		)
-
-		if hooksEnabled || obsEventsActive {
-			he := failedEventData(
-				logging.TraceIDFromContext(ctx),
-				"",
-				req.Model,
-				err.Error(),
-				latency,
-				originalStream,
-			)
-			g.dispatchRequestEvent(ctx, obs, hooksEnabled, obsEventsActive, he)
-		}
+		g.routeError(ctx, span, obs, pctx, plugins, "", req.Model, err, latency, originalStream, hooksEnabled, obsEventsActive)
 		return nil, err
 	}
 
@@ -210,6 +193,7 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	// the LLM until no more tool_calls are present or the depth limit is hit.
 	if mcpExecutorSnapshot != nil && len(mcpTools) > 0 {
 		depth := 0
+		loopProvider := resp.Provider
 		trace.WithRegion(ctx, "gateway.route.mcp.loop", func() {
 			for mcpExecutorSnapshot.ShouldContinueLoop(resp, depth) {
 				depth++
@@ -226,13 +210,17 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 				// Always non-streaming for intermediate calls.
 				req.Stream = false
 
+				callStart := time.Now()
 				resp, err = s.Execute(ctx, req)
+				providerDuration += time.Since(callStart)
 				if err != nil {
 					return
 				}
+				loopProvider = resp.Provider
 			}
 		})
 		if err != nil {
+			g.routeError(ctx, span, obs, pctx, plugins, loopProvider, req.Model, err, time.Since(start), originalStream, hooksEnabled, obsEventsActive)
 			return nil, err
 		}
 	}
@@ -275,6 +263,45 @@ func (g *Gateway) dispatchRequestEvent(ctx context.Context, obs observability.Pr
 	}
 	if obsEventsActive {
 		obs.RecordEvent(ctx, obsEventFromHook(he))
+	}
+}
+
+// routeError finalizes a failed Route call: runs plugin error hooks, records
+// error metrics, stamps the span with the error, logs the failure, and
+// dispatches the failed lifecycle event. Shared by the initial provider call
+// and the MCP tool-call loop's follow-up provider calls so both error paths
+// stay in sync.
+func (g *Gateway) routeError(ctx context.Context, span observability.Span, obs observability.Provider, pctx *plugin.Context, plugins *plugin.Manager, provider, model string, err error, latency time.Duration, originalStream, hooksEnabled, obsEventsActive bool) {
+	if pctx != nil {
+		pctx.Error = err
+		plugins.RunOnError(ctx, pctx)
+	}
+
+	errType := "provider_error"
+	if errors.Is(err, circuitbreaker.ErrCircuitOpen) {
+		errType = "circuit_open"
+	}
+	metrics.ForRequest(provider, model).Error.Inc()
+	metrics.ForProviderError(provider, errType).Inc()
+
+	span.SetError(err)
+
+	logging.FromContext(ctx).Error("request failed",
+		"model", model,
+		"latency_ms", latency.Milliseconds(),
+		"error", err.Error(),
+	)
+
+	if hooksEnabled || obsEventsActive {
+		he := failedEventData(
+			logging.TraceIDFromContext(ctx),
+			provider,
+			model,
+			err.Error(),
+			latency,
+			originalStream,
+		)
+		g.dispatchRequestEvent(ctx, obs, hooksEnabled, obsEventsActive, he)
 	}
 }
 

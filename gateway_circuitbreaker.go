@@ -37,7 +37,7 @@ func (p *cbProvider) Complete(ctx context.Context, req providers.Request) (*prov
 		return nil, err
 	}
 	p.cb.RecordSuccess()
-	metrics.CircuitBreakerState.WithLabelValues(p.name).Set(0) // closed
+	metrics.CircuitBreakerState.WithLabelValues(p.name).Set(float64(p.cb.State()))
 	return resp, nil
 }
 
@@ -93,7 +93,7 @@ func recordStreamCircuitBreakerOutcome(ctx context.Context, cb *circuitbreaker.C
 		return
 	}
 	cb.RecordSuccess()
-	metrics.CircuitBreakerState.WithLabelValues(name).Set(0)
+	metrics.CircuitBreakerState.WithLabelValues(name).Set(float64(cb.State()))
 }
 
 // ensureCircuitBreakersLocked creates circuit breakers for configured targets.

@@ -14,15 +14,17 @@ type modelLookupIndex struct {
 
 // modelsForRoutingLocked returns the routable model IDs for a provider: its
 // hardcoded SupportedModels merged (de-duplicated, hardcoded-first) with any
-// models the catalog advertises for it. Caller must hold g.mu.
+// models the catalog advertises for it, plus any live-discovered models.
+// Caller must hold g.mu.
 func (g *Gateway) modelsForRoutingLocked(name string, p providers.Provider) []string {
 	hardcoded := p.SupportedModels()
 	catModels := g.catalog.ModelsForProvider(name)
-	if len(catModels) == 0 {
+	discovered := g.discoveredModels[name]
+	if len(catModels) == 0 && len(discovered) == 0 {
 		return hardcoded
 	}
-	seen := make(map[string]struct{}, len(hardcoded)+len(catModels))
-	out := make([]string, 0, len(hardcoded)+len(catModels))
+	seen := make(map[string]struct{}, len(hardcoded)+len(catModels)+len(discovered))
+	out := make([]string, 0, len(hardcoded)+len(catModels)+len(discovered))
 	for _, m := range hardcoded {
 		if _, ok := seen[m]; !ok {
 			seen[m] = struct{}{}
@@ -33,6 +35,12 @@ func (g *Gateway) modelsForRoutingLocked(name string, p providers.Provider) []st
 		if _, ok := seen[m]; !ok {
 			seen[m] = struct{}{}
 			out = append(out, m)
+		}
+	}
+	for _, m := range discovered {
+		if _, ok := seen[m.ID]; !ok {
+			seen[m.ID] = struct{}{}
+			out = append(out, m.ID)
 		}
 	}
 	return out
