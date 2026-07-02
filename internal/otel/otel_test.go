@@ -134,6 +134,63 @@ func TestInitRegistersGlobalTracerProvider(t *testing.T) {
 	span2.End()
 }
 
+// TestShutdown_DoesNotResetGlobalInstalledByLaterInit verifies that when
+// Init is called twice (e.g. a config reload path) and the FIRST init's
+// shutdown function is invoked after the SECOND init has already installed
+// its own TracerProvider as the global one, the first shutdown does not
+// clobber the newer, still-active global provider with a no-op.
+func TestShutdown_DoesNotResetGlobalInstalledByLaterInit(t *testing.T) {
+	prev := otel.GetTracerProvider()
+	defer otel.SetTracerProvider(prev)
+
+	cfg := DefaultConfig()
+	cfg.Endpoint = testEndpoint
+	cfg.ShutdownGrace = 200 * time.Millisecond // no live collector; bound the flush
+
+	// First Init installs its TracerProvider as the global.
+	_, shutdown1, err := Init(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("first Init returned error: %v", err)
+	}
+
+	// Second Init (e.g. a config reload) installs a newer TracerProvider as
+	// the global, superseding the first.
+	_, shutdown2, err := Init(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("second Init returned error: %v", err)
+	}
+
+	secondGlobal := otel.GetTracerProvider()
+
+	// Calling the FIRST init's shutdown must not reset the global — it no
+	// longer owns it.
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+	_ = shutdown1(ctx)
+
+	if otel.GetTracerProvider() != secondGlobal {
+		t.Fatal("first Init's shutdown reset the global TracerProvider installed by a later Init call")
+	}
+
+	_, span := otel.GetTracerProvider().Tracer("test").Start(context.Background(), "still-active")
+	if !span.IsRecording() {
+		t.Fatal("global tracer provider was disabled by an earlier Init's shutdown")
+	}
+	span.End()
+
+	// The second init's own shutdown still resets the global — it is the
+	// rightful owner.
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel2()
+	_ = shutdown2(ctx2)
+
+	_, span2 := otel.GetTracerProvider().Tracer("test").Start(context.Background(), "late")
+	if span2.IsRecording() {
+		t.Fatal("second Init's shutdown did not reset the global TracerProvider to no-op")
+	}
+	span2.End()
+}
+
 func TestShutdownUsesIndependentDeadlinesForExporterAndTracerProvider(t *testing.T) {
 	grace := 25 * time.Millisecond
 	exporterDone := make(chan struct{})

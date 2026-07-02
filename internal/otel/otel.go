@@ -65,7 +65,7 @@ func Init(ctx context.Context, cfg Config) (observability.Provider, ShutdownFunc
 		return observability.NoOp(), noopShutdown, nil
 	}
 
-	prov, tpShutdown, globalTPSet, err := buildOTLPProvider(ctx, cfg, hasEndpoint)
+	prov, tpShutdown, installedTP, err := buildOTLPProvider(ctx, cfg, hasEndpoint)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -81,27 +81,29 @@ func Init(ctx context.Context, cfg Config) (observability.Provider, ShutdownFunc
 		prov.AttachExporters(resolvedExporters)
 	}
 
-	return prov, makeShutdown(prov, tpShutdown, cfg.ShutdownGrace, globalTPSet), nil
+	return prov, makeShutdown(prov, tpShutdown, cfg.ShutdownGrace, installedTP), nil
 }
 
 // buildOTLPProvider constructs the otelProvider and its TracerProvider shutdown
 // function. With an OTLP endpoint it builds a real TracerProvider plus OTLP
 // span exporter and installs it as the global TracerProvider (so child spans
-// from the global tracer are exported), returning globalTPSet true. Otherwise
-// it returns a provider backed by a no-op TracerProvider so spans are free
-// while RecordEvent still fans events out to exporters.
-func buildOTLPProvider(ctx context.Context, cfg Config, hasEndpoint bool) (*otelProvider, func(context.Context) error, bool, error) {
+// from the global tracer are exported), returning the installed instance so
+// the caller can later verify ownership before resetting the global.
+// Otherwise it returns a provider backed by a no-op TracerProvider so spans
+// are free while RecordEvent still fans events out to exporters, and a nil
+// installed instance since no global was set.
+func buildOTLPProvider(ctx context.Context, cfg Config, hasEndpoint bool) (*otelProvider, func(context.Context) error, trace.TracerProvider, error) {
 	if !hasEndpoint {
 		// Exporters-only path: no-op tracer so spans are free, but
 		// RecordEvent still fans events out to registered exporters.
 		noopTP := noop.NewTracerProvider()
-		return newProvider(trace.TracerProvider(noopTP), cfg), noopShutdown, false, nil
+		return newProvider(trace.TracerProvider(noopTP), cfg), noopShutdown, nil, nil
 	}
 
 	// Full OTLP pipeline: real TracerProvider + span exporter.
 	exporter, err := newSpanExporter(ctx, cfg)
 	if err != nil {
-		return nil, nil, false, fmt.Errorf("otel: build span exporter: %w", err)
+		return nil, nil, nil, fmt.Errorf("otel: build span exporter: %w", err)
 	}
 
 	res, err := resource.New(ctx,
@@ -114,7 +116,19 @@ func buildOTLPProvider(ctx context.Context, cfg Config, hasEndpoint bool) (*otel
 		resource.WithHost(),
 	)
 	if err != nil {
-		return nil, nil, false, fmt.Errorf("otel: build resource: %w", err)
+		// The exporter already opened its transport (e.g. a gRPC/HTTP
+		// connection); shut it down before returning so this failure path
+		// doesn't leak it on every init retry. Use a bounded context —
+		// distinct from the original err — and don't let a shutdown
+		// failure mask the primary resource.New error.
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), defaultShutdownGrace)
+		if shutdownErr := exporter.Shutdown(shutdownCtx); shutdownErr != nil {
+			logging.Logger.Warn("otel: span exporter shutdown after resource build failure",
+				"error", shutdownErr,
+			)
+		}
+		cancel()
+		return nil, nil, nil, fmt.Errorf("otel: build resource: %w", err)
 	}
 
 	tp := sdktrace.NewTracerProvider(
@@ -133,13 +147,18 @@ func buildOTLPProvider(ctx context.Context, cfg Config, hasEndpoint bool) (*otel
 	// and only the gateway root span (which holds tp directly) is emitted.
 	otel.SetTracerProvider(tp)
 
-	return newProvider(trace.TracerProvider(tp), cfg), tp.Shutdown, true, nil
+	installedTP := trace.TracerProvider(tp)
+	return newProvider(installedTP, cfg), tp.Shutdown, installedTP, nil
 }
 
 // makeShutdown builds the ShutdownFunc that drains plugin exporters and the
 // OTel pipeline within grace, then restores the global TracerProvider to a
-// no-op when this Init installed one.
-func makeShutdown(prov *otelProvider, tpShutdown func(context.Context) error, grace time.Duration, globalTPSet bool) ShutdownFunc {
+// no-op — but only when the global TracerProvider is still the exact
+// instance this Init call installed. If a later Init call (e.g. a config
+// reload) has since replaced it, resetting here would silently disable that
+// newer, still-active provider's tracing, so the reset is skipped and only
+// this Init's own owned resources (exporter, tp) are shut down.
+func makeShutdown(prov *otelProvider, tpShutdown func(context.Context) error, grace time.Duration, installedTP trace.TracerProvider) ShutdownFunc {
 	if grace <= 0 {
 		grace = defaultShutdownGrace
 	}
@@ -148,8 +167,9 @@ func makeShutdown(prov *otelProvider, tpShutdown func(context.Context) error, gr
 		err := shutdownWithIndependentDeadlines(ctx, grace, prov.Shutdown, tpShutdown)
 		// Restore the global TracerProvider to a no-op so any late
 		// otel.Tracer(...) calls after shutdown don't hit the drained
-		// pipeline, and so re-initialisation (tests, embedders) starts clean.
-		if globalTPSet {
+		// pipeline, and so re-initialisation (tests, embedders) starts clean —
+		// but only if no later Init call has since replaced the global.
+		if installedTP != nil && otel.GetTracerProvider() == installedTP {
 			otel.SetTracerProvider(noop.NewTracerProvider())
 		}
 		return err
