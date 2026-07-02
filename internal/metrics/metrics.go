@@ -102,7 +102,9 @@ var (
 	)
 
 	// ServerConnectionTransitionsTotal counts inbound HTTP connection state
-	// transitions, labelled by connection state ("active", "idle", "closed").
+	// transitions, labelled by the same state values emitted by
+	// internal/httpserver's connStateLabel (e.g. "new", "active", "idle",
+	// "hijacked", "closed", "unknown").
 	ServerConnectionTransitionsTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "gateway_server_connection_transitions_total",

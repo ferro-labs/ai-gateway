@@ -268,7 +268,7 @@ func TestPluginChain_PerKeyRateLimit(t *testing.T) {
 				Type:    "ratelimit",
 				Stage:   "before_request",
 				Enabled: true,
-				Config: map[string]interface{}{
+				Config: map[string]any{
 					"requests_per_second": 1000, // global limit is generous
 					"key_rpm":             1,    // 1 rpm per key — burst of 1
 				},
