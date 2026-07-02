@@ -246,6 +246,10 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	}
 
 	// Emit metrics + cost, stamp the span, and dispatch the completed event.
+	// Refresh latency so final accounting covers the whole request, including
+	// any MCP tool-call loop iterations — keeping it consistent with the
+	// accumulated providerDuration so OverheadMs stays non-negative.
+	latency = time.Since(start)
 	g.recordSuccess(ctx, span, obs, resp, latency, originalStream, hooksEnabled, obsEventsActive)
 
 	resp.OverheadMs = float64((latency - providerDuration).Microseconds()) / 1000.0
