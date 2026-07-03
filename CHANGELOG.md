@@ -5,6 +5,27 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.12] — 2026-07-04
+
+Enterprise-endpoint & Cohere fidelity release. The third provider-readiness remediation phase aligns the Vertex AI, Azure OpenAI, Azure AI Foundry, Databricks, and Cohere providers on request/response correctness and consolidates their hand-rolled HTTP onto the shared OpenAI-compatible helpers. No breaking API changes relative to v1.1.11.
+
+### Fixed
+
+- **Vertex AI model publisher prefix**: chat and streaming requests now send first-party models with the required `google/` publisher prefix (an existing publisher prefix — e.g. a Model Garden `meta/` model — is left intact), fixing requests the OpenAI-compatible endpoint rejected.
+- **Cohere vision**: multimodal `image_url` content is now forwarded to Cohere as content blocks instead of being silently dropped.
+- **Cohere streaming usage**: the message-end token counts are now surfaced on a stream chunk (previously parsed and discarded).
+- **Azure OpenAI response provider**: chat responses now carry the provider name, which the hand-rolled decoder dropped.
+- **Databricks retired model**: `databricks-claude-3-7-sonnet` is removed from the advertised model list (Databricks retired it).
+
+### Changed
+
+- **Azure AI Foundry endpoint** (operator-visible): the provider now targets the GA `{endpoint}/openai/v1/chat/completions` route (OpenAI-shaped, no `api-version`) instead of the Model Inference `/models` route the vendor is retiring, and sends `extra-parameters: drop` so a non-schema field is ignored rather than rejected.
+- **Vertex AI credentials** (operator-visible): when neither an API key nor service-account JSON is configured, the provider now falls back to Application Default Credentials (`GOOGLE_APPLICATION_CREDENTIALS`, `gcloud`, workload identity, or the GCE/GKE metadata server), so managed environments authenticate without an explicit key.
+- **Shared OpenAI-compatible request path**: Vertex AI, Azure OpenAI, Azure AI Foundry, and Databricks now route chat/embeddings through the shared `openaicompat` helpers, so their error handling (via `core.APIError`) and request/response shape stay consistent. Base-URL validation is enforced at construction for all five providers, and a tuned HTTP transport preset was added for Databricks serving-endpoint cold starts.
+- **Model catalog refresh**: the Vertex AI static fallback drops the retired `gemini-2.0-flash`; a recognized image size now maps to the Imagen aspect ratio.
+
+---
+
 ## [1.1.11] — 2026-07-03
 
 Native tier-1 provider fidelity release. Aligns the OpenAI, Anthropic, Google Gemini, and AWS Bedrock providers on request/response correctness: forwards multimodal image content and sampling parameters that the streaming paths previously dropped, surfaces token usage the Bedrock and Gemini streaming paths discarded, refreshes stale model catalogs, and consolidates the duplicated Anthropic Messages decoding shared by the native Anthropic and Anthropic-on-Bedrock paths. No breaking API changes relative to v1.1.10. Closes [#265](https://github.com/ferro-labs/ai-gateway/issues/265); advances [#264](https://github.com/ferro-labs/ai-gateway/issues/264) and [#286](https://github.com/ferro-labs/ai-gateway/issues/286).
