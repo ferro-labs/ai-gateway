@@ -47,6 +47,8 @@ func bedrockLlamaMessageText(msg core.Message) string {
 }
 
 func (p *Provider) completeLlama(ctx context.Context, req core.Request) (*core.Response, error) {
+	warnDroppedImageParts(ctx, p.name, req.Model, req.Messages)
+
 	var sb strings.Builder
 	sb.WriteString("<|begin_of_text|>")
 	for _, msg := range req.Messages {
@@ -83,6 +85,7 @@ func (p *Provider) completeLlama(ctx context.Context, req core.Request) (*core.R
 	}
 
 	return &core.Response{
+		ID:       bedrockResponseID(),
 		Model:    req.Model,
 		Provider: p.name,
 		Choices: []core.Choice{{
