@@ -39,6 +39,8 @@ var (
 func New(apiKey, baseURL string) (*Provider, error) {
 	if baseURL == "" {
 		baseURL = defaultBaseURL
+	} else if err := core.ValidateBaseURL(Name, baseURL); err != nil {
+		return nil, err
 	}
 	baseURL = strings.TrimRight(baseURL, "/")
 	return &Provider{
@@ -196,14 +198,17 @@ func cohereMessages(messages []core.Message) []cohereRequestMessage {
 			ToolCalls:  msg.ToolCalls,
 			ToolCallID: msg.ToolCallID,
 		}
-		if msg.Role == core.RoleTool {
+		switch {
+		case msg.Role == core.RoleTool:
 			cohMsg.Content = []cohereToolResultBlock{{
 				Type: "document",
 				Document: cohereToolResultDocument{
 					Data: msg.Content,
 				},
 			}}
-		} else if msg.Content != "" {
+		case len(msg.ContentParts) > 0:
+			cohMsg.Content = cohereContentParts(msg.ContentParts)
+		case msg.Content != "":
 			// Only set content when non-empty. Content is `any` with omitempty,
 			// which does not drop an empty string, so an assistant tool-call
 			// turn would otherwise emit content:"" — which Cohere v2 rejects.
@@ -212,6 +217,44 @@ func cohereMessages(messages []core.Message) []cohereRequestMessage {
 		out = append(out, cohMsg)
 	}
 	return out
+}
+
+// cohereImageURLBlock is a Cohere v2 image content block.
+type cohereImageURLBlock struct {
+	Type     string `json:"type"`
+	ImageURL struct {
+		URL string `json:"url"`
+	} `json:"image_url"`
+}
+
+// cohereContentParts translates multimodal content parts into Cohere v2 content
+// blocks (text + image_url) so vision content is forwarded rather than dropped.
+func cohereContentParts(parts []core.ContentPart) []any {
+	blocks := make([]any, 0, len(parts))
+	for _, part := range parts {
+		switch part.Type {
+		case core.ContentTypeText:
+			blocks = append(blocks, cohereContentBlock{Type: "text", Text: part.Text})
+		case "image_url":
+			if part.ImageURL != nil {
+				block := cohereImageURLBlock{Type: "image_url"}
+				block.ImageURL.URL = part.ImageURL.URL
+				blocks = append(blocks, block)
+			}
+		}
+	}
+	return blocks
+}
+
+// cohereAPIError builds a provider error from a non-2xx Cohere response, whose
+// error envelope is a flat {"message":…} (not the OpenAI {"error":{…}} shape),
+// so core.APIError cannot decode it.
+func cohereAPIError(label string, status int, body []byte) error {
+	var errResp cohereErrorResponse
+	if json.Unmarshal(body, &errResp) == nil && errResp.Message != "" {
+		return fmt.Errorf("%s (%d): %s", label, status, errResp.Message)
+	}
+	return fmt.Errorf("%s (%d): %s", label, status, string(body))
 }
 
 // Complete sends a chat completion request to Cohere.
@@ -257,11 +300,7 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 	}
 
 	if httpResp.StatusCode != http.StatusOK {
-		var errResp cohereErrorResponse
-		if json.Unmarshal(respBody, &errResp) == nil && errResp.Message != "" {
-			return nil, fmt.Errorf("cohere API error (%d): %s", httpResp.StatusCode, errResp.Message)
-		}
-		return nil, fmt.Errorf("cohere API error (%d): %s", httpResp.StatusCode, string(respBody))
+		return nil, cohereAPIError("cohere API error", httpResp.StatusCode, respBody)
 	}
 
 	var cohResp cohereResponse
@@ -415,11 +454,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 	if httpResp.StatusCode != http.StatusOK {
 		defer func() { _ = httpResp.Body.Close() }()
 		respBody, _ := io.ReadAll(httpResp.Body)
-		var errResp cohereErrorResponse
-		if json.Unmarshal(respBody, &errResp) == nil && errResp.Message != "" {
-			return nil, fmt.Errorf("cohere API error (%d): %s", httpResp.StatusCode, errResp.Message)
-		}
-		return nil, fmt.Errorf("cohere API error (%d): %s", httpResp.StatusCode, string(respBody))
+		return nil, cohereAPIError("cohere API error", httpResp.StatusCode, respBody)
 	}
 
 	ch := make(chan core.StreamChunk)
@@ -496,7 +531,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 				if json.Unmarshal(event.Delta, &delta) != nil {
 					continue
 				}
-				ch <- core.StreamChunk{
+				sc := core.StreamChunk{
 					Choices: []core.StreamChoice{
 						{
 							Index:        0,
@@ -504,6 +539,14 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 						},
 					},
 				}
+				if u := delta.Usage.Tokens; u.InputTokens > 0 || u.OutputTokens > 0 {
+					sc.Usage = &core.Usage{
+						PromptTokens:     u.InputTokens,
+						CompletionTokens: u.OutputTokens,
+						TotalTokens:      u.InputTokens + u.OutputTokens,
+					}
+				}
+				ch <- sc
 				return
 			}
 		}
@@ -628,11 +671,7 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 	}
 
 	if httpResp.StatusCode != http.StatusOK {
-		var errResp cohereErrorResponse
-		if json.Unmarshal(respBody, &errResp) == nil && errResp.Message != "" {
-			return nil, fmt.Errorf("cohere embed API error (%d): %s", httpResp.StatusCode, errResp.Message)
-		}
-		return nil, fmt.Errorf("cohere embed API error (%d): %s", httpResp.StatusCode, string(respBody))
+		return nil, cohereAPIError("cohere embed API error", httpResp.StatusCode, respBody)
 	}
 
 	var cohResp cohereEmbedResponse
