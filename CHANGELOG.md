@@ -5,6 +5,32 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.11] — 2026-07-03
+
+Native tier-1 provider fidelity release. Aligns the OpenAI, Anthropic, Google Gemini, and AWS Bedrock providers on request/response correctness: forwards multimodal image content and sampling parameters that the streaming paths previously dropped, surfaces token usage the Bedrock and Gemini streaming paths discarded, refreshes stale model catalogs, and consolidates the duplicated Anthropic Messages decoding shared by the native Anthropic and Anthropic-on-Bedrock paths. No breaking API changes relative to v1.1.10. Closes [#265](https://github.com/ferro-labs/ai-gateway/issues/265); advances [#264](https://github.com/ferro-labs/ai-gateway/issues/264) and [#286](https://github.com/ferro-labs/ai-gateway/issues/286).
+
+### Fixed
+
+- **OpenAI streaming field parity** ([#265](https://github.com/ferro-labs/ai-gateway/issues/265)): a `stream: true` request now forwards the same `logit_bias` and multimodal `image_url` content as an identical `stream: false` request. The streaming path previously rebuilt the request through typed SDK params and silently dropped both; both paths now marshal the same request body, and streaming preserves nested reasoning/cache token usage.
+- **OpenAI image `response_format`**: the `response_format` parameter is no longer sent for `gpt-image-*` models, which reject it and always return base64. It is still sent for the DALL·E models.
+- **Bedrock streaming token usage**: Anthropic-on-Bedrock streaming now reports prompt and completion tokens (from `message_start`/`message_delta`) instead of reporting none.
+- **Gemini vision**: multimodal `image_url` content is now forwarded to Gemini (inline base64 for data URIs, a file URI for remote images) instead of being dropped.
+- **Gemini streaming and detailed usage**: streaming responses now surface token usage, and both paths capture cached-content and thinking (reasoning) token counts. Gemini responses also carry the provider name and upstream response ID.
+- **finish_reason normalization** ([#264](https://github.com/ferro-labs/ai-gateway/issues/264)): Gemini's content-blocking reasons (`RECITATION`, `SAFETY`, `BLOCKLIST`, …) now normalize to the canonical `content_filter` value, and Gemini routes through the shared normalizer.
+- **Anthropic user metadata**: the OpenAI `user` field is forwarded as Anthropic `metadata.user_id` instead of being dropped.
+- **Anthropic non-base64 data URIs**: a non-base64 image data URI is re-encoded to a base64 image source instead of being sent as an invalid URL source Anthropic would reject.
+- **Bedrock token accounting**: Titan responses now report total tokens, Anthropic-on-Bedrock responses capture prompt-cache tokens, and the Nova/Titan/Llama families now carry a response ID.
+
+### Changed
+
+- **Anthropic temperature range** (operator-visible): a temperature above Anthropic's supported maximum (`1`) is now clamped to `1` with a warning instead of being forwarded to an upstream 400. Applies to the native Anthropic and Anthropic-on-Bedrock paths; the gateway's accepted request range (0–2) is unchanged.
+- **Model catalog refresh** (operator-visible): the static model fallback lists for Google Gemini and Anthropic now advertise current-generation models and drop retired ones (Gemini 2.0/1.5). Live discovery, where enabled, continues to surface newer model IDs.
+- **Bedrock text-only image handling** (operator-visible): the Nova, Titan, and Llama families now log a warning when a request carries image content their text-only invocation path cannot forward, instead of dropping it silently.
+- **Bedrock transport**: the tuned per-provider HTTP client (higher cold-start dial/header timeouts) is now used for AWS Bedrock SDK calls.
+- **Internal consolidation**: the Anthropic Messages response and streaming decoders shared by the native Anthropic and Anthropic-on-Bedrock paths are consolidated into one internal package, removing the duplicated response structs and stream event handling. Behaviour-preserving for the native Anthropic path.
+
+---
+
 ## [1.1.10] — 2026-07-03
 
 Proxy & governance hardening release. Corrects the `/v1/*` pass-through proxy so it no longer doubles the `/v1` path segment and no longer forwards OpenAI-shaped requests to providers whose upstream API is not OpenAI-compatible, and extends per-key budget governance to the embeddings and image-generation endpoints. Adds an optional provider request-signing hook and a shared base-URL validator. No breaking API changes relative to v1.1.9 — the `Provider`, `ProxiableProvider`, and plugin contracts are unchanged.
