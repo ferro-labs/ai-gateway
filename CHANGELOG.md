@@ -5,7 +5,7 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.1.14] — 2026-07-04
+## [1.1.14] — 2026-07-05
 
 OpenAI-compatible provider fidelity release (part two). The fifth provider-readiness remediation phase aligns the xAI, OpenRouter, Moonshot, NVIDIA NIM, Perplexity, and Novita providers on request/response correctness, and adds shared improvements that benefit every OpenAI-compatible provider. No breaking API changes relative to v1.1.13.
 
