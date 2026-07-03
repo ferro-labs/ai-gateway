@@ -177,7 +177,12 @@ func TestBudget_ImageSurface_CompletedNotReRejected(t *testing.T) {
 	over.Request = nil
 	over.Metadata["usage"] = providers.Usage{PromptTokens: 1000, TotalTokens: 1000} // 0.003 USD > limit
 	over.Metadata["completed"] = true
-	_ = p.Execute(context.Background(), over)
+	if err := p.Execute(context.Background(), over); err != nil {
+		t.Fatalf("setup over-budget recording should not error: %v", err)
+	}
+	if spent := p.store.get(apiKey); spent < p.spendLimitUSD {
+		t.Fatalf("setup precondition not met: spent $%.4f, want >= limit $%.4f", spent, p.spendLimitUSD)
+	}
 
 	// A completed image request (no usage) in the after stage must not reject,
 	// even though spend is now over the limit.
