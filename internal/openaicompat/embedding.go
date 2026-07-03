@@ -16,6 +16,12 @@ type EmbeddingParams struct {
 	URL        string            // full embeddings endpoint URL
 	Headers    map[string]string // auth + content-type
 	Label      string            // human-facing name for error messages
+
+	// BodyTransform, when set, reshapes the outgoing embeddings body (e.g. to
+	// rename a wire field like Mistral's dimensions→output_dimension) while
+	// keeping the shared response decoding. It receives the request and the
+	// normalized input.
+	BodyTransform func(req core.EmbeddingRequest, input any) any
 }
 
 // embeddingBody is the OpenAI-shaped embeddings request body.
@@ -46,13 +52,17 @@ func PostEmbeddings(ctx context.Context, p EmbeddingParams, req core.EmbeddingRe
 		return nil, err
 	}
 
-	bodyReader, _, release, err := core.JSONBodyReader(embeddingBody{
+	var payload any = embeddingBody{
 		Model:          req.Model,
 		Input:          input,
 		EncodingFormat: req.EncodingFormat,
 		Dimensions:     req.Dimensions,
 		User:           req.User,
-	})
+	}
+	if p.BodyTransform != nil {
+		payload = p.BodyTransform(req, input)
+	}
+	bodyReader, _, release, err := core.JSONBodyReader(payload)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal embedding request: %w", err)
 	}

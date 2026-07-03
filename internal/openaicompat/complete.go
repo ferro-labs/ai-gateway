@@ -32,10 +32,26 @@ type ChatParams struct {
 	Headers    map[string]string // auth + content-type
 	Provider   string            // sets core.Response.Provider
 	Label      string            // human-facing name for error messages
+
+	// BodyTransform, when set, reshapes the outgoing request body (e.g. to rename
+	// a wire field like Mistral's seed→random_seed) while keeping the shared
+	// response decoding, error handling, and finish_reason normalization. It
+	// receives the request with Stream and StreamOptions already applied.
+	BodyTransform func(core.Request) any
 }
 
 func newChatRequest(ctx context.Context, p ChatParams, req core.Request, stream bool) (*http.Response, func(), error) {
-	bodyReader, _, release, err := BuildBody(req, stream)
+	var (
+		bodyReader io.Reader
+		release    func()
+		err        error
+	)
+	if p.BodyTransform != nil {
+		req.Stream = stream
+		bodyReader, _, release, err = core.JSONBodyReader(p.BodyTransform(req))
+	} else {
+		bodyReader, _, release, err = BuildBody(req, stream)
+	}
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
