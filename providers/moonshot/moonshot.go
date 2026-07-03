@@ -91,15 +91,9 @@ func (p *Provider) DiscoverModels(ctx context.Context) ([]core.ModelInfo, error)
 	return discovery.DiscoverOpenAICompatibleModels(ctx, p.httpClient, p.baseURL+"/models", p.apiKey, p.name)
 }
 
-// Complete sends a chat completion request to Moonshot.
-//
-// Usage accounting: when Moonshot reports cache-hit tokens in the standard
-// OpenAI-compatible nested form (usage.prompt_tokens_details.cached_tokens), the
-// shared core.Usage decode folds them into CacheReadTokens automatically, so no
-// provider-local usage decode is needed. A non-standard top-level
-// usage.cached_tokens field is unverified against the live API; if the vendor
-// emits that flat shape it would require a moonshot-local usage decode (as
-// deepseek does for prompt_cache_hit_tokens).
+// Complete sends a chat completion request to Moonshot. Cache-hit tokens
+// reported in the standard nested form (usage.prompt_tokens_details.cached_tokens)
+// are folded into CacheReadTokens by the shared core.Usage decode.
 func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
 	return openaicompat.PostChat(ctx, openaicompat.ChatParams{
 		HTTPClient: p.httpClient,

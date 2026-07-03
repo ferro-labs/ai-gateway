@@ -10,12 +10,9 @@ import (
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
-// TestXAIProvider_Complete_NestedUsage verifies that xAI's nested usage
-// accounting (completion_tokens_details.reasoning_tokens and
-// prompt_tokens_details.cached_tokens) is surfaced onto the canonical
-// core.Usage. This exercises the shared openaicompat/core.Usage decode; on a
-// worktree that predates that foundation the ReasoningTokens/CacheReadTokens
-// assertions fail until the shared change is integrated.
+// TestXAIProvider_Complete_NestedUsage verifies xAI's nested usage accounting
+// (completion_tokens_details.reasoning_tokens and prompt_tokens_details.cached_tokens)
+// is surfaced onto the canonical core.Usage.
 func TestXAIProvider_Complete_NestedUsage(t *testing.T) {
 	respBody := `{"id":"chatcmpl-1","model":"grok-4","choices":[{"index":0,"message":{"role":"assistant","content":"Hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":20,"completion_tokens":8,"total_tokens":28,"completion_tokens_details":{"reasoning_tokens":5},"prompt_tokens_details":{"cached_tokens":12}}}`
 
