@@ -406,9 +406,11 @@ var allProviders = []ProviderEntry{
 	{
 		ID:           NameVertexAI,
 		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityImage, CapabilityProxy},
-		// project_id is the gate: if unset, skip silently.
-		// region plus one of api_key / service_account_json are required once
-		// project_id is present.
+		// project_id is the gate: if unset, skip silently. region is required
+		// once project_id is present; authentication (api key, service-account
+		// JSON, or Application Default Credentials) is resolved and validated by
+		// vertexaipkg.New, so this closure must not pre-reject the no-explicit-key
+		// case — doing so would defeat the ADC / workload-identity path.
 		EnvMappings: []EnvMapping{
 			{CfgKeyProjectID, "VERTEX_AI_PROJECT_ID", true},
 			{CfgKeyRegion, "VERTEX_AI_REGION", false},
@@ -418,9 +420,6 @@ var allProviders = []ProviderEntry{
 		Build: func(cfg ProviderConfig) (Provider, error) {
 			if cfg[CfgKeyRegion] == "" {
 				return nil, fmt.Errorf("%s: region (VERTEX_AI_REGION) is required when project_id is set", NameVertexAI)
-			}
-			if cfg[CfgKeyAPIKey] == "" && cfg[CfgKeyServiceAccountJSON] == "" {
-				return nil, fmt.Errorf("%s: either api_key (VERTEX_AI_API_KEY) or service_account_json (VERTEX_AI_SERVICE_ACCOUNT_JSON) is required", NameVertexAI)
 			}
 			return vertexaipkg.New(vertexaipkg.Options{
 				ProjectID:          cfg[CfgKeyProjectID],

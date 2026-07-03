@@ -12,7 +12,7 @@ import (
 const (
 	testAPIKey                    = "test-key"
 	testBearerAPIKey              = "Bearer test-key"
-	testChatCompletionsPath       = "/chat/completions"
+	testChatCompletionsPath       = "/openai/v1/chat/completions"
 	azureFoundryDefaultAPIVersion = "2024-05-01-preview"
 )
 
@@ -56,8 +56,8 @@ func TestAzureFoundryProvider_Complete_MockHTTP(t *testing.T) {
 		if r.URL.Path != testChatCompletionsPath {
 			t.Errorf("request path = %q, want %s", r.URL.Path, testChatCompletionsPath)
 		}
-		if r.URL.Query().Get("api-version") != azureFoundryDefaultAPIVersion {
-			t.Errorf("api-version = %q, want %s", r.URL.Query().Get("api-version"), azureFoundryDefaultAPIVersion)
+		if v := r.URL.Query().Get("api-version"); v != "" {
+			t.Errorf("api-version = %q, want none (GA v1 route takes no api-version)", v)
 		}
 		if got := r.Header.Get("api-key"); got != testAPIKey {
 			t.Errorf("api-key = %q, want %s", got, testAPIKey)

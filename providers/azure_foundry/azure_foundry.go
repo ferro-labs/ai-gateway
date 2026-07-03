@@ -3,9 +3,7 @@ package azurefoundry
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 
@@ -40,6 +38,12 @@ func New(apiKey, baseURL, apiVersion string) (*Provider, error) {
 	if baseURL == "" {
 		return nil, fmt.Errorf("baseURL is required for azure-foundry provider")
 	}
+	if err := core.ValidateBaseURL(Name, baseURL); err != nil {
+		return nil, err
+	}
+	// apiVersion is retained for the APIVersion() accessor and backward
+	// compatibility; the GA /openai/v1 route this provider targets does not take
+	// an api-version query parameter.
 	if apiVersion == "" {
 		apiVersion = "2024-05-01-preview"
 	}
@@ -62,8 +66,8 @@ func (p *Provider) BaseURL() string { return p.baseURL }
 func (p *Provider) APIVersion() string { return p.apiVersion }
 
 // NonOpenAIWire marks Azure AI Foundry as ineligible for transparent
-// OpenAI-wire proxy pass-through: its upstream uses Azure AI Foundry routing
-// paths and an api-version parameter, so an OpenAI-shaped request is not
+// OpenAI-wire proxy pass-through: its upstream uses Azure AI Foundry
+// deployment/routing paths and api-key auth, so an OpenAI-shaped request is not
 // directly forwardable. It remains fully usable via its native translated
 // endpoints. See core.NonOpenAIWireProvider.
 func (*Provider) NonOpenAIWire() {}
@@ -90,101 +94,37 @@ func (p *Provider) Models() []core.ModelInfo {
 	return core.ModelsFromList(p.name, p.SupportedModels())
 }
 
+// endpoint targets the GA OpenAI v1-compatible route. The older Model Inference
+// "/models" route (with an api-version query parameter) is retired by the
+// vendor; the v1 route is OpenAI-shaped, takes no api-version, and still routes
+// cross-provider Foundry models via the request "model" field.
 func (p *Provider) endpoint() string {
-	return fmt.Sprintf("%s/chat/completions?api-version=%s", p.baseURL, p.apiVersion)
+	return p.baseURL + "/openai/v1/chat/completions"
 }
 
-type azureFoundryResponse struct {
-	ID      string        `json:"id"`
-	Model   string        `json:"model"`
-	Choices []core.Choice `json:"choices"`
-	Usage   core.Usage    `json:"usage"`
-}
-
-type azureFoundryErrorResponse struct {
-	Error struct {
-		Message string `json:"message"`
-		Type    string `json:"type"`
-	} `json:"error"`
+// chatParams builds the shared OpenAI-compatible request parameters.
+// "extra-parameters: drop" asks Foundry to ignore any non-schema field the
+// gateway forwards rather than reject the request (the default is "error").
+func (p *Provider) chatParams() openaicompat.ChatParams {
+	return openaicompat.ChatParams{
+		HTTPClient: p.httpClient,
+		URL:        p.endpoint(),
+		Provider:   p.name,
+		Label:      "azure foundry",
+		Headers: map[string]string{
+			"api-key":          p.apiKey,
+			"Content-Type":     "application/json",
+			"extra-parameters": "drop",
+		},
+	}
 }
 
 // Complete sends a chat completion request to Azure AI Foundry.
 func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
-	bodyReader, _, release, err := openaicompat.BuildBody(req, false)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
-	}
-	defer release()
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.endpoint(), bodyReader)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	httpReq.Header.Set("api-key", p.apiKey)
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	httpResp, err := p.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
-	}
-	defer func() { _ = httpResp.Body.Close() }()
-
-	respBody, err := io.ReadAll(httpResp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if httpResp.StatusCode != http.StatusOK {
-		var errResp azureFoundryErrorResponse
-		if json.Unmarshal(respBody, &errResp) == nil && errResp.Error.Message != "" {
-			return nil, fmt.Errorf("azure foundry API error (%d): %s", httpResp.StatusCode, errResp.Error.Message)
-		}
-		return nil, fmt.Errorf("azure foundry API error (%d): %s", httpResp.StatusCode, string(respBody))
-	}
-
-	var foundryResp azureFoundryResponse
-	if err := json.Unmarshal(respBody, &foundryResp); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
-	}
-
-	return &core.Response{
-		ID:       foundryResp.ID,
-		Model:    foundryResp.Model,
-		Provider: p.name,
-		Choices:  foundryResp.Choices,
-		Usage:    foundryResp.Usage,
-	}, nil
+	return openaicompat.PostChat(ctx, p.chatParams(), req)
 }
 
 // CompleteStream sends a streaming chat completion request to Azure AI Foundry.
 func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan core.StreamChunk, error) {
-	bodyReader, _, release, err := openaicompat.BuildBody(req, true)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
-	}
-	defer release()
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.endpoint(), bodyReader)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	httpReq.Header.Set("api-key", p.apiKey)
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	httpResp, err := p.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
-	}
-
-	if httpResp.StatusCode != http.StatusOK {
-		defer func() { _ = httpResp.Body.Close() }()
-		respBody, _ := io.ReadAll(httpResp.Body)
-		var errResp azureFoundryErrorResponse
-		if json.Unmarshal(respBody, &errResp) == nil && errResp.Error.Message != "" {
-			return nil, fmt.Errorf("azure foundry API error (%d): %s", httpResp.StatusCode, errResp.Error.Message)
-		}
-		return nil, fmt.Errorf("azure foundry API error (%d): %s", httpResp.StatusCode, string(respBody))
-	}
-
-	return openaicompat.StreamSSE(httpResp.Body), nil
+	return openaicompat.PostStream(ctx, p.chatParams(), req)
 }

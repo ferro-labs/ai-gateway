@@ -67,6 +67,11 @@ func KnownProviderPresets() map[string]ProviderPreset {
 			ResponseHeaderTimeout: 120 * time.Second,
 			DialTimeout:           15 * time.Second,
 		},
+		"databricks": {
+			MaxIdleConnsPerHost:   100,
+			ResponseHeaderTimeout: 120 * time.Second,
+			DialTimeout:           15 * time.Second,
+		},
 		"groq": {
 			MaxIdleConnsPerHost:   100,
 			ResponseHeaderTimeout: 15 * time.Second,

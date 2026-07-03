@@ -67,11 +67,7 @@ func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*c
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 	if httpResp.StatusCode != http.StatusOK {
-		var errResp azureOpenAIErrorResponse
-		if json.Unmarshal(respBody, &errResp) == nil && errResp.Error.Message != "" {
-			return nil, fmt.Errorf("azure openai API error (%d): %s", httpResp.StatusCode, errResp.Error.Message)
-		}
-		return nil, fmt.Errorf("azure openai API error (%d): %s", httpResp.StatusCode, string(respBody))
+		return nil, core.APIError("azure openai", httpResp.StatusCode, respBody)
 	}
 
 	var pResp imageResponse
