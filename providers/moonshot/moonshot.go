@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/ferro-labs/ai-gateway/internal/discovery"
 	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
 	"github.com/ferro-labs/ai-gateway/internal/openaicompat"
 	"github.com/ferro-labs/ai-gateway/providers/core"
@@ -29,15 +30,22 @@ type Provider struct {
 var (
 	_ core.Provider          = (*Provider)(nil)
 	_ core.StreamProvider    = (*Provider)(nil)
+	_ core.DiscoveryProvider = (*Provider)(nil)
 	_ core.ProxiableProvider = (*Provider)(nil)
 )
 
 // New creates a new Moonshot provider.
 func New(apiKey, baseURL string) (*Provider, error) {
+	baseURL = strings.TrimSpace(baseURL)
 	if baseURL == "" {
 		baseURL = defaultBaseURL
 	}
 	baseURL = strings.TrimRight(baseURL, "/")
+	// Moonshot's default base URL already carries the /v1 prefix, so unlike
+	// deepseek we do not trim a trailing /v1 — native paths append directly to it.
+	if err := core.ValidateBaseURL(Name, baseURL); err != nil {
+		return nil, err
+	}
 	return &Provider{
 		name:       Name,
 		apiKey:     apiKey,
@@ -76,7 +84,22 @@ func (p *Provider) Models() []core.ModelInfo {
 	return core.ModelsFromList(p.name, p.SupportedModels())
 }
 
+// DiscoverModels fetches the live model list from the Moonshot /v1/models
+// endpoint. The base URL already carries the /v1 prefix, so the models path is
+// baseURL+"/models" (not baseURL+"/v1/models").
+func (p *Provider) DiscoverModels(ctx context.Context) ([]core.ModelInfo, error) {
+	return discovery.DiscoverOpenAICompatibleModels(ctx, p.httpClient, p.baseURL+"/models", p.apiKey, p.name)
+}
+
 // Complete sends a chat completion request to Moonshot.
+//
+// Usage accounting: when Moonshot reports cache-hit tokens in the standard
+// OpenAI-compatible nested form (usage.prompt_tokens_details.cached_tokens), the
+// shared core.Usage decode folds them into CacheReadTokens automatically, so no
+// provider-local usage decode is needed. A non-standard top-level
+// usage.cached_tokens field is unverified against the live API; if the vendor
+// emits that flat shape it would require a moonshot-local usage decode (as
+// deepseek does for prompt_cache_hit_tokens).
 func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
 	return openaicompat.PostChat(ctx, openaicompat.ChatParams{
 		HTTPClient: p.httpClient,

@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"strings"
 
-	discov "github.com/ferro-labs/ai-gateway/internal/discovery"
 	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
 	"github.com/ferro-labs/ai-gateway/internal/openaicompat"
 	"github.com/ferro-labs/ai-gateway/providers/core"
@@ -32,13 +31,16 @@ var (
 	_ core.Provider          = (*Provider)(nil)
 	_ core.StreamProvider    = (*Provider)(nil)
 	_ core.ProxiableProvider = (*Provider)(nil)
-	_ core.DiscoveryProvider = (*Provider)(nil)
 )
 
 // New creates a new Perplexity provider.
 func New(apiKey, baseURL string) (*Provider, error) {
+	baseURL = strings.TrimSpace(baseURL)
 	if baseURL == "" {
 		baseURL = defaultBaseURL
+	}
+	if err := core.ValidateBaseURL(Name, baseURL); err != nil {
+		return nil, err
 	}
 	baseURL = strings.TrimRight(baseURL, "/")
 	return &Provider{
@@ -65,7 +67,6 @@ func (p *Provider) SupportedModels() []string {
 	return []string{
 		"sonar",
 		"sonar-pro",
-		"sonar-reasoning",
 		"sonar-reasoning-pro",
 		"sonar-deep-research",
 	}
@@ -81,11 +82,6 @@ func (p *Provider) Models() []core.ModelInfo {
 	return core.ModelsFromList(p.name, p.SupportedModels())
 }
 
-// DiscoverModels fetches the live model list from the Perplexity /models endpoint.
-func (p *Provider) DiscoverModels(ctx context.Context) ([]core.ModelInfo, error) {
-	return discov.DiscoverOpenAICompatibleModels(ctx, p.httpClient, p.baseURL+"/models", p.apiKey, p.name)
-}
-
 // Complete sends a chat completion request to Perplexity.
 func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
 	return openaicompat.PostChat(ctx, openaicompat.ChatParams{
@@ -94,6 +90,8 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 		Provider:   p.name,
 		Label:      "perplexity",
 		Headers:    map[string]string{"Authorization": "Bearer " + p.apiKey, "Content-Type": "application/json"},
+		// Capture Sonar's top-level search metadata into core.Response.Metadata.
+		ExtraResponseFields: []string{"citations", "search_results", "images", "related_questions"},
 	}, req)
 }
 

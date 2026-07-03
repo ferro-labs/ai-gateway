@@ -1,4 +1,4 @@
-package nvidianim
+package openrouter
 
 import (
 	"context"
@@ -8,9 +8,7 @@ import (
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
-// Embed sends an OpenAI-compatible embedding request to NVIDIA NIM.
-// req.InputType is forwarded verbatim by the shared body builder with no default
-// injection; NeMo retriever models require it or respond with HTTP 400.
+// Embed sends an OpenAI-compatible embedding request to OpenRouter.
 func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.EmbeddingResponse, error) {
 	if req.EncodingFormat != "" && req.EncodingFormat != "float" {
 		return nil, fmt.Errorf("embed: unsupported encoding_format %q; valid value is \"float\"", req.EncodingFormat)
@@ -19,6 +17,6 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 		HTTPClient: p.httpClient,
 		URL:        p.baseURL + "/embeddings",
 		Headers:    map[string]string{"Authorization": "Bearer " + p.apiKey, "Content-Type": "application/json"},
-		Label:      "nvidia nim",
+		Label:      "openrouter",
 	}, req)
 }
