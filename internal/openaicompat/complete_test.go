@@ -75,3 +75,16 @@ func TestPostChat_NormalizesFinishReason(t *testing.T) {
 		t.Errorf("finish_reason = %q, want length (normalized from model_length)", resp.Choices[0].FinishReason)
 	}
 }
+
+// TestDecodeStreamChunk_NormalizesFinishReason verifies the shared stream decoder
+// normalizes a provider-specific finish reason directly (not only through a
+// provider round-trip).
+func TestDecodeStreamChunk_NormalizesFinishReason(t *testing.T) {
+	chunk, err := DecodeStreamChunk([]byte(`{"choices":[{"index":0,"delta":{},"finish_reason":"model_length"}]}`))
+	if err != nil {
+		t.Fatalf("DecodeStreamChunk: %v", err)
+	}
+	if chunk.Choices[0].FinishReason != core.FinishReasonLength {
+		t.Errorf("finish_reason = %q, want length", chunk.Choices[0].FinishReason)
+	}
+}
