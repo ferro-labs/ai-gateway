@@ -128,6 +128,37 @@ func TestBudget_RecordAndExceed(t *testing.T) {
 	}
 }
 
+func TestBudget_RecordsUsageFromMetadata_NonChatSurface(t *testing.T) {
+	// Non-chat surfaces (embeddings) carry no chat Response; token usage arrives
+	// through Metadata["usage"]. Budget must gate and record cost from it exactly
+	// as it does for chat, so spend control is uniform across surfaces.
+	p := makePlugin(t, map[string]any{
+		"store_id":            "test-metadata-usage",
+		"spend_limit_usd":     0.001, // $0.001 limit
+		"input_per_m_tokens":  3.0,
+		"output_per_m_tokens": 15.0,
+	})
+	apiKey := "key-embed"
+
+	// after_request for an embedding: 400 prompt tokens, no completion.
+	// cost = 400/1_000_000 * 3.0 = 0.0012 USD → over the $0.001 limit.
+	afterPctx := pctxWithKey(apiKey)
+	afterPctx.Request = nil // non-chat surface: no chat request
+	afterPctx.Metadata["usage"] = providers.Usage{PromptTokens: 400, TotalTokens: 400}
+	if err := p.Execute(context.Background(), afterPctx); err != nil {
+		t.Fatalf("recording embedding usage should not error: %v", err)
+	}
+
+	// The before_request check must now reject (spend > limit).
+	beforePctx := pctxWithKey(apiKey)
+	beforePctx.Request = nil
+	if err := p.Execute(context.Background(), beforePctx); err == nil {
+		t.Fatal("expected rejection after embedding spend exceeded the limit")
+	} else if !beforePctx.Reject {
+		t.Error("pctx.Reject should be true when budget exceeded via embedding usage")
+	}
+}
+
 func TestBudget_Unlimited_NeverRejects(t *testing.T) {
 	// spend_limit_usd = 0 means unlimited.
 	p := makePlugin(t, map[string]any{

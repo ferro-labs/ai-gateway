@@ -6,7 +6,9 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/ferro-labs/ai-gateway/internal/authctx"
 	"github.com/ferro-labs/ai-gateway/internal/logging"
+	"github.com/ferro-labs/ai-gateway/plugin"
 	"github.com/ferro-labs/ai-gateway/providers"
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
@@ -31,8 +33,54 @@ func (g *Gateway) resolveAlias(req providers.Request) providers.Request {
 	return req
 }
 
+// runSurfaceGovernance runs the before/after/error plugin pipeline around a
+// non-chat surface (embeddings, images) so per-key governance plugins — budget,
+// rate-limit — apply uniformly across every OpenAI surface, not just chat.
+//
+// It reuses the frozen plugin.Manager/Context without inventing a new lifecycle
+// (plugins architecture §2): the Context carries no chat Request, so content
+// plugins that key off Request.Messages guard nil and no-op; surface identity
+// and, on success, normalized token usage flow through Metadata — the sanctioned
+// additive channel (plugins architecture D8). call performs the provider request
+// and returns the token usage to account for, or nil when the surface reports
+// none (e.g. image generation).
+func (g *Gateway) runSurfaceGovernance(ctx context.Context, surface string, call func(context.Context) (*providers.Usage, error)) error {
+	g.mu.RLock()
+	plugins := g.plugins
+	release := acquirePluginManager(plugins)
+	g.mu.RUnlock()
+	defer release()
+
+	if !plugins.HasPlugins() {
+		_, err := call(ctx)
+		return err
+	}
+
+	pctx := plugin.NewContext(nil)
+	defer plugin.PutContext(pctx)
+	pctx.Metadata["surface"] = surface
+	if keyID, ok := authctx.KeyID(ctx); ok {
+		pctx.Metadata["api_key"] = keyID
+	}
+
+	if err := plugins.RunBefore(ctx, pctx); err != nil {
+		return err
+	}
+
+	usage, err := call(ctx)
+	if err != nil {
+		pctx.Error = err
+		plugins.RunOnError(ctx, pctx)
+		return err
+	}
+	if usage != nil {
+		pctx.Metadata["usage"] = *usage
+	}
+	return plugins.RunAfter(ctx, pctx)
+}
+
 // Embed routes an embedding request to the first registered EmbeddingProvider
-// that supports the requested model.
+// that supports the requested model, under the shared governance pipeline.
 func (g *Gateway) Embed(ctx context.Context, req providers.EmbeddingRequest) (*providers.EmbeddingResponse, error) {
 	log := logging.FromContext(ctx)
 
@@ -47,7 +95,15 @@ func (g *Gateway) Embed(ctx context.Context, req providers.EmbeddingRequest) (*p
 		return nil, fmt.Errorf("%w: no embedding provider for %q", core.ErrNoCapableProvider, req.Model)
 	}
 
-	resp, err := ep.Embed(ctx, req)
+	var resp *providers.EmbeddingResponse
+	err := g.runSurfaceGovernance(ctx, "embeddings", func(ctx context.Context) (*providers.Usage, error) {
+		r, callErr := ep.Embed(ctx, req)
+		if callErr != nil {
+			return nil, callErr
+		}
+		resp = r
+		return &providers.Usage{PromptTokens: r.Usage.PromptTokens, TotalTokens: r.Usage.TotalTokens}, nil
+	})
 	if err != nil {
 		log.Error("embedding request failed", "model", req.Model, "error", err.Error())
 		return nil, err
@@ -58,7 +114,9 @@ func (g *Gateway) Embed(ctx context.Context, req providers.EmbeddingRequest) (*p
 }
 
 // GenerateImage routes an image generation request to the first registered
-// ImageProvider that supports the requested model.
+// ImageProvider that supports the requested model, under the shared governance
+// pipeline. Image responses carry no token usage, so budget gates but does not
+// cost these requests.
 func (g *Gateway) GenerateImage(ctx context.Context, req providers.ImageRequest) (*providers.ImageResponse, error) {
 	log := logging.FromContext(ctx)
 
@@ -73,7 +131,15 @@ func (g *Gateway) GenerateImage(ctx context.Context, req providers.ImageRequest)
 		return nil, fmt.Errorf("%w: no image generation provider for %q", core.ErrNoCapableProvider, req.Model)
 	}
 
-	resp, err := ip.GenerateImage(ctx, req)
+	var resp *providers.ImageResponse
+	err := g.runSurfaceGovernance(ctx, "images", func(ctx context.Context) (*providers.Usage, error) {
+		r, callErr := ip.GenerateImage(ctx, req)
+		if callErr != nil {
+			return nil, callErr
+		}
+		resp = r
+		return nil, nil // image responses carry no token usage
+	})
 	if err != nil {
 		log.Error("image generation request failed", "model", req.Model, "error", err.Error())
 		return nil, err

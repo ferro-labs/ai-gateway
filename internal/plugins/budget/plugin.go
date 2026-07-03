@@ -60,6 +60,7 @@ import (
 
 	"github.com/ferro-labs/ai-gateway/internal/plugins/plugincfg"
 	"github.com/ferro-labs/ai-gateway/plugin"
+	"github.com/ferro-labs/ai-gateway/providers"
 )
 
 func init() {
@@ -244,14 +245,30 @@ func (p *Plugin) Execute(_ context.Context, pctx *plugin.Context) error {
 		return nil
 	}
 
-	if pctx.Response == nil {
+	if _, completed := completedUsage(pctx); !completed {
 		// before_request stage: check accumulated spend.
 		return p.checkBudget(pctx, key)
 	}
 
-	// after_request stage: record cost.
+	// after_request stage: record cost from the completed request's usage.
 	p.recordCost(pctx, key)
 	return nil
+}
+
+// completedUsage reports the token usage of a completed request and whether the
+// request has finished, letting budget distinguish the after_request stage from
+// before_request without depending on the surface. Chat carries usage on the
+// typed Response; non-chat surfaces (embeddings) pass it through
+// Metadata["usage"] — the sanctioned additive channel for the frozen plugin
+// seam. Image generation reports no token usage, so it is gated but not costed.
+func completedUsage(pctx *plugin.Context) (providers.Usage, bool) {
+	if pctx.Response != nil {
+		return pctx.Response.Usage, true
+	}
+	if u, ok := pctx.Metadata["usage"].(providers.Usage); ok {
+		return u, true
+	}
+	return providers.Usage{}, false
 }
 
 // Close releases plugin resources.
@@ -291,10 +308,10 @@ func (p *Plugin) checkBudget(pctx *plugin.Context, key string) error {
 // the store via a single atomic read-modify-write, so concurrent completions
 // for the same key never lose an increment.
 func (p *Plugin) recordCost(pctx *plugin.Context, key string) {
-	if pctx.Response == nil {
+	usage, ok := completedUsage(pctx)
+	if !ok {
 		return
 	}
-	usage := pctx.Response.Usage
 	actual := (float64(usage.PromptTokens)/1_000_000.0)*p.inputPerMTokens +
 		(float64(usage.CompletionTokens)/1_000_000.0)*p.outputPerMTokens
 	if actual > 0 {
