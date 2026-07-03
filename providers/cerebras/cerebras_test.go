@@ -207,6 +207,23 @@ func TestCerebrasProvider_Complete_PrefersMaxCompletionTokens(t *testing.T) {
 	}
 }
 
+// TestCerebrasProvider_Complete_ForwardsMaxTokensWhenAlone verifies a legacy
+// request that sets only max_tokens still forwards it (PreferCompletionTokens is
+// a no-op when max_completion_tokens is absent).
+func TestCerebrasProvider_Complete_ForwardsMaxTokensWhenAlone(t *testing.T) {
+	body := captureCerebrasChatBody(t, core.Request{
+		Model:     "llama-3.3-70b",
+		Messages:  []core.Message{{Role: "user", Content: "Hi"}},
+		MaxTokens: intPtr(256),
+	})
+	if got := string(body["max_tokens"]); got != "256" {
+		t.Errorf("max_tokens = %s, want 256 (a max_tokens-only request must still forward it)", got)
+	}
+	if _, ok := body["max_completion_tokens"]; ok {
+		t.Errorf("max_completion_tokens must not appear for a max_tokens-only request, body=%v", body)
+	}
+}
+
 func TestCerebrasProvider_Complete_ErrorStatus(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
