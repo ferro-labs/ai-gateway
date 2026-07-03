@@ -3,9 +3,7 @@ package together
 
 import (
 	"context"
-	"fmt"
 	"net/http"
-	"net/url"
 	"strings"
 
 	"github.com/ferro-labs/ai-gateway/internal/discovery"
@@ -17,8 +15,11 @@ import (
 const (
 	// Name is the canonical identifier for the Together AI provider.
 	// Re-exported as providers.NameTogether in providers/names.go.
-	Name           = "together"
-	defaultBaseURL = "https://api.together.xyz"
+	Name = "together"
+	// defaultBaseURL is Together AI's current documented API domain. Users
+	// pinned to the legacy api.together.xyz host can override it via New's
+	// baseURL argument.
+	defaultBaseURL = "https://api.together.ai"
 )
 
 // Provider implements the core.Provider interface for Together AI.
@@ -40,13 +41,13 @@ var (
 
 // New creates a new Together AI provider.
 func New(apiKey, baseURL string) (*Provider, error) {
+	baseURL = strings.TrimSpace(baseURL)
 	if baseURL == "" {
 		baseURL = defaultBaseURL
 	}
 	baseURL = strings.TrimRight(baseURL, "/")
-	u, err := url.Parse(baseURL)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return nil, fmt.Errorf("together: invalid base URL %q: must be http or https with a host", baseURL)
+	if err := core.ValidateBaseURL(Name, baseURL); err != nil {
+		return nil, err
 	}
 	return &Provider{
 		name:       Name,
@@ -54,6 +55,14 @@ func New(apiKey, baseURL string) (*Provider, error) {
 		baseURL:    baseURL,
 		httpClient: providerhttp.ForProvider(Name),
 	}, nil
+}
+
+// headers returns the auth and content-type headers for Together AI requests.
+func (p *Provider) headers() map[string]string {
+	return map[string]string{
+		"Authorization": "Bearer " + p.apiKey,
+		"Content-Type":  "application/json",
+	}
 }
 
 // Name implements core.Provider.
@@ -105,7 +114,7 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 		URL:        p.baseURL + "/v1/chat/completions",
 		Provider:   p.name,
 		Label:      "together",
-		Headers:    map[string]string{"Authorization": "Bearer " + p.apiKey, "Content-Type": "application/json"},
+		Headers:    p.headers(),
 	}, req)
 }
 
@@ -116,6 +125,6 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 		URL:        p.baseURL + "/v1/chat/completions",
 		Provider:   p.name,
 		Label:      "together",
-		Headers:    map[string]string{"Authorization": "Bearer " + p.apiKey, "Content-Type": "application/json"},
+		Headers:    p.headers(),
 	}, req)
 }

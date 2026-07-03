@@ -5,12 +5,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
@@ -143,28 +141,93 @@ func TestTogetherProvider_CompleteStream_MockSSE(t *testing.T) {
 	}
 }
 
-func TestTogetherProvider_Complete_Integration(t *testing.T) {
-	apiKey := os.Getenv("TOGETHER_API_KEY")
-	if apiKey == "" {
-		t.Skip("Skipping: TOGETHER_API_KEY not set")
-	}
+func TestTogetherProvider_Complete_MockHTTP(t *testing.T) {
+	const model = "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %s, want POST", r.Method)
+		}
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Errorf("path = %q, want /v1/chat/completions", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
+			t.Errorf("Authorization = %q, want Bearer test-key", got)
+		}
+		if got := r.Header.Get("Content-Type"); got != "application/json" {
+			t.Errorf("Content-Type = %q, want application/json", got)
+		}
 
-	p, _ := New(apiKey, "")
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("failed to decode request body: %v", err)
+		}
+		if got := body["model"]; got != model {
+			t.Errorf("model = %v, want %s", got, model)
+		}
 
-	resp, err := p.Complete(ctx, core.Request{
-		Model:     "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo",
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"cmpl-42","object":"chat.completion","model":"` + model + `","choices":[{"index":0,"message":{"role":"assistant","content":"test ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	resp, err := p.Complete(context.Background(), core.Request{
+		Model:     model,
 		Messages:  []core.Message{{Role: "user", Content: "Say 'test ok' and nothing else."}},
 		MaxTokens: intPtr(10),
 	})
 	if err != nil {
 		t.Fatalf("Complete() error: %v", err)
 	}
-	if resp.ID == "" {
-		t.Error("Response ID is empty")
+	if resp.ID != "cmpl-42" {
+		t.Errorf("ID = %q, want cmpl-42", resp.ID)
 	}
-	t.Logf("Response: %+v", resp)
+	if resp.Model != model {
+		t.Errorf("Model = %q, want %s", resp.Model, model)
+	}
+	if len(resp.Choices) != 1 {
+		t.Fatalf("Choices length = %d, want 1", len(resp.Choices))
+	}
+	if resp.Choices[0].Message.Content != "test ok" {
+		t.Errorf("content = %q, want test ok", resp.Choices[0].Message.Content)
+	}
+	if resp.Choices[0].FinishReason != "stop" {
+		t.Errorf("finish_reason = %q, want stop", resp.Choices[0].FinishReason)
+	}
+	if resp.Usage.TotalTokens != 7 {
+		t.Errorf("Usage.TotalTokens = %d, want 7", resp.Usage.TotalTokens)
+	}
+}
+
+func TestTogetherProvider_Complete_UpstreamError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Errorf("path = %q, want /v1/chat/completions", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"rate limited","type":"rate_limit"}}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	_, err := p.Complete(context.Background(), core.Request{
+		Model:    "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo",
+		Messages: []core.Message{{Role: "user", Content: "Hi"}},
+	})
+	if err == nil {
+		t.Fatal("Complete() error = nil, want upstream error")
+	}
+	if !strings.Contains(err.Error(), "together API error (429)") {
+		t.Errorf("error = %q, want it to contain %q", err.Error(), "together API error (429)")
+	}
+	if !strings.Contains(err.Error(), "rate limited") {
+		t.Errorf("error = %q, want upstream message %q", err.Error(), "rate limited")
+	}
+	if got := core.ParseStatusCode(err); got != 429 {
+		t.Errorf("ParseStatusCode = %d, want 429", got)
+	}
 }
 
 func intPtr(i int) *int { return &i }

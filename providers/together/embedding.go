@@ -16,7 +16,7 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 	return openaicompat.PostEmbeddings(ctx, openaicompat.EmbeddingParams{
 		HTTPClient: p.httpClient,
 		URL:        p.baseURL + "/v1/embeddings",
-		Headers:    map[string]string{"Authorization": "Bearer " + p.apiKey, "Content-Type": "application/json"},
+		Headers:    p.headers(),
 		Label:      "together",
 	}, req)
 }

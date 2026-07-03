@@ -37,8 +37,11 @@ var (
 
 // New creates a new Cerebras provider.
 func New(apiKey, baseURL string) (*Provider, error) {
+	baseURL = strings.TrimSpace(baseURL)
 	if baseURL == "" {
 		baseURL = defaultBaseURL
+	} else if err := core.ValidateBaseURL(Name, baseURL); err != nil {
+		return nil, err
 	}
 	baseURL = strings.TrimRight(baseURL, "/")
 	return &Provider{
@@ -87,6 +90,9 @@ func (p *Provider) DiscoverModels(ctx context.Context) ([]core.ModelInfo, error)
 
 // Complete sends a chat completion request to Cerebras.
 func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
+	// Cerebras validates max_completion_tokens, not the legacy max_tokens; the
+	// gateway seam sets both, so forward only the modern field.
+	req.PreferCompletionTokens()
 	return openaicompat.PostChat(ctx, openaicompat.ChatParams{
 		HTTPClient: p.httpClient,
 		URL:        p.baseURL + "/chat/completions",
@@ -98,6 +104,9 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 
 // CompleteStream sends a streaming chat completion request to Cerebras.
 func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan core.StreamChunk, error) {
+	// Cerebras validates max_completion_tokens, not the legacy max_tokens; the
+	// gateway seam sets both, so forward only the modern field.
+	req.PreferCompletionTokens()
 	return openaicompat.PostStream(ctx, openaicompat.ChatParams{
 		HTTPClient: p.httpClient,
 		URL:        p.baseURL + "/chat/completions",
