@@ -187,6 +187,9 @@ type Request struct {
 	Stream        bool           `json:"stream,omitempty"`
 	StreamOptions *StreamOptions `json:"stream_options,omitempty"`
 
+	// Tools
+	ParallelToolCalls *bool `json:"parallel_tool_calls,omitempty"`
+
 	// Misc
 	User      string             `json:"user,omitempty"`
 	LogitBias map[string]float64 `json:"logit_bias,omitempty"`
@@ -264,6 +267,11 @@ type Response struct {
 	Choices  []Choice `json:"choices"`
 	Usage    Usage    `json:"usage"`
 
+	// Metadata carries provider-specific top-level response fields (e.g.
+	// Perplexity's citations/search_results) captured on request via
+	// ChatParams.ExtraResponseFields. Nil unless requested.
+	Metadata map[string]any `json:"metadata,omitempty"`
+
 	// OverheadMs is the gateway processing overhead in milliseconds
 	// (total latency minus provider call duration). Excluded from JSON
 	// responses; exposed via the X-Gateway-Overhead-Ms response header.
@@ -286,4 +294,33 @@ type Usage struct {
 	ReasoningTokens  int `json:"reasoning_tokens,omitempty"`
 	CacheReadTokens  int `json:"cache_read_tokens,omitempty"`
 	CacheWriteTokens int `json:"cache_write_tokens,omitempty"`
+}
+
+// UnmarshalJSON decodes the OpenAI usage object, folding the nested
+// prompt_tokens_details.cached_tokens and completion_tokens_details.reasoning_tokens
+// into the flat CacheReadTokens/ReasoningTokens fields so providers that report
+// usage in the nested form (OpenRouter, xAI, …) surface it consistently. An
+// explicit flat field takes precedence when both are present.
+func (u *Usage) UnmarshalJSON(data []byte) error {
+	type usageAlias Usage // avoid recursing into this method
+	var raw struct {
+		usageAlias
+		PromptTokensDetails *struct {
+			CachedTokens int `json:"cached_tokens"`
+		} `json:"prompt_tokens_details"`
+		CompletionTokensDetails *struct {
+			ReasoningTokens int `json:"reasoning_tokens"`
+		} `json:"completion_tokens_details"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*u = Usage(raw.usageAlias)
+	if u.CacheReadTokens == 0 && raw.PromptTokensDetails != nil {
+		u.CacheReadTokens = raw.PromptTokensDetails.CachedTokens
+	}
+	if u.ReasoningTokens == 0 && raw.CompletionTokensDetails != nil {
+		u.ReasoningTokens = raw.CompletionTokensDetails.ReasoningTokens
+	}
+	return nil
 }

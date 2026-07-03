@@ -88,3 +88,57 @@ func TestDecodeStreamChunk_NormalizesFinishReason(t *testing.T) {
 		t.Errorf("finish_reason = %q, want length", chunk.Choices[0].FinishReason)
 	}
 }
+
+// TestPostChat_CapturesExtraResponseFields verifies opt-in capture of
+// provider-specific top-level response fields into core.Response.Metadata.
+func TestPostChat_CapturesExtraResponseFields(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"x","model":"sonar","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"total_tokens":1},"citations":["https://a.example","https://b.example"]}`)
+	}))
+	defer srv.Close()
+
+	resp, err := PostChat(context.Background(), ChatParams{
+		HTTPClient:          srv.Client(),
+		URL:                 srv.URL,
+		Headers:             map[string]string{"Content-Type": "application/json"},
+		Provider:            "test",
+		Label:               "test",
+		ExtraResponseFields: []string{"citations", "search_results"},
+	}, core.Request{Model: "sonar", Messages: []core.Message{{Role: core.RoleUser, Content: "hi"}}})
+	if err != nil {
+		t.Fatalf("PostChat: %v", err)
+	}
+	cits, ok := resp.Metadata["citations"].([]any)
+	if !ok || len(cits) != 2 {
+		t.Fatalf("Metadata[citations] = %#v, want a 2-element slice", resp.Metadata["citations"])
+	}
+	if _, ok := resp.Metadata["search_results"]; ok {
+		t.Error("search_results (absent upstream) must not appear in metadata")
+	}
+}
+
+// TestPostEmbeddings_ForwardsInputType verifies the shared embeddings body now
+// forwards the input_type field.
+func TestPostEmbeddings_ForwardsInputType(t *testing.T) {
+	var body map[string]json.RawMessage
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"object":"list","data":[{"index":0,"embedding":[0.1]}],"model":"m","usage":{}}`)
+	}))
+	defer srv.Close()
+
+	if _, err := PostEmbeddings(context.Background(), EmbeddingParams{
+		HTTPClient: srv.Client(),
+		URL:        srv.URL,
+		Headers:    map[string]string{"Content-Type": "application/json"},
+		Label:      "test",
+	}, core.EmbeddingRequest{Model: "m", Input: "hello", InputType: "query"}); err != nil {
+		t.Fatalf("PostEmbeddings: %v", err)
+	}
+	if got := string(body["input_type"]); got != `"query"` {
+		t.Errorf("input_type = %s, want \"query\"", got)
+	}
+}
