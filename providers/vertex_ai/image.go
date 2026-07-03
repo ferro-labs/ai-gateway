@@ -49,24 +49,47 @@ func isVertexAIUltraImageModel(model string) bool {
 }
 
 // buildImagenRequest maps a gateway ImageRequest onto the Imagen :predict shape.
-// req.Size ("WxH") is not directly mappable to Imagen and is ignored;
+// A recognized req.Size ("WxH") is mapped to the nearest Imagen aspectRatio;
 // req.ResponseFormat is ignored (Imagen returns base64 only). For ultra models,
 // sampleCount is clamped to 1.
 func buildImagenRequest(req core.ImageRequest) imagenRequest {
 	out := imagenRequest{
 		Instances: []imagenInstance{{Prompt: req.Prompt}},
 	}
+	params := imagenParameters{AspectRatio: imagenAspectRatio(req.Size)}
 	if req.N != nil {
 		count := *req.N
 		if isVertexAIUltraImageModel(req.Model) && count > 1 {
 			count = 1
 		}
-		out.Parameters = &imagenParameters{SampleCount: &count}
+		params.SampleCount = &count
 	} else if isVertexAIUltraImageModel(req.Model) {
 		one := 1
-		out.Parameters = &imagenParameters{SampleCount: &one}
+		params.SampleCount = &one
+	}
+	if params.SampleCount != nil || params.AspectRatio != "" {
+		out.Parameters = &params
 	}
 	return out
+}
+
+// imagenAspectRatio maps a common OpenAI "WxH" size to the nearest Imagen
+// aspectRatio. An unmapped or empty size returns "" (Imagen defaults to 1:1).
+func imagenAspectRatio(size string) string {
+	switch size {
+	case "1024x1024", "512x512", "256x256":
+		return "1:1"
+	case "1792x1024", "1536x1024":
+		return "16:9"
+	case "1024x1792", "1024x1536":
+		return "9:16"
+	case "1408x1024":
+		return "4:3"
+	case "1024x1408":
+		return "3:4"
+	default:
+		return ""
+	}
 }
 
 // mapImagenPredictions converts Imagen predictions to gateway images. It returns

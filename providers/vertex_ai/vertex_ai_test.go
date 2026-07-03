@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -45,9 +46,14 @@ func TestNewVertexAI_RequiresRegion(t *testing.T) {
 }
 
 func TestNewVertexAI_RequiresAuth(t *testing.T) {
+	// Force Application Default Credentials discovery to fail deterministically
+	// (bogus GOOGLE_APPLICATION_CREDENTIALS path) so the "no auth available"
+	// error path is exercised regardless of the host's ambient gcloud/metadata
+	// credentials.
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", filepath.Join(t.TempDir(), "does-not-exist.json"))
 	_, err := New(Options{ProjectID: "demo-project", Region: "us-central1"})
 	if err == nil {
-		t.Fatal("expected error when API key and service account JSON are both empty")
+		t.Fatal("expected error when no api key, service account JSON, or ADC is available")
 	}
 }
 
