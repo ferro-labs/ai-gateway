@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 
 	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
@@ -366,8 +367,10 @@ func geminiImagePart(imageURL string) geminiPart {
 	return geminiPart{FileData: &geminiFileData{FileURI: imageURL}}
 }
 
-// parseImageDataURI splits a "data:<mime>;base64,<data>" URI into its MIME type
-// and base64 payload. ok is false for a non-base64 data URI or a remote URL.
+// parseImageDataURI splits a "data:<mime>[;param]...;base64,<data>" URI into its
+// MIME type and base64 payload. ok is false for a non-base64 data URI or a
+// remote URL. The "base64" token may follow other parameters (e.g.
+// "data:image/png;charset=utf-8;base64,...").
 func parseImageDataURI(uri string) (mimeType, data string, ok bool) {
 	const prefix = "data:"
 	if !strings.HasPrefix(uri, prefix) {
@@ -377,11 +380,11 @@ func parseImageDataURI(uri string) (mimeType, data string, ok bool) {
 	if !found {
 		return "", "", false
 	}
-	mimeType, encoding, _ := strings.Cut(meta, ";")
-	if encoding != "base64" {
-		return "", "", false
+	params := strings.Split(meta, ";")
+	if slices.Contains(params[1:], "base64") {
+		return params[0], payload, true
 	}
-	return mimeType, payload, true
+	return "", "", false
 }
 
 // geminiFinishReason maps a Gemini candidate finishReason to the canonical

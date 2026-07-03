@@ -220,7 +220,9 @@ func base64ImageBlock(mediaType, data string) anthropicwire.Block {
 func reencodeDataURI(uri string) (mediaType, base64Data string) {
 	meta, payload, _ := strings.Cut(strings.TrimPrefix(uri, "data:"), ",")
 	mediaType, _, _ = strings.Cut(meta, ";")
-	decoded, err := url.QueryUnescape(payload)
+	// PathUnescape (not QueryUnescape) so a "+" in the RFC 2397 payload is kept
+	// literal rather than decoded to a space.
+	decoded, err := url.PathUnescape(payload)
 	if err != nil {
 		decoded = payload
 	}

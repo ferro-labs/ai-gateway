@@ -2,6 +2,7 @@ package anthropicwire
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 
 	"github.com/ferro-labs/ai-gateway/providers/core"
@@ -72,10 +73,12 @@ func DecodeContent(blocks []ContentBlock) (text string, toolCalls []core.ToolCal
 	return b.String(), toolCalls
 }
 
-// ParseDataURI splits a data URI of the form "data:<media-type>;base64,<data>"
-// into its media type and base64 payload. ok is false for any non-base64 data
-// URI or a plain remote URL, letting each transport decide how to handle those
-// (the native Anthropic API accepts remote URLs; Bedrock does not).
+// ParseDataURI splits a data URI of the form
+// "data:<media-type>[;param]...;base64,<data>" into its media type and base64
+// payload. ok is false for any non-base64 data URI or a plain remote URL,
+// letting each transport decide how to handle those (the native Anthropic API
+// accepts remote URLs; Bedrock does not). The "base64" token may appear after
+// other parameters (e.g. "data:image/png;charset=utf-8;base64,...").
 func ParseDataURI(uri string) (mediaType, data string, ok bool) {
 	const prefix = "data:"
 	if !strings.HasPrefix(uri, prefix) {
@@ -85,9 +88,9 @@ func ParseDataURI(uri string) (mediaType, data string, ok bool) {
 	if !found {
 		return "", "", false
 	}
-	mediaType, encoding, _ := strings.Cut(meta, ";")
-	if encoding != "base64" {
-		return "", "", false
+	params := strings.Split(meta, ";")
+	if slices.Contains(params[1:], "base64") {
+		return params[0], payload, true
 	}
-	return mediaType, payload, true
+	return "", "", false
 }

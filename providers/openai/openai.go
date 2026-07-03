@@ -372,7 +372,10 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 
 	if httpResp.StatusCode != http.StatusOK {
 		defer func() { _ = httpResp.Body.Close() }()
-		respBody, _ := io.ReadAll(httpResp.Body)
+		respBody, err := io.ReadAll(httpResp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read response: %w", err)
+		}
 		return nil, core.APIError(p.name, httpResp.StatusCode, respBody)
 	}
 
@@ -404,23 +407,29 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 	return ch, nil
 }
 
+// openAIUsage is the OpenAI usage object with the nested reasoning/cached token
+// detail. It is shared by the streaming and non-streaming response decoders so
+// the token-accounting fields stay aligned; the canonical core.Usage decoder
+// does not capture the nested detail.
+type openAIUsage struct {
+	PromptTokens        int `json:"prompt_tokens"`
+	CompletionTokens    int `json:"completion_tokens"`
+	TotalTokens         int `json:"total_tokens"`
+	PromptTokensDetails struct {
+		CachedTokens int `json:"cached_tokens"`
+	} `json:"prompt_tokens_details"`
+	CompletionTokensDetails struct {
+		ReasoningTokens int `json:"reasoning_tokens"`
+	} `json:"completion_tokens_details"`
+}
+
 type openAIChatCompletionResponse struct {
 	ID      string        `json:"id"`
 	Object  string        `json:"object"`
 	Created int64         `json:"created"`
 	Model   string        `json:"model"`
 	Choices []core.Choice `json:"choices"`
-	Usage   struct {
-		PromptTokens        int `json:"prompt_tokens"`
-		CompletionTokens    int `json:"completion_tokens"`
-		TotalTokens         int `json:"total_tokens"`
-		PromptTokensDetails struct {
-			CachedTokens int `json:"cached_tokens"`
-		} `json:"prompt_tokens_details"`
-		CompletionTokensDetails struct {
-			ReasoningTokens int `json:"reasoning_tokens"`
-		} `json:"completion_tokens_details"`
-	} `json:"usage"`
+	Usage   openAIUsage   `json:"usage"`
 }
 
 func (p *Provider) chatCompletionsEndpoint() string {
@@ -452,17 +461,7 @@ type openAIStreamChunk struct {
 		} `json:"delta"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
-	Usage *struct {
-		PromptTokens        int `json:"prompt_tokens"`
-		CompletionTokens    int `json:"completion_tokens"`
-		TotalTokens         int `json:"total_tokens"`
-		PromptTokensDetails struct {
-			CachedTokens int `json:"cached_tokens"`
-		} `json:"prompt_tokens_details"`
-		CompletionTokensDetails struct {
-			ReasoningTokens int `json:"reasoning_tokens"`
-		} `json:"completion_tokens_details"`
-	} `json:"usage"`
+	Usage *openAIUsage `json:"usage"`
 }
 
 type openAIStreamToolCall struct {

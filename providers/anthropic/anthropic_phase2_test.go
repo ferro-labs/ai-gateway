@@ -107,6 +107,31 @@ func TestComplete_MalformedDataURINeverBecomesURLSource(t *testing.T) {
 	}
 }
 
+// TestComplete_PreservesPlusInNonBase64DataURI verifies a "+" in a non-base64
+// data URI payload is kept literal (PathUnescape, not QueryUnescape) before
+// re-encoding.
+func TestComplete_PreservesPlusInNonBase64DataURI(t *testing.T) {
+	body := captureBody(t, core.Request{
+		Model: "claude-sonnet-4-6",
+		Messages: []core.Message{{
+			Role: core.RoleUser,
+			ContentParts: []core.ContentPart{
+				{Type: "image_url", ImageURL: &core.ImageURLPart{URL: "data:text/plain,a+b"}},
+			},
+		}},
+	})
+
+	msgs := decodeMessages(t, body)
+	var blocks []wireImageBlock
+	if err := json.Unmarshal(msgs[0]["content"], &blocks); err != nil {
+		t.Fatalf("decode content blocks: %v", err)
+	}
+	// base64("a+b") == "YSti"; QueryUnescape would corrupt it to base64("a b").
+	if blocks[0].Source.Data != "YSti" {
+		t.Errorf("data = %q, want base64 of \"a+b\" (\"YSti\")", blocks[0].Source.Data)
+	}
+}
+
 // TestComplete_ErrorPathReturnsAPIError verifies a non-2xx chat response surfaces
 // the upstream status and message via core.APIError.
 func TestComplete_ErrorPathReturnsAPIError(t *testing.T) {
