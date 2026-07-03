@@ -5,6 +5,26 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.10] — 2026-07-03
+
+Proxy & governance hardening release. Corrects the `/v1/*` pass-through proxy so it no longer doubles the `/v1` path segment and no longer forwards OpenAI-shaped requests to providers whose upstream API is not OpenAI-compatible, and extends per-key budget governance to the embeddings and image-generation endpoints. Adds an optional provider request-signing hook and a shared base-URL validator. No breaking API changes relative to v1.1.9 — the `Provider`, `ProxiableProvider`, and plugin contracts are unchanged.
+
+### Fixed
+
+- **Pass-through proxy path doubling**: the `/v1/*` pass-through no longer duplicates the `/v1` segment for providers whose configured base URL already ends in `/v1` (e.g. `https://api.x.ai/v1`), which previously produced a `/v1/v1/...` upstream path and a 404. Both base-URL conventions now forward correctly.
+
+### Changed
+
+- **Pass-through proxy scope** (operator-visible): the `/v1/*` pass-through now returns HTTP 501 for providers whose upstream API is not OpenAI-wire-compatible — Anthropic, Google Gemini, AWS Bedrock, Cohere, Vertex AI, and Azure OpenAI/Foundry — instead of forwarding an OpenAI-shaped request their API cannot process (which failed upstream, and for AWS Bedrock under SigV4 was sent unauthenticated). These providers remain fully available through their translated `chat/completions`, `embeddings`, and `images/generations` endpoints.
+- **Per-key budget on embeddings and images** (operator-visible): per-key budget limits now apply to `/v1/embeddings` and `/v1/images/generations`, not only chat. Embedding requests are gated and their spend recorded; image generation is gated (it reports no token usage). Per-IP rate limiting, authentication, and the request body-size limit already applied to every endpoint.
+
+### Added
+
+- **Provider request-signing hook**: an optional `RequestSigner` provider interface lets a provider sign each outbound pass-through request (e.g. AWS SigV4); the proxy invokes it when a provider implements it. No in-tree provider signs yet — this is the seam for future signed pass-through.
+- **Shared base-URL validation**: a shared `core.ValidateBaseURL` helper validates that a provider base URL is an `http(s)` URL with a host, adopted by the Anthropic provider. Remaining providers migrate to it in subsequent releases.
+
+---
+
 ## [1.1.9] — 2026-07-02
 
 Quality & maintainability release. Scopes per-key rate-limit and budget enforcement to the authenticated key, hardens the budget soft cap against concurrent lost updates, fixes a set of gateway routing/observability and provider streaming correctness issues, and lands a large behaviour-preserving internal refactor plus CI supply-chain hardening. No public API breaks relative to v1.1.8. Closes [#261](https://github.com/ferro-labs/ai-gateway/issues/261).
