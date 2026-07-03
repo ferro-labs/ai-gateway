@@ -5,6 +5,28 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.13] — 2026-07-04
+
+OpenAI-compatible provider fidelity release (part one). The fourth provider-readiness remediation phase aligns the Mistral, DeepSeek, Together, Fireworks, Cerebras, and Groq providers on request/response correctness, and adds two shared improvements that benefit every OpenAI-compatible provider. No breaking API changes relative to v1.1.12.
+
+### Fixed
+
+- **Mistral sampling seed**: the `seed` parameter is now sent as Mistral's `random_seed` field (Mistral ignores the standard `seed`), so a requested seed actually takes effect.
+- **Mistral embedding dimensions**: the embeddings `dimensions` parameter is now sent as Mistral's `output_dimension` field.
+- **DeepSeek model list**: `deepseek-v4-flash` and `deepseek-v4-pro` are now advertised, ahead of the retirement of `deepseek-chat`/`deepseek-reasoner`.
+- **Groq model catalog**: the two decommissioned models (`mixtral-8x7b-32768`, `gemma2-9b-it`) are removed and current production models (`openai/gpt-oss-120b`, `openai/gpt-oss-20b`) added.
+- **DeepSeek error and finish_reason handling**: chat errors now use the shared error envelope, and finish reasons are normalized to the canonical OpenAI vocabulary on both the streaming and non-streaming paths.
+
+### Changed
+
+- **Streaming token usage** (all OpenAI-compatible providers): streaming requests now set `stream_options.include_usage`, so providers that gate the terminal usage chunk on that flag report streaming token usage.
+- **finish_reason normalization** (all OpenAI-compatible providers): the shared chat and stream decoders normalize provider-specific finish reasons (e.g. Mistral's `model_length` → `length`) to the canonical OpenAI vocabulary.
+- **Together default API domain** (operator-visible): the default base URL is now `https://api.together.ai` (the current documented host) instead of the legacy `https://api.together.xyz`; deployments pinned to the old domain can still override it via `TOGETHER_BASE_URL`.
+- **DeepSeek model discovery**: DeepSeek now supports live `/models` discovery, so its advertised model list can self-update.
+- **Shared base-URL validation**: Mistral, DeepSeek, Together, Fireworks, Cerebras, and Groq now validate the configured base URL at construction, and Cerebras and Groq forward only the modern `max_completion_tokens` field.
+
+---
+
 ## [1.1.12] — 2026-07-04
 
 Enterprise-endpoint & Cohere fidelity release. The third provider-readiness remediation phase aligns the Vertex AI, Azure OpenAI, Azure AI Foundry, Databricks, and Cohere providers on request/response correctness and consolidates their hand-rolled HTTP onto the shared OpenAI-compatible helpers. No breaking API changes relative to v1.1.11.
