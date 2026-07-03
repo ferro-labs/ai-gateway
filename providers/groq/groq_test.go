@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -99,6 +100,78 @@ func TestGroqProvider_CompleteStream_MockSSE(t *testing.T) {
 	}
 	if chunks[2].Choices[0].Delta.Content != " there" {
 		t.Errorf("delta content = %q, want ' there'", chunks[2].Choices[0].Delta.Content)
+	}
+}
+
+func TestGroqProvider_Complete_ParamsAndAuth(t *testing.T) {
+	var gotPath, gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-1","model":"llama-3.1-8b-instant","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":1,"total_tokens":6}}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	resp, err := p.Complete(context.Background(), core.Request{
+		Model:    "llama-3.1-8b-instant",
+		Messages: []core.Message{{Role: "user", Content: "Hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Complete() error: %v", err)
+	}
+	if gotPath != "/v1/chat/completions" {
+		t.Errorf("request path = %q, want /v1/chat/completions", gotPath)
+	}
+	if gotAuth != "Bearer test-key" {
+		t.Errorf("Authorization = %q, want Bearer test-key", gotAuth)
+	}
+	if resp.ID != "chatcmpl-1" {
+		t.Errorf("Response.ID = %q, want chatcmpl-1", resp.ID)
+	}
+}
+
+func TestGroqProvider_Complete_ErrorStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"rate limited"}}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	_, err := p.Complete(context.Background(), core.Request{
+		Model:    "llama-3.1-8b-instant",
+		Messages: []core.Message{{Role: "user", Content: "Hi"}},
+	})
+	if err == nil {
+		t.Fatal("Complete() expected error on 429, got nil")
+	}
+	if !strings.Contains(err.Error(), "groq API error (429)") {
+		t.Errorf("error = %q, want it to contain %q", err.Error(), "groq API error (429)")
+	}
+}
+
+func TestGroqProvider_CompleteStream_ErrorStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":{"message":"boom"}}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	_, err := p.CompleteStream(context.Background(), core.Request{
+		Model:    "llama-3.1-8b-instant",
+		Messages: []core.Message{{Role: "user", Content: "Hi"}},
+	})
+	if err == nil {
+		t.Fatal("CompleteStream() expected error on 500, got nil")
+	}
+	if !strings.Contains(err.Error(), "groq API error (500)") {
+		t.Errorf("error = %q, want it to contain %q", err.Error(), "groq API error (500)")
 	}
 }
 

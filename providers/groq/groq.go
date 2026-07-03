@@ -3,9 +3,7 @@ package groq
 
 import (
 	"context"
-	"fmt"
 	"net/http"
-	"net/url"
 	"strings"
 
 	"github.com/ferro-labs/ai-gateway/internal/discovery"
@@ -39,14 +37,14 @@ var (
 
 // New creates a new Groq provider.
 func New(apiKey, baseURL string) (*Provider, error) {
+	baseURL = strings.TrimSpace(baseURL)
 	if baseURL == "" {
 		baseURL = defaultBaseURL
 	}
-	baseURL = strings.TrimRight(baseURL, "/")
-	u, err := url.Parse(baseURL)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return nil, fmt.Errorf("groq: invalid base URL %q: must be http or https with a host", baseURL)
+	if err := core.ValidateBaseURL(Name, baseURL); err != nil {
+		return nil, err
 	}
+	baseURL = strings.TrimRight(baseURL, "/")
 	return &Provider{
 		name:       Name,
 		apiKey:     apiKey,
@@ -71,8 +69,8 @@ func (p *Provider) SupportedModels() []string {
 	return []string{
 		"llama-3.3-70b-versatile",
 		"llama-3.1-8b-instant",
-		"mixtral-8x7b-32768",
-		"gemma2-9b-it",
+		"openai/gpt-oss-120b",
+		"openai/gpt-oss-20b",
 	}
 }
 
@@ -93,6 +91,8 @@ func (p *Provider) DiscoverModels(ctx context.Context) ([]core.ModelInfo, error)
 
 // Complete sends a chat completion request to Groq.
 func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
+	// Forward only the modern max_completion_tokens (mirrors the OpenAI surface).
+	req.PreferCompletionTokens()
 	return openaicompat.PostChat(ctx, openaicompat.ChatParams{
 		HTTPClient: p.httpClient,
 		URL:        p.baseURL + "/v1/chat/completions",
@@ -104,6 +104,8 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 
 // CompleteStream sends a streaming chat completion request to Groq.
 func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan core.StreamChunk, error) {
+	// Forward only the modern max_completion_tokens (mirrors the OpenAI surface).
+	req.PreferCompletionTokens()
 	return openaicompat.PostStream(ctx, openaicompat.ChatParams{
 		HTTPClient: p.httpClient,
 		URL:        p.baseURL + "/v1/chat/completions",
