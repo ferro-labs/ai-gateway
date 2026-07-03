@@ -184,11 +184,18 @@ type Request struct {
 	TopLogProbs *int `json:"top_logprobs,omitempty"`
 
 	// Streaming
-	Stream bool `json:"stream,omitempty"`
+	Stream        bool           `json:"stream,omitempty"`
+	StreamOptions *StreamOptions `json:"stream_options,omitempty"`
 
 	// Misc
 	User      string             `json:"user,omitempty"`
 	LogitBias map[string]float64 `json:"logit_bias,omitempty"`
+}
+
+// StreamOptions carries the OpenAI stream_options object. IncludeUsage requests a
+// terminal usage chunk on the stream so cost and metrics tracking work.
+type StreamOptions struct {
+	IncludeUsage bool `json:"include_usage,omitempty"`
 }
 
 // NormalizeCompletionTokenLimits fills max_tokens from max_completion_tokens

@@ -18,6 +18,11 @@ func DecodeStreamChunk(data []byte) (core.StreamChunk, error) {
 	if err := json.Unmarshal(data, &chunk); err != nil {
 		return core.StreamChunk{}, fmt.Errorf("failed to unmarshal stream chunk: %w", err)
 	}
+	// Normalize provider-specific finish reasons to the canonical OpenAI
+	// vocabulary for every OpenAI-compatible provider.
+	for i := range chunk.Choices {
+		chunk.Choices[i].FinishReason = core.NormalizeFinishReason(chunk.Choices[i].FinishReason)
+	}
 	return chunk, nil
 }
 

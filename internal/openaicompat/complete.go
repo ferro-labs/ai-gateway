@@ -78,6 +78,11 @@ func PostChat(ctx context.Context, p ChatParams, req core.Request) (*core.Respon
 	if err := json.Unmarshal(respBody, &pResp); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
+	// Normalize provider-specific finish reasons (e.g. Mistral's model_length)
+	// to the canonical OpenAI vocabulary for every OpenAI-compatible provider.
+	for i := range pResp.Choices {
+		pResp.Choices[i].FinishReason = core.NormalizeFinishReason(pResp.Choices[i].FinishReason)
+	}
 	return &core.Response{
 		ID:       pResp.ID,
 		Model:    pResp.Model,
@@ -91,6 +96,11 @@ func PostChat(ctx context.Context, p ChatParams, req core.Request) (*core.Respon
 // channel of decoded chunks (see StreamSSE). The non-200 body is drained and
 // surfaced as an error before any goroutine is started.
 func PostStream(ctx context.Context, p ChatParams, req core.Request) (<-chan core.StreamChunk, error) {
+	// Request a terminal usage chunk for cost/metrics tracking unless the caller
+	// already configured stream_options.
+	if req.StreamOptions == nil {
+		req.StreamOptions = &core.StreamOptions{IncludeUsage: true}
+	}
 	httpResp, release, err := newChatRequest(ctx, p, req, true)
 	if err != nil {
 		return nil, err
