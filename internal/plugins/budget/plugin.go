@@ -245,7 +245,7 @@ func (p *Plugin) Execute(_ context.Context, pctx *plugin.Context) error {
 		return nil
 	}
 
-	if _, completed := completedUsage(pctx); !completed {
+	if !requestCompleted(pctx) {
 		// before_request stage: check accumulated spend.
 		return p.checkBudget(pctx, key)
 	}
@@ -255,13 +255,25 @@ func (p *Plugin) Execute(_ context.Context, pctx *plugin.Context) error {
 	return nil
 }
 
-// completedUsage reports the token usage of a completed request and whether the
-// request has finished, letting budget distinguish the after_request stage from
-// before_request without depending on the surface. Chat carries usage on the
-// typed Response; non-chat surfaces (embeddings) pass it through
-// Metadata["usage"] — the sanctioned additive channel for the frozen plugin
-// seam. Image generation reports no token usage, so it is gated but not costed.
-func completedUsage(pctx *plugin.Context) (providers.Usage, bool) {
+// requestCompleted reports whether Execute is running in the after_request
+// stage. Chat sets the typed Response; non-chat surfaces (embeddings, images)
+// set Metadata["completed"]. The explicit marker is required because image
+// responses carry no token usage, so completion cannot be inferred from usage
+// presence — doing so would re-run the budget gate on a completed image and
+// could reject an already-billed response under concurrent spend.
+func requestCompleted(pctx *plugin.Context) bool {
+	if pctx.Response != nil {
+		return true
+	}
+	completed, _ := pctx.Metadata["completed"].(bool)
+	return completed
+}
+
+// usageFromContext returns the completed request's token usage — from the chat
+// Response or, for non-chat surfaces, Metadata["usage"] (the sanctioned additive
+// channel for the frozen plugin seam). Image generation reports no usage, so ok
+// is false and the request is gated but not costed.
+func usageFromContext(pctx *plugin.Context) (providers.Usage, bool) {
 	if pctx.Response != nil {
 		return pctx.Response.Usage, true
 	}
@@ -308,7 +320,7 @@ func (p *Plugin) checkBudget(pctx *plugin.Context, key string) error {
 // the store via a single atomic read-modify-write, so concurrent completions
 // for the same key never lose an increment.
 func (p *Plugin) recordCost(pctx *plugin.Context, key string) {
-	usage, ok := completedUsage(pctx)
+	usage, ok := usageFromContext(pctx)
 	if !ok {
 		return
 	}

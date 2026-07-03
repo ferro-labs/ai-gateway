@@ -76,6 +76,9 @@ func (g *Gateway) runSurfaceGovernance(ctx context.Context, surface string, call
 	if usage != nil {
 		pctx.Metadata["usage"] = *usage
 	}
+	// Explicit after_request signal so stage detection does not depend on token
+	// usage — image responses carry none. See budget.requestCompleted.
+	pctx.Metadata["completed"] = true
 	return plugins.RunAfter(ctx, pctx)
 }
 
