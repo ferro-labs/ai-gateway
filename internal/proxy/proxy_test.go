@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -400,6 +401,7 @@ func TestProxyHandler_GatesNonOpenAIWireProvider(t *testing.T) {
 type stubSigningProvider struct {
 	baseURL string
 	signed  *bool
+	signErr error
 }
 
 func (stubSigningProvider) Name() string { return "stub-signer" }
@@ -412,9 +414,11 @@ func (stubSigningProvider) Models() []providers.ModelInfo  { return nil }
 func (s stubSigningProvider) BaseURL() string              { return s.baseURL }
 func (stubSigningProvider) AuthHeaders() map[string]string { return nil }
 func (s stubSigningProvider) SignProxyRequest(req *http.Request) error {
-	*s.signed = true
+	if s.signed != nil {
+		*s.signed = true
+	}
 	req.Header.Set("X-Signed", "1")
-	return nil
+	return s.signErr
 }
 
 // TestProxyHandler_InvokesRequestSigner verifies that when a provider implements
@@ -445,6 +449,36 @@ func TestProxyHandler_InvokesRequestSigner(t *testing.T) {
 	}
 	if seenSigned != "1" {
 		t.Errorf("upstream X-Signed = %q, want 1 (signer header not applied)", seenSigned)
+	}
+}
+
+// TestProxyHandler_RequestSignerFailure_Returns502 verifies that when signing
+// fails the proxy surfaces a 502 (via ErrorHandler) and never reaches upstream,
+// rather than forwarding an unsigned request.
+func TestProxyHandler_RequestSignerFailure_Returns502(t *testing.T) {
+	var reached bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		reached = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	reg := providers.NewRegistry()
+	reg.Register(stubSigningProvider{baseURL: upstream.URL, signErr: errors.New("sign failed")})
+	handler := Handler(reg)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{}`))
+	req.Header.Set("X-Provider", "stub-signer")
+	req.ContentLength = 2
+	w := httptest.NewRecorder()
+
+	handler(w, req)
+
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502 when signing fails", w.Code)
+	}
+	if reached {
+		t.Error("upstream must not be reached when signing fails")
 	}
 }
 
