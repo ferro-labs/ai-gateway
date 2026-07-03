@@ -139,6 +139,158 @@ func TestMistralProvider_CompleteStream_MockSSE(t *testing.T) {
 	}
 }
 
+func TestMistralProvider_Complete_Success_MockHTTP(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %s, want POST", r.Method)
+		}
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Errorf("path = %q, want /v1/chat/completions", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
+			t.Errorf("Authorization = %q, want Bearer test-key", got)
+		}
+		if got := r.Header.Get("Content-Type"); got != "application/json" {
+			t.Errorf("Content-Type = %q, want application/json", got)
+		}
+
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("failed to decode request body: %v", err)
+		}
+		if got := body["model"]; got != "mistral-large-latest" {
+			t.Errorf("model = %v, want mistral-large-latest", got)
+		}
+		msgs, ok := body["messages"].([]any)
+		if !ok || len(msgs) != 1 {
+			t.Fatalf("messages = %#v, want 1-element array", body["messages"])
+		}
+		if m0, _ := msgs[0].(map[string]any); m0["role"] != "user" || m0["content"] != "Hi" {
+			t.Errorf("messages[0] = %#v, want {role:user, content:Hi}", msgs[0])
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		// finish_reason "model_length" exercises the shared normalization to "length".
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-abc","object":"chat.completion","model":"mistral-large-latest","choices":[{"index":0,"message":{"role":"assistant","content":"Hello!"},"finish_reason":"model_length"}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	resp, err := p.Complete(context.Background(), core.Request{
+		Model:    "mistral-large-latest",
+		Messages: []core.Message{{Role: "user", Content: "Hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Complete() error: %v", err)
+	}
+	if resp.ID != "chatcmpl-abc" {
+		t.Errorf("ID = %q, want chatcmpl-abc", resp.ID)
+	}
+	if resp.Model != "mistral-large-latest" {
+		t.Errorf("Model = %q, want mistral-large-latest", resp.Model)
+	}
+	if resp.Provider != "mistral" {
+		t.Errorf("Provider = %q, want mistral", resp.Provider)
+	}
+	if len(resp.Choices) != 1 {
+		t.Fatalf("Choices length = %d, want 1", len(resp.Choices))
+	}
+	if resp.Choices[0].Message.Content != "Hello!" {
+		t.Errorf("Choices[0].Message.Content = %q, want Hello!", resp.Choices[0].Message.Content)
+	}
+	if resp.Choices[0].FinishReason != "length" {
+		t.Errorf("Choices[0].FinishReason = %q, want length (normalized from model_length)", resp.Choices[0].FinishReason)
+	}
+	if resp.Usage.PromptTokens != 5 || resp.Usage.CompletionTokens != 2 || resp.Usage.TotalTokens != 7 {
+		t.Errorf("Usage = %+v, want prompt=5 completion=2 total=7", resp.Usage)
+	}
+}
+
+func TestMistralProvider_Complete_UpstreamError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Errorf("path = %q, want /v1/chat/completions", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"invalid model","type":"invalid_request_error"}}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	_, err := p.Complete(context.Background(), core.Request{
+		Model:    "bogus-model",
+		Messages: []core.Message{{Role: "user", Content: "Hi"}},
+	})
+	if err == nil {
+		t.Fatal("Complete() error = nil, want upstream error")
+	}
+	if !strings.Contains(err.Error(), "invalid model") {
+		t.Fatalf("error = %v, want invalid model message", err)
+	}
+}
+
+func TestMistralProvider_Complete_SeedRewrite(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("failed to decode request body: %v", err)
+		}
+		if _, ok := body["seed"]; ok {
+			t.Errorf("body contains %q, want it suppressed in favor of random_seed", "seed")
+		}
+		if got := body["random_seed"]; got != float64(42) {
+			t.Errorf("random_seed = %#v, want 42", got)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-1","model":"mistral-large-latest","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer srv.Close()
+
+	seed := int64(42)
+	p, _ := New("test-key", srv.URL)
+	if _, err := p.Complete(context.Background(), core.Request{
+		Model:    "mistral-large-latest",
+		Messages: []core.Message{{Role: "user", Content: "Hi"}},
+		Seed:     &seed,
+	}); err != nil {
+		t.Fatalf("Complete() error: %v", err)
+	}
+}
+
+func TestMistralProvider_Embed_DimensionsRewrite(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("failed to decode request body: %v", err)
+		}
+		if _, ok := body["dimensions"]; ok {
+			t.Errorf("body contains %q, want it renamed to output_dimension", "dimensions")
+		}
+		if got := body["output_dimension"]; got != float64(256) {
+			t.Errorf("output_dimension = %#v, want 256", got)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"object":"embedding","embedding":[0.1,0.2],"index":0}],"model":"` + testEmbeddingModel + `","usage":{"prompt_tokens":1,"total_tokens":1}}`))
+	}))
+	defer srv.Close()
+
+	dims := 256
+	p, _ := New("test-key", srv.URL)
+	if _, err := p.Embed(context.Background(), core.EmbeddingRequest{
+		Model:      testEmbeddingModel,
+		Input:      "hello",
+		Dimensions: &dims,
+	}); err != nil {
+		t.Fatalf("Embed() error: %v", err)
+	}
+}
+
 func TestMistralProvider_Embed_Interface(_ *testing.T) {
 	p, _ := New("test-key", "")
 	var _ core.EmbeddingProvider = p
