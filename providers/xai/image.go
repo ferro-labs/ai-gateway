@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/ferro-labs/ai-gateway/internal/logging"
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
@@ -19,34 +20,29 @@ type xaiImageRequest struct {
 	Prompt         string `json:"prompt"`
 	N              *int   `json:"n,omitempty"`
 	ResponseFormat string `json:"response_format,omitempty"`
-}
-
-// xaiImageResponse is the OpenAI-compatible response body for xAI image
-// generation.
-type xaiImageResponse struct {
-	Created int64 `json:"created"`
-	Data    []struct {
-		URL           string `json:"url"`
-		B64JSON       string `json:"b64_json"`
-		RevisedPrompt string `json:"revised_prompt"`
-	} `json:"data"`
-}
-
-// xaiImageErrorResponse mirrors the OpenAI-compatible error envelope.
-type xaiImageErrorResponse struct {
-	Error struct {
-		Message string `json:"message"`
-	} `json:"error"`
+	User           string `json:"user,omitempty"`
 }
 
 // GenerateImage sends an image generation request to xAI (Grok image models).
 // It is OpenAI-compatible against the /images/generations endpoint.
 func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*core.ImageResponse, error) {
+	// grok-2-image ignores size/quality/style. Surface the drop instead of
+	// discarding it silently so the caller can observe the mismatch.
+	if dropped := droppedImageParams(req); len(dropped) > 0 {
+		logging.FromContext(ctx).Warn(
+			"xai image models ignore size/quality/style request parameter(s); dropping",
+			"provider", p.name,
+			"model", req.Model,
+			"dropped_params", dropped,
+		)
+	}
+
 	payload := xaiImageRequest{
 		Model:          req.Model,
 		Prompt:         req.Prompt,
 		N:              req.N,
 		ResponseFormat: req.ResponseFormat,
+		User:           req.User,
 	}
 
 	body, contentLen, release, err := core.JSONBodyReader(payload)
@@ -69,39 +65,39 @@ func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*c
 	}
 	defer func() { _ = httpResp.Body.Close() }()
 
-	if httpResp.StatusCode != http.StatusOK {
-		respBody, readErr := io.ReadAll(httpResp.Body)
-		if readErr != nil {
-			return nil, fmt.Errorf("xai: failed to read error response: %w", readErr)
-		}
-		var errResp xaiImageErrorResponse
-		if json.Unmarshal(respBody, &errResp) == nil && errResp.Error.Message != "" {
-			return nil, fmt.Errorf("xai API error (%d): %s", httpResp.StatusCode, errResp.Error.Message)
-		}
-		return nil, fmt.Errorf("xai API error (%d): %s", httpResp.StatusCode, string(respBody))
+	respBody, err := io.ReadAll(httpResp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("xai: failed to read image response: %w", err)
 	}
 
-	var decoded xaiImageResponse
-	if err := json.NewDecoder(httpResp.Body).Decode(&decoded); err != nil {
+	if httpResp.StatusCode != http.StatusOK {
+		return nil, core.APIError("xai", httpResp.StatusCode, respBody)
+	}
+
+	var decoded core.ImageResponse
+	if err := json.Unmarshal(respBody, &decoded); err != nil {
 		return nil, fmt.Errorf("xai: failed to decode image response: %w", err)
 	}
 
-	images := make([]core.GeneratedImage, len(decoded.Data))
-	for i, d := range decoded.Data {
-		images[i] = core.GeneratedImage{
-			URL:           d.URL,
-			B64JSON:       d.B64JSON,
-			RevisedPrompt: d.RevisedPrompt,
-		}
+	if decoded.Created == 0 {
+		decoded.Created = time.Now().Unix()
 	}
 
-	created := decoded.Created
-	if created == 0 {
-		created = time.Now().Unix()
-	}
+	return &decoded, nil
+}
 
-	return &core.ImageResponse{
-		Created: created,
-		Data:    images,
-	}, nil
+// droppedImageParams returns, in stable order, the image request parameters that
+// xAI's Grok image models ignore but that the caller populated.
+func droppedImageParams(req core.ImageRequest) []string {
+	var dropped []string
+	if req.Size != "" {
+		dropped = append(dropped, "size")
+	}
+	if req.Quality != "" {
+		dropped = append(dropped, "quality")
+	}
+	if req.Style != "" {
+		dropped = append(dropped, "style")
+	}
+	return dropped
 }
