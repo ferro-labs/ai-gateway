@@ -14,7 +14,7 @@
 - **Unified factory** — `providers/factory.go` holds types/constants; `providers/providers_list.go` holds all built-in `ProviderEntry` records. Auto-registration via `AllProviders()` means `main.go` never needs editing for new providers.
 - **`providers/core/` split** — interfaces in `contracts.go`; shared types split into `chat.go`, `stream.go`, `embedding.go`, `image.go`, `model.go`, `constants.go`, `errors.go`.
 - **Single source of truth for name constants** — `providers/names.go` re-exports `NameXxx` from each subpackage's `const Name`.
-- **`internal/discovery/`** — shared OpenAI-compatible model discovery helper used by fireworks, hugging_face, perplexity, xai.
+- **`internal/discovery/`** — shared OpenAI-compatible model discovery helper used by many OpenAI-compatible providers (fireworks, xai, moonshot, nvidia-nim, novita, …).
 - **Provider coverage** — OpenAI, Anthropic, Gemini, Groq, Bedrock, Vertex AI, Hugging Face, Cerebras, Cloudflare, Databricks, DeepInfra, Moonshot, Novita, NVIDIA NIM, OpenRouter, Qwen, SambaNova, and more.
 - **Built-in OSS plugins** — word filter, max token, response cache, request logger, rate limit, budget.
 - **Admin API** — dashboard, key management, usage stats, request logs, config history/rollback (`internal/admin/handlers.go`).
@@ -138,7 +138,7 @@ ai-gateway/
 | `internal/otel/config.go` | OTel `Config` (endpoint, protocol, sample_ratio, privacy_level, shutdown_grace) + `Validate()` |
 | `internal/redact/redact.go` | `Redactor` applied to span/event error messages |
 | `internal/strategies/strategy.go` | `Strategy` interface |
-| `internal/discovery/openai_compat.go` | `DiscoverOpenAICompatibleModels` — shared by fireworks, hugging_face, perplexity, xai |
+| `internal/discovery/openai_compat.go` | `DiscoverOpenAICompatibleModels` — shared by many OpenAI-compatible providers (fireworks, xai, moonshot, nvidia-nim, …) |
 | `cmd/ferrogw/main.go` | HTTP server setup and entry point |
 | `internal/admin/middleware.go` | Bearer token auth middleware |
 

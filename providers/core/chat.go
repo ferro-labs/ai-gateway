@@ -269,8 +269,10 @@ type Response struct {
 
 	// Metadata carries provider-specific top-level response fields (e.g.
 	// Perplexity's citations/search_results) captured on request via
-	// ChatParams.ExtraResponseFields. Nil unless requested.
-	Metadata map[string]any `json:"metadata,omitempty"`
+	// ChatParams.ExtraResponseFields. Serialized under "provider_metadata" (not
+	// "metadata", which OpenAI reserves for client-supplied tags). Nil unless
+	// requested.
+	Metadata map[string]any `json:"provider_metadata,omitempty"`
 
 	// OverheadMs is the gateway processing overhead in milliseconds
 	// (total latency minus provider call duration). Excluded from JSON
@@ -299,8 +301,8 @@ type Usage struct {
 // UnmarshalJSON decodes the OpenAI usage object, folding the nested
 // prompt_tokens_details.cached_tokens and completion_tokens_details.reasoning_tokens
 // into the flat CacheReadTokens/ReasoningTokens fields so providers that report
-// usage in the nested form (OpenRouter, xAI, …) surface it consistently. An
-// explicit flat field takes precedence when both are present.
+// usage in the nested form (OpenRouter, xAI, …) surface it consistently. A
+// nonzero flat field takes precedence over the nested value.
 func (u *Usage) UnmarshalJSON(data []byte) error {
 	type usageAlias Usage // avoid recursing into this method
 	var raw struct {
