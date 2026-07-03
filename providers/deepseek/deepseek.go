@@ -164,6 +164,12 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 	if err := json.Unmarshal(respBody, &pResp); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
+	// Normalize finish reasons to the canonical OpenAI vocabulary, matching the
+	// shared streaming path (the hand-rolled decode here is kept only to capture
+	// DeepSeek's extended cache/reasoning usage).
+	for i := range pResp.Choices {
+		pResp.Choices[i].FinishReason = core.NormalizeFinishReason(pResp.Choices[i].FinishReason)
+	}
 
 	return &core.Response{
 		ID:       pResp.ID,
