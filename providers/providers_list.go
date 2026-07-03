@@ -187,7 +187,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameDeepSeek,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityDiscovery, CapabilityProxy},
 		EnvMappings: []EnvMapping{
 			{CfgKeyAPIKey, "DEEPSEEK_API_KEY", true},
 			{CfgKeyBaseURL, "DEEPSEEK_BASE_URL", false},

@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 
+	"github.com/ferro-labs/ai-gateway/internal/discovery"
 	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
 	"github.com/ferro-labs/ai-gateway/internal/openaicompat"
 	"github.com/ferro-labs/ai-gateway/providers/core"
@@ -34,18 +34,22 @@ type Provider struct {
 var (
 	_ core.Provider          = (*Provider)(nil)
 	_ core.StreamProvider    = (*Provider)(nil)
+	_ core.DiscoveryProvider = (*Provider)(nil)
 	_ core.ProxiableProvider = (*Provider)(nil)
 )
 
 // New creates a new DeepSeek provider.
 func New(apiKey, baseURL string) (*Provider, error) {
+	baseURL = strings.TrimSpace(baseURL)
 	if baseURL == "" {
 		baseURL = defaultBaseURL
 	}
 	baseURL = strings.TrimRight(baseURL, "/")
-	u, err := url.Parse(baseURL)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return nil, fmt.Errorf("deepseek: invalid base URL %q: must be http or https with a host", baseURL)
+	// DeepSeek's chat and models paths already carry the /v1 prefix, so trim a
+	// trailing /v1 to avoid doubling it when callers pass ".../v1" as the base.
+	baseURL = strings.TrimSuffix(baseURL, "/v1")
+	if err := core.ValidateBaseURL(Name, baseURL); err != nil {
+		return nil, err
 	}
 	return &Provider{
 		name:       Name,
@@ -71,6 +75,8 @@ func (p *Provider) SupportedModels() []string {
 	return []string{
 		"deepseek-chat",
 		"deepseek-reasoner",
+		"deepseek-v4-flash",
+		"deepseek-v4-pro",
 	}
 }
 
@@ -82,6 +88,11 @@ func (p *Provider) SupportsModel(model string) bool {
 // Models returns structured model metadata.
 func (p *Provider) Models() []core.ModelInfo {
 	return core.ModelsFromList(p.name, p.SupportedModels())
+}
+
+// DiscoverModels fetches the live model list from the DeepSeek /v1/models endpoint.
+func (p *Provider) DiscoverModels(ctx context.Context) ([]core.ModelInfo, error) {
+	return discovery.DiscoverOpenAICompatibleModels(ctx, p.httpClient, p.baseURL+"/v1/models", p.apiKey, p.name)
 }
 
 // ------------------------------------------------------------------ types ---
@@ -119,15 +130,6 @@ func (u usage) toCore() core.Usage {
 	}
 }
 
-type errorDetail struct {
-	Message string `json:"message"`
-	Type    string `json:"type"`
-}
-
-type errorResponse struct {
-	Error errorDetail `json:"error"`
-}
-
 // Complete sends a chat completion request to DeepSeek.
 func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
 	bodyReader, _, release, err := openaicompat.BuildBody(req, false)
@@ -155,11 +157,7 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 	}
 
 	if httpResp.StatusCode != http.StatusOK {
-		var errResp errorResponse
-		if json.Unmarshal(respBody, &errResp) == nil && errResp.Error.Message != "" {
-			return nil, fmt.Errorf("deepseek API error (%d): %s", httpResp.StatusCode, errResp.Error.Message)
-		}
-		return nil, fmt.Errorf("deepseek API error (%d): %s", httpResp.StatusCode, string(respBody))
+		return nil, core.APIError("deepseek", httpResp.StatusCode, respBody)
 	}
 
 	var pResp response
