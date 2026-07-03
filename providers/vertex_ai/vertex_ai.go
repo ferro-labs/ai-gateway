@@ -98,6 +98,13 @@ func (p *Provider) BaseURL() string { return p.baseURL }
 // SetBaseURL overrides the base URL (used in tests to point to a mock server).
 func (p *Provider) SetBaseURL(url string) { p.baseURL = url }
 
+// NonOpenAIWire marks Vertex AI as ineligible for transparent OpenAI-wire proxy
+// pass-through: its upstream uses Vertex-native paths and auth (publisher-
+// prefixed models, project/location-scoped endpoints), not directly forwardable.
+// It remains fully usable via its native translated endpoints. See
+// core.NonOpenAIWireProvider.
+func (*Provider) NonOpenAIWire() {}
+
 // AuthHeaders implements core.ProxiableProvider.
 func (p *Provider) AuthHeaders() map[string]string {
 	if p.apiKey != "" {

@@ -64,6 +64,13 @@ func (p *Provider) BaseURL() string { return p.baseURL }
 // APIVersion returns the configured Azure API version.
 func (p *Provider) APIVersion() string { return p.apiVersion }
 
+// NonOpenAIWire marks Azure OpenAI as ineligible for transparent OpenAI-wire
+// proxy pass-through: its upstream uses Azure deployment paths and an
+// api-version query parameter, so an OpenAI-shaped request is not directly
+// forwardable. It remains fully usable via its native translated endpoints. See
+// core.NonOpenAIWireProvider.
+func (*Provider) NonOpenAIWire() {}
+
 // AuthHeaders implements core.ProxiableProvider.
 func (p *Provider) AuthHeaders() map[string]string {
 	return map[string]string{"api-key": p.apiKey}

@@ -155,6 +155,13 @@ func (p *Provider) BaseURL() string {
 	return fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com", p.region)
 }
 
+// NonOpenAIWire marks Bedrock as ineligible for transparent OpenAI-wire proxy
+// pass-through: its upstream is the AWS Bedrock API (SigV4-signed and not
+// OpenAI-shaped). It remains fully usable via its native translated endpoints,
+// and can graduate to signed pass-through by implementing RequestSigner. See
+// core.NonOpenAIWireProvider.
+func (*Provider) NonOpenAIWire() {}
+
 // AuthHeaders satisfies ProxiableProvider.
 func (p *Provider) AuthHeaders() map[string]string {
 	if p.bearerToken == "" {

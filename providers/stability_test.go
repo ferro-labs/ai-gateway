@@ -552,6 +552,33 @@ func TestProviderProxyCapabilityMatchesInterface(t *testing.T) {
 	}
 }
 
+// TestProviderNonOpenAIWireSet pins the exact set of providers gated from
+// transparent OpenAI-wire proxy pass-through via core.NonOpenAIWireProvider.
+// OpenAI-wire is the ecosystem default, so a new OpenAI-compatible provider must
+// NOT be added here; only a genuinely native / non-directly-forwardable provider
+// both implements the marker AND appears in this set. If this test fails,
+// reconcile the provider's marker with this list — do not blindly edit one side.
+func TestProviderNonOpenAIWireSet(t *testing.T) {
+	nativeOnly := map[string]bool{
+		NameAnthropic:    true,
+		NameGemini:       true,
+		NameBedrock:      true,
+		NameCohere:       true,
+		NameVertexAI:     true,
+		NameAzureOpenAI:  true,
+		NameAzureFoundry: true,
+	}
+	for _, tc := range providerNameStabilityCases() {
+		t.Run(tc.wantName, func(t *testing.T) {
+			p := tc.build(t)
+			_, marked := p.(NonOpenAIWireProvider)
+			if marked != nativeOnly[tc.wantName] {
+				t.Errorf("provider %q implements NonOpenAIWireProvider = %v, want %v (reconcile the provider marker with the gated set)", tc.wantName, marked, nativeOnly[tc.wantName])
+			}
+		})
+	}
+}
+
 // TestProviderEnvMappingsHaveRequiredKey verifies that each provider entry has
 // a configured? gate: either at least one EnvMapping with Required=true, or a
 // ConfiguredFn (used for providers whose gate is an OR across multiple env vars,

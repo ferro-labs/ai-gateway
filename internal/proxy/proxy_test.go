@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/ferro-labs/ai-gateway/providers"
+	geminipkg "github.com/ferro-labs/ai-gateway/providers/gemini"
 	openaipkg "github.com/ferro-labs/ai-gateway/providers/openai"
 )
 
@@ -360,6 +362,89 @@ func TestProxyHandler_PreservesV1PrefixForRootBase(t *testing.T) {
 
 	if gotPath != "/v1/responses" {
 		t.Errorf("upstream path = %q, want /v1/responses", gotPath)
+	}
+}
+
+// TestProxyHandler_GatesNonOpenAIWireProvider verifies a non-OpenAI-wire
+// provider (Gemini) is refused with 501 rather than transparently forwarded —
+// its upstream is not OpenAI-shaped, so an OpenAI-wire pass-through would fail.
+func TestProxyHandler_GatesNonOpenAIWireProvider(t *testing.T) {
+	g, err := geminipkg.New("test-key", "")
+	if err != nil {
+		t.Fatalf("gemini.New: %v", err)
+	}
+	reg := providers.NewRegistry()
+	reg.Register(g)
+	handler := Handler(reg)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{}`))
+	req.Header.Set("X-Provider", g.Name())
+	req.ContentLength = 2
+	w := httptest.NewRecorder()
+
+	handler(w, req)
+
+	if w.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want 501 for non-OpenAI-wire provider", w.Code)
+	}
+	var body map[string]any
+	_ = json.NewDecoder(w.Body).Decode(&body)
+	if _, ok := body["error"]; !ok {
+		t.Error("expected error envelope for gated provider")
+	}
+}
+
+// stubSigningProvider is a minimal OpenAI-wire ProxiableProvider that also
+// implements providers.RequestSigner, used to verify the proxy signs outbound
+// requests before forwarding them.
+type stubSigningProvider struct {
+	baseURL string
+	signed  *bool
+}
+
+func (stubSigningProvider) Name() string { return "stub-signer" }
+func (stubSigningProvider) Complete(context.Context, providers.Request) (*providers.Response, error) {
+	return nil, nil
+}
+func (stubSigningProvider) SupportedModels() []string      { return nil }
+func (stubSigningProvider) SupportsModel(string) bool      { return true }
+func (stubSigningProvider) Models() []providers.ModelInfo  { return nil }
+func (s stubSigningProvider) BaseURL() string              { return s.baseURL }
+func (stubSigningProvider) AuthHeaders() map[string]string { return nil }
+func (s stubSigningProvider) SignProxyRequest(req *http.Request) error {
+	*s.signed = true
+	req.Header.Set("X-Signed", "1")
+	return nil
+}
+
+// TestProxyHandler_InvokesRequestSigner verifies that when a provider implements
+// RequestSigner, the proxy signs the outbound request before forwarding it.
+func TestProxyHandler_InvokesRequestSigner(t *testing.T) {
+	var seenSigned string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenSigned = r.Header.Get("X-Signed")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer upstream.Close()
+
+	signed := false
+	reg := providers.NewRegistry()
+	reg.Register(stubSigningProvider{baseURL: upstream.URL, signed: &signed})
+	handler := Handler(reg)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{}`))
+	req.Header.Set("X-Provider", "stub-signer")
+	req.ContentLength = 2
+	w := httptest.NewRecorder()
+
+	handler(w, req)
+
+	if !signed {
+		t.Fatal("RequestSigner.SignProxyRequest was not called")
+	}
+	if seenSigned != "1" {
+		t.Errorf("upstream X-Signed = %q, want 1 (signer header not applied)", seenSigned)
 	}
 }
 

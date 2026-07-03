@@ -67,6 +67,12 @@ func (p *Provider) Name() string { return p.name }
 // BaseURL implements core.ProxiableProvider.
 func (p *Provider) BaseURL() string { return p.baseURL }
 
+// NonOpenAIWire marks Gemini as ineligible for transparent OpenAI-wire proxy
+// pass-through: its upstream is the Gemini generateContent API, not
+// OpenAI-shaped. It remains fully usable via its native translated endpoints.
+// See core.NonOpenAIWireProvider.
+func (*Provider) NonOpenAIWire() {}
+
 // AuthHeaders implements core.ProxiableProvider.
 // Gemini authenticates via the ?key= query parameter (added by the proxy
 // director), so no Authorization header is required here.

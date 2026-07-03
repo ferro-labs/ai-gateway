@@ -75,6 +75,12 @@ func (p *Provider) Name() string { return p.name }
 // BaseURL implements core.ProxiableProvider.
 func (p *Provider) BaseURL() string { return p.baseURL }
 
+// NonOpenAIWire marks Anthropic as ineligible for transparent OpenAI-wire proxy
+// pass-through: its upstream is the Anthropic Messages API, not OpenAI-shaped.
+// It remains fully usable via its native translated endpoints. See
+// core.NonOpenAIWireProvider.
+func (*Provider) NonOpenAIWire() {}
+
 // AuthHeaders implements core.ProxiableProvider.
 func (p *Provider) AuthHeaders() map[string]string {
 	return map[string]string{
