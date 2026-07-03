@@ -63,6 +63,32 @@ func TestDatabricks_NewRejectsInvalidBaseURL(t *testing.T) {
 	}
 }
 
+// TestDatabricks_EmbedErrorPath verifies a valid Embed request whose upstream
+// returns a non-200 surfaces the shared core.APIError behavior through
+// openaicompat.PostEmbeddings (input-validation errors are covered separately).
+func TestDatabricks_EmbedErrorPath(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"error":{"message":"embed overloaded"}}`)
+	}))
+	defer srv.Close()
+
+	p, err := New("test-key", srv.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_, err = p.Embed(context.Background(), core.EmbeddingRequest{
+		Model: "databricks-bge-large-en",
+		Input: "hello",
+	})
+	if err == nil {
+		t.Fatal("expected error for 429")
+	}
+	if !strings.Contains(err.Error(), "embed overloaded") || !strings.Contains(err.Error(), "429") {
+		t.Fatalf("error = %v, want status + upstream message", err)
+	}
+}
+
 // TestDatabricks_NewTrimsWhitespaceBeforeValidating verifies a whitespace-padded
 // base URL (common from env/secrets) is trimmed before validation, not rejected.
 func TestDatabricks_NewTrimsWhitespaceBeforeValidating(t *testing.T) {
