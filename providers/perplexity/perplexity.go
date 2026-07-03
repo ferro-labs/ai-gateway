@@ -83,7 +83,7 @@ func (p *Provider) Models() []core.ModelInfo {
 
 // DiscoverModels fetches the live model list from the Perplexity /models endpoint.
 func (p *Provider) DiscoverModels(ctx context.Context) ([]core.ModelInfo, error) {
-	return discov.DiscoverOpenAICompatibleModels(ctx, p.httpClient, p.baseURL+"/models", p.apiKey, p.name)
+	return discov.DiscoverOpenAICompatibleModels(ctx, p.httpClient, p.baseURL+"/v1/models", p.apiKey, p.name)
 }
 
 // Complete sends a chat completion request to Perplexity.

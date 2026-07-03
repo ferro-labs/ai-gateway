@@ -25,6 +25,39 @@ func TestNewPerplexity(t *testing.T) {
 	}
 }
 
+func TestPerplexityProvider_DiscoverModels(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("method = %q, want GET", r.Method)
+		}
+		if r.URL.Path != "/v1/models" {
+			t.Errorf("path = %q, want /v1/models", r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != testBearerAPIKey {
+			t.Errorf("Authorization = %q, want %q", r.Header.Get("Authorization"), testBearerAPIKey)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"sonar","object":"model","owned_by":"perplexity"},{"id":"sonar-pro","object":"model"}]}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New(testAPIKey, srv.URL)
+	models, err := p.DiscoverModels(context.Background())
+	if err != nil {
+		t.Fatalf("DiscoverModels() error: %v", err)
+	}
+	if len(models) != 2 {
+		t.Fatalf("expected 2 models, got %d", len(models))
+	}
+	if models[0].ID != "sonar" || models[0].OwnedBy != "perplexity" {
+		t.Errorf("unexpected model[0]: %+v", models[0])
+	}
+	if models[1].ID != "sonar-pro" || models[1].OwnedBy != "perplexity" {
+		t.Errorf("model[1] owned_by fallback = %q, want perplexity", models[1].OwnedBy)
+	}
+}
+
 func TestPerplexityProvider_SupportedModels(t *testing.T) {
 	p, _ := New("test-key", "")
 	models := p.SupportedModels()
