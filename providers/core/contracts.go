@@ -68,6 +68,10 @@ type NonOpenAIWireProvider interface {
 // surfaced as an upstream error rather than forwarding an unsigned request.
 type RequestSigner interface {
 	// SignProxyRequest signs the fully-formed outbound proxy request in place.
+	// An implementation that reads req.Body to compute the signature (e.g. AWS
+	// SigV4 body hashing) must restore it before returning — replace req.Body
+	// with a fresh io.NopCloser over the buffered bytes — so the base transport
+	// forwards the request with an intact body.
 	SignProxyRequest(req *http.Request) error
 }
 
