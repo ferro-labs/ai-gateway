@@ -13,6 +13,10 @@ import (
 // Anthropic Messages event stream is decoded by the shared anthropicwire
 // StreamDecoder, which is also driven by the Anthropic-on-Bedrock path so the
 // two providers cannot drift.
+//
+// It reuses the non-streaming HTTP client. That client's ResponseHeaderTimeout
+// bounds time-to-first-byte (headers), not the duration of the streamed body, so
+// it is safe for streaming: a slow model still streams tokens past the timeout.
 func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan core.StreamChunk, error) {
 	core.WarnUnsupportedParams(ctx, p.Name(), req.Model, req, anthropicSupportedParams...)
 

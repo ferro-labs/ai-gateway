@@ -3,10 +3,12 @@ package anthropic
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/ferro-labs/ai-gateway/internal/anthropicwire"
@@ -94,10 +96,10 @@ func (p *Provider) DiscoverModels(ctx context.Context) ([]core.ModelInfo, error)
 // SupportedModels returns the list of models supported by this provider.
 func (p *Provider) SupportedModels() []string {
 	return []string{
-		"claude-sonnet-4-20250514",
-		"claude-3-5-sonnet-20241022",
-		"claude-3-haiku-20240307",
-		"claude-3-opus-20240229",
+		"claude-opus-4-8",
+		"claude-sonnet-5",
+		"claude-fable-5",
+		"claude-haiku-4-5-20251001",
 	}
 }
 
@@ -121,12 +123,19 @@ type anthropicRequest struct {
 	Temperature   *float64                `json:"temperature,omitempty"`
 	TopP          *float64                `json:"top_p,omitempty"`
 	StopSequences []string                `json:"stop_sequences,omitempty"`
+	Metadata      *anthropicMetadata      `json:"metadata,omitempty"`
 	Stream        bool                    `json:"stream,omitempty"`
+}
+
+// anthropicMetadata carries the optional request metadata; user_id maps the
+// OpenAI "user" field, which Anthropic uses for abuse monitoring.
+type anthropicMetadata struct {
+	UserID string `json:"user_id,omitempty"`
 }
 
 // anthropicSupportedParams lists the OpenAI parameters the Anthropic Messages
 // API can express. Anything else the caller sets is warn-and-dropped (#140).
-var anthropicSupportedParams = []string{"temperature", "top_p", "max_tokens", "stop", "tools", "tool_choice"}
+var anthropicSupportedParams = []string{"temperature", "top_p", "max_tokens", "stop", "tools", "tool_choice", "user"}
 
 // buildContent renders a non-system message's content for the Anthropic API.
 // Plain text turns stay a JSON string (the common path); multimodal turns and
@@ -172,23 +181,50 @@ func buildContent(msg core.Message) any {
 	return blocks
 }
 
-// imageBlock maps an OpenAI image_url (data URI or remote URL) to an Anthropic
-// image content block.
-func imageBlock(url string) anthropicwire.Block {
-	if mediaType, data, ok := anthropicwire.ParseDataURI(url); ok {
-		return anthropicwire.Block{
-			Type: "image",
-			Source: &anthropicwire.ImageSource{
-				Type:      "base64",
-				MediaType: mediaType,
-				Data:      data,
-			},
+// imageBlock maps an OpenAI image_url to an Anthropic image content block: a
+// base64 source for a data URI (re-encoding a non-base64 data URI's payload), or
+// a url source for a genuine remote URL. A data: URI is never emitted as a url
+// source, which Anthropic would reject.
+func imageBlock(imageURL string) anthropicwire.Block {
+	if mediaType, data, ok := anthropicwire.ParseDataURI(imageURL); ok {
+		return base64ImageBlock(mediaType, data)
+	}
+	if strings.HasPrefix(imageURL, "data:") {
+		if mediaType, encoded, ok := reencodeDataURI(imageURL); ok {
+			return base64ImageBlock(mediaType, encoded)
 		}
 	}
 	return anthropicwire.Block{
 		Type:   "image",
-		Source: &anthropicwire.ImageSource{Type: "url", URL: url},
+		Source: &anthropicwire.ImageSource{Type: "url", URL: imageURL},
 	}
+}
+
+func base64ImageBlock(mediaType, data string) anthropicwire.Block {
+	return anthropicwire.Block{
+		Type: "image",
+		Source: &anthropicwire.ImageSource{
+			Type:      "base64",
+			MediaType: mediaType,
+			Data:      data,
+		},
+	}
+}
+
+// reencodeDataURI converts a non-base64 data URI ("data:<mediatype>,<payload>",
+// where payload is percent-encoded per RFC 2397) into a media type and base64
+// payload so it can be sent as an Anthropic base64 image source.
+func reencodeDataURI(uri string) (mediaType, base64Data string, ok bool) {
+	meta, payload, found := strings.Cut(strings.TrimPrefix(uri, "data:"), ",")
+	if !found {
+		return "", "", false
+	}
+	mediaType, _, _ = strings.Cut(meta, ";")
+	decoded, err := url.QueryUnescape(payload)
+	if err != nil {
+		return "", "", false
+	}
+	return mediaType, base64.StdEncoding.EncodeToString([]byte(decoded)), true
 }
 
 // buildAnthropicRequest maps a core.Request to an Anthropic Messages API request
@@ -202,6 +238,11 @@ func buildAnthropicRequest(ctx context.Context, req core.Request, stream bool) a
 		maxTokens = *req.MaxTokens
 	}
 
+	var metadata *anthropicMetadata
+	if req.User != "" {
+		metadata = &anthropicMetadata{UserID: req.User}
+	}
+
 	return anthropicRequest{
 		Model:         req.Model,
 		MaxTokens:     maxTokens,
@@ -212,6 +253,7 @@ func buildAnthropicRequest(ctx context.Context, req core.Request, stream bool) a
 		System:        system,
 		Tools:         anthropicwire.MapTools(req.Tools),
 		ToolChoice:    anthropicwire.MapToolChoice(req.ToolChoice, req.Tools),
+		Metadata:      metadata,
 		Stream:        stream,
 	}
 }

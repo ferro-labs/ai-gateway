@@ -76,10 +76,10 @@ func TestAnthropicProvider_SupportedModels(t *testing.T) {
 	}
 
 	expected := []string{
-		"claude-sonnet-4-20250514",
-		"claude-3-5-sonnet-20241022",
-		"claude-3-haiku-20240307",
-		"claude-3-opus-20240229",
+		"claude-opus-4-8",
+		"claude-sonnet-5",
+		"claude-fable-5",
+		"claude-haiku-4-5-20251001",
 	}
 
 	if len(models) != len(expected) {
