@@ -307,6 +307,62 @@ func TestProxyHandler_NoProvider_Returns400(t *testing.T) {
 	}
 }
 
+// TestProxyHandler_DoesNotDoubleV1Prefix guards against the pass-through proxy
+// doubling the /v1 path segment for providers whose base URL already ends in
+// /v1 (e.g. xai, openrouter, cerebras). The proxy is mounted at /v1/*, so the
+// inbound path always carries /v1; the upstream must receive it exactly once.
+func TestProxyHandler_DoesNotDoubleV1Prefix(t *testing.T) {
+	var gotPath string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer upstream.Close()
+
+	// Provider whose base URL already ends in /v1.
+	reg := buildTestRegistry(upstream.URL + "/v1")
+	handler := Handler(reg)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{}`))
+	req.Header.Set("X-Provider", providerOpenAI)
+	req.ContentLength = 2
+	w := httptest.NewRecorder()
+
+	handler(w, req)
+
+	if gotPath != "/v1/responses" {
+		t.Errorf("upstream path = %q, want /v1/responses (proxy must not double the /v1 segment)", gotPath)
+	}
+}
+
+// TestProxyHandler_PreservesV1PrefixForRootBase verifies that a bare-host base
+// URL (no /v1 suffix) still forwards the inbound /v1 prefix intact — the fix
+// must not over-trim.
+func TestProxyHandler_PreservesV1PrefixForRootBase(t *testing.T) {
+	var gotPath string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer upstream.Close()
+
+	reg := buildTestRegistry(upstream.URL) // base has no /v1
+	handler := Handler(reg)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{}`))
+	req.Header.Set("X-Provider", providerOpenAI)
+	req.ContentLength = 2
+	w := httptest.NewRecorder()
+
+	handler(w, req)
+
+	if gotPath != "/v1/responses" {
+		t.Errorf("upstream path = %q, want /v1/responses", gotPath)
+	}
+}
+
 func BenchmarkExtractTopLevelModel(b *testing.B) {
 	body := []byte(`{
 		"messages":[

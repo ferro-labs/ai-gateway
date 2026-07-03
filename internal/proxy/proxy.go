@@ -12,6 +12,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/ferro-labs/ai-gateway/internal/apierror"
@@ -69,6 +70,14 @@ func Handler(registry *providers.Registry) http.HandlerFunc {
 			apierror.WriteOpenAI(w, http.StatusInternalServerError, "upstream provider is unavailable", "server_error", "internal_error")
 			return
 		}
+
+		// The proxy is mounted at /v1/*, so every inbound path already carries
+		// the OpenAI /v1 prefix. Strip a trailing /v1 from the provider base
+		// path so a base URL that itself ends in /v1 (e.g. https://api.x.ai/v1)
+		// does not double the segment (…/v1 + /v1/responses -> /v1/v1/responses)
+		// and 404 upstream.
+		target.Path = strings.TrimSuffix(strings.TrimSuffix(target.Path, "/v1/"), "/v1")
+		target.RawPath = ""
 
 		authHeaders := pp.AuthHeaders()
 
