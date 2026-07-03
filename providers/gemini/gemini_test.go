@@ -54,7 +54,7 @@ func TestGeminiProvider_SupportedModels(t *testing.T) {
 	found := false
 	foundEmbedding := false
 	for _, m := range models {
-		if m == "gemini-2.0-flash" {
+		if m == "gemini-2.5-flash" {
 			found = true
 		}
 		if m == "gemini-embedding-001" {
@@ -62,7 +62,7 @@ func TestGeminiProvider_SupportedModels(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Error("gemini-2.0-flash not found")
+		t.Error("gemini-2.5-flash not found")
 	}
 	if !foundEmbedding {
 		t.Error("gemini-embedding-001 not found")
@@ -71,8 +71,8 @@ func TestGeminiProvider_SupportedModels(t *testing.T) {
 
 func TestGeminiProvider_SupportsModel(t *testing.T) {
 	p, _ := New("test-key", "")
-	if !p.SupportsModel("gemini-2.0-flash") {
-		t.Error("expected gemini-2.0-flash to be supported")
+	if !p.SupportsModel("gemini-2.5-flash") {
+		t.Error("expected gemini-2.5-flash to be supported")
 	}
 	if p.SupportsModel("gpt-4o") {
 		t.Error("gemini should not support gpt-4o")
