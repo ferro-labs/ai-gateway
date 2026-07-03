@@ -28,10 +28,11 @@ type Provider struct {
 
 // Compile-time interface assertions.
 var (
-	_ core.Provider          = (*Provider)(nil)
-	_ core.StreamProvider    = (*Provider)(nil)
-	_ core.ProxiableProvider = (*Provider)(nil)
-	_ core.EmbeddingProvider = (*Provider)(nil)
+	_ core.Provider              = (*Provider)(nil)
+	_ core.StreamProvider        = (*Provider)(nil)
+	_ core.ProxiableProvider     = (*Provider)(nil)
+	_ core.NonOpenAIWireProvider = (*Provider)(nil)
+	_ core.EmbeddingProvider     = (*Provider)(nil)
 )
 
 // New creates a new Cohere provider.
