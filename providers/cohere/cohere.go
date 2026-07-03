@@ -28,10 +28,11 @@ type Provider struct {
 
 // Compile-time interface assertions.
 var (
-	_ core.Provider          = (*Provider)(nil)
-	_ core.StreamProvider    = (*Provider)(nil)
-	_ core.ProxiableProvider = (*Provider)(nil)
-	_ core.EmbeddingProvider = (*Provider)(nil)
+	_ core.Provider              = (*Provider)(nil)
+	_ core.StreamProvider        = (*Provider)(nil)
+	_ core.ProxiableProvider     = (*Provider)(nil)
+	_ core.NonOpenAIWireProvider = (*Provider)(nil)
+	_ core.EmbeddingProvider     = (*Provider)(nil)
 )
 
 // New creates a new Cohere provider.
@@ -53,6 +54,12 @@ func (p *Provider) Name() string { return p.name }
 
 // BaseURL implements core.ProxiableProvider.
 func (p *Provider) BaseURL() string { return p.baseURL }
+
+// NonOpenAIWire marks Cohere as ineligible for transparent OpenAI-wire proxy
+// pass-through: its upstream is the Cohere v2 API, not OpenAI-shaped. It remains
+// fully usable via its native translated endpoints. See
+// core.NonOpenAIWireProvider.
+func (*Provider) NonOpenAIWire() {}
 
 // AuthHeaders implements core.ProxiableProvider.
 func (p *Provider) AuthHeaders() map[string]string {

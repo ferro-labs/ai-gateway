@@ -70,11 +70,12 @@ type Provider struct {
 
 // Compile-time interface assertions.
 var (
-	_ core.Provider          = (*Provider)(nil)
-	_ core.StreamProvider    = (*Provider)(nil)
-	_ core.EmbeddingProvider = (*Provider)(nil)
-	_ core.ImageProvider     = (*Provider)(nil)
-	_ core.ProxiableProvider = (*Provider)(nil)
+	_ core.Provider              = (*Provider)(nil)
+	_ core.StreamProvider        = (*Provider)(nil)
+	_ core.EmbeddingProvider     = (*Provider)(nil)
+	_ core.ImageProvider         = (*Provider)(nil)
+	_ core.ProxiableProvider     = (*Provider)(nil)
+	_ core.NonOpenAIWireProvider = (*Provider)(nil)
 )
 
 // New creates a new AWS Bedrock provider.
@@ -154,6 +155,13 @@ func (p *Provider) Region() string { return p.region }
 func (p *Provider) BaseURL() string {
 	return fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com", p.region)
 }
+
+// NonOpenAIWire marks Bedrock as ineligible for transparent OpenAI-wire proxy
+// pass-through: its upstream is the AWS Bedrock API (SigV4-signed and not
+// OpenAI-shaped). It remains fully usable via its native translated endpoints,
+// and can graduate to signed pass-through by implementing RequestSigner. See
+// core.NonOpenAIWireProvider.
+func (*Provider) NonOpenAIWire() {}
 
 // AuthHeaders satisfies ProxiableProvider.
 func (p *Provider) AuthHeaders() map[string]string {

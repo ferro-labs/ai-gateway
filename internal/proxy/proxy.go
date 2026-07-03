@@ -6,12 +6,14 @@ import (
 	"bufio"
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/ferro-labs/ai-gateway/internal/apierror"
@@ -60,6 +62,20 @@ func Handler(registry *providers.Registry) http.HandlerFunc {
 			return
 		}
 
+		// Non-OpenAI-wire providers (Anthropic, Gemini, Bedrock, Cohere, Vertex,
+		// Azure) cannot serve a transparently-forwarded OpenAI-shaped request at
+		// their base URL. Refuse with 501 instead of forwarding a request their
+		// upstream cannot parse; they remain available via their native
+		// translated endpoints. See core.NonOpenAIWireProvider.
+		if _, nativeOnly := p.(providers.NonOpenAIWireProvider); nativeOnly {
+			apierror.WriteOpenAI(w, http.StatusNotImplemented,
+				"provider "+p.Name()+" is not available for OpenAI-compatible pass-through; use its native chat, embeddings, or images endpoints",
+				"invalid_request_error",
+				"proxy_not_supported",
+			)
+			return
+		}
+
 		providerName := p.Name()
 
 		target, err := url.Parse(pp.BaseURL())
@@ -70,16 +86,33 @@ func Handler(registry *providers.Registry) http.HandlerFunc {
 			return
 		}
 
+		// The proxy is mounted at /v1/*, so every inbound path already carries
+		// the OpenAI /v1 prefix. Strip a trailing /v1 from the provider base
+		// path so a base URL that itself ends in /v1 (e.g. https://api.x.ai/v1)
+		// does not double the segment (…/v1 + /v1/responses -> /v1/v1/responses)
+		// and 404 upstream.
+		target.Path = strings.TrimSuffix(strings.TrimSuffix(target.Path, "/v1/"), "/v1")
+		target.RawPath = ""
+
 		authHeaders := pp.AuthHeaders()
 
+		// Use the raw SSE-tuned transport (no ResponseHeaderTimeout) so slow or
+		// streaming pass-through endpoints are not cut off at 30s while waiting
+		// for the upstream's first response header. The raw transport (not the
+		// otelhttp-wrapped client RoundTripper) keeps this a transparent proxy:
+		// no traceparent/tracestate injected into upstream requests and no extra
+		// OTel CLIENT span per proxied call.
+		//
+		// Providers requiring per-request signing (e.g. AWS SigV4) wrap that
+		// transport so the fully-formed outbound request is signed; a signing
+		// failure surfaces via ErrorHandler rather than as an unsigned forward.
+		var transport http.RoundTripper = httpclient.SharedStreamingTransport()
+		if signer, ok := p.(providers.RequestSigner); ok {
+			transport = signingRoundTripper{base: transport, signer: signer}
+		}
+
 		proxy := &httputil.ReverseProxy{
-			// Use the raw SSE-tuned transport (no ResponseHeaderTimeout) so slow
-			// or streaming pass-through endpoints are not cut off at 30s while
-			// waiting for the upstream's first response header. The raw
-			// transport (not the otelhttp-wrapped client RoundTripper) keeps
-			// this a transparent proxy: no traceparent/tracestate injected into
-			// upstream requests and no extra OTel CLIENT span per proxied call.
-			Transport:     httpclient.SharedStreamingTransport(),
+			Transport:     transport,
 			FlushInterval: proxyFlushInterval,
 			Rewrite: func(pr *httputil.ProxyRequest) {
 				pr.SetURL(target)
@@ -112,6 +145,22 @@ func Handler(registry *providers.Registry) http.HandlerFunc {
 
 		proxy.ServeHTTP(w, r)
 	}
+}
+
+// signingRoundTripper signs each outbound proxied request via a provider's
+// RequestSigner before delegating to the base transport. A signing failure is
+// returned to the reverse proxy (surfaced as a 502 by ErrorHandler) rather than
+// forwarding an unsigned request upstream.
+type signingRoundTripper struct {
+	base   http.RoundTripper
+	signer providers.RequestSigner
+}
+
+func (s signingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	if err := s.signer.SignProxyRequest(req); err != nil {
+		return nil, fmt.Errorf("sign proxy request: %w", err)
+	}
+	return s.base.RoundTrip(req)
 }
 
 // ResolveProvider determines which provider should receive the request.

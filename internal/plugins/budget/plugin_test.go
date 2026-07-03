@@ -128,6 +128,75 @@ func TestBudget_RecordAndExceed(t *testing.T) {
 	}
 }
 
+func TestBudget_RecordsUsageFromMetadata_NonChatSurface(t *testing.T) {
+	// Non-chat surfaces (embeddings) carry no chat Response; token usage arrives
+	// through Metadata["usage"]. Budget must gate and record cost from it exactly
+	// as it does for chat, so spend control is uniform across surfaces.
+	p := makePlugin(t, map[string]any{
+		"store_id":            "test-metadata-usage",
+		"spend_limit_usd":     0.001, // $0.001 limit
+		"input_per_m_tokens":  3.0,
+		"output_per_m_tokens": 15.0,
+	})
+	apiKey := "key-embed"
+
+	// after_request for an embedding: 400 prompt tokens, no completion.
+	// cost = 400/1_000_000 * 3.0 = 0.0012 USD → over the $0.001 limit.
+	afterPctx := pctxWithKey(apiKey)
+	afterPctx.Request = nil // non-chat surface: no chat request
+	afterPctx.Metadata["usage"] = providers.Usage{PromptTokens: 400, TotalTokens: 400}
+	afterPctx.Metadata["completed"] = true // explicit after_request signal
+	if err := p.Execute(context.Background(), afterPctx); err != nil {
+		t.Fatalf("recording embedding usage should not error: %v", err)
+	}
+
+	// The before_request check must now reject (spend > limit).
+	beforePctx := pctxWithKey(apiKey)
+	beforePctx.Request = nil
+	if err := p.Execute(context.Background(), beforePctx); err == nil {
+		t.Fatal("expected rejection after embedding spend exceeded the limit")
+	} else if !beforePctx.Reject {
+		t.Error("pctx.Reject should be true when budget exceeded via embedding usage")
+	}
+}
+
+func TestBudget_ImageSurface_CompletedNotReRejected(t *testing.T) {
+	// Image generation reports no token usage. After a completed image request,
+	// the after_request stage must NOT re-run the budget gate (which could reject
+	// an already-generated, already-billed response); it records nothing.
+	p := makePlugin(t, map[string]any{
+		"store_id":            "test-image-surface",
+		"spend_limit_usd":     0.001, // $0.001 limit
+		"input_per_m_tokens":  3.0,
+		"output_per_m_tokens": 15.0,
+	})
+	apiKey := "key-image"
+
+	// Push accumulated spend over the limit via a prior completed request.
+	over := pctxWithKey(apiKey)
+	over.Request = nil
+	over.Metadata["usage"] = providers.Usage{PromptTokens: 1000, TotalTokens: 1000} // 0.003 USD > limit
+	over.Metadata["completed"] = true
+	if err := p.Execute(context.Background(), over); err != nil {
+		t.Fatalf("setup over-budget recording should not error: %v", err)
+	}
+	if spent := p.store.get(apiKey); spent < p.spendLimitUSD {
+		t.Fatalf("setup precondition not met: spent $%.4f, want >= limit $%.4f", spent, p.spendLimitUSD)
+	}
+
+	// A completed image request (no usage) in the after stage must not reject,
+	// even though spend is now over the limit.
+	afterImg := pctxWithKey(apiKey)
+	afterImg.Request = nil
+	afterImg.Metadata["completed"] = true // completed, but no usage
+	if err := p.Execute(context.Background(), afterImg); err != nil {
+		t.Fatalf("after_request for a completed image must not reject: %v", err)
+	}
+	if afterImg.Reject {
+		t.Error("image after_request re-ran the budget gate and rejected a completed response")
+	}
+}
+
 func TestBudget_Unlimited_NeverRejects(t *testing.T) {
 	// spend_limit_usd = 0 means unlimited.
 	p := makePlugin(t, map[string]any{

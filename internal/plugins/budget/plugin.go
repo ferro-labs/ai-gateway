@@ -60,6 +60,7 @@ import (
 
 	"github.com/ferro-labs/ai-gateway/internal/plugins/plugincfg"
 	"github.com/ferro-labs/ai-gateway/plugin"
+	"github.com/ferro-labs/ai-gateway/providers"
 )
 
 func init() {
@@ -244,14 +245,42 @@ func (p *Plugin) Execute(_ context.Context, pctx *plugin.Context) error {
 		return nil
 	}
 
-	if pctx.Response == nil {
+	if !requestCompleted(pctx) {
 		// before_request stage: check accumulated spend.
 		return p.checkBudget(pctx, key)
 	}
 
-	// after_request stage: record cost.
+	// after_request stage: record cost from the completed request's usage.
 	p.recordCost(pctx, key)
 	return nil
+}
+
+// requestCompleted reports whether Execute is running in the after_request
+// stage. Chat sets the typed Response; non-chat surfaces (embeddings, images)
+// set Metadata["completed"]. The explicit marker is required because image
+// responses carry no token usage, so completion cannot be inferred from usage
+// presence — doing so would re-run the budget gate on a completed image and
+// could reject an already-billed response under concurrent spend.
+func requestCompleted(pctx *plugin.Context) bool {
+	if pctx.Response != nil {
+		return true
+	}
+	completed, _ := pctx.Metadata["completed"].(bool)
+	return completed
+}
+
+// usageFromContext returns the completed request's token usage — from the chat
+// Response or, for non-chat surfaces, Metadata["usage"] (the sanctioned additive
+// channel for the frozen plugin seam). Image generation reports no usage, so ok
+// is false and the request is gated but not costed.
+func usageFromContext(pctx *plugin.Context) (providers.Usage, bool) {
+	if pctx.Response != nil {
+		return pctx.Response.Usage, true
+	}
+	if u, ok := pctx.Metadata["usage"].(providers.Usage); ok {
+		return u, true
+	}
+	return providers.Usage{}, false
 }
 
 // Close releases plugin resources.
@@ -291,10 +320,10 @@ func (p *Plugin) checkBudget(pctx *plugin.Context, key string) error {
 // the store via a single atomic read-modify-write, so concurrent completions
 // for the same key never lose an increment.
 func (p *Plugin) recordCost(pctx *plugin.Context, key string) {
-	if pctx.Response == nil {
+	usage, ok := usageFromContext(pctx)
+	if !ok {
 		return
 	}
-	usage := pctx.Response.Usage
 	actual := (float64(usage.PromptTokens)/1_000_000.0)*p.inputPerMTokens +
 		(float64(usage.CompletionTokens)/1_000_000.0)*p.outputPerMTokens
 	if actual > 0 {

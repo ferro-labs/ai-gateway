@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 
 	"github.com/ferro-labs/ai-gateway/internal/anthropicwire"
@@ -15,14 +14,6 @@ import (
 	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
-
-func validateBaseURL(name, rawURL string) error {
-	u, err := url.Parse(rawURL)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return fmt.Errorf("%s: invalid base URL %q: must be http or https with a host", name, rawURL)
-	}
-	return nil
-}
 
 // Name is the canonical provider identifier.
 const Name = "anthropic"
@@ -46,10 +37,11 @@ type Provider struct {
 
 // Compile-time interface assertions.
 var (
-	_ core.Provider          = (*Provider)(nil)
-	_ core.StreamProvider    = (*Provider)(nil)
-	_ core.ProxiableProvider = (*Provider)(nil)
-	_ core.DiscoveryProvider = (*Provider)(nil)
+	_ core.Provider              = (*Provider)(nil)
+	_ core.StreamProvider        = (*Provider)(nil)
+	_ core.ProxiableProvider     = (*Provider)(nil)
+	_ core.NonOpenAIWireProvider = (*Provider)(nil)
+	_ core.DiscoveryProvider     = (*Provider)(nil)
 )
 
 // New creates a new Anthropic provider.
@@ -58,7 +50,7 @@ func New(apiKey, baseURL string) (*Provider, error) {
 		baseURL = defaultBaseURL
 	}
 	baseURL = strings.TrimRight(baseURL, "/")
-	if err := validateBaseURL(Name, baseURL); err != nil {
+	if err := core.ValidateBaseURL(Name, baseURL); err != nil {
 		return nil, err
 	}
 	return &Provider{
@@ -74,6 +66,12 @@ func (p *Provider) Name() string { return p.name }
 
 // BaseURL implements core.ProxiableProvider.
 func (p *Provider) BaseURL() string { return p.baseURL }
+
+// NonOpenAIWire marks Anthropic as ineligible for transparent OpenAI-wire proxy
+// pass-through: its upstream is the Anthropic Messages API, not OpenAI-shaped.
+// It remains fully usable via its native translated endpoints. See
+// core.NonOpenAIWireProvider.
+func (*Provider) NonOpenAIWire() {}
 
 // AuthHeaders implements core.ProxiableProvider.
 func (p *Provider) AuthHeaders() map[string]string {

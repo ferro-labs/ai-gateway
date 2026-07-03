@@ -40,11 +40,12 @@ type Provider struct {
 
 // Compile-time interface assertions.
 var (
-	_ core.Provider          = (*Provider)(nil)
-	_ core.StreamProvider    = (*Provider)(nil)
-	_ core.EmbeddingProvider = (*Provider)(nil)
-	_ core.ImageProvider     = (*Provider)(nil)
-	_ core.ProxiableProvider = (*Provider)(nil)
+	_ core.Provider              = (*Provider)(nil)
+	_ core.StreamProvider        = (*Provider)(nil)
+	_ core.EmbeddingProvider     = (*Provider)(nil)
+	_ core.ImageProvider         = (*Provider)(nil)
+	_ core.ProxiableProvider     = (*Provider)(nil)
+	_ core.NonOpenAIWireProvider = (*Provider)(nil)
 )
 
 // New creates a new Google Gemini provider.
@@ -66,6 +67,12 @@ func (p *Provider) Name() string { return p.name }
 
 // BaseURL implements core.ProxiableProvider.
 func (p *Provider) BaseURL() string { return p.baseURL }
+
+// NonOpenAIWire marks Gemini as ineligible for transparent OpenAI-wire proxy
+// pass-through: its upstream is the Gemini generateContent API, not
+// OpenAI-shaped. It remains fully usable via its native translated endpoints.
+// See core.NonOpenAIWireProvider.
+func (*Provider) NonOpenAIWire() {}
 
 // AuthHeaders implements core.ProxiableProvider.
 // Gemini authenticates via the ?key= query parameter (added by the proxy

@@ -2889,6 +2889,77 @@ func (m *mockImageProvider) GenerateImage(_ context.Context, req providers.Image
 
 // ── alias resolution tests ────────────────────────────────────────────────────
 
+func TestGateway_Embed_BeforePluginRejects(t *testing.T) {
+	// Governance (before-request plugins) must apply to embeddings, not just chat:
+	// a rejecting before-plugin blocks the request before the provider is called.
+	ep := &mockEmbeddingProvider{
+		mockProvider: mockProvider{name: mockProviderName, models: []string{"text-embedding-3-small"}},
+	}
+	gw, _ := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: mockProviderName}},
+	})
+	gw.RegisterProvider(ep)
+
+	_ = gw.RegisterPlugin(plugin.StageBeforeRequest, &testPlugin{
+		name: "embed-blocker",
+		typ:  plugin.TypeGuardrail,
+		execFn: func(_ context.Context, pctx *plugin.Context) error {
+			pctx.Reject = true
+			pctx.Reason = "blocked"
+			return nil
+		},
+	})
+
+	if _, err := gw.Embed(context.Background(), providers.EmbeddingRequest{
+		Model: "text-embedding-3-small",
+		Input: "hello",
+	}); err == nil {
+		t.Fatal("expected before-plugin to reject the embedding request")
+	}
+	if ep.capturedModel != "" {
+		t.Error("embedding provider was called despite a before-plugin rejection")
+	}
+}
+
+func TestGateway_Embed_AfterPluginSeesSurfaceAndUsage(t *testing.T) {
+	// After-request plugins on the embedding surface receive the surface tag and
+	// normalized token usage via Metadata (the additive channel budget uses).
+	ep := &mockEmbeddingProvider{
+		mockProvider: mockProvider{name: mockProviderName, models: []string{"text-embedding-3-small"}},
+	}
+	gw, _ := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: mockProviderName}},
+	})
+	gw.RegisterProvider(ep)
+
+	var gotSurface any
+	var sawUsage bool
+	_ = gw.RegisterPlugin(plugin.StageAfterRequest, &testPlugin{
+		name: "embed-observer",
+		typ:  plugin.TypeLogging,
+		execFn: func(_ context.Context, pctx *plugin.Context) error {
+			gotSurface = pctx.Metadata["surface"]
+			_, sawUsage = pctx.Metadata["usage"].(providers.Usage)
+			return nil
+		},
+	})
+
+	if _, err := gw.Embed(context.Background(), providers.EmbeddingRequest{
+		Model: "text-embedding-3-small",
+		Input: "hello",
+	}); err != nil {
+		t.Fatalf("Embed() error: %v", err)
+	}
+	if gotSurface != "embeddings" {
+		t.Errorf("after-plugin saw surface %v, want %q", gotSurface, "embeddings")
+	}
+	if !sawUsage {
+		t.Error(`after-plugin did not receive normalized usage via Metadata["usage"]`)
+	}
+}
+
 func TestGateway_Embed_ResolvesAlias(t *testing.T) {
 	ep := &mockEmbeddingProvider{
 		mockProvider: mockProvider{
