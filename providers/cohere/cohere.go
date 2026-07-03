@@ -37,6 +37,7 @@ var (
 
 // New creates a new Cohere provider.
 func New(apiKey, baseURL string) (*Provider, error) {
+	baseURL = strings.TrimSpace(baseURL)
 	if baseURL == "" {
 		baseURL = defaultBaseURL
 	} else if err := core.ValidateBaseURL(Name, baseURL); err != nil {
@@ -223,7 +224,8 @@ func cohereMessages(messages []core.Message) []cohereRequestMessage {
 type cohereImageURLBlock struct {
 	Type     string `json:"type"`
 	ImageURL struct {
-		URL string `json:"url"`
+		URL    string `json:"url"`
+		Detail string `json:"detail,omitempty"`
 	} `json:"image_url"`
 }
 
@@ -239,6 +241,7 @@ func cohereContentParts(parts []core.ContentPart) []any {
 			if part.ImageURL != nil {
 				block := cohereImageURLBlock{Type: "image_url"}
 				block.ImageURL.URL = part.ImageURL.URL
+				block.ImageURL.Detail = part.ImageURL.Detail
 				blocks = append(blocks, block)
 			}
 		}

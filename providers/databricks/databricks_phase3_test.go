@@ -62,3 +62,15 @@ func TestDatabricks_NewRejectsInvalidBaseURL(t *testing.T) {
 		t.Fatal("New accepted an invalid base URL")
 	}
 }
+
+// TestDatabricks_NewTrimsWhitespaceBeforeValidating verifies a whitespace-padded
+// base URL (common from env/secrets) is trimmed before validation, not rejected.
+func TestDatabricks_NewTrimsWhitespaceBeforeValidating(t *testing.T) {
+	p, err := New("k", "  https://demo.databricks.com  ")
+	if err != nil {
+		t.Fatalf("New rejected a whitespace-padded valid URL: %v", err)
+	}
+	if !strings.HasPrefix(p.BaseURL(), "https://demo.databricks.com") {
+		t.Errorf("BaseURL = %q, want trimmed", p.BaseURL())
+	}
+}

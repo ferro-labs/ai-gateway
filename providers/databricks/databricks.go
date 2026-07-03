@@ -39,7 +39,8 @@ var (
 // baseURL should point at the Databricks host or the OpenAI-compatible serving
 // path. If a plain workspace host is provided, /serving-endpoints is appended.
 func New(apiKey, baseURL string) (*Provider, error) {
-	if strings.TrimSpace(baseURL) == "" {
+	baseURL = strings.TrimSpace(baseURL)
+	if baseURL == "" {
 		return nil, fmt.Errorf("databricks: baseURL is required")
 	}
 	if err := core.ValidateBaseURL(Name, baseURL); err != nil {

@@ -40,6 +40,7 @@ var (
 
 // New creates a new Azure OpenAI provider.
 func New(apiKey, baseURL, deploymentName, apiVersion string) (*Provider, error) {
+	baseURL = strings.TrimSpace(baseURL)
 	if err := core.ValidateBaseURL(Name, baseURL); err != nil {
 		return nil, err
 	}
