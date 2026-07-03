@@ -96,9 +96,9 @@ func (p *Provider) DiscoverModels(ctx context.Context) ([]core.ModelInfo, error)
 // SupportedModels returns the list of models supported by this provider.
 func (p *Provider) SupportedModels() []string {
 	return []string{
-		"claude-opus-4-8",
-		"claude-sonnet-5",
-		"claude-fable-5",
+		"claude-opus-4-7",
+		"claude-opus-4-6",
+		"claude-sonnet-4-6",
 		"claude-haiku-4-5-20251001",
 	}
 }

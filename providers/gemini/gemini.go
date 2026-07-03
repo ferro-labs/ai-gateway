@@ -86,9 +86,7 @@ func (p *Provider) AuthHeaders() map[string]string {
 // SupportedModels returns the static list of known Gemini models.
 func (p *Provider) SupportedModels() []string {
 	return []string{
-		// Gemini 3.x
-		"gemini-3.5-flash",
-		// Gemini 2.5 (current GA tier)
+		// Current GA tier
 		"gemini-2.5-pro",
 		"gemini-2.5-flash",
 		"gemini-2.5-flash-lite",

@@ -76,9 +76,9 @@ func TestAnthropicProvider_SupportedModels(t *testing.T) {
 	}
 
 	expected := []string{
-		"claude-opus-4-8",
-		"claude-sonnet-5",
-		"claude-fable-5",
+		"claude-opus-4-7",
+		"claude-opus-4-6",
+		"claude-sonnet-4-6",
 		"claude-haiku-4-5-20251001",
 	}
 
