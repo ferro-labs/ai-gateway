@@ -31,6 +31,19 @@ func TestNormalizeFinishReason(t *testing.T) {
 		{"cohere TOOL_CALL", "TOOL_CALL", "tool_calls"},
 		{"cohere ERROR_TOXIC", "ERROR_TOXIC", "content_filter"},
 
+		// Gemini (uppercase finishReason; content-blocking reasons → content_filter)
+		{"gemini STOP", "STOP", "stop"},
+		{"gemini MAX_TOKENS", "MAX_TOKENS", "length"},
+		{"gemini SAFETY", "SAFETY", "content_filter"},
+		{"gemini RECITATION", "RECITATION", "content_filter"},
+		{"gemini BLOCKLIST", "BLOCKLIST", "content_filter"},
+		{"gemini PROHIBITED_CONTENT", "PROHIBITED_CONTENT", "content_filter"},
+		{"gemini SPII", "SPII", "content_filter"},
+		{"gemini IMAGE_SAFETY", "IMAGE_SAFETY", "content_filter"},
+		// Ambiguous Gemini reasons are surfaced unchanged rather than mis-signaled.
+		{"gemini OTHER passthrough", "OTHER", "OTHER"},
+		{"gemini MALFORMED_FUNCTION_CALL passthrough", "MALFORMED_FUNCTION_CALL", "MALFORMED_FUNCTION_CALL"},
+
 		// Already-canonical passthrough
 		{"canonical tool_calls", "tool_calls", "tool_calls"},
 		{"canonical content_filter", "content_filter", "content_filter"},

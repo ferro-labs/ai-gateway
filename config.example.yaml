@@ -22,7 +22,7 @@ strategy:
 #       value: gpt-4o
 #       target_key: openai
 #     - key: model
-#       value: claude-3-5-sonnet-20241022
+#       value: claude-sonnet-4-6
 #       target_key: anthropic
 # Routes based on the value of a request field (e.g. "model").
 
@@ -100,8 +100,8 @@ targets:
 # Aliases are resolved before routing and plugin execution.
 aliases:
   fast: gpt-4o-mini
-  smart: claude-3-5-sonnet-20241022
-  cheap: gemini-1.5-flash
+  smart: claude-sonnet-4-6
+  cheap: gemini-2.5-flash
   code: deepseek-coder
 
 # Optional plugins

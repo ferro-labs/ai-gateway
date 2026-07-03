@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 
 	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
@@ -52,6 +53,8 @@ var (
 func New(apiKey, baseURL string) (*Provider, error) {
 	if baseURL == "" {
 		baseURL = defaultBaseURL
+	} else if err := core.ValidateBaseURL(Name, baseURL); err != nil {
+		return nil, err
 	}
 	baseURL = strings.TrimRight(baseURL, "/")
 	return &Provider{
@@ -84,13 +87,15 @@ func (p *Provider) AuthHeaders() map[string]string {
 // SupportedModels returns the static list of known Gemini models.
 func (p *Provider) SupportedModels() []string {
 	return []string{
-		"gemini-2.0-flash",
-		"gemini-2.0-flash-lite",
-		"gemini-1.5-pro",
-		"gemini-1.5-flash",
+		// Current GA tier
+		"gemini-2.5-pro",
+		"gemini-2.5-flash",
+		"gemini-2.5-flash-lite",
+		// Embeddings
 		"gemini-embedding-001",
 		"text-embedding-004",
 		"embedding-001",
+		// Image generation (Imagen)
 		"imagen-4.0-generate-001",
 		"imagen-4.0-ultra-generate-001",
 		"imagen-4.0-fast-generate-001",
@@ -118,8 +123,24 @@ func (p *Provider) Models() []core.ModelInfo {
 
 type geminiPart struct {
 	Text             string                  `json:"text,omitempty"`
+	InlineData       *geminiInlineData       `json:"inlineData,omitempty"`
+	FileData         *geminiFileData         `json:"fileData,omitempty"`
 	FunctionCall     *geminiFunctionCall     `json:"functionCall,omitempty"`
 	FunctionResponse *geminiFunctionResponse `json:"functionResponse,omitempty"`
+}
+
+// geminiInlineData carries an inline base64-encoded image, mapped from an OpenAI
+// image_url data URI.
+type geminiInlineData struct {
+	MimeType string `json:"mimeType"`
+	Data     string `json:"data"`
+}
+
+// geminiFileData references image bytes by URI, mapped from a remote (non-data)
+// image_url.
+type geminiFileData struct {
+	MimeType string `json:"mimeType,omitempty"`
+	FileURI  string `json:"fileUri"`
 }
 
 type geminiFunctionCall struct {
@@ -187,7 +208,19 @@ type geminiFunctionCallingConfig struct {
 	AllowedFunctionNames []string `json:"allowedFunctionNames,omitempty"`
 }
 
+// geminiUsageMetadata is Gemini's token accounting, including the cached-content
+// and thinking (reasoning) token counts documented on the generateContent
+// response.
+type geminiUsageMetadata struct {
+	PromptTokenCount        int `json:"promptTokenCount"`
+	CandidatesTokenCount    int `json:"candidatesTokenCount"`
+	TotalTokenCount         int `json:"totalTokenCount"`
+	CachedContentTokenCount int `json:"cachedContentTokenCount"`
+	ThoughtsTokenCount      int `json:"thoughtsTokenCount"`
+}
+
 type geminiResponse struct {
+	ResponseID string `json:"responseId"`
 	Candidates []struct {
 		Content struct {
 			Parts []geminiPart `json:"parts"`
@@ -195,11 +228,7 @@ type geminiResponse struct {
 		} `json:"content"`
 		FinishReason string `json:"finishReason"`
 	} `json:"candidates"`
-	UsageMetadata struct {
-		PromptTokenCount     int `json:"promptTokenCount"`
-		CandidatesTokenCount int `json:"candidatesTokenCount"`
-		TotalTokenCount      int `json:"totalTokenCount"`
-	} `json:"usageMetadata"`
+	UsageMetadata geminiUsageMetadata `json:"usageMetadata"`
 }
 
 type geminiEmbeddingContent struct {
@@ -234,11 +263,7 @@ type geminiStreamResponse struct {
 		} `json:"content"`
 		FinishReason string `json:"finishReason,omitempty"`
 	} `json:"candidates"`
-	UsageMetadata struct {
-		PromptTokenCount     int `json:"promptTokenCount"`
-		CandidatesTokenCount int `json:"candidatesTokenCount"`
-		TotalTokenCount      int `json:"totalTokenCount"`
-	} `json:"usageMetadata"`
+	UsageMetadata geminiUsageMetadata `json:"usageMetadata"`
 }
 
 // convertToGemini converts gateway Messages to Gemini contents format. System
@@ -301,7 +326,18 @@ func geminiParts(msg core.Message, toolCallNames map[string]string) []geminiPart
 		}}}
 	}
 	var parts []geminiPart
-	if msg.Content != "" {
+	if len(msg.ContentParts) > 0 {
+		for _, part := range msg.ContentParts {
+			switch part.Type {
+			case core.ContentTypeText:
+				parts = append(parts, geminiPart{Text: part.Text})
+			case "image_url":
+				if part.ImageURL != nil {
+					parts = append(parts, geminiImagePart(part.ImageURL.URL))
+				}
+			}
+		}
+	} else if msg.Content != "" {
 		parts = append(parts, geminiPart{Text: msg.Content})
 	}
 	for _, tc := range msg.ToolCalls {
@@ -321,25 +357,45 @@ func geminiParts(msg core.Message, toolCallNames map[string]string) []geminiPart
 	return parts
 }
 
-// mapFinishReason maps Gemini finish reasons to OpenAI-style reasons.
-func mapFinishReason(reason string) string {
-	switch reason {
-	case "STOP":
-		return core.FinishReasonStop
-	case "MAX_TOKENS":
-		return core.FinishReasonLength
-	case "SAFETY":
-		return core.FinishReasonContentFilter
-	default:
-		return reason
+// geminiImagePart maps an OpenAI image_url to a Gemini part: an inline base64
+// image for a data URI, or a fileData URI reference for a remote image. This
+// keeps multimodal image content in the request instead of dropping it.
+func geminiImagePart(imageURL string) geminiPart {
+	if mimeType, data, ok := parseImageDataURI(imageURL); ok {
+		return geminiPart{InlineData: &geminiInlineData{MimeType: mimeType, Data: data}}
 	}
+	return geminiPart{FileData: &geminiFileData{FileURI: imageURL}}
 }
 
+// parseImageDataURI splits a "data:<mime>[;param]...;base64,<data>" URI into its
+// MIME type and base64 payload. ok is false for a non-base64 data URI or a
+// remote URL. The "base64" token may follow other parameters (e.g.
+// "data:image/png;charset=utf-8;base64,...").
+func parseImageDataURI(uri string) (mimeType, data string, ok bool) {
+	const prefix = "data:"
+	if !strings.HasPrefix(uri, prefix) {
+		return "", "", false
+	}
+	meta, payload, found := strings.Cut(uri[len(prefix):], ",")
+	if !found {
+		return "", "", false
+	}
+	params := strings.Split(meta, ";")
+	if slices.Contains(params[1:], "base64") {
+		return params[0], payload, true
+	}
+	return "", "", false
+}
+
+// geminiFinishReason maps a Gemini candidate finishReason to the canonical
+// OpenAI vocabulary. Gemini has no dedicated tool-call reason, so tool calls are
+// inferred from the decoded parts; everything else routes through the shared
+// normalizer (which covers Gemini's RECITATION/SAFETY-family reasons).
 func geminiFinishReason(reason string, toolCalls []core.ToolCall) string {
 	if len(toolCalls) > 0 {
 		return core.FinishReasonToolCalls
 	}
-	return mapFinishReason(reason)
+	return core.NormalizeFinishReason(reason)
 }
 
 func buildRequest(req core.Request) geminiRequest {
@@ -667,14 +723,21 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 		})
 	}
 
+	responseID := geminiResp.ResponseID
+	if responseID == "" {
+		responseID = req.Model
+	}
 	return &core.Response{
-		ID:      req.Model,
-		Model:   req.Model,
-		Choices: choices,
+		ID:       responseID,
+		Model:    req.Model,
+		Provider: p.name,
+		Choices:  choices,
 		Usage: core.Usage{
 			PromptTokens:     geminiResp.UsageMetadata.PromptTokenCount,
 			CompletionTokens: geminiResp.UsageMetadata.CandidatesTokenCount,
 			TotalTokens:      geminiResp.UsageMetadata.TotalTokenCount,
+			ReasoningTokens:  geminiResp.UsageMetadata.ThoughtsTokenCount,
+			CacheReadTokens:  geminiResp.UsageMetadata.CachedContentTokenCount,
 		},
 	}, nil
 }
@@ -732,6 +795,16 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 					},
 					FinishReason: geminiFinishReason(candidate.FinishReason, toolCalls),
 				})
+			}
+			// Gemini reports usage on the final streamed chunk.
+			if chunk.UsageMetadata.TotalTokenCount > 0 {
+				sc.Usage = &core.Usage{
+					PromptTokens:     chunk.UsageMetadata.PromptTokenCount,
+					CompletionTokens: chunk.UsageMetadata.CandidatesTokenCount,
+					TotalTokens:      chunk.UsageMetadata.TotalTokenCount,
+					ReasoningTokens:  chunk.UsageMetadata.ThoughtsTokenCount,
+					CacheReadTokens:  chunk.UsageMetadata.CachedContentTokenCount,
+				}
 			}
 			ch <- sc
 		}

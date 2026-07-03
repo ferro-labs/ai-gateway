@@ -43,17 +43,39 @@ type imagenResponse struct {
 }
 
 // buildImagenRequest maps a gateway ImageRequest onto the Imagen :predict shape.
-// req.Size ("WxH") is not directly mappable to Imagen and is ignored;
+// A recognized req.Size ("WxH") is mapped to the nearest Imagen aspectRatio;
 // req.ResponseFormat is ignored (Imagen returns base64 only).
 func buildImagenRequest(req core.ImageRequest) imagenRequest {
 	out := imagenRequest{
 		Instances: []imagenInstance{{Prompt: req.Prompt}},
 	}
-	if req.N != nil {
-		params := imagenParameters{SampleCount: req.N}
+	params := imagenParameters{SampleCount: req.N}
+	if ar := imagenAspectRatio(req.Size); ar != "" {
+		params.AspectRatio = ar
+	}
+	if params.SampleCount != nil || params.AspectRatio != "" {
 		out.Parameters = &params
 	}
 	return out
+}
+
+// imagenAspectRatio maps a common OpenAI "WxH" size to the nearest Imagen
+// aspectRatio. An unmapped or empty size returns "" (Imagen defaults to 1:1).
+func imagenAspectRatio(size string) string {
+	switch size {
+	case "1024x1024", "512x512", "256x256":
+		return "1:1"
+	case "1792x1024", "1536x1024":
+		return "16:9"
+	case "1024x1792", "1024x1536":
+		return "9:16"
+	case "1408x1024":
+		return "4:3"
+	case "1024x1408":
+		return "3:4"
+	default:
+		return ""
+	}
 }
 
 // mapImagenPredictions converts Imagen predictions to gateway images. It returns
@@ -76,24 +98,13 @@ func mapImagenPredictions(model string, predictions []imagenPrediction) ([]core.
 func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*core.ImageResponse, error) {
 	imagenReq := buildImagenRequest(req)
 
-	bodyReader, _, release, err := core.JSONBodyReader(imagenReq)
+	model := strings.TrimPrefix(req.Model, "models/")
+	reqURL := fmt.Sprintf("%s/v1beta/models/%s:predict?key=%s", p.baseURL, url.PathEscape(model), p.apiKey)
+	httpResp, release, err := p.doJSONRequest(ctx, http.MethodPost, reqURL, "image ", imagenReq)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal image request: %w", err)
+		return nil, err
 	}
 	defer release()
-
-	model := strings.TrimPrefix(req.Model, "models/")
-	url := fmt.Sprintf("%s/v1beta/models/%s:predict?key=%s", p.baseURL, url.PathEscape(model), p.apiKey)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bodyReader)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create image request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	httpResp, err := p.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("image request failed: %w", sanitizeRequestErr(err))
-	}
 	defer func() { _ = httpResp.Body.Close() }()
 
 	respBody, err := io.ReadAll(httpResp.Body)

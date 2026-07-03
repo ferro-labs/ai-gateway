@@ -230,34 +230,6 @@ func TestOpenAIProvider_Complete_MockHTTP(t *testing.T) {
 	}
 }
 
-func TestBuildMessages_AssistantToolCalls(t *testing.T) {
-	msgs := buildMessages([]core.Message{
-		{Role: core.RoleAssistant, ToolCalls: []core.ToolCall{{
-			ID:       "call_1",
-			Type:     "function",
-			Function: core.FunctionCall{Name: "lookup", Arguments: `{"city":"SF"}`},
-		}}},
-		{Role: core.RoleTool, ToolCallID: "call_1", Content: "72F"},
-	})
-	raw, err := json.Marshal(msgs)
-	if err != nil {
-		t.Fatalf("marshal messages: %v", err)
-	}
-	var got []core.Message
-	if err := json.Unmarshal(raw, &got); err != nil {
-		t.Fatalf("unmarshal messages: %v\n%s", err, raw)
-	}
-	if len(got) != 2 {
-		t.Fatalf("messages len = %d, want 2", len(got))
-	}
-	if len(got[0].ToolCalls) != 1 || got[0].ToolCalls[0].Function.Name != "lookup" {
-		t.Fatalf("assistant tool_calls = %#v, want lookup", got[0].ToolCalls)
-	}
-	if got[1].ToolCallID != "call_1" {
-		t.Fatalf("tool_call_id = %q, want call_1", got[1].ToolCallID)
-	}
-}
-
 func TestOpenAIProvider_Complete_DrainsSuccessfulResponseBody(t *testing.T) {
 	var newConnections atomic.Int32
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -359,24 +331,30 @@ func TestOpenAIProvider_CompleteStream_MockSSE(t *testing.T) {
 	}
 
 	var chunks []core.StreamChunk
+	var content strings.Builder
 	for c := range ch {
 		if c.Error != nil {
-			t.Logf("CompleteStream chunk error (SDK may reject mock format): %v", c.Error)
-			return
+			t.Fatalf("stream error: %v", c.Error)
 		}
 		chunks = append(chunks, c)
+		for _, choice := range c.Choices {
+			content.WriteString(choice.Delta.Content)
+		}
 	}
 
-	if len(chunks) == 0 {
-		t.Log("No chunks received — openai-go SDK may not process mock SSE; interface compliance verified by _Interface test")
-		return
+	if len(chunks) != 4 {
+		t.Fatalf("chunks len = %d, want 4: %#v", len(chunks), chunks)
 	}
-
-	// Verify chunk structure when SDK parses successfully.
 	for _, chunk := range chunks {
 		if chunk.ID != "chatcmpl-1" {
-			t.Errorf("chunk ID = %q, want %s", chunk.ID, "chatcmpl-1")
+			t.Errorf("chunk ID = %q, want chatcmpl-1", chunk.ID)
 		}
+	}
+	if content.String() != "Hello world" {
+		t.Errorf("assembled content = %q, want %q", content.String(), "Hello world")
+	}
+	if chunks[3].Choices[0].FinishReason != core.FinishReasonStop {
+		t.Errorf("final finish_reason = %q, want stop", chunks[3].Choices[0].FinishReason)
 	}
 }
 

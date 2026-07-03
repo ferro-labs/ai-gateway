@@ -48,6 +48,8 @@ type bedrockNovaResponse struct {
 }
 
 func (p *Provider) completeNova(ctx context.Context, req core.Request) (*core.Response, error) {
+	warnDroppedImageParts(ctx, p.name, req.Model, req.Messages)
+
 	novaReq := bedrockNovaRequest{
 		SchemaVersion: "messages-v1",
 	}
@@ -90,6 +92,7 @@ func (p *Provider) completeNova(ctx context.Context, req core.Request) (*core.Re
 	}
 
 	return &core.Response{
+		ID:       bedrockResponseID(),
 		Model:    req.Model,
 		Provider: p.name,
 		Choices: []core.Choice{{

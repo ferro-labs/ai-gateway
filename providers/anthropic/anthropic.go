@@ -3,10 +3,12 @@ package anthropic
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/ferro-labs/ai-gateway/internal/anthropicwire"
@@ -94,10 +96,10 @@ func (p *Provider) DiscoverModels(ctx context.Context) ([]core.ModelInfo, error)
 // SupportedModels returns the list of models supported by this provider.
 func (p *Provider) SupportedModels() []string {
 	return []string{
-		"claude-sonnet-4-20250514",
-		"claude-3-5-sonnet-20241022",
-		"claude-3-haiku-20240307",
-		"claude-3-opus-20240229",
+		"claude-opus-4-7",
+		"claude-opus-4-6",
+		"claude-sonnet-4-6",
+		"claude-haiku-4-5-20251001",
 	}
 }
 
@@ -121,40 +123,19 @@ type anthropicRequest struct {
 	Temperature   *float64                `json:"temperature,omitempty"`
 	TopP          *float64                `json:"top_p,omitempty"`
 	StopSequences []string                `json:"stop_sequences,omitempty"`
+	Metadata      *anthropicMetadata      `json:"metadata,omitempty"`
 	Stream        bool                    `json:"stream,omitempty"`
 }
 
-// blockTypeToolUse is the Anthropic content-block type for a tool call.
-const blockTypeToolUse = "tool_use"
+// anthropicMetadata carries the optional request metadata; user_id maps the
+// OpenAI "user" field, which Anthropic uses for abuse monitoring.
+type anthropicMetadata struct {
+	UserID string `json:"user_id,omitempty"`
+}
 
 // anthropicSupportedParams lists the OpenAI parameters the Anthropic Messages
 // API can express. Anything else the caller sets is warn-and-dropped (#140).
-var anthropicSupportedParams = []string{"temperature", "top_p", "max_tokens", "stop", "tools", "tool_choice"}
-
-type anthropicContentBlock struct {
-	Type  string          `json:"type"`
-	Text  string          `json:"text"`
-	ID    string          `json:"id"`
-	Name  string          `json:"name"`
-	Input json.RawMessage `json:"input"`
-}
-
-type anthropicUsage struct {
-	InputTokens              int `json:"input_tokens"`
-	OutputTokens             int `json:"output_tokens"`
-	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
-	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
-}
-
-type anthropicResponse struct {
-	ID         string                  `json:"id"`
-	Type       string                  `json:"type"`
-	Role       string                  `json:"role"`
-	Content    []anthropicContentBlock `json:"content"`
-	Model      string                  `json:"model"`
-	StopReason string                  `json:"stop_reason"`
-	Usage      anthropicUsage          `json:"usage"`
-}
+var anthropicSupportedParams = []string{"temperature", "top_p", "max_tokens", "stop", "tools", "tool_choice", "user"}
 
 // buildContent renders a non-system message's content for the Anthropic API.
 // Plain text turns stay a JSON string (the common path); multimodal turns and
@@ -185,7 +166,7 @@ func buildContent(msg core.Message) any {
 			input = json.RawMessage("{}")
 		}
 		blocks = append(blocks, anthropicwire.Block{
-			Type:  blockTypeToolUse,
+			Type:  anthropicwire.BlockTypeToolUse,
 			ID:    tc.ID,
 			Name:  tc.Function.Name,
 			Input: input,
@@ -200,47 +181,58 @@ func buildContent(msg core.Message) any {
 	return blocks
 }
 
-// imageBlock maps an OpenAI image_url (data URI or remote URL) to an Anthropic
-// image content block.
-func imageBlock(url string) anthropicwire.Block {
-	if mediaType, data, ok := parseDataURI(url); ok {
-		return anthropicwire.Block{
-			Type: "image",
-			Source: &anthropicwire.ImageSource{
-				Type:      "base64",
-				MediaType: mediaType,
-				Data:      data,
-			},
-		}
+// imageBlock maps an OpenAI image_url to an Anthropic image content block: a
+// base64 source for a data URI (re-encoding a non-base64 data URI's payload), or
+// a url source for a genuine remote URL. A data: URI is never emitted as a url
+// source, which Anthropic would reject.
+func imageBlock(imageURL string) anthropicwire.Block {
+	if mediaType, data, ok := anthropicwire.ParseDataURI(imageURL); ok {
+		return base64ImageBlock(mediaType, data)
+	}
+	// Any other data: URI (non-base64 or malformed) is re-encoded to a base64
+	// source; a data: URI is never emitted as a url source, which Anthropic
+	// would reject.
+	if strings.HasPrefix(imageURL, "data:") {
+		mediaType, encoded := reencodeDataURI(imageURL)
+		return base64ImageBlock(mediaType, encoded)
 	}
 	return anthropicwire.Block{
 		Type:   "image",
-		Source: &anthropicwire.ImageSource{Type: "url", URL: url},
+		Source: &anthropicwire.ImageSource{Type: "url", URL: imageURL},
 	}
 }
 
-// parseDataURI splits a data URI of the form "data:<media-type>;base64,<data>"
-// into its media type and payload. ok is false for any non-base64 data URI or
-// a plain remote URL.
-func parseDataURI(uri string) (mediaType, data string, ok bool) {
-	const prefix = "data:"
-	if !strings.HasPrefix(uri, prefix) {
-		return "", "", false
+func base64ImageBlock(mediaType, data string) anthropicwire.Block {
+	return anthropicwire.Block{
+		Type: "image",
+		Source: &anthropicwire.ImageSource{
+			Type:      "base64",
+			MediaType: mediaType,
+			Data:      data,
+		},
 	}
-	meta, payload, found := strings.Cut(uri[len(prefix):], ",")
-	if !found {
-		return "", "", false
+}
+
+// reencodeDataURI converts a non-base64 data URI ("data:<mediatype>[;param],<payload>",
+// payload percent-encoded per RFC 2397) into a media type and base64 payload. It
+// is best-effort: a payload that is not valid percent-encoding is base64-encoded
+// as-is, so a data: URI is never left as an (invalid) url source.
+func reencodeDataURI(uri string) (mediaType, base64Data string) {
+	meta, payload, _ := strings.Cut(strings.TrimPrefix(uri, "data:"), ",")
+	mediaType, _, _ = strings.Cut(meta, ";")
+	// PathUnescape (not QueryUnescape) so a "+" in the RFC 2397 payload is kept
+	// literal rather than decoded to a space.
+	decoded, err := url.PathUnescape(payload)
+	if err != nil {
+		decoded = payload
 	}
-	mediaType, encoding, _ := strings.Cut(meta, ";")
-	if encoding != "base64" {
-		return "", "", false
-	}
-	return mediaType, payload, true
+	return mediaType, base64.StdEncoding.EncodeToString([]byte(decoded))
 }
 
 // buildAnthropicRequest maps a core.Request to an Anthropic Messages API request
-// body. stream toggles server-sent event streaming.
-func buildAnthropicRequest(req core.Request, stream bool) anthropicRequest {
+// body. stream toggles server-sent event streaming. ctx carries the logger used
+// to record any temperature clamp applied for Anthropic's narrower range.
+func buildAnthropicRequest(ctx context.Context, req core.Request, stream bool) anthropicRequest {
 	messages, system := anthropicwire.BuildMessages(req, buildContent)
 
 	maxTokens := defaultMaxTokens
@@ -248,16 +240,22 @@ func buildAnthropicRequest(req core.Request, stream bool) anthropicRequest {
 		maxTokens = *req.MaxTokens
 	}
 
+	var metadata *anthropicMetadata
+	if req.User != "" {
+		metadata = &anthropicMetadata{UserID: req.User}
+	}
+
 	return anthropicRequest{
 		Model:         req.Model,
 		MaxTokens:     maxTokens,
 		Messages:      messages,
-		Temperature:   req.Temperature,
+		Temperature:   anthropicwire.ClampTemperature(ctx, Name, req.Model, req.Temperature),
 		TopP:          req.TopP,
 		StopSequences: req.Stop,
 		System:        system,
 		Tools:         anthropicwire.MapTools(req.Tools),
 		ToolChoice:    anthropicwire.MapToolChoice(req.ToolChoice, req.Tools),
+		Metadata:      metadata,
 		Stream:        stream,
 	}
 }
@@ -292,7 +290,7 @@ func (p *Provider) newMessagesRequest(ctx context.Context, aReq anthropicRequest
 func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
 	core.WarnUnsupportedParams(ctx, p.Name(), req.Model, req, anthropicSupportedParams...)
 
-	aReq := buildAnthropicRequest(req, false)
+	aReq := buildAnthropicRequest(ctx, req, false)
 
 	httpResp, release, err := p.newMessagesRequest(ctx, aReq)
 	if err != nil {
@@ -313,34 +311,12 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 
 	// Success path streams the decode straight off the response body, avoiding
 	// the extra full-body copy that io.ReadAll + Unmarshal incurs per request.
-	var aResp anthropicResponse
+	var aResp anthropicwire.Response
 	if err := json.NewDecoder(httpResp.Body).Decode(&aResp); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 
-	var content strings.Builder
-	var toolCalls []core.ToolCall
-	for _, block := range aResp.Content {
-		if block.Type == "text" {
-			content.WriteString(block.Text)
-			continue
-		}
-		if block.Type == blockTypeToolUse {
-			args := string(block.Input)
-			if args == "" {
-				args = "{}"
-			}
-			toolCalls = append(toolCalls, core.ToolCall{
-				ID:   block.ID,
-				Type: "function",
-				Function: core.FunctionCall{
-					Name:      block.Name,
-					Arguments: args,
-				},
-			})
-		}
-	}
-
+	content, toolCalls := anthropicwire.DecodeContent(aResp.Content)
 	totalTokens := aResp.Usage.InputTokens + aResp.Usage.OutputTokens
 
 	return &core.Response{
@@ -351,7 +327,7 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 				Index: 0,
 				Message: core.Message{
 					Role:      aResp.Role,
-					Content:   content.String(),
+					Content:   content,
 					ToolCalls: toolCalls,
 				},
 				FinishReason: core.NormalizeFinishReason(aResp.StopReason),

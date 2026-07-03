@@ -14,6 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 	"github.com/aws/smithy-go/auth/bearer"
 
+	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
@@ -135,6 +136,10 @@ func NewWithOptions(opts Options) (*Provider, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to load AWS config: %w", err)
 	}
+
+	// Use the gateway's tuned per-provider HTTP client (higher dial/header
+	// timeouts for Bedrock's cold starts) rather than the SDK default.
+	cfg.HTTPClient = providerhttp.ForProvider(Name)
 
 	client := realBedrockClient{bedrockruntime.NewFromConfig(cfg, clientOpts...)}
 	return &Provider{
