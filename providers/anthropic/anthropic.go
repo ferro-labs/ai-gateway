@@ -189,10 +189,12 @@ func imageBlock(imageURL string) anthropicwire.Block {
 	if mediaType, data, ok := anthropicwire.ParseDataURI(imageURL); ok {
 		return base64ImageBlock(mediaType, data)
 	}
+	// Any other data: URI (non-base64 or malformed) is re-encoded to a base64
+	// source; a data: URI is never emitted as a url source, which Anthropic
+	// would reject.
 	if strings.HasPrefix(imageURL, "data:") {
-		if mediaType, encoded, ok := reencodeDataURI(imageURL); ok {
-			return base64ImageBlock(mediaType, encoded)
-		}
+		mediaType, encoded := reencodeDataURI(imageURL)
+		return base64ImageBlock(mediaType, encoded)
 	}
 	return anthropicwire.Block{
 		Type:   "image",
@@ -211,20 +213,18 @@ func base64ImageBlock(mediaType, data string) anthropicwire.Block {
 	}
 }
 
-// reencodeDataURI converts a non-base64 data URI ("data:<mediatype>,<payload>",
-// where payload is percent-encoded per RFC 2397) into a media type and base64
-// payload so it can be sent as an Anthropic base64 image source.
-func reencodeDataURI(uri string) (mediaType, base64Data string, ok bool) {
-	meta, payload, found := strings.Cut(strings.TrimPrefix(uri, "data:"), ",")
-	if !found {
-		return "", "", false
-	}
+// reencodeDataURI converts a non-base64 data URI ("data:<mediatype>[;param],<payload>",
+// payload percent-encoded per RFC 2397) into a media type and base64 payload. It
+// is best-effort: a payload that is not valid percent-encoding is base64-encoded
+// as-is, so a data: URI is never left as an (invalid) url source.
+func reencodeDataURI(uri string) (mediaType, base64Data string) {
+	meta, payload, _ := strings.Cut(strings.TrimPrefix(uri, "data:"), ",")
 	mediaType, _, _ = strings.Cut(meta, ";")
 	decoded, err := url.QueryUnescape(payload)
 	if err != nil {
-		return "", "", false
+		decoded = payload
 	}
-	return mediaType, base64.StdEncoding.EncodeToString([]byte(decoded)), true
+	return mediaType, base64.StdEncoding.EncodeToString([]byte(decoded))
 }
 
 // buildAnthropicRequest maps a core.Request to an Anthropic Messages API request

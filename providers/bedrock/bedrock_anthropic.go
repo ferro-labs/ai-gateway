@@ -50,6 +50,9 @@ func buildBedrockAnthropicRequest(ctx context.Context, req core.Request) (bedroc
 		return bedrockAnthropicRequest{}, contentErr
 	}
 
+	// Note: the native Anthropic provider maps the OpenAI "user" field to
+	// metadata.user_id, but AWS Bedrock's InvokeModel Anthropic schema does not
+	// document a metadata field, so it is intentionally not forwarded here.
 	return bedrockAnthropicRequest{
 		AnthropicVersion: "bedrock-2023-05-31",
 		MaxTokens:        maxTokens,

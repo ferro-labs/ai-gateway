@@ -80,6 +80,33 @@ func TestComplete_ReencodesNonBase64DataURI(t *testing.T) {
 	}
 }
 
+// TestComplete_MalformedDataURINeverBecomesURLSource verifies a data: URI with an
+// invalid percent-encoding is still emitted as a base64 source (best-effort),
+// never as a url source Anthropic would reject.
+func TestComplete_MalformedDataURINeverBecomesURLSource(t *testing.T) {
+	body := captureBody(t, core.Request{
+		Model: "claude-sonnet-4-6",
+		Messages: []core.Message{{
+			Role: core.RoleUser,
+			ContentParts: []core.ContentPart{
+				{Type: "image_url", ImageURL: &core.ImageURLPart{URL: "data:image/png,%zz"}},
+			},
+		}},
+	})
+
+	msgs := decodeMessages(t, body)
+	var blocks []wireImageBlock
+	if err := json.Unmarshal(msgs[0]["content"], &blocks); err != nil {
+		t.Fatalf("decode content blocks: %v", err)
+	}
+	if len(blocks) != 1 || blocks[0].Source.Type != "base64" {
+		t.Fatalf("source = %+v, want a base64 source for a malformed data URI", blocks[0].Source)
+	}
+	if blocks[0].Source.URL != "" {
+		t.Errorf("url source leaked for a data: URI: %q", blocks[0].Source.URL)
+	}
+}
+
 // TestComplete_ErrorPathReturnsAPIError verifies a non-2xx chat response surfaces
 // the upstream status and message via core.APIError.
 func TestComplete_ErrorPathReturnsAPIError(t *testing.T) {

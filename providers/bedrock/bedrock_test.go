@@ -13,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 
+	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
@@ -64,6 +65,27 @@ func TestNewBedrockWithOptions_BearerTokenAuthHeaders(t *testing.T) {
 	headers := p.AuthHeaders()
 	if got := headers["Authorization"]; got != "Bearer test-bearer-token" {
 		t.Errorf("Authorization = %q, want Bearer test-bearer-token", got)
+	}
+}
+
+func TestNewBedrockWithOptions_UsesTunedHTTPClient(t *testing.T) {
+	t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
+
+	p, err := NewWithOptions(Options{
+		Region:          "us-east-1",
+		AccessKeyID:     "test-access-key",
+		SecretAccessKey: "test-secret-key",
+	})
+	if err != nil {
+		t.Fatalf("NewWithOptions() error: %v", err)
+	}
+
+	client, ok := p.client.(realBedrockClient)
+	if !ok {
+		t.Fatalf("client type = %T, want realBedrockClient", p.client)
+	}
+	if got := client.Options().HTTPClient; got != providerhttp.ForProvider(Name) {
+		t.Errorf("SDK HTTPClient = %v, want the tuned per-provider client", got)
 	}
 }
 
