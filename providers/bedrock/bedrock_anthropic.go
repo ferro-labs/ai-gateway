@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
@@ -24,31 +23,13 @@ type bedrockAnthropicRequest struct {
 	System           string                  `json:"system,omitempty"`
 }
 
-type bedrockAnthropicResponse struct {
-	ID      string `json:"id"`
-	Type    string `json:"type"`
-	Role    string `json:"role"`
-	Content []struct {
-		Type  string          `json:"type"`
-		Text  string          `json:"text"`
-		ID    string          `json:"id"`
-		Name  string          `json:"name"`
-		Input json.RawMessage `json:"input"`
-	} `json:"content"`
-	StopReason string `json:"stop_reason"`
-	Usage      struct {
-		InputTokens  int `json:"input_tokens"`
-		OutputTokens int `json:"output_tokens"`
-	} `json:"usage"`
-}
-
 // bedrockAnthropicDefaultMaxTokens is the max_tokens applied when a request does
 // not specify one.
 const bedrockAnthropicDefaultMaxTokens = 1024
 
 // buildBedrockAnthropicRequest translates an OpenAI-shaped request into the
 // Bedrock Anthropic invocation body, applying the default max_tokens when unset.
-func buildBedrockAnthropicRequest(req core.Request) (bedrockAnthropicRequest, error) {
+func buildBedrockAnthropicRequest(ctx context.Context, req core.Request) (bedrockAnthropicRequest, error) {
 	maxTokens := bedrockAnthropicDefaultMaxTokens
 	if req.MaxTokens != nil {
 		maxTokens = *req.MaxTokens
@@ -75,7 +56,7 @@ func buildBedrockAnthropicRequest(req core.Request) (bedrockAnthropicRequest, er
 		Messages:         messages,
 		Tools:            anthropicwire.MapTools(req.Tools),
 		ToolChoice:       anthropicwire.MapToolChoice(req.ToolChoice, req.Tools),
-		Temperature:      req.Temperature,
+		Temperature:      anthropicwire.ClampTemperature(ctx, Name, req.Model, req.Temperature),
 		TopP:             req.TopP,
 		StopSequences:    req.Stop,
 		System:           system,
@@ -137,7 +118,7 @@ func bedrockAnthropicContent(msg core.Message) (any, error) {
 // Anthropic API), so a non-data-URI image is rejected with a clear error rather
 // than emitting a "url" source block the Bedrock API would reject.
 func bedrockAnthropicImageBlock(url string) (anthropicwire.Block, error) {
-	mediaType, data, ok := bedrockParseDataURI(url)
+	mediaType, data, ok := anthropicwire.ParseDataURI(url)
 	if !ok {
 		return anthropicwire.Block{}, fmt.Errorf("bedrock anthropic: image inputs must be base64 data URIs; remote image URLs are not supported")
 	}
@@ -151,27 +132,8 @@ func bedrockAnthropicImageBlock(url string) (anthropicwire.Block, error) {
 	}, nil
 }
 
-// bedrockParseDataURI splits a data URI of the form
-// "data:<media-type>;base64,<data>" into its media type and payload. ok is
-// false for any non-base64 data URI or a plain remote URL.
-func bedrockParseDataURI(uri string) (mediaType, data string, ok bool) {
-	const prefix = "data:"
-	if !strings.HasPrefix(uri, prefix) {
-		return "", "", false
-	}
-	meta, payload, found := strings.Cut(uri[len(prefix):], ",")
-	if !found {
-		return "", "", false
-	}
-	mt, encoding, _ := strings.Cut(meta, ";")
-	if encoding != "base64" {
-		return "", "", false
-	}
-	return mt, payload, true
-}
-
 func (p *Provider) completeAnthropic(ctx context.Context, req core.Request) (*core.Response, error) {
-	anthropicReq, err := buildBedrockAnthropicRequest(req)
+	anthropicReq, err := buildBedrockAnthropicRequest(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -190,33 +152,12 @@ func (p *Provider) completeAnthropic(ctx context.Context, req core.Request) (*co
 		return nil, fmt.Errorf("bedrock invoke failed: %w", err)
 	}
 
-	var anthropicResp bedrockAnthropicResponse
+	var anthropicResp anthropicwire.Response
 	if err := json.Unmarshal(output.Body, &anthropicResp); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 
-	text := ""
-	var toolCalls []core.ToolCall
-	for _, c := range anthropicResp.Content {
-		if c.Type == "text" {
-			text += c.Text
-			continue
-		}
-		if c.Type == "tool_use" {
-			args := string(c.Input)
-			if args == "" {
-				args = "{}"
-			}
-			toolCalls = append(toolCalls, core.ToolCall{
-				ID:   c.ID,
-				Type: "function",
-				Function: core.FunctionCall{
-					Name:      c.Name,
-					Arguments: args,
-				},
-			})
-		}
-	}
+	text, toolCalls := anthropicwire.DecodeContent(anthropicResp.Content)
 
 	return &core.Response{
 		ID:       anthropicResp.ID,
@@ -231,6 +172,8 @@ func (p *Provider) completeAnthropic(ctx context.Context, req core.Request) (*co
 			PromptTokens:     anthropicResp.Usage.InputTokens,
 			CompletionTokens: anthropicResp.Usage.OutputTokens,
 			TotalTokens:      anthropicResp.Usage.InputTokens + anthropicResp.Usage.OutputTokens,
+			CacheReadTokens:  anthropicResp.Usage.CacheReadInputTokens,
+			CacheWriteTokens: anthropicResp.Usage.CacheCreationInputTokens,
 		},
 	}, nil
 }
