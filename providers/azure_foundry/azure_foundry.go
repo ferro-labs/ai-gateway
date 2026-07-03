@@ -66,8 +66,8 @@ func (p *Provider) BaseURL() string { return p.baseURL }
 func (p *Provider) APIVersion() string { return p.apiVersion }
 
 // NonOpenAIWire marks Azure AI Foundry as ineligible for transparent
-// OpenAI-wire proxy pass-through: its upstream uses Azure AI Foundry routing
-// paths and an api-version parameter, so an OpenAI-shaped request is not
+// OpenAI-wire proxy pass-through: its upstream uses Azure AI Foundry
+// deployment/routing paths and api-key auth, so an OpenAI-shaped request is not
 // directly forwardable. It remains fully usable via its native translated
 // endpoints. See core.NonOpenAIWireProvider.
 func (*Provider) NonOpenAIWire() {}

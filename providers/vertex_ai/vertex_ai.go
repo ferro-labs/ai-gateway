@@ -114,19 +114,34 @@ func (p *Provider) SetBaseURL(url string) { p.baseURL = url }
 // core.NonOpenAIWireProvider.
 func (*Provider) NonOpenAIWire() {}
 
-// AuthHeaders implements core.ProxiableProvider.
-func (p *Provider) AuthHeaders() map[string]string {
+// authHeader returns the single auth header for Vertex AI — the api-key header
+// when an API key is configured, otherwise a Bearer token from the token source
+// (service-account JSON or Application Default Credentials). It returns a clear
+// error when no auth is configured or a token cannot be fetched. All three call
+// sites (AuthHeaders, authorizeRequest, chatAuthHeaders) derive from this so the
+// precedence logic lives in one place.
+func (p *Provider) authHeader() (name, value string, err error) {
 	if p.apiKey != "" {
-		return map[string]string{"x-goog-api-key": p.apiKey}
+		return "x-goog-api-key", p.apiKey, nil
 	}
 	if p.tokenSource == nil {
-		return map[string]string{}
+		return "", "", fmt.Errorf("vertex-ai authorization is not configured")
 	}
 	tok, err := p.tokenSource.Token()
 	if err != nil {
+		return "", "", fmt.Errorf("vertex-ai token fetch failed: %w", err)
+	}
+	return "Authorization", "Bearer " + tok.AccessToken, nil
+}
+
+// AuthHeaders implements core.ProxiableProvider. It returns an empty map when
+// auth cannot be resolved (the proxy seam has no error channel).
+func (p *Provider) AuthHeaders() map[string]string {
+	name, value, err := p.authHeader()
+	if err != nil {
 		return map[string]string{}
 	}
-	return map[string]string{"Authorization": "Bearer " + tok.AccessToken}
+	return map[string]string{name: value}
 }
 
 // SupportedModels returns known Vertex AI model examples.
@@ -210,18 +225,11 @@ func (p *Provider) predictionEndpoint(model string) string {
 }
 
 func (p *Provider) authorizeRequest(req *http.Request) error {
-	if p.apiKey != "" {
-		req.Header.Set("x-goog-api-key", p.apiKey)
-		return nil
-	}
-	if p.tokenSource == nil {
-		return fmt.Errorf("vertex-ai authorization is not configured")
-	}
-	tok, err := p.tokenSource.Token()
+	name, value, err := p.authHeader()
 	if err != nil {
-		return fmt.Errorf("vertex-ai token fetch failed: %w", err)
+		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+tok.AccessToken)
+	req.Header.Set(name, value)
 	return nil
 }
 
@@ -247,20 +255,11 @@ func vertexAIChatModelID(model string) string {
 // returning a clear error when an OAuth token cannot be fetched instead of
 // letting a missing Authorization header surface as an opaque upstream 401.
 func (p *Provider) chatAuthHeaders() (map[string]string, error) {
-	h := map[string]string{"Content-Type": "application/json"}
-	if p.apiKey != "" {
-		h["x-goog-api-key"] = p.apiKey
-		return h, nil
-	}
-	if p.tokenSource == nil {
-		return nil, fmt.Errorf("vertex-ai authorization is not configured")
-	}
-	tok, err := p.tokenSource.Token()
+	name, value, err := p.authHeader()
 	if err != nil {
-		return nil, fmt.Errorf("vertex-ai token fetch failed: %w", err)
+		return nil, err
 	}
-	h["Authorization"] = "Bearer " + tok.AccessToken
-	return h, nil
+	return map[string]string{"Content-Type": "application/json", name: value}, nil
 }
 
 func isVertexAITextEmbeddingModel(model string) bool {

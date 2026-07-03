@@ -248,13 +248,14 @@ func cohereContentParts(parts []core.ContentPart) []any {
 
 // cohereAPIError builds a provider error from a non-2xx Cohere response, whose
 // error envelope is a flat {"message":…} (not the OpenAI {"error":{…}} shape),
-// so core.APIError cannot decode it.
-func cohereAPIError(label string, status int, body []byte) error {
+// so core.APIError cannot decode it. prefix is the full message prefix (e.g.
+// "cohere API error"), unlike core.APIError's bare provider-name label.
+func cohereAPIError(prefix string, status int, body []byte) error {
 	var errResp cohereErrorResponse
 	if json.Unmarshal(body, &errResp) == nil && errResp.Message != "" {
-		return fmt.Errorf("%s (%d): %s", label, status, errResp.Message)
+		return fmt.Errorf("%s (%d): %s", prefix, status, errResp.Message)
 	}
-	return fmt.Errorf("%s (%d): %s", label, status, string(body))
+	return fmt.Errorf("%s (%d): %s", prefix, status, string(body))
 }
 
 // Complete sends a chat completion request to Cohere.

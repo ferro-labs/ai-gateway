@@ -3,14 +3,80 @@ package vertexai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"golang.org/x/oauth2"
+
+	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
+
+type fakeTokenSource struct {
+	token string
+	err   error
+}
+
+func (f fakeTokenSource) Token() (*oauth2.Token, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return &oauth2.Token{AccessToken: f.token}, nil
+}
+
+// TestComplete_UsesBearerTokenFromTokenSource covers the service-account / ADC
+// auth mode: with no API key, the OAuth token source supplies an Authorization
+// Bearer header.
+func TestComplete_UsesBearerTokenFromTokenSource(t *testing.T) {
+	var authHeader string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authHeader = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"x","model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"total_tokens":1}}`)
+	}))
+	defer srv.Close()
+
+	p := &Provider{
+		name:        Name,
+		baseURL:     srv.URL,
+		httpClient:  providerhttp.ForProvider(Name),
+		tokenSource: fakeTokenSource{token: "tok-123"},
+	}
+	if _, err := p.Complete(context.Background(), core.Request{
+		Model:    "gemini-2.5-flash",
+		Messages: []core.Message{{Role: core.RoleUser, Content: "hi"}},
+	}); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if authHeader != "Bearer tok-123" {
+		t.Errorf("Authorization = %q, want Bearer tok-123", authHeader)
+	}
+}
+
+// TestComplete_TokenFetchFailureSurfaces verifies a token-source failure surfaces
+// as a clear gateway error rather than an unauthenticated request / opaque 401.
+func TestComplete_TokenFetchFailureSurfaces(t *testing.T) {
+	p := &Provider{
+		name:        Name,
+		baseURL:     "https://vertex.example",
+		httpClient:  providerhttp.ForProvider(Name),
+		tokenSource: fakeTokenSource{err: errors.New("metadata unavailable")},
+	}
+	_, err := p.Complete(context.Background(), core.Request{
+		Model:    "gemini-2.5-flash",
+		Messages: []core.Message{{Role: core.RoleUser, Content: "hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected token-fetch error")
+	}
+	if !strings.Contains(err.Error(), "token fetch failed") || !strings.Contains(err.Error(), "metadata unavailable") {
+		t.Fatalf("error = %v, want wrapped token-fetch failure", err)
+	}
+}
 
 // vertexChatModel runs one Complete against a stub and returns the "model" field
 // of the request body the provider sent.
