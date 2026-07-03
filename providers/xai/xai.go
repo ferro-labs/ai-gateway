@@ -38,10 +38,14 @@ var (
 
 // New creates a new xAI provider.
 func New(apiKey, baseURL string) (*Provider, error) {
+	baseURL = strings.TrimSpace(baseURL)
 	if baseURL == "" {
 		baseURL = defaultBaseURL
 	}
 	baseURL = strings.TrimRight(baseURL, "/")
+	if err := core.ValidateBaseURL(Name, baseURL); err != nil {
+		return nil, err
+	}
 	return &Provider{
 		name:       Name,
 		apiKey:     apiKey,
@@ -63,10 +67,21 @@ func (p *Provider) AuthHeaders() map[string]string {
 
 // SupportedModels returns the static list of known xAI models.
 func (p *Provider) SupportedModels() []string {
+	// grok-2-latest is kept first because the model catalog resolves it as
+	// xai/grok-2-latest (see models/catalog_backup.json). SupportsModel accepts
+	// any grok*/xai* name by prefix, so the grok-3/grok-4 entries below are for
+	// discovery/listing surfaces.
 	return []string{
 		"grok-2-latest",
 		"grok-2-vision-latest",
 		"grok-beta",
+		"grok-3",
+		"grok-3-mini",
+		"grok-4",
+		"grok-4-latest",
+		"grok-4-fast-reasoning",
+		"grok-4-fast-non-reasoning",
+		"grok-code-fast-1",
 		"grok-2-image",
 		"grok-2-image-1212",
 		"grok-2-image-latest",

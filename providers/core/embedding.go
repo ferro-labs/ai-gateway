@@ -8,9 +8,10 @@ type EmbeddingRequest struct {
 	EncodingFormat string `json:"encoding_format,omitempty"`
 	Dimensions     *int   `json:"dimensions,omitempty"`
 	User           string `json:"user,omitempty"`
-	// InputType is a non-OpenAI extension used by providers (e.g. Cohere) that
-	// distinguish embedding intent — "search_document", "search_query",
-	// "classification", "clustering". Empty lets the provider pick a default.
+	// InputType is a non-OpenAI extension for providers that distinguish
+	// embedding intent — "search_document", "search_query", "classification",
+	// "clustering". Forwarded by the shared embeddings body (Cohere, NVIDIA NIM,
+	// OpenRouter, …). Empty lets the provider pick a default.
 	InputType string `json:"input_type,omitempty"`
 }
 

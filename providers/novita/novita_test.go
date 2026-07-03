@@ -16,6 +16,8 @@ import (
 const (
 	testBearerAPIKey   = "Bearer test-key"
 	testEmbeddingModel = "baai/bge-m3"
+	testChatModel      = "deepseek/deepseek-v3.2"
+	testChatPath       = "/chat/completions"
 )
 
 func TestNewNovita(t *testing.T) {
@@ -85,7 +87,8 @@ func TestNovitaProvider_CompleteStream_MockSSE(t *testing.T) {
 		"data: {\"id\":\"cmpl-1\",\"model\":\"deepseek/deepseek-v3.2\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
 		"data: [DONE]\n\n"
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertNovitaChatRequest(t, r)
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(sseData))
@@ -120,7 +123,8 @@ func TestNovitaProvider_CompleteStream_MockSSE(t *testing.T) {
 func TestNovitaProvider_Complete_MockHTTP(t *testing.T) {
 	respBody := `{"id":"cmpl-1","model":"deepseek/deepseek-v3.2","choices":[{"index":0,"message":{"role":"assistant","content":"Hello!"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}`
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertNovitaChatRequest(t, r)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(respBody))
@@ -129,7 +133,7 @@ func TestNovitaProvider_Complete_MockHTTP(t *testing.T) {
 
 	p, _ := New("test-key", srv.URL)
 	resp, err := p.Complete(context.Background(), core.Request{
-		Model:    "deepseek/deepseek-v3.2",
+		Model:    testChatModel,
 		Messages: []core.Message{{Role: "user", Content: "Hi"}},
 	})
 	if err != nil {
@@ -140,6 +144,33 @@ func TestNovitaProvider_Complete_MockHTTP(t *testing.T) {
 	}
 	if len(resp.Choices) == 0 {
 		t.Error("expected at least one choice")
+	}
+}
+
+// assertNovitaChatRequest verifies the outbound chat request shape: a POST to
+// /chat/completions carrying bearer auth and the forwarded model and messages.
+func assertNovitaChatRequest(t *testing.T, r *http.Request) {
+	t.Helper()
+	if r.Method != http.MethodPost {
+		t.Errorf("method = %s, want POST", r.Method)
+	}
+	if r.URL.Path != testChatPath {
+		t.Errorf("path = %q, want %s", r.URL.Path, testChatPath)
+	}
+	if got := r.Header.Get("Authorization"); got != testBearerAPIKey {
+		t.Errorf("Authorization = %q, want %s", got, testBearerAPIKey)
+	}
+	var body map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		t.Errorf("failed to decode request body: %v", err)
+		return
+	}
+	if got := body["model"]; got != testChatModel {
+		t.Errorf("model = %v, want %s", got, testChatModel)
+	}
+	msgs, ok := body["messages"].([]any)
+	if !ok || len(msgs) == 0 {
+		t.Errorf("messages = %#v, want non-empty array", body["messages"])
 	}
 }
 

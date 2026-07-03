@@ -139,3 +139,67 @@ func TestPerplexityProvider_Complete_MockHTTP(t *testing.T) {
 		t.Error("expected at least one choice")
 	}
 }
+
+// TestPerplexityProvider_Complete_CapturesCitations verifies the Sonar-specific
+// top-level "citations" field is surfaced into core.Response.Metadata via the
+// shared ExtraResponseFields seam.
+func TestPerplexityProvider_Complete_CapturesCitations(t *testing.T) {
+	respBody := `{"id":"chatcmpl-1","model":"sonar","choices":[{"index":0,"message":{"role":"assistant","content":"Hello!"},"finish_reason":"stop"}],"citations":["https://example.com/a","https://example.com/b"],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(respBody))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	resp, err := p.Complete(context.Background(), core.Request{
+		Model:    "sonar",
+		Messages: []core.Message{{Role: "user", Content: "Hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Complete() error: %v", err)
+	}
+	if resp.Metadata == nil {
+		t.Fatal("expected Metadata to be populated with citations")
+	}
+	citations, ok := resp.Metadata["citations"].([]any)
+	if !ok {
+		t.Fatalf("Metadata[\"citations\"] = %T, want []any", resp.Metadata["citations"])
+	}
+	if len(citations) != 2 {
+		t.Errorf("len(citations) = %d, want 2", len(citations))
+	}
+}
+
+// TestPerplexityProvider_Complete_ErrorStatus verifies a non-2xx chat response is
+// surfaced as a provider error rather than a decoded response.
+func TestPerplexityProvider_Complete_ErrorStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"message":"invalid api key"}}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	resp, err := p.Complete(context.Background(), core.Request{
+		Model:    "sonar",
+		Messages: []core.Message{{Role: "user", Content: "Hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected error for non-2xx response, got nil")
+	}
+	if resp != nil {
+		t.Errorf("expected nil response on error, got %+v", resp)
+	}
+}
+
+// TestNewPerplexity_InvalidBaseURL verifies a malformed base URL is rejected at
+// construction time.
+func TestNewPerplexity_InvalidBaseURL(t *testing.T) {
+	if _, err := New(testAPIKey, "not-a-url"); err == nil {
+		t.Error("expected error for invalid base URL, got nil")
+	}
+}

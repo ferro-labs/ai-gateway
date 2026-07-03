@@ -253,7 +253,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameMoonshot,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityDiscovery, CapabilityProxy},
 		EnvMappings: []EnvMapping{
 			{CfgKeyAPIKey, "MOONSHOT_API_KEY", true},
 			{CfgKeyBaseURL, "MOONSHOT_BASE_URL", false},
@@ -275,7 +275,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameNVIDIANIM,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityDiscovery, CapabilityProxy},
 		EnvMappings: []EnvMapping{
 			{CfgKeyAPIKey, "NVIDIA_NIM_API_KEY", true},
 			{CfgKeyBaseURL, "NVIDIA_NIM_BASE_URL", false},
@@ -329,7 +329,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameOpenRouter,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityDiscovery, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityDiscovery, CapabilityProxy},
 		EnvMappings: []EnvMapping{
 			{CfgKeyAPIKey, "OPENROUTER_API_KEY", true},
 			{CfgKeyBaseURL, "OPENROUTER_BASE_URL", false},
@@ -340,7 +340,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NamePerplexity,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityDiscovery, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityProxy},
 		EnvMappings: []EnvMapping{
 			{CfgKeyAPIKey, "PERPLEXITY_API_KEY", true},
 			{CfgKeyBaseURL, "PERPLEXITY_BASE_URL", false},

@@ -30,6 +30,7 @@ type embeddingBody struct {
 	Input          any    `json:"input"`
 	EncodingFormat string `json:"encoding_format,omitempty"`
 	Dimensions     *int   `json:"dimensions,omitempty"`
+	InputType      string `json:"input_type,omitempty"`
 	User           string `json:"user,omitempty"`
 }
 
@@ -57,6 +58,7 @@ func PostEmbeddings(ctx context.Context, p EmbeddingParams, req core.EmbeddingRe
 		Input:          input,
 		EncodingFormat: req.EncodingFormat,
 		Dimensions:     req.Dimensions,
+		InputType:      req.InputType,
 		User:           req.User,
 	}
 	if p.BodyTransform != nil {

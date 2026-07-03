@@ -33,12 +33,17 @@ var (
 	_ core.StreamProvider    = (*Provider)(nil)
 	_ core.ProxiableProvider = (*Provider)(nil)
 	_ core.DiscoveryProvider = (*Provider)(nil)
+	_ core.EmbeddingProvider = (*Provider)(nil)
 )
 
 // New creates a new OpenRouter provider.
 func New(apiKey, baseURL string) (*Provider, error) {
+	baseURL = strings.TrimSpace(baseURL)
 	if baseURL == "" {
 		baseURL = defaultBaseURL
+	}
+	if err := core.ValidateBaseURL(Name, baseURL); err != nil {
+		return nil, err
 	}
 	baseURL = strings.TrimRight(baseURL, "/")
 	return &Provider{

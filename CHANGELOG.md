@@ -5,6 +5,28 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.14] — 2026-07-05
+
+OpenAI-compatible provider fidelity release (part two). The fifth provider-readiness remediation phase aligns the xAI, OpenRouter, Moonshot, NVIDIA NIM, Perplexity, and Novita providers on request/response correctness, and adds shared improvements that benefit every OpenAI-compatible provider. No breaking API changes relative to v1.1.13.
+
+### Fixed
+
+- **Reasoning & cache token usage** (xAI, OpenRouter, and every OpenAI-compatible provider): usage reported in the nested OpenAI form (`prompt_tokens_details.cached_tokens`, `completion_tokens_details.reasoning_tokens`) is now decoded into the reported token counts on both the chat and streaming paths instead of being dropped.
+- **Perplexity Sonar metadata**: citations, search results, images, and related questions are now surfaced (under a `provider_metadata` response field) instead of being discarded.
+- **Perplexity model discovery**: the always-failing discovery call (it targeted a nonexistent endpoint and returned the wrong model family) is removed; the static Sonar model list is authoritative.
+- **Perplexity model list**: the retired `sonar-reasoning` model is removed (`sonar-reasoning-pro` replaces it).
+- **NVIDIA NIM embeddings**: now route through the shared embeddings path, so errors surface consistently and `input_type` is forwarded.
+- **xAI image responses**: decode into the canonical image response type and route errors through the shared error envelope; the `user` field is now forwarded, and `size`/`quality`/`style` are reported as dropped when a Grok image model ignores them.
+- **parallel_tool_calls**: a client-supplied `parallel_tool_calls` is now forwarded to the provider instead of being dropped at the HTTP boundary.
+
+### Changed
+
+- **Live model discovery** added for Moonshot and NVIDIA NIM (self-updating model lists); the Moonshot and xAI static fallback lists were refreshed.
+- **Base-URL validation** is now enforced at construction for xAI, OpenRouter, Moonshot, NVIDIA NIM, Perplexity, and Novita.
+- **OpenRouter embeddings**: OpenRouter now supports the embeddings endpoint via the shared helper.
+
+---
+
 ## [1.1.13] — 2026-07-04
 
 OpenAI-compatible provider fidelity release (part one). The fourth provider-readiness remediation phase aligns the Mistral, DeepSeek, Together, Fireworks, Cerebras, and Groq providers on request/response correctness, and adds two shared improvements that benefit every OpenAI-compatible provider. No breaking API changes relative to v1.1.12.

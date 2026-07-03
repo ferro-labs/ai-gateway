@@ -31,6 +31,7 @@ type routeChatCompletionRequest struct {
 	Stream              bool                      `json:"stream,omitempty"`
 	User                string                    `json:"user,omitempty"`
 	LogitBias           map[string]float64        `json:"logit_bias,omitempty"`
+	ParallelToolCalls   *bool                     `json:"parallel_tool_calls,omitempty"`
 }
 
 type routeChatMessage struct {
@@ -59,7 +60,7 @@ func putRouteChatCompletionRequest(r *routeChatCompletionRequest) {
 	chatRequestPool.Put(r)
 }
 
-// reset clears all 19 fields before returning to the pool.
+// reset clears all 20 fields before returning to the pool.
 // SECURITY: every field must be listed explicitly. Missing a field
 // leaks one tenant's data to another in the multi-tenant gateway.
 func (r *routeChatCompletionRequest) reset() {
@@ -82,6 +83,7 @@ func (r *routeChatCompletionRequest) reset() {
 	r.Stream = false            // field 17: bool
 	r.User = ""                 // field 18: string
 	r.LogitBias = nil           // field 19: map[string]float64
+	r.ParallelToolCalls = nil   // field 20: *bool
 }
 
 // DecodeChatCompletionRequest decodes the JSON body into a providers.Request.
@@ -128,6 +130,7 @@ func DecodeChatCompletionRequest(r io.Reader) (providers.Request, error) {
 		Stream:              wire.Stream,
 		User:                wire.User,
 		LogitBias:           wire.LogitBias,
+		ParallelToolCalls:   wire.ParallelToolCalls,
 	}, nil
 }
 

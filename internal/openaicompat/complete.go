@@ -38,6 +38,11 @@ type ChatParams struct {
 	// response decoding, error handling, and finish_reason normalization. It
 	// receives the request with Stream and StreamOptions already applied.
 	BodyTransform func(core.Request) any
+
+	// ExtraResponseFields, when set, captures these top-level response fields
+	// (e.g. Perplexity's "citations", "search_results") into core.Response.Metadata,
+	// surfacing provider-specific data the canonical response shape doesn't model.
+	ExtraResponseFields []string
 }
 
 func newChatRequest(ctx context.Context, p ChatParams, req core.Request, stream bool) (*http.Response, func(), error) {
@@ -99,13 +104,45 @@ func PostChat(ctx context.Context, p ChatParams, req core.Request) (*core.Respon
 	for i := range pResp.Choices {
 		pResp.Choices[i].FinishReason = core.NormalizeFinishReason(pResp.Choices[i].FinishReason)
 	}
-	return &core.Response{
+	resp := &core.Response{
 		ID:       pResp.ID,
 		Model:    pResp.Model,
 		Provider: p.Provider,
 		Choices:  pResp.Choices,
 		Usage:    pResp.Usage,
-	}, nil
+	}
+	if meta := captureExtraFields(respBody, p.ExtraResponseFields); meta != nil {
+		resp.Metadata = meta
+	}
+	return resp, nil
+}
+
+// captureExtraFields decodes the named top-level response fields into a metadata
+// map, used to surface provider-specific data (e.g. Perplexity citations) that
+// the canonical response shape does not model. Returns nil when nothing matches.
+func captureExtraFields(body []byte, fields []string) map[string]any {
+	if len(fields) == 0 {
+		return nil
+	}
+	var raw map[string]json.RawMessage
+	if json.Unmarshal(body, &raw) != nil {
+		return nil
+	}
+	meta := make(map[string]any, len(fields))
+	for _, k := range fields {
+		rawVal, ok := raw[k]
+		if !ok {
+			continue
+		}
+		var v any
+		if json.Unmarshal(rawVal, &v) == nil {
+			meta[k] = v
+		}
+	}
+	if len(meta) == 0 {
+		return nil
+	}
+	return meta
 }
 
 // PostStream sends a streaming OpenAI-compatible chat completion and returns a

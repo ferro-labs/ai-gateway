@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/ferro-labs/ai-gateway/providers/core"
@@ -13,7 +14,10 @@ import (
 
 const testBearerAPIKey = "Bearer test-key"
 
-const testEmbeddingModel = "nvidia/nv-embedqa-e5-v5"
+const (
+	testEmbeddingModel = "nvidia/nv-embedqa-e5-v5"
+	testChatModel      = "nvidia/Llama-3.1-Nemotron-70B-Instruct"
+)
 
 func TestNewNVIDIANIM(t *testing.T) {
 	p, err := New("test-key", "")
@@ -213,5 +217,123 @@ func TestNVIDIANIMProvider_Embed_NoInputTypeDefaultInjection(t *testing.T) {
 	p, _ := New("test-key", srv.URL)
 	if _, err := p.Embed(context.Background(), core.EmbeddingRequest{Model: testEmbeddingModel, Input: "hi"}); err != nil {
 		t.Fatalf("Embed() error: %v", err)
+	}
+}
+
+// TestNewNVIDIANIM_RejectsInvalidBaseURL verifies the constructor fails fast when
+// the base URL is not a valid absolute http(s) URL with a host.
+func TestNewNVIDIANIM_RejectsInvalidBaseURL(t *testing.T) {
+	if _, err := New("test-key", "://nope"); err == nil {
+		t.Fatal("New() accepted an invalid base URL, want error")
+	}
+}
+
+func TestNVIDIANIMProvider_Complete_UpstreamError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"rate limited"}}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	_, err := p.Complete(context.Background(), core.Request{
+		Model:    testChatModel,
+		Messages: []core.Message{{Role: "user", Content: "Hi"}},
+	})
+	if err == nil {
+		t.Fatal("Complete() error = nil, want upstream error")
+	}
+	if got := core.ParseStatusCode(err); got != http.StatusTooManyRequests {
+		t.Errorf("ParseStatusCode(err) = %d, want %d", got, http.StatusTooManyRequests)
+	}
+	if !strings.Contains(err.Error(), "rate limited") {
+		t.Errorf("error = %v, want it to contain %q", err, "rate limited")
+	}
+}
+
+func TestNVIDIANIMProvider_CompleteStream_UpstreamError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":{"message":"internal boom"}}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	_, err := p.CompleteStream(context.Background(), core.Request{
+		Model:    testChatModel,
+		Messages: []core.Message{{Role: "user", Content: "Hi"}},
+	})
+	if err == nil {
+		t.Fatal("CompleteStream() error = nil, want upstream error")
+	}
+	if got := core.ParseStatusCode(err); got != http.StatusInternalServerError {
+		t.Errorf("ParseStatusCode(err) = %d, want %d", got, http.StatusInternalServerError)
+	}
+	if !strings.Contains(err.Error(), "internal boom") {
+		t.Errorf("error = %v, want it to contain %q", err, "internal boom")
+	}
+}
+
+func TestNVIDIANIMProvider_Embed_UpstreamError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/embeddings" {
+			t.Errorf("path = %q, want /embeddings", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"input_type required"}}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	_, err := p.Embed(context.Background(), core.EmbeddingRequest{
+		Model: testEmbeddingModel,
+		Input: "hello",
+	})
+	if err == nil {
+		t.Fatal("Embed() error = nil, want upstream error")
+	}
+	if got := core.ParseStatusCode(err); got != http.StatusBadRequest {
+		t.Errorf("ParseStatusCode(err) = %d, want %d", got, http.StatusBadRequest)
+	}
+	if !strings.Contains(err.Error(), "input_type required") {
+		t.Errorf("error = %v, want it to contain %q", err, "input_type required")
+	}
+}
+
+// TestNVIDIANIMProvider_DiscoverModels verifies live discovery issues a GET to
+// /models with bearer auth and parses the returned model metadata.
+func TestNVIDIANIMProvider_DiscoverModels(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("method = %q, want GET", r.Method)
+		}
+		if r.URL.Path != "/models" {
+			t.Errorf("path = %q, want /models", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != testBearerAPIKey {
+			t.Errorf("Authorization = %q, want %s", got, testBearerAPIKey)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"` + testChatModel + `","object":"model","created":1700000000,"owned_by":"nvidia-nim"}]}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	models, err := p.DiscoverModels(context.Background())
+	if err != nil {
+		t.Fatalf("DiscoverModels() error: %v", err)
+	}
+	if len(models) != 1 {
+		t.Fatalf("expected 1 model, got %d", len(models))
+	}
+	if models[0].ID != testChatModel {
+		t.Errorf("model[0].ID = %q, want %s", models[0].ID, testChatModel)
+	}
+	if models[0].OwnedBy != "nvidia-nim" {
+		t.Errorf("model[0].OwnedBy = %q, want nvidia-nim", models[0].OwnedBy)
 	}
 }
