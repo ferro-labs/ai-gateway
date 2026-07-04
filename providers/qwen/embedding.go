@@ -3,8 +3,8 @@ package qwen
 import (
 	"context"
 
-	"github.com/ferro-labs/ai-gateway/internal/openaicompat"
 	"github.com/ferro-labs/ai-gateway/providers/core"
+	"github.com/ferro-labs/ai-gateway/providers/internal/openaicompat"
 )
 
 // Embed sends an OpenAI-compatible embedding request to Qwen (DashScope compatible mode).

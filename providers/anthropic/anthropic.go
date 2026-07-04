@@ -11,10 +11,10 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/ferro-labs/ai-gateway/internal/anthropicwire"
 	"github.com/ferro-labs/ai-gateway/internal/discovery"
 	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
 	"github.com/ferro-labs/ai-gateway/providers/core"
+	"github.com/ferro-labs/ai-gateway/providers/internal/anthropicwire"
 )
 
 // Name is the canonical provider identifier.

@@ -3,8 +3,8 @@ package mistral
 import (
 	"context"
 
-	"github.com/ferro-labs/ai-gateway/internal/openaicompat"
 	"github.com/ferro-labs/ai-gateway/providers/core"
+	"github.com/ferro-labs/ai-gateway/providers/internal/openaicompat"
 )
 
 // mistralEmbeddingBody reshapes the OpenAI-shaped embeddings body for Mistral,

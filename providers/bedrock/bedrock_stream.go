@@ -8,8 +8,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
-	"github.com/ferro-labs/ai-gateway/internal/anthropicwire"
 	"github.com/ferro-labs/ai-gateway/providers/core"
+	"github.com/ferro-labs/ai-gateway/providers/internal/anthropicwire"
 )
 
 // CompleteStream sends a streaming request to AWS Bedrock via InvokeModelWithResponseStream.
