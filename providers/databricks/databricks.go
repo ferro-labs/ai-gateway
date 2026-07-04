@@ -137,6 +137,9 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 	}, req)
 }
 
+// normalizeEmbeddingInput is kept local rather than using
+// core.NormalizeEmbeddingInput because it additionally rejects empty or
+// whitespace-only strings (per element) — intentional extra strictness.
 func normalizeEmbeddingInput(input any) (any, error) {
 	switch v := input.(type) {
 	case string:
