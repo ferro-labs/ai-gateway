@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -46,6 +45,7 @@ type Provider struct {
 var (
 	_ core.Provider          = (*Provider)(nil)
 	_ core.StreamProvider    = (*Provider)(nil)
+	_ core.EmbeddingProvider = (*Provider)(nil)
 	_ core.DiscoveryProvider = (*Provider)(nil)
 )
 
@@ -61,9 +61,8 @@ func New(apiKey, baseURL string, models []string) (*Provider, error) {
 		baseURL = defaultBaseURL
 	}
 	baseURL = strings.TrimRight(baseURL, "/")
-	u, err := url.Parse(baseURL)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return nil, fmt.Errorf("ollama-cloud: invalid base URL %q: must be http or https with a host", baseURL)
+	if err := core.ValidateBaseURL(Name, baseURL); err != nil {
+		return nil, err
 	}
 
 	models = normalizeModels(models)
@@ -115,7 +114,7 @@ func (p *Provider) Models() []core.ModelInfo {
 
 // Complete sends a non-streaming chat request to Ollama Cloud.
 func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
-	apiReq := buildChatRequest(req, false)
+	apiReq := buildChatRequest(ctx, req, false)
 	bodyReader, _, release, err := core.JSONBodyReader(apiReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
@@ -150,6 +149,12 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 		return nil, fmt.Errorf("ollama-cloud API error: %s", apiResp.Error)
 	}
 
+	message := apiResp.Message.toCore()
+	finishReason := core.NormalizeFinishReason(apiResp.DoneReason)
+	if len(message.ToolCalls) > 0 {
+		finishReason = core.FinishReasonToolCalls
+	}
+
 	return &core.Response{
 		Object:   "chat.completion",
 		Created:  parseCreatedAt(apiResp.CreatedAt),
@@ -158,8 +163,8 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 		Choices: []core.Choice{
 			{
 				Index:        0,
-				Message:      apiResp.Message.toCore(),
-				FinishReason: apiResp.DoneReason,
+				Message:      message,
+				FinishReason: finishReason,
 			},
 		},
 		Usage: usageFromCounts(apiResp.PromptEvalCount, apiResp.EvalCount),
@@ -168,7 +173,7 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 
 // CompleteStream sends a streaming chat request to Ollama Cloud.
 func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan core.StreamChunk, error) {
-	apiReq := buildChatRequest(req, true)
+	apiReq := buildChatRequest(ctx, req, true)
 	bodyReader, _, release, err := core.JSONBodyReader(apiReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
@@ -296,9 +301,13 @@ type chatRequest struct {
 }
 
 type chatOptions struct {
-	Temperature *float64 `json:"temperature,omitempty"`
-	TopP        *float64 `json:"top_p,omitempty"`
-	NumPredict  *int     `json:"num_predict,omitempty"`
+	Temperature      *float64 `json:"temperature,omitempty"`
+	TopP             *float64 `json:"top_p,omitempty"`
+	NumPredict       *int     `json:"num_predict,omitempty"`
+	Stop             []string `json:"stop,omitempty"`
+	Seed             *int64   `json:"seed,omitempty"`
+	PresencePenalty  *float64 `json:"presence_penalty,omitempty"`
+	FrequencyPenalty *float64 `json:"frequency_penalty,omitempty"`
 }
 
 type chatResponse struct {
@@ -337,7 +346,7 @@ type tagsResponse struct {
 	} `json:"models"`
 }
 
-func buildChatRequest(req core.Request, stream bool) chatRequest {
+func buildChatRequest(ctx context.Context, req core.Request, stream bool) chatRequest {
 	var maxTokens *int
 	if req.MaxTokens != nil {
 		maxTokens = req.MaxTokens
@@ -346,13 +355,25 @@ func buildChatRequest(req core.Request, stream bool) chatRequest {
 	}
 
 	var options *chatOptions
-	if req.Temperature != nil || req.TopP != nil || maxTokens != nil {
+	if req.Temperature != nil || req.TopP != nil || maxTokens != nil ||
+		len(req.Stop) > 0 || req.Seed != nil ||
+		req.PresencePenalty != nil || req.FrequencyPenalty != nil {
 		options = &chatOptions{
-			Temperature: req.Temperature,
-			TopP:        req.TopP,
-			NumPredict:  maxTokens,
+			Temperature:      req.Temperature,
+			TopP:             req.TopP,
+			NumPredict:       maxTokens,
+			Stop:             req.Stop,
+			Seed:             req.Seed,
+			PresencePenalty:  req.PresencePenalty,
+			FrequencyPenalty: req.FrequencyPenalty,
 		}
 	}
+
+	// Observability for silently dropped params (issue #140): the native
+	// /api/chat surface forwards only the options below plus tools.
+	core.WarnUnsupportedParams(ctx, Name, req.Model, req,
+		"temperature", "top_p", "max_tokens", "max_completion_tokens",
+		"stop", "seed", "presence_penalty", "frequency_penalty", "tools")
 
 	return chatRequest{
 		Model:    req.Model,
@@ -369,14 +390,19 @@ func streamChunkFromResponse(apiResp chatResponse) core.StreamChunk {
 		Created: parseCreatedAt(apiResp.CreatedAt),
 		Model:   apiResp.Model,
 	}
+	toolCalls := apiResp.Message.toCore().ToolCalls
+	finishReason := core.NormalizeFinishReason(apiResp.DoneReason)
+	if len(toolCalls) > 0 {
+		finishReason = core.FinishReasonToolCalls
+	}
 	choice := core.StreamChoice{
 		Index: 0,
 		Delta: core.MessageDelta{
 			Role:      apiResp.Message.Role,
 			Content:   apiResp.Message.Content,
-			ToolCalls: apiResp.Message.toCore().ToolCalls,
+			ToolCalls: toolCalls,
 		},
-		FinishReason: apiResp.DoneReason,
+		FinishReason: finishReason,
 	}
 	if apiResp.Message.Role != "" || apiResp.Message.Content != "" || len(apiResp.Message.ToolCalls) > 0 || apiResp.Done || apiResp.DoneReason != "" {
 		chunk.Choices = append(chunk.Choices, choice)
@@ -398,13 +424,20 @@ func (m nativeMessage) toCore() core.Message {
 	}
 
 	msg.ToolCalls = make([]core.ToolCall, 0, len(m.ToolCalls))
-	for _, tc := range m.ToolCalls {
+	for idx, tc := range m.ToolCalls {
 		callType := tc.Type
 		if callType == "" {
 			callType = "function"
 		}
+		// The native /api/chat schema omits tool-call IDs; synthesize a
+		// deterministic one so downstream tool-result correlation works
+		// (mirrors providers/gemini/gemini.go).
+		id := tc.ID
+		if id == "" {
+			id = fmt.Sprintf("call_%d", idx)
+		}
 		msg.ToolCalls = append(msg.ToolCalls, core.ToolCall{
-			ID:   tc.ID,
+			ID:   id,
 			Type: callType,
 			Function: core.FunctionCall{
 				Name:      tc.Function.Name,
