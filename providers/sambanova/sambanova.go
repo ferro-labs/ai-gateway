@@ -41,10 +41,10 @@ func New(apiKey, baseURL string) (*Provider, error) {
 	if baseURL == "" {
 		baseURL = defaultBaseURL
 	}
+	baseURL = strings.TrimRight(baseURL, "/")
 	if err := core.ValidateBaseURL(Name, baseURL); err != nil {
 		return nil, err
 	}
-	baseURL = strings.TrimRight(baseURL, "/")
 	return &Provider{
 		name:       Name,
 		apiKey:     apiKey,
