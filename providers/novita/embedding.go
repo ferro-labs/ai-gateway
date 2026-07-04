@@ -2,21 +2,20 @@ package novita
 
 import (
 	"context"
-	"fmt"
 
-	"github.com/ferro-labs/ai-gateway/internal/openaicompat"
 	"github.com/ferro-labs/ai-gateway/providers/core"
+	"github.com/ferro-labs/ai-gateway/providers/internal/openaicompat"
 )
 
 // Embed sends an OpenAI-compatible embedding request to Novita.
 func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.EmbeddingResponse, error) {
-	if req.EncodingFormat != "" && req.EncodingFormat != "float" {
-		return nil, fmt.Errorf("embed: unsupported encoding_format %q; valid value is \"float\"", req.EncodingFormat)
+	if err := core.ValidateEmbeddingEncodingFormat(req.EncodingFormat); err != nil {
+		return nil, err
 	}
 	return openaicompat.PostEmbeddings(ctx, openaicompat.EmbeddingParams{
 		HTTPClient: p.httpClient,
 		URL:        p.baseURL + "/embeddings",
-		Headers:    map[string]string{"Authorization": "Bearer " + p.apiKey, "Content-Type": "application/json"},
+		Headers:    p.headers(),
 		Label:      "novita",
 	}, req)
 }

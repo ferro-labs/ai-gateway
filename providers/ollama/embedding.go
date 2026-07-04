@@ -27,12 +27,12 @@ type ollamaEmbedResponse struct {
 // Embed sends a request to the native Ollama /api/embed endpoint and adapts
 // the response to the OpenAI-compatible core.EmbeddingResponse shape.
 func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.EmbeddingResponse, error) {
-	input, err := normalizeEmbeddingInput(req.Input)
+	input, err := core.NormalizeEmbeddingInput(req.Input)
 	if err != nil {
 		return nil, err
 	}
-	if req.EncodingFormat != "" && req.EncodingFormat != "float" {
-		return nil, fmt.Errorf("embed: unsupported encoding_format %q; valid value is \"float\"", req.EncodingFormat)
+	if err := core.ValidateEmbeddingEncodingFormat(req.EncodingFormat); err != nil {
+		return nil, err
 	}
 
 	// Ollama's /api/embed accepts a "dimensions" advanced parameter; forward it
@@ -95,33 +95,4 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 			TotalTokens:  oResp.PromptEvalCount,
 		},
 	}, nil
-}
-
-func normalizeEmbeddingInput(input any) (any, error) {
-	switch v := input.(type) {
-	case string:
-		return v, nil
-	case []string:
-		if len(v) == 0 {
-			return nil, fmt.Errorf("embed: Input must not be an empty array")
-		}
-		return v, nil
-	case []any:
-		if len(v) == 0 {
-			return nil, fmt.Errorf("embed: Input must not be an empty array")
-		}
-		strs := make([]string, 0, len(v))
-		for i, item := range v {
-			s, ok := item.(string)
-			if !ok {
-				return nil, fmt.Errorf("embed: Input[%d] is %T, want string", i, item)
-			}
-			strs = append(strs, s)
-		}
-		return strs, nil
-	case nil:
-		return nil, fmt.Errorf("embed: Input must not be nil")
-	default:
-		return nil, fmt.Errorf("embed: unsupported Input type %T; want string or []string", input)
-	}
 }

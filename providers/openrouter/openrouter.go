@@ -8,8 +8,8 @@ import (
 
 	discov "github.com/ferro-labs/ai-gateway/internal/discovery"
 	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
-	"github.com/ferro-labs/ai-gateway/internal/openaicompat"
 	"github.com/ferro-labs/ai-gateway/providers/core"
+	"github.com/ferro-labs/ai-gateway/providers/internal/openaicompat"
 )
 
 const (
@@ -92,22 +92,21 @@ func (p *Provider) DiscoverModels(ctx context.Context) ([]core.ModelInfo, error)
 
 // Complete sends a chat completion request to OpenRouter.
 func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
-	return openaicompat.PostChat(ctx, openaicompat.ChatParams{
+	return openaicompat.PostChat(ctx, p.chatParams(), req)
+}
+
+// chatParams builds the shared OpenAI-compatible chat endpoint configuration.
+func (p *Provider) chatParams() openaicompat.ChatParams {
+	return openaicompat.ChatParams{
 		HTTPClient: p.httpClient,
 		URL:        p.baseURL + "/chat/completions",
 		Provider:   p.name,
 		Label:      "openrouter",
 		Headers:    map[string]string{"Authorization": "Bearer " + p.apiKey, "Content-Type": "application/json"},
-	}, req)
+	}
 }
 
 // CompleteStream sends a streaming chat completion request to OpenRouter.
 func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan core.StreamChunk, error) {
-	return openaicompat.PostStream(ctx, openaicompat.ChatParams{
-		HTTPClient: p.httpClient,
-		URL:        p.baseURL + "/chat/completions",
-		Provider:   p.name,
-		Label:      "openrouter",
-		Headers:    map[string]string{"Authorization": "Bearer " + p.apiKey, "Content-Type": "application/json"},
-	}, req)
+	return openaicompat.PostStream(ctx, p.chatParams(), req)
 }

@@ -269,3 +269,10 @@ func TestMoonshotProvider_DiscoverModels(t *testing.T) {
 		t.Errorf("model[1] owned_by fallback = %q, want moonshot", models[1].OwnedBy)
 	}
 }
+
+// TestNewMoonshot_RejectsInvalidBaseURL locks in the base-URL validation.
+func TestNewMoonshot_RejectsInvalidBaseURL(t *testing.T) {
+	if _, err := New("k", "://bad"); err == nil {
+		t.Fatal("New accepted an invalid base URL")
+	}
+}

@@ -5,7 +5,6 @@
 package openai
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -148,31 +147,15 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 		Model: req.Model,
 	}
 
-	switch v := req.Input.(type) {
+	normalized, err := core.NormalizeEmbeddingInput(req.Input)
+	if err != nil {
+		return nil, err
+	}
+	switch v := normalized.(type) {
 	case string:
 		params.Input = oai.EmbeddingNewParamsInputUnion{OfString: oai.String(v)}
 	case []string:
-		if len(v) == 0 {
-			return nil, fmt.Errorf("embed: Input must not be an empty array")
-		}
 		params.Input = oai.EmbeddingNewParamsInputUnion{OfArrayOfStrings: v}
-	case []any:
-		if len(v) == 0 {
-			return nil, fmt.Errorf("embed: Input must not be an empty array")
-		}
-		strs := make([]string, 0, len(v))
-		for i, item := range v {
-			s, ok := item.(string)
-			if !ok {
-				return nil, fmt.Errorf("embed: Input[%d] is %T, want string", i, item)
-			}
-			strs = append(strs, s)
-		}
-		params.Input = oai.EmbeddingNewParamsInputUnion{OfArrayOfStrings: strs}
-	case nil:
-		return nil, fmt.Errorf("embed: Input must not be nil")
-	default:
-		return nil, fmt.Errorf("embed: unsupported Input type %T; want string or []string", req.Input)
 	}
 
 	switch req.EncodingFormat {
@@ -275,12 +258,13 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 	// token fields populated, so forward only the modern max_completion_tokens.
 	req.PreferCompletionTokens()
 
-	body, err := json.Marshal(req)
+	bodyReader, _, release, err := core.JSONBodyReader(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
+	defer release()
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.chatCompletionsEndpoint(), bytes.NewReader(body)) //nolint:gosec // baseURL validated in New()
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.chatCompletionsEndpoint(), bodyReader) //nolint:gosec // baseURL validated in New()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -353,12 +337,13 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 	sreq := streamingRequest{Request: req, StreamOptions: streamOptions{IncludeUsage: true}}
 	sreq.Stream = true
 
-	body, err := json.Marshal(sreq)
+	bodyReader, _, release, err := core.JSONBodyReader(sreq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
+	defer release()
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.chatCompletionsEndpoint(), bytes.NewReader(body)) //nolint:gosec // baseURL validated in New()
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.chatCompletionsEndpoint(), bodyReader) //nolint:gosec // baseURL validated in New()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}

@@ -11,10 +11,10 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/ferro-labs/ai-gateway/internal/anthropicwire"
 	"github.com/ferro-labs/ai-gateway/internal/discovery"
 	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
 	"github.com/ferro-labs/ai-gateway/providers/core"
+	"github.com/ferro-labs/ai-gateway/providers/internal/anthropicwire"
 )
 
 // Name is the canonical provider identifier.
@@ -86,11 +86,7 @@ func (p *Provider) AuthHeaders() map[string]string {
 // DiscoverModels fetches the live model list from the Anthropic /v1/models
 // endpoint, which uses x-api-key + anthropic-version headers rather than Bearer.
 func (p *Provider) DiscoverModels(ctx context.Context) ([]core.ModelInfo, error) {
-	headers := map[string]string{
-		"x-api-key":         p.apiKey,
-		"anthropic-version": anthropicVersion,
-	}
-	return discovery.DiscoverModelsWithHeaders(ctx, p.httpClient, p.baseURL+"/v1/models", headers, p.name)
+	return discovery.DiscoverModelsWithHeaders(ctx, p.httpClient, p.baseURL+"/v1/models", p.AuthHeaders(), p.name)
 }
 
 // SupportedModels returns the list of models supported by this provider.

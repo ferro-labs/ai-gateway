@@ -3,6 +3,7 @@ package cohere
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -600,5 +601,186 @@ func TestCohereProvider_Embed_UpstreamNon2xxError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "cohere embed API error (429): rate limited") {
 		t.Errorf("error = %q, want cohere embed API error (429): rate limited", err.Error())
+	}
+}
+
+// TestCohereProvider_Complete_UpstreamNon2xxError exercises the hand-rolled
+// Complete non-200 branch: Cohere's flat {"message":…} error envelope is
+// surfaced as a "cohere API error (<status>): <message>" error.
+func TestCohereProvider_Complete_UpstreamNon2xxError(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+	}{
+		{"rate limited", http.StatusTooManyRequests},
+		{"server error", http.StatusInternalServerError},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, `{"message":"upstream boom"}`)
+			}))
+			defer srv.Close()
+
+			p, _ := New("test-key", srv.URL)
+			_, err := p.Complete(context.Background(), core.Request{
+				Model:    "command-r-plus",
+				Messages: []core.Message{{Role: core.RoleUser, Content: "Hi"}},
+			})
+			if err == nil {
+				t.Fatal("expected upstream error, got nil")
+			}
+			want := fmt.Sprintf("cohere API error (%d): upstream boom", tc.status)
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error = %q, want it to contain %q", err.Error(), want)
+			}
+		})
+	}
+}
+
+// TestCohereProvider_CompleteStream_UpstreamNon2xxError exercises the streaming
+// non-200 branch that reads the body and returns an error BEFORE spawning the
+// producer goroutine, so the caller gets (nil, err) rather than an error chunk.
+func TestCohereProvider_CompleteStream_UpstreamNon2xxError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"message":"stream rate limited"}`)
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	ch, err := p.CompleteStream(context.Background(), core.Request{
+		Model:    "command-r-plus",
+		Messages: []core.Message{{Role: core.RoleUser, Content: "Hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected pre-goroutine error, got nil")
+	}
+	if ch != nil {
+		t.Errorf("expected nil channel on pre-goroutine error, got %#v", ch)
+	}
+	if !strings.Contains(err.Error(), "cohere API error (429): stream rate limited") {
+		t.Errorf("error = %q, want cohere API error (429): stream rate limited", err.Error())
+	}
+}
+
+// TestCohereProvider_CompleteStream_TruncatedStream verifies that a stream cut
+// short mid-body (declared Content-Length longer than the bytes written) surfaces
+// the scanner read error as a StreamChunk.Error, exercising the mid-stream
+// scanErr() branch.
+func TestCohereProvider_CompleteStream_TruncatedStream(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		// Declare more bytes than are written so the client's read of the body
+		// terminates with an unexpected-EOF error rather than a clean close.
+		w.Header().Set("Content-Length", "4096")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "data: {\"type\":\"content-delta\",\"delta\":{\"message\":{\"content\":{\"text\":\"Hello\"}}}}\n\n")
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	ch, err := p.CompleteStream(context.Background(), core.Request{
+		Model:    "command-r-plus",
+		Messages: []core.Message{{Role: core.RoleUser, Content: "Hi"}},
+	})
+	if err != nil {
+		t.Fatalf("CompleteStream() error: %v", err)
+	}
+
+	var chunks []core.StreamChunk
+	for c := range ch {
+		chunks = append(chunks, c)
+	}
+
+	if len(chunks) == 0 {
+		t.Fatal("expected at least one chunk before the truncation error")
+	}
+	last := chunks[len(chunks)-1]
+	if last.Error == nil {
+		t.Fatalf("final chunk = %#v, want a mid-stream scan error", last)
+	}
+}
+
+// TestComplete_ForwardsVisionContent verifies multimodal image parts are mapped
+// to Cohere content blocks instead of being dropped.
+func TestComplete_ForwardsVisionContent(t *testing.T) {
+	var body map[string]json.RawMessage
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"x","message":{"role":"assistant","content":[{"type":"text","text":"ok"}]},"finish_reason":"COMPLETE","usage":{"tokens":{"input_tokens":1,"output_tokens":1}}}`)
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	if _, err := p.Complete(context.Background(), core.Request{
+		Model: "command-r-plus",
+		Messages: []core.Message{{
+			Role: core.RoleUser,
+			ContentParts: []core.ContentPart{
+				{Type: "text", Text: "what is this"},
+				{Type: "image_url", ImageURL: &core.ImageURLPart{URL: "https://example.com/cat.png"}},
+			},
+		}},
+	}); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	var msgs []struct {
+		Content json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal(body["messages"], &msgs); err != nil {
+		t.Fatalf("decode messages: %v", err)
+	}
+	if len(msgs) == 0 || !strings.Contains(string(msgs[0].Content), "image_url") ||
+		!strings.Contains(string(msgs[0].Content), "example.com/cat.png") {
+		t.Errorf("vision image not forwarded; content=%s", msgs[0].Content)
+	}
+}
+
+// TestCompleteStream_SurfacesUsage verifies the message-end token usage is
+// surfaced on a StreamChunk (previously parsed and discarded).
+func TestCompleteStream_SurfacesUsage(t *testing.T) {
+	sse := "data: {\"type\":\"content-delta\",\"delta\":{\"message\":{\"content\":{\"text\":\"hi\"}}}}\n\n" +
+		"data: {\"type\":\"message-end\",\"delta\":{\"finish_reason\":\"COMPLETE\",\"usage\":{\"tokens\":{\"input_tokens\":7,\"output_tokens\":3}}}}\n\n"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, sse)
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	ch, err := p.CompleteStream(context.Background(), core.Request{
+		Model:    "command-r-plus",
+		Messages: []core.Message{{Role: core.RoleUser, Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("CompleteStream: %v", err)
+	}
+	var usage *core.Usage
+	for c := range ch {
+		if c.Error != nil {
+			t.Fatalf("stream error: %v", c.Error)
+		}
+		if c.Usage != nil {
+			usage = c.Usage
+		}
+	}
+	if usage == nil {
+		t.Fatal("no usage surfaced on cohere stream")
+	}
+	if usage.PromptTokens != 7 || usage.CompletionTokens != 3 || usage.TotalTokens != 10 {
+		t.Fatalf("usage = %+v, want 7/3/10", usage)
+	}
+}
+
+func TestNew_RejectsInvalidBaseURL(t *testing.T) {
+	if _, err := New("k", "://bad"); err == nil {
+		t.Fatal("New accepted an invalid base URL")
 	}
 }

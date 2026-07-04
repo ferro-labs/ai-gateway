@@ -8,8 +8,8 @@ import (
 	"strings"
 
 	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
-	"github.com/ferro-labs/ai-gateway/internal/openaicompat"
 	"github.com/ferro-labs/ai-gateway/providers/core"
+	"github.com/ferro-labs/ai-gateway/providers/internal/openaicompat"
 )
 
 const (
@@ -122,8 +122,8 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 	if err != nil {
 		return nil, err
 	}
-	if req.EncodingFormat != "" && req.EncodingFormat != "float" {
-		return nil, fmt.Errorf("embed: unsupported encoding_format %q; valid value is \"float\"", req.EncodingFormat)
+	if err := core.ValidateEmbeddingEncodingFormat(req.EncodingFormat); err != nil {
+		return nil, err
 	}
 	req.Input = input
 	return openaicompat.PostEmbeddings(ctx, openaicompat.EmbeddingParams{
@@ -137,6 +137,9 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 	}, req)
 }
 
+// normalizeEmbeddingInput is kept local rather than using
+// core.NormalizeEmbeddingInput because it additionally rejects empty or
+// whitespace-only strings (per element) — intentional extra strictness.
 func normalizeEmbeddingInput(input any) (any, error) {
 	switch v := input.(type) {
 	case string:

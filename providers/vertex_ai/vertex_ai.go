@@ -14,8 +14,8 @@ import (
 	"golang.org/x/oauth2/google"
 
 	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
-	"github.com/ferro-labs/ai-gateway/internal/openaicompat"
 	"github.com/ferro-labs/ai-gateway/providers/core"
+	"github.com/ferro-labs/ai-gateway/providers/internal/openaicompat"
 )
 
 // Name is the canonical provider identifier.
@@ -285,13 +285,48 @@ func vertexAIEmbeddingValues(prediction vertexAIEmbeddingPrediction) ([]float64,
 	return values, tokenCount
 }
 
+// doPredict posts body to the model's :predict endpoint and returns the raw
+// response body, applying auth and mapping a non-200 status to core.APIError.
+// label ("embed"/"image") is woven into error messages.
+func (p *Provider) doPredict(ctx context.Context, model string, body any, label string) ([]byte, error) {
+	bodyReader, _, release, err := core.JSONBodyReader(body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal %s request: %w", label, err)
+	}
+	defer release()
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.predictionEndpoint(model), bodyReader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create %s request: %w", label, err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	if err := p.authorizeRequest(httpReq); err != nil {
+		return nil, err
+	}
+
+	httpResp, err := p.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("%s request failed: %w", label, err)
+	}
+	defer func() { _ = httpResp.Body.Close() }()
+
+	respBody, err := io.ReadAll(httpResp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read %s response: %w", label, err)
+	}
+	if httpResp.StatusCode != http.StatusOK {
+		return nil, core.APIError("vertex ai "+label, httpResp.StatusCode, respBody)
+	}
+	return respBody, nil
+}
+
 // Embed sends a text embedding request to Vertex AI's publisher model predict endpoint.
 func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.EmbeddingResponse, error) {
 	if !isVertexAITextEmbeddingModel(req.Model) {
 		return nil, fmt.Errorf("embed: unsupported Vertex AI text embedding model %q", req.Model)
 	}
-	if req.EncodingFormat != "" && req.EncodingFormat != "float" {
-		return nil, fmt.Errorf("embed: unsupported encoding_format %q; valid value is \"float\"", req.EncodingFormat)
+	if err := core.ValidateEmbeddingEncodingFormat(req.EncodingFormat); err != nil {
+		return nil, err
 	}
 	texts, err := core.CoerceEmbeddingInput(req.Input)
 	if err != nil {
@@ -308,34 +343,9 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 		vertexReq.Parameters = &vertexAIEmbeddingParameters{OutputDimensionality: req.Dimensions}
 	}
 
-	bodyReader, _, release, err := core.JSONBodyReader(vertexReq)
+	respBody, err := p.doPredict(ctx, req.Model, vertexReq, "embed")
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal embed request: %w", err)
-	}
-	defer release()
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.predictionEndpoint(req.Model), bodyReader)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create embed request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	if err := p.authorizeRequest(httpReq); err != nil {
 		return nil, err
-	}
-
-	httpResp, err := p.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("embed request failed: %w", err)
-	}
-	defer func() { _ = httpResp.Body.Close() }()
-
-	respBody, err := io.ReadAll(httpResp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read embed response: %w", err)
-	}
-
-	if httpResp.StatusCode != http.StatusOK {
-		return nil, core.APIError("vertex ai embed", httpResp.StatusCode, respBody)
 	}
 
 	var vertexResp vertexAIEmbeddingResponse

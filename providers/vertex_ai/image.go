@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"strings"
 	"time"
 
@@ -96,13 +94,20 @@ func imagenAspectRatio(size string) string {
 // an error when every prediction was rai-filtered or empty.
 func mapImagenPredictions(model string, predictions []imagenPrediction) ([]core.GeneratedImage, error) {
 	images := make([]core.GeneratedImage, 0, len(predictions))
+	var filterReason string
 	for _, pred := range predictions {
 		if pred.BytesBase64Encoded == "" {
+			if filterReason == "" {
+				filterReason = pred.RAIFilteredReason
+			}
 			continue
 		}
 		images = append(images, core.GeneratedImage{B64JSON: pred.BytesBase64Encoded})
 	}
 	if len(images) == 0 {
+		if filterReason != "" {
+			return nil, fmt.Errorf("vertex ai image generation for %q returned no images: %s", model, filterReason)
+		}
 		return nil, fmt.Errorf("vertex ai image generation for %q returned no images (all predictions were filtered or empty)", model)
 	}
 	return images, nil
@@ -113,34 +118,9 @@ func mapImagenPredictions(model string, predictions []imagenPrediction) ([]core.
 func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*core.ImageResponse, error) {
 	imagenReq := buildImagenRequest(req)
 
-	bodyReader, _, release, err := core.JSONBodyReader(imagenReq)
+	respBody, err := p.doPredict(ctx, req.Model, imagenReq, "image")
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal image request: %w", err)
-	}
-	defer release()
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.predictionEndpoint(req.Model), bodyReader)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create image request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	if err := p.authorizeRequest(httpReq); err != nil {
 		return nil, err
-	}
-
-	httpResp, err := p.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("image request failed: %w", err)
-	}
-	defer func() { _ = httpResp.Body.Close() }()
-
-	respBody, err := io.ReadAll(httpResp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read image response: %w", err)
-	}
-
-	if httpResp.StatusCode != http.StatusOK {
-		return nil, core.APIError("vertex ai image", httpResp.StatusCode, respBody)
 	}
 
 	var imagenResp imagenResponse

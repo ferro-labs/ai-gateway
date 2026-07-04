@@ -16,8 +16,8 @@ import (
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
-// sanitizeRequestErr strips the request URL (which carries the ?key= API key)
-// from *url.Error so the key never reaches logs or client-facing error bodies.
+// sanitizeRequestErr strips the request URL from *url.Error as defense-in-depth
+// so no request URL or query params reach logs or client-facing error bodies.
 func sanitizeRequestErr(err error) error {
 	var urlErr *url.Error
 	if errors.As(err, &urlErr) {
@@ -78,8 +78,9 @@ func (p *Provider) BaseURL() string { return p.baseURL }
 func (*Provider) NonOpenAIWire() {}
 
 // AuthHeaders implements core.ProxiableProvider.
-// Gemini authenticates via the ?key= query parameter (added by the proxy
-// director), so no Authorization header is required here.
+// Gemini authenticates via the x-goog-api-key header, applied to native calls
+// in doJSONRequest and injected on the proxy path by the director. The key is
+// never placed in the request URL, so it cannot leak into spans or access logs.
 func (p *Provider) AuthHeaders() map[string]string {
 	return map[string]string{"x-goog-api-key": p.apiKey}
 }
@@ -229,30 +230,6 @@ type geminiResponse struct {
 		FinishReason string `json:"finishReason"`
 	} `json:"candidates"`
 	UsageMetadata geminiUsageMetadata `json:"usageMetadata"`
-}
-
-type geminiEmbeddingContent struct {
-	Parts []geminiPart `json:"parts"`
-}
-
-type geminiBatchEmbedContentRequest struct {
-	Model                string                 `json:"model"`
-	Content              geminiEmbeddingContent `json:"content"`
-	OutputDimensionality *int                   `json:"outputDimensionality,omitempty"`
-}
-
-type geminiBatchEmbedRequest struct {
-	Requests []geminiBatchEmbedContentRequest `json:"requests"`
-}
-
-type geminiBatchEmbedResponse struct {
-	Embeddings []struct {
-		Values []float64 `json:"values"`
-	} `json:"embeddings"`
-	UsageMetadata struct {
-		PromptTokenCount int `json:"promptTokenCount"`
-		TotalTokenCount  int `json:"totalTokenCount"`
-	} `json:"usageMetadata"`
 }
 
 type geminiStreamResponse struct {
@@ -532,11 +509,6 @@ func geminiToolConfigFor(choice any) *geminiToolConfig {
 	}
 }
 
-func geminiModelResource(model string) string {
-	model = strings.TrimPrefix(model, "models/")
-	return "models/" + model
-}
-
 // doJSONRequest marshals body to JSON and performs an HTTP request against the
 // Gemini API. It returns the live response plus a release func the caller must
 // defer to return the pooled request buffer. The label is woven into error
@@ -552,6 +524,9 @@ func (p *Provider) doJSONRequest(ctx context.Context, method, reqURL, label stri
 		return nil, nil, fmt.Errorf("failed to create %srequest: %w", label, err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	for k, v := range p.AuthHeaders() {
+		httpReq.Header.Set(k, v)
+	}
 
 	httpResp, err := p.httpClient.Do(httpReq)
 	if err != nil {
@@ -559,78 +534,6 @@ func (p *Provider) doJSONRequest(ctx context.Context, method, reqURL, label stri
 		return nil, nil, fmt.Errorf("%srequest failed: %w", label, sanitizeRequestErr(err))
 	}
 	return httpResp, release, nil
-}
-
-// Embed sends a text embedding request to Gemini's batchEmbedContents endpoint.
-func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.EmbeddingResponse, error) {
-	if req.EncodingFormat != "" && req.EncodingFormat != "float" {
-		return nil, fmt.Errorf("embed: unsupported encoding_format %q; valid value is \"float\"", req.EncodingFormat)
-	}
-	texts, err := core.CoerceEmbeddingInput(req.Input)
-	if err != nil {
-		return nil, err
-	}
-
-	model := strings.TrimPrefix(req.Model, "models/")
-	modelResource := geminiModelResource(req.Model)
-	geminiReq := geminiBatchEmbedRequest{
-		Requests: make([]geminiBatchEmbedContentRequest, 0, len(texts)),
-	}
-	for _, text := range texts {
-		geminiReq.Requests = append(geminiReq.Requests, geminiBatchEmbedContentRequest{
-			Model:                modelResource,
-			Content:              geminiEmbeddingContent{Parts: []geminiPart{{Text: text}}},
-			OutputDimensionality: req.Dimensions,
-		})
-	}
-
-	url := fmt.Sprintf("%s/v1beta/models/%s:batchEmbedContents?key=%s", p.baseURL, url.PathEscape(model), p.apiKey)
-	httpResp, release, err := p.doJSONRequest(ctx, http.MethodPost, url, "embed ", geminiReq)
-	if err != nil {
-		return nil, err
-	}
-	defer release()
-	defer func() { _ = httpResp.Body.Close() }()
-
-	respBody, err := io.ReadAll(httpResp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read embed response: %w", err)
-	}
-
-	if httpResp.StatusCode != http.StatusOK {
-		return nil, core.APIError("gemini embed", httpResp.StatusCode, respBody)
-	}
-
-	var geminiResp geminiBatchEmbedResponse
-	if err := json.Unmarshal(respBody, &geminiResp); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal embed response: %w", err)
-	}
-	if len(geminiResp.Embeddings) != len(texts) {
-		return nil, fmt.Errorf("gemini embed API returned %d embeddings for %d inputs", len(geminiResp.Embeddings), len(texts))
-	}
-
-	data := make([]core.Embedding, len(geminiResp.Embeddings))
-	for i, embedding := range geminiResp.Embeddings {
-		data[i] = core.Embedding{
-			Object:    "embedding",
-			Embedding: embedding.Values,
-			Index:     i,
-		}
-	}
-
-	totalTokens := geminiResp.UsageMetadata.TotalTokenCount
-	if totalTokens == 0 {
-		totalTokens = geminiResp.UsageMetadata.PromptTokenCount
-	}
-	return &core.EmbeddingResponse{
-		Object: "list",
-		Data:   data,
-		Model:  req.Model,
-		Usage: core.EmbeddingUsage{
-			PromptTokens: geminiResp.UsageMetadata.PromptTokenCount,
-			TotalTokens:  totalTokens,
-		},
-	}, nil
 }
 
 // parseCandidateParts accumulates text and tool calls from one candidate's
@@ -687,7 +590,7 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 
 	geminiReq := buildRequest(req)
 
-	url := fmt.Sprintf("%s/v1beta/models/%s:generateContent?key=%s", p.baseURL, url.PathEscape(req.Model), p.apiKey)
+	url := fmt.Sprintf("%s/v1beta/models/%s:generateContent", p.baseURL, url.PathEscape(req.Model))
 	httpResp, release, err := p.doJSONRequest(ctx, http.MethodPost, url, "", geminiReq)
 	if err != nil {
 		return nil, err
@@ -748,7 +651,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 
 	geminiReq := buildRequest(req)
 
-	url := fmt.Sprintf("%s/v1beta/models/%s:streamGenerateContent?key=%s&alt=sse", p.baseURL, url.PathEscape(req.Model), p.apiKey)
+	url := fmt.Sprintf("%s/v1beta/models/%s:streamGenerateContent?alt=sse", p.baseURL, url.PathEscape(req.Model))
 	httpResp, release, err := p.doJSONRequest(ctx, http.MethodPost, url, "", geminiReq)
 	if err != nil {
 		return nil, err

@@ -8,8 +8,8 @@ import (
 	"strings"
 
 	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
-	"github.com/ferro-labs/ai-gateway/internal/openaicompat"
 	"github.com/ferro-labs/ai-gateway/providers/core"
+	"github.com/ferro-labs/ai-gateway/providers/internal/openaicompat"
 )
 
 // Name is the canonical provider identifier.
@@ -17,9 +17,12 @@ const Name = "azure-foundry"
 
 // Provider implements the Azure AI Foundry API client.
 type Provider struct {
-	name       string
-	apiKey     string
-	baseURL    string
+	name    string
+	apiKey  string
+	baseURL string
+	// apiVersion is retained for back-compat (the APIVersion() accessor and the
+	// AZURE_FOUNDRY_API_VERSION env knob); it is not sent on the GA /openai/v1
+	// route this provider targets. See New().
 	apiVersion string
 	httpClient *http.Client
 }
@@ -62,7 +65,8 @@ func (p *Provider) Name() string { return p.name }
 // BaseURL implements core.ProxiableProvider.
 func (p *Provider) BaseURL() string { return p.baseURL }
 
-// APIVersion returns the configured Azure API version.
+// APIVersion returns the configured Azure API version. Retained for back-compat;
+// it is not sent on the GA /openai/v1 route.
 func (p *Provider) APIVersion() string { return p.apiVersion }
 
 // NonOpenAIWire marks Azure AI Foundry as ineligible for transparent

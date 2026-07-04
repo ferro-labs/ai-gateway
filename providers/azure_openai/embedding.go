@@ -91,7 +91,9 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 }
 
 // normalizeEmbeddingInput validates and normalizes the polymorphic Input field
-// into a string or []string, rejecting empty/nil/non-string inputs.
+// into a string or []string, rejecting empty/nil/non-string inputs. It is kept
+// local rather than using core.NormalizeEmbeddingInput because it additionally
+// rejects an empty input string — intentional extra strictness for Azure.
 func normalizeEmbeddingInput(input any) (any, error) {
 	switch v := input.(type) {
 	case string:

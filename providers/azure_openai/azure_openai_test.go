@@ -118,6 +118,78 @@ func TestAzureOpenAIProvider_CompleteStream_MockSSE(t *testing.T) {
 	}
 }
 
+// TestAzureOpenAIProvider_Complete_Endpoint asserts the chat path targets the
+// configured deployment: /openai/deployments/<deployment>/chat/completions with
+// the api-version query and api-key header. The chat path is pinned to the
+// configured deployment (not req.Model), so a distinct deployment name proves
+// endpoint() is what builds the URL.
+func TestAzureOpenAIProvider_Complete_Endpoint(t *testing.T) {
+	var gotPath, gotQuery, gotAPIKey string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotQuery = r.URL.RawQuery
+		gotAPIKey = r.Header.Get("api-key")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"id":"chatcmpl-1","object":"chat.completion","model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL, "my-chat-deploy", "2024-10-21")
+	if _, err := p.Complete(context.Background(), core.Request{
+		Model:    "gpt-4o",
+		Messages: []core.Message{{Role: core.RoleUser, Content: "Hi"}},
+	}); err != nil {
+		t.Fatalf("Complete() error: %v", err)
+	}
+
+	if gotPath != "/openai/deployments/my-chat-deploy/chat/completions" {
+		t.Errorf("path = %q, want /openai/deployments/my-chat-deploy/chat/completions", gotPath)
+	}
+	if !strings.Contains(gotQuery, "api-version=2024-10-21") {
+		t.Errorf("query = %q, want api-version=2024-10-21", gotQuery)
+	}
+	if gotAPIKey != "test-key" {
+		t.Errorf("api-key header = %q, want test-key", gotAPIKey)
+	}
+}
+
+// TestAzureOpenAIProvider_CompleteStream_Endpoint asserts the streaming chat path
+// uses the same configured-deployment endpoint with the api-version query.
+func TestAzureOpenAIProvider_CompleteStream_Endpoint(t *testing.T) {
+	var gotPath, gotQuery, gotAPIKey string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotQuery = r.URL.RawQuery
+		gotAPIKey = r.Header.Get("api-key")
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "data: {\"id\":\"chatcmpl-1\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL, "my-chat-deploy", "2024-10-21")
+	ch, err := p.CompleteStream(context.Background(), core.Request{
+		Model:    "gpt-4o",
+		Messages: []core.Message{{Role: core.RoleUser, Content: "Hi"}},
+	})
+	if err != nil {
+		t.Fatalf("CompleteStream() error: %v", err)
+	}
+	for range ch { //nolint:revive // drain the stream to completion
+	}
+
+	if gotPath != "/openai/deployments/my-chat-deploy/chat/completions" {
+		t.Errorf("path = %q, want /openai/deployments/my-chat-deploy/chat/completions", gotPath)
+	}
+	if !strings.Contains(gotQuery, "api-version=2024-10-21") {
+		t.Errorf("query = %q, want api-version=2024-10-21", gotQuery)
+	}
+	if gotAPIKey != "test-key" {
+		t.Errorf("api-key header = %q, want test-key", gotAPIKey)
+	}
+}
+
 func TestAzureOpenAIProvider_opEndpoint_PathEscapesDeployment(t *testing.T) {
 	p, _ := New("test-key", "https://myresource.openai.azure.com", "gpt-4o", "2024-10-21")
 
@@ -345,5 +417,69 @@ func TestAzureOpenAIProvider_GenerateImage_APIError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "content policy violation") || !strings.Contains(err.Error(), "500") {
 		t.Errorf("error = %q, want wrapped 500 + message", err.Error())
+	}
+}
+
+// TestComplete_DecodesResponseWithProvider verifies the chat response is decoded
+// (id/model/content/usage) and now carries the provider name (previously
+// dropped).
+func TestComplete_DecodesResponseWithProvider(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"chatcmpl-1","model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`)
+	}))
+	defer srv.Close()
+
+	p, err := New("test-key", srv.URL, "gpt-4o", "2024-10-21")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	resp, err := p.Complete(context.Background(), core.Request{
+		Model:    "gpt-4o",
+		Messages: []core.Message{{Role: core.RoleUser, Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if resp.Provider != Name {
+		t.Errorf("Provider = %q, want %q", resp.Provider, Name)
+	}
+	if resp.ID != "chatcmpl-1" || resp.Model != "gpt-4o" {
+		t.Errorf("id/model = %q/%q", resp.ID, resp.Model)
+	}
+	if len(resp.Choices) != 1 || resp.Choices[0].Message.Content != "hello" {
+		t.Errorf("choices = %+v", resp.Choices)
+	}
+	if resp.Usage.PromptTokens != 3 || resp.Usage.CompletionTokens != 2 || resp.Usage.TotalTokens != 5 {
+		t.Errorf("usage = %+v", resp.Usage)
+	}
+}
+
+func TestComplete_ErrorPathReturnsAPIError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"error":{"message":"rate limited"}}`)
+	}))
+	defer srv.Close()
+
+	p, err := New("test-key", srv.URL, "gpt-4o", "2024-10-21")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_, err = p.Complete(context.Background(), core.Request{
+		Model:    "gpt-4o",
+		Messages: []core.Message{{Role: core.RoleUser, Content: "hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected error for 429")
+	}
+	if !strings.Contains(err.Error(), "rate limited") || !strings.Contains(err.Error(), "429") {
+		t.Fatalf("error = %v, want status + message", err)
+	}
+}
+
+func TestNew_RejectsInvalidBaseURL(t *testing.T) {
+	if _, err := New("k", "://bad", "dep", ""); err == nil {
+		t.Fatal("New accepted an invalid base URL")
 	}
 }

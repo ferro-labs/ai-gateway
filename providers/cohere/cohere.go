@@ -362,12 +362,8 @@ type cohereMessageEndDelta struct {
 	Usage        cohereUsage `json:"usage"`
 }
 
-type cohereToolCallStartDelta struct {
-	Message struct {
-		ToolCalls json.RawMessage `json:"tool_calls"`
-	} `json:"message"`
-}
-
+// cohereToolCallDelta carries the tool_calls payload from both the
+// tool-call-start and tool-call-delta streaming events (identical shape).
 type cohereToolCallDelta struct {
 	Message struct {
 		ToolCalls json.RawMessage `json:"tool_calls"`
@@ -491,7 +487,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 					},
 				}
 			case "tool-call-start":
-				var delta cohereToolCallStartDelta
+				var delta cohereToolCallDelta
 				if json.Unmarshal(event.Delta, &delta) != nil {
 					continue
 				}

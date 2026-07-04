@@ -48,7 +48,7 @@ type embeddingResponse struct {
 // non-string values are rejected. Providers that forward extra request fields or
 // decode extended usage should build the request themselves instead.
 func PostEmbeddings(ctx context.Context, p EmbeddingParams, req core.EmbeddingRequest) (*core.EmbeddingResponse, error) {
-	input, err := normalizeEmbeddingInput(req.Input)
+	input, err := core.NormalizeEmbeddingInput(req.Input)
 	if err != nil {
 		return nil, err
 	}
@@ -102,36 +102,4 @@ func PostEmbeddings(ctx context.Context, p EmbeddingParams, req core.EmbeddingRe
 		Model:  pResp.Model,
 		Usage:  pResp.Usage,
 	}, nil
-}
-
-// normalizeEmbeddingInput validates the polymorphic embeddings Input, preserving
-// its wire form: a bare string stays a string and a []string stays an array.
-// Empty arrays, nil, and non-string values are rejected.
-func normalizeEmbeddingInput(input any) (any, error) {
-	switch v := input.(type) {
-	case string:
-		return v, nil
-	case []string:
-		if len(v) == 0 {
-			return nil, fmt.Errorf("embed: Input must not be an empty array")
-		}
-		return v, nil
-	case []any:
-		if len(v) == 0 {
-			return nil, fmt.Errorf("embed: Input must not be an empty array")
-		}
-		strs := make([]string, 0, len(v))
-		for i, item := range v {
-			s, ok := item.(string)
-			if !ok {
-				return nil, fmt.Errorf("embed: Input[%d] is %T, want string", i, item)
-			}
-			strs = append(strs, s)
-		}
-		return strs, nil
-	case nil:
-		return nil, fmt.Errorf("embed: Input must not be nil")
-	default:
-		return nil, fmt.Errorf("embed: unsupported Input type %T; want string or []string", input)
-	}
 }

@@ -82,13 +82,20 @@ func imagenAspectRatio(size string) string {
 // an error when every prediction was rai-filtered or empty.
 func mapImagenPredictions(model string, predictions []imagenPrediction) ([]core.GeneratedImage, error) {
 	images := make([]core.GeneratedImage, 0, len(predictions))
+	var filterReason string
 	for _, pred := range predictions {
 		if pred.BytesBase64Encoded == "" {
+			if filterReason == "" {
+				filterReason = pred.RAIFilteredReason
+			}
 			continue
 		}
 		images = append(images, core.GeneratedImage{B64JSON: pred.BytesBase64Encoded})
 	}
 	if len(images) == 0 {
+		if filterReason != "" {
+			return nil, fmt.Errorf("gemini image generation for %q returned no images: %s", model, filterReason)
+		}
 		return nil, fmt.Errorf("gemini image generation for %q returned no images (all predictions were filtered or empty)", model)
 	}
 	return images, nil
@@ -99,7 +106,7 @@ func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*c
 	imagenReq := buildImagenRequest(req)
 
 	model := strings.TrimPrefix(req.Model, "models/")
-	reqURL := fmt.Sprintf("%s/v1beta/models/%s:predict?key=%s", p.baseURL, url.PathEscape(model), p.apiKey)
+	reqURL := fmt.Sprintf("%s/v1beta/models/%s:predict", p.baseURL, url.PathEscape(model))
 	httpResp, release, err := p.doJSONRequest(ctx, http.MethodPost, reqURL, "image ", imagenReq)
 	if err != nil {
 		return nil, err

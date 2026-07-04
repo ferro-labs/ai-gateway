@@ -246,16 +246,6 @@ func (p *Provider) Models() []core.ModelInfo {
 	return core.ModelsFromList(p.name, p.SupportedModels())
 }
 
-// ── Anthropic Claude on Bedrock ───────────────────────────────────────────────
-
-// ── Amazon Titan ─────────────────────────────────────────────────────────────
-
-// ── Amazon Nova ──────────────────────────────────────────────────────────────
-
-// ── Meta Llama ────────────────────────────────────────────────────────────────
-
-// ── Embeddings ───────────────────────────────────────────────────────────────
-
 func (p *Provider) invokeModelJSON(ctx context.Context, modelID string, payload any, out any) error {
 	body, err := core.MarshalJSON(payload)
 	if err != nil {
@@ -306,7 +296,6 @@ func isBedrockNovaTextModel(model string) bool {
 	return false
 }
 
-// Complete sends a request to AWS Bedrock and returns the response.
 // bedrockSupportedParams returns the OpenAI parameters expressible on the given
 // Bedrock model family's inference shape. Anything else the caller set is
 // warn-and-dropped (#140).
