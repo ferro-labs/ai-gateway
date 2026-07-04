@@ -26,15 +26,7 @@ func CoerceEmbeddingInput(input any) ([]string, error) {
 		if len(v) == 0 {
 			return nil, errEmptyEmbeddingInput
 		}
-		texts := make([]string, 0, len(v))
-		for i, item := range v {
-			s, ok := item.(string)
-			if !ok {
-				return nil, fmt.Errorf("embed: Input[%d] is %T, want string", i, item)
-			}
-			texts = append(texts, s)
-		}
-		return texts, nil
+		return coerceAnyStrings(v)
 	case nil:
 		return nil, fmt.Errorf("embed: Input must not be nil")
 	default:
@@ -63,15 +55,7 @@ func NormalizeEmbeddingInput(input any) (any, error) {
 		if len(v) == 0 {
 			return nil, errEmptyEmbeddingInput
 		}
-		strs := make([]string, 0, len(v))
-		for i, item := range v {
-			s, ok := item.(string)
-			if !ok {
-				return nil, fmt.Errorf("embed: Input[%d] is %T, want string", i, item)
-			}
-			strs = append(strs, s)
-		}
-		return strs, nil
+		return coerceAnyStrings(v)
 	case nil:
 		return nil, fmt.Errorf("embed: Input must not be nil")
 	default:
@@ -88,4 +72,18 @@ func ValidateEmbeddingEncodingFormat(format string) error {
 		return fmt.Errorf("embed: unsupported encoding_format %q; valid value is \"float\"", format)
 	}
 	return nil
+}
+
+// coerceAnyStrings converts a []any of strings to []string, rejecting any
+// non-string element with a positional error.
+func coerceAnyStrings(v []any) ([]string, error) {
+	strs := make([]string, 0, len(v))
+	for i, item := range v {
+		s, ok := item.(string)
+		if !ok {
+			return nil, fmt.Errorf("embed: Input[%d] is %T, want string", i, item)
+		}
+		strs = append(strs, s)
+	}
+	return strs, nil
 }

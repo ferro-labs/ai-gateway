@@ -877,11 +877,8 @@ func TestBedrockProvider_Embed_Validation(t *testing.T) {
 	}
 }
 
-// TestBedrockProvider_WrapsSDKError verifies every native InvokeModel path
-// (Complete across the anthropic/titan/nova/llama families, Embed for the Titan
-// and Cohere embedding families, and GenerateImage for the Titan/Nova and
-// Stability families) surfaces a %w-wrapped SDK error carrying the
-// "bedrock invoke failed" context, so upstream failures are not swallowed.
+// TestBedrockProvider_WrapsSDKError verifies Complete, Embed, and GenerateImage
+// across the model families surface a %w-wrapped "bedrock invoke failed" error.
 func TestBedrockProvider_WrapsSDKError(t *testing.T) {
 	sdkErr := errors.New("simulated bedrock SDK failure")
 

@@ -247,8 +247,8 @@ func TestOpenRouterProvider_Embed_InvalidEncodingFormat(t *testing.T) {
 		Input:          "hi",
 		EncodingFormat: "base64",
 	})
-	if err == nil {
-		t.Fatal("Embed() error = nil, want unsupported encoding_format error")
+	if err == nil || !strings.Contains(err.Error(), "encoding_format") {
+		t.Fatalf("Embed() error = %v, want unsupported encoding_format error", err)
 	}
 }
 
