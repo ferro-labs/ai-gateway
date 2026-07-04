@@ -18,17 +18,14 @@ type bedrockImageTitanRequest struct {
 }
 
 type bedrockImageTextToImageParams struct {
-	Text         string `json:"text"`
-	NegativeText string `json:"negativeText,omitempty"`
+	Text string `json:"text"`
 }
 
 type bedrockImageGenerationConfig struct {
-	NumberOfImages int      `json:"numberOfImages,omitempty"`
-	Width          int      `json:"width,omitempty"`
-	Height         int      `json:"height,omitempty"`
-	CfgScale       *float64 `json:"cfgScale,omitempty"`
-	Seed           *int     `json:"seed,omitempty"`
-	Quality        string   `json:"quality,omitempty"`
+	NumberOfImages int    `json:"numberOfImages,omitempty"`
+	Width          int    `json:"width,omitempty"`
+	Height         int    `json:"height,omitempty"`
+	Quality        string `json:"quality,omitempty"`
 }
 
 type bedrockImageTitanResponse struct {
@@ -40,9 +37,6 @@ type bedrockImageTitanResponse struct {
 
 type bedrockImageStabilityRequest struct {
 	TextPrompts []bedrockImageStabilityPrompt `json:"text_prompts"`
-	CfgScale    *float64                      `json:"cfg_scale,omitempty"`
-	Seed        *int                          `json:"seed,omitempty"`
-	Steps       *int                          `json:"steps,omitempty"`
 	Samples     *int                          `json:"samples,omitempty"`
 }
 

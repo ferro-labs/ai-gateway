@@ -14,12 +14,11 @@ import (
 )
 
 const (
-	testAPIKey              = "test-key"
-	testBearerAPIKey        = "Bearer test-key"
-	testChatCompletionsPath = "/chat/completions"
-	testChatPath            = "/v1/chat/completions"
-	testChatModel           = "accounts/fireworks/models/llama-v3p1-8b-instruct"
-	testEmbeddingModel      = "accounts/fireworks/models/qwen3-embedding-0p6b"
+	testAPIKey         = "test-key"
+	testBearerAPIKey   = "Bearer test-key"
+	testChatPath       = "/v1/chat/completions"
+	testChatModel      = "accounts/fireworks/models/llama-v3p1-8b-instruct"
+	testEmbeddingModel = "accounts/fireworks/models/qwen3-embedding-0p6b"
 )
 
 func TestNewFireworks(t *testing.T) {

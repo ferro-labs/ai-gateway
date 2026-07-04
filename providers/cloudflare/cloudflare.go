@@ -23,7 +23,6 @@ const (
 type Provider struct {
 	name       string
 	apiKey     string
-	accountID  string
 	baseURL    string
 	httpClient *http.Client
 }
@@ -52,7 +51,6 @@ func New(apiKey, accountID, baseURL string) (*Provider, error) {
 	return &Provider{
 		name:       Name,
 		apiKey:     apiKey,
-		accountID:  accountID,
 		baseURL:    baseURL,
 		httpClient: providerhttp.ForProvider(Name),
 	}, nil
@@ -88,7 +86,6 @@ func (p *Provider) Models() []core.ModelInfo {
 	return core.ModelsFromList(p.name, p.SupportedModels())
 }
 
-// chatParams builds the shared OpenAI-compatible chat endpoint configuration.
 // headers returns the auth + content-type headers for direct API calls.
 func (p *Provider) headers() map[string]string {
 	h := p.AuthHeaders()
@@ -96,6 +93,7 @@ func (p *Provider) headers() map[string]string {
 	return h
 }
 
+// chatParams builds the shared OpenAI-compatible chat endpoint configuration.
 func (p *Provider) chatParams() openaicompat.ChatParams {
 	return openaicompat.ChatParams{
 		HTTPClient: p.httpClient,

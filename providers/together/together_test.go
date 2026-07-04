@@ -77,6 +77,17 @@ func TestTogetherProvider_SupportedModels(t *testing.T) {
 	}
 }
 
+func TestTogetherProvider_SupportedModels_NoDuplicates(t *testing.T) {
+	p, _ := New("test-key", "")
+	seen := make(map[string]struct{})
+	for _, m := range p.SupportedModels() {
+		if _, dup := seen[m]; dup {
+			t.Errorf("duplicate model ID in SupportedModels(): %q", m)
+		}
+		seen[m] = struct{}{}
+	}
+}
+
 func TestTogetherProvider_SupportsModel(t *testing.T) {
 	p, _ := New("test-key", "")
 	if !p.SupportsModel("meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo") {

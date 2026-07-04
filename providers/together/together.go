@@ -84,7 +84,6 @@ func (p *Provider) SupportedModels() []string {
 		"mistralai/Mixtral-8x7B-Instruct-v0.1",
 		"Qwen/Qwen2.5-72B-Instruct-Turbo",
 		"BAAI/bge-base-en-v1.5",
-		"baai/bge-base-en-v1.5",
 		"together-ai-embedding-up-to-150m",
 		"together-ai-embedding-151m-to-350m",
 	}

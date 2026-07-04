@@ -118,13 +118,7 @@ type ai21CompleteResponse struct {
 	ID          string `json:"id"`
 	Completions []struct {
 		Data struct {
-			Text   string `json:"text"`
-			Tokens []struct {
-				GeneratedToken struct {
-					Token   string  `json:"token"`
-					Logprob float64 `json:"logprob"`
-				} `json:"generatedToken"`
-			} `json:"tokens"`
+			Text string `json:"text"`
 		} `json:"data"`
 		FinishReason struct {
 			Reason string `json:"reason"`
