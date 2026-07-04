@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -64,6 +65,87 @@ func TestOllamaProvider_Models(t *testing.T) {
 func TestOllamaProvider_CompleteStream_Interface(_ *testing.T) {
 	p, _ := New("", nil)
 	var _ core.StreamProvider = p
+}
+
+func TestOllamaProvider_Complete_MockHTTP(t *testing.T) {
+	respBody := `{"id":"chatcmpl-1","model":"llama3.2","choices":[{"index":0,"message":{"role":"assistant","content":"Hello!"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %s, want POST", r.Method)
+		}
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Errorf("path = %q, want /v1/chat/completions", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Errorf("Authorization = %q, want empty (self-hosted Ollama is unauthenticated)", got)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("failed to decode request body: %v", err)
+			return
+		}
+		if got := body["model"]; got != "llama3.2" {
+			t.Errorf("model = %v, want llama3.2", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(respBody))
+	}))
+	defer srv.Close()
+
+	p, _ := New(srv.URL, []string{"llama3.2"})
+	resp, err := p.Complete(context.Background(), core.Request{
+		Model:    "llama3.2",
+		Messages: []core.Message{{Role: "user", Content: "Hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Complete() error: %v", err)
+	}
+	if resp.ID != "chatcmpl-1" {
+		t.Errorf("Response.ID = %q, want chatcmpl-1", resp.ID)
+	}
+	if resp.Model != "llama3.2" {
+		t.Errorf("Response.Model = %q, want llama3.2", resp.Model)
+	}
+	if resp.Provider != Name {
+		t.Errorf("Response.Provider = %q, want %s", resp.Provider, Name)
+	}
+	if len(resp.Choices) != 1 {
+		t.Fatalf("Choices length = %d, want 1", len(resp.Choices))
+	}
+	if resp.Choices[0].Message.Content != "Hello!" {
+		t.Errorf("Choices[0].Message.Content = %q, want Hello!", resp.Choices[0].Message.Content)
+	}
+	if resp.Choices[0].FinishReason != "stop" {
+		t.Errorf("Choices[0].FinishReason = %q, want stop", resp.Choices[0].FinishReason)
+	}
+}
+
+func TestOllamaProvider_Complete_Non200Error(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":{"message":"model not found"}}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New(srv.URL, nil)
+	_, err := p.Complete(context.Background(), core.Request{
+		Model:    "llama3.2",
+		Messages: []core.Message{{Role: "user", Content: "Hi"}},
+	})
+	if err == nil {
+		t.Fatal("Complete() error = nil, want error on non-200")
+	}
+	if got := core.ParseStatusCode(err); got != http.StatusInternalServerError {
+		t.Errorf("ParseStatusCode(err) = %d, want %d", got, http.StatusInternalServerError)
+	}
+	if !strings.Contains(err.Error(), "model not found") {
+		t.Errorf("error %q does not surface upstream message", err.Error())
+	}
+	if !strings.Contains(err.Error(), "ollama") {
+		t.Errorf("error %q does not carry provider label", err.Error())
+	}
 }
 
 func TestOllamaProvider_CompleteStream_MockSSE(t *testing.T) {
@@ -163,6 +245,56 @@ func TestOllamaProvider_Embed_MockHTTP(t *testing.T) {
 	}
 	if resp.Usage.PromptTokens != 6 || resp.Usage.TotalTokens != 6 {
 		t.Errorf("Usage = %+v, want prompt=6 total=6", resp.Usage)
+	}
+}
+
+func TestOllamaProvider_Embed_ForwardsDimensions(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if got, ok := body["dimensions"]; !ok || got != float64(256) {
+			t.Errorf("dimensions = %v (present=%v), want 256", got, ok)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"model":"nomic-embed-text","embeddings":[[0.1,0.2]],"prompt_eval_count":3}`))
+	}))
+	defer srv.Close()
+
+	dims := 256
+	p, _ := New(srv.URL, []string{"nomic-embed-text"})
+	if _, err := p.Embed(context.Background(), core.EmbeddingRequest{
+		Model:      "nomic-embed-text",
+		Input:      "hello",
+		Dimensions: &dims,
+	}); err != nil {
+		t.Fatalf("Embed() error: %v", err)
+	}
+}
+
+func TestOllamaProvider_Embed_OmitsDimensionsWhenNil(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if _, ok := body["dimensions"]; ok {
+			t.Errorf("dimensions present in body, want omitted when nil")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"model":"nomic-embed-text","embeddings":[[0.1,0.2]],"prompt_eval_count":3}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New(srv.URL, []string{"nomic-embed-text"})
+	if _, err := p.Embed(context.Background(), core.EmbeddingRequest{
+		Model: "nomic-embed-text",
+		Input: "hello",
+	}); err != nil {
+		t.Fatalf("Embed() error: %v", err)
 	}
 }
 

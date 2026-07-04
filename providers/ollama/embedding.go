@@ -12,8 +12,9 @@ import (
 
 // ollamaEmbedRequest is the native Ollama /api/embed request schema.
 type ollamaEmbedRequest struct {
-	Model string `json:"model"`
-	Input any    `json:"input"` // string or []string
+	Model      string `json:"model"`
+	Input      any    `json:"input"` // string or []string
+	Dimensions *int   `json:"dimensions,omitempty"`
 }
 
 // ollamaEmbedResponse is the native Ollama /api/embed response schema.
@@ -33,11 +34,13 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 	if req.EncodingFormat != "" && req.EncodingFormat != "float" {
 		return nil, fmt.Errorf("embed: unsupported encoding_format %q; valid value is \"float\"", req.EncodingFormat)
 	}
-	// Ollama's native API does not support output dimension control; ignore req.Dimensions.
 
+	// Ollama's /api/embed accepts a "dimensions" advanced parameter; forward it
+	// when the caller requested a specific output dimension (nil is omitted).
 	pReq := ollamaEmbedRequest{
-		Model: req.Model,
-		Input: input,
+		Model:      req.Model,
+		Input:      input,
+		Dimensions: req.Dimensions,
 	}
 	bodyReader, _, release, err := core.JSONBodyReader(pReq)
 	if err != nil {
