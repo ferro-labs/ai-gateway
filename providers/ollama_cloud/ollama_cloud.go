@@ -153,6 +153,7 @@ func (p *Provider) DiscoverModels(ctx context.Context) ([]core.ModelInfo, error)
 
 	seen := make(map[string]struct{}, len(models))
 	modelIDs := make([]string, 0, len(models))
+	deduped := make([]core.ModelInfo, 0, len(models))
 	for _, m := range models {
 		id := strings.TrimSpace(m.ID)
 		if id == "" {
@@ -163,13 +164,14 @@ func (p *Provider) DiscoverModels(ctx context.Context) ([]core.ModelInfo, error)
 		}
 		seen[id] = struct{}{}
 		modelIDs = append(modelIDs, id)
+		deduped = append(deduped, m)
 	}
 
 	p.mu.Lock()
 	p.discovered = modelIDs
 	p.mu.Unlock()
 
-	return models, nil
+	return deduped, nil
 }
 
 // setHeaders applies the shared auth and content-type headers. Retained for the
