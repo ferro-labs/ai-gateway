@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -259,7 +260,18 @@ func (p *Provider) resolveModelURL(modelPath string) (url, version string) {
 	if v := ModelVersion(modelPath); v != "" {
 		return fmt.Sprintf("%s/predictions", p.baseURL), v
 	}
-	return fmt.Sprintf("%s/models/%s/predictions", p.baseURL, ModelBaseName(modelPath)), ""
+	return fmt.Sprintf("%s/models/%s/predictions", p.baseURL, escapeModelPath(ModelBaseName(modelPath))), ""
+}
+
+// escapeModelPath percent-escapes each segment of an "owner/name" model path so
+// a crafted model value cannot alter the request URL path, while preserving the
+// segment separators the /models/{owner}/{name} route relies on.
+func escapeModelPath(model string) string {
+	parts := strings.Split(model, "/")
+	for i, part := range parts {
+		parts[i] = url.PathEscape(part)
+	}
+	return strings.Join(parts, "/")
 }
 
 // predictionText coerces a Replicate prediction output (a string or an array of
