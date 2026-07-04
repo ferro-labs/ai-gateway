@@ -92,24 +92,28 @@ func (p *Provider) DiscoverModels(ctx context.Context) ([]core.ModelInfo, error)
 	return discov.DiscoverOpenAICompatibleModels(ctx, p.httpClient, p.baseURL+"/models", p.apiKey, p.name)
 }
 
-// Complete sends a chat completion request to Novita.
-func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
-	return openaicompat.PostChat(ctx, openaicompat.ChatParams{
+// headers returns the auth + content-type headers for Novita requests.
+func (p *Provider) headers() map[string]string {
+	return map[string]string{"Authorization": "Bearer " + p.apiKey, "Content-Type": "application/json"}
+}
+
+// chatParams builds the shared OpenAI-compatible chat endpoint configuration.
+func (p *Provider) chatParams() openaicompat.ChatParams {
+	return openaicompat.ChatParams{
 		HTTPClient: p.httpClient,
 		URL:        p.baseURL + "/chat/completions",
 		Provider:   p.name,
 		Label:      "novita",
-		Headers:    map[string]string{"Authorization": "Bearer " + p.apiKey, "Content-Type": "application/json"},
-	}, req)
+		Headers:    p.headers(),
+	}
+}
+
+// Complete sends a chat completion request to Novita.
+func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
+	return openaicompat.PostChat(ctx, p.chatParams(), req)
 }
 
 // CompleteStream sends a streaming chat completion request to Novita.
 func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan core.StreamChunk, error) {
-	return openaicompat.PostStream(ctx, openaicompat.ChatParams{
-		HTTPClient: p.httpClient,
-		URL:        p.baseURL + "/chat/completions",
-		Provider:   p.name,
-		Label:      "novita",
-		Headers:    map[string]string{"Authorization": "Bearer " + p.apiKey, "Content-Type": "application/json"},
-	}, req)
+	return openaicompat.PostStream(ctx, p.chatParams(), req)
 }
