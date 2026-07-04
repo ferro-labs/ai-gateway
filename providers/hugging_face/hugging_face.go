@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -72,6 +73,17 @@ func (p *Provider) BaseURL() string { return p.baseURL }
 // extraction, text-to-image) hang directly off the root, not under /v1.
 func (p *Provider) routerRoot() string {
 	return strings.TrimSuffix(p.baseURL, "/v1")
+}
+
+// escapeModelPath percent-escapes each segment of a caller-supplied model id
+// (e.g. "owner/name") while preserving the "/" separators the router task routes
+// use, so a crafted model string can't alter the request path.
+func escapeModelPath(model string) string {
+	parts := strings.Split(model, "/")
+	for i, part := range parts {
+		parts[i] = url.PathEscape(part)
+	}
+	return strings.Join(parts, "/")
 }
 
 // AuthHeaders implements core.ProxiableProvider.
@@ -153,7 +165,8 @@ func (p *Provider) postTask(ctx context.Context, url string, body io.Reader) ([]
 // Embed sends a feature-extraction request to Hugging Face. The task API is not
 // OpenAI-shaped: it takes {"inputs": <string|[]string>} and returns a bare JSON
 // array of float vectors ([]float64 for a single input, [][]float64 for a
-// batch). Hugging Face does not report token usage, so Usage stays zero.
+// batch). Hugging Face does not report token usage, so Usage stays zero;
+// req.EncodingFormat and req.Dimensions have no task-API equivalent and are ignored.
 func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.EmbeddingResponse, error) {
 	bodyReader, _, release, err := core.JSONBodyReader(map[string]any{"inputs": req.Input})
 	if err != nil {
@@ -161,8 +174,8 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 	}
 	defer release()
 
-	url := p.routerRoot() + "/hf-inference/models/" + req.Model + "/pipeline/feature-extraction"
-	respBody, err := p.postTask(ctx, url, bodyReader)
+	taskURL := p.routerRoot() + "/hf-inference/models/" + escapeModelPath(req.Model) + "/pipeline/feature-extraction"
+	respBody, err := p.postTask(ctx, taskURL, bodyReader)
 	if err != nil {
 		return nil, err
 	}
@@ -208,8 +221,8 @@ func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*c
 	}
 	defer release()
 
-	url := p.routerRoot() + "/hf-inference/models/" + req.Model
-	respBody, err := p.postTask(ctx, url, bodyReader)
+	taskURL := p.routerRoot() + "/hf-inference/models/" + escapeModelPath(req.Model)
+	respBody, err := p.postTask(ctx, taskURL, bodyReader)
 	if err != nil {
 		return nil, err
 	}
