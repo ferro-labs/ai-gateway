@@ -52,6 +52,42 @@ func TestPostStream_SetsIncludeUsage(t *testing.T) {
 	}
 }
 
+// TestPostStream_UpstreamError verifies the shared streaming path surfaces a
+// non-200 upstream response as an error before starting any reader goroutine:
+// the returned channel is nil, and the error carries both the recoverable status
+// code (via core.ParseStatusCode) and the upstream message. This is the
+// streaming counterpart to PostChat's non-200 branch and covers every provider
+// that delegates to PostStream (cerebras, deepseek, fireworks, mistral, together).
+func TestPostStream_UpstreamError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"error":{"message":"rate limited"}}`)
+	}))
+	defer srv.Close()
+
+	ch, err := PostStream(context.Background(), ChatParams{
+		HTTPClient: srv.Client(),
+		URL:        srv.URL,
+		Headers:    map[string]string{"Content-Type": "application/json"},
+		Provider:   "test",
+		Label:      "test",
+	}, core.Request{Model: "m", Messages: []core.Message{{Role: core.RoleUser, Content: "hi"}}})
+
+	if err == nil {
+		t.Fatal("PostStream() error = nil, want upstream error")
+	}
+	if ch != nil {
+		t.Errorf("PostStream() channel = %v, want nil on error (no reader goroutine started)", ch)
+	}
+	if got := core.ParseStatusCode(err); got != http.StatusTooManyRequests {
+		t.Errorf("ParseStatusCode(err) = %d, want %d", got, http.StatusTooManyRequests)
+	}
+	if !strings.Contains(err.Error(), "rate limited") {
+		t.Errorf("error = %v, want it to contain upstream message %q", err, "rate limited")
+	}
+}
+
 // TestPostChat_NormalizesFinishReason verifies a provider-specific finish reason
 // (Mistral's model_length) is normalized to the canonical OpenAI value.
 func TestPostChat_NormalizesFinishReason(t *testing.T) {
