@@ -264,3 +264,51 @@ func TestQwenProvider_Complete_ErrorStatus(t *testing.T) {
 		})
 	}
 }
+
+func TestQwenProvider_CompleteStream_ErrorStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"rate limit exceeded","type":"rate_limit_error"}}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	_, err := p.CompleteStream(context.Background(), core.Request{
+		Model:    "qwen-plus",
+		Messages: []core.Message{{Role: "user", Content: "Hi"}},
+	})
+	if err == nil {
+		t.Fatal("CompleteStream() error = nil, want upstream error")
+	}
+	if code := core.ParseStatusCode(err); code != http.StatusTooManyRequests {
+		t.Errorf("ParseStatusCode = %d, want 429 (err=%v)", code, err)
+	}
+	if !strings.Contains(err.Error(), "rate limit exceeded") {
+		t.Errorf("error = %q, want it to contain the upstream message", err.Error())
+	}
+}
+
+func TestQwenProvider_Embed_ErrorStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"rate limit exceeded","type":"rate_limit_error"}}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	_, err := p.Embed(context.Background(), core.EmbeddingRequest{
+		Model: testEmbeddingModel,
+		Input: []string{"hello", "world"},
+	})
+	if err == nil {
+		t.Fatal("Embed() error = nil, want upstream error")
+	}
+	if code := core.ParseStatusCode(err); code != http.StatusTooManyRequests {
+		t.Errorf("ParseStatusCode = %d, want 429 (err=%v)", code, err)
+	}
+	if !strings.Contains(err.Error(), "rate limit exceeded") {
+		t.Errorf("error = %q, want it to contain the upstream message", err.Error())
+	}
+}
