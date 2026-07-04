@@ -3,6 +3,7 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -515,6 +516,59 @@ func TestOpenAIProvider_Embed_ValidEncodingFormats(t *testing.T) {
 			})
 			if err != nil {
 				t.Errorf("Embed() with EncodingFormat=%q: unexpected error: %v", format, err)
+			}
+		})
+	}
+}
+
+// TestOpenAIProvider_DiscoverModels_WireEndpoint verifies DiscoverModels hits
+// <base>/v1/models and, critically, dedups a base URL that already ends in /v1
+// (so it never issues /v1/v1/models). Bearer auth and the parsed model list are
+// asserted too.
+func TestOpenAIProvider_DiscoverModels_WireEndpoint(t *testing.T) {
+	const wantPath = "/v1/models"
+
+	cases := []struct {
+		name       string
+		baseSuffix string
+	}{
+		{"default base resolves to /v1/models", ""},
+		{"trailing /v1 base is not doubled", "/v1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotPath, gotAuth string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotPath = r.URL.Path
+				gotAuth = r.Header.Get("Authorization")
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"object":"list","data":[{"id":"gpt-4o","object":"model","owned_by":"openai"},{"id":"gpt-4o-mini","object":"model"}]}`)
+			}))
+			defer srv.Close()
+
+			p, err := New("sk-test-key", srv.URL+tc.baseSuffix)
+			if err != nil {
+				t.Fatalf("New() error: %v", err)
+			}
+			models, err := p.DiscoverModels(context.Background())
+			if err != nil {
+				t.Fatalf("DiscoverModels() error: %v", err)
+			}
+			if gotPath != wantPath {
+				t.Errorf("request path = %q, want %q", gotPath, wantPath)
+			}
+			if gotAuth != "Bearer sk-test-key" {
+				t.Errorf("Authorization = %q, want Bearer sk-test-key", gotAuth)
+			}
+			if len(models) != 2 {
+				t.Fatalf("models len = %d, want 2", len(models))
+			}
+			if models[0].ID != "gpt-4o" || models[0].OwnedBy != "openai" {
+				t.Errorf("models[0] = %+v, want gpt-4o owned_by openai", models[0])
+			}
+			// owned_by falls back to the provider name when absent.
+			if models[1].OwnedBy != "openai" {
+				t.Errorf("models[1] owned_by = %q, want openai fallback", models[1].OwnedBy)
 			}
 		})
 	}

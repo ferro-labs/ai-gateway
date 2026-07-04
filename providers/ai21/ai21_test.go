@@ -2,6 +2,7 @@ package ai21
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -182,5 +183,79 @@ func TestAI21Provider_Complete_JurassicModel(t *testing.T) {
 	}
 	if resp.Choices[0].Message.Content != "Hello from Jurassic!" {
 		t.Errorf("choice content = %q, want 'Hello from Jurassic!'", resp.Choices[0].Message.Content)
+	}
+}
+
+// TestAI21Provider_Complete_JurassicAPIError verifies a non-2xx response from the
+// native Jurassic /complete endpoint is surfaced as a core.APIError whose status
+// core.ParseStatusCode can recover.
+func TestAI21Provider_Complete_JurassicAPIError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/j2-ultra/complete" {
+			t.Errorf("path = %q, want /j2-ultra/complete", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = io.WriteString(w, `{"detail":"service unavailable"}`)
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	_, err := p.Complete(context.Background(), core.Request{
+		Model:    "j2-ultra",
+		Messages: []core.Message{{Role: core.RoleUser, Content: "Hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected error for non-2xx Jurassic response, got nil")
+	}
+	if got := core.ParseStatusCode(err); got != http.StatusServiceUnavailable {
+		t.Errorf("ParseStatusCode = %d, want %d", got, http.StatusServiceUnavailable)
+	}
+}
+
+// TestAI21Provider_Complete_RoutesByModelFamily verifies Complete dispatches by
+// model family: Jurassic (j2-*) models hit the native /<model>/complete endpoint
+// while Jamba models hit the OpenAI-compatible /chat/completions endpoint.
+func TestAI21Provider_Complete_RoutesByModelFamily(t *testing.T) {
+	cases := []struct {
+		name     string
+		model    string
+		wantPath string
+		respBody string
+	}{
+		{
+			name:     "jurassic model hits /<model>/complete",
+			model:    "j2-ultra",
+			wantPath: "/j2-ultra/complete",
+			respBody: `{"id":"j2-1","completions":[{"data":{"text":"hi","tokens":[]},"finishReason":{"reason":"stop"}}]}`,
+		},
+		{
+			name:     "jamba model hits /chat/completions",
+			model:    "jamba-large-1.7",
+			wantPath: "/chat/completions",
+			respBody: `{"id":"chatcmpl-1","model":"jamba-large-1.7","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{}}`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotPath string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotPath = r.URL.Path
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, tc.respBody)
+			}))
+			defer srv.Close()
+
+			p, _ := New("test-key", srv.URL)
+			if _, err := p.Complete(context.Background(), core.Request{
+				Model:    tc.model,
+				Messages: []core.Message{{Role: core.RoleUser, Content: "Hi"}},
+			}); err != nil {
+				t.Fatalf("Complete() error: %v", err)
+			}
+			if gotPath != tc.wantPath {
+				t.Errorf("path = %q, want %q", gotPath, tc.wantPath)
+			}
+		})
 	}
 }

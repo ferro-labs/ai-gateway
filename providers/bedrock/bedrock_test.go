@@ -3,6 +3,7 @@ package bedrock
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -876,6 +877,221 @@ func TestBedrockProvider_Embed_Validation(t *testing.T) {
 	}
 }
 
+// TestBedrockProvider_WrapsSDKError verifies every native InvokeModel path
+// (Complete across the anthropic/titan/nova/llama families, Embed for the Titan
+// and Cohere embedding families, and GenerateImage for the Titan/Nova and
+// Stability families) surfaces a %w-wrapped SDK error carrying the
+// "bedrock invoke failed" context, so upstream failures are not swallowed.
+func TestBedrockProvider_WrapsSDKError(t *testing.T) {
+	sdkErr := errors.New("simulated bedrock SDK failure")
+
+	cases := []struct {
+		name string
+		call func(context.Context, *Provider) error
+	}{
+		{
+			name: "anthropic complete",
+			call: func(ctx context.Context, p *Provider) error {
+				_, err := p.Complete(ctx, core.Request{
+					Model:    "anthropic.claude-3-5-sonnet-20241022-v2:0",
+					Messages: []core.Message{{Role: core.RoleUser, Content: "hi"}},
+				})
+				return err
+			},
+		},
+		{
+			name: "titan complete",
+			call: func(ctx context.Context, p *Provider) error {
+				_, err := p.Complete(ctx, core.Request{
+					Model:    "amazon.titan-text-express-v1",
+					Messages: []core.Message{{Role: core.RoleUser, Content: "hi"}},
+				})
+				return err
+			},
+		},
+		{
+			name: "nova complete",
+			call: func(ctx context.Context, p *Provider) error {
+				_, err := p.Complete(ctx, core.Request{
+					Model:    "amazon.nova-micro-v1:0",
+					Messages: []core.Message{{Role: core.RoleUser, Content: "hi"}},
+				})
+				return err
+			},
+		},
+		{
+			name: "llama complete",
+			call: func(ctx context.Context, p *Provider) error {
+				_, err := p.Complete(ctx, core.Request{
+					Model:    "meta.llama3-1-8b-instruct-v1:0",
+					Messages: []core.Message{{Role: core.RoleUser, Content: "hi"}},
+				})
+				return err
+			},
+		},
+		{
+			name: "titan embed",
+			call: func(ctx context.Context, p *Provider) error {
+				_, err := p.Embed(ctx, core.EmbeddingRequest{
+					Model: "amazon.titan-embed-text-v2:0",
+					Input: "hi",
+				})
+				return err
+			},
+		},
+		{
+			name: "cohere embed",
+			call: func(ctx context.Context, p *Provider) error {
+				_, err := p.Embed(ctx, core.EmbeddingRequest{
+					Model: "cohere.embed-english-v3",
+					Input: "hi",
+				})
+				return err
+			},
+		},
+		{
+			name: "titan/nova image",
+			call: func(ctx context.Context, p *Provider) error {
+				_, err := p.GenerateImage(ctx, core.ImageRequest{
+					Model:  "amazon.nova-canvas-v1:0",
+					Prompt: "a cat",
+				})
+				return err
+			},
+		},
+		{
+			name: "stability image",
+			call: func(ctx context.Context, p *Provider) error {
+				_, err := p.GenerateImage(ctx, core.ImageRequest{
+					Model:  "stability.stable-diffusion-xl-v1",
+					Prompt: "a cat",
+				})
+				return err
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeBedrockRuntimeClient{err: sdkErr}
+			p := &Provider{name: Name, client: fake}
+
+			err := tc.call(context.Background(), p)
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !errors.Is(err, sdkErr) {
+				t.Fatalf("error %v does not wrap the SDK error", err)
+			}
+			if !strings.Contains(err.Error(), "bedrock invoke failed") {
+				t.Errorf("error = %q, want it to contain 'bedrock invoke failed'", err.Error())
+			}
+			if len(fake.invokeCalls) == 0 {
+				t.Error("expected at least one InvokeModel call before the error surfaced")
+			}
+		})
+	}
+}
+
+// TestBedrockProvider_CompleteStreamAnthropic_SurfacesMidStreamDecoderError feeds
+// an Anthropic mid-stream "error" event so the decoder returns a non-nil error,
+// exercising the in-stream decoder-error branch that emits a StreamChunk.Error
+// and stops reading. It also asserts the streamed request shape recorded in
+// invokeStreamCalls.
+func TestBedrockProvider_CompleteStreamAnthropic_SurfacesMidStreamDecoderError(t *testing.T) {
+	fake := &fakeBedrockRuntimeClient{
+		streamResponses: [][]byte{
+			[]byte(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial"}}`),
+			[]byte(`{"type":"error","error":{"type":"overloaded_error","message":"upstream overloaded"}}`),
+		},
+	}
+	p := &Provider{name: Name, client: fake}
+	maxTokens := 32
+
+	ch, err := p.CompleteStream(context.Background(), core.Request{
+		Model:     "anthropic.claude-3-5-sonnet-20241022-v2:0",
+		MaxTokens: &maxTokens,
+		Messages:  []core.Message{{Role: core.RoleUser, Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("CompleteStream() error: %v", err)
+	}
+
+	var chunks []core.StreamChunk
+	for c := range ch {
+		chunks = append(chunks, c)
+	}
+
+	if len(chunks) < 2 {
+		t.Fatalf("chunks = %#v, want a text chunk followed by an error chunk", chunks)
+	}
+	if chunks[0].Choices[0].Delta.Content != "partial" {
+		t.Errorf("first chunk content = %q, want partial", chunks[0].Choices[0].Delta.Content)
+	}
+	last := chunks[len(chunks)-1]
+	if last.Error == nil {
+		t.Fatalf("final chunk = %#v, want a decoder error", last)
+	}
+	if !strings.Contains(last.Error.Error(), "upstream overloaded") {
+		t.Errorf("decoder error = %v, want the mid-stream error message", last.Error)
+	}
+
+	// invokeStreamCalls records the outbound streamed request shape.
+	if len(fake.invokeStreamCalls) != 1 {
+		t.Fatalf("InvokeModelWithResponseStream calls = %d, want 1", len(fake.invokeStreamCalls))
+	}
+	call := fake.invokeStreamCalls[0]
+	if got := aws.ToString(call.ModelId); got != "anthropic.claude-3-5-sonnet-20241022-v2:0" {
+		t.Errorf("stream ModelId = %q, want the request model", got)
+	}
+	if got := aws.ToString(call.ContentType); got != "application/json" {
+		t.Errorf("stream ContentType = %q, want application/json", got)
+	}
+	var body bedrockAnthropicRequest
+	mustUnmarshalBody(t, call.Body, &body)
+	if body.AnthropicVersion != "bedrock-2023-05-31" {
+		t.Errorf("anthropic_version = %q, want bedrock-2023-05-31", body.AnthropicVersion)
+	}
+	if body.MaxTokens != maxTokens {
+		t.Errorf("max_tokens = %d, want %d", body.MaxTokens, maxTokens)
+	}
+}
+
+// TestBedrockProvider_CompleteStreamAnthropic_PropagatesTerminalStreamErr drains
+// a well-formed event stream whose terminal Err() is non-nil, exercising the
+// CompleteStream branch that surfaces stream.Err() as a final StreamChunk.Error.
+func TestBedrockProvider_CompleteStreamAnthropic_PropagatesTerminalStreamErr(t *testing.T) {
+	streamErr := errors.New("event stream transport failure")
+	fake := &fakeBedrockRuntimeClient{
+		streamResponses: [][]byte{
+			[]byte(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}`),
+		},
+		streamErr: streamErr,
+	}
+	p := &Provider{name: Name, client: fake}
+
+	ch, err := p.CompleteStream(context.Background(), core.Request{
+		Model:    "anthropic.claude-3-5-sonnet-20241022-v2:0",
+		Messages: []core.Message{{Role: core.RoleUser, Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("CompleteStream() error: %v", err)
+	}
+
+	var chunks []core.StreamChunk
+	for c := range ch {
+		chunks = append(chunks, c)
+	}
+
+	if len(chunks) == 0 {
+		t.Fatal("expected at least the terminal error chunk")
+	}
+	last := chunks[len(chunks)-1]
+	if last.Error == nil || !errors.Is(last.Error, streamErr) {
+		t.Fatalf("final chunk = %#v, want the terminal stream.Err() propagated", last)
+	}
+}
+
 type fakeBedrockRuntimeClient struct {
 	mu                sync.Mutex
 	invokeCalls       []*bedrockruntime.InvokeModelInput
@@ -883,6 +1099,10 @@ type fakeBedrockRuntimeClient struct {
 	responses         [][]byte
 	streamResponses   [][]byte
 	err               error
+	// streamErr, when set, is returned by the fake event stream's terminal Err()
+	// after all events have been consumed, exercising the CompleteStream path
+	// that surfaces a transport-level stream error as a final StreamChunk.Error.
+	streamErr error
 	// responseFor, when set, selects the response body for a given call
 	// instead of the index-based responses slice. It lets tests that issue
 	// concurrent InvokeModel calls (e.g. bedrock_embed.go's parallel Titan
@@ -931,11 +1151,12 @@ func (f *fakeBedrockRuntimeClient) InvokeModelWithResponseStream(_ context.Conte
 		events <- &types.ResponseStreamMemberChunk{Value: types.PayloadPart{Bytes: body}}
 	}
 	close(events)
-	return fakeBedrockResponseStreamReader{events: events}, nil
+	return fakeBedrockResponseStreamReader{events: events, err: f.streamErr}, nil
 }
 
 type fakeBedrockResponseStreamReader struct {
 	events <-chan types.ResponseStream
+	err    error
 }
 
 func (f fakeBedrockResponseStreamReader) Events() <-chan types.ResponseStream {
@@ -947,7 +1168,7 @@ func (f fakeBedrockResponseStreamReader) Close() error {
 }
 
 func (f fakeBedrockResponseStreamReader) Err() error {
-	return nil
+	return f.err
 }
 
 func mustUnmarshalBody(t *testing.T, body []byte, out any) {

@@ -118,6 +118,78 @@ func TestAzureOpenAIProvider_CompleteStream_MockSSE(t *testing.T) {
 	}
 }
 
+// TestAzureOpenAIProvider_Complete_Endpoint asserts the chat path targets the
+// configured deployment: /openai/deployments/<deployment>/chat/completions with
+// the api-version query and api-key header. The chat path is pinned to the
+// configured deployment (not req.Model), so a distinct deployment name proves
+// endpoint() is what builds the URL.
+func TestAzureOpenAIProvider_Complete_Endpoint(t *testing.T) {
+	var gotPath, gotQuery, gotAPIKey string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotQuery = r.URL.RawQuery
+		gotAPIKey = r.Header.Get("api-key")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"id":"chatcmpl-1","object":"chat.completion","model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL, "my-chat-deploy", "2024-10-21")
+	if _, err := p.Complete(context.Background(), core.Request{
+		Model:    "gpt-4o",
+		Messages: []core.Message{{Role: core.RoleUser, Content: "Hi"}},
+	}); err != nil {
+		t.Fatalf("Complete() error: %v", err)
+	}
+
+	if gotPath != "/openai/deployments/my-chat-deploy/chat/completions" {
+		t.Errorf("path = %q, want /openai/deployments/my-chat-deploy/chat/completions", gotPath)
+	}
+	if !strings.Contains(gotQuery, "api-version=2024-10-21") {
+		t.Errorf("query = %q, want api-version=2024-10-21", gotQuery)
+	}
+	if gotAPIKey != "test-key" {
+		t.Errorf("api-key header = %q, want test-key", gotAPIKey)
+	}
+}
+
+// TestAzureOpenAIProvider_CompleteStream_Endpoint asserts the streaming chat path
+// uses the same configured-deployment endpoint with the api-version query.
+func TestAzureOpenAIProvider_CompleteStream_Endpoint(t *testing.T) {
+	var gotPath, gotQuery, gotAPIKey string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotQuery = r.URL.RawQuery
+		gotAPIKey = r.Header.Get("api-key")
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "data: {\"id\":\"chatcmpl-1\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL, "my-chat-deploy", "2024-10-21")
+	ch, err := p.CompleteStream(context.Background(), core.Request{
+		Model:    "gpt-4o",
+		Messages: []core.Message{{Role: core.RoleUser, Content: "Hi"}},
+	})
+	if err != nil {
+		t.Fatalf("CompleteStream() error: %v", err)
+	}
+	for range ch { //nolint:revive // drain the stream to completion
+	}
+
+	if gotPath != "/openai/deployments/my-chat-deploy/chat/completions" {
+		t.Errorf("path = %q, want /openai/deployments/my-chat-deploy/chat/completions", gotPath)
+	}
+	if !strings.Contains(gotQuery, "api-version=2024-10-21") {
+		t.Errorf("query = %q, want api-version=2024-10-21", gotQuery)
+	}
+	if gotAPIKey != "test-key" {
+		t.Errorf("api-key header = %q, want test-key", gotAPIKey)
+	}
+}
+
 func TestAzureOpenAIProvider_opEndpoint_PathEscapesDeployment(t *testing.T) {
 	p, _ := New("test-key", "https://myresource.openai.azure.com", "gpt-4o", "2024-10-21")
 

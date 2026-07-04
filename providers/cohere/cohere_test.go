@@ -3,6 +3,7 @@ package cohere
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -600,5 +601,106 @@ func TestCohereProvider_Embed_UpstreamNon2xxError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "cohere embed API error (429): rate limited") {
 		t.Errorf("error = %q, want cohere embed API error (429): rate limited", err.Error())
+	}
+}
+
+// TestCohereProvider_Complete_UpstreamNon2xxError exercises the hand-rolled
+// Complete non-200 branch: Cohere's flat {"message":…} error envelope is
+// surfaced as a "cohere API error (<status>): <message>" error.
+func TestCohereProvider_Complete_UpstreamNon2xxError(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+	}{
+		{"rate limited", http.StatusTooManyRequests},
+		{"server error", http.StatusInternalServerError},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, `{"message":"upstream boom"}`)
+			}))
+			defer srv.Close()
+
+			p, _ := New("test-key", srv.URL)
+			_, err := p.Complete(context.Background(), core.Request{
+				Model:    "command-r-plus",
+				Messages: []core.Message{{Role: core.RoleUser, Content: "Hi"}},
+			})
+			if err == nil {
+				t.Fatal("expected upstream error, got nil")
+			}
+			want := fmt.Sprintf("cohere API error (%d): upstream boom", tc.status)
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error = %q, want it to contain %q", err.Error(), want)
+			}
+		})
+	}
+}
+
+// TestCohereProvider_CompleteStream_UpstreamNon2xxError exercises the streaming
+// non-200 branch that reads the body and returns an error BEFORE spawning the
+// producer goroutine, so the caller gets (nil, err) rather than an error chunk.
+func TestCohereProvider_CompleteStream_UpstreamNon2xxError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"message":"stream rate limited"}`)
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	ch, err := p.CompleteStream(context.Background(), core.Request{
+		Model:    "command-r-plus",
+		Messages: []core.Message{{Role: core.RoleUser, Content: "Hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected pre-goroutine error, got nil")
+	}
+	if ch != nil {
+		t.Errorf("expected nil channel on pre-goroutine error, got %#v", ch)
+	}
+	if !strings.Contains(err.Error(), "cohere API error (429): stream rate limited") {
+		t.Errorf("error = %q, want cohere API error (429): stream rate limited", err.Error())
+	}
+}
+
+// TestCohereProvider_CompleteStream_TruncatedStream verifies that a stream cut
+// short mid-body (declared Content-Length longer than the bytes written) surfaces
+// the scanner read error as a StreamChunk.Error, exercising the mid-stream
+// scanErr() branch.
+func TestCohereProvider_CompleteStream_TruncatedStream(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		// Declare more bytes than are written so the client's read of the body
+		// terminates with an unexpected-EOF error rather than a clean close.
+		w.Header().Set("Content-Length", "4096")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "data: {\"type\":\"content-delta\",\"delta\":{\"message\":{\"content\":{\"text\":\"Hello\"}}}}\n\n")
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	ch, err := p.CompleteStream(context.Background(), core.Request{
+		Model:    "command-r-plus",
+		Messages: []core.Message{{Role: core.RoleUser, Content: "Hi"}},
+	})
+	if err != nil {
+		t.Fatalf("CompleteStream() error: %v", err)
+	}
+
+	var chunks []core.StreamChunk
+	for c := range ch {
+		chunks = append(chunks, c)
+	}
+
+	if len(chunks) == 0 {
+		t.Fatal("expected at least one chunk before the truncation error")
+	}
+	last := chunks[len(chunks)-1]
+	if last.Error == nil {
+		t.Fatalf("final chunk = %#v, want a mid-stream scan error", last)
 	}
 }
