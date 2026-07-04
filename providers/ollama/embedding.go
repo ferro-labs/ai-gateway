@@ -31,8 +31,8 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 	if err != nil {
 		return nil, err
 	}
-	if req.EncodingFormat != "" && req.EncodingFormat != "float" {
-		return nil, fmt.Errorf("embed: unsupported encoding_format %q; valid value is \"float\"", req.EncodingFormat)
+	if err := core.ValidateEmbeddingEncodingFormat(req.EncodingFormat); err != nil {
+		return nil, err
 	}
 
 	// Ollama's /api/embed accepts a "dimensions" advanced parameter; forward it

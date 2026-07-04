@@ -567,8 +567,8 @@ func (p *Provider) doJSONRequest(ctx context.Context, method, reqURL, label stri
 
 // Embed sends a text embedding request to Gemini's batchEmbedContents endpoint.
 func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.EmbeddingResponse, error) {
-	if req.EncodingFormat != "" && req.EncodingFormat != "float" {
-		return nil, fmt.Errorf("embed: unsupported encoding_format %q; valid value is \"float\"", req.EncodingFormat)
+	if err := core.ValidateEmbeddingEncodingFormat(req.EncodingFormat); err != nil {
+		return nil, err
 	}
 	texts, err := core.CoerceEmbeddingInput(req.Input)
 	if err != nil {

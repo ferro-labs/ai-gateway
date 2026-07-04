@@ -290,8 +290,8 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 	if !isVertexAITextEmbeddingModel(req.Model) {
 		return nil, fmt.Errorf("embed: unsupported Vertex AI text embedding model %q", req.Model)
 	}
-	if req.EncodingFormat != "" && req.EncodingFormat != "float" {
-		return nil, fmt.Errorf("embed: unsupported encoding_format %q; valid value is \"float\"", req.EncodingFormat)
+	if err := core.ValidateEmbeddingEncodingFormat(req.EncodingFormat); err != nil {
+		return nil, err
 	}
 	texts, err := core.CoerceEmbeddingInput(req.Input)
 	if err != nil {
