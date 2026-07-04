@@ -39,10 +39,14 @@ var (
 
 // New creates a new Ollama provider.
 func New(baseURL string, models []string) (*Provider, error) {
+	baseURL = strings.TrimSpace(baseURL)
 	if baseURL == "" {
 		baseURL = defaultBaseURL
 	}
 	baseURL = strings.TrimRight(baseURL, "/")
+	if err := core.ValidateBaseURL(Name, baseURL); err != nil {
+		return nil, err
+	}
 
 	if len(models) == 0 {
 		models = []string{"llama3.2"}
@@ -77,66 +81,25 @@ func (p *Provider) Models() []core.ModelInfo {
 	return core.ModelsFromList(p.name, p.SupportedModels())
 }
 
-type ollamaResponse struct {
-	ID      string        `json:"id"`
-	Model   string        `json:"model"`
-	Choices []core.Choice `json:"choices"`
-	Usage   core.Usage    `json:"usage"`
-}
-
 type ollamaErrorDetail struct {
 	Message string `json:"message"`
-	Type    string `json:"type"`
 }
 
 type ollamaErrorResponse struct {
 	Error ollamaErrorDetail `json:"error"`
 }
 
-// Complete sends a chat completion request and returns the full response.
+// Complete sends a chat completion request and returns the full response. It
+// speaks Ollama's OpenAI-compatible /v1/chat/completions endpoint via the shared
+// helper, which sets core.Response.Provider and normalizes finish reasons.
 func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
-	bodyReader, _, release, err := openaicompat.BuildBody(req, false)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
-	}
-	defer release()
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/v1/chat/completions", bodyReader)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	httpResp, err := p.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
-	}
-	defer func() { _ = httpResp.Body.Close() }()
-
-	respBody, err := io.ReadAll(httpResp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if httpResp.StatusCode != http.StatusOK {
-		var errResp ollamaErrorResponse
-		if json.Unmarshal(respBody, &errResp) == nil && errResp.Error.Message != "" {
-			return nil, fmt.Errorf("ollama API error (%d): %s", httpResp.StatusCode, errResp.Error.Message)
-		}
-		return nil, fmt.Errorf("ollama API error (%d): %s", httpResp.StatusCode, string(respBody))
-	}
-
-	var ollamaResp ollamaResponse
-	if err := json.Unmarshal(respBody, &ollamaResp); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
-	}
-
-	return &core.Response{
-		ID:      ollamaResp.ID,
-		Model:   ollamaResp.Model,
-		Choices: ollamaResp.Choices,
-		Usage:   ollamaResp.Usage,
-	}, nil
+	return openaicompat.PostChat(ctx, openaicompat.ChatParams{
+		HTTPClient: p.httpClient,
+		URL:        p.baseURL + "/v1/chat/completions",
+		Provider:   p.name,
+		Label:      "ollama",
+		Headers:    map[string]string{"Content-Type": "application/json"},
+	}, req)
 }
 
 // CompleteStream sends a streaming chat completion request to Ollama.

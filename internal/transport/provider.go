@@ -81,6 +81,13 @@ func KnownProviderPresets() map[string]ProviderPreset {
 			ResponseHeaderTimeout: 120 * time.Second,
 			DialTimeout:           5 * time.Second,
 		},
+		"replicate": {
+			// Replicate's async prediction API holds the connection open for
+			// "Prefer: wait" submissions (~60s); the default 30s header timeout
+			// would abort these before the prediction resolves.
+			MaxIdleConnsPerHost:   100,
+			ResponseHeaderTimeout: 65 * time.Second,
+		},
 	}
 }
 

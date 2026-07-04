@@ -5,6 +5,27 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.16] — 2026-07-06
+
+Local & prediction-API provider fidelity release. The seventh provider-readiness remediation phase aligns the Hugging Face, Ollama, Ollama Cloud, and Replicate providers — which use task-specific, prediction, and native (non-OpenAI-wire) APIs — on request/response correctness. No breaking API changes relative to v1.1.15.
+
+### Fixed
+
+- **Hugging Face default endpoint**: the default base URL now targets `https://router.huggingface.co/v1`; the previous `api-inference.huggingface.co` host is retired and returns HTTP 410.
+- **Hugging Face embeddings and image generation**: both now use Hugging Face's task-specific routes and schemas (feature extraction returns a bare vector array; text-to-image returns raw image bytes) instead of OpenAI-shaped requests that hit the wrong endpoints.
+- **Replicate token usage & finish reasons**: chat responses now populate token usage from prediction metrics and normalize finish reasons instead of hardcoding them.
+- **Ollama Cloud sampling parameters**: `stop`/`seed`/presence/frequency penalties are now forwarded, remaining unsupported parameters are reported rather than dropped silently, finish reasons are normalized, and tool-call IDs are populated.
+- **Ollama embedding dimensions**: the `dimensions` parameter is now forwarded to Ollama's native embeddings endpoint.
+
+### Changed
+
+- **Replicate authentication** (operator-visible): the provider now sends the documented `Bearer` authorization scheme instead of the deprecated `Token` scheme (Replicate still accepts both).
+- **Replicate request timeout**: a tuned transport preset raises the response-header timeout so `Prefer: wait` predictions (held up to ~60s) are not aborted by the default 30s timeout.
+- **Ollama Cloud embeddings**: Ollama Cloud now supports an embeddings endpoint.
+- **Base-URL validation** is now enforced at construction for Hugging Face, Ollama, and Replicate.
+
+---
+
 ## [1.1.15] — 2026-07-05
 
 OpenAI-compatible provider fidelity release (part three) and Cloudflare. The sixth provider-readiness remediation phase aligns the AI21, Cloudflare, DeepInfra, Qwen, and SambaNova providers on request/response correctness. No breaking API changes relative to v1.1.14.

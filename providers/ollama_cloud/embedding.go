@@ -1,4 +1,4 @@
-package ollama
+package ollamacloud
 
 import (
 	"context"
@@ -10,22 +10,22 @@ import (
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
-// ollamaEmbedRequest is the native Ollama /api/embed request schema.
-type ollamaEmbedRequest struct {
+// embedRequest is the native Ollama /api/embed request schema.
+type embedRequest struct {
 	Model      string `json:"model"`
-	Input      any    `json:"input"` // string or []string
-	Dimensions *int   `json:"dimensions,omitempty"`
+	Input      any    `json:"input"`                // string or []string
+	Dimensions *int   `json:"dimensions,omitempty"` // optional output dimension control
 }
 
-// ollamaEmbedResponse is the native Ollama /api/embed response schema.
-type ollamaEmbedResponse struct {
+// embedResponse is the native Ollama /api/embed response schema.
+type embedResponse struct {
 	Model           string      `json:"model"`
 	Embeddings      [][]float64 `json:"embeddings"`
 	PromptEvalCount int         `json:"prompt_eval_count"`
 }
 
-// Embed sends a request to the native Ollama /api/embed endpoint and adapts
-// the response to the OpenAI-compatible core.EmbeddingResponse shape.
+// Embed sends a request to the native Ollama Cloud /api/embed endpoint and
+// adapts the response to the OpenAI-compatible core.EmbeddingResponse shape.
 func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.EmbeddingResponse, error) {
 	input, err := normalizeEmbeddingInput(req.Input)
 	if err != nil {
@@ -34,15 +34,14 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 	if req.EncodingFormat != "" && req.EncodingFormat != "float" {
 		return nil, fmt.Errorf("embed: unsupported encoding_format %q; valid value is \"float\"", req.EncodingFormat)
 	}
-
 	// Ollama's /api/embed accepts a "dimensions" advanced parameter; forward it
-	// when the caller requested a specific output dimension (nil is omitted).
-	pReq := ollamaEmbedRequest{
+	// when the caller requests output dimension control.
+	apiReq := embedRequest{
 		Model:      req.Model,
 		Input:      input,
 		Dimensions: req.Dimensions,
 	}
-	bodyReader, _, release, err := core.JSONBodyReader(pReq)
+	bodyReader, _, release, err := core.JSONBodyReader(apiReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal embedding request: %w", err)
 	}
@@ -52,7 +51,7 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
+	p.setHeaders(httpReq)
 
 	httpResp, err := p.httpClient.Do(httpReq)
 	if err != nil {
@@ -65,20 +64,16 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 	if httpResp.StatusCode != http.StatusOK {
-		var errResp ollamaErrorResponse
-		if json.Unmarshal(respBody, &errResp) == nil && errResp.Error.Message != "" {
-			return nil, fmt.Errorf("ollama API error (%d): %s", httpResp.StatusCode, errResp.Error.Message)
-		}
-		return nil, fmt.Errorf("ollama API error (%d): %s", httpResp.StatusCode, string(respBody))
+		return nil, apiError(httpResp.StatusCode, respBody)
 	}
 
-	var oResp ollamaEmbedResponse
-	if err := json.Unmarshal(respBody, &oResp); err != nil {
+	var apiResp embedResponse
+	if err := json.Unmarshal(respBody, &apiResp); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal embedding response: %w", err)
 	}
 
-	data := make([]core.Embedding, 0, len(oResp.Embeddings))
-	for i, row := range oResp.Embeddings {
+	data := make([]core.Embedding, 0, len(apiResp.Embeddings))
+	for i, row := range apiResp.Embeddings {
 		data = append(data, core.Embedding{
 			Object:    "embedding",
 			Embedding: row,
@@ -89,14 +84,17 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 	return &core.EmbeddingResponse{
 		Object: "list",
 		Data:   data,
-		Model:  oResp.Model,
+		Model:  apiResp.Model,
 		Usage: core.EmbeddingUsage{
-			PromptTokens: oResp.PromptEvalCount,
-			TotalTokens:  oResp.PromptEvalCount,
+			PromptTokens: apiResp.PromptEvalCount,
+			TotalTokens:  apiResp.PromptEvalCount,
 		},
 	}, nil
 }
 
+// normalizeEmbeddingInput coerces the OpenAI-style embedding input (string or
+// array of strings) into the native Ollama /api/embed input shape, rejecting
+// empty or non-string inputs.
 func normalizeEmbeddingInput(input any) (any, error) {
 	switch v := input.(type) {
 	case string:

@@ -340,6 +340,237 @@ func TestSupportsModel(t *testing.T) {
 	}
 }
 
+func TestCompleteSynthesizesToolCallIDAndForcesFinishReason(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// Native schema: object arguments and NO id, done_reason is a plain
+		// "stop" that must be overridden to tool_calls.
+		_, _ = w.Write([]byte(`{
+			"model":"` + testCloudModel + `",
+			"created_at":"2025-01-02T03:04:05Z",
+			"message":{
+				"role":"assistant",
+				"tool_calls":[{"function":{"name":"get_weather","arguments":{"city":"Paris"}}}]
+			},
+			"done":true,
+			"done_reason":"stop"
+		}`))
+	}))
+	defer server.Close()
+
+	p, err := New(testCloudAPIKey, server.URL, []string{testCloudModel})
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	resp, err := p.Complete(context.Background(), core.Request{
+		Model:    testCloudModel,
+		Messages: []core.Message{{Role: "user", Content: "weather in Paris?"}},
+	})
+	if err != nil {
+		t.Fatalf("Complete returned error: %v", err)
+	}
+
+	if resp.Choices[0].FinishReason != core.FinishReasonToolCalls {
+		t.Fatalf("finish reason = %q, want %q", resp.Choices[0].FinishReason, core.FinishReasonToolCalls)
+	}
+	calls := resp.Choices[0].Message.ToolCalls
+	if len(calls) != 1 {
+		t.Fatalf("tool calls length = %d, want 1", len(calls))
+	}
+	if calls[0].ID != "call_0" {
+		t.Fatalf("tool call ID = %q, want synthesized call_0", calls[0].ID)
+	}
+	if calls[0].Type != "function" {
+		t.Fatalf("tool call type = %q, want function", calls[0].Type)
+	}
+	if calls[0].Function.Name != "get_weather" {
+		t.Fatalf("tool call name = %q, want get_weather", calls[0].Function.Name)
+	}
+	if calls[0].Function.Arguments != `{"city":"Paris"}` {
+		t.Fatalf("tool call arguments = %q, want compacted object", calls[0].Function.Arguments)
+	}
+}
+
+func TestCompleteStreamSynthesizesToolCallIDAndFinishReason(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		_, _ = w.Write([]byte(`{"model":"` + testCloudModel + `","message":{"role":"assistant","tool_calls":[{"function":{"name":"get_weather","arguments":{"city":"Paris"}}}]},"done":false}` + "\n"))
+		_, _ = w.Write([]byte(`{"model":"` + testCloudModel + `","done":true,"done_reason":"stop","prompt_eval_count":3,"eval_count":2}` + "\n"))
+	}))
+	defer server.Close()
+
+	p, err := New(testCloudAPIKey, server.URL, []string{testCloudModel})
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	ch, err := p.CompleteStream(context.Background(), core.Request{
+		Model:    testCloudModel,
+		Messages: []core.Message{{Role: "user", Content: "weather?"}},
+	})
+	if err != nil {
+		t.Fatalf("CompleteStream returned error: %v", err)
+	}
+
+	var chunks []core.StreamChunk
+	for chunk := range ch {
+		if chunk.Error != nil {
+			t.Fatalf("stream chunk error: %v", chunk.Error)
+		}
+		chunks = append(chunks, chunk)
+	}
+	if len(chunks) != 2 {
+		t.Fatalf("chunks length = %d, want 2", len(chunks))
+	}
+
+	calls := chunks[0].Choices[0].Delta.ToolCalls
+	if len(calls) != 1 {
+		t.Fatalf("delta tool calls length = %d, want 1", len(calls))
+	}
+	if calls[0].ID != "call_0" {
+		t.Fatalf("delta tool call ID = %q, want synthesized call_0", calls[0].ID)
+	}
+	if calls[0].Function.Name != "get_weather" || calls[0].Function.Arguments != `{"city":"Paris"}` {
+		t.Fatalf("delta tool call function = %#v, want get_weather with compacted args", calls[0].Function)
+	}
+	if chunks[0].Choices[0].FinishReason != core.FinishReasonToolCalls {
+		t.Fatalf("tool-call chunk finish reason = %q, want %q", chunks[0].Choices[0].FinishReason, core.FinishReasonToolCalls)
+	}
+}
+
+func TestCompleteForwardsExtendedOptions(t *testing.T) {
+	var body struct {
+		Options *struct {
+			Stop             []string `json:"stop"`
+			Seed             *int64   `json:"seed"`
+			PresencePenalty  *float64 `json:"presence_penalty"`
+			FrequencyPenalty *float64 `json:"frequency_penalty"`
+		} `json:"options"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("failed to decode request body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"` + testCloudModel + `","message":{"role":"assistant","content":"ok"},"done":true,"done_reason":"stop"}`))
+	}))
+	defer server.Close()
+
+	p, err := New(testCloudAPIKey, server.URL, []string{testCloudModel})
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	seed := int64(42)
+	presence, frequency := 0.5, -0.25
+	if _, err := p.Complete(context.Background(), core.Request{
+		Model:            testCloudModel,
+		Messages:         []core.Message{{Role: "user", Content: "hi"}},
+		Stop:             []string{"STOP"},
+		Seed:             &seed,
+		PresencePenalty:  &presence,
+		FrequencyPenalty: &frequency,
+	}); err != nil {
+		t.Fatalf("Complete returned error: %v", err)
+	}
+
+	if body.Options == nil {
+		t.Fatal("options missing from request body")
+	}
+	if len(body.Options.Stop) != 1 || body.Options.Stop[0] != "STOP" {
+		t.Fatalf("stop = %#v, want [STOP]", body.Options.Stop)
+	}
+	if body.Options.Seed == nil || *body.Options.Seed != 42 {
+		t.Fatalf("seed = %#v, want 42", body.Options.Seed)
+	}
+	if body.Options.PresencePenalty == nil || *body.Options.PresencePenalty != 0.5 {
+		t.Fatalf("presence_penalty = %#v, want 0.5", body.Options.PresencePenalty)
+	}
+	if body.Options.FrequencyPenalty == nil || *body.Options.FrequencyPenalty != -0.25 {
+		t.Fatalf("frequency_penalty = %#v, want -0.25", body.Options.FrequencyPenalty)
+	}
+}
+
+func TestEmbedSendsAuthAndMapsResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %s, want POST", r.Method)
+		}
+		if r.URL.Path != "/api/embed" {
+			t.Errorf("path = %s, want /api/embed", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != testAuthHeader {
+			t.Errorf("Authorization = %q, want %s", got, testAuthHeader)
+		}
+
+		var reqBody struct {
+			Model string `json:"model"`
+			Input string `json:"input"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
+			t.Fatalf("failed to decode request body: %v", err)
+		}
+		if reqBody.Model != "embed-model" || reqBody.Input != "hello world" {
+			t.Errorf("request = %#v, want embed-model / hello world", reqBody)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"embed-model","embeddings":[[0.1,0.2,0.3]],"prompt_eval_count":5}`))
+	}))
+	defer server.Close()
+
+	p, err := New(testCloudAPIKey, server.URL, []string{testCloudModel})
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	resp, err := p.Embed(context.Background(), core.EmbeddingRequest{
+		Model: "embed-model",
+		Input: "hello world",
+	})
+	if err != nil {
+		t.Fatalf("Embed returned error: %v", err)
+	}
+
+	if resp.Object != "list" || resp.Model != "embed-model" {
+		t.Fatalf("response envelope = %#v, want list / embed-model", resp)
+	}
+	if len(resp.Data) != 1 {
+		t.Fatalf("data length = %d, want 1", len(resp.Data))
+	}
+	if !reflect.DeepEqual(resp.Data[0].Embedding, []float64{0.1, 0.2, 0.3}) {
+		t.Fatalf("embedding = %#v, want [0.1 0.2 0.3]", resp.Data[0].Embedding)
+	}
+	if resp.Data[0].Index != 0 || resp.Data[0].Object != "embedding" {
+		t.Fatalf("embedding entry = %#v, want index 0 embedding", resp.Data[0])
+	}
+	if resp.Usage.PromptTokens != 5 || resp.Usage.TotalTokens != 5 {
+		t.Fatalf("usage = %#v, want 5/5", resp.Usage)
+	}
+}
+
+func TestEmbedNon200Error(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"model not found"}}`))
+	}))
+	defer server.Close()
+
+	p, err := New(testCloudAPIKey, server.URL, []string{testCloudModel})
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	_, err = p.Embed(context.Background(), core.EmbeddingRequest{Model: "embed-model", Input: "hi"})
+	if err == nil {
+		t.Fatal("expected Embed to return an error")
+	}
+	if got := err.Error(); !strings.Contains(got, "400") || !strings.Contains(got, "model not found") {
+		t.Fatalf("error = %q, want status code and response message", got)
+	}
+}
+
 func mustUnix(t *testing.T, value string) int64 {
 	t.Helper()
 	parsed, err := time.Parse(time.RFC3339Nano, value)
