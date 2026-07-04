@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/ferro-labs/ai-gateway/providers/core"
@@ -201,5 +202,113 @@ func TestQwenProvider_Embed_InvalidEncodingFormat(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("Embed() error = nil, want unsupported encoding_format error")
+	}
+}
+
+// TestQwenProvider_Complete_ErrorStatus verifies that a non-2xx chat response is
+// surfaced as a normalized provider error (with the upstream status code and
+// message) rather than being decoded as a successful completion.
+func TestQwenProvider_Complete_ErrorStatus(t *testing.T) {
+	tests := []struct {
+		name       string
+		statusCode int
+		body       string
+		wantMsg    string
+	}{
+		{
+			name:       "401 unauthorized",
+			statusCode: http.StatusUnauthorized,
+			body:       `{"error":{"message":"Invalid API key","type":"authentication_error"}}`,
+			wantMsg:    "Invalid API key",
+		},
+		{
+			name:       "429 rate limited",
+			statusCode: http.StatusTooManyRequests,
+			body:       `{"error":{"message":"Rate limit exceeded","type":"rate_limit_error"}}`,
+			wantMsg:    "Rate limit exceeded",
+		},
+		{
+			name:       "500 internal server error",
+			statusCode: http.StatusInternalServerError,
+			body:       `{"error":{"message":"Internal server error","type":"server_error"}}`,
+			wantMsg:    "Internal server error",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tt.statusCode)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer srv.Close()
+
+			p, _ := New("bad-key", srv.URL)
+			resp, err := p.Complete(context.Background(), core.Request{
+				Model:    "qwen-plus",
+				Messages: []core.Message{{Role: "user", Content: "Hi"}},
+			})
+			if err == nil {
+				t.Fatalf("Complete() error = nil, want an error for %d response", tt.statusCode)
+			}
+			if resp != nil {
+				t.Errorf("Complete() resp = %+v, want nil on error", resp)
+			}
+			if code := core.ParseStatusCode(err); code != tt.statusCode {
+				t.Errorf("ParseStatusCode() = %d, want %d", code, tt.statusCode)
+			}
+			if !strings.Contains(err.Error(), tt.wantMsg) {
+				t.Errorf("error = %q, want it to contain upstream message %q", err.Error(), tt.wantMsg)
+			}
+		})
+	}
+}
+
+func TestQwenProvider_CompleteStream_ErrorStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"rate limit exceeded","type":"rate_limit_error"}}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	_, err := p.CompleteStream(context.Background(), core.Request{
+		Model:    "qwen-plus",
+		Messages: []core.Message{{Role: "user", Content: "Hi"}},
+	})
+	if err == nil {
+		t.Fatal("CompleteStream() error = nil, want upstream error")
+	}
+	if code := core.ParseStatusCode(err); code != http.StatusTooManyRequests {
+		t.Errorf("ParseStatusCode = %d, want 429 (err=%v)", code, err)
+	}
+	if !strings.Contains(err.Error(), "rate limit exceeded") {
+		t.Errorf("error = %q, want it to contain the upstream message", err.Error())
+	}
+}
+
+func TestQwenProvider_Embed_ErrorStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"rate limit exceeded","type":"rate_limit_error"}}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	_, err := p.Embed(context.Background(), core.EmbeddingRequest{
+		Model: testEmbeddingModel,
+		Input: []string{"hello", "world"},
+	})
+	if err == nil {
+		t.Fatal("Embed() error = nil, want upstream error")
+	}
+	if code := core.ParseStatusCode(err); code != http.StatusTooManyRequests {
+		t.Errorf("ParseStatusCode = %d, want 429 (err=%v)", code, err)
+	}
+	if !strings.Contains(err.Error(), "rate limit exceeded") {
+		t.Errorf("error = %q, want it to contain the upstream message", err.Error())
 	}
 }
