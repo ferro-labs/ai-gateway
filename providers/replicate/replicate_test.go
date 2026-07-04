@@ -3,10 +3,12 @@ package replicate
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
@@ -189,8 +191,8 @@ func TestReplicateProvider_Models(t *testing.T) {
 func TestReplicateProvider_AuthHeaders(t *testing.T) {
 	p, _ := New("test-token", "", nil, nil)
 	headers := p.AuthHeaders()
-	if headers["Authorization"] != "Token test-token" {
-		t.Errorf("AuthHeaders Authorization = %q, want Token test-token", headers["Authorization"])
+	if headers["Authorization"] != "Bearer test-token" {
+		t.Errorf("AuthHeaders Authorization = %q, want Bearer test-token", headers["Authorization"])
 	}
 }
 
@@ -290,8 +292,8 @@ func TestReplicateProvider_CompleteStream_MockSSE(t *testing.T) {
 	if gotPath != "/models/test/model/predictions" {
 		t.Fatalf("request path = %q, want /models/test/model/predictions", gotPath)
 	}
-	if gotAuth != "Token test-token" {
-		t.Fatalf("authorization = %q, want Token test-token", gotAuth)
+	if gotAuth != "Bearer test-token" {
+		t.Fatalf("authorization = %q, want Bearer test-token", gotAuth)
 	}
 	if gotAccept != "text/event-stream" {
 		t.Fatalf("stream Accept = %q, want text/event-stream", gotAccept)
@@ -471,5 +473,288 @@ func TestReplicateProvider_Poll_NonOKStatus(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "429") {
 		t.Errorf("error should mention HTTP status 429; got: %v", err)
+	}
+}
+
+// ── Submit error paths (4xx / 5xx) ─────────────────────────────────────────────
+
+func TestReplicateProvider_Complete_SubmitError(t *testing.T) {
+	// The initial POST fails; submitAndPoll must surface a core.APIError that
+	// embeds the status code and the {"detail":…} message Replicate returns.
+	cases := []struct {
+		name       string
+		status     int
+		body       string
+		wantSubstr string
+	}{
+		{"bad request", http.StatusBadRequest, `{"detail":"invalid input"}`, "invalid input"},
+		{"server error", http.StatusInternalServerError, `{"detail":"internal"}`, "internal"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+
+			p, _ := New("test-token", srv.URL, []string{"test/model"}, nil)
+			_, err := p.Complete(context.Background(), core.Request{
+				Model:    "test/model",
+				Messages: []core.Message{{Role: "user", Content: "Hi"}},
+			})
+			if err == nil {
+				t.Fatalf("expected error for status %d, got nil", tc.status)
+			}
+			if got := core.ParseStatusCode(err); got != tc.status {
+				t.Errorf("ParseStatusCode = %d, want %d (err: %v)", got, tc.status, err)
+			}
+			if !strings.Contains(err.Error(), tc.wantSubstr) {
+				t.Errorf("error should contain %q; got: %v", tc.wantSubstr, err)
+			}
+		})
+	}
+}
+
+func TestReplicateProvider_CompleteStream_SubmitError(t *testing.T) {
+	// The streaming path's initial submit POST fails; the error must be a
+	// core.APIError carrying the status code.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"detail":"stream submit rejected"}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-token", srv.URL, []string{"test/model"}, nil)
+	_, err := p.CompleteStream(context.Background(), core.Request{
+		Model:    "test/model",
+		Messages: []core.Message{{Role: "user", Content: "Hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected submit error from CompleteStream, got nil")
+	}
+	if core.ParseStatusCode(err) != http.StatusBadRequest {
+		t.Errorf("expected status 400 in error; got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "stream submit rejected") {
+		t.Errorf("error should carry the detail message; got: %v", err)
+	}
+}
+
+// ── Usage + finish_reason ──────────────────────────────────────────────────────
+
+func TestReplicateProvider_Complete_UsageAndFinishReason(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{
+			"id":"pred-usage",
+			"status":"succeeded",
+			"output":"hello",
+			"metrics":{"input_token_count":12,"output_token_count":7}
+		}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-token", srv.URL, []string{"test/model"}, nil)
+	resp, err := p.Complete(context.Background(), core.Request{
+		Model:    "test/model",
+		Messages: []core.Message{{Role: "user", Content: "Hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Complete() error: %v", err)
+	}
+	if resp.Usage.PromptTokens != 12 || resp.Usage.CompletionTokens != 7 || resp.Usage.TotalTokens != 19 {
+		t.Errorf("usage = %+v, want prompt=12 completion=7 total=19", resp.Usage)
+	}
+	if resp.Choices[0].FinishReason != core.FinishReasonStop {
+		t.Errorf("finish_reason = %q, want %q", resp.Choices[0].FinishReason, core.FinishReasonStop)
+	}
+}
+
+// ── Streaming: error event + done reason ───────────────────────────────────────
+
+func TestReplicateProvider_CompleteStream_ErrorEvent(t *testing.T) {
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/models/test/model/predictions":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"id":"pred-err","status":"starting","urls":{"stream":"` + srv.URL + `/stream"}}`))
+		case "/stream":
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("event: output\ndata: partial\n\n" +
+				"event: error\ndata: model exploded\n\n"))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-token", srv.URL, []string{"test/model"}, nil)
+	ch, err := p.CompleteStream(context.Background(), core.Request{
+		Model:    "test/model",
+		Messages: []core.Message{{Role: "user", Content: "Hi"}},
+	})
+	if err != nil {
+		t.Fatalf("CompleteStream() error: %v", err)
+	}
+
+	var streamErr error
+	for c := range ch {
+		if c.Error != nil {
+			streamErr = c.Error
+		}
+	}
+	if streamErr == nil {
+		t.Fatal("expected an error chunk from the error event")
+	}
+	if !strings.Contains(streamErr.Error(), "model exploded") {
+		t.Errorf("error chunk should carry the payload; got: %v", streamErr)
+	}
+}
+
+func TestReplicateProvider_CompleteStream_DoneReason(t *testing.T) {
+	// A "done" event carrying a reason must normalize into the terminal chunk's
+	// finish_reason (max_tokens → length), not be treated as an error.
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/models/test/model/predictions":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"id":"pred-done","status":"starting","urls":{"stream":"` + srv.URL + `/stream"}}`))
+		case "/stream":
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("event: output\ndata: hi\n\n" +
+				"event: done\ndata: {\"reason\":\"max_tokens\"}\n\n"))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-token", srv.URL, []string{"test/model"}, nil)
+	ch, err := p.CompleteStream(context.Background(), core.Request{
+		Model:    "test/model",
+		Messages: []core.Message{{Role: "user", Content: "Hi"}},
+	})
+	if err != nil {
+		t.Fatalf("CompleteStream() error: %v", err)
+	}
+
+	var chunks []core.StreamChunk
+	for c := range ch {
+		if c.Error != nil {
+			t.Fatalf("unexpected error chunk: %v", c.Error)
+		}
+		chunks = append(chunks, c)
+	}
+	if len(chunks) == 0 {
+		t.Fatal("expected at least one chunk")
+	}
+	last := chunks[len(chunks)-1]
+	if last.Choices[0].FinishReason != core.FinishReasonLength {
+		t.Errorf("terminal finish_reason = %q, want %q", last.Choices[0].FinishReason, core.FinishReasonLength)
+	}
+}
+
+// ── Context cancellation ───────────────────────────────────────────────────────
+
+func TestReplicateProvider_Poll_ContextCancel(t *testing.T) {
+	// The prediction never resolves; canceling the context mid-poll must return
+	// promptly with a context error.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"pred-hang","status":"processing"}`))
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	// Cancel after submit succeeds so the poll loop observes the cancellation.
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+
+	p, _ := New("test-token", srv.URL, []string{"test/model"}, nil)
+	_, err := p.Complete(ctx, core.Request{
+		Model:    "test/model",
+		Messages: []core.Message{{Role: "user", Content: "Hi"}},
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled from poll loop, got: %v", err)
+	}
+}
+
+func TestReplicateProvider_Stream_ContextCancel(t *testing.T) {
+	// The stream never ends; canceling the context must terminate the read loop
+	// with a context-related error chunk.
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/models/test/model/predictions":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"id":"pred-stream-cancel","status":"starting","urls":{"stream":"` + srv.URL + `/stream"}}`))
+		case "/stream":
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			flusher, ok := w.(http.Flusher)
+			if !ok {
+				t.Fatal("stream response writer is not a Flusher")
+			}
+			// Emit output events until the client disconnects.
+			for i := 0; i < 100000; i++ {
+				select {
+				case <-r.Context().Done():
+					return
+				default:
+				}
+				if _, err := w.Write([]byte("event: output\ndata: x\n\n")); err != nil {
+					return
+				}
+				flusher.Flush()
+			}
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	p, _ := New("test-token", srv.URL, []string{"test/model"}, nil)
+	ch, err := p.CompleteStream(ctx, core.Request{
+		Model:    "test/model",
+		Messages: []core.Message{{Role: "user", Content: "Hi"}},
+	})
+	if err != nil {
+		t.Fatalf("CompleteStream() error: %v", err)
+	}
+
+	var cancelErr error
+	count := 0
+	for c := range ch {
+		count++
+		if count == 1 {
+			cancel()
+		}
+		if c.Error != nil {
+			cancelErr = c.Error
+			break
+		}
+	}
+	if cancelErr == nil {
+		t.Fatal("expected an error chunk after context cancellation")
+	}
+	if !errors.Is(cancelErr, context.Canceled) {
+		t.Errorf("expected context.Canceled, got: %v", cancelErr)
 	}
 }
