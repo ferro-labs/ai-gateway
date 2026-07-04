@@ -38,10 +38,14 @@ var (
 
 // New creates a new AI21 provider.
 func New(apiKey, baseURL string) (*Provider, error) {
+	baseURL = strings.TrimSpace(baseURL)
 	if baseURL == "" {
 		baseURL = defaultBaseURL
 	}
 	baseURL = strings.TrimRight(baseURL, "/")
+	if err := core.ValidateBaseURL(Name, baseURL); err != nil {
+		return nil, err
+	}
 	return &Provider{
 		name:       Name,
 		apiKey:     apiKey,
@@ -61,15 +65,14 @@ func (p *Provider) AuthHeaders() map[string]string {
 	return map[string]string{"Authorization": "Bearer " + p.apiKey}
 }
 
-// SupportedModels returns known AI21 models.
+// SupportedModels returns known AI21 models. AI21 is Jamba-only; the legacy
+// Jurassic (j2-*) models are deprecated and no longer advertised.
 func (p *Provider) SupportedModels() []string {
 	return []string{
+		"jamba-large-1.7",
+		"jamba-mini-1.7",
 		"jamba-1.5-large",
 		"jamba-1.5-mini",
-		"jamba-instruct",
-		"j2-ultra",
-		"j2-mid",
-		"j2-light",
 	}
 }
 
@@ -86,13 +89,19 @@ func IsJambaModel(model string) bool {
 	return strings.HasPrefix(model, "jamba")
 }
 
-// ── Jamba models (OpenAI-compatible) ─────────────────────────────────────────
-
-type ai21ChatResponse struct {
-	ID      string        `json:"id"`
-	Model   string        `json:"model"`
-	Choices []core.Choice `json:"choices"`
-	Usage   core.Usage    `json:"usage"`
+// chatParams builds the shared OpenAI-compatible request parameters for the
+// Jamba chat-completions endpoint.
+func (p *Provider) chatParams() openaicompat.ChatParams {
+	return openaicompat.ChatParams{
+		HTTPClient: p.httpClient,
+		URL:        p.baseURL + "/chat/completions",
+		Provider:   p.name,
+		Label:      Name,
+		Headers: map[string]string{
+			"Authorization": "Bearer " + p.apiKey,
+			"Content-Type":  "application/json",
+		},
+	}
 }
 
 // ── Jurassic models (AI21-native) ────────────────────────────────────────────
@@ -123,10 +132,6 @@ type ai21CompleteResponse struct {
 	} `json:"completions"`
 }
 
-type ai21Error struct {
-	Detail string `json:"detail"`
-}
-
 // Complete sends a chat completion request to AI21.
 func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
 	if IsJambaModel(req.Model) {
@@ -136,52 +141,14 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 }
 
 func (p *Provider) completeJamba(ctx context.Context, req core.Request) (*core.Response, error) {
-	bodyReader, _, release, err := openaicompat.BuildBody(req, false)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
-	}
-	defer release()
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/chat/completions", bodyReader)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	httpResp, err := p.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
-	}
-	defer func() { _ = httpResp.Body.Close() }()
-
-	respBody, err := io.ReadAll(httpResp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if httpResp.StatusCode != http.StatusOK {
-		var errResp ai21Error
-		if json.Unmarshal(respBody, &errResp) == nil && errResp.Detail != "" {
-			return nil, fmt.Errorf("ai21 API error (%d): %s", httpResp.StatusCode, errResp.Detail)
-		}
-		return nil, fmt.Errorf("ai21 API error (%d): %s", httpResp.StatusCode, string(respBody))
-	}
-
-	var chatResp ai21ChatResponse
-	if err := json.Unmarshal(respBody, &chatResp); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
-	}
-
-	return &core.Response{
-		ID:       chatResp.ID,
-		Model:    chatResp.Model,
-		Provider: p.name,
-		Choices:  chatResp.Choices,
-		Usage:    chatResp.Usage,
-	}, nil
+	return openaicompat.PostChat(ctx, p.chatParams(), req)
 }
 
+// completeJurassic sends a request to AI21's native /complete endpoint.
+//
+// Legacy: AI21's /complete (Jurassic) endpoint and the j2-* models are
+// deprecated. AI21 is Jamba-only going forward; this path is kept functional for
+// callers still pinned to Jurassic models but is no longer advertised.
 func (p *Provider) completeJurassic(ctx context.Context, req core.Request) (*core.Response, error) {
 	prompt := ""
 	for _, msg := range req.Messages {
@@ -227,11 +194,7 @@ func (p *Provider) completeJurassic(ctx context.Context, req core.Request) (*cor
 	}
 
 	if httpResp.StatusCode != http.StatusOK {
-		var errResp ai21Error
-		if json.Unmarshal(respBody, &errResp) == nil && errResp.Detail != "" {
-			return nil, fmt.Errorf("ai21 API error (%d): %s", httpResp.StatusCode, errResp.Detail)
-		}
-		return nil, fmt.Errorf("ai21 API error (%d): %s", httpResp.StatusCode, string(respBody))
+		return nil, core.APIError(Name, httpResp.StatusCode, respBody)
 	}
 
 	var completeResp ai21CompleteResponse
@@ -247,7 +210,7 @@ func (p *Provider) completeJurassic(ctx context.Context, req core.Request) (*cor
 				Role:    core.RoleAssistant,
 				Content: c.Data.Text,
 			},
-			FinishReason: c.FinishReason.Reason,
+			FinishReason: core.NormalizeFinishReason(c.FinishReason.Reason),
 		})
 	}
 
@@ -265,34 +228,5 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 	if !IsJambaModel(req.Model) {
 		return nil, fmt.Errorf("streaming is only supported for Jamba models; use a jamba-* model for streaming")
 	}
-
-	bodyReader, _, release, err := openaicompat.BuildBody(req, true)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
-	}
-	defer release()
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/chat/completions", bodyReader)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	httpResp, err := p.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
-	}
-
-	if httpResp.StatusCode != http.StatusOK {
-		defer func() { _ = httpResp.Body.Close() }()
-		respBody, _ := io.ReadAll(httpResp.Body)
-		var errResp ai21Error
-		if json.Unmarshal(respBody, &errResp) == nil && errResp.Detail != "" {
-			return nil, fmt.Errorf("ai21 API error (%d): %s", httpResp.StatusCode, errResp.Detail)
-		}
-		return nil, fmt.Errorf("ai21 API error (%d): %s", httpResp.StatusCode, string(respBody))
-	}
-
-	return openaicompat.StreamSSE(httpResp.Body), nil
+	return openaicompat.PostStream(ctx, p.chatParams(), req)
 }
