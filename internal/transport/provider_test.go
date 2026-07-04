@@ -42,6 +42,12 @@ func TestKnownProviderPresets(t *testing.T) {
 	if rep.ResponseHeaderTimeout < 60*time.Second {
 		t.Errorf("replicate ResponseHeaderTimeout = %v, want >= 60s", rep.ResponseHeaderTimeout)
 	}
+
+	// Ollama Cloud serves large models; it needs a raised header timeout.
+	oc := presets["ollama-cloud"]
+	if oc.ResponseHeaderTimeout < 60*time.Second {
+		t.Errorf("ollama-cloud ResponseHeaderTimeout = %v, want >= 60s", oc.ResponseHeaderTimeout)
+	}
 }
 
 func TestApplyPreset(t *testing.T) {
