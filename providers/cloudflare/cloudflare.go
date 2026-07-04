@@ -89,16 +89,20 @@ func (p *Provider) Models() []core.ModelInfo {
 }
 
 // chatParams builds the shared OpenAI-compatible chat endpoint configuration.
+// headers returns the auth + content-type headers for direct API calls.
+func (p *Provider) headers() map[string]string {
+	h := p.AuthHeaders()
+	h["Content-Type"] = "application/json"
+	return h
+}
+
 func (p *Provider) chatParams() openaicompat.ChatParams {
 	return openaicompat.ChatParams{
 		HTTPClient: p.httpClient,
 		URL:        p.baseURL + "/chat/completions",
 		Provider:   p.name,
 		Label:      "cloudflare",
-		Headers: map[string]string{
-			"Authorization": "Bearer " + p.apiKey,
-			"Content-Type":  "application/json",
-		},
+		Headers:    p.headers(),
 	}
 }
 
@@ -117,7 +121,7 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 	return openaicompat.PostEmbeddings(ctx, openaicompat.EmbeddingParams{
 		HTTPClient: p.httpClient,
 		URL:        p.baseURL + "/embeddings",
-		Headers:    map[string]string{"Authorization": "Bearer " + p.apiKey, "Content-Type": "application/json"},
+		Headers:    p.headers(),
 		Label:      "cloudflare",
 	}, req)
 }

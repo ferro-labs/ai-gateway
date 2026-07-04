@@ -53,10 +53,9 @@ func New(apiKey, baseURL string) (*Provider, error) {
 
 // headers returns the auth and content-type headers for Qwen requests.
 func (p *Provider) headers() map[string]string {
-	return map[string]string{
-		"Authorization": "Bearer " + p.apiKey,
-		"Content-Type":  "application/json",
-	}
+	h := p.AuthHeaders()
+	h["Content-Type"] = "application/json"
+	return h
 }
 
 // Name implements core.Provider.
