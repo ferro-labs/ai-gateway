@@ -256,22 +256,30 @@ func buildTextInput(ctx context.Context, req core.Request) replicatePredictionIn
 // (empty when the model path carries no ":version" suffix) for a resolved model
 // path. A pinned version posts to /predictions with the version in the body; an
 // unpinned model posts to /models/{owner}/{name}/predictions.
-func (p *Provider) resolveModelURL(modelPath string) (url, version string) {
+func (p *Provider) resolveModelURL(modelPath string) (url, version string, err error) {
 	if v := ModelVersion(modelPath); v != "" {
-		return fmt.Sprintf("%s/predictions", p.baseURL), v
+		return fmt.Sprintf("%s/predictions", p.baseURL), v, nil
 	}
-	return fmt.Sprintf("%s/models/%s/predictions", p.baseURL, escapeModelPath(ModelBaseName(modelPath))), ""
+	escaped, err := escapeModelPath(ModelBaseName(modelPath))
+	if err != nil {
+		return "", "", err
+	}
+	return fmt.Sprintf("%s/models/%s/predictions", p.baseURL, escaped), "", nil
 }
 
 // escapeModelPath percent-escapes each segment of an "owner/name" model path so
 // a crafted model value cannot alter the request URL path, while preserving the
-// segment separators the /models/{owner}/{name} route relies on.
-func escapeModelPath(model string) string {
+// segment separators the /models/{owner}/{name} route relies on. Empty and dot
+// ("."/"..") segments are rejected, since url.PathEscape leaves them unchanged.
+func escapeModelPath(model string) (string, error) {
 	parts := strings.Split(model, "/")
 	for i, part := range parts {
+		if part == "" || part == "." || part == ".." {
+			return "", fmt.Errorf("replicate: invalid model path segment %q", part)
+		}
 		parts[i] = url.PathEscape(part)
 	}
-	return strings.Join(parts, "/")
+	return strings.Join(parts, "/"), nil
 }
 
 // predictionText coerces a Replicate prediction output (a string or an array of
@@ -308,7 +316,10 @@ func usageFromMetrics(pred *Prediction) (core.Usage, bool) {
 
 // Complete sends a chat completion request to Replicate and polls until done.
 func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
-	url, version := p.resolveModelURL(p.resolveTextModel(req.Model))
+	url, version, err := p.resolveModelURL(p.resolveTextModel(req.Model))
+	if err != nil {
+		return nil, err
+	}
 	predReq := replicatePredictionRequest{Version: version, Input: buildTextInput(ctx, req)}
 
 	bodyReader, _, release, err := core.JSONBodyReader(predReq)
@@ -341,7 +352,10 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 // CompleteStream submits a Replicate prediction with streaming enabled and
 // translates Replicate output SSE events into OpenAI-compatible stream chunks.
 func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan core.StreamChunk, error) {
-	url, version := p.resolveModelURL(p.resolveTextModel(req.Model))
+	url, version, err := p.resolveModelURL(p.resolveTextModel(req.Model))
+	if err != nil {
+		return nil, err
+	}
 	predReq := replicatePredictionRequest{Version: version, Input: buildTextInput(ctx, req), Stream: true}
 
 	bodyReader, _, release, err := core.JSONBodyReader(predReq)
@@ -409,7 +423,10 @@ func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*c
 		}
 	}
 
-	url, version := p.resolveModelURL(modelPath)
+	url, version, err := p.resolveModelURL(modelPath)
+	if err != nil {
+		return nil, err
+	}
 	imgReq.Version = version
 
 	bodyReader, _, release, err := core.JSONBodyReader(imgReq)

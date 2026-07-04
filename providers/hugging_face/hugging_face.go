@@ -77,13 +77,18 @@ func (p *Provider) routerRoot() string {
 
 // escapeModelPath percent-escapes each segment of a caller-supplied model id
 // (e.g. "owner/name") while preserving the "/" separators the router task routes
-// use, so a crafted model string can't alter the request path.
-func escapeModelPath(model string) string {
+// use. Empty and dot ("."/"..") segments are rejected — url.PathEscape leaves
+// them unchanged, so they would otherwise let a crafted model traverse to a
+// different router path.
+func escapeModelPath(model string) (string, error) {
 	parts := strings.Split(model, "/")
 	for i, part := range parts {
+		if part == "" || part == "." || part == ".." {
+			return "", fmt.Errorf("hugging face: invalid model path segment %q", part)
+		}
 		parts[i] = url.PathEscape(part)
 	}
-	return strings.Join(parts, "/")
+	return strings.Join(parts, "/"), nil
 }
 
 // AuthHeaders implements core.ProxiableProvider.
@@ -168,13 +173,17 @@ func (p *Provider) postTask(ctx context.Context, url string, body io.Reader) ([]
 // batch). Hugging Face does not report token usage, so Usage stays zero;
 // req.EncodingFormat and req.Dimensions have no task-API equivalent and are ignored.
 func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.EmbeddingResponse, error) {
+	escaped, err := escapeModelPath(req.Model)
+	if err != nil {
+		return nil, err
+	}
 	bodyReader, _, release, err := core.JSONBodyReader(map[string]any{"inputs": req.Input})
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal embedding request: %w", err)
 	}
 	defer release()
 
-	taskURL := p.routerRoot() + "/hf-inference/models/" + escapeModelPath(req.Model) + "/pipeline/feature-extraction"
+	taskURL := p.routerRoot() + "/hf-inference/models/" + escaped + "/pipeline/feature-extraction"
 	respBody, err := p.postTask(ctx, taskURL, bodyReader)
 	if err != nil {
 		return nil, err
@@ -233,6 +242,10 @@ func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*c
 	if req.N != nil && *req.N != 1 {
 		return nil, fmt.Errorf("hugging face: text-to-image returns one image per request; only n=1 is supported (got %d)", *req.N)
 	}
+	escaped, err := escapeModelPath(req.Model)
+	if err != nil {
+		return nil, err
+	}
 	payload := map[string]any{"inputs": req.Prompt}
 	if params := imageParameters(req); len(params) > 0 {
 		payload["parameters"] = params
@@ -243,7 +256,7 @@ func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*c
 	}
 	defer release()
 
-	taskURL := p.routerRoot() + "/hf-inference/models/" + escapeModelPath(req.Model)
+	taskURL := p.routerRoot() + "/hf-inference/models/" + escaped
 	respBody, err := p.postTask(ctx, taskURL, bodyReader)
 	if err != nil {
 		return nil, err

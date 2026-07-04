@@ -77,3 +77,12 @@ func TestGenerateImage_RejectsNonSingleN(t *testing.T) {
 		}
 	}
 }
+
+// TestEmbed_RejectsTraversalModel locks in that dot segments in the model id are
+// rejected rather than escaping to a different router path.
+func TestEmbed_RejectsTraversalModel(t *testing.T) {
+	p, _ := New("k", "https://router.huggingface.co/v1")
+	if _, err := p.Embed(context.Background(), core.EmbeddingRequest{Model: "../../secret", Input: "hi"}); err == nil {
+		t.Fatal("Embed accepted a traversal model path, want error")
+	}
+}
