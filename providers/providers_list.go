@@ -176,7 +176,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameDeepInfra,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityDiscovery, CapabilityProxy},
 		EnvMappings: []EnvMapping{
 			{CfgKeyAPIKey, "DEEPINFRA_API_KEY", true},
 			{CfgKeyBaseURL, "DEEPINFRA_BASE_URL", false},
@@ -383,7 +383,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameSambaNova,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityDiscovery, CapabilityProxy},
 		EnvMappings: []EnvMapping{
 			{CfgKeyAPIKey, "SAMBANOVA_API_KEY", true},
 			{CfgKeyBaseURL, "SAMBANOVA_BASE_URL", false},
