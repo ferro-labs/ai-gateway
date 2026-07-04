@@ -65,13 +65,15 @@ func TestEmbed_EscapesModelPath(t *testing.T) {
 	}
 }
 
-// TestGenerateImage_RejectsMultipleImages locks in that n>1 is rejected rather
-// than silently returning a single image (HF yields one image per request).
-func TestGenerateImage_RejectsMultipleImages(t *testing.T) {
+// TestGenerateImage_RejectsNonSingleN locks in that any explicit n != 1 is
+// rejected rather than silently returning a single image (HF yields exactly one
+// image per request); nil n is allowed.
+func TestGenerateImage_RejectsNonSingleN(t *testing.T) {
 	p, _ := New("k", "https://router.huggingface.co/v1")
-	n := 2
-	_, err := p.GenerateImage(context.Background(), core.ImageRequest{Model: "owner/model", Prompt: "a cat", N: &n})
-	if err == nil {
-		t.Fatal("GenerateImage accepted n>1, want error")
+	for _, n := range []int{2, 0, -1} {
+		_, err := p.GenerateImage(context.Background(), core.ImageRequest{Model: "owner/model", Prompt: "a cat", N: &n})
+		if err == nil {
+			t.Errorf("GenerateImage accepted n=%d, want error", n)
+		}
 	}
 }

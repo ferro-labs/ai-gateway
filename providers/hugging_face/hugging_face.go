@@ -230,8 +230,8 @@ func parseFeatureExtraction(body []byte) ([][]float64, error) {
 // returns the generated image as raw bytes, which are base64-encoded into the
 // OpenAI-style b64_json field.
 func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*core.ImageResponse, error) {
-	if req.N != nil && *req.N > 1 {
-		return nil, fmt.Errorf("hugging face: text-to-image returns one image per request; n=%d is unsupported", *req.N)
+	if req.N != nil && *req.N != 1 {
+		return nil, fmt.Errorf("hugging face: text-to-image returns one image per request; only n=1 is supported (got %d)", *req.N)
 	}
 	payload := map[string]any{"inputs": req.Prompt}
 	if params := imageParameters(req); len(params) > 0 {
