@@ -5,6 +5,29 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.17] — 2026-07-06
+
+Provider & plugin readiness closeout — the eighth and final phase of the provider-readiness remediation. A hygiene and quality release: shared validators, dead-code removal, broad test coverage, and one security hardening. It contains a single behavior change (the Ollama Cloud chat surface), noted under Changed.
+
+### Security
+
+- **Gemini** now authenticates native calls with the `x-goog-api-key` header instead of the `?key=` query parameter. The key was previously part of the request URL, where it could be recorded in request-URL span attributes and proxy access logs. Authentication is otherwise unchanged and the key no longer appears in any request URL.
+
+### Changed
+
+- **Ollama Cloud chat** now uses the OpenAI-compatible `/v1/chat/completions` and `/v1/models` endpoints instead of the native `/api/chat` and `/api/tags`, recovering full sampling-parameter coverage, normalized finish reasons, and real upstream tool-call IDs. Embeddings remain on the native `/api/embed` endpoint; the base URL (`https://ollama.com`) and the `OLLAMA_API_KEY` environment variable are unchanged. Direction credited to community PR #243.
+- **Transport presets** added for Azure AI Foundry, Ollama Cloud, and Perplexity so large-model and long-running first responses are not aborted by the default 30-second header timeout.
+
+### Fixed
+
+- **Gemini and Vertex AI** image generation now surface the returned safety-filter reason when every prediction is filtered, instead of a generic "no images" error.
+
+### Internal
+
+- Shared `core.NormalizeEmbeddingInput` and `core.ValidateEmbeddingEncodingFormat` replace duplicated per-provider embedding validators (Azure OpenAI and Databricks keep their stricter local validators by design). Extracted `chatParams()`/`headers()` helpers (xAI, Moonshot, OpenRouter, Novita) and a Vertex AI `doPredict()` helper; OpenAI chat request bodies now use the pooled buffer path. Removed dead code (Bedrock section banners and unused image fields, AI21 Jurassic token detail, a Cloudflare field, a duplicate Together model id) and split the Gemini embedding path into its own file to stay under the file-size limit. Added request-shape, error-path, and shared streaming error-path tests across many providers.
+
+---
+
 ## [1.1.16] — 2026-07-06
 
 Local & prediction-API provider fidelity release. The seventh provider-readiness remediation phase aligns the Hugging Face, Ollama, Ollama Cloud, and Replicate providers — which use task-specific, prediction, and native (non-OpenAI-wire) APIs — on request/response correctness. No breaking API changes relative to v1.1.15.
