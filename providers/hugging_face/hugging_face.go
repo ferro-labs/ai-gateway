@@ -184,11 +184,30 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 	if err != nil {
 		return nil, err
 	}
+	if want := expectedEmbeddingCount(req.Input); want > 0 && len(vectors) != want {
+		return nil, fmt.Errorf("hugging face: got %d embedding vectors for %d inputs", len(vectors), want)
+	}
 	data := make([]core.Embedding, len(vectors))
 	for i, vec := range vectors {
 		data[i] = core.Embedding{Object: "embedding", Embedding: vec, Index: i}
 	}
 	return &core.EmbeddingResponse{Object: "list", Data: data, Model: req.Model}, nil
+}
+
+// expectedEmbeddingCount reports how many input strings an embedding request
+// carries (1 for a single string), or 0 when the shape is unknown and the count
+// guard should be skipped.
+func expectedEmbeddingCount(input any) int {
+	switch v := input.(type) {
+	case string:
+		return 1
+	case []string:
+		return len(v)
+	case []any:
+		return len(v)
+	default:
+		return 0
+	}
 }
 
 // parseFeatureExtraction decodes a Hugging Face feature-extraction response into
@@ -211,6 +230,9 @@ func parseFeatureExtraction(body []byte) ([][]float64, error) {
 // returns the generated image as raw bytes, which are base64-encoded into the
 // OpenAI-style b64_json field.
 func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*core.ImageResponse, error) {
+	if req.N != nil && *req.N > 1 {
+		return nil, fmt.Errorf("hugging face: text-to-image returns one image per request; n=%d is unsupported", *req.N)
+	}
 	payload := map[string]any{"inputs": req.Prompt}
 	if params := imageParameters(req); len(params) > 0 {
 		payload["parameters"] = params
