@@ -16,8 +16,8 @@ import (
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
-// sanitizeRequestErr strips the request URL (which carries the ?key= API key)
-// from *url.Error so the key never reaches logs or client-facing error bodies.
+// sanitizeRequestErr strips the request URL from *url.Error as defense-in-depth
+// so no request URL or query params reach logs or client-facing error bodies.
 func sanitizeRequestErr(err error) error {
 	var urlErr *url.Error
 	if errors.As(err, &urlErr) {
@@ -78,8 +78,9 @@ func (p *Provider) BaseURL() string { return p.baseURL }
 func (*Provider) NonOpenAIWire() {}
 
 // AuthHeaders implements core.ProxiableProvider.
-// Gemini authenticates via the ?key= query parameter (added by the proxy
-// director), so no Authorization header is required here.
+// Gemini authenticates via the x-goog-api-key header, applied to native calls
+// in doJSONRequest and injected on the proxy path by the director. The key is
+// never placed in the request URL, so it cannot leak into spans or access logs.
 func (p *Provider) AuthHeaders() map[string]string {
 	return map[string]string{"x-goog-api-key": p.apiKey}
 }
@@ -552,6 +553,9 @@ func (p *Provider) doJSONRequest(ctx context.Context, method, reqURL, label stri
 		return nil, nil, fmt.Errorf("failed to create %srequest: %w", label, err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	for k, v := range p.AuthHeaders() {
+		httpReq.Header.Set(k, v)
+	}
 
 	httpResp, err := p.httpClient.Do(httpReq)
 	if err != nil {
@@ -584,7 +588,7 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 		})
 	}
 
-	url := fmt.Sprintf("%s/v1beta/models/%s:batchEmbedContents?key=%s", p.baseURL, url.PathEscape(model), p.apiKey)
+	url := fmt.Sprintf("%s/v1beta/models/%s:batchEmbedContents", p.baseURL, url.PathEscape(model))
 	httpResp, release, err := p.doJSONRequest(ctx, http.MethodPost, url, "embed ", geminiReq)
 	if err != nil {
 		return nil, err
@@ -687,7 +691,7 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 
 	geminiReq := buildRequest(req)
 
-	url := fmt.Sprintf("%s/v1beta/models/%s:generateContent?key=%s", p.baseURL, url.PathEscape(req.Model), p.apiKey)
+	url := fmt.Sprintf("%s/v1beta/models/%s:generateContent", p.baseURL, url.PathEscape(req.Model))
 	httpResp, release, err := p.doJSONRequest(ctx, http.MethodPost, url, "", geminiReq)
 	if err != nil {
 		return nil, err
@@ -748,7 +752,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 
 	geminiReq := buildRequest(req)
 
-	url := fmt.Sprintf("%s/v1beta/models/%s:streamGenerateContent?key=%s&alt=sse", p.baseURL, url.PathEscape(req.Model), p.apiKey)
+	url := fmt.Sprintf("%s/v1beta/models/%s:streamGenerateContent?alt=sse", p.baseURL, url.PathEscape(req.Model))
 	httpResp, release, err := p.doJSONRequest(ctx, http.MethodPost, url, "", geminiReq)
 	if err != nil {
 		return nil, err

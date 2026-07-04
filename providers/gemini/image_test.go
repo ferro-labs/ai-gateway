@@ -30,8 +30,11 @@ func TestGeminiProvider_GenerateImage(t *testing.T) {
 		if !strings.Contains(r.URL.Path, "imagen-4.0-generate-001") {
 			t.Errorf("request path = %q, want it to contain the model id", r.URL.Path)
 		}
-		if got := r.URL.Query().Get("key"); got != "test-key" {
-			t.Errorf("key query = %q, want test-key", got)
+		if got := r.Header.Get("x-goog-api-key"); got != "test-key" {
+			t.Errorf("x-goog-api-key header = %q, want test-key", got)
+		}
+		if got := r.URL.Query().Get("key"); got != "" {
+			t.Errorf("key must not appear in the query string, got %q", got)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"predictions":[{"bytesBase64Encoded":"aGk=","mimeType":"image/png"}]}`))

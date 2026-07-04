@@ -111,8 +111,11 @@ func TestGeminiProvider_Embed_BatchSuccess(t *testing.T) {
 		if r.URL.Path != "/v1beta/models/gemini-embedding-001:batchEmbedContents" {
 			t.Errorf("request path = %q, want /v1beta/models/gemini-embedding-001:batchEmbedContents", r.URL.Path)
 		}
-		if got := r.URL.Query().Get("key"); got != "test-key" {
-			t.Errorf("key query = %q, want test-key", got)
+		if got := r.Header.Get("x-goog-api-key"); got != "test-key" {
+			t.Errorf("x-goog-api-key header = %q, want test-key", got)
+		}
+		if got := r.URL.Query().Get("key"); got != "" {
+			t.Errorf("key must not appear in the query string, got %q", got)
 		}
 		var body struct {
 			Requests []struct {
