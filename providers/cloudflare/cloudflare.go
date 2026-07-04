@@ -3,9 +3,7 @@ package cloudflare
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 
@@ -43,10 +41,14 @@ func New(apiKey, accountID, baseURL string) (*Provider, error) {
 	if strings.TrimSpace(accountID) == "" && strings.TrimSpace(baseURL) == "" {
 		return nil, fmt.Errorf("cloudflare: accountID or baseURL is required")
 	}
+	baseURL = strings.TrimSpace(baseURL)
 	if baseURL == "" {
 		baseURL = fmt.Sprintf(defaultBaseURL, strings.TrimSpace(accountID))
 	}
 	baseURL = strings.TrimRight(baseURL, "/")
+	if err := core.ValidateBaseURL(Name, baseURL); err != nil {
+		return nil, err
+	}
 	return &Provider{
 		name:       Name,
 		apiKey:     apiKey,
@@ -86,15 +88,6 @@ func (p *Provider) Models() []core.ModelInfo {
 	return core.ModelsFromList(p.name, p.SupportedModels())
 }
 
-type errorDetail struct {
-	Message string `json:"message"`
-	Type    string `json:"type"`
-}
-
-type errorResponse struct {
-	Error errorDetail `json:"error"`
-}
-
 // chatParams builds the shared OpenAI-compatible chat endpoint configuration.
 func (p *Provider) chatParams() openaicompat.ChatParams {
 	return openaicompat.ChatParams{
@@ -119,43 +112,12 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 	return openaicompat.PostStream(ctx, p.chatParams(), req)
 }
 
-// Embed sends an embedding request to Cloudflare Workers AI.
+// Embed sends an OpenAI-compatible embedding request to Cloudflare Workers AI.
 func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.EmbeddingResponse, error) {
-	bodyReader, _, release, err := core.JSONBodyReader(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal embedding request: %w", err)
-	}
-	defer release()
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/embeddings", bodyReader)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	httpResp, err := p.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
-	}
-	defer func() { _ = httpResp.Body.Close() }()
-
-	respBody, err := io.ReadAll(httpResp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if httpResp.StatusCode != http.StatusOK {
-		var errResp errorResponse
-		if json.Unmarshal(respBody, &errResp) == nil && errResp.Error.Message != "" {
-			return nil, fmt.Errorf("cloudflare API error (%d): %s", httpResp.StatusCode, errResp.Error.Message)
-		}
-		return nil, fmt.Errorf("cloudflare API error (%d): %s", httpResp.StatusCode, string(respBody))
-	}
-
-	var resp core.EmbeddingResponse
-	if err := json.Unmarshal(respBody, &resp); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
-	}
-	return &resp, nil
+	return openaicompat.PostEmbeddings(ctx, openaicompat.EmbeddingParams{
+		HTTPClient: p.httpClient,
+		URL:        p.baseURL + "/embeddings",
+		Headers:    map[string]string{"Authorization": "Bearer " + p.apiKey, "Content-Type": "application/json"},
+		Label:      "cloudflare",
+	}, req)
 }

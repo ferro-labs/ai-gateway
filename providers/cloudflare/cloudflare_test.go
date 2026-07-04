@@ -169,3 +169,200 @@ func TestCloudflareProvider_Embed_MockHTTP(t *testing.T) {
 		t.Fatalf("Data length = %d, want 1", len(resp.Data))
 	}
 }
+
+// TestNew_RejectsInvalidBaseURL verifies the constructor fails fast when the base
+// URL is not a valid absolute http(s) URL with a host.
+func TestNew_RejectsInvalidBaseURL(t *testing.T) {
+	if _, err := New("test-key", "", "://nope"); err == nil {
+		t.Fatal("New() accepted an invalid base URL, want error")
+	}
+}
+
+// errorServer returns a test server that replies with the given status and an
+// OpenAI-shaped error envelope on the expected endpoint suffix.
+func errorServer(t *testing.T, suffix string, status int, message string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, suffix) {
+			t.Errorf("path = %q, want suffix %s", r.URL.Path, suffix)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(`{"error":{"message":"` + message + `"}}`))
+	}))
+}
+
+// TestCloudflareProvider_Complete_UpstreamError verifies a non-2xx chat response
+// surfaces an error carrying both the HTTP status and the upstream message.
+func TestCloudflareProvider_Complete_UpstreamError(t *testing.T) {
+	tests := []struct {
+		name    string
+		status  int
+		message string
+	}{
+		{"bad-request", http.StatusBadRequest, "invalid model"},
+		{"rate-limited", http.StatusTooManyRequests, "slow down"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := errorServer(t, "/chat/completions", tc.status, tc.message)
+			defer srv.Close()
+
+			p, _ := New("test-key", "", srv.URL)
+			_, err := p.Complete(context.Background(), core.Request{
+				Model:    "@cf/meta/llama-3.1-8b-instruct",
+				Messages: []core.Message{{Role: "user", Content: "Hi"}},
+			})
+			if err == nil {
+				t.Fatal("Complete() error = nil, want upstream error")
+			}
+			if got := core.ParseStatusCode(err); got != tc.status {
+				t.Errorf("ParseStatusCode(err) = %d, want %d", got, tc.status)
+			}
+			if !strings.Contains(err.Error(), "cloudflare API error") {
+				t.Errorf("error = %v, want it to contain %q", err, "cloudflare API error")
+			}
+			if !strings.Contains(err.Error(), tc.message) {
+				t.Errorf("error = %v, want it to contain %q", err, tc.message)
+			}
+		})
+	}
+}
+
+// TestCloudflareProvider_CompleteStream_UpstreamError verifies a non-2xx streaming
+// response is drained and surfaced as an error before any chunk is produced.
+func TestCloudflareProvider_CompleteStream_UpstreamError(t *testing.T) {
+	tests := []struct {
+		name    string
+		status  int
+		message string
+	}{
+		{"bad-request", http.StatusBadRequest, "invalid model"},
+		{"rate-limited", http.StatusTooManyRequests, "slow down"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := errorServer(t, "/chat/completions", tc.status, tc.message)
+			defer srv.Close()
+
+			p, _ := New("test-key", "", srv.URL)
+			ch, err := p.CompleteStream(context.Background(), core.Request{
+				Model:    "@cf/meta/llama-3.1-8b-instruct",
+				Messages: []core.Message{{Role: "user", Content: "Hi"}},
+			})
+			if err == nil {
+				t.Fatal("CompleteStream() error = nil, want upstream error")
+			}
+			if ch != nil {
+				t.Error("CompleteStream() channel = non-nil, want nil on error")
+			}
+			if got := core.ParseStatusCode(err); got != tc.status {
+				t.Errorf("ParseStatusCode(err) = %d, want %d", got, tc.status)
+			}
+			if !strings.Contains(err.Error(), "cloudflare API error") {
+				t.Errorf("error = %v, want it to contain %q", err, "cloudflare API error")
+			}
+			if !strings.Contains(err.Error(), tc.message) {
+				t.Errorf("error = %v, want it to contain %q", err, tc.message)
+			}
+		})
+	}
+}
+
+// TestCloudflareProvider_Embed_UpstreamError verifies a non-2xx embeddings
+// response surfaces an error carrying the HTTP status and the upstream message.
+func TestCloudflareProvider_Embed_UpstreamError(t *testing.T) {
+	tests := []struct {
+		name    string
+		status  int
+		message string
+	}{
+		{"bad-request", http.StatusBadRequest, "invalid input"},
+		{"rate-limited", http.StatusTooManyRequests, "slow down"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := errorServer(t, "/embeddings", tc.status, tc.message)
+			defer srv.Close()
+
+			p, _ := New("test-key", "", srv.URL)
+			_, err := p.Embed(context.Background(), core.EmbeddingRequest{
+				Model: "@cf/baai/bge-large-en-v1.5",
+				Input: "hello",
+			})
+			if err == nil {
+				t.Fatal("Embed() error = nil, want upstream error")
+			}
+			if got := core.ParseStatusCode(err); got != tc.status {
+				t.Errorf("ParseStatusCode(err) = %d, want %d", got, tc.status)
+			}
+			if !strings.Contains(err.Error(), "cloudflare API error") {
+				t.Errorf("error = %v, want it to contain %q", err, "cloudflare API error")
+			}
+			if !strings.Contains(err.Error(), tc.message) {
+				t.Errorf("error = %v, want it to contain %q", err, tc.message)
+			}
+		})
+	}
+}
+
+// TestCloudflareProvider_CompleteStream_ToolCallAndUsage verifies the shared SSE
+// decoder surfaces a tool_call delta and the terminal usage chunk.
+func TestCloudflareProvider_CompleteStream_ToolCallAndUsage(t *testing.T) {
+	sseData := "data: {\"id\":\"cmpl-1\",\"model\":\"@cf/meta/llama-3.1-8b-instruct\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"\"}}]},\"finish_reason\":\"\"}]}\n\n" +
+		"data: {\"id\":\"cmpl-1\",\"model\":\"@cf/meta/llama-3.1-8b-instruct\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"city\\\":\\\"SF\\\"}\"}}]},\"finish_reason\":\"\"}]}\n\n" +
+		"data: {\"id\":\"cmpl-1\",\"model\":\"@cf/meta/llama-3.1-8b-instruct\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n" +
+		"data: {\"id\":\"cmpl-1\",\"model\":\"@cf/meta/llama-3.1-8b-instruct\",\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}\n\n" +
+		"data: [DONE]\n\n"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/chat/completions") {
+			t.Fatalf("path = %q, want suffix /chat/completions", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(sseData))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", "", srv.URL)
+	ch, err := p.CompleteStream(context.Background(), core.Request{
+		Model:    "@cf/meta/llama-3.1-8b-instruct",
+		Messages: []core.Message{{Role: "user", Content: "Weather?"}},
+	})
+	if err != nil {
+		t.Fatalf("CompleteStream() error: %v", err)
+	}
+
+	var (
+		toolName string
+		toolArgs string
+		gotUsage *core.Usage
+	)
+	for c := range ch {
+		for _, choice := range c.Choices {
+			for _, tcall := range choice.Delta.ToolCalls {
+				if tcall.Function.Name != "" {
+					toolName = tcall.Function.Name
+				}
+				toolArgs += tcall.Function.Arguments
+			}
+		}
+		if c.Usage != nil {
+			gotUsage = c.Usage
+		}
+	}
+
+	if toolName != "get_weather" {
+		t.Errorf("tool_call name = %q, want get_weather", toolName)
+	}
+	if toolArgs != `{"city":"SF"}` {
+		t.Errorf("tool_call arguments = %q, want %s", toolArgs, `{"city":"SF"}`)
+	}
+	if gotUsage == nil {
+		t.Fatal("usage = nil, want decoded terminal usage chunk")
+	}
+	if gotUsage.TotalTokens != 15 {
+		t.Errorf("usage.TotalTokens = %d, want 15", gotUsage.TotalTokens)
+	}
+}
