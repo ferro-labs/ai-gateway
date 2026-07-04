@@ -82,13 +82,20 @@ func imagenAspectRatio(size string) string {
 // an error when every prediction was rai-filtered or empty.
 func mapImagenPredictions(model string, predictions []imagenPrediction) ([]core.GeneratedImage, error) {
 	images := make([]core.GeneratedImage, 0, len(predictions))
+	var filterReason string
 	for _, pred := range predictions {
 		if pred.BytesBase64Encoded == "" {
+			if filterReason == "" {
+				filterReason = pred.RAIFilteredReason
+			}
 			continue
 		}
 		images = append(images, core.GeneratedImage{B64JSON: pred.BytesBase64Encoded})
 	}
 	if len(images) == 0 {
+		if filterReason != "" {
+			return nil, fmt.Errorf("gemini image generation for %q returned no images: %s", model, filterReason)
+		}
 		return nil, fmt.Errorf("gemini image generation for %q returned no images (all predictions were filtered or empty)", model)
 	}
 	return images, nil
