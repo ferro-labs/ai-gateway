@@ -5,6 +5,25 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.15] — 2026-07-05
+
+OpenAI-compatible provider fidelity release (part three) and Cloudflare. The sixth provider-readiness remediation phase aligns the AI21, Cloudflare, DeepInfra, Qwen, and SambaNova providers on request/response correctness. No breaking API changes relative to v1.1.14.
+
+### Fixed
+
+- **AI21 Jamba errors and usage**: the Jamba chat and streaming paths now route through the shared OpenAI-compatible path, so errors, finish reasons, and streaming token usage are handled consistently.
+- **Error message extraction**: a gateway-level error returned as a `{"detail":"…"}` body (e.g. AI21 authentication errors) now surfaces the extracted message instead of the raw JSON body.
+- **AI21 model list**: refreshed to the current Jamba 1.7 generation; the deprecated Jurassic `/complete` path is retained but marked legacy.
+- **Cloudflare embeddings**: now route through the shared embeddings path, so errors surface consistently and input is normalized.
+
+### Changed
+
+- **Live model discovery** added for DeepInfra and SambaNova (self-updating model lists).
+- **SambaNova embeddings**: SambaNova now supports the embeddings endpoint via the shared helper.
+- **Base-URL validation** is now enforced at construction for AI21, Cloudflare, DeepInfra, Qwen, and SambaNova.
+
+---
+
 ## [1.1.14] — 2026-07-05
 
 OpenAI-compatible provider fidelity release (part two). The fifth provider-readiness remediation phase aligns the xAI, OpenRouter, Moonshot, NVIDIA NIM, Perplexity, and Novita providers on request/response correctness, and adds shared improvements that benefit every OpenAI-compatible provider. No breaking API changes relative to v1.1.13.
