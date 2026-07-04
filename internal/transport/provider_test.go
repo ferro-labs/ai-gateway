@@ -36,6 +36,12 @@ func TestKnownProviderPresets(t *testing.T) {
 	if oll.MaxIdleConnsPerHost > 30 {
 		t.Errorf("ollama MaxIdleConnsPerHost = %d, want <= 30", oll.MaxIdleConnsPerHost)
 	}
+
+	// Replicate must tolerate the ~60s Prefer:wait prediction hold.
+	rep := presets["replicate"]
+	if rep.ResponseHeaderTimeout < 60*time.Second {
+		t.Errorf("replicate ResponseHeaderTimeout = %v, want >= 60s", rep.ResponseHeaderTimeout)
+	}
 }
 
 func TestApplyPreset(t *testing.T) {

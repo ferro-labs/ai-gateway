@@ -112,7 +112,10 @@ func (p *Provider) Models() []core.ModelInfo {
 	return core.ModelsFromList(p.name, p.SupportedModels())
 }
 
-// Complete sends a non-streaming chat request to Ollama Cloud.
+// Complete sends a non-streaming chat request to Ollama Cloud. Unlike the local
+// ollama provider (which uses the OpenAI-compatible /v1 surface), this stays on
+// the native /api/chat endpoint: ollama.com's /v1 surface is not first-party
+// documented, so a migration is deferred pending live verification.
 func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
 	apiReq := buildChatRequest(ctx, req, false)
 	bodyReader, _, release, err := core.JSONBodyReader(apiReq)
@@ -429,9 +432,10 @@ func (m nativeMessage) toCore() core.Message {
 		if callType == "" {
 			callType = "function"
 		}
-		// The native /api/chat schema omits tool-call IDs; synthesize a
-		// deterministic one so downstream tool-result correlation works
-		// (mirrors providers/gemini/gemini.go).
+		// The native /api/chat schema omits tool-call IDs; synthesize one per
+		// message so downstream tool-result correlation works. Ollama returns
+		// parallel tool calls bundled in a single message, so message-scoped
+		// indices stay unique.
 		id := tc.ID
 		if id == "" {
 			id = fmt.Sprintf("call_%d", idx)
