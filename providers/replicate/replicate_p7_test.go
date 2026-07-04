@@ -34,3 +34,14 @@ func TestResolveModelURL_RejectsTraversal(t *testing.T) {
 		t.Fatal("resolveModelURL accepted a traversal model path, want error")
 	}
 }
+
+// TestResolveModelURL_RejectsNonOwnerName locks in that only an owner/name model
+// path builds a /models/ URL; missing or extra segments are rejected.
+func TestResolveModelURL_RejectsNonOwnerName(t *testing.T) {
+	p, _ := New("k", "https://api.replicate.com/v1", nil, nil)
+	for _, m := range []string{"solo", "owner/name/extra", "a/b/c/d"} {
+		if _, _, err := p.resolveModelURL(m); err == nil {
+			t.Errorf("resolveModelURL(%q) accepted a non owner/name path, want error", m)
+		}
+	}
+}

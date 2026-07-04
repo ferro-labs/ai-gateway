@@ -267,12 +267,16 @@ func (p *Provider) resolveModelURL(modelPath string) (url, version string, err e
 	return fmt.Sprintf("%s/models/%s/predictions", p.baseURL, escaped), "", nil
 }
 
-// escapeModelPath percent-escapes each segment of an "owner/name" model path so
-// a crafted model value cannot alter the request URL path, while preserving the
-// segment separators the /models/{owner}/{name} route relies on. Empty and dot
-// ("."/"..") segments are rejected, since url.PathEscape leaves them unchanged.
+// escapeModelPath validates that a Replicate model base name is exactly
+// "owner/name" (two non-empty, non-dot segments) and percent-escapes each
+// segment. Any other shape is rejected so a crafted model value cannot alter or
+// extend the /models/{owner}/{name} request path (url.PathEscape alone leaves
+// "."/".." and extra "/" separators intact).
 func escapeModelPath(model string) (string, error) {
 	parts := strings.Split(model, "/")
+	if len(parts) != 2 {
+		return "", fmt.Errorf("replicate: model must be in owner/name form, got %q", model)
+	}
 	for i, part := range parts {
 		if part == "" || part == "." || part == ".." {
 			return "", fmt.Errorf("replicate: invalid model path segment %q", part)
