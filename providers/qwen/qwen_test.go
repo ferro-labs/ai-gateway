@@ -358,3 +358,10 @@ func TestQwenProvider_Embed_ErrorStatus(t *testing.T) {
 		t.Errorf("error = %q, want it to contain the upstream message", err.Error())
 	}
 }
+
+// TestNewQwen_RejectsInvalidBaseURL locks in the base-URL validation.
+func TestNewQwen_RejectsInvalidBaseURL(t *testing.T) {
+	if _, err := New("k", "://bad"); err == nil {
+		t.Fatal("New accepted an invalid base URL")
+	}
+}

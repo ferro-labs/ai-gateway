@@ -2,9 +2,11 @@ package anthropic
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -379,3 +381,149 @@ func TestAnthropicProvider_Complete_Integration(t *testing.T) {
 
 func floatPtr(f float64) *float64 { return &f }
 func intPtr(i int) *int           { return &i }
+
+// TestComplete_MapsUserToMetadata verifies the OpenAI "user" field is forwarded
+// as Anthropic's metadata.user_id rather than dropped.
+func TestComplete_MapsUserToMetadata(t *testing.T) {
+	body := captureBody(t, core.Request{
+		Model:    "claude-sonnet-5",
+		Messages: []core.Message{{Role: core.RoleUser, Content: "hi"}},
+		User:     "user_123",
+	})
+
+	raw, ok := body["metadata"]
+	if !ok {
+		t.Fatal("metadata not forwarded")
+	}
+	var md struct {
+		UserID string `json:"user_id"`
+	}
+	if err := json.Unmarshal(raw, &md); err != nil {
+		t.Fatalf("decode metadata: %v", err)
+	}
+	if md.UserID != "user_123" {
+		t.Errorf("metadata.user_id = %q, want user_123", md.UserID)
+	}
+}
+
+type wireImageBlock struct {
+	Type   string `json:"type"`
+	Source struct {
+		Type      string `json:"type"`
+		MediaType string `json:"media_type"`
+		Data      string `json:"data"`
+		URL       string `json:"url"`
+	} `json:"source"`
+}
+
+// TestComplete_ReencodesNonBase64DataURI verifies a non-base64 data URI is
+// re-encoded to a base64 image source instead of being emitted as an invalid
+// url source.
+func TestComplete_ReencodesNonBase64DataURI(t *testing.T) {
+	body := captureBody(t, core.Request{
+		Model: "claude-sonnet-5",
+		Messages: []core.Message{{
+			Role: core.RoleUser,
+			ContentParts: []core.ContentPart{
+				{Type: "image_url", ImageURL: &core.ImageURLPart{URL: "data:image/png,hello%20world"}},
+			},
+		}},
+	})
+
+	msgs := decodeMessages(t, body)
+	var blocks []wireImageBlock
+	if err := json.Unmarshal(msgs[0]["content"], &blocks); err != nil {
+		t.Fatalf("decode content blocks: %v", err)
+	}
+	if len(blocks) != 1 {
+		t.Fatalf("content blocks = %d, want 1: %+v", len(blocks), blocks)
+	}
+	src := blocks[0].Source
+	if src.Type != "base64" {
+		t.Fatalf("source type = %q, want base64 (non-base64 data URI must be re-encoded)", src.Type)
+	}
+	if src.MediaType != "image/png" {
+		t.Errorf("media_type = %q, want image/png", src.MediaType)
+	}
+	// base64("hello world") == "aGVsbG8gd29ybGQ="
+	if src.Data != "aGVsbG8gd29ybGQ=" {
+		t.Errorf("data = %q, want base64 of the decoded payload", src.Data)
+	}
+}
+
+// TestComplete_MalformedDataURINeverBecomesURLSource verifies a data: URI with an
+// invalid percent-encoding is still emitted as a base64 source (best-effort),
+// never as a url source Anthropic would reject.
+func TestComplete_MalformedDataURINeverBecomesURLSource(t *testing.T) {
+	body := captureBody(t, core.Request{
+		Model: "claude-sonnet-4-6",
+		Messages: []core.Message{{
+			Role: core.RoleUser,
+			ContentParts: []core.ContentPart{
+				{Type: "image_url", ImageURL: &core.ImageURLPart{URL: "data:image/png,%zz"}},
+			},
+		}},
+	})
+
+	msgs := decodeMessages(t, body)
+	var blocks []wireImageBlock
+	if err := json.Unmarshal(msgs[0]["content"], &blocks); err != nil {
+		t.Fatalf("decode content blocks: %v", err)
+	}
+	if len(blocks) != 1 || blocks[0].Source.Type != "base64" {
+		t.Fatalf("source = %+v, want a base64 source for a malformed data URI", blocks[0].Source)
+	}
+	if blocks[0].Source.URL != "" {
+		t.Errorf("url source leaked for a data: URI: %q", blocks[0].Source.URL)
+	}
+}
+
+// TestComplete_PreservesPlusInNonBase64DataURI verifies a "+" in a non-base64
+// data URI payload is kept literal (PathUnescape, not QueryUnescape) before
+// re-encoding.
+func TestComplete_PreservesPlusInNonBase64DataURI(t *testing.T) {
+	body := captureBody(t, core.Request{
+		Model: "claude-sonnet-4-6",
+		Messages: []core.Message{{
+			Role: core.RoleUser,
+			ContentParts: []core.ContentPart{
+				{Type: "image_url", ImageURL: &core.ImageURLPart{URL: "data:text/plain,a+b"}},
+			},
+		}},
+	})
+
+	msgs := decodeMessages(t, body)
+	var blocks []wireImageBlock
+	if err := json.Unmarshal(msgs[0]["content"], &blocks); err != nil {
+		t.Fatalf("decode content blocks: %v", err)
+	}
+	// base64("a+b") == "YSti"; QueryUnescape would corrupt it to base64("a b").
+	if blocks[0].Source.Data != "YSti" {
+		t.Errorf("data = %q, want base64 of \"a+b\" (\"YSti\")", blocks[0].Source.Data)
+	}
+}
+
+// TestComplete_ErrorPathReturnsAPIError verifies a non-2xx chat response surfaces
+// the upstream status and message via core.APIError.
+func TestComplete_ErrorPathReturnsAPIError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"type":"error","error":{"type":"rate_limit_error","message":"overloaded"}}`))
+	}))
+	defer srv.Close()
+
+	p, err := New("sk-test-key", srv.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_, err = p.Complete(context.Background(), core.Request{
+		Model:    "claude-sonnet-5",
+		Messages: []core.Message{{Role: core.RoleUser, Content: "hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected error for 429")
+	}
+	if !strings.Contains(err.Error(), "overloaded") || !strings.Contains(err.Error(), "429") {
+		t.Fatalf("error = %v, want status + upstream message", err)
+	}
+}
