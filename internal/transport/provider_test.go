@@ -48,6 +48,18 @@ func TestKnownProviderPresets(t *testing.T) {
 	if oc.ResponseHeaderTimeout < 60*time.Second {
 		t.Errorf("ollama-cloud ResponseHeaderTimeout = %v, want >= 60s", oc.ResponseHeaderTimeout)
 	}
+
+	// Perplexity's deep-research model can delay the first header.
+	ppx := presets["perplexity"]
+	if ppx.ResponseHeaderTimeout < 60*time.Second {
+		t.Errorf("perplexity ResponseHeaderTimeout = %v, want >= 60s", ppx.ResponseHeaderTimeout)
+	}
+
+	// Azure AI Foundry is an OpenAI-wire endpoint; mirror azure-openai's pool.
+	af := presets["azure-foundry"]
+	if af.MaxIdleConnsPerHost < 100 {
+		t.Errorf("azure-foundry MaxIdleConnsPerHost = %d, want >= 100", af.MaxIdleConnsPerHost)
+	}
 }
 
 func TestApplyPreset(t *testing.T) {

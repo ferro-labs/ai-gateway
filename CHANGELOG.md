@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.1.17] — 2026-07-06
 
-Provider & plugin readiness closeout — the eighth and final phase of the provider-readiness remediation. A hygiene and quality release: shared validators, dead-code removal, broad test coverage, and one security hardening. It contains a single behavior change (the Ollama Cloud chat surface), noted under Changed.
+Provider readiness closeout — the eighth and final phase of the provider-readiness remediation. A hygiene and quality release: shared validators, dead-code removal, broad test coverage, and one security hardening. It contains a single behavior change (the Ollama Cloud chat surface), noted under Changed.
 
 ### Security
 

@@ -81,6 +81,9 @@ func TestGeminiProvider_GenerateImage_AllFiltered(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when all predictions are filtered")
 	}
+	if !strings.Contains(err.Error(), "safety") {
+		t.Errorf("error should surface the safety-filter reason, got %q", err.Error())
+	}
 }
 
 func TestGeminiProvider_GenerateImage_UpstreamError(t *testing.T) {
