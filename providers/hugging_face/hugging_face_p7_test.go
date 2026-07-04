@@ -65,23 +65,37 @@ func TestEmbed_EscapesModelPath(t *testing.T) {
 	}
 }
 
+// failOnRequest returns an httptest server that fails the test if any request
+// reaches it, so a validation test passes only when local validation
+// short-circuits before the network (not because a real call errored out).
+func failOnRequest(t *testing.T) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("unexpected outbound request: %s %s", r.Method, r.URL.Path)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+}
+
 // TestGenerateImage_RejectsNonSingleN locks in that any explicit n != 1 is
-// rejected rather than silently returning a single image (HF yields exactly one
+// rejected by local validation before any request is sent (HF yields exactly one
 // image per request); nil n is allowed.
 func TestGenerateImage_RejectsNonSingleN(t *testing.T) {
-	p, _ := New("k", "https://router.huggingface.co/v1")
+	srv := failOnRequest(t)
+	defer srv.Close()
+	p, _ := New("k", srv.URL)
 	for _, n := range []int{2, 0, -1} {
-		_, err := p.GenerateImage(context.Background(), core.ImageRequest{Model: "owner/model", Prompt: "a cat", N: &n})
-		if err == nil {
+		if _, err := p.GenerateImage(context.Background(), core.ImageRequest{Model: "owner/model", Prompt: "a cat", N: &n}); err == nil {
 			t.Errorf("GenerateImage accepted n=%d, want error", n)
 		}
 	}
 }
 
 // TestEmbed_RejectsTraversalModel locks in that dot segments in the model id are
-// rejected rather than escaping to a different router path.
+// rejected by local validation before any request is sent.
 func TestEmbed_RejectsTraversalModel(t *testing.T) {
-	p, _ := New("k", "https://router.huggingface.co/v1")
+	srv := failOnRequest(t)
+	defer srv.Close()
+	p, _ := New("k", srv.URL)
 	if _, err := p.Embed(context.Background(), core.EmbeddingRequest{Model: "../../secret", Input: "hi"}); err == nil {
 		t.Fatal("Embed accepted a traversal model path, want error")
 	}
