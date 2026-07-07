@@ -36,3 +36,12 @@ linters:
       - path: _test\.go
         linters:
           - errorlint
+      # staticcheck's SA5011 does not reliably recognize a preceding
+      # t.Fatal/t.Fatalf-guarded nil check as terminating the branch in some
+      # table-driven/multi-guard test shapes, and flags the subsequent access
+      # as a possible nil dereference. Scoped to SA5011 only (via text) so
+      # other staticcheck findings in tests still apply.
+      - path: _test\.go
+        linters:
+          - staticcheck
+        text: "SA5011"
