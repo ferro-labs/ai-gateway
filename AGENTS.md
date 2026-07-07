@@ -247,6 +247,8 @@ observability:
 | `AWS_SECRET_ACCESS_KEY` | AWS secret key |
 | `CORS_ORIGINS` | Comma-separated allowed CORS origins |
 | `TRUSTED_PROXIES` | Comma-separated CIDRs of trusted reverse proxies; `X-Forwarded-For`/`X-Real-IP` is honored only from these (default: loopback) |
+| `RATE_LIMIT_RPS` | Per-IP rate limit requests/sec; enabled by default (20 rps / burst 40). Set to `0` to disable. Setting this alone resets burst to the default 40 too — pair with `RATE_LIMIT_BURST` for a custom rate/burst combination. Keys on the resolved client IP, so `TRUSTED_PROXIES` must list the real proxy CIDR or all traffic behind an untrusted proxy shares one bucket |
+| `RATE_LIMIT_BURST` | Per-IP burst capacity override (default: 40) |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP collector endpoint; enables tracing when set (takes precedence over config) |
 | `OTEL_TRACES_SAMPLER` / `OTEL_TRACES_SAMPLER_ARG` | Standard OTel head-sampler overrides |
 

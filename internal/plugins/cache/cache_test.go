@@ -3,6 +3,7 @@ package cache
 import (
 	"context"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -101,9 +102,100 @@ func TestCachePlugin_CacheHitAfterStore(t *testing.T) {
 	if !lookupPctx.Skip {
 		t.Error("expected Skip to be true on cache hit")
 	}
-	if lookupPctx.Response != resp {
-		t.Error("expected cached response to match stored response")
+	if lookupPctx.Response == nil {
+		t.Fatal("expected a cached response")
 	}
+	if lookupPctx.Response == resp {
+		t.Error("expected cache hit to return a distinct copy, not the cached pointer (shared-pointer data race)")
+	}
+	if lookupPctx.Response.ID != resp.ID {
+		t.Errorf("expected cached response content to match stored response, got ID %q want %q", lookupPctx.Response.ID, resp.ID)
+	}
+}
+
+// TestCachePlugin_ConcurrentCacheHits_NoDataRace reproduces the scenario where
+// Route/RouteStream stamp Object/Created/OverheadMs on a cache-hit response
+// (see gateway_route.go and gateway_stream.go). Before the fix, every hit
+// returned the same cached *providers.Response pointer, so concurrent callers
+// raced on these writes. Run with -race.
+func TestCachePlugin_ConcurrentCacheHits_NoDataRace(t *testing.T) {
+	c := initCache(t, map[string]any{})
+	req := testRequest("gpt-4", "hello")
+
+	storePctx := plugin.NewContext(req)
+	storePctx.Response = testResponse()
+	if err := c.Execute(context.Background(), storePctx); err != nil {
+		t.Fatalf("Execute (store) error: %v", err)
+	}
+
+	const concurrency = 50
+	var wg sync.WaitGroup
+	wg.Add(concurrency)
+	for range concurrency {
+		go func() {
+			defer wg.Done()
+			pctx := plugin.NewContext(testRequest("gpt-4", "hello"))
+			if err := c.Execute(context.Background(), pctx); err != nil {
+				t.Errorf("Execute (lookup) error: %v", err)
+				return
+			}
+			if pctx.Response == nil {
+				t.Error("expected cache hit response")
+				return
+			}
+			// Mirrors the per-caller mutations Route/RouteStream apply to an
+			// early cache-hit response.
+			if pctx.Response.Created == 0 {
+				pctx.Response.Created = time.Now().Unix()
+			}
+			pctx.Response.OverheadMs = float64(time.Now().UnixNano())
+			pctx.Response.Object = "chat.completion"
+		}()
+	}
+	wg.Wait()
+}
+
+// TestCachePlugin_ConcurrentStoreAndHit_NoDataRace reproduces a second,
+// distinct race: Route/RouteStream mutate their own resp.OverheadMs *after*
+// RunAfter (and therefore after the cache plugin's Set) returns (see
+// gateway_route.go's `resp.OverheadMs = ...` following the after-plugins
+// call, and gateway_stream.go's analogous self-assignment). If Set stores the
+// caller's live pointer, that post-store mutation races with any concurrent
+// Get on the same key. Run with -race.
+func TestCachePlugin_ConcurrentStoreAndHit_NoDataRace(t *testing.T) {
+	c := initCache(t, map[string]any{})
+	req := testRequest("gpt-4", "hello")
+
+	const concurrency = 50
+	var wg sync.WaitGroup
+	wg.Add(concurrency)
+	for range concurrency {
+		go func() {
+			defer wg.Done()
+
+			resp := testResponse()
+			storePctx := plugin.NewContext(req)
+			storePctx.Response = resp
+			if err := c.Execute(context.Background(), storePctx); err != nil {
+				t.Errorf("Execute (store) error: %v", err)
+				return
+			}
+			// Mirrors gateway_route.go stamping OverheadMs on its own resp
+			// variable after the after-request plugins (including the cache
+			// store) have already run.
+			resp.OverheadMs = float64(time.Now().UnixNano())
+
+			lookupPctx := plugin.NewContext(req)
+			if err := c.Execute(context.Background(), lookupPctx); err != nil {
+				t.Errorf("Execute (lookup) error: %v", err)
+				return
+			}
+			if lookupPctx.Response != nil {
+				lookupPctx.Response.OverheadMs = float64(time.Now().UnixNano())
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 func TestCachePlugin_DifferentKeys(t *testing.T) {

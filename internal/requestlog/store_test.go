@@ -9,6 +9,23 @@ import (
 	"time"
 )
 
+func TestNewSQLiteWriter_FilePermissions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "requests.db")
+	w, err := NewSQLiteWriter(path)
+	if err != nil {
+		t.Fatalf("new sqlite writer: %v", err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat sqlite file: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("expected request log file mode 0600, got %o", perm)
+	}
+}
+
 func TestSQLiteWriter_WriteListDelete(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "requests.db")
 	w, err := NewSQLiteWriter(path)

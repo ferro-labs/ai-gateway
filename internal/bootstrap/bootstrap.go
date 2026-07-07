@@ -387,28 +387,59 @@ func BuildGateway(cfg *aigateway.Config, registry *providers.Registry) *aigatewa
 	return gw
 }
 
-// NewRateLimitStore builds a per-IP token-bucket store from env vars.
-// Returns nil if RATE_LIMIT_RPS is not set or is not a positive number.
+const (
+	// defaultRateLimitRPS and defaultRateLimitBurst are applied when
+	// RATE_LIMIT_RPS/RATE_LIMIT_BURST are unset, so the per-IP limiter is
+	// enabled out of the box rather than opt-in.
+	defaultRateLimitRPS   = 20.0
+	defaultRateLimitBurst = 40.0
+)
+
+// defaultRateLimitMaxKeys caps the number of per-IP limiters tracked at
+// once, preventing unbounded memory growth from a flood of distinct client
+// IPs. A var (not const) so tests can shrink it to exercise the eviction cap
+// cheaply; production always uses this value.
+var defaultRateLimitMaxKeys = 100_000
+
+// NewRateLimitStore builds a per-IP token-bucket store from env vars. Rate
+// limiting is enabled by default at defaultRateLimitRPS/defaultRateLimitBurst,
+// capped at defaultRateLimitMaxKeys tracked IPs. Set RATE_LIMIT_RPS=0 to opt
+// out entirely; a positive RATE_LIMIT_RPS overrides the default rate. Setting
+// RATE_LIMIT_RPS alone always resets the burst to defaultRateLimitBurst too —
+// set RATE_LIMIT_BURST explicitly if a custom rate needs a matching burst.
+//
+// The store keys on the resolved client IP (see RealIPMiddleware), which only
+// trusts X-Forwarded-For/X-Real-IP from TRUSTED_PROXIES (default: loopback).
+// Behind a reverse proxy/ingress/LB outside that range, every request
+// resolves to the proxy's own IP, collapsing this into one shared bucket for
+// all clients — set TRUSTED_PROXIES to the proxy's real CIDR for this to
+// rate-limit per client rather than globally.
 func NewRateLimitStore() *ratelimit.Store {
-	rpsStr := os.Getenv("RATE_LIMIT_RPS")
-	if rpsStr == "" {
-		return nil
+	rps := defaultRateLimitRPS
+	if rpsStr := os.Getenv("RATE_LIMIT_RPS"); rpsStr != "" {
+		v, err := strconv.ParseFloat(rpsStr, 64)
+		switch {
+		case err != nil || math.IsNaN(v) || math.IsInf(v, 0) || v < 0:
+			logging.Logger.Warn("ignoring invalid RATE_LIMIT_RPS; using default", "value", rpsStr, "default", defaultRateLimitRPS)
+		case v == 0:
+			logging.Logger.Info("rate limiting disabled via RATE_LIMIT_RPS=0")
+			return nil
+		default:
+			rps = v
+		}
 	}
-	rps, err := strconv.ParseFloat(rpsStr, 64)
-	if err != nil || math.IsNaN(rps) || math.IsInf(rps, 0) || rps <= 0 {
-		logging.Logger.Warn("rate limiting disabled: RATE_LIMIT_RPS must be a positive number", "value", rpsStr)
-		return nil
-	}
-	var burst float64
+
+	burst := defaultRateLimitBurst
 	if burstStr := os.Getenv("RATE_LIMIT_BURST"); burstStr != "" {
 		if v, err := strconv.ParseFloat(burstStr, 64); err == nil && !math.IsNaN(v) && !math.IsInf(v, 0) && v >= 0 {
 			burst = v
 		} else {
-			logging.Logger.Warn("ignoring invalid RATE_LIMIT_BURST; using 0", "value", burstStr)
+			logging.Logger.Warn("ignoring invalid RATE_LIMIT_BURST; using default", "value", burstStr, "default", defaultRateLimitBurst)
 		}
 	}
-	store := ratelimit.NewStore(rps, burst)
-	logging.Logger.Info("rate limiting enabled", "rps", rps, "burst", burst)
+
+	store := ratelimit.NewStoreWithMax(rps, burst, defaultRateLimitMaxKeys)
+	logging.Logger.Info("rate limiting enabled", "rps", rps, "burst", burst, "max_keys", defaultRateLimitMaxKeys)
 	return store
 }
 

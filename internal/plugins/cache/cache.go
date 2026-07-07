@@ -78,7 +78,7 @@ func (c *ResponseCache) Execute(_ context.Context, pctx *plugin.Context) error {
 	if pctx.Response == nil {
 		// before_request: lookup
 		if resp, ok := c.Get(key); ok {
-			pctx.Response = resp
+			pctx.Response = cloneResponse(resp)
 			pctx.Skip = true
 			pctx.Metadata["cache_hit"] = true
 		}
@@ -94,12 +94,25 @@ func (c *ResponseCache) Execute(_ context.Context, pctx *plugin.Context) error {
 		return nil
 	}
 
-	c.Set(key, pctx.Response)
+	// Store a private copy: the caller's resp keeps being mutated after this
+	// call returns (e.g. Route/RouteStream stamp OverheadMs post-RunAfter), so
+	// the cache must not hold onto the same pointer.
+	c.Set(key, cloneResponse(pctx.Response))
 	return nil
 }
 
 // Close releases plugin resources.
 func (c *ResponseCache) Close() error { return nil }
+
+// cloneResponse returns a shallow copy of resp so each cache hit gets its own
+// top-level struct. Route/RouteStream stamp Object/Created/OverheadMs on the
+// response returned from a cache hit; Choices/Metadata/Usage are never
+// mutated post-hit, so a shallow copy is sufficient to remove the race on a
+// cache entry shared across concurrent callers.
+func cloneResponse(resp *providers.Response) *providers.Response {
+	clone := *resp
+	return &clone
+}
 
 func cacheKey(req *providers.Request) string {
 	h := sha256.New()

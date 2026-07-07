@@ -5,6 +5,22 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.18] — 2026-07-08
+
+Critical fixes and security hardening — the first of a multi-phase hardening release line following an internal security review. All changes are additive/behavior-preserving: no public config key or Go signature is removed or renamed.
+
+### Security
+
+- **Response cache** no longer shares a single cached response object across concurrent requests hitting the same cache key. Each cache hit, and each response being newly cached, now gets its own independent copy, closing a data race that could occur under concurrent load.
+- **SQLite-backed stores** (API keys, config snapshots, request logs) now restrict their on-disk database file to owner-only read/write (0600) instead of the default umask-derived permissions, which could leave the file group- or world-readable.
+- **Rate limiting** is now enabled by default for every deployment: 20 requests/sec with a burst of 40 per client IP, capped at 100,000 tracked IPs. Set `RATE_LIMIT_RPS=0` to opt out; `RATE_LIMIT_RPS`/`RATE_LIMIT_BURST` override the defaults. Deployments that already set a custom `RATE_LIMIT_RPS` without `RATE_LIMIT_BURST` will now get the default burst (40) rather than a burst equal to their custom rate — set `RATE_LIMIT_BURST` explicitly to preserve the old behavior. Rate limiting keys on the resolved client IP, so `TRUSTED_PROXIES` must correctly list any reverse proxy in front of the gateway, or all traffic behind that proxy is limited as a single client.
+
+### Internal
+
+- The build toolchain is now pinned to Go 1.25.11 (previously 1.25.0), matching the version already used by CI and the published Docker image, closing a gap where a plain source build could pick up an older, unpinned patch version.
+
+---
+
 ## [1.1.17] — 2026-07-06
 
 Provider readiness closeout — the eighth and final phase of the provider-readiness remediation. A hygiene and quality release: shared validators, dead-code removal, broad test coverage, and one security hardening. It contains a single behavior change (the Ollama Cloud chat surface), noted under Changed.
