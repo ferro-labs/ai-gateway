@@ -30,11 +30,10 @@ func Secure(dsn string) error {
 	if path == "" {
 		return nil
 	}
-	// codeql[go/path-injection] -- path derives from operator-configured DSN
-	// env vars (API_KEY_STORE_DSN / CONFIG_STORE_DSN / REQUEST_LOG_STORE_DSN),
-	// set at deploy time by whoever runs the gateway, not from runtime request
-	// data; filePath additionally cleans it above.
-	if err := os.Chmod(path, 0o600); err != nil {
+	// path derives from operator-configured DSN env vars (API_KEY_STORE_DSN /
+	// CONFIG_STORE_DSN / REQUEST_LOG_STORE_DSN) fixed at store construction,
+	// not from any runtime request; filePath additionally cleans it above.
+	if err := os.Chmod(path, 0o600); err != nil { // codeql[go/path-injection]
 		return fmt.Errorf("restrict sqlite file permissions: %w", err)
 	}
 	return nil
