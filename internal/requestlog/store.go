@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ferro-labs/ai-gateway/internal/sqlitefile"
+
 	// Register Postgres SQL driver.
 	_ "github.com/lib/pq"
 	// Register SQLite SQL driver.
@@ -100,6 +102,10 @@ func NewSQLiteWriter(dsn string) (*SQLWriter, error) {
 	tuneDBPool(db, requestLogDialectSQLite)
 	w := &SQLWriter{db: db, dialect: requestLogDialectSQLite}
 	if err := w.init(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := sqlitefile.Secure(dsn); err != nil {
 		_ = db.Close()
 		return nil, err
 	}

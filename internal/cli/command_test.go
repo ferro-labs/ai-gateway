@@ -71,6 +71,7 @@ func TestAdminClientFromCmd(t *testing.T) {
 			// Assert
 			if client == nil {
 				t.Fatal("adminClientFromCmd returned nil")
+				return
 			}
 			if client.BaseURL != tt.wantBaseURL {
 				t.Errorf("BaseURL = %q, want %q", client.BaseURL, tt.wantBaseURL)
@@ -97,6 +98,7 @@ func TestAdminClientFromCmd_MissingFlags(t *testing.T) {
 	// documented defaults instead of propagating a flag-lookup error.
 	if client == nil {
 		t.Fatal("adminClientFromCmd returned nil")
+		return
 	}
 	if client.BaseURL != "http://localhost:8080" {
 		t.Errorf("BaseURL = %q, want default %q", client.BaseURL, "http://localhost:8080")

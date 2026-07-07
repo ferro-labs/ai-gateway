@@ -3,10 +3,29 @@ package admin
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	aigateway "github.com/ferro-labs/ai-gateway"
 )
+
+func TestNewSQLiteConfigStore_FilePermissions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.db")
+	store, err := NewSQLiteConfigStore(path)
+	if err != nil {
+		t.Fatalf("new sqlite config store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.db.Close() })
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat sqlite file: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("expected config store file mode 0600, got %o", perm)
+	}
+}
 
 type failingConfigStore struct {
 	saveErr error

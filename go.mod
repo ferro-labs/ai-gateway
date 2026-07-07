@@ -1,6 +1,6 @@
 module github.com/ferro-labs/ai-gateway
 
-go 1.25.0
+go 1.25.11
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.41.8

@@ -45,7 +45,7 @@ git push origin release/v1.0.0
 
 ### Prerequisites
 
-- **Go 1.25+** — the toolchain version is pinned in [`go.mod`](go.mod) (`go 1.25.0`).
+- **Go 1.25+** — the toolchain version is pinned in [`go.mod`](go.mod) (`go 1.25.11`).
 - **golangci-lint** — install via the [official instructions](https://golangci-lint.run/welcome/install/). CI pins v2; match that locally.
 
 ### Running Checks

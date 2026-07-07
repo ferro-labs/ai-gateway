@@ -11,6 +11,7 @@ import (
 	"time"
 
 	aigateway "github.com/ferro-labs/ai-gateway"
+	"github.com/ferro-labs/ai-gateway/internal/sqlitefile"
 	// Register Postgres SQL driver.
 	_ "github.com/lib/pq"
 	// Register SQLite SQL driver.
@@ -63,6 +64,10 @@ func NewSQLiteConfigStore(dsn string) (*SQLConfigStore, error) {
 	tuneDBPool(db, string(configDialectSQLite))
 	s := &SQLConfigStore{db: db, dialect: configDialectSQLite}
 	if err := s.init(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := sqlitefile.Secure(dsn); err != nil {
 		_ = db.Close()
 		return nil, err
 	}

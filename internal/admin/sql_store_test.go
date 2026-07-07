@@ -150,6 +150,23 @@ func TestSQLiteStoreExpiration(t *testing.T) {
 	}
 }
 
+func TestNewSQLiteStore_FilePermissions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "keys.db")
+	store, err := NewSQLiteStore(path)
+	if err != nil {
+		t.Fatalf("new sqlite store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.db.Close() })
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat sqlite file: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("expected key store file mode 0600, got %o", perm)
+	}
+}
+
 func TestPostgresStoreMissingDSN(t *testing.T) {
 	if _, err := NewPostgresStore(""); err == nil {
 		t.Fatalf("expected error for missing postgres dsn")
@@ -200,6 +217,7 @@ func TestSQLStore_ValidateKey_CounterWriteFailure_AuthSucceeds(t *testing.T) {
 	}
 	if validated == nil {
 		t.Fatal("ValidateKey returned nil key despite ok=true")
+		return
 	}
 	if validated.ID != created.ID {
 		t.Errorf("returned key ID = %q, want %q", validated.ID, created.ID)
