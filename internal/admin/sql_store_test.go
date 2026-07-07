@@ -217,6 +217,7 @@ func TestSQLStore_ValidateKey_CounterWriteFailure_AuthSucceeds(t *testing.T) {
 	}
 	if validated == nil {
 		t.Fatal("ValidateKey returned nil key despite ok=true")
+		return
 	}
 	if validated.ID != created.ID {
 		t.Errorf("returned key ID = %q, want %q", validated.ID, created.ID)
