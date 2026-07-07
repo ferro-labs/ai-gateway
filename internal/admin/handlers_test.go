@@ -14,6 +14,7 @@ import (
 
 	aigateway "github.com/ferro-labs/ai-gateway"
 	"github.com/ferro-labs/ai-gateway/internal/requestlog"
+	"github.com/ferro-labs/ai-gateway/mcp"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -1698,6 +1699,16 @@ func TestGetConfigRedactsSecrets(t *testing.T) {
 	cfg := aigateway.Config{
 		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeSingle},
 		Targets:  []aigateway.Target{{VirtualKey: "openai"}},
+		MCPServers: []mcp.ServerConfig{
+			{
+				Name: "tools",
+				URL:  "https://mcp.example.com/mcp",
+				Headers: map[string]string{
+					"Authorization": "literal-mcp-secret",
+					"X-Env":         "${MCP_TOKEN}",
+				},
+			},
+		},
 		Observability: aigateway.ObservabilityConfig{
 			Tracing: aigateway.TracingConfig{
 				Headers: map[string]string{
@@ -1763,6 +1774,17 @@ func TestGetConfigRedactsSecrets(t *testing.T) {
 		t.Errorf("X-Api-Key header: got %q, want ${MY_API_KEY}", got)
 	}
 
+	// MCP literal header value must be redacted; env references must be preserved.
+	if len(respCfg.MCPServers) == 0 {
+		t.Fatal("expected MCP servers in response")
+	}
+	if got := respCfg.MCPServers[0].Headers["Authorization"]; got != "[REDACTED]" {
+		t.Errorf("MCP Authorization header: got %q, want [REDACTED]", got)
+	}
+	if got := respCfg.MCPServers[0].Headers["X-Env"]; got != "${MCP_TOKEN}" {
+		t.Errorf("MCP X-Env header: got %q, want ${MCP_TOKEN}", got)
+	}
+
 	// Exporter string config must be redacted.
 	if len(respCfg.Observability.Exporters) == 0 {
 		t.Fatal("expected exporters in response")
@@ -1787,6 +1809,9 @@ func TestGetConfigRedactsSecrets(t *testing.T) {
 	liveCfg := cm.GetConfig()
 	if got := liveCfg.Observability.Tracing.Headers["Authorization"]; got != "literal-secret-value" {
 		t.Errorf("live config Authorization mutated: got %q, want literal-secret-value", got)
+	}
+	if got := liveCfg.MCPServers[0].Headers["Authorization"]; got != "literal-mcp-secret" {
+		t.Errorf("live config MCP Authorization mutated: got %q, want literal-mcp-secret", got)
 	}
 	if got := liveCfg.Observability.Exporters[0].Config["api_key"].(string); got != "literal-ls-key" {
 		t.Errorf("live config api_key mutated: got %q, want literal-ls-key", got)

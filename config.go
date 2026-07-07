@@ -107,8 +107,9 @@ type ExporterConfig struct {
 	// Enabled gates the exporter. Set to false to temporarily disable
 	// without removing the config block.
 	Enabled bool `json:"enabled" yaml:"enabled"`
-	// Config is the exporter-specific configuration map. Passed
-	// verbatim to Exporter.Init at gateway startup.
+	// Config is the exporter-specific configuration map. When loaded via
+	// LoadConfig, string values may reference environment variables using $VAR
+	// or ${VAR}; resolved values are passed to Exporter.Init at gateway startup.
 	Config map[string]any `json:"config,omitempty" yaml:"config,omitempty"`
 }
 
@@ -267,7 +268,8 @@ type CircuitBreakerConfig struct {
 	Timeout string `json:"timeout" yaml:"timeout"`
 }
 
-// PluginConfig holds plugin configuration.
+// PluginConfig holds plugin configuration. When loaded via LoadConfig, string
+// values in Config may reference environment variables using $VAR or ${VAR}.
 type PluginConfig struct {
 	Name    string         `json:"name" yaml:"name"`
 	Type    string         `json:"type" yaml:"type"`

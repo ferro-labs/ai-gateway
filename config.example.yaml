@@ -105,6 +105,7 @@ aliases:
   code: deepseek-coder
 
 # Optional plugins
+# Plugin config string values loaded via LoadConfig support $VAR / ${VAR} interpolation.
 plugins:
   - name: word-filter
     type: guardrail
@@ -192,6 +193,7 @@ mcp_servers:
   - name: database
     url: "https://mcp-db.internal/mcp"
     headers:
+      # Values loaded via LoadConfig support $VAR / ${VAR} interpolation.
       Authorization: "Bearer ${MCP_DB_TOKEN}"
     allowed_tools:
       - query_readonly
@@ -226,6 +228,7 @@ observability:
 
   # exporters lists plugin observability exporters that receive
   # gateway.request.completed / gateway.request.failed events.
+  # Config string values loaded via LoadConfig support $VAR / ${VAR} interpolation.
   # Each entry names a factory registered via observability.RegisterExporter
   # in a plugin's init().  Unrecognised names emit a warning and are skipped
   # (non-fatal).  No built-in exporters ship with this repo — they are

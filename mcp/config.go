@@ -17,8 +17,8 @@ type ServerConfig struct {
 	// URL is the Streamable HTTP endpoint (e.g. "https://mcp.example.com/mcp").
 	URL string `json:"url" yaml:"url"`
 	// Headers are additional HTTP headers sent with every MCP request
-	// (e.g. authorization tokens). Values may reference environment variables
-	// via shell-style ${VAR} substitution performed by the caller.
+	// (e.g. authorization tokens). When loaded via aigateway.LoadConfig,
+	// values may reference environment variables using $VAR or ${VAR}.
 	Headers map[string]string `json:"headers,omitempty" yaml:"headers,omitempty"`
 	// AllowedTools restricts which tools from this server are exposed to the LLM.
 	// An empty slice means all discovered tools are allowed.

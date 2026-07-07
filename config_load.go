@@ -70,7 +70,85 @@ func LoadConfig(path string) (*Config, error) {
 			"apiVersion", cfg.APIVersion, "expected", CurrentAPIVersion)
 	}
 
+	resolveEnv(&cfg)
+
 	return &cfg, nil
+}
+
+// resolveEnv materialises environment-variable references in config sections
+// that carry user/plugin-owned secrets. It intentionally leaves
+// observability.tracing.headers alone: those are still resolved lazily by
+// internal/otel so programmatic configs keep the historical behaviour.
+func resolveEnv(cfg *Config) {
+	if cfg == nil {
+		return
+	}
+
+	for i := range cfg.MCPServers {
+		cfg.MCPServers[i].Headers = resolveEnvStringMap(cfg.MCPServers[i].Headers, true)
+	}
+
+	for i := range cfg.Observability.Exporters {
+		cfg.Observability.Exporters[i].Config = resolveEnvAnyMap(cfg.Observability.Exporters[i].Config)
+	}
+
+	for i := range cfg.Plugins {
+		cfg.Plugins[i].Config = resolveEnvAnyMap(cfg.Plugins[i].Config)
+	}
+}
+
+func resolveEnvStringMap(raw map[string]string, skipEmpty bool) map[string]string {
+	if len(raw) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(raw))
+	for k, v := range raw {
+		resolved := os.Expand(v, os.Getenv)
+		if skipEmpty && resolved == "" {
+			continue
+		}
+		out[k] = resolved
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func resolveEnvAnyMap(raw map[string]any) map[string]any {
+	if raw == nil {
+		return nil
+	}
+	out := make(map[string]any, len(raw))
+	for k, v := range raw {
+		out[k] = resolveEnvAnyValue(v)
+	}
+	return out
+}
+
+func resolveEnvAnyValue(v any) any {
+	switch val := v.(type) {
+	case string:
+		return os.Expand(val, os.Getenv)
+	case map[string]any:
+		return resolveEnvAnyMap(val)
+	case map[string]string:
+		return resolveEnvStringMap(val, false)
+	case []any:
+		out := make([]any, len(val))
+		for i, elem := range val {
+			out[i] = resolveEnvAnyValue(elem)
+		}
+		return out
+	case []string:
+		out := make([]string, len(val))
+		for i, elem := range val {
+			out[i] = os.Expand(elem, os.Getenv)
+		}
+		return out
+	default:
+		return v
+	}
 }
 
 // ValidateConfig validates a Config for correctness.
