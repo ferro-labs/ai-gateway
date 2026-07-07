@@ -20,20 +20,12 @@ import (
 // "file:" URI whose path is ":memory:", or any URI with a "mode=memory"
 // query parameter — including named shared-cache in-memory databases like
 // "file:mydb?mode=memory&cache=shared") have no backing file and are a no-op.
-//
-// dsn is deployment configuration (an env var set by whoever operates the
-// gateway), not runtime request data; filepath.Clean is applied as a matter
-// of good practice for any path built from an external string, not because
-// this path is attacker-controlled at request time.
 func Secure(dsn string) error {
 	path := filePath(dsn)
 	if path == "" {
 		return nil
 	}
-	// path derives from operator-configured DSN env vars (API_KEY_STORE_DSN /
-	// CONFIG_STORE_DSN / REQUEST_LOG_STORE_DSN) fixed at store construction,
-	// not from any runtime request; filePath additionally cleans it above.
-	if err := os.Chmod(path, 0o600); err != nil { // codeql[go/path-injection]
+	if err := os.Chmod(path, 0o600); err != nil {
 		return fmt.Errorf("restrict sqlite file permissions: %w", err)
 	}
 	return nil
