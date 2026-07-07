@@ -88,7 +88,16 @@ func TestSecure_DSNVariants(t *testing.T) {
 	})
 
 	t.Run("in-memory DSNs are a no-op", func(t *testing.T) {
-		for _, dsn := range []string{":memory:", "file::memory:?cache=shared"} {
+		// file:name?mode=memory[&cache=shared] is SQLite's named in-memory
+		// database form: "name" is a cache-sharing key, not a real file, even
+		// though it isn't the literal ":memory:" string.
+		for _, dsn := range []string{
+			":memory:",
+			"file::memory:?cache=shared",
+			"file:test.db?mode=memory",
+			"file:my_shared_db?mode=memory&cache=shared",
+			"file:my_shared_db?cache=shared&mode=memory",
+		} {
 			if err := Secure(dsn); err != nil {
 				t.Errorf("Secure(%q): expected no-op for in-memory DSN, got error: %v", dsn, err)
 			}

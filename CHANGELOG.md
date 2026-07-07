@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.1.18] — 2026-07-08
 
-Critical fixes and security hardening — the first of a multi-phase hardening release line following an internal security review. All changes are additive/behavior-preserving: no public config key or Go signature is removed or renamed.
+Critical fixes and security hardening — the first of a multi-phase hardening release line. All changes are additive/behavior-preserving: no public config key or Go signature is removed or renamed.
 
 ### Security
 
