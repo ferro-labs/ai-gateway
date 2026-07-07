@@ -14,6 +14,58 @@ import (
 
 const defaultRejectionReason = "rejected"
 
+// pluginFailsClosed reports whether a plugin of the given type aborts the
+// request when it errors or rejects. Observability-only plugins (logging,
+// metrics, transform) fail open so a backend hiccup never takes down the
+// request path; everything else — guardrails in particular — fails closed.
+func pluginFailsClosed(pluginType PluginType) bool {
+	switch pluginType {
+	case TypeLogging, TypeMetrics, TypeTransform:
+		return false
+	default:
+		return true
+	}
+}
+
+// handlePluginFailure applies the per-type failure policy after a plugin
+// stage runs. Fail-closed plugins turn an error or rejection into a
+// RejectionError that aborts the stage; fail-open plugins have the same
+// outcome logged and swallowed so the request continues.
+func handlePluginFailure(p Plugin, stage Stage, pctx *Context, err error) error {
+	if err == nil && !pctx.Reject {
+		return nil
+	}
+	if pluginFailsClosed(p.Type()) {
+		return rejectionErrorFor(p, stage, pctx, err)
+	}
+
+	rejected := pctx.Reject
+	reason := rejectionReason(pctx, err)
+	pctx.Reject = false
+	pctx.Reason = ""
+	if err != nil {
+		slog.Default().Warn("fail-open plugin error ignored", "plugin", p.Name(), "type", p.Type(), "stage", stage, "error", err)
+	}
+	if rejected {
+		slog.Default().Warn("fail-open plugin rejection ignored", "plugin", p.Name(), "type", p.Type(), "stage", stage, "reason", reason)
+	}
+	return nil
+}
+
+func rejectionErrorFor(p Plugin, stage Stage, pctx *Context, err error) *RejectionError {
+	return &RejectionError{Plugin: p.Name(), PluginType: p.Type(), Stage: stage, Reason: rejectionReason(pctx, err)}
+}
+
+func rejectionReason(pctx *Context, err error) string {
+	if pctx.Reason != "" {
+		return pctx.Reason
+	}
+	if err != nil {
+		return err.Error()
+	}
+	return defaultRejectionReason
+}
+
 // Manager manages plugin lifecycle and execution.
 type Manager struct {
 	before      []Plugin
@@ -77,30 +129,16 @@ func (m *Manager) Register(stage Stage, p Plugin) error {
 	return nil
 }
 
-// RunBefore executes all before-request plugins. Returns an error if a plugin
-// rejects the request.
+// RunBefore executes all before-request plugins. Fail-closed plugin errors or
+// rejections abort the request; fail-open plugin failures are logged and ignored.
 func (m *Manager) RunBefore(ctx context.Context, pctx *Context) error {
 	m.mu.RLock()
 	plugins := m.before
 	m.mu.RUnlock()
 	for _, p := range plugins {
 		err := m.executePlugin(ctx, p, pctx, string(StageBeforeRequest))
-		if err != nil {
-			if pctx.Reject {
-				reason := pctx.Reason
-				if reason == "" {
-					reason = err.Error()
-				}
-				return &RejectionError{Plugin: p.Name(), PluginType: p.Type(), Stage: StageBeforeRequest, Reason: reason}
-			}
-			return fmt.Errorf("plugin %s failed: %w", p.Name(), err)
-		}
-		if pctx.Reject {
-			reason := pctx.Reason
-			if reason == "" {
-				reason = defaultRejectionReason
-			}
-			return &RejectionError{Plugin: p.Name(), PluginType: p.Type(), Stage: StageBeforeRequest, Reason: reason}
+		if failureErr := handlePluginFailure(p, StageBeforeRequest, pctx, err); failureErr != nil {
+			return failureErr
 		}
 		if pctx.Skip {
 			break
@@ -109,26 +147,16 @@ func (m *Manager) RunBefore(ctx context.Context, pctx *Context) error {
 	return nil
 }
 
-// RunAfter executes all after-request plugins.
+// RunAfter executes all after-request plugins. Fail-closed plugin errors or
+// rejections abort the response; fail-open plugin failures are logged and ignored.
 func (m *Manager) RunAfter(ctx context.Context, pctx *Context) error {
 	m.mu.RLock()
 	plugins := m.after
 	m.mu.RUnlock()
 	for _, p := range plugins {
 		err := m.executePlugin(ctx, p, pctx, string(StageAfterRequest))
-		if pctx.Reject {
-			reason := pctx.Reason
-			if reason == "" {
-				if err != nil {
-					reason = err.Error()
-				} else {
-					reason = defaultRejectionReason
-				}
-			}
-			return &RejectionError{Plugin: p.Name(), PluginType: p.Type(), Stage: StageAfterRequest, Reason: reason}
-		}
-		if err != nil {
-			slog.Default().Warn("after-request plugin error", "plugin", p.Name(), "error", err)
+		if failureErr := handlePluginFailure(p, StageAfterRequest, pctx, err); failureErr != nil {
+			return failureErr
 		}
 		if pctx.Skip {
 			break

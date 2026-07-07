@@ -1935,7 +1935,7 @@ func TestGateway_RouteStream_AfterPluginRejectRunsOnError(t *testing.T) {
 	var onErrorCalls int
 	_ = gw.RegisterPlugin(plugin.StageAfterRequest, &testPlugin{
 		name: "after",
-		typ:  plugin.TypeLogging,
+		typ:  plugin.TypeGuardrail,
 		execFn: func(_ context.Context, pctx *plugin.Context) error {
 			pctx.Reject = true
 			pctx.Reason = "after plugin rejected"
@@ -1991,7 +1991,7 @@ func TestGateway_Route_AfterPluginRejectRunsOnError(t *testing.T) {
 	var onErrorCalls int
 	_ = gw.RegisterPlugin(plugin.StageAfterRequest, &testPlugin{
 		name: "after",
-		typ:  plugin.TypeLogging,
+		typ:  plugin.TypeGuardrail,
 		execFn: func(_ context.Context, pctx *plugin.Context) error {
 			pctx.Reject = true
 			pctx.Reason = "after plugin rejected"
@@ -2020,6 +2020,114 @@ func TestGateway_Route_AfterPluginRejectRunsOnError(t *testing.T) {
 	}
 	if onErrorCalls != 1 {
 		t.Fatalf("on-error plugin calls = %d, want 1", onErrorCalls)
+	}
+}
+
+func TestGateway_Route_AfterLoggingPanicStaysNonFatal(t *testing.T) {
+	gw, _ := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: mockProviderName}},
+	})
+	gw.RegisterProvider(&mockProvider{
+		name:   mockProviderName,
+		models: []string{"gpt-4o"},
+		resp:   &providers.Response{ID: "r1", Model: "gpt-4o", Provider: mockProviderName},
+	})
+
+	var onErrorCalls int
+	_ = gw.RegisterPlugin(plugin.StageAfterRequest, &testPlugin{
+		name: "after-logger",
+		typ:  plugin.TypeLogging,
+		execFn: func(context.Context, *plugin.Context) error {
+			panic("log sink down")
+		},
+	})
+	_ = gw.RegisterPlugin(plugin.StageOnError, &testPlugin{
+		name: "on-error",
+		typ:  plugin.TypeLogging,
+		execFn: func(context.Context, *plugin.Context) error {
+			onErrorCalls++
+			return nil
+		},
+	})
+
+	resp, err := gw.Route(context.Background(), providers.Request{
+		Model:    "gpt-4o",
+		Messages: []providers.Message{{Role: "user", Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Route() error = %v, want nil", err)
+	}
+	if resp.ID != "r1" {
+		t.Fatalf("response ID = %q, want r1", resp.ID)
+	}
+	if onErrorCalls != 0 {
+		t.Fatalf("on-error plugin calls = %d, want 0", onErrorCalls)
+	}
+}
+
+func TestGateway_RouteStream_AfterLoggingErrorStaysNonFatal(t *testing.T) {
+	gw, _ := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: mockProviderName}},
+	})
+	gw.RegisterProvider(&mockStreamProvider{
+		mockProvider: mockProvider{name: mockProviderName, models: []string{"gpt-4o"}},
+		streamFn: func(context.Context, providers.Request) (<-chan providers.StreamChunk, error) {
+			ch := make(chan providers.StreamChunk, 2)
+			ch <- providers.StreamChunk{
+				Model: "gpt-4o",
+				Choices: []providers.StreamChoice{{
+					Index:        0,
+					Delta:        providers.MessageDelta{Role: "assistant", Content: "ok"},
+					FinishReason: "stop",
+				}},
+			}
+			ch <- providers.StreamChunk{
+				Usage: &providers.Usage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2},
+			}
+			close(ch)
+			return ch, nil
+		},
+	})
+
+	var onErrorCalls int
+	_ = gw.RegisterPlugin(plugin.StageAfterRequest, &testPlugin{
+		name: "after-logger",
+		typ:  plugin.TypeLogging,
+		execFn: func(context.Context, *plugin.Context) error {
+			return fmt.Errorf("log sink down")
+		},
+	})
+	_ = gw.RegisterPlugin(plugin.StageOnError, &testPlugin{
+		name: "on-error",
+		typ:  plugin.TypeLogging,
+		execFn: func(context.Context, *plugin.Context) error {
+			onErrorCalls++
+			return nil
+		},
+	})
+
+	ch, err := gw.RouteStream(context.Background(), providers.Request{
+		Model:    "gpt-4o",
+		Messages: []providers.Message{{Role: "user", Content: "hi"}},
+		Stream:   true,
+	})
+	if err != nil {
+		t.Fatalf("RouteStream: %v", err)
+	}
+	var chunks int
+	for chunk := range ch {
+		chunks++
+		if chunk.Error != nil {
+			t.Fatalf("stream chunk error = %v, want nil", chunk.Error)
+		}
+	}
+	if chunks == 0 {
+		t.Fatal("expected stream chunks")
+	}
+	if onErrorCalls != 0 {
+		t.Fatalf("on-error plugin calls = %d, want 0", onErrorCalls)
 	}
 }
 
