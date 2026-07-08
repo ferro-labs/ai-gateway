@@ -80,14 +80,6 @@ func (p *Provider) Models() []core.ModelInfo {
 	return core.ModelsFromList(p.name, p.SupportedModels())
 }
 
-type ollamaErrorDetail struct {
-	Message string `json:"message"`
-}
-
-type ollamaErrorResponse struct {
-	Error ollamaErrorDetail `json:"error"`
-}
-
 // Complete sends a chat completion request and returns the full response. It
 // speaks Ollama's OpenAI-compatible /v1/chat/completions endpoint via the shared
 // helper, which sets core.Response.Provider and normalizes finish reasons.
@@ -146,11 +138,7 @@ func (p *Provider) DiscoverModels(ctx context.Context) ([]core.ModelInfo, error)
 	}
 
 	if httpResp.StatusCode != http.StatusOK {
-		var errResp ollamaErrorResponse
-		if json.Unmarshal(respBody, &errResp) == nil && errResp.Error.Message != "" {
-			return nil, fmt.Errorf("ollama API error (%d): %s", httpResp.StatusCode, errResp.Error.Message)
-		}
-		return nil, fmt.Errorf("ollama API error (%d): %s", httpResp.StatusCode, string(respBody))
+		return nil, core.APIError("ollama", httpResp.StatusCode, respBody)
 	}
 
 	var tags tagsResponse

@@ -16,13 +16,19 @@ var ErrNoCapableProvider = errors.New("no capable provider for model")
 // provider error messages (e.g. "provider API error (429): ...").
 var statusCodePattern = regexp.MustCompile(`\((\d{3})\)`)
 
-// ParseStatusCode extracts the HTTP status code embedded in a provider error
-// message. Returns 0 if no 3-digit parenthesised code can be found.
-// All built-in providers embed a 3-digit HTTP status code in parentheses inside
-// their error messages (e.g. "... API error (NNN): message").
+// ParseStatusCode recovers the HTTP status code from a provider error. It
+// first tries errors.As for a typed *HTTPStatusError (as returned by
+// APIError), unwrapping through any %w wrapping; if the error was never
+// constructed via APIError, it falls back to regexing a 3-digit parenthesised
+// code out of the message (e.g. "... API error (NNN): message"). Returns 0 if
+// neither recovers a code.
 func ParseStatusCode(err error) int {
 	if err == nil {
 		return 0
+	}
+	var statusErr *HTTPStatusError
+	if errors.As(err, &statusErr) {
+		return statusErr.StatusCode
 	}
 	m := statusCodePattern.FindStringSubmatch(err.Error())
 	if len(m) < 2 {

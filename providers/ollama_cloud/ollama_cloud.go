@@ -189,7 +189,10 @@ func apiError(statusCode int, body []byte) error {
 	if msg == "" {
 		msg = "unexpected response"
 	}
-	return fmt.Errorf("ollama-cloud API error (%d): %s", statusCode, msg)
+	return &core.HTTPStatusError{
+		StatusCode: statusCode,
+		Message:    fmt.Sprintf("ollama-cloud API error (%d): %s", statusCode, msg),
+	}
 }
 
 func parseErrorMessage(body []byte) string {
