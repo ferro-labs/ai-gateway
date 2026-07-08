@@ -299,10 +299,11 @@ type Usage struct {
 }
 
 // UnmarshalJSON decodes the OpenAI usage object, folding the nested
-// prompt_tokens_details.cached_tokens and completion_tokens_details.reasoning_tokens
-// into the flat CacheReadTokens/ReasoningTokens fields so providers that report
-// usage in the nested form (OpenRouter, xAI, …) surface it consistently. A
-// nonzero flat field takes precedence over the nested value.
+// prompt_tokens_details.cached_tokens and completion_tokens_details.reasoning_tokens,
+// and DeepSeek's flat prompt_cache_hit_tokens, into the flat
+// CacheReadTokens/ReasoningTokens fields so providers that report usage in
+// these alternate forms (OpenRouter, xAI, DeepSeek's streaming path, …)
+// surface it consistently. A nonzero flat field takes precedence.
 func (u *Usage) UnmarshalJSON(data []byte) error {
 	type usageAlias Usage // avoid recursing into this method
 	var raw struct {
@@ -313,6 +314,7 @@ func (u *Usage) UnmarshalJSON(data []byte) error {
 		CompletionTokensDetails *struct {
 			ReasoningTokens int `json:"reasoning_tokens"`
 		} `json:"completion_tokens_details"`
+		PromptCacheHitTokens int `json:"prompt_cache_hit_tokens"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
@@ -320,6 +322,9 @@ func (u *Usage) UnmarshalJSON(data []byte) error {
 	*u = Usage(raw.usageAlias)
 	if u.CacheReadTokens == 0 && raw.PromptTokensDetails != nil {
 		u.CacheReadTokens = raw.PromptTokensDetails.CachedTokens
+	}
+	if u.CacheReadTokens == 0 && raw.PromptCacheHitTokens != 0 {
+		u.CacheReadTokens = raw.PromptCacheHitTokens
 	}
 	if u.ReasoningTokens == 0 && raw.CompletionTokensDetails != nil {
 		u.ReasoningTokens = raw.CompletionTokensDetails.ReasoningTokens

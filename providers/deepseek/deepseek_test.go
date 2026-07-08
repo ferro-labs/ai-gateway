@@ -122,6 +122,46 @@ func TestDeepSeekProvider_CompleteStream_MockSSE(t *testing.T) {
 	}
 }
 
+// TestDeepSeekProvider_CompleteStream_SurfacesCacheReadTokens verifies the
+// streaming path (which decodes straight into core.StreamChunk via the shared
+// openaicompat decoder, unlike Complete's hand-rolled usage struct) still
+// surfaces DeepSeek's flat prompt_cache_hit_tokens as CacheReadTokens on the
+// terminal usage chunk.
+func TestDeepSeekProvider_CompleteStream_SurfacesCacheReadTokens(t *testing.T) {
+	sseData := "data: {\"id\":\"chatcmpl-1\",\"model\":\"deepseek-chat\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hi\"},\"finish_reason\":\"stop\"}]}\n\n" +
+		"data: {\"id\":\"chatcmpl-1\",\"model\":\"deepseek-chat\",\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2,\"total_tokens\":12,\"prompt_cache_hit_tokens\":6,\"prompt_cache_miss_tokens\":4}}\n\n" +
+		"data: [DONE]\n\n"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(sseData))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	ch, err := p.CompleteStream(context.Background(), core.Request{
+		Model:    "deepseek-chat",
+		Messages: []core.Message{{Role: "user", Content: "Hi"}},
+	})
+	if err != nil {
+		t.Fatalf("CompleteStream() error: %v", err)
+	}
+
+	var usageChunk *core.StreamChunk
+	for c := range ch {
+		if c.Usage != nil {
+			usageChunk = &c
+		}
+	}
+	if usageChunk == nil {
+		t.Fatal("expected a chunk carrying usage")
+	}
+	if usageChunk.Usage.CacheReadTokens != 6 {
+		t.Errorf("CacheReadTokens = %d, want 6 (from prompt_cache_hit_tokens)", usageChunk.Usage.CacheReadTokens)
+	}
+}
+
 func TestDeepSeekProvider_Complete_Integration(t *testing.T) {
 	apiKey := os.Getenv("DEEPSEEK_API_KEY")
 	if apiKey == "" {
