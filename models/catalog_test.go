@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -168,9 +169,9 @@ func TestLoadWithInfoUsesRemoteCatalog(t *testing.T) {
 // must never reach the server at all, and the result must fall back to the
 // embedded catalog exactly like any other remote-fetch failure.
 func TestLoadWithInfoContext_HonorsCanceledContext(t *testing.T) {
-	var reached bool
+	var reached atomic.Bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		reached = true
+		reached.Store(true)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"test/remote":{"provider":"test","model_id":"remote","mode":"chat"}}`))
 	}))
@@ -187,7 +188,7 @@ func TestLoadWithInfoContext_HonorsCanceledContext(t *testing.T) {
 	if result.Source != LoadSourceFallback {
 		t.Fatalf("Source = %q, want %q (canceled context must not reach the server)", result.Source, LoadSourceFallback)
 	}
-	if reached {
+	if reached.Load() {
 		t.Fatal("server was reached despite an already-canceled context")
 	}
 }
