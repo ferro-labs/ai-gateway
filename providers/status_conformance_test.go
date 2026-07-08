@@ -46,6 +46,23 @@ type statusConformanceCase struct {
 	build func(t *testing.T, baseURL string) Provider
 }
 
+// simpleBuild adapts a provider constructor shaped func(apiKey, baseURL string)
+// (P, error) — the shape shared by most providers — into a
+// statusConformanceCase build func, so each such provider needs only a
+// one-line case instead of repeating the same construct-and-check-error
+// closure. Providers with a differently-shaped constructor (extra
+// parameters, different argument order) still write their own closure below.
+func simpleBuild[P Provider](newFn func(apiKey, baseURL string) (P, error)) func(t *testing.T, baseURL string) Provider {
+	return func(t *testing.T, baseURL string) Provider {
+		t.Helper()
+		p, err := newFn(testAPIKey, baseURL)
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		return p
+	}
+}
+
 // statusConformanceCases covers every provider whose constructor accepts a
 // base-URL override. Bedrock (AWS-SDK-signed transport) and Vertex AI
 // (GCP-SDK auth) are intentionally excluded — neither takes a simple baseURL
@@ -53,22 +70,8 @@ type statusConformanceCase struct {
 // credential/transport stubbing than this conformance test is worth.
 func statusConformanceCases() []statusConformanceCase {
 	return []statusConformanceCase{
-		{name: "ai21", model: "jamba-mini-1.7", build: func(t *testing.T, baseURL string) Provider {
-			t.Helper()
-			p, err := ai21pkg.New(testAPIKey, baseURL)
-			if err != nil {
-				t.Fatalf("New: %v", err)
-			}
-			return p
-		}},
-		{name: "anthropic", build: func(t *testing.T, baseURL string) Provider {
-			t.Helper()
-			p, err := anthropicpkg.New(testAPIKey, baseURL)
-			if err != nil {
-				t.Fatalf("New: %v", err)
-			}
-			return p
-		}},
+		{name: "ai21", model: "jamba-mini-1.7", build: simpleBuild(ai21pkg.New)},
+		{name: "anthropic", build: simpleBuild(anthropicpkg.New)},
 		{name: "azure_foundry", build: func(t *testing.T, baseURL string) Provider {
 			t.Helper()
 			p, err := azurefoundrypkg.New(testAPIKey, baseURL, "")
@@ -85,14 +88,7 @@ func statusConformanceCases() []statusConformanceCase {
 			}
 			return p
 		}},
-		{name: "cerebras", build: func(t *testing.T, baseURL string) Provider {
-			t.Helper()
-			p, err := cerebraspkg.New(testAPIKey, baseURL)
-			if err != nil {
-				t.Fatalf("New: %v", err)
-			}
-			return p
-		}},
+		{name: "cerebras", build: simpleBuild(cerebraspkg.New)},
 		{name: "cloudflare", build: func(t *testing.T, baseURL string) Provider {
 			t.Helper()
 			p, err := cloudflarepkg.New(testAPIKey, "acct-123", baseURL)
@@ -101,102 +97,18 @@ func statusConformanceCases() []statusConformanceCase {
 			}
 			return p
 		}},
-		{name: "cohere", build: func(t *testing.T, baseURL string) Provider {
-			t.Helper()
-			p, err := coherepkg.New(testAPIKey, baseURL)
-			if err != nil {
-				t.Fatalf("New: %v", err)
-			}
-			return p
-		}},
-		{name: "databricks", build: func(t *testing.T, baseURL string) Provider {
-			t.Helper()
-			p, err := databrickspkg.New(testAPIKey, baseURL)
-			if err != nil {
-				t.Fatalf("New: %v", err)
-			}
-			return p
-		}},
-		{name: "deepinfra", build: func(t *testing.T, baseURL string) Provider {
-			t.Helper()
-			p, err := deepinfrapkg.New(testAPIKey, baseURL)
-			if err != nil {
-				t.Fatalf("New: %v", err)
-			}
-			return p
-		}},
-		{name: "deepseek", build: func(t *testing.T, baseURL string) Provider {
-			t.Helper()
-			p, err := deepseekpkg.New(testAPIKey, baseURL)
-			if err != nil {
-				t.Fatalf("New: %v", err)
-			}
-			return p
-		}},
-		{name: "fireworks", build: func(t *testing.T, baseURL string) Provider {
-			t.Helper()
-			p, err := fireworkspkg.New(testAPIKey, baseURL)
-			if err != nil {
-				t.Fatalf("New: %v", err)
-			}
-			return p
-		}},
-		{name: "gemini", build: func(t *testing.T, baseURL string) Provider {
-			t.Helper()
-			p, err := geminipkg.New(testAPIKey, baseURL)
-			if err != nil {
-				t.Fatalf("New: %v", err)
-			}
-			return p
-		}},
-		{name: "groq", build: func(t *testing.T, baseURL string) Provider {
-			t.Helper()
-			p, err := groqpkg.New(testAPIKey, baseURL)
-			if err != nil {
-				t.Fatalf("New: %v", err)
-			}
-			return p
-		}},
-		{name: "hugging_face", build: func(t *testing.T, baseURL string) Provider {
-			t.Helper()
-			p, err := huggingfacepkg.New(testAPIKey, baseURL)
-			if err != nil {
-				t.Fatalf("New: %v", err)
-			}
-			return p
-		}},
-		{name: "mistral", build: func(t *testing.T, baseURL string) Provider {
-			t.Helper()
-			p, err := mistralpkg.New(testAPIKey, baseURL)
-			if err != nil {
-				t.Fatalf("New: %v", err)
-			}
-			return p
-		}},
-		{name: "moonshot", build: func(t *testing.T, baseURL string) Provider {
-			t.Helper()
-			p, err := moonshotpkg.New(testAPIKey, baseURL)
-			if err != nil {
-				t.Fatalf("New: %v", err)
-			}
-			return p
-		}},
-		{name: "novita", build: func(t *testing.T, baseURL string) Provider {
-			t.Helper()
-			p, err := novitapkg.New(testAPIKey, baseURL)
-			if err != nil {
-				t.Fatalf("New: %v", err)
-			}
-			return p
-		}},
-		{name: "nvidia_nim", build: func(t *testing.T, baseURL string) Provider {
-			t.Helper()
-			p, err := nvidianimpkg.New(testAPIKey, baseURL)
-			if err != nil {
-				t.Fatalf("New: %v", err)
-			}
-			return p
-		}},
+		{name: "cohere", build: simpleBuild(coherepkg.New)},
+		{name: "databricks", build: simpleBuild(databrickspkg.New)},
+		{name: "deepinfra", build: simpleBuild(deepinfrapkg.New)},
+		{name: "deepseek", build: simpleBuild(deepseekpkg.New)},
+		{name: "fireworks", build: simpleBuild(fireworkspkg.New)},
+		{name: "gemini", build: simpleBuild(geminipkg.New)},
+		{name: "groq", build: simpleBuild(groqpkg.New)},
+		{name: "hugging_face", build: simpleBuild(huggingfacepkg.New)},
+		{name: "mistral", build: simpleBuild(mistralpkg.New)},
+		{name: "moonshot", build: simpleBuild(moonshotpkg.New)},
+		{name: "novita", build: simpleBuild(novitapkg.New)},
+		{name: "nvidia_nim", build: simpleBuild(nvidianimpkg.New)},
 		{name: "ollama", build: func(t *testing.T, baseURL string) Provider {
 			t.Helper()
 			p, err := ollamapkg.New(baseURL, nil)
@@ -213,38 +125,10 @@ func statusConformanceCases() []statusConformanceCase {
 			}
 			return p
 		}},
-		{name: "openai", build: func(t *testing.T, baseURL string) Provider {
-			t.Helper()
-			p, err := openaipkg.New(testAPIKey, baseURL)
-			if err != nil {
-				t.Fatalf("New: %v", err)
-			}
-			return p
-		}},
-		{name: "openrouter", build: func(t *testing.T, baseURL string) Provider {
-			t.Helper()
-			p, err := openrouterpkg.New(testAPIKey, baseURL)
-			if err != nil {
-				t.Fatalf("New: %v", err)
-			}
-			return p
-		}},
-		{name: "perplexity", build: func(t *testing.T, baseURL string) Provider {
-			t.Helper()
-			p, err := perplexitypkg.New(testAPIKey, baseURL)
-			if err != nil {
-				t.Fatalf("New: %v", err)
-			}
-			return p
-		}},
-		{name: "qwen", build: func(t *testing.T, baseURL string) Provider {
-			t.Helper()
-			p, err := qwenpkg.New(testAPIKey, baseURL)
-			if err != nil {
-				t.Fatalf("New: %v", err)
-			}
-			return p
-		}},
+		{name: "openai", build: simpleBuild(openaipkg.New)},
+		{name: "openrouter", build: simpleBuild(openrouterpkg.New)},
+		{name: "perplexity", build: simpleBuild(perplexitypkg.New)},
+		{name: "qwen", build: simpleBuild(qwenpkg.New)},
 		{name: "replicate", model: "test-owner/test-model", build: func(t *testing.T, baseURL string) Provider {
 			t.Helper()
 			p, err := replicatepkg.New(testAPIKey, baseURL, nil, nil)
@@ -253,30 +137,9 @@ func statusConformanceCases() []statusConformanceCase {
 			}
 			return p
 		}},
-		{name: "sambanova", build: func(t *testing.T, baseURL string) Provider {
-			t.Helper()
-			p, err := sambanovapkg.New(testAPIKey, baseURL)
-			if err != nil {
-				t.Fatalf("New: %v", err)
-			}
-			return p
-		}},
-		{name: "together", build: func(t *testing.T, baseURL string) Provider {
-			t.Helper()
-			p, err := togetherpkg.New(testAPIKey, baseURL)
-			if err != nil {
-				t.Fatalf("New: %v", err)
-			}
-			return p
-		}},
-		{name: "xai", build: func(t *testing.T, baseURL string) Provider {
-			t.Helper()
-			p, err := xaipkg.New(testAPIKey, baseURL)
-			if err != nil {
-				t.Fatalf("New: %v", err)
-			}
-			return p
-		}},
+		{name: "sambanova", build: simpleBuild(sambanovapkg.New)},
+		{name: "together", build: simpleBuild(togetherpkg.New)},
+		{name: "xai", build: simpleBuild(xaipkg.New)},
 	}
 }
 

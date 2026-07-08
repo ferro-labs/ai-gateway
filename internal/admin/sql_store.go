@@ -145,7 +145,11 @@ func (s *SQLStore) prepareStmts(ctx context.Context) error {
 		{&s.stmtRotate, `UPDATE api_keys SET key = ?, rotated_at = ? WHERE id = ?`},
 	}
 	for _, s2 := range stmts {
-		stmt, err := s.db.PrepareContext(ctx, s.bind(s2.query))
+		// These are long-lived prepared statements cached on the SQLStore for
+		// its whole lifetime, not a per-call resource — closed in Close()
+		// (below), which sqlclosecheck's static analysis can't trace through
+		// the *s2.dest indirection.
+		stmt, err := s.db.PrepareContext(ctx, s.bind(s2.query)) //nolint:sqlclosecheck // closed in (*SQLStore).Close
 		if err != nil {
 			return fmt.Errorf("prepare statement: %w", err)
 		}

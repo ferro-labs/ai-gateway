@@ -14,6 +14,7 @@ import (
 	"github.com/ferro-labs/ai-gateway/internal/logging"
 	"github.com/ferro-labs/ai-gateway/internal/mcp"
 	"github.com/ferro-labs/ai-gateway/internal/metrics"
+	"github.com/ferro-labs/ai-gateway/internal/strategies"
 	"github.com/ferro-labs/ai-gateway/models"
 	"github.com/ferro-labs/ai-gateway/observability"
 	"github.com/ferro-labs/ai-gateway/plugin"
@@ -192,33 +193,10 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	// returned tool_calls. Each iteration executes the tools and re-contacts
 	// the LLM until no more tool_calls are present or the depth limit is hit.
 	if mcpExecutorSnapshot != nil && len(mcpTools) > 0 {
-		depth := 0
-		loopProvider := resp.Provider
-		trace.WithRegion(ctx, "gateway.route.mcp.loop", func() {
-			for mcpExecutorSnapshot.ShouldContinueLoop(resp, depth) {
-				depth++
-
-				// ResolvePendingToolCalls returns the assistant message (with tool_calls)
-				// plus one tool-result message per call — append all at once.
-				toolMsgs, toolErr := mcpExecutorSnapshot.ResolvePendingToolCalls(ctx, resp)
-				if toolErr != nil {
-					err = fmt.Errorf("mcp tool execution at depth %d: %w", depth, toolErr)
-					return
-				}
-				req.Messages = append(req.Messages, toolMsgs...)
-
-				// Always non-streaming for intermediate calls.
-				req.Stream = false
-
-				callStart := time.Now()
-				resp, err = s.Execute(ctx, req)
-				providerDuration += time.Since(callStart)
-				if err != nil {
-					return
-				}
-				loopProvider = resp.Provider
-			}
-		})
+		var loopDuration time.Duration
+		var loopProvider string
+		resp, loopDuration, loopProvider, err = g.runMCPLoop(ctx, mcpExecutorSnapshot, s, &req, resp)
+		providerDuration += loopDuration
 		if err != nil {
 			g.routeError(ctx, span, obs, pctx, plugins, loopProvider, req.Model, err, time.Since(start), originalStream, hooksEnabled, obsEventsActive)
 			return nil, err
@@ -255,6 +233,48 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	resp.OverheadMs = float64((latency - providerDuration).Microseconds()) / 1000.0
 
 	return resp, nil
+}
+
+// runMCPLoop drives the agentic MCP tool-call loop: while resp has pending
+// tool_calls, it executes them via the MCP executor, appends the results to
+// req, and re-contacts the provider (always non-streaming for intermediate
+// calls) until no tool_calls remain or the depth limit is hit. req is
+// mutated in place (same aliasing as runBeforePlugins) so the caller's
+// plugin.Context, which was built from &req, still sees the accumulated
+// tool messages. Returns the final response, the accumulated provider-call
+// duration (for OverheadMs accounting), the provider name of the last
+// attempted call (for error reporting), and any error.
+func (g *Gateway) runMCPLoop(ctx context.Context, mcpExecutorSnapshot *mcp.Executor, s strategies.Strategy, req *providers.Request, resp *providers.Response) (*providers.Response, time.Duration, string, error) {
+	var providerDuration time.Duration
+	var err error
+	depth := 0
+	loopProvider := resp.Provider
+	trace.WithRegion(ctx, "gateway.route.mcp.loop", func() {
+		for mcpExecutorSnapshot.ShouldContinueLoop(resp, depth) {
+			depth++
+
+			// ResolvePendingToolCalls returns the assistant message (with tool_calls)
+			// plus one tool-result message per call — append all at once.
+			toolMsgs, toolErr := mcpExecutorSnapshot.ResolvePendingToolCalls(ctx, resp)
+			if toolErr != nil {
+				err = fmt.Errorf("mcp tool execution at depth %d: %w", depth, toolErr)
+				return
+			}
+			req.Messages = append(req.Messages, toolMsgs...)
+
+			// Always non-streaming for intermediate calls.
+			req.Stream = false
+
+			callStart := time.Now()
+			resp, err = s.Execute(ctx, *req)
+			providerDuration += time.Since(callStart)
+			if err != nil {
+				return
+			}
+			loopProvider = resp.Provider
+		}
+	})
+	return resp, providerDuration, loopProvider, err
 }
 
 // dispatchRequestEvent fans a request lifecycle event out to the async hook
