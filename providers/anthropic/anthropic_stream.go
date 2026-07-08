@@ -2,7 +2,6 @@ package anthropic
 
 import (
 	"context"
-	"io"
 	"net/http"
 
 	"github.com/ferro-labs/ai-gateway/providers/core"
@@ -30,7 +29,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 
 	if httpResp.StatusCode != http.StatusOK {
 		defer func() { _ = httpResp.Body.Close() }()
-		respBody, _ := io.ReadAll(httpResp.Body)
+		respBody, _ := core.ReadResponseBody(httpResp.Body, core.MaxProviderResponseBytes)
 		return nil, core.APIError("anthropic", httpResp.StatusCode, respBody)
 	}
 

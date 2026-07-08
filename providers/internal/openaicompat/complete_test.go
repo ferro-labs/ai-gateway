@@ -178,3 +178,28 @@ func TestPostEmbeddings_ForwardsInputType(t *testing.T) {
 		t.Errorf("input_type = %s, want \"query\"", got)
 	}
 }
+
+// TestPostChat_OversizedResponseRejected verifies the shared chat path bounds
+// the response read via core.ReadResponseBody instead of buffering an
+// unbounded upstream body.
+func TestPostChat_OversizedResponseRejected(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(make([]byte, core.MaxProviderResponseBytes+1))
+	}))
+	defer srv.Close()
+
+	_, err := PostChat(context.Background(), ChatParams{
+		HTTPClient: srv.Client(),
+		URL:        srv.URL,
+		Headers:    map[string]string{"Content-Type": "application/json"},
+		Provider:   "test",
+		Label:      "test",
+	}, core.Request{Model: "m", Messages: []core.Message{{Role: core.RoleUser, Content: "hi"}}})
+	if err == nil {
+		t.Fatal("expected an error for a response exceeding the byte limit")
+	}
+	if !strings.Contains(err.Error(), "byte limit") {
+		t.Errorf("error = %q, want it to mention the byte limit", err.Error())
+	}
+}
