@@ -53,7 +53,7 @@ type statusConformanceCase struct {
 // credential/transport stubbing than this conformance test is worth.
 func statusConformanceCases() []statusConformanceCase {
 	return []statusConformanceCase{
-		{name: "ai21", build: func(t *testing.T, baseURL string) Provider {
+		{name: "ai21", model: "jamba-mini-1.7", build: func(t *testing.T, baseURL string) Provider {
 			t.Helper()
 			p, err := ai21pkg.New(testAPIKey, baseURL)
 			if err != nil {
@@ -291,12 +291,19 @@ func newStatusStub(status int) *httptest.Server {
 }
 
 // TestProviderStatusConformance verifies core.ParseStatusCode recovers the
-// upstream HTTP status from every provider's Complete() error, for both a
-// retryable (429) and a non-retryable (500) canned upstream response. This is
-// the cross-provider regression test for H2-2 (typed HTTPStatusError): a
-// provider that stops embedding a parseable status in its error breaks
+// upstream HTTP status from every provider's Complete() (and, where
+// implemented, CompleteStream()) error, for both a retryable (429) and a
+// non-retryable (500) canned upstream response. This is the cross-provider
+// regression test for H2-2 (typed HTTPStatusError): a provider that stops
+// embedding a parseable status in its error breaks
 // gateway_circuitbreaker.go's isRateLimitError and
-// internal/strategies/fallback.go's onStatusCodes retry gate silently.
+// internal/strategies/fallback.go's onStatusCodes retry gate silently. The
+// streaming half also guards the H2-1 regression class found in review: a
+// provider that discards ReadResponseBody's error on a non-200 stream
+// response loses the status/message entirely rather than just the byte-limit
+// detail, since a discarded read error still leaves the status code intact —
+// so this specifically exercises the "does CompleteStream even return an
+// error at all, with a recoverable status" contract, not the message detail.
 func TestProviderStatusConformance(t *testing.T) {
 	for _, status := range []int{http.StatusTooManyRequests, http.StatusInternalServerError} {
 		for _, tc := range statusConformanceCases() {
@@ -308,16 +315,35 @@ func TestProviderStatusConformance(t *testing.T) {
 				if model == "" {
 					model = "test-model"
 				}
-				p := tc.build(t, srv.URL)
-				_, err := p.Complete(context.Background(), core.Request{
+				req := core.Request{
 					Model:    model,
 					Messages: []core.Message{{Role: core.RoleUser, Content: "hi"}},
-				})
+				}
+
+				p := tc.build(t, srv.URL)
+				_, err := p.Complete(context.Background(), req)
 				if err == nil {
 					t.Fatalf("Complete() returned no error for a %d upstream response", status)
 				}
 				if got := core.ParseStatusCode(err); got != status {
-					t.Errorf("ParseStatusCode(err) = %d, want %d; err = %v", got, status, err)
+					t.Errorf("Complete(): ParseStatusCode(err) = %d, want %d; err = %v", got, status, err)
+				}
+
+				sp, ok := p.(StreamProvider)
+				if !ok {
+					return
+				}
+				ch, err := sp.CompleteStream(context.Background(), req)
+				if err == nil {
+					for range ch { //nolint:revive // drain to avoid a goroutine leak if a provider unexpectedly starts one
+					}
+					t.Fatalf("CompleteStream() returned no error for a %d upstream response", status)
+				}
+				if ch != nil {
+					t.Errorf("CompleteStream() channel = %v, want nil on a pre-stream error", ch)
+				}
+				if got := core.ParseStatusCode(err); got != status {
+					t.Errorf("CompleteStream(): ParseStatusCode(err) = %d, want %d; err = %v", got, status, err)
 				}
 			})
 		}

@@ -543,6 +543,40 @@ func TestReplicateProvider_CompleteStream_SubmitError(t *testing.T) {
 	}
 }
 
+// TestReplicateProvider_CompleteStream_StreamFetchErrorBodyExceedsCap verifies
+// that when the submit succeeds but the subsequent GET to the stream URL
+// returns a non-200 response whose body itself exceeds the read cap, the
+// resulting read error is surfaced to the caller instead of being silently
+// discarded (which would otherwise produce a misleading empty-message error).
+func TestReplicateProvider_CompleteStream_StreamFetchErrorBodyExceedsCap(t *testing.T) {
+	var streamURL string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/models/", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id":"pred-1","status":"starting","urls":{"stream":"` + streamURL + `"}}`))
+	})
+	mux.HandleFunc("/stream", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write(make([]byte, core.MaxProviderResponseBytes+1))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	streamURL = srv.URL + "/stream"
+
+	p, _ := New("test-token", srv.URL, []string{"test/model"}, nil)
+	_, err := p.CompleteStream(context.Background(), core.Request{
+		Model:    "test/model",
+		Messages: []core.Message{{Role: "user", Content: "Hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected an error for an oversized non-200 stream-fetch response body")
+	}
+	if !strings.Contains(err.Error(), "byte limit") {
+		t.Errorf("error = %q, want it to mention the byte limit (read error must not be discarded)", err.Error())
+	}
+}
+
 // ── Usage + finish_reason ──────────────────────────────────────────────────────
 
 func TestReplicateProvider_Complete_UsageAndFinishReason(t *testing.T) {
