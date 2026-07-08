@@ -25,18 +25,20 @@ func TestPostgresStoreContract(t *testing.T) {
 		t.Skip("set FERROGW_TEST_POSTGRES_DSN to run Postgres store integration tests")
 	}
 
-	store, err := NewPostgresStore(dsn)
+	store, err := NewPostgresStore(t.Context(), dsn)
 	if err != nil {
 		t.Fatalf("new postgres store: %v", err)
 	}
 	t.Cleanup(func() {
-		_, _ = store.db.Exec("DELETE FROM api_keys")
+		// t.Context() is already canceled by the time Cleanup runs; use a
+		// fresh context for this cleanup query.
+		_, _ = store.db.ExecContext(context.Background(), "DELETE FROM api_keys")
 		if store.db != nil {
 			_ = store.db.Close()
 		}
 	})
 
-	_, _ = store.db.Exec("DELETE FROM api_keys")
+	_, _ = store.db.ExecContext(t.Context(), "DELETE FROM api_keys")
 	runStoreContract(t, store)
 }
 
@@ -152,7 +154,7 @@ func TestSQLiteStoreExpiration(t *testing.T) {
 
 func TestNewSQLiteStore_FilePermissions(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "keys.db")
-	store, err := NewSQLiteStore(path)
+	store, err := NewSQLiteStore(t.Context(), path)
 	if err != nil {
 		t.Fatalf("new sqlite store: %v", err)
 	}
@@ -168,7 +170,7 @@ func TestNewSQLiteStore_FilePermissions(t *testing.T) {
 }
 
 func TestPostgresStoreMissingDSN(t *testing.T) {
-	if _, err := NewPostgresStore(""); err == nil {
+	if _, err := NewPostgresStore(t.Context(), ""); err == nil {
 		t.Fatalf("expected error for missing postgres dsn")
 	}
 }
@@ -177,7 +179,7 @@ func newSQLiteTestStore(t *testing.T) *SQLStore {
 	t.Helper()
 
 	path := filepath.Join(t.TempDir(), "keys.db")
-	store, err := NewSQLiteStore(path)
+	store, err := NewSQLiteStore(t.Context(), path)
 	if err != nil {
 		t.Fatalf("new sqlite store: %v", err)
 	}

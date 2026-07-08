@@ -27,7 +27,7 @@ func TestChatCompletions_BodyTooLarge_Returns413(t *testing.T) {
 	// The JSON decoder reads partial content then hits the MaxBytesReader limit.
 	body := `{"model":"test","messages":[{"role":"user","content":"` + strings.Repeat("x", 200) + `"}]}`
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
 	w := httptest.NewRecorder()
 
 	// Simulate what the body-limit middleware does: wrap the body with a 10-byte limit.
@@ -47,7 +47,7 @@ func TestDecodeChatCompletionRequest_BodyTooLarge(t *testing.T) {
 	// Use valid-JSON-prefixed body: decoder reads the first few bytes, then hits the limit.
 	body := `{"model":"test","messages":[{"role":"user","content":"` + strings.Repeat("x", 500) + `"}]}`
 
-	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/", strings.NewReader(body))
 	w := httptest.NewRecorder()
 
 	// Wrap with a tiny limit so the reader hits it mid-JSON.

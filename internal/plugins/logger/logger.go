@@ -57,15 +57,17 @@ func (l *RequestLogger) Init(config map[string]any) error {
 	if persist {
 		backend, _ := config["backend"].(string)
 		dsn, _ := config["dsn"].(string)
+		// plugin.Plugin.Init has no ctx parameter (config-load time, not a
+		// request), so there is no caller context to thread through here.
 		switch strings.ToLower(strings.TrimSpace(backend)) {
 		case "sqlite", "":
-			writer, err := requestlog.NewSQLiteWriter(dsn)
+			writer, err := requestlog.NewSQLiteWriter(context.Background(), dsn)
 			if err != nil {
 				return err
 			}
 			l.writer = writer
 		case "postgres", "postgresql":
-			writer, err := requestlog.NewPostgresWriter(dsn)
+			writer, err := requestlog.NewPostgresWriter(context.Background(), dsn)
 			if err != nil {
 				return err
 			}

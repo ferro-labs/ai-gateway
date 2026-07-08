@@ -30,7 +30,7 @@ func buildTestRegistry(upstreamURL string) *providers.Registry {
 func TestResolveProvider_XProviderHeader(t *testing.T) {
 	reg := buildTestRegistry("http://localhost")
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/files", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/files", nil)
 	req.Header.Set("X-Provider", providerOpenAI)
 
 	p, ok := ResolveProvider(req, reg)
@@ -46,7 +46,7 @@ func TestResolveProvider_ModelInBody(t *testing.T) {
 	reg := buildTestRegistry("http://localhost")
 
 	body := `{"model":"gpt-4o","messages":[]}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.ContentLength = int64(len(body))
 
@@ -62,7 +62,7 @@ func TestResolveProvider_ModelInBody(t *testing.T) {
 func TestResolveProvider_UnknownProvider(t *testing.T) {
 	reg := buildTestRegistry("http://localhost")
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/files", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/files", nil)
 	req.Header.Set("X-Provider", "nonexistent")
 
 	_, ok := ResolveProvider(req, reg)
@@ -74,7 +74,7 @@ func TestResolveProvider_UnknownProvider(t *testing.T) {
 func TestResolveProvider_NoProviderInfo(t *testing.T) {
 	reg := buildTestRegistry("http://localhost")
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/files", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/files", nil)
 
 	_, ok := ResolveProvider(req, reg)
 	if ok {
@@ -86,7 +86,7 @@ func TestResolveProvider_BodyRestoredAfterRead(t *testing.T) {
 	reg := buildTestRegistry("http://localhost")
 
 	body := `{"model":"gpt-4o"}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/test", strings.NewReader(body))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/test", strings.NewReader(body))
 	req.ContentLength = int64(len(body))
 
 	ResolveProvider(req, reg) //nolint:errcheck
@@ -105,7 +105,7 @@ func TestResolveProvider_ModelAfterLargeNestedField(t *testing.T) {
 	reg := buildTestRegistry("http://localhost")
 
 	body := `{"messages":[{"role":"user","content":"hello"},{"role":"assistant","content":"world"}],"metadata":{"nested":{"a":[1,2,3],"b":{"c":"d"}}},"model":"gpt-4o","stream":true}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.ContentLength = int64(len(body))
 
@@ -130,7 +130,7 @@ func TestResolveProvider_IgnoresNestedModelField(t *testing.T) {
 	reg := buildTestRegistry("http://localhost")
 
 	body := `{"input":{"model":"gpt-4o"},"messages":[]}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.ContentLength = int64(len(body))
 
@@ -160,7 +160,7 @@ func TestProxyHandler_ForwardsRequest(t *testing.T) {
 	reg := buildTestRegistry(upstream.URL)
 	handler := Handler(reg)
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/files", strings.NewReader(`{}`))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/files", strings.NewReader(`{}`))
 	req.Header.Set("X-Provider", providerOpenAI)
 	req.ContentLength = 2
 	w := httptest.NewRecorder()
@@ -185,7 +185,7 @@ func TestProxyHandler_InjectsAuthHeader(t *testing.T) {
 	reg := buildTestRegistry(upstream.URL)
 	handler := Handler(reg)
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/files", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/files", nil)
 	req.Header.Set("X-Provider", providerOpenAI)
 	w := httptest.NewRecorder()
 
@@ -208,7 +208,7 @@ func TestProxyHandler_RemovesGatewayHeaders(t *testing.T) {
 	reg := buildTestRegistry(upstream.URL)
 	handler := Handler(reg)
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/files", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/files", nil)
 	req.Header.Set("X-Provider", providerOpenAI)
 	w := httptest.NewRecorder()
 
@@ -229,7 +229,7 @@ func TestProxyHandler_AddsGatewayProviderHeader(t *testing.T) {
 	reg := buildTestRegistry(upstream.URL)
 	handler := Handler(reg)
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/files", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/files", nil)
 	req.Header.Set("X-Provider", providerOpenAI)
 	w := httptest.NewRecorder()
 
@@ -252,7 +252,7 @@ func TestProxyHandler_RebuildsForwardedHeaders(t *testing.T) {
 	reg := buildTestRegistry(upstream.URL)
 	handler := Handler(reg)
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/files", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/files", nil)
 	req.RemoteAddr = "203.0.113.10:1234"
 	req.Header.Set("X-Provider", providerOpenAI)
 	req.Header.Set("X-Forwarded-For", "1.2.3.4")
@@ -279,7 +279,7 @@ func TestProxyHandler_PassthroughNon200(t *testing.T) {
 	reg := buildTestRegistry(upstream.URL)
 	handler := Handler(reg)
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/files", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/files", nil)
 	req.Header.Set("X-Provider", providerOpenAI)
 	w := httptest.NewRecorder()
 
@@ -294,7 +294,7 @@ func TestProxyHandler_NoProvider_Returns400(t *testing.T) {
 	reg := providers.NewRegistry() // empty registry
 	handler := Handler(reg)
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/audio/transcriptions", nil)
 	w := httptest.NewRecorder()
 
 	handler(w, req)
@@ -327,7 +327,7 @@ func TestProxyHandler_DoesNotDoubleV1Prefix(t *testing.T) {
 	reg := buildTestRegistry(upstream.URL + "/v1")
 	handler := Handler(reg)
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{}`))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/responses", strings.NewReader(`{}`))
 	req.Header.Set("X-Provider", providerOpenAI)
 	req.ContentLength = 2
 	w := httptest.NewRecorder()
@@ -354,7 +354,7 @@ func TestProxyHandler_PreservesV1PrefixForRootBase(t *testing.T) {
 	reg := buildTestRegistry(upstream.URL) // base has no /v1
 	handler := Handler(reg)
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{}`))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/responses", strings.NewReader(`{}`))
 	req.Header.Set("X-Provider", providerOpenAI)
 	req.ContentLength = 2
 	w := httptest.NewRecorder()
@@ -378,7 +378,7 @@ func TestProxyHandler_GatesNonOpenAIWireProvider(t *testing.T) {
 	reg.Register(g)
 	handler := Handler(reg)
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{}`))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/responses", strings.NewReader(`{}`))
 	req.Header.Set("X-Provider", g.Name())
 	req.ContentLength = 2
 	w := httptest.NewRecorder()
@@ -437,7 +437,7 @@ func TestProxyHandler_InvokesRequestSigner(t *testing.T) {
 	reg.Register(stubSigningProvider{baseURL: upstream.URL, signed: &signed})
 	handler := Handler(reg)
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{}`))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/responses", strings.NewReader(`{}`))
 	req.Header.Set("X-Provider", "stub-signer")
 	req.ContentLength = 2
 	w := httptest.NewRecorder()
@@ -467,7 +467,7 @@ func TestProxyHandler_RequestSignerFailure_Returns502(t *testing.T) {
 	reg.Register(stubSigningProvider{baseURL: upstream.URL, signErr: errors.New("sign failed")})
 	handler := Handler(reg)
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{}`))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/responses", strings.NewReader(`{}`))
 	req.Header.Set("X-Provider", "stub-signer")
 	req.ContentLength = 2
 	w := httptest.NewRecorder()
@@ -565,7 +565,7 @@ func TestProxyHandler_ErrorHandler_GenericJSON(t *testing.T) {
 	reg := buildTestRegistry(deadURL)
 	handler := Handler(reg)
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/files", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/files", nil)
 	req.Header.Set("X-Provider", providerOpenAI)
 	w := httptest.NewRecorder()
 	handler(w, req)

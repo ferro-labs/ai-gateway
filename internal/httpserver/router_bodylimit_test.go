@@ -66,7 +66,7 @@ func TestBodySizeLimit_TooLarge_Returns413(t *testing.T) {
 
 	// Build a body that is definitely larger than the 64-byte limit.
 	body := `{"model":"stub-model","messages":[{"role":"user","content":"` + strings.Repeat("x", 200) + `"}]}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
@@ -96,7 +96,7 @@ func TestBodySizeLimit_UnderLimit_NotRejected(t *testing.T) {
 
 	// A minimal valid-looking chat body (under the 10 MiB limit).
 	body := `{"model":"stub-model","messages":[{"role":"user","content":"hi"}]}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 

@@ -96,7 +96,10 @@ func New(cfg Config) (*Gateway, error) {
 		return nil, err
 	}
 
-	catalogResult, err := models.LoadWithInfo()
+	// No lifecycle context exists yet at this point in construction (shutdownCtx
+	// is created below); this is a one-time startup fetch bounded by fetchRemote's
+	// own 1s client timeout, so context.Background() is the correct choice here.
+	catalogResult, err := models.LoadWithInfoContext(context.Background())
 	recordCatalogLoad(catalogResult.Source, err)
 	catalog := catalogResult.Catalog
 	if err != nil {
@@ -191,14 +194,17 @@ func (g *Gateway) startCatalogRefresh() {
 			case <-g.shutdownCtx.Done():
 				return
 			case <-ticker.C:
-				g.refreshCatalog()
+				g.refreshCatalog(g.shutdownCtx)
 			}
 		}
 	}()
 }
 
-func (g *Gateway) refreshCatalog() {
-	result, err := models.LoadWithInfo()
+// refreshCatalog fetches the latest model catalog. ctx is g.shutdownCtx, so a
+// fetch already in flight when the gateway shuts down is canceled immediately
+// instead of running to fetchRemote's own 1s timeout.
+func (g *Gateway) refreshCatalog(ctx context.Context) {
+	result, err := models.LoadWithInfoContext(ctx)
 	recordCatalogLoad(result.Source, err)
 	if err != nil {
 		slog.Error("model catalog refresh failed", "url", result.URLForLog(), "error", err)

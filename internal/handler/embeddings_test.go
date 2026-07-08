@@ -25,7 +25,7 @@ func TestEmbeddings_NoCapableProvider_Returns404(t *testing.T) {
 	t.Cleanup(func() { _ = gw.Close() })
 
 	body := `{"model":"no-such-embedding-model","input":"hello"}`
-	r := httptest.NewRequest(http.MethodPost, "/v1/embeddings", strings.NewReader(body))
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/embeddings", strings.NewReader(body))
 	w := httptest.NewRecorder()
 
 	Embeddings(gw)(w, r)

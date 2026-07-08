@@ -18,7 +18,7 @@ func TestProxyAuthMiddleware_MasterKeyRequired(t *testing.T) {
 	}))
 
 	// No auth header → 401.
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions", nil)
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 	if rr.Code != http.StatusUnauthorized {
@@ -26,7 +26,7 @@ func TestProxyAuthMiddleware_MasterKeyRequired(t *testing.T) {
 	}
 
 	// Master key → 200.
-	req = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req = httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions", nil)
 	req.Header.Set("Authorization", "Bearer test-master-key")
 	rr = httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
@@ -45,7 +45,7 @@ func TestProxyAuthMiddleware_UnauthenticatedProxy(t *testing.T) {
 	}))
 
 	// Unauthenticated proxy explicitly enabled → pass through.
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions", nil)
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
@@ -62,7 +62,7 @@ func TestProxyAuthMiddleware_DefaultRequiresAuth(t *testing.T) {
 	}))
 
 	// No master key, no ALLOW_UNAUTHENTICATED_PROXY → 401.
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions", nil)
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 	if rr.Code != http.StatusUnauthorized {

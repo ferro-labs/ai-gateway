@@ -12,7 +12,7 @@ import (
 
 func TestNewSQLiteConfigStore_FilePermissions(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.db")
-	store, err := NewSQLiteConfigStore(path)
+	store, err := NewSQLiteConfigStore(t.Context(), path)
 	if err != nil {
 		t.Fatalf("new sqlite config store: %v", err)
 	}

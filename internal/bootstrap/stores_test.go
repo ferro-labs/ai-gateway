@@ -10,7 +10,7 @@ import (
 
 func TestCreateKeyStoreFromEnv_DefaultsToMemory(t *testing.T) {
 	t.Setenv("API_KEY_STORE_BACKEND", "")
-	store, backend, err := CreateKeyStoreFromEnv()
+	store, backend, err := CreateKeyStoreFromEnv(t.Context())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -26,7 +26,7 @@ func TestCreateKeyStoreFromEnv_MemoryAliases(t *testing.T) {
 	for _, alias := range []string{"memory", "in-memory", "inmemory", "MEMORY", " Memory "} {
 		t.Run(alias, func(t *testing.T) {
 			t.Setenv("API_KEY_STORE_BACKEND", alias)
-			store, backend, err := CreateKeyStoreFromEnv()
+			store, backend, err := CreateKeyStoreFromEnv(t.Context())
 			if err != nil {
 				t.Fatalf("unexpected error for alias %q: %v", alias, err)
 			}
@@ -45,7 +45,7 @@ func TestCreateKeyStoreFromEnv_SQLite(t *testing.T) {
 	t.Setenv("API_KEY_STORE_BACKEND", "sqlite")
 	t.Setenv("API_KEY_STORE_DSN", dbPath)
 
-	store, backend, err := CreateKeyStoreFromEnv()
+	store, backend, err := CreateKeyStoreFromEnv(t.Context())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -59,7 +59,7 @@ func TestCreateKeyStoreFromEnv_SQLite(t *testing.T) {
 
 func TestCreateKeyStoreFromEnv_UnsupportedBackend(t *testing.T) {
 	t.Setenv("API_KEY_STORE_BACKEND", "redis")
-	_, _, err := CreateKeyStoreFromEnv()
+	_, _, err := CreateKeyStoreFromEnv(t.Context())
 	if err == nil {
 		t.Fatal("expected error for unsupported backend")
 	}
@@ -67,7 +67,7 @@ func TestCreateKeyStoreFromEnv_UnsupportedBackend(t *testing.T) {
 
 func TestCreateRequestLogReaderFromEnv_DefaultDisabled(t *testing.T) {
 	t.Setenv("REQUEST_LOG_STORE_BACKEND", "")
-	reader, maintainer, backend, err := CreateRequestLogReaderFromEnv()
+	reader, maintainer, backend, err := CreateRequestLogReaderFromEnv(t.Context())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestCreateRequestLogReaderFromEnv_SQLite(t *testing.T) {
 	t.Setenv("REQUEST_LOG_STORE_BACKEND", "sqlite")
 	t.Setenv("REQUEST_LOG_STORE_DSN", dbPath)
 
-	reader, maintainer, backend, err := CreateRequestLogReaderFromEnv()
+	reader, maintainer, backend, err := CreateRequestLogReaderFromEnv(t.Context())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestCreateRequestLogReaderFromEnv_SQLite(t *testing.T) {
 
 func TestCreateRequestLogReaderFromEnv_UnsupportedBackend(t *testing.T) {
 	t.Setenv("REQUEST_LOG_STORE_BACKEND", "redis")
-	_, _, _, err := CreateRequestLogReaderFromEnv()
+	_, _, _, err := CreateRequestLogReaderFromEnv(t.Context())
 	if err == nil {
 		t.Fatal("expected error for unsupported backend")
 	}
@@ -108,7 +108,7 @@ func TestCreateConfigManagerFromEnv_DefaultsToMemory(t *testing.T) {
 	t.Setenv("CONFIG_STORE_BACKEND", "")
 	gw := newTestGateway(t)
 
-	mgr, backend, err := CreateConfigManagerFromEnv(gw)
+	mgr, backend, err := CreateConfigManagerFromEnv(t.Context(), gw)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestCreateConfigManagerFromEnv_SQLite(t *testing.T) {
 	t.Setenv("CONFIG_STORE_DSN", dbPath)
 	gw := newTestGateway(t)
 
-	mgr, backend, err := CreateConfigManagerFromEnv(gw)
+	mgr, backend, err := CreateConfigManagerFromEnv(t.Context(), gw)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -142,7 +142,7 @@ func TestCreateConfigManagerFromEnv_UnsupportedBackend(t *testing.T) {
 	t.Setenv("CONFIG_STORE_BACKEND", "redis")
 	gw := newTestGateway(t)
 
-	_, _, err := CreateConfigManagerFromEnv(gw)
+	_, _, err := CreateConfigManagerFromEnv(t.Context(), gw)
 	if err == nil {
 		t.Fatal("expected error for unsupported backend")
 	}
@@ -153,7 +153,7 @@ func TestCreateConfigManagerFromEnv_PostgresqlAlias(t *testing.T) {
 	t.Setenv("CONFIG_STORE_DSN", "postgresql://invalid:5432/test")
 	gw := newTestGateway(t)
 
-	_, _, err := CreateConfigManagerFromEnv(gw)
+	_, _, err := CreateConfigManagerFromEnv(t.Context(), gw)
 	if err == nil {
 		t.Skip("postgres not available, but alias was recognized")
 	}

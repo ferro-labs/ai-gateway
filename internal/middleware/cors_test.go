@@ -16,7 +16,7 @@ func TestCORS_NoCORSHeaders_WhenNoOriginsConfigured(t *testing.T) {
 	mw := CORS()
 	handler := mw(dummyHandler)
 
-	r := httptest.NewRequest(http.MethodGet, "/v1/chat/completions", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/v1/chat/completions", nil)
 	r.Header.Set("Origin", "https://attacker.example.com")
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, r)
@@ -30,7 +30,7 @@ func TestCORS_NoCORSHeaders_WhenOnlyEmptyStrings(t *testing.T) {
 	mw := CORS("", "  ")
 	handler := mw(dummyHandler)
 
-	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 	r.Header.Set("Origin", "https://attacker.example.com")
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, r)
@@ -46,7 +46,7 @@ func TestCORS_NoCORSHeaders_OnAdminPath(t *testing.T) {
 	mw := CORS()
 	handler := mw(dummyHandler)
 
-	r := httptest.NewRequest(http.MethodGet, "/admin/keys", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/admin/keys", nil)
 	r.Header.Set("Origin", "https://attacker.example.com")
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, r)
@@ -72,7 +72,7 @@ func TestCORS_NoOriginsConfigured_OptionsPassesThrough(t *testing.T) {
 	mw := CORS()
 	handler := mw(next)
 
-	r := httptest.NewRequest(http.MethodOptions, "/v1/chat/completions", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodOptions, "/v1/chat/completions", nil)
 	r.Header.Set("Origin", "https://attacker.example.com")
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, r)
@@ -88,7 +88,7 @@ func TestCORS_AllowedOrigin_SetsHeaderAndVary(t *testing.T) {
 	mw := CORS("https://example.com", "https://other.com")
 	handler := mw(dummyHandler)
 
-	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 	r.Header.Set("Origin", "https://example.com")
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, r)
@@ -105,7 +105,7 @@ func TestCORS_DisallowedOrigin_NoAllowOriginHeader(t *testing.T) {
 	mw := CORS("https://example.com")
 	handler := mw(dummyHandler)
 
-	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 	r.Header.Set("Origin", "https://evil.com")
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, r)
@@ -119,7 +119,7 @@ func TestCORS_PreflightOptions_Returns204(t *testing.T) {
 	mw := CORS("https://example.com")
 	handler := mw(dummyHandler)
 
-	r := httptest.NewRequest(http.MethodOptions, "/", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodOptions, "/", nil)
 	r.Header.Set("Origin", "https://example.com")
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, r)
@@ -137,7 +137,7 @@ func TestCORS_PreflightOptions_DoesNotCallNext(t *testing.T) {
 	mw := CORS("https://example.com")
 	handler := mw(next)
 
-	r := httptest.NewRequest(http.MethodOptions, "/", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodOptions, "/", nil)
 	r.Header.Set("Origin", "https://example.com")
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, r)
@@ -154,7 +154,7 @@ func TestCORS_WithConfiguredOrigin_PreflightGetsAllowHeaders(t *testing.T) {
 	mw := CORS("https://dash.example.com")
 	handler := mw(dummyHandler)
 
-	r := httptest.NewRequest(http.MethodOptions, "/v1/chat/completions", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodOptions, "/v1/chat/completions", nil)
 	r.Header.Set("Origin", "https://dash.example.com")
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, r)
@@ -174,7 +174,7 @@ func TestCORS_StandardHeaders_AlwaysSet(t *testing.T) {
 	mw := CORS("https://example.com")
 	handler := mw(dummyHandler)
 
-	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 	r.Header.Set("Origin", "https://example.com")
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, r)
@@ -199,7 +199,7 @@ func TestCORS_NonOptions_CallsNextHandler(t *testing.T) {
 	mw := CORS()
 	handler := mw(next)
 
-	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, r)
 
@@ -215,7 +215,7 @@ func TestCORS_TrimsWhitespaceFromOrigins(t *testing.T) {
 	mw := CORS("  https://example.com  ")
 	handler := mw(dummyHandler)
 
-	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 	r.Header.Set("Origin", "https://example.com")
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, r)

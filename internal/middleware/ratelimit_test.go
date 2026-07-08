@@ -19,7 +19,7 @@ func TestRateLimit_AllowsRequestUnderLimit(t *testing.T) {
 	store := ratelimit.NewStore(10, 10)
 	handler := makeRateLimitHandler(store)
 
-	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 	r.RemoteAddr = testIP
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, r)
@@ -36,7 +36,7 @@ func TestRateLimit_Blocks_WhenBurstExceeded(t *testing.T) {
 
 	ip := testIP
 
-	first := httptest.NewRequest(http.MethodGet, "/", nil)
+	first := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 	first.RemoteAddr = ip
 	w1 := httptest.NewRecorder()
 	handler.ServeHTTP(w1, first)
@@ -44,7 +44,7 @@ func TestRateLimit_Blocks_WhenBurstExceeded(t *testing.T) {
 		t.Fatalf("first request: expected 200, got %d", w1.Code)
 	}
 
-	second := httptest.NewRequest(http.MethodGet, "/", nil)
+	second := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 	second.RemoteAddr = ip
 	w2 := httptest.NewRecorder()
 	handler.ServeHTTP(w2, second)
@@ -60,12 +60,12 @@ func TestRateLimit_Returns429WithOpenAIErrorBody(t *testing.T) {
 	ip := testIP
 
 	// Exhaust the bucket.
-	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 	r.RemoteAddr = ip
 	handler.ServeHTTP(httptest.NewRecorder(), r)
 
 	// Blocked request — check content type and body shape.
-	r2 := httptest.NewRequest(http.MethodGet, "/", nil)
+	r2 := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 	r2.RemoteAddr = ip
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, r2)
@@ -89,7 +89,7 @@ func TestRateLimit_UsesResolvedRemoteAddr(t *testing.T) {
 	handler := makeRateLimitHandler(store)
 
 	makeReq := func() *httptest.ResponseRecorder {
-		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 		// Simulate what RealIPMiddleware would produce: bare host, no port.
 		r.RemoteAddr = "203.0.113.5"
 		w := httptest.NewRecorder()
@@ -111,7 +111,7 @@ func TestRateLimit_DifferentIPs_IndependentBuckets(t *testing.T) {
 	handler := makeRateLimitHandler(store)
 
 	for _, ip := range []string{"1.1.1.1:1", "2.2.2.2:2"} {
-		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 		r.RemoteAddr = ip
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, r)
@@ -131,7 +131,7 @@ func TestRateLimit_NilStore_Passthrough(t *testing.T) {
 	})
 	RateLimit(nil)(next).ServeHTTP(
 		httptest.NewRecorder(),
-		httptest.NewRequest(http.MethodGet, "/", nil),
+		httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil),
 	)
 	if !called {
 		t.Fatal("nil store: expected next handler to be called (passthrough), but it was not")
@@ -147,7 +147,7 @@ func TestRateLimit_NextHandler_NotCalledOnBlock(t *testing.T) {
 	ip := "5.5.5.5:5"
 
 	// First request passes — next is called.
-	r1 := httptest.NewRequest(http.MethodGet, "/", nil)
+	r1 := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 	r1.RemoteAddr = ip
 	handler.ServeHTTP(httptest.NewRecorder(), r1)
 	if !called {
@@ -156,7 +156,7 @@ func TestRateLimit_NextHandler_NotCalledOnBlock(t *testing.T) {
 
 	// Second request is blocked — next must not be called again.
 	called = false
-	r2 := httptest.NewRequest(http.MethodGet, "/", nil)
+	r2 := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 	r2.RemoteAddr = ip
 	handler.ServeHTTP(httptest.NewRecorder(), r2)
 	if called {

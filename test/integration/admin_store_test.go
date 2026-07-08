@@ -13,7 +13,7 @@ import (
 )
 
 func TestPostgresStore_CRUD(t *testing.T) {
-	store, err := admin.NewPostgresStore(testDSN)
+	store, err := admin.NewPostgresStore(t.Context(), testDSN)
 	if err != nil {
 		t.Fatalf("new postgres store: %v", err)
 	}
@@ -52,7 +52,7 @@ func TestPostgresStore_CRUD(t *testing.T) {
 }
 
 func TestPostgresStore_ValidateAndUsage(t *testing.T) {
-	store, err := admin.NewPostgresStore(testDSN)
+	store, err := admin.NewPostgresStore(t.Context(), testDSN)
 	if err != nil {
 		t.Fatalf("new postgres store: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestPostgresStore_ValidateAndUsage(t *testing.T) {
 }
 
 func TestPostgresStore_Expiration(t *testing.T) {
-	store, err := admin.NewPostgresStore(testDSN)
+	store, err := admin.NewPostgresStore(t.Context(), testDSN)
 	if err != nil {
 		t.Fatalf("new postgres store: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestPostgresStore_Expiration(t *testing.T) {
 }
 
 func TestPostgresStore_RevokeAndRotate(t *testing.T) {
-	store, err := admin.NewPostgresStore(testDSN)
+	store, err := admin.NewPostgresStore(t.Context(), testDSN)
 	if err != nil {
 		t.Fatalf("new postgres store: %v", err)
 	}
@@ -134,7 +134,7 @@ func TestPostgresStore_RevokeAndRotate(t *testing.T) {
 }
 
 func TestPostgresStore_ListMasked(t *testing.T) {
-	store, err := admin.NewPostgresStore(testDSN)
+	store, err := admin.NewPostgresStore(t.Context(), testDSN)
 	if err != nil {
 		t.Fatalf("new postgres store: %v", err)
 	}

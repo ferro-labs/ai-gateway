@@ -7,6 +7,7 @@
 package models
 
 import (
+	"context"
 	_ "embed"
 	"encoding/json"
 	"fmt"
@@ -177,20 +178,35 @@ type Lifecycle struct {
 // Load fetches the model catalog from a remote URL (1s timeout).
 // On any failure it falls back to the embedded catalog_backup.json.
 // The gateway never fails to start due to catalog unavailability.
+// Equivalent to LoadContext(context.Background()).
 func Load() (Catalog, error) {
-	result, err := LoadWithInfo()
+	return LoadContext(context.Background())
+}
+
+// LoadContext is Load with a caller-supplied context bounding the remote
+// fetch, so it can be canceled early (e.g. on gateway shutdown) instead of
+// always running to its own internal timeout.
+func LoadContext(ctx context.Context) (Catalog, error) {
+	result, err := LoadWithInfoContext(ctx)
 	return result.Catalog, err
 }
 
 // LoadWithInfo fetches the model catalog and returns metadata about whether
 // the remote source or embedded fallback was used.
+// Equivalent to LoadWithInfoContext(context.Background()).
 func LoadWithInfo() (LoadResult, error) {
+	return LoadWithInfoContext(context.Background())
+}
+
+// LoadWithInfoContext is LoadWithInfo with a caller-supplied context bounding
+// the remote fetch.
+func LoadWithInfoContext(ctx context.Context) (LoadResult, error) {
 	catalogURL := os.Getenv(CatalogURLEnv)
 	if catalogURL == "" {
 		catalogURL = defaultCatalogURL
 	}
 
-	if data, err := fetchRemote(catalogURL); err == nil {
+	if data, err := fetchRemote(ctx, catalogURL); err == nil {
 		c, parseErr := parse(data)
 		if parseErr == nil {
 			return LoadResult{Catalog: c, Source: LoadSourceRemote, URL: catalogURL}, nil
@@ -251,13 +267,17 @@ func catalogLoadErrorForLog(err error, catalogURL string) string {
 // larger than any realistic catalog file.
 const maxCatalogResponseBytes = 8 * 1024 * 1024
 
-func fetchRemote(rawURL string) ([]byte, error) {
+func fetchRemote(ctx context.Context, rawURL string) ([]byte, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return nil, fmt.Errorf("invalid catalog URL %q: must be http or https with a host", rawURL)
 	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil) //nolint:gosec // URL scheme and host validated above
+	if err != nil {
+		return nil, err
+	}
 	client := &http.Client{Timeout: time.Second}
-	resp, err := client.Get(rawURL) //nolint:gosec // URL scheme and host validated above
+	resp, err := client.Do(req) //nolint:gosec // URL scheme and host validated above
 	if err != nil {
 		return nil, err
 	}

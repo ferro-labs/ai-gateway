@@ -12,7 +12,7 @@ import (
 )
 
 func TestPostgresConfigStore_SaveLoadRoundtrip(t *testing.T) {
-	store, err := admin.NewPostgresConfigStore(testDSN)
+	store, err := admin.NewPostgresConfigStore(t.Context(), testDSN)
 	if err != nil {
 		t.Fatalf("new config store: %v", err)
 	}
@@ -45,7 +45,7 @@ func TestPostgresConfigStore_SaveLoadRoundtrip(t *testing.T) {
 }
 
 func TestPostgresConfigStore_Delete(t *testing.T) {
-	store, err := admin.NewPostgresConfigStore(testDSN)
+	store, err := admin.NewPostgresConfigStore(t.Context(), testDSN)
 	if err != nil {
 		t.Fatalf("new config store: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestPostgresConfigStore_Delete(t *testing.T) {
 }
 
 func TestPostgresConfigManager_ReloadPersists(t *testing.T) {
-	store, err := admin.NewPostgresConfigStore(testDSN)
+	store, err := admin.NewPostgresConfigStore(t.Context(), testDSN)
 	if err != nil {
 		t.Fatalf("new config store: %v", err)
 	}

@@ -184,9 +184,18 @@ func BenchmarkTransportConcurrent(b *testing.B) {
 	client := m.ForProvider("bench")
 	body := `{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}`
 
+	postJSON := func() (*http.Response, error) {
+		req, err := http.NewRequestWithContext(b.Context(), http.MethodPost, srv.URL, strings.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		return client.Do(req)
+	}
+
 	// Warm up connections.
 	for i := 0; i < 20; i++ {
-		resp, err := client.Post(srv.URL, "application/json", strings.NewReader(body))
+		resp, err := postJSON()
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -198,7 +207,7 @@ func BenchmarkTransportConcurrent(b *testing.B) {
 	b.ReportAllocs()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			resp, err := client.Post(srv.URL, "application/json", strings.NewReader(body))
+			resp, err := postJSON()
 			if err != nil {
 				b.Fatal(err)
 			}

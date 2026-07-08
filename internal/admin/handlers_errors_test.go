@@ -29,8 +29,10 @@ func (s *dbFailKeyStore) RotateKey(context.Context, string) (*APIKey, error) {
 }
 
 // reqWithID builds a request carrying the chi "id" URL param the key handlers read.
+// No *testing.T is available in this standalone builder; the context is
+// replaced by WithContext below regardless, so context.Background() is fine.
 func reqWithID(method, id string) *http.Request {
-	req := httptest.NewRequest(method, "/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), method, "/", nil)
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("id", id)
 	return req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))

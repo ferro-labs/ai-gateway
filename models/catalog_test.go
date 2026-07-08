@@ -2,6 +2,7 @@ package models
 
 import (
 	"bytes"
+	"context"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -158,6 +159,36 @@ func TestLoadWithInfoUsesRemoteCatalog(t *testing.T) {
 	}
 	if model.ModelID != "remote" {
 		t.Fatalf("ModelID = %q, want remote", model.ModelID)
+	}
+}
+
+// TestLoadWithInfoContext_HonorsCanceledContext proves the ctx passed to
+// LoadWithInfoContext is actually wired into the outbound HTTP request (not
+// just accepted and ignored): with an already-canceled context, the request
+// must never reach the server at all, and the result must fall back to the
+// embedded catalog exactly like any other remote-fetch failure.
+func TestLoadWithInfoContext_HonorsCanceledContext(t *testing.T) {
+	var reached bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		reached = true
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"test/remote":{"provider":"test","model_id":"remote","mode":"chat"}}`))
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv(CatalogURLEnv, server.URL)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	result, err := LoadWithInfoContext(ctx)
+	if err != nil {
+		t.Fatalf("LoadWithInfoContext returned error: %v", err)
+	}
+	if result.Source != LoadSourceFallback {
+		t.Fatalf("Source = %q, want %q (canceled context must not reach the server)", result.Source, LoadSourceFallback)
+	}
+	if reached {
+		t.Fatal("server was reached despite an already-canceled context")
 	}
 }
 
