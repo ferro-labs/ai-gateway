@@ -64,7 +64,7 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 	if httpResp.StatusCode != http.StatusOK {
-		return nil, core.APIError("ollama", httpResp.StatusCode, respBody)
+		return nil, ollamaAPIError(httpResp.StatusCode, respBody)
 	}
 
 	var oResp ollamaEmbedResponse

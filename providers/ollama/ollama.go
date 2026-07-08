@@ -112,6 +112,28 @@ type tagsResponse struct {
 	} `json:"models"`
 }
 
+// ollamaAPIError builds a provider error from a non-2xx response on one of
+// Ollama's native endpoints (/api/tags, /api/embed). Ollama documents its
+// error body as a flat {"error":"..."} string (see
+// https://docs.ollama.com/api/errors), not the OpenAI-nested
+// {"error":{"message":...}} shape core.APIError expects, so core.APIError
+// cannot decode it. The OpenAI-compat surface (/v1/chat/completions, used by
+// Complete/CompleteStream) is a different endpoint that genuinely does return
+// OpenAI-shaped errors and keeps using core.APIError via openaicompat.
+func ollamaAPIError(statusCode int, body []byte) error {
+	msg := string(body)
+	var envelope struct {
+		Error string `json:"error"`
+	}
+	if json.Unmarshal(body, &envelope) == nil && envelope.Error != "" {
+		msg = envelope.Error
+	}
+	return &core.HTTPStatusError{
+		StatusCode: statusCode,
+		Message:    fmt.Sprintf("ollama API error (%d): %s", statusCode, msg),
+	}
+}
+
 // DiscoverModels fetches the live model list from the self-hosted Ollama
 // server's /api/tags endpoint. Ollama is unauthenticated, so no Authorization
 // header is sent.
@@ -138,7 +160,7 @@ func (p *Provider) DiscoverModels(ctx context.Context) ([]core.ModelInfo, error)
 	}
 
 	if httpResp.StatusCode != http.StatusOK {
-		return nil, core.APIError("ollama", httpResp.StatusCode, respBody)
+		return nil, ollamaAPIError(httpResp.StatusCode, respBody)
 	}
 
 	var tags tagsResponse

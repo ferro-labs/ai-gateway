@@ -293,17 +293,12 @@ func newStatusStub(status int) *httptest.Server {
 // TestProviderStatusConformance verifies core.ParseStatusCode recovers the
 // upstream HTTP status from every provider's Complete() (and, where
 // implemented, CompleteStream()) error, for both a retryable (429) and a
-// non-retryable (500) canned upstream response. This is the cross-provider
-// regression test for H2-2 (typed HTTPStatusError): a provider that stops
-// embedding a parseable status in its error breaks
-// gateway_circuitbreaker.go's isRateLimitError and
-// internal/strategies/fallback.go's onStatusCodes retry gate silently. The
-// streaming half also guards the H2-1 regression class found in review: a
-// provider that discards ReadResponseBody's error on a non-200 stream
-// response loses the status/message entirely rather than just the byte-limit
-// detail, since a discarded read error still leaves the status code intact —
-// so this specifically exercises the "does CompleteStream even return an
-// error at all, with a recoverable status" contract, not the message detail.
+// non-retryable (500) canned upstream response. Status-code recoverability is
+// relied on by gateway_circuitbreaker.go's isRateLimitError and
+// internal/strategies/fallback.go's onStatusCodes retry gate, so a provider
+// that stops surfacing a parseable status breaks that gating silently. The
+// streaming assertions only check that an error with a recoverable status is
+// returned at all, not the message detail.
 func TestProviderStatusConformance(t *testing.T) {
 	for _, status := range []int{http.StatusTooManyRequests, http.StatusInternalServerError} {
 		for _, tc := range statusConformanceCases() {

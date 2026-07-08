@@ -296,8 +296,9 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 	defer func() { _ = httpResp.Body.Close() }()
 
 	if httpResp.StatusCode != http.StatusOK {
-		// Error branch keeps ReadAll: the raw body is needed verbatim for the
-		// fallback error message when it is not valid Anthropic error JSON.
+		// Error branch reads the full (capped) body via core.ReadResponseBody:
+		// the raw body is needed verbatim for the fallback error message when
+		// it is not valid Anthropic error JSON.
 		respBody, err := core.ReadResponseBody(httpResp.Body, core.MaxProviderResponseBytes)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read response: %w", err)
