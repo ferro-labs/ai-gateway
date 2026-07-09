@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ferro-labs/ai-gateway/internal/migrations"
 	"github.com/ferro-labs/ai-gateway/internal/sqlitefile"
 
 	// Register Postgres SQL driver.
@@ -32,7 +33,7 @@ type SQLStore struct {
 	db            *sql.DB
 	dialect       sqlDialect
 	stmtGetByID   *sql.Stmt
-	stmtGetByKey  *sql.Stmt
+	stmtGetByHash *sql.Stmt
 	stmtRevoke    *sql.Stmt
 	stmtUpdate    *sql.Stmt
 	stmtSetExpiry *sql.Stmt
@@ -89,60 +90,30 @@ func (s *SQLStore) init(ctx context.Context) error {
 		return fmt.Errorf("ping %s store: %w", s.dialect, err)
 	}
 
-	var ddl string
-	switch s.dialect {
-	case dialectPostgres:
-		ddl = `
-CREATE TABLE IF NOT EXISTS api_keys (
-	id TEXT PRIMARY KEY,
-	key TEXT UNIQUE NOT NULL,
-	name TEXT NOT NULL,
-	scopes TEXT NOT NULL,
-	created_at TIMESTAMPTZ NOT NULL,
-	revoked_at TIMESTAMPTZ NULL,
-	expires_at TIMESTAMPTZ NULL,
-	rotated_at TIMESTAMPTZ NULL,
-	active BOOLEAN NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_api_keys_key ON api_keys(key);`
-	default:
-		ddl = `
-CREATE TABLE IF NOT EXISTS api_keys (
-	id TEXT PRIMARY KEY,
-	key TEXT UNIQUE NOT NULL,
-	name TEXT NOT NULL,
-	scopes TEXT NOT NULL,
-	created_at DATETIME NOT NULL,
-	revoked_at DATETIME NULL,
-	expires_at DATETIME NULL,
-	rotated_at DATETIME NULL,
-	active BOOLEAN NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_api_keys_key ON api_keys(key);`
-	}
-
-	if _, err := s.db.ExecContext(ctx, ddl); err != nil {
-		return fmt.Errorf("initialize %s store schema: %w", s.dialect, err)
-	}
-	if err := s.ensureUsageColumns(ctx); err != nil {
-		return err
+	dialect := migrations.Dialect(s.dialect)
+	if err := migrations.Run(ctx, s.db, dialect, "api_keys", keyStoreSteps(dialect)); err != nil {
+		return fmt.Errorf("migrate %s store schema: %w", s.dialect, err)
 	}
 	return s.prepareStmts(ctx)
 }
+
+// keyRowSelect lists the columns scanAPIKey expects. key_display stands in for
+// the secret: the store has no way to produce the plaintext.
+const keyRowSelect = `SELECT id, key_display, name, scopes, created_at, revoked_at, expires_at, rotated_at, last_used_at, usage_count, active FROM api_keys`
 
 func (s *SQLStore) prepareStmts(ctx context.Context) error {
 	stmts := []struct {
 		dest  **sql.Stmt
 		query string
 	}{
-		{&s.stmtGetByID, `SELECT id, key, name, scopes, created_at, revoked_at, expires_at, rotated_at, last_used_at, usage_count, active FROM api_keys WHERE id = ?`},
-		{&s.stmtGetByKey, `SELECT id, key, name, scopes, created_at, revoked_at, expires_at, rotated_at, last_used_at, usage_count, active FROM api_keys WHERE key = ?`},
+		{&s.stmtGetByID, keyRowSelect + ` WHERE id = ?`},
+		{&s.stmtGetByHash, keyRowSelect + ` WHERE key_hash = ?`},
 		{&s.stmtRevoke, `UPDATE api_keys SET revoked_at = ?, active = ? WHERE id = ?`},
 		{&s.stmtUpdate, `UPDATE api_keys SET name = ?, scopes = ? WHERE id = ?`},
 		{&s.stmtSetExpiry, `UPDATE api_keys SET expires_at = ? WHERE id = ?`},
 		{&s.stmtDelete, `DELETE FROM api_keys WHERE id = ?`},
 		{&s.stmtUsage, `UPDATE api_keys SET usage_count = usage_count + 1, last_used_at = ? WHERE id = ?`},
-		{&s.stmtRotate, `UPDATE api_keys SET key = ?, rotated_at = ? WHERE id = ?`},
+		{&s.stmtRotate, `UPDATE api_keys SET key_hash = ?, key_display = ?, rotated_at = ? WHERE id = ?`},
 	}
 	for _, s2 := range stmts {
 		// These are long-lived prepared statements cached on the SQLStore for
@@ -158,35 +129,12 @@ func (s *SQLStore) prepareStmts(ctx context.Context) error {
 	return nil
 }
 
-func (s *SQLStore) ensureUsageColumns(ctx context.Context) error {
-	alterStatements := []string{
-		"ALTER TABLE api_keys ADD COLUMN usage_count INTEGER NOT NULL DEFAULT 0",
-	}
-
-	if s.dialect == dialectPostgres {
-		alterStatements = append(alterStatements,
-			"ALTER TABLE api_keys ADD COLUMN last_used_at TIMESTAMPTZ NULL",
-		)
-	} else {
-		alterStatements = append(alterStatements,
-			"ALTER TABLE api_keys ADD COLUMN last_used_at DATETIME NULL",
-		)
-	}
-
-	for _, stmt := range alterStatements {
-		if _, err := s.db.ExecContext(ctx, stmt); err != nil && !isDuplicateColumnError(err) {
-			return fmt.Errorf("ensure api_keys usage columns: %w", err)
-		}
-	}
-	return nil
-}
-
 // Close closes the underlying SQL connection.
 func (s *SQLStore) Close() error {
 	if s == nil || s.db == nil {
 		return nil
 	}
-	for _, stmt := range []*sql.Stmt{s.stmtGetByID, s.stmtGetByKey, s.stmtRevoke, s.stmtUpdate, s.stmtSetExpiry, s.stmtDelete, s.stmtUsage, s.stmtRotate} {
+	for _, stmt := range []*sql.Stmt{s.stmtGetByID, s.stmtGetByHash, s.stmtRevoke, s.stmtUpdate, s.stmtSetExpiry, s.stmtDelete, s.stmtUsage, s.stmtRotate} {
 		if stmt != nil {
 			_ = stmt.Close()
 		}
@@ -194,7 +142,8 @@ func (s *SQLStore) Close() error {
 	return s.db.Close()
 }
 
-// Create inserts a new API key in the SQL store.
+// Create inserts a new API key in the SQL store. The returned key carries the
+// full secret; only its hash and display form are persisted.
 func (s *SQLStore) Create(ctx context.Context, name string, scopes []string, expiresAt *time.Time) (*APIKey, error) {
 	if len(scopes) == 0 {
 		scopes = []string{ScopeAdmin}
@@ -220,11 +169,11 @@ func (s *SQLStore) Create(ctx context.Context, name string, scopes []string, exp
 	}
 
 	q := s.bind(`
-INSERT INTO api_keys(id, key, name, scopes, created_at, revoked_at, expires_at, rotated_at, active, usage_count, last_used_at)
-VALUES(?, ?, ?, ?, ?, NULL, ?, NULL, ?, ?, NULL)`)
+INSERT INTO api_keys(id, key_hash, key_display, name, scopes, created_at, revoked_at, expires_at, rotated_at, active, usage_count, last_used_at)
+VALUES(?, ?, ?, ?, ?, ?, NULL, ?, NULL, ?, ?, NULL)`)
 
 	//nolint:gosec // G701 false positive: q is a static SQL template (s.bind rewrites placeholders); all values are passed as bound parameters, not interpolated.
-	if _, err := s.db.ExecContext(ctx, q, id, key, name, string(scopesJSON), now, expiresAt, true, 0); err != nil {
+	if _, err := s.db.ExecContext(ctx, q, id, hashKey(key), displayKey(key), name, string(scopesJSON), now, expiresAt, true, 0); err != nil {
 		return nil, fmt.Errorf("create key: %w", err)
 	}
 
@@ -238,6 +187,20 @@ VALUES(?, ?, ?, ?, ?, NULL, ?, NULL, ?, ?, NULL)`)
 		UsageCount: 0,
 		Active:     true,
 	}, nil
+}
+
+// IsEmpty reports whether the store holds no API keys. It stops at the first
+// row rather than materializing the whole table.
+func (s *SQLStore) IsEmpty(ctx context.Context) (bool, error) {
+	var one int
+	err := s.db.QueryRowContext(ctx, "SELECT 1 FROM api_keys LIMIT 1").Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return true, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("count keys: %w", err)
+	}
+	return false, nil
 }
 
 // Get retrieves an API key by ID from the SQL store.
@@ -267,13 +230,9 @@ func (s *SQLStore) lookupForMutate(ctx context.Context, id string) (*APIKey, err
 	return key, nil
 }
 
-// List returns all API keys with masked key values.
+// List returns all API keys.
 func (s *SQLStore) List(ctx context.Context) []*APIKey {
-	q := `
-SELECT id, key, name, scopes, created_at, revoked_at, expires_at, rotated_at, last_used_at, usage_count, active
-FROM api_keys`
-
-	rows, err := s.db.QueryContext(ctx, q)
+	rows, err := s.db.QueryContext(ctx, keyRowSelect)
 	if err != nil {
 		return []*APIKey{}
 	}
@@ -287,9 +246,7 @@ FROM api_keys`
 		if scanErr != nil {
 			continue
 		}
-		masked := *k
-		masked.Key = maskKey(masked.Key)
-		keys = append(keys, &masked)
+		keys = append(keys, k)
 	}
 	return keys
 }
@@ -331,9 +288,7 @@ func (s *SQLStore) Update(ctx context.Context, id string, name string, scopes []
 		return nil, fmt.Errorf("update key: %w", err)
 	}
 
-	masked := *current
-	masked.Key = maskKey(masked.Key)
-	return &masked, nil
+	return current, nil
 }
 
 // SetExpiration updates or clears the API key expiration time.
@@ -373,7 +328,7 @@ func (s *SQLStore) Delete(ctx context.Context, id string) error {
 // authentication — dropping one increment is preferable to returning a 401 on a
 // legitimate request.
 func (s *SQLStore) ValidateKey(ctx context.Context, key string) (*APIKey, bool) {
-	apiKey, err := s.scanOne(ctx, s.stmtGetByKey, key)
+	apiKey, err := s.scanOne(ctx, s.stmtGetByHash, hashKey(key))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false
 	}
@@ -400,7 +355,8 @@ func (s *SQLStore) ValidateKey(ctx context.Context, key string) (*APIKey, bool) 
 	return apiKey, true
 }
 
-// RotateKey rotates the secret value for an existing API key.
+// RotateKey rotates the secret value for an existing API key. The returned key
+// carries the new secret, which the read-back cannot recover.
 func (s *SQLStore) RotateKey(ctx context.Context, id string) (*APIKey, error) {
 	newKey, err := generateAPIKeyString()
 	if err != nil {
@@ -408,7 +364,7 @@ func (s *SQLStore) RotateKey(ctx context.Context, id string) (*APIKey, error) {
 	}
 	now := time.Now().UTC()
 
-	res, err := s.stmtRotate.ExecContext(ctx, newKey, now, id)
+	res, err := s.stmtRotate.ExecContext(ctx, hashKey(newKey), displayKey(newKey), now, id)
 	if err != nil {
 		return nil, fmt.Errorf("rotate key: %w", err)
 	}
@@ -421,6 +377,7 @@ func (s *SQLStore) RotateKey(ctx context.Context, id string) (*APIKey, error) {
 	if err != nil {
 		return nil, err
 	}
+	updated.Key = newKey
 	return updated, nil
 }
 
@@ -479,17 +436,13 @@ func scanAPIKey(scanner interface {
 	return &k, nil
 }
 
-func isDuplicateColumnError(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "duplicate column") ||
-		strings.Contains(msg, "already exists")
+func (s *SQLStore) bind(query string) string {
+	return bindPlaceholders(migrations.Dialect(s.dialect), query)
 }
 
-func (s *SQLStore) bind(query string) string {
-	if s.dialect != dialectPostgres {
+// bindPlaceholders rewrites '?' placeholders to Postgres '$N' form.
+func bindPlaceholders(dialect migrations.Dialect, query string) string {
+	if dialect != migrations.Postgres {
 		return query
 	}
 	var (

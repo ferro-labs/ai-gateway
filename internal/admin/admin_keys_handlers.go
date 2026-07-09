@@ -78,11 +78,8 @@ func (h *Handlers) getKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	masked := *key
-	masked.Key = maskKey(masked.Key)
-
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(masked)
+	_ = json.NewEncoder(w).Encode(key)
 }
 
 //nolint:gocyclo // Query parsing + filtering/sorting logic is intentionally centralized for the endpoint.

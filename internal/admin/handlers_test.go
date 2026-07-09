@@ -307,8 +307,8 @@ func TestListKeys(t *testing.T) {
 		t.Fatalf("expected 3 keys, got %d", len(keys))
 	}
 	for _, k := range keys {
-		if len(k.Key) > 11 {
-			t.Errorf("expected masked key, got %s", k.Key)
+		if !strings.Contains(k.Key, "...") {
+			t.Errorf("expected a display key, got %s", k.Key)
 		}
 	}
 }
@@ -333,8 +333,11 @@ func TestGetKeyByID(t *testing.T) {
 	if got.ID != created.ID {
 		t.Fatalf("expected id %s, got %s", created.ID, got.ID)
 	}
-	if got.Key == created.Key || len(got.Key) > 11 {
-		t.Fatalf("expected masked key, got %q", got.Key)
+	if got.Key == created.Key {
+		t.Fatalf("the full secret was returned by GET /admin/keys/{id}: %q", got.Key)
+	}
+	if got.Key != displayKey(created.Key) {
+		t.Fatalf("expected the display key %q, got %q", displayKey(created.Key), got.Key)
 	}
 }
 

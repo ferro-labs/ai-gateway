@@ -91,6 +91,7 @@ ai-gateway/
 │   ├── discovery/        # Shared OpenAI-compatible model discovery helper
 │   ├── latency/          # Latency tracking for least-latency strategy
 │   ├── metrics/          # Prometheus metrics
+│   ├── migrations/       # Versioned schema-migration runner (schema_migrations ledger)
 │   ├── otel/             # OTel-backed observability.Provider: OTLP exporter, W3C propagation, trace-ID unifying IDGenerator, privacy-aware span errors, HTTP middleware
 │   ├── redact/           # Error-message redaction policies (email / JWT / AWS key)
 │   ├── plugins/          # Built-in plugin implementations
