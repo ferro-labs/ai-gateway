@@ -49,24 +49,18 @@ func NewSQLiteStore(ctx context.Context, dsn string) (*SQLStore, error) {
 	if dsn == "" {
 		dsn = "ferrogw-keys.db"
 	}
+	// Restrict the file before SQLite touches it. The migration below reads and
+	// rewrites every stored key, and a file created under the process umask is
+	// world-readable until something narrows it.
+	if err := sqlitefile.Secure(dsn); err != nil {
+		return nil, err
+	}
+
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite store: %w", err)
 	}
 	tuneDBPool(db, string(dialectSQLite))
-
-	// Restrict the file before the schema migration reads or rewrites any key.
-	// SQLite creates the file honoring the process umask, so it can start out
-	// world-readable, and the migration that replaces the plaintext keys is
-	// exactly the window in which that matters.
-	if err := db.PingContext(ctx); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("ping sqlite store: %w", err)
-	}
-	if err := sqlitefile.Secure(dsn); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
 
 	store := &SQLStore{db: db, dialect: dialectSQLite}
 	if err := store.init(ctx); err != nil {

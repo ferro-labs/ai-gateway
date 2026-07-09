@@ -31,10 +31,55 @@ func TestSecure_RestrictsPermissions(t *testing.T) {
 	}
 }
 
-func TestSecure_MissingFileReturnsError(t *testing.T) {
+// Securing a file that SQLite has not created yet is the point: a file created
+// under the process umask is world-readable, and a process that opened it in
+// that window keeps reading everything written afterwards.
+func TestSecure_CreatesMissingFileRestricted(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "missing.db")
+
+	if err := Secure(path); err != nil {
+		t.Fatalf("Secure: %v", err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("expected mode 0600, got %o", perm)
+	}
+	if info.Size() != 0 {
+		t.Errorf("expected an empty file, got %d bytes", info.Size())
+	}
+}
+
+// SQLite reads a zero-byte file as an empty database, so pre-creating one must
+// not disturb a database opened over it afterwards.
+func TestSecure_IsIdempotent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "twice.db")
+	if err := Secure(path); err != nil {
+		t.Fatalf("first Secure: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("payload"), 0o600); err != nil {
+		t.Fatalf("write payload: %v", err)
+	}
+	if err := Secure(path); err != nil {
+		t.Fatalf("second Secure: %v", err)
+	}
+
+	raw, err := os.ReadFile(path) //nolint:gosec // path is from t.TempDir()
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if string(raw) != "payload" {
+		t.Fatalf("Secure truncated an existing database: %q", raw)
+	}
+}
+
+func TestSecure_UncreatableFileReturnsError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "no-such-dir", "test.db")
 	if err := Secure(path); err == nil {
-		t.Fatal("expected error for a file that does not exist")
+		t.Fatal("expected an error for a path whose directory does not exist")
 	}
 }
 

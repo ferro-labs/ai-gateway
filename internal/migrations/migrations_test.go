@@ -6,6 +6,7 @@ import (
 	"errors"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	// Register the SQLite SQL driver under the name "sqlite".
@@ -298,6 +299,7 @@ func TestRun_NoTxStep(t *testing.T) {
 
 func TestRun_Validation(t *testing.T) {
 	noop := func(_ context.Context, _ *sql.Tx) error { return nil }
+	noopDB := func(_ context.Context, _ *sql.DB) error { return nil }
 
 	cases := []struct {
 		name  string
@@ -315,6 +317,9 @@ func TestRun_Validation(t *testing.T) {
 		{"version below one", []Step{{Version: 0, Name: "a", SQL: "SELECT 1"}}},
 		{"empty name", []Step{{Version: 1, Name: "", SQL: "SELECT 1"}}},
 		{"both SQL and Fn", []Step{{Version: 1, Name: "a", SQL: "SELECT 1", Fn: noop}}},
+		{"both SQL and NoTx", []Step{{Version: 1, Name: "a", SQL: "SELECT 1", NoTx: noopDB}}},
+		{"both Fn and NoTx", []Step{{Version: 1, Name: "a", Fn: noop, NoTx: noopDB}}},
+		{"all three", []Step{{Version: 1, Name: "a", SQL: "SELECT 1", Fn: noop, NoTx: noopDB}}},
 		{"no work set", []Step{{Version: 1, Name: "a"}}},
 	}
 
@@ -325,5 +330,53 @@ func TestRun_Validation(t *testing.T) {
 				t.Fatalf("Run(%s) = nil, want validation error", c.name)
 			}
 		})
+	}
+}
+
+// Every path below Run treats "not Postgres" as SQLite. An unrecognized dialect
+// must be rejected rather than silently taking that path.
+func TestRun_UnsupportedDialect(t *testing.T) {
+	db := newTestDB(t)
+	steps := []Step{{Version: 1, Name: "a", SQL: "CREATE TABLE a (id INTEGER)"}}
+
+	err := Run(context.Background(), db, Dialect("mysql"), "", steps)
+	if err == nil {
+		t.Fatal("Run with an unsupported dialect returned nil")
+	}
+	if !strings.Contains(err.Error(), "unsupported dialect") {
+		t.Fatalf("error = %v, want an unsupported-dialect error", err)
+	}
+
+	var tables int
+	if err := db.QueryRowContext(t.Context(), "SELECT COUNT(*) FROM sqlite_master WHERE type='table'").Scan(&tables); err != nil {
+		t.Fatalf("count tables: %v", err)
+	}
+	if tables != 0 {
+		t.Fatalf("Run created %d table(s) before rejecting the dialect", tables)
+	}
+}
+
+// Rolling a deployment back leaves the schema at the newer shape. This build's
+// statements were not written against it, so Run must stop rather than read and
+// write rows through a schema it does not know.
+func TestRun_RefusesDatabaseMigratedByNewerBuild(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+
+	newer := []Step{
+		{Version: 1, Name: "a", SQL: "CREATE TABLE a (id INTEGER)"},
+		{Version: 2, Name: "b", SQL: "CREATE TABLE b (id INTEGER)"},
+	}
+	if err := Run(ctx, db, SQLite, "", newer); err != nil {
+		t.Fatalf("seed newer schema: %v", err)
+	}
+
+	older := newer[:1]
+	err := Run(ctx, db, SQLite, "", older)
+	if err == nil {
+		t.Fatal("Run against a forward-migrated database returned nil")
+	}
+	if !strings.Contains(err.Error(), "newer version") {
+		t.Fatalf("error = %v, want a newer-version error", err)
 	}
 }

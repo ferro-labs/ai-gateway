@@ -386,3 +386,99 @@ VALUES('empty-id', ?, '...', 'empty', '["admin"]', ?, NULL, NULL, NULL, 1, 0, NU
 		t.Fatal("the empty string authenticated against the in-memory store")
 	}
 }
+
+// SQLite gives the rollback journal and the write-ahead log the mode of the
+// database file, so creating the database restricted also restricts the
+// sidecars that hold the same data.
+func TestWriteAheadLogInheritsRestrictedMode(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "keys.db")
+
+	store, err := NewSQLiteStore(t.Context(), "file:"+path+"?_pragma=journal_mode(WAL)")
+	if err != nil {
+		t.Fatalf("new sqlite store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	if _, err := store.Create(context.Background(), "wal", []string{ScopeAdmin}, nil); err != nil {
+		t.Fatalf("create key: %v", err)
+	}
+
+	var mode string
+	if err := store.db.QueryRowContext(t.Context(), "PRAGMA journal_mode").Scan(&mode); err != nil {
+		t.Fatalf("read journal_mode: %v", err)
+	}
+	if mode != "wal" {
+		t.Fatalf("journal_mode = %q, want wal; this test would prove nothing", mode)
+	}
+
+	for _, suffix := range []string{"", "-wal"} {
+		info, err := os.Stat(path + suffix)
+		if err != nil {
+			t.Fatalf("stat %s%s: %v", path, suffix, err)
+		}
+		if perm := info.Mode().Perm(); perm != 0o600 {
+			t.Errorf("%s%s has mode %o, want 0600", path, suffix, perm)
+		}
+	}
+}
+
+// The checkpoint pragma reports a busy database in a result row rather than an
+// error, and leaves the log in place. Discarding that row would record the
+// migration as complete with the plaintext still in the write-ahead log.
+func TestCheckpointReportsBusyDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wal.db")
+	dsn := "file:" + path + "?_pragma=journal_mode(WAL)"
+
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.ExecContext(t.Context(), "CREATE TABLE t (id INTEGER); INSERT INTO t VALUES (1)"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// A quiet database checkpoints cleanly.
+	if err := checkpointWAL(t.Context(), db); err != nil {
+		t.Fatalf("checkpointWAL on an idle database: %v", err)
+	}
+
+	// Another connection holding a read transaction blocks a truncating
+	// checkpoint. The pragma succeeds, reports busy, and merges nothing.
+	reader, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatalf("open reader: %v", err)
+	}
+	t.Cleanup(func() { _ = reader.Close() })
+	tx, err := reader.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatalf("begin reader transaction: %v", err)
+	}
+	var n int
+	if err := tx.QueryRowContext(t.Context(), "SELECT COUNT(*) FROM t").Scan(&n); err != nil {
+		t.Fatalf("hold read lock: %v", err)
+	}
+	if _, err := db.ExecContext(t.Context(), "INSERT INTO t VALUES (2)"); err != nil {
+		t.Fatalf("write a frame to the log: %v", err)
+	}
+
+	if err := checkpointWAL(t.Context(), db); err == nil {
+		t.Fatal("checkpointWAL reported success while the log could not be merged")
+	}
+	_ = tx.Rollback()
+
+	// A database in the default journal mode has no log to fold, and must not
+	// be reported as busy.
+	plain, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "plain.db"))
+	if err != nil {
+		t.Fatalf("open plain db: %v", err)
+	}
+	t.Cleanup(func() { _ = plain.Close() })
+	if _, err := plain.ExecContext(t.Context(), "CREATE TABLE t (id INTEGER)"); err != nil {
+		t.Fatalf("seed plain: %v", err)
+	}
+	if err := checkpointWAL(t.Context(), plain); err != nil {
+		t.Fatalf("checkpointWAL on a non-WAL database: %v", err)
+	}
+}

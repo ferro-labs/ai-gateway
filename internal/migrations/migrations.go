@@ -66,6 +66,12 @@ const lockID int64 = 4872193001
 // duration, so a second instance waits and then finds every step already
 // recorded. SQLite serializes writers itself.
 func Run(ctx context.Context, db *sql.DB, dialect Dialect, primaryTable string, steps []Step) error {
+	// Everything below treats "not Postgres" as SQLite — the ledger DDL, the
+	// table probe, and the placeholder form. An unrecognized dialect would
+	// silently take the SQLite path rather than fail.
+	if dialect != SQLite && dialect != Postgres {
+		return fmt.Errorf("migrations: unsupported dialect %q", dialect)
+	}
 	if err := validate(steps); err != nil {
 		return err
 	}
@@ -97,6 +103,9 @@ func Run(ctx context.Context, db *sql.DB, dialect Dialect, primaryTable string, 
 	}
 	applied, err := appliedVersions(ctx, db)
 	if err != nil {
+		return err
+	}
+	if err := checkNotAhead(applied, steps); err != nil {
 		return err
 	}
 
@@ -161,6 +170,23 @@ func applyStep(ctx context.Context, db *sql.DB, ledgerInsert string, step Step) 
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit migration %d (%s): %w", step.Version, step.Name, err)
+	}
+	return nil
+}
+
+// checkNotAhead refuses to run against a database a newer binary has already
+// migrated. Rolling back a deployment leaves the schema at the newer shape,
+// which this binary's statements were not written against; stopping is safer
+// than reading and writing rows through a schema it does not know.
+func checkNotAhead(applied map[int]struct{}, steps []Step) error {
+	known := make(map[int]struct{}, len(steps))
+	for _, step := range steps {
+		known[step.Version] = struct{}{}
+	}
+	for version := range applied {
+		if _, ok := known[version]; !ok {
+			return fmt.Errorf("migrations: database has migration %d applied, which this build does not know; it was migrated by a newer version", version)
+		}
 	}
 	return nil
 }

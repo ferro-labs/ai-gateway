@@ -141,9 +141,9 @@ func (h *Handlers) logsStats(w http.ResponseWriter, r *http.Request) {
 			"error_entries": stats.ErrorEntries,
 			"total_tokens":  stats.TotalTokens,
 		},
-		"by_stage":    stats.ByStage,
-		"by_provider": limitCounts(stats.ByProvider, limit),
-		"by_model":    limitCounts(stats.ByModel, limit),
+		"by_stage":    nonNilCounts(stats.ByStage),
+		"by_provider": nonNilCounts(limitCounts(stats.ByProvider, limit)),
+		"by_model":    nonNilCounts(limitCounts(stats.ByModel, limit)),
 		"filters": map[string]any{
 			"limit":    limit,
 			"stage":    query.Stage,
@@ -152,6 +152,15 @@ func (h *Handlers) logsStats(w http.ResponseWriter, r *http.Request) {
 			"since":    r.URL.Query().Get("since"),
 		},
 	})
+}
+
+// nonNilCounts keeps an absent dimension encoding as {} rather than null, which
+// clients index into without checking.
+func nonNilCounts(input map[string]int) map[string]int {
+	if input == nil {
+		return map[string]int{}
+	}
+	return input
 }
 
 func limitCounts(input map[string]int, limit int) map[string]int {

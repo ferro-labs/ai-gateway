@@ -207,10 +207,18 @@ func rebuildColumns(dialect migrations.Dialect) []columnSpec {
 // ensureColumn adds a column when the table does not already have it. It probes
 // the catalog rather than executing the ALTER and matching the resulting error
 // message.
+//
+// The Postgres probe resolves the table through to_regclass, so it inspects the
+// relation the surrounding statements will actually touch. Filtering
+// information_schema.columns by name alone would match a same-named table in
+// any visible schema, and skipping the ALTER on that evidence would leave the
+// real table without the column. attisdropped excludes columns Postgres retains
+// in the catalog after a DROP COLUMN.
 func ensureColumn(ctx context.Context, tx *sql.Tx, dialect migrations.Dialect, table, column, ddl string) error {
 	probe := "SELECT 1 FROM pragma_table_info(?) WHERE name = ?"
 	if dialect == migrations.Postgres {
-		probe = "SELECT 1 FROM information_schema.columns WHERE table_name = $1 AND column_name = $2"
+		probe = `SELECT 1 FROM pg_attribute
+WHERE attrelid = to_regclass($1) AND attname = $2 AND attnum > 0 AND NOT attisdropped`
 	}
 
 	var one int
@@ -247,9 +255,27 @@ func scrubFreedPages(dialect migrations.Dialect) func(context.Context, *sql.DB) 
 		if _, err := db.ExecContext(ctx, "VACUUM"); err != nil {
 			return fmt.Errorf("vacuum api_keys database: %w", err)
 		}
-		if _, err := db.ExecContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
-			return fmt.Errorf("checkpoint api_keys write-ahead log: %w", err)
-		}
-		return nil
+		return checkpointWAL(ctx, db)
 	}
+}
+
+// checkpointWAL folds the write-ahead log back into the database and truncates
+// it.
+//
+// The pragma reports its outcome in a result row rather than an error, and it
+// returns busy=1 without doing anything when another connection holds a read
+// lock. Executing it and discarding that row would record the migration as
+// complete while the plaintext keys are still sitting in the -wal file.
+//
+// On a database in the default journal mode there is no log to fold, and the
+// pragma reports busy=0 with log=-1.
+func checkpointWAL(ctx context.Context, db *sql.DB) error {
+	var busy, logFrames, checkpointed int
+	if err := db.QueryRowContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)").Scan(&busy, &logFrames, &checkpointed); err != nil {
+		return fmt.Errorf("checkpoint api_keys write-ahead log: %w", err)
+	}
+	if busy != 0 {
+		return fmt.Errorf("checkpoint api_keys write-ahead log: database busy, %d frames left unmerged", logFrames)
+	}
+	return nil
 }

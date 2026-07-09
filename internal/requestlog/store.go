@@ -106,22 +106,17 @@ func NewSQLiteWriter(ctx context.Context, dsn string) (*SQLWriter, error) {
 	if dsn == "" {
 		dsn = "ferrogw-requests.db"
 	}
+	// Restrict the file before SQLite touches it: a file created under the
+	// process umask is world-readable until something narrows it.
+	if err := sqlitefile.Secure(dsn); err != nil {
+		return nil, err
+	}
+
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite request log writer: %w", err)
 	}
 	tuneDBPool(db, requestLogDialectSQLite)
-
-	// Restrict the file before anything is written to it: SQLite creates it
-	// honoring the process umask, which can leave it world-readable.
-	if err := db.PingContext(ctx); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("ping sqlite request log writer: %w", err)
-	}
-	if err := sqlitefile.Secure(dsn); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
 
 	w := &SQLWriter{db: db, dialect: requestLogDialectSQLite}
 	if err := w.init(ctx); err != nil {
