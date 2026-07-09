@@ -49,16 +49,49 @@ type Step struct {
 	NoTx func(ctx context.Context, db *sql.DB) error
 }
 
+// lockID identifies the advisory lock Postgres callers take for the duration of
+// Run. The value is arbitrary; it only has to be stable and unlikely to collide
+// with an application lock.
+const lockID int64 = 4872193001
+
 // Run applies every step whose version is not yet recorded, in ascending order,
 // and is safe to call on every process start.
 //
 // If the ledger is empty, primaryTable is non-empty, and that table already
 // exists, steps[0] is recorded as applied without executing it: the database
 // predates the runner and its baseline schema is already present.
+//
+// Concurrent callers are serialized. On Postgres, where several gateway
+// instances can share one database, Run holds an advisory lock for its whole
+// duration, so a second instance waits and then finds every step already
+// recorded. SQLite serializes writers itself.
 func Run(ctx context.Context, db *sql.DB, dialect Dialect, primaryTable string, steps []Step) error {
 	if err := validate(steps); err != nil {
 		return err
 	}
+
+	if dialect == Postgres {
+		// The lock is held on its own reserved session; the steps below run on
+		// other pooled connections. Postgres releases session-level advisory
+		// locks when the backend disconnects, so a crash mid-migration cannot
+		// strand it.
+		conn, err := db.Conn(ctx)
+		if err != nil {
+			return fmt.Errorf("reserve migration connection: %w", err)
+		}
+		defer func() { _ = conn.Close() }()
+
+		if _, err := conn.ExecContext(ctx, "SELECT pg_advisory_lock($1)", lockID); err != nil {
+			return fmt.Errorf("acquire migration lock: %w", err)
+		}
+		defer func() {
+			// The caller's context may already be done; releasing the lock is
+			// still worth attempting so the connection returns to the pool
+			// unlocked rather than waiting on the backend to disconnect.
+			_, _ = conn.ExecContext(context.WithoutCancel(ctx), "SELECT pg_advisory_unlock($1)", lockID)
+		}()
+	}
+
 	if err := ensureLedger(ctx, db, dialect); err != nil {
 		return err
 	}

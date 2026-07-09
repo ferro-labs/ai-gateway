@@ -15,10 +15,12 @@ Key hashing and storage hardening — the fourth phase of the v1.1.x hardening r
 - The migration **rebuilds the key table** rather than dropping the plaintext column, so the secrets are removed from the database file itself. Dropping the column would leave them readable on disk: SQLite retains freed pages until `VACUUM`, and Postgres `DROP COLUMN` only updates the catalog. On SQLite the migration additionally vacuums and truncates the write-ahead log.
 - Operators who need a hard guarantee that no earlier copy of a key survives — in backups, WAL archives, replicas, or unlinked filesystem blocks — should **rotate their keys after upgrading**. No schema migration can reach those copies.
 - **Bootstrap credentials now fail closed.** `ADMIN_BOOTSTRAP_KEY` and `ADMIN_BOOTSTRAP_READ_ONLY_KEY` are accepted only against a key store that is confirmed empty. Previously a key store that could not be read reported zero keys, which re-opened the bootstrap credentials during a database outage.
+- **SQLite database files are restricted to owner-only access before any data is written to them**, rather than after the schema is initialized. SQLite creates files honoring the process umask, so a database could previously be world-readable for the duration of startup.
+- An `Authorization: Bearer` header with an empty value is no longer matched against the key store.
 
 ### Added
 
-- **Versioned schema migrations.** Schema changes now run through a `schema_migrations` ledger, replacing repeated `ALTER TABLE` statements whose failures were classified by matching the error message text. Databases created by earlier releases are adopted at the baseline version rather than re-initialized.
+- **Versioned schema migrations.** Schema changes now run through a `schema_migrations` ledger, replacing repeated `ALTER TABLE` statements whose failures were classified by matching the error message text. Databases created by earlier releases are adopted at the baseline version rather than re-initialized. On Postgres the runner holds an advisory lock for its duration, so several gateway instances sharing one database can start at the same time.
 
 ### Changed
 

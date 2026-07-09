@@ -63,12 +63,20 @@ func NewSQLiteConfigStore(ctx context.Context, dsn string) (*SQLConfigStore, err
 		return nil, fmt.Errorf("open sqlite config store: %w", err)
 	}
 	tuneDBPool(db, string(configDialectSQLite))
-	s := &SQLConfigStore{db: db, dialect: configDialectSQLite}
-	if err := s.init(ctx); err != nil {
+
+	// Restrict the file before anything is written to it: SQLite creates it
+	// honoring the process umask, which can leave it world-readable.
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("ping sqlite config store: %w", err)
+	}
+	if err := sqlitefile.Secure(dsn); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
-	if err := sqlitefile.Secure(dsn); err != nil {
+
+	s := &SQLConfigStore{db: db, dialect: configDialectSQLite}
+	if err := s.init(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
 	}

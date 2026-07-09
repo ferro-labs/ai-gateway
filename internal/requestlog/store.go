@@ -111,12 +111,20 @@ func NewSQLiteWriter(ctx context.Context, dsn string) (*SQLWriter, error) {
 		return nil, fmt.Errorf("open sqlite request log writer: %w", err)
 	}
 	tuneDBPool(db, requestLogDialectSQLite)
-	w := &SQLWriter{db: db, dialect: requestLogDialectSQLite}
-	if err := w.init(ctx); err != nil {
+
+	// Restrict the file before anything is written to it: SQLite creates it
+	// honoring the process umask, which can leave it world-readable.
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("ping sqlite request log writer: %w", err)
+	}
+	if err := sqlitefile.Secure(dsn); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
-	if err := sqlitefile.Secure(dsn); err != nil {
+
+	w := &SQLWriter{db: db, dialect: requestLogDialectSQLite}
+	if err := w.init(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
 	}

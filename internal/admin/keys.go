@@ -263,8 +263,13 @@ func (s *KeyStore) RotateKey(_ context.Context, id string) (*APIKey, error) {
 	return rotated, nil
 }
 
-// ValidateKey looks up a key by its full string and returns it if active.
+// ValidateKey looks up a key by its full string and returns it if active. The
+// empty string is never a valid key: an "Authorization: Bearer " header with no
+// value must not match a stored record, however that record came to exist.
 func (s *KeyStore) ValidateKey(_ context.Context, key string) (*APIKey, bool) {
+	if key == "" {
+		return nil, false
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	id, ok := s.byHash[hashKey(key)]

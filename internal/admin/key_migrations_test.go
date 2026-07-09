@@ -298,3 +298,91 @@ func TestFreshDatabaseMatchesMigratedSchema(t *testing.T) {
 		}
 	}
 }
+
+// writeUnmigratableDB builds a legacy database the migration cannot complete:
+// two rows share a key, so the rebuild's UNIQUE key_hash constraint rejects the
+// copy. The plaintext column is declared without UNIQUE to allow the duplicate.
+func writeUnmigratableDB(t *testing.T) string {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "keys.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open legacy db: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	ddl := `CREATE TABLE api_keys (
+		id TEXT PRIMARY KEY, key TEXT NOT NULL, name TEXT NOT NULL, scopes TEXT NOT NULL,
+		created_at DATETIME NOT NULL, revoked_at DATETIME NULL, expires_at DATETIME NULL,
+		rotated_at DATETIME NULL, active BOOLEAN NOT NULL,
+		usage_count INTEGER NOT NULL DEFAULT 0, last_used_at DATETIME NULL);`
+	if _, err := db.ExecContext(t.Context(), ddl); err != nil {
+		t.Fatalf("create legacy schema: %v", err)
+	}
+
+	insert := `INSERT INTO api_keys(id, key, name, scopes, created_at, active) VALUES(?, ?, 'legacy', '["admin"]', ?, 1)`
+	for _, id := range []string{"first", "second"} {
+		if _, err := db.ExecContext(t.Context(), insert, id, plaintextKey, time.Now().UTC()); err != nil {
+			t.Fatalf("insert duplicate key: %v", err)
+		}
+	}
+	return path
+}
+
+// The migration reads and rewrites every stored secret. If the file is still
+// world-readable while that happens, hashing the keys buys nothing.
+//
+// Asserting the mode after a *successful* open would prove nothing, since a
+// chmod that runs afterwards leaves the same final state. So this drives a
+// migration that fails partway: the file must already be restricted by the time
+// the constructor gives up.
+func TestDatabaseIsSecuredBeforeMigrationReadsKeys(t *testing.T) {
+	path := writeUnmigratableDB(t)
+	// The permissive mode is the precondition under test, not an oversight.
+	if err := os.Chmod(path, 0o644); err != nil { //nolint:gosec // G302: deliberately world-readable fixture.
+		t.Fatalf("relax file mode: %v", err)
+	}
+
+	store, err := NewSQLiteStore(t.Context(), path)
+	if err == nil {
+		_ = store.Close()
+		t.Fatal("the migration was expected to fail on the duplicate key")
+	}
+
+	info, statErr := os.Stat(path)
+	if statErr != nil {
+		t.Fatalf("stat sqlite file: %v", statErr)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("file mode is %o when the migration failed, want 0600: the secrets were read while world-readable", perm)
+	}
+}
+
+// An "Authorization: Bearer " header with no value hashes to a real digest. It
+// must never match, even against a hand-tampered row holding an empty key.
+func TestEmptyBearerNeverValidates(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "keys.db")
+	store, err := NewSQLiteStore(t.Context(), path)
+	if err != nil {
+		t.Fatalf("new sqlite store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	insert := `INSERT INTO api_keys(id, key_hash, key_display, name, scopes, created_at, revoked_at, expires_at, rotated_at, active, usage_count, last_used_at)
+VALUES('empty-id', ?, '...', 'empty', '["admin"]', ?, NULL, NULL, NULL, 1, 0, NULL)`
+	if _, err := store.db.ExecContext(t.Context(), insert, hashKey(""), time.Now().UTC()); err != nil {
+		t.Fatalf("insert degenerate key: %v", err)
+	}
+
+	if _, ok := store.ValidateKey(context.Background(), ""); ok {
+		t.Fatal("the empty string authenticated against the SQL store")
+	}
+
+	mem := NewKeyStore()
+	mem.byHash[hashKey("")] = "empty-id"
+	mem.byID["empty-id"] = &keyRecord{apiKey: &APIKey{ID: "empty-id", Active: true}, hash: hashKey("")}
+	if _, ok := mem.ValidateKey(context.Background(), ""); ok {
+		t.Fatal("the empty string authenticated against the in-memory store")
+	}
+}

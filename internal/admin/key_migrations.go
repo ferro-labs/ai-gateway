@@ -118,14 +118,10 @@ func hashStoredKeys(dialect migrations.Dialect) func(context.Context, *sql.Tx) e
 		// A database last opened by a release that predates the usage columns
 		// is adopted at the baseline without them, so the rebuild's SELECT
 		// would fail. Add whatever is missing before reading.
-		for _, col := range baselineUsageColumns(dialect) {
+		for _, col := range rebuildColumns(dialect) {
 			if err := ensureColumn(ctx, tx, dialect, "api_keys", col.name, col.ddl); err != nil {
 				return err
 			}
-		}
-
-		if err := addHashColumns(ctx, tx); err != nil {
-			return err
 		}
 
 		secrets, err := readPlaintextKeys(ctx, tx)
@@ -186,24 +182,16 @@ func readPlaintextKeys(ctx context.Context, tx *sql.Tx) ([]storedSecret, error) 
 	return secrets, nil
 }
 
-func addHashColumns(ctx context.Context, tx *sql.Tx) error {
-	for _, stmt := range []string{
-		"ALTER TABLE api_keys ADD COLUMN key_hash TEXT",
-		"ALTER TABLE api_keys ADD COLUMN key_display TEXT",
-	} {
-		if _, err := tx.ExecContext(ctx, stmt); err != nil {
-			return fmt.Errorf("add hash columns: %w", err)
-		}
-	}
-	return nil
-}
-
 type columnSpec struct {
 	name string
 	ddl  string
 }
 
-func baselineUsageColumns(dialect migrations.Dialect) []columnSpec {
+// rebuildColumns are the columns the rebuild reads from or writes to and that
+// the table may not already have: the two an earlier release added with a bare
+// ALTER TABLE, and the two this migration introduces. Adding them through
+// ensureColumn keeps the step re-runnable.
+func rebuildColumns(dialect migrations.Dialect) []columnSpec {
 	lastUsed := "ALTER TABLE api_keys ADD COLUMN last_used_at DATETIME NULL"
 	if dialect == migrations.Postgres {
 		lastUsed = "ALTER TABLE api_keys ADD COLUMN last_used_at TIMESTAMPTZ NULL"
@@ -211,6 +199,8 @@ func baselineUsageColumns(dialect migrations.Dialect) []columnSpec {
 	return []columnSpec{
 		{name: "usage_count", ddl: "ALTER TABLE api_keys ADD COLUMN usage_count INTEGER NOT NULL DEFAULT 0"},
 		{name: "last_used_at", ddl: lastUsed},
+		{name: "key_hash", ddl: "ALTER TABLE api_keys ADD COLUMN key_hash TEXT"},
+		{name: "key_display", ddl: "ALTER TABLE api_keys ADD COLUMN key_display TEXT"},
 	}
 }
 

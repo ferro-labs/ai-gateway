@@ -54,12 +54,22 @@ func NewSQLiteStore(ctx context.Context, dsn string) (*SQLStore, error) {
 		return nil, fmt.Errorf("open sqlite store: %w", err)
 	}
 	tuneDBPool(db, string(dialectSQLite))
-	store := &SQLStore{db: db, dialect: dialectSQLite}
-	if err := store.init(ctx); err != nil {
+
+	// Restrict the file before the schema migration reads or rewrites any key.
+	// SQLite creates the file honoring the process umask, so it can start out
+	// world-readable, and the migration that replaces the plaintext keys is
+	// exactly the window in which that matters.
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("ping sqlite store: %w", err)
+	}
+	if err := sqlitefile.Secure(dsn); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
-	if err := sqlitefile.Secure(dsn); err != nil {
+
+	store := &SQLStore{db: db, dialect: dialectSQLite}
+	if err := store.init(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -328,6 +338,11 @@ func (s *SQLStore) Delete(ctx context.Context, id string) error {
 // authentication — dropping one increment is preferable to returning a 401 on a
 // legitimate request.
 func (s *SQLStore) ValidateKey(ctx context.Context, key string) (*APIKey, bool) {
+	// The empty string is never a valid key: an "Authorization: Bearer " header
+	// with no value must not match a stored record, however it came to exist.
+	if key == "" {
+		return nil, false
+	}
 	apiKey, err := s.scanOne(ctx, s.stmtGetByHash, hashKey(key))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false
