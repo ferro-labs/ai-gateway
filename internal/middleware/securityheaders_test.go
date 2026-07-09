@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -21,11 +22,41 @@ func TestSecurityHeaders_SetsBaselineHeaders(t *testing.T) {
 		{"X-Content-Type-Options", "nosniff"},
 		{"X-Frame-Options", "DENY"},
 		{"Referrer-Policy", "strict-origin-when-cross-origin"},
+		{"Content-Security-Policy", ContentSecurityPolicy},
+		{"Permissions-Policy", PermissionsPolicy},
 	}
 	for _, tt := range tests {
 		if got := w.Header().Get(tt.header); got != tt.want {
 			t.Errorf("header %s = %q, want %q", tt.header, got, tt.want)
 		}
+	}
+}
+
+// The policy protects an admin token held in localStorage. These are the
+// directives that do that work; a future edit must not quietly relax them.
+func TestSecurityHeaders_ContentSecurityPolicyBlocksInjectedScript(t *testing.T) {
+	mustContain := []string{
+		"script-src 'self'",
+		"object-src 'none'",
+		"frame-ancestors 'none'",
+		"base-uri 'self'",
+	}
+	for _, directive := range mustContain {
+		if !strings.Contains(ContentSecurityPolicy, directive) {
+			t.Errorf("CSP is missing %q: %s", directive, ContentSecurityPolicy)
+		}
+	}
+
+	// 'unsafe-inline'/'unsafe-eval' in script-src would defeat the whole policy.
+	// It is allowed in style-src, so check the script-src directive alone.
+	scriptSrc := ""
+	for _, directive := range strings.Split(ContentSecurityPolicy, ";") {
+		if strings.HasPrefix(strings.TrimSpace(directive), "script-src") {
+			scriptSrc = directive
+		}
+	}
+	if strings.Contains(scriptSrc, "unsafe-inline") || strings.Contains(scriptSrc, "unsafe-eval") {
+		t.Fatalf("script-src must not allow unsafe script execution: %q", scriptSrc)
 	}
 }
 

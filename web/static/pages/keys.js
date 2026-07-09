@@ -2,6 +2,16 @@
 
 var _createdKeyValue = '';
 
+registerActions({
+  'show-create-key': showCreateKeyModal,
+  'submit-create-key': submitCreateKey,
+  'copy-created-key': copyCreatedKey,
+  'close-modal': function(el) { closeModal(el.getAttribute('data-modal')); },
+  // Swallows clicks inside the modal card so they never reach the overlay's
+  // close action — data-action resolves to the nearest ancestor only.
+  'modal-body': function() {}
+});
+
 document.addEventListener('DOMContentLoaded', function() {
   loadKeys();
 });
@@ -135,10 +145,6 @@ function showCreateKeyModal() {
 function closeModal(id) {
   var modal = document.getElementById(id);
   if (modal) modal.style.display = 'none';
-}
-
-function handleOverlayClick(event, id) {
-  if (event.target === event.currentTarget) closeModal(id);
 }
 
 async function submitCreateKey() {
