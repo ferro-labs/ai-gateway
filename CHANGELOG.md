@@ -14,6 +14,7 @@ Streaming deadlines and serving robustness — the third phase of the v1.1.x har
 - **Long-lived streaming responses** on pass-through proxy routes and legacy completions streaming are no longer truncated after 120 seconds. Each client-facing write now carries its own short deadline, and a slow client that stops reading is disconnected instead of blocking a request goroutine.
 - **Upstream idle bound.** Because per-write deadlines take the server's overall write timeout out of play, both streaming paths now cancel the upstream request when it produces no data for 5 minutes. A stalled or trickling provider can no longer hold a connection open indefinitely.
 - **Browser-facing responses** now include Content-Security-Policy and Permissions-Policy headers in addition to the existing baseline security headers. The policy sets `script-src 'self'`, so the admin dashboard no longer relies on inline scripts or inline event handlers.
+- **Build toolchain pinned to Go 1.25.12**, picking up the fix for [GO-2026-5856](https://pkg.go.dev/vuln/GO-2026-5856) — an Encrypted Client Hello privacy leak in `crypto/tls`.
 
 ### Changed
 
