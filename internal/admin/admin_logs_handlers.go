@@ -121,95 +121,34 @@ func (h *Handlers) logsStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	baseQuery := requestlog.Query{
-		Limit:    200,
-		Offset:   0,
+	query := requestlog.Query{
 		Stage:    r.URL.Query().Get("stage"),
 		Model:    r.URL.Query().Get("model"),
 		Provider: r.URL.Query().Get("provider"),
 		Since:    since,
 	}
 
-	result, err := h.Logs.List(r.Context(), baseQuery)
+	stats, err := h.Logs.Stats(r.Context(), query)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to compute request log stats", "server_error", "internal_error")
 		return
 	}
 
-	entries := make([]requestlog.Entry, 0, min(result.Total, logsStatsMaxScannedEntries))
-	entries = append(entries, result.Data...)
-	for len(entries) < result.Total && len(entries) < logsStatsMaxScannedEntries {
-		baseQuery.Offset = len(entries)
-		next, listErr := h.Logs.List(r.Context(), baseQuery)
-		if listErr != nil {
-			writeError(w, http.StatusInternalServerError, "failed to compute request log stats", "server_error", "internal_error")
-			return
-		}
-		if len(next.Data) == 0 {
-			break
-		}
-		remaining := logsStatsMaxScannedEntries - len(entries)
-		if remaining <= 0 {
-			break
-		}
-		if len(next.Data) > remaining {
-			next.Data = next.Data[:remaining]
-		}
-		entries = append(entries, next.Data...)
-	}
-	truncated := len(entries) < result.Total
-
-	byStage := map[string]int{}
-	byProvider := map[string]int{}
-	byModel := map[string]int{}
-	errorCount := 0
-	tokens := 0
-	for _, entry := range entries {
-		stage := entry.Stage
-		if stage == "" {
-			stage = unknownLabel
-		}
-		byStage[stage]++
-
-		provider := entry.Provider
-		if provider == "" {
-			provider = unknownLabel
-		}
-		byProvider[provider]++
-
-		model := entry.Model
-		if model == "" {
-			model = unknownLabel
-		}
-		byModel[model]++
-
-		if entry.ErrorMessage != "" || stage == "on_error" {
-			errorCount++
-		}
-		tokens += entry.TotalTokens
-	}
-
-	byProvider = limitCounts(byProvider, limit)
-	byModel = limitCounts(byModel, limit)
-
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"summary": map[string]any{
-			"total_entries":     len(entries),
-			"error_entries":     errorCount,
-			"total_tokens":      tokens,
-			"truncated":         truncated,
-			"available_entries": result.Total,
-			"scan_limit":        logsStatsMaxScannedEntries,
+			"total_entries": stats.TotalEntries,
+			"error_entries": stats.ErrorEntries,
+			"total_tokens":  stats.TotalTokens,
 		},
-		"by_stage":    byStage,
-		"by_provider": byProvider,
-		"by_model":    byModel,
+		"by_stage":    stats.ByStage,
+		"by_provider": limitCounts(stats.ByProvider, limit),
+		"by_model":    limitCounts(stats.ByModel, limit),
 		"filters": map[string]any{
 			"limit":    limit,
-			"stage":    baseQuery.Stage,
-			"model":    baseQuery.Model,
-			"provider": baseQuery.Provider,
+			"stage":    query.Stage,
+			"model":    query.Model,
+			"provider": query.Provider,
 			"since":    r.URL.Query().Get("since"),
 		},
 	})

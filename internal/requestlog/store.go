@@ -63,6 +63,16 @@ type ListResult struct {
 	Total int
 }
 
+// StatsResult is an aggregated summary of the request logs matching a Query's filters.
+type StatsResult struct {
+	TotalEntries int
+	ErrorEntries int
+	TotalTokens  int
+	ByStage      map[string]int
+	ByProvider   map[string]int
+	ByModel      map[string]int
+}
+
 // Writer persists request log entries.
 type Writer interface {
 	Write(ctx context.Context, entry Entry) error
@@ -71,6 +81,7 @@ type Writer interface {
 // Reader loads request log entries from persistent storage.
 type Reader interface {
 	List(ctx context.Context, query Query) (ListResult, error)
+	Stats(ctx context.Context, query Query) (StatsResult, error)
 }
 
 // Maintainer provides cleanup operations over persistent request logs.
@@ -168,6 +179,12 @@ CREATE TABLE IF NOT EXISTS request_logs (
 
 	if _, err := w.db.ExecContext(ctx, ddl); err != nil {
 		return fmt.Errorf("initialize request log schema: %w", err)
+	}
+
+	// Serves List's created_at ordering/range, Delete's created_at range, and
+	// Stats' since filter. Identical DDL on both dialects.
+	if _, err := w.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_request_logs_created_at ON request_logs (created_at);`); err != nil {
+		return fmt.Errorf("initialize request log index: %w", err)
 	}
 	return nil
 }
@@ -297,6 +314,119 @@ func (w *SQLWriter) List(ctx context.Context, query Query) (ListResult, error) {
 	}
 
 	return ListResult{Data: entries, Total: total}, nil
+}
+
+// statsQueryTemplate aggregates matching rows across three dimensions in one
+// round trip. SQLite lacks GROUPING SETS, so a UNION ALL stands in. The %[1]s
+// verb is the shared WHERE clause; its bound args repeat once per branch.
+// COALESCE(NULLIF(col,”),'unknown') folds NULL and ” into a single group so
+// nullable provider/model columns match the historical Go aggregation.
+const statsQueryTemplate = `SELECT 'stage' AS dim,
+       COALESCE(NULLIF(stage, ''), 'unknown') AS grp,
+       COUNT(*) AS cnt,
+       SUM(CASE WHEN (error_message IS NOT NULL AND error_message <> '') OR stage = 'on_error' THEN 1 ELSE 0 END) AS errs,
+       COALESCE(SUM(total_tokens), 0) AS toks
+FROM request_logs%[1]s
+GROUP BY COALESCE(NULLIF(stage, ''), 'unknown')
+UNION ALL
+SELECT 'provider', COALESCE(NULLIF(provider, ''), 'unknown'), COUNT(*),
+       SUM(CASE WHEN (error_message IS NOT NULL AND error_message <> '') OR stage = 'on_error' THEN 1 ELSE 0 END),
+       COALESCE(SUM(total_tokens), 0)
+FROM request_logs%[1]s
+GROUP BY COALESCE(NULLIF(provider, ''), 'unknown')
+UNION ALL
+SELECT 'model', COALESCE(NULLIF(model, ''), 'unknown'), COUNT(*),
+       SUM(CASE WHEN (error_message IS NOT NULL AND error_message <> '') OR stage = 'on_error' THEN 1 ELSE 0 END),
+       COALESCE(SUM(total_tokens), 0)
+FROM request_logs%[1]s
+GROUP BY COALESCE(NULLIF(model, ''), 'unknown')`
+
+// Stats aggregates request logs matching the query filters (Stage, Model,
+// Provider, Since) entirely in SQL. Limit and Offset are ignored. Returned maps
+// are always non-nil. TotalEntries/ErrorEntries/TotalTokens are derived from the
+// stage rows, which partition every matching row exactly once.
+func (w *SQLWriter) Stats(ctx context.Context, query Query) (StatsResult, error) {
+	whereClauses := make([]string, 0)
+	args := make([]any, 0)
+
+	if query.Stage != "" {
+		whereClauses = append(whereClauses, "stage = ?")
+		args = append(args, query.Stage)
+	}
+	if query.Model != "" {
+		whereClauses = append(whereClauses, "model = ?")
+		args = append(args, query.Model)
+	}
+	if query.Provider != "" {
+		whereClauses = append(whereClauses, "provider = ?")
+		args = append(args, query.Provider)
+	}
+	if query.Since != nil {
+		whereClauses = append(whereClauses, "created_at >= ?")
+		args = append(args, query.Since.UTC())
+	}
+
+	whereSQL := ""
+	if len(whereClauses) > 0 {
+		whereSQL = " WHERE " + strings.Join(whereClauses, " AND ")
+	}
+
+	// #nosec G201 -- dimension/column names are fixed literals; whereSQL contains only bound placeholders.
+	statsQuery := fmt.Sprintf(statsQueryTemplate, whereSQL)
+
+	// whereSQL's placeholders appear once per UNION ALL branch, so its args bind
+	// three times in branch order. bindPostgres renumbers ? sequentially across
+	// the whole statement, keeping the tripled args aligned.
+	allArgs := make([]any, 0, len(args)*3)
+	allArgs = append(allArgs, args...)
+	allArgs = append(allArgs, args...)
+	allArgs = append(allArgs, args...)
+
+	if w.dialect == requestLogDialectPostgres {
+		statsQuery = bindPostgres(statsQuery)
+	}
+
+	rows, err := w.db.QueryContext(ctx, statsQuery, allArgs...)
+	if err != nil {
+		return StatsResult{}, fmt.Errorf("aggregate request log stats: %w", err)
+	}
+	defer func() {
+		_ = rows.Close()
+	}()
+
+	result := StatsResult{
+		ByStage:    map[string]int{},
+		ByProvider: map[string]int{},
+		ByModel:    map[string]int{},
+	}
+	for rows.Next() {
+		var (
+			dim  string
+			grp  string
+			cnt  int
+			errs int
+			toks int
+		)
+		if err := rows.Scan(&dim, &grp, &cnt, &errs, &toks); err != nil {
+			return StatsResult{}, fmt.Errorf("scan request log stats row: %w", err)
+		}
+		switch dim {
+		case "stage":
+			result.ByStage[grp] = cnt
+			result.TotalEntries += cnt
+			result.ErrorEntries += errs
+			result.TotalTokens += toks
+		case "provider":
+			result.ByProvider[grp] = cnt
+		case "model":
+			result.ByModel[grp] = cnt
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return StatsResult{}, fmt.Errorf("iterate request log stats: %w", err)
+	}
+
+	return result, nil
 }
 
 // Delete removes request log entries matching maintenance filters.
