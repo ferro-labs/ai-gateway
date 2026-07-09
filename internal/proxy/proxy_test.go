@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ferro-labs/ai-gateway/providers"
 	geminipkg "github.com/ferro-labs/ai-gateway/providers/gemini"
@@ -598,4 +599,56 @@ func TestProxyHandler_ErrorHandler_GenericJSON(t *testing.T) {
 	if msg == "" {
 		t.Error("response 'error.message' is empty")
 	}
+}
+
+func TestProxyHandler_StreamingResponseUsesWriteDeadlines(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: {\"id\":\"chunk-1\"}\n\n"))
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+	}))
+	defer upstream.Close()
+
+	reg := buildTestRegistry(upstream.URL)
+	handler := Handler(reg)
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-4o","stream":true}`))
+	req.Header.Set("X-Provider", providerOpenAI)
+	req.ContentLength = int64(len(`{"model":"gpt-4o","stream":true}`))
+	w := newProxyDeadlineRecorder()
+
+	handler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "data:") {
+		t.Fatalf("expected streamed body, got %q", w.Body.String())
+	}
+	if len(w.deadlines) < 2 {
+		t.Fatalf("expected write deadline set and clear, got %d entries", len(w.deadlines))
+	}
+	if w.deadlines[0].IsZero() {
+		t.Fatal("first deadline should set a timeout")
+	}
+	if !w.deadlines[len(w.deadlines)-1].IsZero() {
+		t.Fatalf("last deadline should clear timeout, got %v", w.deadlines[len(w.deadlines)-1])
+	}
+}
+
+type proxyDeadlineRecorder struct {
+	*httptest.ResponseRecorder
+	deadlines []time.Time
+}
+
+func newProxyDeadlineRecorder() *proxyDeadlineRecorder {
+	return &proxyDeadlineRecorder{ResponseRecorder: httptest.NewRecorder()}
+}
+
+func (r *proxyDeadlineRecorder) SetWriteDeadline(deadline time.Time) error {
+	r.deadlines = append(r.deadlines, deadline)
+	return nil
 }

@@ -500,14 +500,14 @@ func TestHealthCheck(t *testing.T) {
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d: %s", w.Code, w.Body.String())
 	}
 
 	var result map[string]any
 	_ = json.NewDecoder(w.Body).Decode(&result)
-	if _, ok := result["status"]; !ok {
-		t.Error("expected status field")
+	if result["status"] != "no_providers" {
+		t.Fatalf("expected status no_providers, got %v", result["status"])
 	}
 	if _, ok := result["providers"]; !ok {
 		t.Error("expected providers field")

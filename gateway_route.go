@@ -109,7 +109,7 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 			early, err = g.runBeforePlugins(ctx, plugins, pctx, &req)
 		})
 		if err != nil {
-			metrics.ForRequest("", req.Model).Rejected.Inc()
+			metrics.ForRequest("", g.rejectedMetricModel(req.Model)).Rejected.Inc()
 			return nil, err
 		}
 		if early != nil {
@@ -233,6 +233,18 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	resp.OverheadMs = float64((latency - providerDuration).Microseconds()) / 1000.0
 
 	return resp, nil
+}
+
+func (g *Gateway) rejectedMetricModel(model string) string {
+	if model == "" {
+		return metrics.UnknownModelLabel
+	}
+	for _, known := range g.AllModels() {
+		if known.ID == model {
+			return model
+		}
+	}
+	return metrics.UnknownModelLabel
 }
 
 // runMCPLoop drives the agentic MCP tool-call loop: while resp has pending

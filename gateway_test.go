@@ -94,6 +94,29 @@ func counterValue(t *testing.T, c prometheus.Counter) float64 {
 	return m.GetCounter().GetValue()
 }
 
+func requestMetricLabelExists(t *testing.T, provider, model, status string) bool {
+	t.Helper()
+	mfs, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatalf("gather metrics: %v", err)
+	}
+	for _, mf := range mfs {
+		if mf.GetName() != "gateway_requests_total" {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			labels := map[string]string{}
+			for _, label := range m.GetLabel() {
+				labels[label.GetName()] = label.GetValue()
+			}
+			if labels["provider"] == provider && labels["model"] == model && labels["status"] == status {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func ptrFloat64(v float64) *float64 { return &v }
 
 func drainStream(t *testing.T, ch <-chan providers.StreamChunk) {
@@ -2673,6 +2696,64 @@ func TestGateway_Route_PluginRejectsRequest(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected rejection error")
+	}
+}
+
+type wildcardMetricProvider struct {
+	mockProvider
+}
+
+func (p *wildcardMetricProvider) SupportsModel(string) bool { return true }
+func (p *wildcardMetricProvider) Models() []providers.ModelInfo {
+	return []providers.ModelInfo{{ID: "known-model", Object: "model", OwnedBy: p.name}}
+}
+
+func TestGateway_Route_PluginRejectsUnknownModelBucketsMetricLabel(t *testing.T) {
+	rawModel := "user-supplied-high-cardinality-" + strings.NewReplacer("/", "_", " ", "_").Replace(t.Name())
+	if requestMetricLabelExists(t, "", rawModel, "rejected") {
+		t.Fatalf("raw model label %q already exists before test", rawModel)
+	}
+
+	gw, err := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: mockProviderName}},
+	})
+	if err != nil {
+		t.Fatalf("New gateway: %v", err)
+	}
+	gw.RegisterProvider(&wildcardMetricProvider{mockProvider: mockProvider{
+		name:   mockProviderName,
+		models: []string{"known-model"},
+		resp:   &providers.Response{ID: "should-not-reach"},
+	}})
+
+	_ = gw.RegisterPlugin(plugin.StageBeforeRequest, &testPlugin{
+		name: "blocker",
+		typ:  plugin.TypeGuardrail,
+		execFn: func(_ context.Context, pctx *plugin.Context) error {
+			pctx.Reject = true
+			pctx.Reason = "blocked"
+			return nil
+		},
+	})
+
+	unknownCounter := metrics.ForRequest("", metrics.UnknownModelLabel).Rejected
+	before := counterValue(t, unknownCounter)
+	_, err = gw.Route(context.Background(), providers.Request{
+		Model:    rawModel,
+		Messages: []providers.Message{{Role: "user", Content: "hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected rejection error")
+	}
+	if delta := counterValue(t, unknownCounter) - before; delta != 1 {
+		t.Fatalf("unknown rejected counter delta = %v, want 1", delta)
+	}
+	if requestMetricLabelExists(t, "", rawModel, "rejected") {
+		t.Fatalf("raw rejected model label %q should not be created", rawModel)
+	}
+	if got := gw.rejectedMetricModel("known-model"); got != "known-model" {
+		t.Fatalf("known rejected metric model = %q, want known-model", got)
 	}
 }
 

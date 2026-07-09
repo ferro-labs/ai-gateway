@@ -5,6 +5,27 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.20] — 2026-07-10
+
+Streaming deadlines and serving robustness — the third phase of the v1.1.x hardening release line. All changes are additive/behavior-preserving for the public API.
+
+### Security
+
+- **Streaming response writes** on pass-through proxy routes and legacy completions streaming now use short per-write deadlines that are cleared after each successful write, reducing the chance that slow or disconnected clients can tie up server resources indefinitely.
+- **Browser-facing responses** now include Content-Security-Policy and Permissions-Policy headers in addition to the existing baseline security headers.
+
+### Changed
+
+- **Provider auto-registration** now warns and skips a single configured provider when its factory fails, allowing the gateway to continue serving with other valid providers. Fatal startup behavior is unchanged for invalid config, store initialization, plugin loading, and other process-level failures.
+- **Health endpoints** now return HTTP 503 for degraded or no-provider states while preserving the existing JSON response body shape for `/health` and `/admin/health`.
+
+### Fixed
+
+- **Panic recovery** now returns the gateway's JSON error envelope from the outer HTTP middleware layer, so recovered panics are shaped consistently with other server errors.
+- **Rejected-request metrics** now bucket unknown or arbitrary model names under the bounded `unknown` model label, avoiding high-cardinality Prometheus series from user-supplied model strings.
+
+---
+
 ## [1.1.19] — 2026-07-09
 
 Provider read bounds and typed errors — the second phase of a multi-phase hardening release line. All changes are additive/behavior-preserving.

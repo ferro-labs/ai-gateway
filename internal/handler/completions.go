@@ -13,6 +13,7 @@ import (
 
 	"github.com/ferro-labs/ai-gateway/internal/apierror"
 	"github.com/ferro-labs/ai-gateway/internal/httpclient"
+	"github.com/ferro-labs/ai-gateway/internal/streamio"
 	"github.com/ferro-labs/ai-gateway/providers"
 )
 
@@ -114,7 +115,11 @@ func Completions(registry *providers.Registry) http.HandlerFunc {
 			}
 			w.Header().Set("X-Gateway-Provider", p.Name())
 			w.WriteHeader(resp.StatusCode)
-			io.Copy(w, resp.Body) //nolint:errcheck,gosec
+			if legacyReq.Stream {
+				_, _ = streamio.Copy(r.Context(), w, resp.Body)
+			} else {
+				_, _ = io.Copy(w, resp.Body) //nolint:gosec
+			}
 			return
 		}
 

@@ -9,6 +9,8 @@ import "net/http"
 // (i.e. r.TLS != nil) to avoid breaking plain-HTTP deployments.
 //
 // Headers applied:
+//   - Content-Security-Policy: default-src 'self'; object-src 'none'; frame-ancestors 'none'
+//   - Permissions-Policy: camera=(), microphone=(), geolocation=()
 //   - X-Content-Type-Options: nosniff
 //   - X-Frame-Options: DENY
 //   - Referrer-Policy: strict-origin-when-cross-origin
@@ -16,6 +18,8 @@ import "net/http"
 func SecurityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
+		h.Set("Content-Security-Policy", "default-src 'self'; object-src 'none'; frame-ancestors 'none'")
+		h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Referrer-Policy", "strict-origin-when-cross-origin")

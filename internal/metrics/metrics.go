@@ -10,6 +10,9 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
+// UnknownModelLabel is the bounded label used for rejected requests whose model is unknown.
+const UnknownModelLabel = "unknown"
+
 // Request-level counters and histograms.
 var (
 	// RequestsTotal counts completed requests labelled by provider, model, and

@@ -308,9 +308,13 @@ func LoadConfig() *aigateway.Config {
 // RegisterProviders auto-registers all providers found via environment variables.
 func RegisterProviders() *providers.Registry {
 	registry := providers.NewRegistry()
+	registerProviderEntries(registry, providers.AllProviders())
+	registerBedrockProvider(registry)
+	return registry
+}
 
-	// Register all providers whose required environment variables are set.
-	for _, entry := range providers.AllProviders() {
+func registerProviderEntries(registry *providers.Registry, entries []providers.ProviderEntry) {
+	for _, entry := range entries {
 		if entry.ID == providers.NameBedrock {
 			continue // handled below with its dual-key detection
 		}
@@ -322,13 +326,15 @@ func RegisterProviders() *providers.Registry {
 
 		p, err := entry.Build(cfg)
 		if err != nil {
-			logging.Logger.Error("provider init failed", "provider", entry.ID, "error", err)
-			os.Exit(1)
+			logging.Logger.Warn("provider init skipped", "provider", entry.ID, "error", err)
+			continue
 		}
 		registry.Register(p)
 		logging.Logger.Info("provider registered", "provider", entry.ID)
 	}
+}
 
+func registerBedrockProvider(registry *providers.Registry) {
 	// AWS Bedrock: register if AWS_REGION, AWS_ACCESS_KEY_ID, or
 	// AWS_BEARER_TOKEN_BEDROCK is set.
 	if region := os.Getenv("AWS_REGION"); region != "" ||
@@ -348,8 +354,6 @@ func RegisterProviders() *providers.Registry {
 			logging.Logger.Info("provider registered", "provider", providers.NameBedrock, "region", p.Region())
 		}
 	}
-
-	return registry
 }
 
 // BuildGateway constructs the Gateway, wires providers, and loads plugins.

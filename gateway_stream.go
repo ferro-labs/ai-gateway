@@ -296,7 +296,7 @@ func (g *Gateway) runBeforePluginsStream(ctx context.Context, span observability
 	if err != nil {
 		plugin.PutContext(pctx)
 		releasePluginManager()
-		metrics.ForRequest("", req.Model).Rejected.Inc()
+		metrics.ForRequest("", g.rejectedMetricModel(req.Model)).Rejected.Inc()
 		return nil, nil, err
 	}
 	if early != nil {

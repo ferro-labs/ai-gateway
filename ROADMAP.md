@@ -71,6 +71,13 @@ Weekly patch line. Each release is backward-compatible bug-fixing on a single th
 - **v1.1.7** — Small enhancements: end-to-end `context.Context` propagation, plugin-registry concurrency, hot-path allocation reductions, git-hook gating.
 - **v1.1.8** — Security & trust hardening: baseline HTTP security headers, request body-size limit, trusted-proxy client-IP resolution, expanded secret redaction, config-validation and admin-key safety.
 - **v1.1.9** — Quality & maintainability hardening: per-key rate-limit / budget scoping, atomic budget soft cap, internal package restructuring (no API or behaviour changes), and CI supply-chain hardening (SHA-pinned actions).
+- **v1.1.10–v1.1.17** — Provider readiness remediation: proxy governance, native provider fidelity, enterprise endpoints, OpenAI-compatible provider coverage, local/prediction API providers, and provider-readiness closeout.
+- **v1.1.18** — Critical fixes and security hardening: concurrent cache-hit race fix, SQLite file permissions restricted to `0600`, safe default per-IP rate limiting, and Go 1.25.11 toolchain pin.
+- **v1.1.19** — Provider read bounds and typed errors: upstream provider response reads capped at 50 MiB, typed provider HTTP status errors for retry/circuit-breaker classification, DeepSeek streaming token accounting, and cross-provider status conformance.
+
+### Next patch
+
+- **v1.1.20** — Streaming deadlines and serving robustness: long-lived proxy and legacy-completions streams, recoverable provider initialization failures, degraded health status codes, CSP/Permissions-Policy headers, panic recovery order, and metrics-cardinality hardening.
 
 ## v1.2.0 — Provider Parameter Capability Matrix
 

@@ -22,7 +22,6 @@ import (
 	"github.com/ferro-labs/ai-gateway/providers"
 	webassets "github.com/ferro-labs/ai-gateway/web"
 	"github.com/go-chi/chi/v5"
-	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
@@ -64,6 +63,9 @@ func NewRouter(
 	}
 
 	// Core middleware stack.
+	// RecoverJSON is outermost so panics anywhere below this point still return
+	// the gateway's JSON error envelope while inner middleware defers can run.
+	r.Use(middleware.RecoverJSON)
 	// OTel middleware MUST come before logging.Middleware so any inbound
 	// W3C traceparent is extracted into the request context, then the
 	// logging layer reuses that trace ID for X-Request-ID. When no OTel
@@ -71,7 +73,6 @@ func NewRouter(
 	// global propagator is the default no-op propagator).
 	r.Use(gwotel.Middleware)
 	r.Use(logging.Middleware) // inject trace ID + X-Request-ID header
-	r.Use(chimw.Recoverer)
 	// SecurityHeaders applies baseline browser-hardening headers (X-Content-Type-Options,
 	// X-Frame-Options, Referrer-Policy, and HSTS on TLS connections) to every response.
 	// It must come before CORS so that security headers are present on all responses,

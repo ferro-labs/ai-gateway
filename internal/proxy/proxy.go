@@ -18,6 +18,7 @@ import (
 
 	"github.com/ferro-labs/ai-gateway/internal/apierror"
 	"github.com/ferro-labs/ai-gateway/internal/httpclient"
+	"github.com/ferro-labs/ai-gateway/internal/streamio"
 	"github.com/ferro-labs/ai-gateway/providers"
 )
 
@@ -143,7 +144,7 @@ func Handler(registry *providers.Registry) http.HandlerFunc {
 			},
 		}
 
-		proxy.ServeHTTP(w, r)
+		proxy.ServeHTTP(streamio.WrapResponseWriter(w), r)
 	}
 }
 
