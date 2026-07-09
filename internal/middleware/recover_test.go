@@ -40,3 +40,23 @@ func TestRecoverJSONReturnsErrorEnvelope(t *testing.T) {
 		t.Fatalf("panic detail leaked in response message: %q", payload.Error.Message)
 	}
 }
+
+func TestRecoverJSONRepanicsAbortHandler(t *testing.T) {
+	handler := RecoverJSON(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		panic(http.ErrAbortHandler)
+	}))
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/abort", nil)
+	w := httptest.NewRecorder()
+
+	defer func() {
+		recovered := recover()
+		if recovered != http.ErrAbortHandler {
+			t.Fatalf("recovered = %v, want http.ErrAbortHandler", recovered)
+		}
+		if w.Body.Len() != 0 {
+			t.Fatalf("response body should stay empty, got %q", w.Body.String())
+		}
+	}()
+	handler.ServeHTTP(w, req)
+}
