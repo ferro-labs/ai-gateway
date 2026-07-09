@@ -60,11 +60,12 @@ func TestMeter_ClientDisconnect_NoGoroutineLeak(t *testing.T) {
 	}
 
 	out := Meter(ctx, src, time.Now(), MeterMeta{
-		Provider:  "openai",
-		Model:     "gpt-4o",
-		Catalog:   models.Catalog{},
-		PublishFn: publishFn,
-		TraceID:   "trace-disconnect",
+		Provider:    "openai",
+		Model:       "gpt-4o",
+		MetricModel: "gpt-4o",
+		Catalog:     models.Catalog{},
+		PublishFn:   publishFn,
+		TraceID:     "trace-disconnect",
 	})
 
 	// Consume 1 chunk, then disconnect.
@@ -121,9 +122,10 @@ func TestMeter_ConsumerStopsReading_NoLeak(t *testing.T) {
 	)
 
 	out := Meter(context.Background(), src, time.Now(), MeterMeta{
-		Provider: "openai",
-		Model:    "gpt-4o",
-		Catalog:  models.Catalog{},
+		Provider:    "openai",
+		Model:       "gpt-4o",
+		MetricModel: "gpt-4o",
+		Catalog:     models.Catalog{},
 	})
 
 	// Read one, then stop. Meter's per-chunk send is buffered through the

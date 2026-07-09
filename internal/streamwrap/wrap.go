@@ -51,7 +51,9 @@ type MeterMeta struct {
 	Model string
 	// MetricModel is the bounded form of Model used for Prometheus labels: a
 	// model the gateway cannot route collapses to metrics.UnknownModelLabel so a
-	// client cannot mint unbounded time series. Empty falls back to Model.
+	// client cannot mint unbounded time series. Required whenever Model can carry
+	// a client-supplied value — leaving it empty degrades every label for the
+	// request to "unknown" rather than falling back to the raw model.
 	MetricModel string
 	// Catalog is a snapshot of the gateway's model catalog used for cost calculation.
 	Catalog models.Catalog
@@ -80,13 +82,16 @@ type MeterMeta struct {
 	CircuitBreakerOutcome func(err error)
 }
 
-// metricLabelModel returns the bounded Prometheus label for this request,
-// falling back to the raw model when the caller did not bucket it.
+// metricLabelModel returns the bounded Prometheus label for this request.
+//
+// An unset MetricModel fails closed to UnknownModelLabel rather than falling
+// back to the raw, client-supplied Model. Losing one label's precision is
+// strictly better than letting a caller mint unbounded time series by omission.
 func (m MeterMeta) metricLabelModel() string {
-	if m.MetricModel != "" {
-		return m.MetricModel
+	if m.MetricModel == "" {
+		return metrics.UnknownModelLabel
 	}
-	return m.Model
+	return m.MetricModel
 }
 
 // StreamOutcome bundles the values stamped onto the observability span
