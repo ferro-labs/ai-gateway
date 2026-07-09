@@ -26,7 +26,7 @@
       <div class="form-group">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
           <label class="form-label" for="pg-system" style="margin-bottom:0;">System Prompt</label>
-          <button id="pg-system-toggle" class="btn btn-ghost" style="padding:2px 8px;font-size:12px;" onclick="toggleSystemPrompt()">Show</button>
+          <button id="pg-system-toggle" class="btn btn-ghost" style="padding:2px 8px;font-size:12px;" data-action="toggle-system-prompt">Show</button>
         </div>
         <textarea id="pg-system" class="playground-textarea" placeholder="Optional system instructions..." style="display:none;min-height:80px;"></textarea>
       </div>
@@ -39,7 +39,7 @@
         <div class="form-group" style="margin-bottom:12px;">
           <textarea id="pg-user" class="playground-textarea" placeholder="Enter your message..." autofocus style="min-height:140px;"></textarea>
         </div>
-        <button id="pg-send" class="btn btn-primary" onclick="sendMessage()">Send</button>
+        <button id="pg-send" class="btn btn-primary" data-action="send-message">Send</button>
       </div>
 
       <div id="pg-response-card" class="card" style="display:none;margin-bottom:0;">

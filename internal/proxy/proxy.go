@@ -5,6 +5,7 @@ package proxy
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/ferro-labs/ai-gateway/internal/apierror"
 	"github.com/ferro-labs/ai-gateway/internal/httpclient"
+	"github.com/ferro-labs/ai-gateway/internal/streamio"
 	"github.com/ferro-labs/ai-gateway/providers"
 )
 
@@ -111,6 +113,13 @@ func Handler(registry *providers.Registry) http.HandlerFunc {
 			transport = signingRoundTripper{base: transport, signer: signer}
 		}
 
+		// WrapResponseWriter clears http.Server's WriteTimeout after the first
+		// write so long streams are not truncated. Cancelling this context on an
+		// idle upstream is what replaces the bound that removal gives up.
+		upstreamCtx, cancelUpstream := context.WithCancel(r.Context())
+		defer cancelUpstream()
+		r = r.WithContext(upstreamCtx)
+
 		proxy := &httputil.ReverseProxy{
 			Transport:     transport,
 			FlushInterval: proxyFlushInterval,
@@ -125,6 +134,12 @@ func Handler(registry *providers.Registry) http.HandlerFunc {
 			},
 			ModifyResponse: func(resp *http.Response) error {
 				resp.Header.Set("X-Gateway-Provider", providerName)
+				// A 101 hands resp.Body to handleUpgradeResponse, which requires an
+				// io.ReadWriteCloser, and a tunnelled connection (e.g. /v1/realtime)
+				// is legitimately idle. Bound only ordinary response bodies.
+				if resp.StatusCode != http.StatusSwitchingProtocols {
+					resp.Body = streamio.NewIdleReadCloser(resp.Body, streamio.IdleTimeout(), cancelUpstream)
+				}
 				return nil
 			},
 			ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
@@ -143,7 +158,7 @@ func Handler(registry *providers.Registry) http.HandlerFunc {
 			},
 		}
 
-		proxy.ServeHTTP(w, r)
+		proxy.ServeHTTP(streamio.WrapResponseWriter(w), r)
 	}
 }
 

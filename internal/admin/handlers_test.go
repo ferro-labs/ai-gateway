@@ -500,14 +500,16 @@ func TestHealthCheck(t *testing.T) {
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
+	// 200 even while degraded: the dashboard login probe and providers page read
+	// any non-2xx here as an auth failure. The body carries the real status.
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
 	var result map[string]any
 	_ = json.NewDecoder(w.Body).Decode(&result)
-	if _, ok := result["status"]; !ok {
-		t.Error("expected status field")
+	if result["status"] != "no_providers" {
+		t.Fatalf("expected status no_providers, got %v", result["status"])
 	}
 	if _, ok := result["providers"]; !ok {
 		t.Error("expected providers field")

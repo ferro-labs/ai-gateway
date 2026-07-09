@@ -1,9 +1,9 @@
 {{define "content"}}
 <div class="tabs" id="range-tabs">
-  <button class="tab active" onclick="setRange(this, 1)">1h</button>
-  <button class="tab" onclick="setRange(this, 6)">6h</button>
-  <button class="tab" onclick="setRange(this, 24)">24h</button>
-  <button class="tab" onclick="setRange(this, 168)">7d</button>
+  <button class="tab active" data-action="set-range" data-hours="1">1h</button>
+  <button class="tab" data-action="set-range" data-hours="6">6h</button>
+  <button class="tab" data-action="set-range" data-hours="24">24h</button>
+  <button class="tab" data-action="set-range" data-hours="168">7d</button>
 </div>
 
 <div class="stat-grid" style="grid-template-columns: repeat(3, 1fr);">

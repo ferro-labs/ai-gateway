@@ -100,6 +100,9 @@ func Health(gw *aigateway.Gateway) http.HandlerFunc {
 			status = "no_providers"
 		}
 		w.Header().Set("Content-Type", "application/json")
+		if status != "ok" {
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"status":    status,
 			"providers": providerStatuses,

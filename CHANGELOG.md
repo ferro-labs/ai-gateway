@@ -5,6 +5,30 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.20] — 2026-07-09
+
+Streaming deadlines and serving robustness — the third phase of the v1.1.x hardening release line. All changes are additive/behavior-preserving for the public API.
+
+### Security
+
+- **Long-lived streaming responses** on pass-through proxy routes and legacy completions streaming are no longer truncated after 120 seconds. Each client-facing write now carries its own short deadline, and a slow client that stops reading is disconnected instead of blocking a request goroutine.
+- **Upstream idle bound.** Because per-write deadlines take the server's overall write timeout out of play, both streaming paths now cancel the upstream request when it produces no data for 5 minutes. A stalled or trickling provider can no longer hold a connection open indefinitely.
+- **Browser-facing responses** now include Content-Security-Policy and Permissions-Policy headers in addition to the existing baseline security headers. The policy sets `script-src 'self'`, so the admin dashboard no longer relies on inline scripts or inline event handlers.
+- **Build toolchain pinned to Go 1.25.12**, picking up the fix for [GO-2026-5856](https://pkg.go.dev/vuln/GO-2026-5856) — an Encrypted Client Hello privacy leak in `crypto/tls`.
+
+### Changed
+
+- **Provider auto-registration** now warns and skips a single configured provider when its factory fails, allowing the gateway to continue serving with other valid providers. Fatal startup behavior is unchanged for invalid config, store initialization, plugin loading, and other process-level failures. Each skip increments the new `gateway_provider_init_failures_total{provider}` counter — alert on it, since the gateway stays healthy with the provider missing.
+- **`/health`** now returns HTTP 503 for degraded or no-provider states while preserving its JSON response body, so load balancer and Kubernetes probes can act on it. `/admin/health` is bearer-authenticated rather than a probe target and continues to return 200, reporting state in the body.
+- **`ferrogw status` and `ferrogw doctor`** distinguish a degraded gateway from an unreachable one and print the reported status.
+
+### Fixed
+
+- **Panic recovery** now returns the gateway's JSON error envelope from the outermost HTTP middleware layer, so panics raised inside the tracing and logging middleware are recovered too. Recovered panics are logged with a stack trace and the request's trace ID.
+- **Request metrics** now bucket unknown or arbitrary model names under the bounded `unknown` model label on both the rejected and error paths. Previously any request naming an unroutable model minted a new Prometheus series and a permanent metric-handle cache entry.
+
+---
+
 ## [1.1.19] — 2026-07-09
 
 Provider read bounds and typed errors — the second phase of a multi-phase hardening release line. All changes are additive/behavior-preserving.

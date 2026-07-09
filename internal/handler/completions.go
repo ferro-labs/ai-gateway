@@ -3,6 +3,7 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,8 @@ import (
 
 	"github.com/ferro-labs/ai-gateway/internal/apierror"
 	"github.com/ferro-labs/ai-gateway/internal/httpclient"
+	"github.com/ferro-labs/ai-gateway/internal/logging"
+	"github.com/ferro-labs/ai-gateway/internal/streamio"
 	"github.com/ferro-labs/ai-gateway/providers"
 )
 
@@ -82,7 +85,12 @@ func Completions(registry *providers.Registry) http.HandlerFunc {
 				apierror.WriteOpenAI(w, http.StatusInternalServerError, err.Error(), "server_error", "internal_error")
 				return
 			}
-			outReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, target, bytes.NewReader(body))
+			// Streaming clears http.Server's WriteTimeout per write, so an idle
+			// upstream is bounded by cancelling this context instead.
+			upstreamCtx, cancelUpstream := context.WithCancel(r.Context())
+			defer cancelUpstream()
+
+			outReq, err := http.NewRequestWithContext(upstreamCtx, http.MethodPost, target, bytes.NewReader(body))
 			if err != nil {
 				apierror.WriteOpenAI(w, http.StatusInternalServerError, "failed to create upstream request: "+err.Error(), "server_error", "internal_error")
 				return
@@ -106,6 +114,15 @@ func Completions(registry *providers.Registry) http.HandlerFunc {
 			}
 			defer func() { _ = resp.Body.Close() }()
 
+			upstreamBody := io.Reader(resp.Body)
+			if legacyReq.Stream {
+				// Closing the wrapper stops its idle timer; it also closes
+				// resp.Body, which net/http makes idempotent.
+				idle := streamio.NewIdleReadCloser(resp.Body, streamio.IdleTimeout(), cancelUpstream)
+				defer func() { _ = idle.Close() }()
+				upstreamBody = idle
+			}
+
 			// Mirror status + content-type and stream the body back.
 			for k, vs := range resp.Header {
 				for _, v := range vs {
@@ -114,7 +131,20 @@ func Completions(registry *providers.Registry) http.HandlerFunc {
 			}
 			w.Header().Set("X-Gateway-Provider", p.Name())
 			w.WriteHeader(resp.StatusCode)
-			io.Copy(w, resp.Body) //nolint:errcheck,gosec
+
+			var copyErr error
+			if legacyReq.Stream {
+				_, copyErr = streamio.Copy(r.Context(), w, upstreamBody)
+			} else {
+				_, copyErr = io.Copy(w, upstreamBody) //nolint:gosec
+			}
+			// Headers are already out, so this cannot become an error response —
+			// but an idle-timeout cut of a stalled upstream would otherwise be
+			// invisible. A client that hung up is not worth reporting.
+			if copyErr != nil && r.Context().Err() == nil {
+				logging.FromContext(r.Context()).Warn("completions response copy failed",
+					"provider", p.Name(), "stream", legacyReq.Stream, "error", copyErr)
+			}
 			return
 		}
 

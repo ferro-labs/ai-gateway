@@ -126,6 +126,31 @@ function logout() {
   window.location.href = '/dashboard/login';
 }
 
+// Click delegation. The Content-Security-Policy sets script-src 'self', which
+// blocks inline onclick="..." attributes, so markup declares data-action="name"
+// and pages register the handler here. Handlers receive (element, event).
+//
+// Only the nearest ancestor with data-action runs, so a data-action on a modal
+// body shadows the overlay's close action the way stopPropagation used to.
+var actionHandlers = {};
+
+function registerActions(handlers) {
+  Object.keys(handlers).forEach(function(name) { actionHandlers[name] = handlers[name]; });
+}
+
+document.addEventListener('click', function(event) {
+  var target = event.target;
+  var el = target && target.closest ? target.closest('[data-action]') : null;
+  if (!el) return;
+  var handler = actionHandlers[el.getAttribute('data-action')];
+  if (handler) handler(el, event);
+});
+
+registerActions({
+  'toggle-theme': toggleDarkMode,
+  'logout': logout
+});
+
 document.addEventListener('DOMContentLoaded', function() {
   initDarkMode();
   if (checkAuth()) {

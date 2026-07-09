@@ -19,16 +19,27 @@ func runStatus(cmd *cobra.Command, _ []string) error {
 
 	start := time.Now()
 	var health map[string]any
-	if err := c.Get(cmd.Context(), "/health", &health); err != nil {
+	if err := c.GetHealth(cmd.Context(), "/health", &health); err != nil {
 		fmt.Printf("  %s Gateway unreachable: %v\n", Clr(ColorRed, SymFAIL), err)
 		return nil
 	}
 	latency := time.Since(start)
 
+	// /health answers 503 while degraded (e.g. no providers configured). The
+	// gateway is up; say what is actually wrong instead of "unreachable".
+	// A body with no usable status is reported as such rather than as healthy.
+	status, symbol, color := "unknown", SymWARN, ColorYellow
+	if s, ok := health["status"].(string); ok {
+		if s == "ok" {
+			status, symbol, color = "healthy", SymOK, ColorGreen
+		} else {
+			status = s
+		}
+	}
 	fmt.Printf("  %s %s -- %s (%s)\n",
-		Clr(ColorGreen, SymOK),
+		Clr(color, symbol),
 		c.BaseURL,
-		Clr(ColorBold+ColorGreen, "healthy"),
+		Clr(ColorBold+color, status),
 		latency.Round(time.Millisecond),
 	)
 

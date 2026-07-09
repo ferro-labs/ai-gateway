@@ -17,6 +17,7 @@ import (
 	"github.com/ferro-labs/ai-gateway/internal/admin"
 	"github.com/ferro-labs/ai-gateway/internal/httpserver"
 	"github.com/ferro-labs/ai-gateway/internal/logging"
+	"github.com/ferro-labs/ai-gateway/internal/metrics"
 	gwotel "github.com/ferro-labs/ai-gateway/internal/otel"
 	"github.com/ferro-labs/ai-gateway/internal/ratelimit"
 	"github.com/ferro-labs/ai-gateway/internal/requestlog"
@@ -308,9 +309,13 @@ func LoadConfig() *aigateway.Config {
 // RegisterProviders auto-registers all providers found via environment variables.
 func RegisterProviders() *providers.Registry {
 	registry := providers.NewRegistry()
+	registerProviderEntries(registry, providers.AllProviders())
+	registerBedrockProvider(registry)
+	return registry
+}
 
-	// Register all providers whose required environment variables are set.
-	for _, entry := range providers.AllProviders() {
+func registerProviderEntries(registry *providers.Registry, entries []providers.ProviderEntry) {
+	for _, entry := range entries {
 		if entry.ID == providers.NameBedrock {
 			continue // handled below with its dual-key detection
 		}
@@ -322,13 +327,19 @@ func RegisterProviders() *providers.Registry {
 
 		p, err := entry.Build(cfg)
 		if err != nil {
-			logging.Logger.Error("provider init failed", "provider", entry.ID, "error", err)
-			os.Exit(1)
+			// Warn-and-skip so one bad credential cannot stop the whole gateway.
+			// The counter is what keeps that from being a silent partial outage:
+			// /health only counts registered providers, so it stays 200 here.
+			logging.Logger.Warn("provider init skipped", "provider", entry.ID, "error", err)
+			metrics.ProviderInitFailures.WithLabelValues(entry.ID).Inc()
+			continue
 		}
 		registry.Register(p)
 		logging.Logger.Info("provider registered", "provider", entry.ID)
 	}
+}
 
+func registerBedrockProvider(registry *providers.Registry) {
 	// AWS Bedrock: register if AWS_REGION, AWS_ACCESS_KEY_ID, or
 	// AWS_BEARER_TOKEN_BEDROCK is set.
 	if region := os.Getenv("AWS_REGION"); region != "" ||
@@ -342,14 +353,15 @@ func RegisterProviders() *providers.Registry {
 			SessionToken:    os.Getenv("AWS_SESSION_TOKEN"),
 		})
 		if err != nil {
+			// Same warn-and-skip contract as registerProviderEntries: the counter
+			// is the only machine-readable signal that this provider is missing.
 			logging.Logger.Error("provider init failed", "provider", providers.NameBedrock, "error", err)
+			metrics.ProviderInitFailures.WithLabelValues(providers.NameBedrock).Inc()
 		} else {
 			registry.Register(p)
 			logging.Logger.Info("provider registered", "provider", providers.NameBedrock, "region", p.Region())
 		}
 	}
-
-	return registry
 }
 
 // BuildGateway constructs the Gateway, wires providers, and loads plugins.

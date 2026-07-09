@@ -1,17 +1,21 @@
 package proxy
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/ferro-labs/ai-gateway/internal/streamio"
 	"github.com/ferro-labs/ai-gateway/providers"
 	geminipkg "github.com/ferro-labs/ai-gateway/providers/gemini"
 	openaipkg "github.com/ferro-labs/ai-gateway/providers/openai"
@@ -598,4 +602,180 @@ func TestProxyHandler_ErrorHandler_GenericJSON(t *testing.T) {
 	if msg == "" {
 		t.Error("response 'error.message' is empty")
 	}
+}
+
+func TestProxyHandler_StreamingResponseUsesWriteDeadlines(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: {\"id\":\"chunk-1\"}\n\n"))
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+	}))
+	defer upstream.Close()
+
+	reg := buildTestRegistry(upstream.URL)
+	handler := Handler(reg)
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-4o","stream":true}`))
+	req.Header.Set("X-Provider", providerOpenAI)
+	req.ContentLength = int64(len(`{"model":"gpt-4o","stream":true}`))
+	w := newProxyDeadlineRecorder()
+
+	handler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "data:") {
+		t.Fatalf("expected streamed body, got %q", w.Body.String())
+	}
+	if len(w.deadlines) < 2 {
+		t.Fatalf("expected write deadline set and clear, got %d entries", len(w.deadlines))
+	}
+	if w.deadlines[0].IsZero() {
+		t.Fatal("first deadline should set a timeout")
+	}
+	if !w.deadlines[len(w.deadlines)-1].IsZero() {
+		t.Fatalf("last deadline should clear timeout, got %v", w.deadlines[len(w.deadlines)-1])
+	}
+	if w.flushes == 0 {
+		t.Fatal("expected the reverse proxy to flush through the wrapped ResponseWriter")
+	}
+}
+
+// Clearing the write deadline after each write also disables http.Server's
+// WriteTimeout, so an upstream that sends a chunk and then stalls forever must
+// be cut by the idle bound rather than pinning the handler.
+func TestProxyHandler_StalledUpstreamIsCutByIdleTimeout(t *testing.T) {
+	defer streamio.SetIdleTimeoutForTest(50 * time.Millisecond)()
+
+	upstreamBlocked := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: {\"id\":\"chunk-1\"}\n\n"))
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		// Stall until the gateway gives up on us and cancels the request.
+		<-r.Context().Done()
+		close(upstreamBlocked)
+	}))
+	defer upstream.Close()
+
+	handler := Handler(buildTestRegistry(upstream.URL))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-4o","stream":true}`))
+	req.Header.Set("X-Provider", providerOpenAI)
+	req.ContentLength = int64(len(`{"model":"gpt-4o","stream":true}`))
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		handler(newProxyDeadlineRecorder(), req)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("handler never returned: a stalled upstream pinned the connection")
+	}
+
+	select {
+	case <-upstreamBlocked:
+	case <-time.After(10 * time.Second):
+		t.Fatal("upstream request context was never cancelled")
+	}
+}
+
+// httputil.ReverseProxy runs ModifyResponse before handleUpgradeResponse, which
+// requires res.Body to be an io.ReadWriteCloser. Wrapping the body of a 101
+// would break every upgrade endpoint (e.g. /v1/realtime).
+func TestProxyHandler_SwitchingProtocolsUpgradeStillWorks(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		conn, buf, err := http.NewResponseController(w).Hijack()
+		if err != nil {
+			t.Errorf("upstream hijack: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		_, _ = buf.WriteString("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n")
+		_ = buf.Flush()
+
+		line, err := buf.ReadString('\n')
+		if err != nil {
+			return
+		}
+		_, _ = buf.WriteString("echo:" + line)
+		_ = buf.Flush()
+	}))
+	defer upstream.Close()
+
+	gateway := httptest.NewServer(Handler(buildTestRegistry(upstream.URL)))
+	defer gateway.Close()
+
+	var dialer net.Dialer
+	conn, err := dialer.DialContext(t.Context(), "tcp", strings.TrimPrefix(gateway.URL, "http://"))
+	if err != nil {
+		t.Fatalf("dial gateway: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+
+	_, err = conn.Write([]byte("GET /v1/realtime HTTP/1.1\r\nHost: gateway\r\n" +
+		"X-Provider: " + providerOpenAI + "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"))
+	if err != nil {
+		t.Fatalf("write upgrade request: %v", err)
+	}
+
+	br := bufio.NewReader(conn)
+	status, err := br.ReadString('\n')
+	if err != nil {
+		t.Fatalf("read status line: %v", err)
+	}
+	if !strings.Contains(status, "101") {
+		t.Fatalf("status = %q, want 101 Switching Protocols", strings.TrimSpace(status))
+	}
+	for { // drain headers
+		line, err := br.ReadString('\n')
+		if err != nil {
+			t.Fatalf("read headers: %v", err)
+		}
+		if strings.TrimSpace(line) == "" {
+			break
+		}
+	}
+
+	// The tunnel must carry bytes both ways.
+	if _, err := conn.Write([]byte("ping\n")); err != nil {
+		t.Fatalf("write through tunnel: %v", err)
+	}
+	echo, err := br.ReadString('\n')
+	if err != nil {
+		t.Fatalf("read through tunnel: %v", err)
+	}
+	if strings.TrimSpace(echo) != "echo:ping" {
+		t.Fatalf("tunnel echo = %q, want echo:ping", strings.TrimSpace(echo))
+	}
+}
+
+type proxyDeadlineRecorder struct {
+	*httptest.ResponseRecorder
+	deadlines []time.Time
+	flushes   int
+}
+
+func newProxyDeadlineRecorder() *proxyDeadlineRecorder {
+	return &proxyDeadlineRecorder{ResponseRecorder: httptest.NewRecorder()}
+}
+
+func (r *proxyDeadlineRecorder) Flush() {
+	r.flushes++
+	r.ResponseRecorder.Flush()
+}
+
+func (r *proxyDeadlineRecorder) SetWriteDeadline(deadline time.Time) error {
+	r.deadlines = append(r.deadlines, deadline)
+	return nil
 }

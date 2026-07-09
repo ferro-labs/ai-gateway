@@ -44,9 +44,10 @@ func TestMeter_ForwardsAllChunks(t *testing.T) {
 	}
 	src := feed(chunks...)
 	out := Meter(context.Background(), src, time.Now(), MeterMeta{
-		Provider: "openai",
-		Model:    "gpt-4o",
-		Catalog:  models.Catalog{},
+		Provider:    "openai",
+		Model:       "gpt-4o",
+		MetricModel: "gpt-4o",
+		Catalog:     models.Catalog{},
 	})
 
 	var got []providers.StreamChunk
@@ -78,11 +79,12 @@ func TestMeter_CallsPublishFn_OnSuccess(t *testing.T) {
 	)
 
 	out := Meter(context.Background(), src, time.Now(), MeterMeta{
-		Provider:  "openai",
-		Model:     "gpt-4o",
-		Catalog:   models.Catalog{},
-		PublishFn: publishFn,
-		TraceID:   "trace-123",
+		Provider:    "openai",
+		Model:       "gpt-4o",
+		MetricModel: "gpt-4o",
+		Catalog:     models.Catalog{},
+		PublishFn:   publishFn,
+		TraceID:     "trace-123",
 	})
 
 	// Drain. PublishFn is called synchronously inside the Meter goroutine
@@ -127,10 +129,11 @@ func TestMeter_CallsPublishFn_OnError(t *testing.T) {
 	)
 
 	out := Meter(context.Background(), src, time.Now(), MeterMeta{
-		Provider:  "groq",
-		Model:     "llama-3",
-		Catalog:   models.Catalog{},
-		PublishFn: publishFn,
+		Provider:    "groq",
+		Model:       "llama-3",
+		MetricModel: "llama-3",
+		Catalog:     models.Catalog{},
+		PublishFn:   publishFn,
 	})
 	// PublishFn is called synchronously before close(out); no sleep needed.
 	for range out { //nolint:revive
@@ -157,9 +160,10 @@ func TestMeter_IncrementsProviderErrors_OnError(t *testing.T) {
 	beforeProvErr := counterValue(t, metrics.ProviderErrors.WithLabelValues("groq", "provider_error"))
 
 	out := Meter(context.Background(), src, time.Now(), MeterMeta{
-		Provider: "groq",
-		Model:    "llama-3",
-		Catalog:  models.Catalog{},
+		Provider:    "groq",
+		Model:       "llama-3",
+		MetricModel: "llama-3",
+		Catalog:     models.Catalog{},
 	})
 	for range out { //nolint:revive
 	}
@@ -184,9 +188,10 @@ func TestMeter_IncrementsProviderErrors_CircuitOpen(t *testing.T) {
 	beforeProvErr := counterValue(t, metrics.ProviderErrors.WithLabelValues("groq", "circuit_open"))
 
 	out := Meter(context.Background(), src, time.Now(), MeterMeta{
-		Provider: "groq",
-		Model:    "llama-3",
-		Catalog:  models.Catalog{},
+		Provider:    "groq",
+		Model:       "llama-3",
+		MetricModel: "llama-3",
+		Catalog:     models.Catalog{},
 	})
 	for range out { //nolint:revive
 	}
@@ -230,6 +235,7 @@ func TestMeter_CircuitBreakerOutcome_PreservesProviderErrorOnClientCancel(t *tes
 	out := Meter(ctx, src, time.Now(), MeterMeta{
 		Provider:              "openai",
 		Model:                 "gpt-4o",
+		MetricModel:           "gpt-4o",
 		Catalog:               models.Catalog{},
 		CircuitBreakerOutcome: outcomeFn,
 	})
@@ -272,6 +278,7 @@ func TestMeter_CallsCircuitBreakerOutcome_OnSuccessAndError(t *testing.T) {
 		out := Meter(context.Background(), src, time.Now(), MeterMeta{
 			Provider:              "openai",
 			Model:                 "gpt-4o",
+			MetricModel:           "gpt-4o",
 			Catalog:               models.Catalog{},
 			CircuitBreakerOutcome: outcomeFn,
 		})
@@ -298,6 +305,7 @@ func TestMeter_CallsCircuitBreakerOutcome_OnSuccessAndError(t *testing.T) {
 		out := Meter(context.Background(), src, time.Now(), MeterMeta{
 			Provider:              "openai",
 			Model:                 "gpt-4o",
+			MetricModel:           "gpt-4o",
 			Catalog:               models.Catalog{},
 			CircuitBreakerOutcome: outcomeFn,
 		})
@@ -325,9 +333,10 @@ func TestMeter_CallsCircuitBreakerOutcome_OnAfterPluginError(t *testing.T) {
 	)
 
 	out := Meter(context.Background(), src, time.Now(), MeterMeta{
-		Provider: "openai",
-		Model:    "gpt-4o",
-		Catalog:  models.Catalog{},
+		Provider:    "openai",
+		Model:       "gpt-4o",
+		MetricModel: "gpt-4o",
+		Catalog:     models.Catalog{},
 		CompletionFn: func(context.Context, *providers.Response) error {
 			return pluginErr
 		},
@@ -347,11 +356,81 @@ func TestMeter_NilPublishFn_NoPanic(t *testing.T) {
 	t.Helper()
 	src := feed(providers.StreamChunk{ID: "1"})
 	out := Meter(context.Background(), src, time.Now(), MeterMeta{
-		Provider:  "openai",
-		Model:     "gpt-4o",
-		Catalog:   models.Catalog{},
-		PublishFn: nil,
+		Provider:    "openai",
+		Model:       "gpt-4o",
+		MetricModel: "gpt-4o",
+		Catalog:     models.Catalog{},
+		PublishFn:   nil,
 	})
 	for range out { //nolint:revive
+	}
+}
+
+// A caller that forgets MetricModel must not silently reintroduce unbounded
+// cardinality: the label fails closed to "unknown" instead of echoing the raw,
+// client-supplied model. Model itself stays raw for cost lookup and events.
+func TestMeterMeta_MetricLabelModelFailsClosed(t *testing.T) {
+	tests := []struct {
+		name string
+		meta MeterMeta
+		want string
+	}{
+		{
+			name: "bucketed label is used",
+			meta: MeterMeta{Model: "raw-client-model", MetricModel: metrics.UnknownModelLabel},
+			want: metrics.UnknownModelLabel,
+		},
+		{
+			name: "known model passes through",
+			meta: MeterMeta{Model: "gpt-4o", MetricModel: "gpt-4o"},
+			want: "gpt-4o",
+		},
+		{
+			name: "unset MetricModel never leaks the raw model",
+			meta: MeterMeta{Model: "raw-client-model"},
+			want: metrics.UnknownModelLabel,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.meta.metricLabelModel(); got != tt.want {
+				t.Fatalf("metricLabelModel() = %q, want %q", got, tt.want)
+			}
+			if tt.meta.Model == "" {
+				t.Fatal("Model must remain available for cost lookup")
+			}
+		})
+	}
+}
+
+// The unset case must not merely default — it must also keep the raw model out
+// of the emitted series.
+func TestMeter_UnsetMetricModelDoesNotEmitRawModelLabel(t *testing.T) {
+	const rawModel = "streamwrap-raw-model-must-not-appear"
+
+	src := feed(providers.StreamChunk{Usage: &providers.Usage{PromptTokens: 1, CompletionTokens: 1}})
+	out := Meter(context.Background(), src, time.Now(), MeterMeta{
+		Provider: "openai",
+		Model:    rawModel, // MetricModel deliberately unset
+		Catalog:  models.Catalog{},
+	})
+	for range out { //nolint:revive // drain
+	}
+
+	mfs, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatalf("gather metrics: %v", err)
+	}
+	for _, mf := range mfs {
+		if mf.GetName() != "gateway_requests_total" {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			for _, label := range m.GetLabel() {
+				if label.GetName() == "model" && label.GetValue() == rawModel {
+					t.Fatalf("raw model %q leaked into a metric series", rawModel)
+				}
+			}
+		}
 	}
 }

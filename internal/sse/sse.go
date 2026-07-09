@@ -10,13 +10,14 @@ import (
 	"time"
 
 	"github.com/ferro-labs/ai-gateway/internal/logging"
+	"github.com/ferro-labs/ai-gateway/internal/streamio"
 	"github.com/ferro-labs/ai-gateway/providers"
 )
 
-var (
-	writeDeadline = 15 * time.Second
-	idleTimeout   = 2 * time.Minute
-)
+// idleTimeout bounds the gap between two chunks arriving on the provider
+// channel. The proxy and legacy-completions paths bound their upstream reads
+// with streamio.IdleTimeout instead.
+var idleTimeout = 2 * time.Minute
 
 // SetIdleTimeoutForTest overrides the idle timeout for testing and returns a restore function.
 func SetIdleTimeoutForTest(d time.Duration) func() {
@@ -32,7 +33,7 @@ func Write(ctx context.Context, w http.ResponseWriter, ch <-chan providers.Strea
 	w.Header().Set("Connection", "keep-alive")
 
 	controller := http.NewResponseController(w)
-	_ = clearWriteDeadline(controller)
+	_ = streamio.ClearWriteDeadline(controller)
 
 	bw := bufio.NewWriterSize(w, 4096)
 	enc := json.NewEncoder(bw)
@@ -105,26 +106,7 @@ func Write(ctx context.Context, w http.ResponseWriter, ch <-chan providers.Strea
 }
 
 func writeAndFlush(ctx context.Context, controller *http.ResponseController, bw *bufio.Writer, writeFn func() error) error {
-	if err := setWriteDeadline(controller, time.Now().Add(writeDeadline)); err != nil {
-		return err
-	}
-	defer func() {
-		_ = clearWriteDeadline(controller)
-	}()
-
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	default:
-	}
-
-	if err := writeFn(); err != nil {
-		return err
-	}
-	if err := bw.Flush(); err != nil {
-		return err
-	}
-	return flush(controller)
+	return streamio.WriteAndFlush(ctx, controller, bw.Flush, writeFn)
 }
 
 // writeChunk writes a single stream chunk as an SSE event using a
@@ -152,22 +134,4 @@ func writeEvent(bw *bufio.Writer, enc *json.Encoder, payload any) error {
 		return err
 	}
 	return bw.WriteByte('\n')
-}
-
-func flush(controller *http.ResponseController) error {
-	if err := controller.Flush(); err != nil && !errors.Is(err, http.ErrNotSupported) {
-		return err
-	}
-	return nil
-}
-
-func setWriteDeadline(controller *http.ResponseController, deadline time.Time) error {
-	if err := controller.SetWriteDeadline(deadline); err != nil && !errors.Is(err, http.ErrNotSupported) {
-		return err
-	}
-	return nil
-}
-
-func clearWriteDeadline(controller *http.ResponseController) error {
-	return setWriteDeadline(controller, time.Time{})
 }

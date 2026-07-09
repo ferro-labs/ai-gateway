@@ -138,7 +138,9 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 			plugin.PutContext(pctx)
 			releasePluginManager()
 		}
-		metrics.ForRequest(providerName, req.Model).Error.Inc()
+		// Providers that accept any model ID (openrouter, ollama, azure_openai, …)
+		// let a raw client model reach this counter, so bound it.
+		metrics.ForRequest(providerName, g.metricModel(req.Model)).Error.Inc()
 		metrics.ForProviderError(providerName, errType).Inc()
 		span.SetError(err)
 		if hooksEnabled || obsEventsActive {
@@ -162,8 +164,12 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 	g.mu.RUnlock()
 
 	meta := streamwrap.MeterMeta{
-		Provider:        providerName,
-		Model:           req.Model,
+		Provider: providerName,
+		Model:    req.Model,
+		// Model stays raw for cost lookup and event payloads; only the metric
+		// label is bounded, mirroring the non-streaming path's use of the
+		// provider-reported model.
+		MetricModel:     g.metricModel(req.Model),
 		Catalog:         catalog,
 		TraceID:         logging.TraceIDFromContext(ctx),
 		LatencyRecorder: g.latencyTracker.Record,
@@ -296,7 +302,7 @@ func (g *Gateway) runBeforePluginsStream(ctx context.Context, span observability
 	if err != nil {
 		plugin.PutContext(pctx)
 		releasePluginManager()
-		metrics.ForRequest("", req.Model).Rejected.Inc()
+		metrics.ForRequest("", g.metricModel(req.Model)).Rejected.Inc()
 		return nil, nil, err
 	}
 	if early != nil {
