@@ -14,6 +14,7 @@ import (
 
 	"github.com/ferro-labs/ai-gateway/internal/apierror"
 	"github.com/ferro-labs/ai-gateway/internal/httpclient"
+	"github.com/ferro-labs/ai-gateway/internal/logging"
 	"github.com/ferro-labs/ai-gateway/internal/streamio"
 	"github.com/ferro-labs/ai-gateway/providers"
 )
@@ -130,10 +131,19 @@ func Completions(registry *providers.Registry) http.HandlerFunc {
 			}
 			w.Header().Set("X-Gateway-Provider", p.Name())
 			w.WriteHeader(resp.StatusCode)
+
+			var copyErr error
 			if legacyReq.Stream {
-				_, _ = streamio.Copy(r.Context(), w, upstreamBody)
+				_, copyErr = streamio.Copy(r.Context(), w, upstreamBody)
 			} else {
-				_, _ = io.Copy(w, upstreamBody) //nolint:gosec
+				_, copyErr = io.Copy(w, upstreamBody) //nolint:gosec
+			}
+			// Headers are already out, so this cannot become an error response —
+			// but an idle-timeout cut of a stalled upstream would otherwise be
+			// invisible. A client that hung up is not worth reporting.
+			if copyErr != nil && r.Context().Err() == nil {
+				logging.FromContext(r.Context()).Warn("completions response copy failed",
+					"provider", p.Name(), "stream", legacyReq.Stream, "error", copyErr)
 			}
 			return
 		}

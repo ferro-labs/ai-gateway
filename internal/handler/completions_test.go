@@ -1,14 +1,18 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/ferro-labs/ai-gateway/internal/logging"
+	"github.com/ferro-labs/ai-gateway/internal/streamio"
 	"github.com/ferro-labs/ai-gateway/providers"
 	openaipkg "github.com/ferro-labs/ai-gateway/providers/openai"
 )
@@ -183,6 +187,54 @@ func TestCompletionsHandler_ProxyStreamPathUsesWriteDeadlines(t *testing.T) {
 	}
 	if w.flushes == 0 {
 		t.Fatal("expected streaming response flush")
+	}
+}
+
+// Cutting a stalled upstream must not be silent: the copy error is the only
+// evidence the idle bound fired, and a client that hung up is not an error.
+func TestCompletionsHandler_StalledUpstreamCutIsLogged(t *testing.T) {
+	defer streamio.SetIdleTimeoutForTest(50 * time.Millisecond)()
+
+	var logs bytes.Buffer
+	prevLogger := logging.Logger
+	logging.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+	defer func() { logging.Logger = prevLogger }()
+
+	upstreamDone := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: {\"id\":\"chunk-1\"}\n\n"))
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		<-r.Context().Done() // stall until the gateway gives up
+		close(upstreamDone)
+	}))
+	defer upstream.Close()
+
+	reg := providers.NewRegistry()
+	op, err := openaipkg.New("sk-test", upstream.URL)
+	if err != nil {
+		t.Fatalf("failed to build openai provider: %v", err)
+	}
+	reg.Register(op)
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/completions",
+		strings.NewReader(`{"model":"gpt-4o","prompt":"hi","stream":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := newCompletionDeadlineRecorder()
+
+	Completions(reg)(w, req)
+
+	select {
+	case <-upstreamDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("upstream request was never cancelled by the idle bound")
+	}
+
+	if got := logs.String(); !strings.Contains(got, "completions response copy failed") {
+		t.Fatalf("idle-timeout cut was not logged: %s", got)
 	}
 }
 

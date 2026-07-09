@@ -79,6 +79,63 @@ func TestRecoverJSONDoesNotCorruptCommittedResponse(t *testing.T) {
 	}
 }
 
+// net/http allows any number of 1xx informational headers before the single
+// 2xx-5xx one, so only a final status commits the response.
+func TestCommittedWriterIgnoresInformationalStatus(t *testing.T) {
+	cw := &committedWriter{ResponseWriter: httptest.NewRecorder()}
+
+	cw.WriteHeader(http.StatusEarlyHints) // 103
+	if cw.committed {
+		t.Fatal("a 1xx informational response must not commit the response")
+	}
+	cw.WriteHeader(http.StatusOK)
+	if !cw.committed {
+		t.Fatal("a final status must commit the response")
+	}
+}
+
+// httputil.ReverseProxy forwards an upstream 1xx straight through WriteHeader.
+// Treating it as committed would leave a panicking request with no final
+// response at all — the client would hang on a bare 103.
+//
+// httptest.ResponseRecorder latches Code on the first WriteHeader and cannot
+// model 1xx, so this runs against a real server.
+func TestRecoverJSONWritesEnvelopeAfterInformationalResponse(t *testing.T) {
+	captureLogs(t)
+
+	server := httptest.NewServer(RecoverJSON(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Link", "</style.css>; rel=preload; as=style")
+		w.WriteHeader(http.StatusEarlyHints) // 103, informational only
+		panic("exploded after early hints")
+	})))
+	defer server.Close()
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, server.URL, nil)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 after a 103", resp.StatusCode)
+	}
+	var payload struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.Error.Code != "internal_error" {
+		t.Fatalf("error code = %q, want internal_error", payload.Error.Code)
+	}
+}
+
 // The ordering contract: RecoverJSON sits above logging (and tracing), so a
 // panic raised inside those layers still produces the JSON envelope.
 func TestRecoverJSONRecoversPanicRaisedInsideLoggingLayer(t *testing.T) {

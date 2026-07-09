@@ -2810,6 +2810,46 @@ type wildcardStreamProvider struct {
 
 func (p *wildcardStreamProvider) SupportsModel(string) bool { return true }
 
+// A wildcard provider can accept an arbitrary model and stream successfully, so
+// the success/token/duration labels emitted by streamwrap must be bounded too —
+// not just the error label. The raw model still reaches cost lookup and events.
+func TestGateway_RouteStream_SuccessBucketsMetricLabel(t *testing.T) {
+	const rawModel = "user-supplied-high-cardinality-stream-success"
+	if requestMetricLabelExists(t, mockProviderName, rawModel, "success") {
+		t.Fatalf("raw model label %q already exists before test", rawModel)
+	}
+
+	gw, err := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: mockProviderName}},
+	})
+	if err != nil {
+		t.Fatalf("New gateway: %v", err)
+	}
+	gw.RegisterProvider(&wildcardStreamProvider{mockStreamProvider: mockStreamProvider{
+		mockProvider: mockProvider{name: mockProviderName, models: []string{"known-model"}},
+	}})
+
+	unknownCounter := metrics.ForRequest(mockProviderName, metrics.UnknownModelLabel).Success
+	before := counterValue(t, unknownCounter)
+
+	ch, err := gw.RouteStream(context.Background(), providers.Request{
+		Model:    rawModel,
+		Messages: []providers.Message{{Role: "user", Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("RouteStream: %v", err)
+	}
+	drainStream(t, ch) // streamwrap emits metrics before closing the channel
+
+	if delta := counterValue(t, unknownCounter) - before; delta != 1 {
+		t.Fatalf("unknown success counter delta = %v, want 1", delta)
+	}
+	if requestMetricLabelExists(t, mockProviderName, rawModel, "success") {
+		t.Fatalf("raw success model label %q should not be created", rawModel)
+	}
+}
+
 func TestGateway_RouteStream_WildcardProviderBucketsErrorMetricLabel(t *testing.T) {
 	const rawModel = "user-supplied-high-cardinality-stream"
 	if requestMetricLabelExists(t, mockProviderName, rawModel, "error") {

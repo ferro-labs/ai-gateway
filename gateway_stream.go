@@ -164,8 +164,12 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 	g.mu.RUnlock()
 
 	meta := streamwrap.MeterMeta{
-		Provider:        providerName,
-		Model:           req.Model,
+		Provider: providerName,
+		Model:    req.Model,
+		// Model stays raw for cost lookup and event payloads; only the metric
+		// label is bounded, mirroring the non-streaming path's use of the
+		// provider-reported model.
+		MetricModel:     g.metricModel(req.Model),
 		Catalog:         catalog,
 		TraceID:         logging.TraceIDFromContext(ctx),
 		LatencyRecorder: g.latencyTracker.Record,

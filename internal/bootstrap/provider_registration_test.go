@@ -56,6 +56,28 @@ func TestRegisterProviderEntriesSkipsBrokenProviderAndKeepsGoodProvider(t *testi
 	}
 }
 
+// Bedrock is registered by its own dual-key branch rather than the generic loop,
+// so it needs the same failure signal: an access key without a secret builds no
+// provider, the gateway still starts, and /health still reports it as serving.
+func TestRegisterBedrockProviderCountsInitFailure(t *testing.T) {
+	t.Setenv("AWS_REGION", "us-east-1")
+	t.Setenv("AWS_ACCESS_KEY_ID", "AKIAEXAMPLE")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "") // static credentials require both
+	t.Setenv("AWS_BEARER_TOKEN_BEDROCK", "")
+
+	before := initFailureCount(t, providers.NameBedrock)
+
+	registry := providers.NewRegistry()
+	registerBedrockProvider(registry)
+
+	if _, ok := registry.Get(providers.NameBedrock); ok {
+		t.Fatal("bedrock should not register with incomplete static credentials")
+	}
+	if delta := initFailureCount(t, providers.NameBedrock) - before; delta != 1 {
+		t.Fatalf("bedrock init failure counter delta = %v, want 1", delta)
+	}
+}
+
 // initFailureCount reads gateway_provider_init_failures_total for one provider.
 func initFailureCount(t *testing.T, provider string) float64 {
 	t.Helper()

@@ -64,8 +64,14 @@ type committedWriter struct {
 
 func (w *committedWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
+// WriteHeader commits only on a final status. net/http allows any number of 1xx
+// informational headers before the single 2xx-5xx one, and httputil.ReverseProxy
+// forwards an upstream 1xx (e.g. 103 Early Hints) straight through — treating
+// that as committed would leave a panicking request with no response at all.
 func (w *committedWriter) WriteHeader(status int) {
-	w.committed = true
+	if status >= 200 {
+		w.committed = true
+	}
 	w.ResponseWriter.WriteHeader(status)
 }
 

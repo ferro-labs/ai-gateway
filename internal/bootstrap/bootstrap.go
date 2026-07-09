@@ -353,7 +353,10 @@ func registerBedrockProvider(registry *providers.Registry) {
 			SessionToken:    os.Getenv("AWS_SESSION_TOKEN"),
 		})
 		if err != nil {
+			// Same warn-and-skip contract as registerProviderEntries: the counter
+			// is the only machine-readable signal that this provider is missing.
 			logging.Logger.Error("provider init failed", "provider", providers.NameBedrock, "error", err)
+			metrics.ProviderInitFailures.WithLabelValues(providers.NameBedrock).Inc()
 		} else {
 			registry.Register(p)
 			logging.Logger.Info("provider registered", "provider", providers.NameBedrock, "region", p.Region())

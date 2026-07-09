@@ -45,8 +45,14 @@ import (
 type MeterMeta struct {
 	// Provider is the name of the provider that handled the request (e.g. "openai").
 	Provider string
-	// Model is the model ID after alias resolution.
+	// Model is the model ID after alias resolution. It reaches this struct as the
+	// client supplied it, so it is used for cost lookup and event payloads but
+	// never as a Prometheus label — see MetricModel.
 	Model string
+	// MetricModel is the bounded form of Model used for Prometheus labels: a
+	// model the gateway cannot route collapses to metrics.UnknownModelLabel so a
+	// client cannot mint unbounded time series. Empty falls back to Model.
+	MetricModel string
 	// Catalog is a snapshot of the gateway's model catalog used for cost calculation.
 	Catalog models.Catalog
 	// PublishFn is the gateway's event-hook dispatcher. Called asynchronously on
@@ -72,6 +78,15 @@ type MeterMeta struct {
 	// CircuitBreakerOutcome, if non-nil, is invoked once when the stream
 	// finishes. err is nil on success; non-nil on provider/stream failure.
 	CircuitBreakerOutcome func(err error)
+}
+
+// metricLabelModel returns the bounded Prometheus label for this request,
+// falling back to the raw model when the caller did not bucket it.
+func (m MeterMeta) metricLabelModel() string {
+	if m.MetricModel != "" {
+		return m.MetricModel
+	}
+	return m.Model
 }
 
 // StreamOutcome bundles the values stamped onto the observability span
@@ -257,7 +272,7 @@ func finishStreamOnError(
 	case errors.Is(streamErr, circuitbreaker.ErrCircuitOpen):
 		errType = "circuit_open"
 	}
-	requestMetrics := metrics.ForRequest(meta.Provider, meta.Model)
+	requestMetrics := metrics.ForRequest(meta.Provider, meta.metricLabelModel())
 	requestMetrics.Error.Inc()
 	metrics.ForProviderError(meta.Provider, errType).Inc()
 	if meta.PublishFn != nil {
@@ -308,7 +323,7 @@ func handleCompletionFn(
 	if err == nil {
 		return false
 	}
-	requestMetrics := metrics.ForRequest(meta.Provider, meta.Model)
+	requestMetrics := metrics.ForRequest(meta.Provider, meta.metricLabelModel())
 	requestMetrics.Error.Inc()
 	metrics.ForProviderError(meta.Provider, "plugin_error").Inc()
 	select {
@@ -341,7 +356,7 @@ func finishStreamOnSuccess(
 	ttftMs, ttltMs float64,
 	latency time.Duration,
 ) {
-	requestMetrics := metrics.ForRequest(meta.Provider, meta.Model)
+	requestMetrics := metrics.ForRequest(meta.Provider, meta.metricLabelModel())
 	requestMetrics.Duration.Observe(latency.Seconds())
 	requestMetrics.Success.Inc()
 
