@@ -11,7 +11,7 @@ import (
 
 func TestNewSQLiteWriter_FilePermissions(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "requests.db")
-	w, err := NewSQLiteWriter(path)
+	w, err := NewSQLiteWriter(t.Context(), path)
 	if err != nil {
 		t.Fatalf("new sqlite writer: %v", err)
 	}
@@ -28,7 +28,7 @@ func TestNewSQLiteWriter_FilePermissions(t *testing.T) {
 
 func TestSQLiteWriter_WriteListDelete(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "requests.db")
-	w, err := NewSQLiteWriter(path)
+	w, err := NewSQLiteWriter(t.Context(), path)
 	if err != nil {
 		t.Fatalf("new sqlite writer: %v", err)
 	}
@@ -122,16 +122,18 @@ func TestPostgresWriterContract(t *testing.T) {
 		t.Skip("set FERROGW_TEST_POSTGRES_DSN to run Postgres requestlog integration tests")
 	}
 
-	w, err := NewPostgresWriter(dsn)
+	w, err := NewPostgresWriter(t.Context(), dsn)
 	if err != nil {
 		t.Fatalf("new postgres writer: %v", err)
 	}
 	t.Cleanup(func() {
-		_, _ = w.db.Exec("DELETE FROM request_logs")
+		// t.Context() is already canceled by the time Cleanup runs; use a
+		// fresh context for this cleanup query.
+		_, _ = w.db.ExecContext(context.Background(), "DELETE FROM request_logs")
 		_ = w.Close()
 	})
 
-	_, _ = w.db.Exec("DELETE FROM request_logs")
+	_, _ = w.db.ExecContext(t.Context(), "DELETE FROM request_logs")
 
 	entry := Entry{
 		TraceID:          "pg-trace",
@@ -170,7 +172,7 @@ func TestSQLiteWriter_DefaultDSNAndZeroCreatedAt(t *testing.T) {
 		_ = os.Chdir(wd)
 	})
 
-	w, err := NewSQLiteWriter("   ")
+	w, err := NewSQLiteWriter(t.Context(), "   ")
 	if err != nil {
 		t.Fatalf("new sqlite writer with default dsn: %v", err)
 	}
@@ -203,7 +205,7 @@ func TestSQLiteWriter_DefaultDSNAndZeroCreatedAt(t *testing.T) {
 
 func TestSQLiteWriter_ListDefaultsAndSinceFilter(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "requests.db")
-	w, err := NewSQLiteWriter(path)
+	w, err := NewSQLiteWriter(t.Context(), path)
 	if err != nil {
 		t.Fatalf("new sqlite writer: %v", err)
 	}
@@ -256,7 +258,7 @@ func TestSQLiteWriter_ListDefaultsAndSinceFilter(t *testing.T) {
 
 func TestDeleteRequiresBefore(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "requests.db")
-	w, err := NewSQLiteWriter(path)
+	w, err := NewSQLiteWriter(t.Context(), path)
 	if err != nil {
 		t.Fatalf("new sqlite writer: %v", err)
 	}
@@ -271,7 +273,7 @@ func TestDeleteRequiresBefore(t *testing.T) {
 }
 
 func TestNewPostgresWriterRequiresDSN(t *testing.T) {
-	_, err := NewPostgresWriter("   ")
+	_, err := NewPostgresWriter(t.Context(), "   ")
 	if err == nil || !strings.Contains(err.Error(), "postgres dsn is required") {
 		t.Fatalf("expected postgres dsn required error, got %v", err)
 	}

@@ -96,7 +96,7 @@ func TestCompletionsHandler_ProxyPath_DoesNotDuplicateV1(t *testing.T) {
 	reg.Register(op)
 
 	h := Completions(reg)
-	req := httptest.NewRequest(http.MethodPost, "/v1/completions", strings.NewReader(`{"model":"gpt-4o","prompt":"hi"}`))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/completions", strings.NewReader(`{"model":"gpt-4o","prompt":"hi"}`))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
@@ -117,7 +117,7 @@ func TestCompletionsHandler_ShimsStreamRequest_ReturnsExplicitError(t *testing.T
 	reg.Register(np)
 
 	h := Completions(reg)
-	req := httptest.NewRequest(http.MethodPost, "/v1/completions", strings.NewReader(`{"model":"non-proxy-model","prompt":"hi","stream":true}`))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/completions", strings.NewReader(`{"model":"non-proxy-model","prompt":"hi","stream":true}`))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 

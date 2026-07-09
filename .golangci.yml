@@ -19,6 +19,8 @@ linters:
     - revive
     - staticcheck
     - unused
+    - noctx
+    - maintidx
 
   settings:
     gocyclo:
@@ -45,3 +47,19 @@ linters:
         linters:
           - staticcheck
         text: "SA5011"
+      # RouteStream's remaining complexity (after extracting the MCP-loop-
+      # equivalent safe blocks — see resolveStreamOrError and
+      # runBeforePluginsStream) is the streamwrap.MeterMeta closure setup
+      # (CompletionFn/ErrorFn/SpanFinisher), which captures and mutates pctx
+      # (nil-out + sync.Once-guarded release) across three closures.
+      # Extracting it further means passing pctx as **plugin.Context or
+      # restructuring the release semantics — both add real risk of a
+      # double-release or nil-deref in the hottest streaming path. See
+      # gateway_stream.go's test coverage (RunAfterReceivesStreamResponse,
+      # RunOnErrorReceivesStreamError, AfterPluginRejectRunsOnError,
+      # Close_DuringInFlightRouteStreamDoesNotPanic) for what protects this
+      # behavior today.
+      - path: gateway_stream\.go
+        linters:
+          - maintidx
+        text: "RouteStream"

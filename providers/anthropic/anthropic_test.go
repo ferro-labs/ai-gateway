@@ -3,6 +3,8 @@ package anthropic
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -525,5 +527,72 @@ func TestComplete_ErrorPathReturnsAPIError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "overloaded") || !strings.Contains(err.Error(), "429") {
 		t.Fatalf("error = %v, want status + upstream message", err)
+	}
+}
+
+// TestComplete_OversizedResponseTruncatedNotBuffered verifies the native
+// (non-openaicompat) chat path's streaming decode is capped via
+// io.LimitReader: a well-formed JSON body whose content exceeds the cap gets
+// truncated mid-value rather than fully buffered and decoded, proving the
+// decoder never reads past core.MaxProviderResponseBytes. Unlike the
+// openaicompat path (which reads the full body up front via
+// core.ReadResponseBody and can report an explicit "byte limit" error), this
+// path fails with a JSON truncation error — the important property is that it
+// fails fast instead of buffering an unbounded body.
+func TestComplete_OversizedResponseTruncatedNotBuffered(t *testing.T) {
+	padding := strings.Repeat("a", core.MaxProviderResponseBytes)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"x","model":"m","content":[{"type":"text","text":"`+padding+`"}]}`)
+	}))
+	defer srv.Close()
+
+	p, err := New("sk-test-key", srv.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_, err = p.Complete(context.Background(), core.Request{
+		Model:    "claude-sonnet-5",
+		Messages: []core.Message{{Role: core.RoleUser, Content: "hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected a decode error: the well-formed body exceeds the cap and must be truncated, not fully buffered")
+	}
+	if !strings.Contains(err.Error(), "failed to unmarshal response") {
+		t.Errorf("error = %q, want the JSON-decode failure wrapper, proving this failed at Decode() and not somewhere earlier", err.Error())
+	}
+	var statusErr *core.HTTPStatusError
+	if errors.As(err, &statusErr) {
+		t.Errorf("error unexpectedly carries a typed HTTPStatusError (%+v); this is a 200 response truncated mid-decode, not an upstream error status", statusErr)
+	}
+}
+
+// TestCompleteStream_UpstreamErrorBodyExceedsCap verifies that when a non-200
+// stream response body itself exceeds the read cap, the resulting read error
+// is surfaced to the caller instead of being silently discarded (which would
+// otherwise produce a misleading empty-message error).
+func TestCompleteStream_UpstreamErrorBodyExceedsCap(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write(make([]byte, core.MaxProviderResponseBytes+1))
+	}))
+	defer srv.Close()
+
+	p, err := New("sk-test-key", srv.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ch, err := p.CompleteStream(context.Background(), core.Request{
+		Model:    "claude-sonnet-5",
+		Messages: []core.Message{{Role: core.RoleUser, Content: "hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected an error for an oversized non-200 stream response body")
+	}
+	if ch != nil {
+		t.Errorf("expected nil channel on error, got %#v", ch)
+	}
+	if !strings.Contains(err.Error(), "byte limit") {
+		t.Errorf("error = %q, want it to mention the byte limit (read error must not be discarded)", err.Error())
 	}
 }

@@ -90,7 +90,7 @@ type SQLWriter struct {
 }
 
 // NewSQLiteWriter creates a SQLite-backed request log writer.
-func NewSQLiteWriter(dsn string) (*SQLWriter, error) {
+func NewSQLiteWriter(ctx context.Context, dsn string) (*SQLWriter, error) {
 	dsn = strings.TrimSpace(dsn)
 	if dsn == "" {
 		dsn = "ferrogw-requests.db"
@@ -101,7 +101,7 @@ func NewSQLiteWriter(dsn string) (*SQLWriter, error) {
 	}
 	tuneDBPool(db, requestLogDialectSQLite)
 	w := &SQLWriter{db: db, dialect: requestLogDialectSQLite}
-	if err := w.init(); err != nil {
+	if err := w.init(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -113,7 +113,7 @@ func NewSQLiteWriter(dsn string) (*SQLWriter, error) {
 }
 
 // NewPostgresWriter creates a Postgres-backed request log writer.
-func NewPostgresWriter(dsn string) (*SQLWriter, error) {
+func NewPostgresWriter(ctx context.Context, dsn string) (*SQLWriter, error) {
 	dsn = strings.TrimSpace(dsn)
 	if dsn == "" {
 		return nil, fmt.Errorf("postgres dsn is required")
@@ -124,15 +124,15 @@ func NewPostgresWriter(dsn string) (*SQLWriter, error) {
 	}
 	tuneDBPool(db, requestLogDialectPostgres)
 	w := &SQLWriter{db: db, dialect: requestLogDialectPostgres}
-	if err := w.init(); err != nil {
+	if err := w.init(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
 	return w, nil
 }
 
-func (w *SQLWriter) init() error {
-	if err := w.db.Ping(); err != nil {
+func (w *SQLWriter) init(ctx context.Context) error {
+	if err := w.db.PingContext(ctx); err != nil {
 		return fmt.Errorf("ping %s request log writer: %w", w.dialect, err)
 	}
 
@@ -166,7 +166,7 @@ CREATE TABLE IF NOT EXISTS request_logs (
 );`
 	}
 
-	if _, err := w.db.Exec(ddl); err != nil {
+	if _, err := w.db.ExecContext(ctx, ddl); err != nil {
 		return fmt.Errorf("initialize request log schema: %w", err)
 	}
 	return nil

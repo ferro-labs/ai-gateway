@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 
 	"github.com/ferro-labs/ai-gateway/providers/core"
@@ -60,16 +59,12 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 	}
 	defer func() { _ = httpResp.Body.Close() }()
 
-	respBody, err := io.ReadAll(httpResp.Body)
+	respBody, err := core.ReadResponseBody(httpResp.Body, core.MaxProviderResponseBytes)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 	if httpResp.StatusCode != http.StatusOK {
-		var errResp ollamaErrorResponse
-		if json.Unmarshal(respBody, &errResp) == nil && errResp.Error.Message != "" {
-			return nil, fmt.Errorf("ollama API error (%d): %s", httpResp.StatusCode, errResp.Error.Message)
-		}
-		return nil, fmt.Errorf("ollama API error (%d): %s", httpResp.StatusCode, string(respBody))
+		return nil, ollamaAPIError(httpResp.StatusCode, respBody)
 	}
 
 	var oResp ollamaEmbedResponse

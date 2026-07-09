@@ -10,7 +10,7 @@ import (
 func TestSecurityHeaders_SetsBaselineHeaders(t *testing.T) {
 	handler := SecurityHeaders(dummyHandler)
 
-	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, r)
 
@@ -32,7 +32,7 @@ func TestSecurityHeaders_SetsBaselineHeaders(t *testing.T) {
 func TestSecurityHeaders_NoHSTS_WhenNotTLS(t *testing.T) {
 	handler := SecurityHeaders(dummyHandler)
 
-	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 	// r.TLS is nil by default — plain HTTP
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, r)
@@ -45,7 +45,7 @@ func TestSecurityHeaders_NoHSTS_WhenNotTLS(t *testing.T) {
 func TestSecurityHeaders_HSTS_WhenTLS(t *testing.T) {
 	handler := SecurityHeaders(dummyHandler)
 
-	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 	r.TLS = &tls.ConnectionState{}
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, r)
@@ -64,7 +64,7 @@ func TestSecurityHeaders_CallsNextHandler(t *testing.T) {
 	})
 	handler := SecurityHeaders(next)
 
-	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, r)
 

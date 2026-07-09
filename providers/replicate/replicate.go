@@ -393,7 +393,10 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 	}
 	if httpResp.StatusCode != http.StatusOK {
 		defer func() { _ = httpResp.Body.Close() }()
-		respBody, _ := io.ReadAll(httpResp.Body)
+		respBody, err := core.ReadResponseBody(httpResp.Body, core.MaxProviderResponseBytes)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read response: %w", err)
+		}
 		return nil, core.APIError(Name, httpResp.StatusCode, respBody)
 	}
 
@@ -491,7 +494,7 @@ func (p *Provider) submit(ctx context.Context, url string, body io.Reader, wait 
 	}
 	defer func() { _ = httpResp.Body.Close() }()
 
-	respBody, err := io.ReadAll(httpResp.Body)
+	respBody, err := core.ReadResponseBody(httpResp.Body, core.MaxProviderResponseBytes)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
@@ -576,7 +579,7 @@ func (p *Provider) pollOnce(ctx context.Context, pollURL string) (*Prediction, e
 	if err != nil {
 		return nil, fmt.Errorf("poll request failed: %w", err)
 	}
-	pollBody, readErr := io.ReadAll(pollResp.Body)
+	pollBody, readErr := core.ReadResponseBody(pollResp.Body, core.MaxProviderResponseBytes)
 	_ = pollResp.Body.Close()
 	if readErr != nil {
 		return nil, fmt.Errorf("failed to read poll response body: %w", readErr)

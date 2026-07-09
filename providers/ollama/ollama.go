@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -81,14 +80,6 @@ func (p *Provider) Models() []core.ModelInfo {
 	return core.ModelsFromList(p.name, p.SupportedModels())
 }
 
-type ollamaErrorDetail struct {
-	Message string `json:"message"`
-}
-
-type ollamaErrorResponse struct {
-	Error ollamaErrorDetail `json:"error"`
-}
-
 // Complete sends a chat completion request and returns the full response. It
 // speaks Ollama's OpenAI-compatible /v1/chat/completions endpoint via the shared
 // helper, which sets core.Response.Provider and normalizes finish reasons.
@@ -121,6 +112,28 @@ type tagsResponse struct {
 	} `json:"models"`
 }
 
+// ollamaAPIError builds a provider error from a non-2xx response on one of
+// Ollama's native endpoints (/api/tags, /api/embed). Ollama documents its
+// error body as a flat {"error":"..."} string (see
+// https://docs.ollama.com/api/errors), not the OpenAI-nested
+// {"error":{"message":...}} shape core.APIError expects, so core.APIError
+// cannot decode it. The OpenAI-compat surface (/v1/chat/completions, used by
+// Complete/CompleteStream) is a different endpoint that genuinely does return
+// OpenAI-shaped errors and keeps using core.APIError via openaicompat.
+func ollamaAPIError(statusCode int, body []byte) error {
+	msg := string(body)
+	var envelope struct {
+		Error string `json:"error"`
+	}
+	if json.Unmarshal(body, &envelope) == nil && envelope.Error != "" {
+		msg = envelope.Error
+	}
+	return &core.HTTPStatusError{
+		StatusCode: statusCode,
+		Message:    fmt.Sprintf("ollama API error (%d): %s", statusCode, msg),
+	}
+}
+
 // DiscoverModels fetches the live model list from the self-hosted Ollama
 // server's /api/tags endpoint. Ollama is unauthenticated, so no Authorization
 // header is sent.
@@ -141,17 +154,13 @@ func (p *Provider) DiscoverModels(ctx context.Context) ([]core.ModelInfo, error)
 	}
 	defer func() { _ = httpResp.Body.Close() }()
 
-	respBody, err := io.ReadAll(httpResp.Body)
+	respBody, err := core.ReadResponseBody(httpResp.Body, core.MaxProviderResponseBytes)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 
 	if httpResp.StatusCode != http.StatusOK {
-		var errResp ollamaErrorResponse
-		if json.Unmarshal(respBody, &errResp) == nil && errResp.Error.Message != "" {
-			return nil, fmt.Errorf("ollama API error (%d): %s", httpResp.StatusCode, errResp.Error.Message)
-		}
-		return nil, fmt.Errorf("ollama API error (%d): %s", httpResp.StatusCode, string(respBody))
+		return nil, ollamaAPIError(httpResp.StatusCode, respBody)
 	}
 
 	var tags tagsResponse

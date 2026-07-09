@@ -272,6 +272,33 @@ func TestGeminiProvider_CompleteStream_MockSSE(t *testing.T) {
 	}
 }
 
+// TestGeminiProvider_CompleteStream_UpstreamErrorBodyExceedsCap verifies that
+// when a non-200 stream response body itself exceeds the read cap, the
+// resulting read error is surfaced to the caller instead of being silently
+// discarded (which would otherwise produce a misleading empty-message error).
+func TestGeminiProvider_CompleteStream_UpstreamErrorBodyExceedsCap(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write(make([]byte, core.MaxProviderResponseBytes+1))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	ch, err := p.CompleteStream(context.Background(), core.Request{
+		Model:    "gemini-2.0-flash",
+		Messages: []core.Message{{Role: "user", Content: "Hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected an error for an oversized non-200 stream response body")
+	}
+	if ch != nil {
+		t.Errorf("expected nil channel on error, got %#v", ch)
+	}
+	if !strings.Contains(err.Error(), "byte limit") {
+		t.Errorf("error = %q, want it to mention the byte limit (read error must not be discarded)", err.Error())
+	}
+}
+
 func TestGeminiProvider_CompleteStream_IndexesFunctionCalls(t *testing.T) {
 	sseData := `data: {"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"id":"call_1","name":"lookup_weather","args":{"city":"SF"}}},{"functionCall":{"id":"call_2","name":"lookup_time","args":{"city":"SF"}}}]},"finishReason":"STOP"}]}
 

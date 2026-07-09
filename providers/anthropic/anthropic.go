@@ -296,9 +296,10 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 	defer func() { _ = httpResp.Body.Close() }()
 
 	if httpResp.StatusCode != http.StatusOK {
-		// Error branch keeps ReadAll: the raw body is needed verbatim for the
-		// fallback error message when it is not valid Anthropic error JSON.
-		respBody, err := io.ReadAll(httpResp.Body)
+		// Error branch reads the full (capped) body via core.ReadResponseBody:
+		// the raw body is needed verbatim for the fallback error message when
+		// it is not valid Anthropic error JSON.
+		respBody, err := core.ReadResponseBody(httpResp.Body, core.MaxProviderResponseBytes)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read response: %w", err)
 		}
@@ -307,8 +308,10 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 
 	// Success path streams the decode straight off the response body, avoiding
 	// the extra full-body copy that io.ReadAll + Unmarshal incurs per request.
+	// The body is still capped so an oversized upstream response can't exhaust
+	// memory via the decoder's internal buffering.
 	var aResp anthropicwire.Response
-	if err := json.NewDecoder(httpResp.Body).Decode(&aResp); err != nil {
+	if err := json.NewDecoder(io.LimitReader(httpResp.Body, core.MaxProviderResponseBytes)).Decode(&aResp); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 

@@ -278,18 +278,21 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 	defer func() { _ = httpResp.Body.Close() }()
 
 	if httpResp.StatusCode != http.StatusOK {
-		respBody, err := io.ReadAll(httpResp.Body)
+		respBody, err := core.ReadResponseBody(httpResp.Body, core.MaxProviderResponseBytes)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read response: %w", err)
 		}
 		return nil, core.APIError(p.name, httpResp.StatusCode, respBody)
 	}
 
+	// Bound decode + drain together so an oversized upstream response can't
+	// exhaust memory via the decoder's internal buffering or the drain copy.
+	limited := io.LimitReader(httpResp.Body, core.MaxProviderResponseBytes)
 	var completion openAIChatCompletionResponse
-	if err := json.NewDecoder(httpResp.Body).Decode(&completion); err != nil {
+	if err := json.NewDecoder(limited).Decode(&completion); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
-	if _, err := io.Copy(io.Discard, httpResp.Body); err != nil {
+	if _, err := io.Copy(io.Discard, limited); err != nil {
 		return nil, fmt.Errorf("failed to drain response: %w", err)
 	}
 
@@ -357,7 +360,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 
 	if httpResp.StatusCode != http.StatusOK {
 		defer func() { _ = httpResp.Body.Close() }()
-		respBody, err := io.ReadAll(httpResp.Body)
+		respBody, err := core.ReadResponseBody(httpResp.Body, core.MaxProviderResponseBytes)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read response: %w", err)
 		}

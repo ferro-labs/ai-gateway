@@ -37,7 +37,7 @@ func TestDecodeJSONBody(t *testing.T) {
 		{
 			name: "well-formed body decodes successfully",
 			buildReq: func(_ http.ResponseWriter) *http.Request {
-				return httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"model":"gpt-4o"}`))
+				return httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/", strings.NewReader(`{"model":"gpt-4o"}`))
 			},
 			wantOK:    true,
 			wantModel: "gpt-4o",
@@ -46,7 +46,7 @@ func TestDecodeJSONBody(t *testing.T) {
 			name: "malformed body returns 400",
 			buildReq: func(_ http.ResponseWriter) *http.Request {
 				// Truncated JSON: the decoder fails with a non-MaxBytes error.
-				return httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"model":`))
+				return httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/", strings.NewReader(`{"model":`))
 			},
 			wantOK:     false,
 			wantStatus: http.StatusBadRequest,
@@ -59,7 +59,7 @@ func TestDecodeJSONBody(t *testing.T) {
 				// Valid-JSON-prefixed body far larger than the tiny limit so the
 				// decoder reads partial content, then hits the MaxBytesReader cap.
 				body := `{"model":"` + strings.Repeat("x", 500) + `"}`
-				r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+				r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/", strings.NewReader(body))
 				r.Body = http.MaxBytesReader(w, r.Body, 5)
 				return r
 			},

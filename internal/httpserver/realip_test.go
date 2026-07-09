@@ -36,7 +36,7 @@ func applyRealIP(t *testing.T, trustedCIDRs string, req *http.Request) string {
 // is not within any trusted CIDR, X-Forwarded-For is silently discarded and
 // the raw RemoteAddr host is used as the resolved client IP.
 func TestRealIP_UntrustedPeer_IgnoresXFF(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 	req.RemoteAddr = "203.0.113.1:12345" // public IP, not in loopback CIDR
 	req.Header.Set("X-Forwarded-For", "10.0.0.1")
 
@@ -48,7 +48,7 @@ func TestRealIP_UntrustedPeer_IgnoresXFF(t *testing.T) {
 }
 
 func TestRealIP_UntrustedPeer_IgnoresXRealIP(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 	req.RemoteAddr = "198.51.100.5:9999"
 	req.Header.Set("X-Real-IP", "10.0.0.99")
 
@@ -67,7 +67,7 @@ func TestRealIP_UntrustedPeer_IgnoresXRealIP(t *testing.T) {
 // within a trusted CIDR, the leftmost X-Forwarded-For entry is used as the
 // resolved client IP.
 func TestRealIP_TrustedPeer_HonorsXFF(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 	req.RemoteAddr = "127.0.0.1:56789"                           // trusted loopback peer
 	req.Header.Set("X-Forwarded-For", "203.0.113.42, 127.0.0.1") // leftmost = real client
 
@@ -79,7 +79,7 @@ func TestRealIP_TrustedPeer_HonorsXFF(t *testing.T) {
 }
 
 func TestRealIP_TrustedPeer_HonorsXRealIP_WhenNoXFF(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 	req.RemoteAddr = "127.0.0.1:12345"
 	req.Header.Set("X-Real-IP", "198.51.100.7")
 
@@ -91,7 +91,7 @@ func TestRealIP_TrustedPeer_HonorsXRealIP_WhenNoXFF(t *testing.T) {
 }
 
 func TestRealIP_TrustedPeer_IPv6Loopback(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 	req.RemoteAddr = "[::1]:44444"
 	req.Header.Set("X-Forwarded-For", "2001:db8::1")
 
@@ -103,7 +103,7 @@ func TestRealIP_TrustedPeer_IPv6Loopback(t *testing.T) {
 }
 
 func TestRealIP_CustomTrustedCIDR_HonorsXFF(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 	req.RemoteAddr = "10.1.2.3:4567" // inside custom 10.0.0.0/8 range
 	req.Header.Set("X-Forwarded-For", "203.0.113.99")
 
@@ -115,7 +115,7 @@ func TestRealIP_CustomTrustedCIDR_HonorsXFF(t *testing.T) {
 }
 
 func TestRealIP_TrustedPeer_MalformedXFF_FallsBackToPeer(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 	req.RemoteAddr = "127.0.0.1:9999"
 	req.Header.Set("X-Forwarded-For", "not-an-ip")
 
@@ -141,7 +141,7 @@ func TestRateLimit_BucketKey_UsesHostOnly(t *testing.T) {
 	ok := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	handler := middleware.RateLimit(store)(ok)
 
-	r1 := httptest.NewRequest(http.MethodGet, "/", nil)
+	r1 := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 	r1.RemoteAddr = "1.2.3.4:5678"
 	w1 := httptest.NewRecorder()
 	handler.ServeHTTP(w1, r1)
@@ -150,7 +150,7 @@ func TestRateLimit_BucketKey_UsesHostOnly(t *testing.T) {
 	}
 
 	// Different ephemeral port, same host → must hit the same bucket.
-	r2 := httptest.NewRequest(http.MethodGet, "/", nil)
+	r2 := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 	r2.RemoteAddr = "1.2.3.4:9999"
 	w2 := httptest.NewRecorder()
 	handler.ServeHTTP(w2, r2)

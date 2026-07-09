@@ -248,6 +248,32 @@ func TestOllamaProvider_Embed_MockHTTP(t *testing.T) {
 	}
 }
 
+// TestOllamaProvider_Embed_Non200Error verifies the native /api/embed error
+// path decodes Ollama's actual documented error shape — a flat
+// {"error":"..."} string — not the OpenAI-nested shape core.APIError expects.
+func TestOllamaProvider_Embed_Non200Error(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"model not found"}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New(srv.URL, nil)
+	_, err := p.Embed(context.Background(), core.EmbeddingRequest{
+		Model: "nomic-embed-text",
+		Input: "hello",
+	})
+	if err == nil {
+		t.Fatal("Embed() error = nil, want error on non-200")
+	}
+	if !strings.Contains(err.Error(), "model not found") || strings.Contains(err.Error(), `{"error"`) {
+		t.Errorf("error = %q, want the cleanly extracted message \"model not found\", not the raw JSON blob", err.Error())
+	}
+	if got := core.ParseStatusCode(err); got != http.StatusBadRequest {
+		t.Errorf("ParseStatusCode(err) = %d, want %d", got, http.StatusBadRequest)
+	}
+}
+
 func TestOllamaProvider_Embed_ForwardsDimensions(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
@@ -347,16 +373,29 @@ func TestOllamaProvider_DiscoverModels_ParsesTagsNoAuth(t *testing.T) {
 	}
 }
 
+// TestOllamaProvider_DiscoverModels_Non200Error verifies the native /api/tags
+// error path decodes Ollama's actual documented error shape — a flat
+// {"error":"..."} string (see https://docs.ollama.com/api/errors), not the
+// OpenAI-nested {"error":{"message":...}} shape core.APIError expects. The
+// OpenAI-compat surface (Complete/CompleteStream, /v1/chat/completions) is a
+// different endpoint that genuinely does return OpenAI-shaped errors and is
+// covered separately; this test is specific to Ollama's native endpoints.
 func TestOllamaProvider_DiscoverModels_Non200Error(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte(`{"error":{"message":"boom"}}`))
+		_, _ = w.Write([]byte(`{"error":"boom"}`))
 	}))
 	defer srv.Close()
 
 	p, _ := New(srv.URL, nil)
-	if _, err := p.DiscoverModels(context.Background()); err == nil {
+	_, err := p.DiscoverModels(context.Background())
+	if err == nil {
 		t.Fatal("DiscoverModels() error = nil, want error on non-200")
+	}
+	// "boom" alone is a substring of the raw JSON blob too, so also assert the
+	// message is NOT the undecoded blob, ruling out the raw-body fallback path.
+	if !strings.Contains(err.Error(), "boom") || strings.Contains(err.Error(), `{"error"`) {
+		t.Errorf("error = %q, want the cleanly extracted message \"boom\", not the raw JSON blob", err.Error())
 	}
 }
 

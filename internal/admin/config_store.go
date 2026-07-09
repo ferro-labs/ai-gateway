@@ -12,6 +12,7 @@ import (
 
 	aigateway "github.com/ferro-labs/ai-gateway"
 	"github.com/ferro-labs/ai-gateway/internal/sqlitefile"
+
 	// Register Postgres SQL driver.
 	_ "github.com/lib/pq"
 	// Register SQLite SQL driver.
@@ -52,7 +53,7 @@ type SQLConfigStore struct {
 }
 
 // NewSQLiteConfigStore creates a SQLite-backed config store.
-func NewSQLiteConfigStore(dsn string) (*SQLConfigStore, error) {
+func NewSQLiteConfigStore(ctx context.Context, dsn string) (*SQLConfigStore, error) {
 	dsn = strings.TrimSpace(dsn)
 	if dsn == "" {
 		dsn = "ferrogw-config.db"
@@ -63,7 +64,7 @@ func NewSQLiteConfigStore(dsn string) (*SQLConfigStore, error) {
 	}
 	tuneDBPool(db, string(configDialectSQLite))
 	s := &SQLConfigStore{db: db, dialect: configDialectSQLite}
-	if err := s.init(); err != nil {
+	if err := s.init(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -75,7 +76,7 @@ func NewSQLiteConfigStore(dsn string) (*SQLConfigStore, error) {
 }
 
 // NewPostgresConfigStore creates a Postgres-backed config store.
-func NewPostgresConfigStore(dsn string) (*SQLConfigStore, error) {
+func NewPostgresConfigStore(ctx context.Context, dsn string) (*SQLConfigStore, error) {
 	dsn = strings.TrimSpace(dsn)
 	if dsn == "" {
 		return nil, fmt.Errorf("postgres dsn is required")
@@ -86,15 +87,15 @@ func NewPostgresConfigStore(dsn string) (*SQLConfigStore, error) {
 	}
 	tuneDBPool(db, string(configDialectPostgres))
 	s := &SQLConfigStore{db: db, dialect: configDialectPostgres}
-	if err := s.init(); err != nil {
+	if err := s.init(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
 	return s, nil
 }
 
-func (s *SQLConfigStore) init() error {
-	if err := s.db.Ping(); err != nil {
+func (s *SQLConfigStore) init(ctx context.Context) error {
+	if err := s.db.PingContext(ctx); err != nil {
 		return fmt.Errorf("ping %s config store: %w", s.dialect, err)
 	}
 
@@ -114,7 +115,7 @@ CREATE TABLE IF NOT EXISTS gateway_config (
 );`
 	}
 
-	if _, err := s.db.Exec(ddl); err != nil {
+	if _, err := s.db.ExecContext(ctx, ddl); err != nil {
 		return fmt.Errorf("initialize config schema: %w", err)
 	}
 	return nil

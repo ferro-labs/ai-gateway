@@ -25,7 +25,7 @@ func TestImages_NoCapableProvider_Returns404(t *testing.T) {
 	t.Cleanup(func() { _ = gw.Close() })
 
 	body := `{"model":"no-such-image-model","prompt":"a cat"}`
-	r := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(body))
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/images/generations", strings.NewReader(body))
 	w := httptest.NewRecorder()
 
 	Images(gw)(w, r)

@@ -110,13 +110,16 @@ func buildServer() (
 	}
 	gw.SetObservability(obsProvider)
 
-	cfgManager, configStoreBackend, err := CreateConfigManagerFromEnv(gw)
+	// No lifecycle context exists yet at this point in startup (signal.NotifyContext
+	// is only set up later, in runUntilShutdown), matching the gwotel.Init call
+	// above — these are one-time store-initialization calls, not per-request work.
+	cfgManager, configStoreBackend, err := CreateConfigManagerFromEnv(context.Background(), gw)
 	if err != nil {
 		logging.Logger.Error("failed to initialize config store", "error", err)
 		os.Exit(1)
 	}
 
-	keyStore, keyStoreBackend, err := CreateKeyStoreFromEnv()
+	keyStore, keyStoreBackend, err := CreateKeyStoreFromEnv(context.Background())
 	if err != nil {
 		logging.Logger.Error("failed to initialize API key store", "error", err)
 		os.Exit(1)
@@ -139,7 +142,7 @@ func buildServer() (
 	}
 
 	rlStore := NewRateLimitStore()
-	logReader, logMaintainer, logReaderBackend, err := CreateRequestLogReaderFromEnv()
+	logReader, logMaintainer, logReaderBackend, err := CreateRequestLogReaderFromEnv(context.Background())
 	if err != nil {
 		logging.Logger.Error("failed to initialize request log reader", "error", err)
 		os.Exit(1)

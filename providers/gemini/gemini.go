@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"slices"
@@ -598,7 +597,7 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 	defer release()
 	defer func() { _ = httpResp.Body.Close() }()
 
-	respBody, err := io.ReadAll(httpResp.Body)
+	respBody, err := core.ReadResponseBody(httpResp.Body, core.MaxProviderResponseBytes)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
@@ -660,7 +659,10 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 
 	if httpResp.StatusCode != http.StatusOK {
 		defer func() { _ = httpResp.Body.Close() }()
-		respBody, _ := io.ReadAll(httpResp.Body)
+		respBody, err := core.ReadResponseBody(httpResp.Body, core.MaxProviderResponseBytes)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read response: %w", err)
+		}
 		return nil, core.APIError("gemini", httpResp.StatusCode, respBody)
 	}
 

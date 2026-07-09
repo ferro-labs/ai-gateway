@@ -5,6 +5,24 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.19] — 2026-07-09
+
+Provider read bounds and typed errors — the second phase of a multi-phase hardening release line. All changes are additive/behavior-preserving.
+
+### Security
+
+- **Upstream provider responses** are now capped at 50 MiB when read into memory, across every provider, closing a gap where a single oversized upstream response could exhaust gateway memory.
+
+### Fixed
+
+- **DeepSeek streaming responses** now report cache-hit token counts (`cache_read_tokens`) consistently with non-streaming responses; the streaming path was previously dropping this field.
+
+### Internal
+
+- Provider HTTP errors now carry their status code as a typed field, recoverable via `errors.As`, in addition to the existing formatted message, so retry and circuit-breaker classification no longer depends solely on parsing the status out of the error string. Added a cross-provider conformance test covering upstream error-status recovery.
+
+---
+
 ## [1.1.18] — 2026-07-08
 
 Critical fixes and security hardening — the first of a multi-phase hardening release line. All changes are additive/behavior-preserving: no public config key or Go signature is removed or renamed.

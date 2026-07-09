@@ -99,69 +99,17 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 	}
 
 	// Run before-request plugins (word-filter, max-token, rate-limit, etc.).
-	var pctx *plugin.Context
-	if plugins.HasPlugins() {
-		pctx = plugin.NewContext(&req)
-		// Propagate the opaque key identifier so per-key plugins (rate-limit,
-		// budget) can scope limits to the authenticated caller. The raw bearer
-		// secret is never exposed here — only the stable APIKey.ID.
-		if keyID, ok := authctx.KeyID(ctx); ok {
-			pctx.Metadata["api_key"] = keyID
-		}
-		var early *providers.Response
-		trace.WithRegion(ctx, "gateway.route_stream.plugins.before", func() {
-			early, err = g.runBeforePlugins(ctx, plugins, pctx, &req)
-		})
-		if err != nil {
-			plugin.PutContext(pctx)
-			pctx = nil
-			releasePluginManager()
-			metrics.ForRequest("", req.Model).Rejected.Inc()
-			return nil, err
-		}
-		if early != nil {
-			if early.Created == 0 {
-				early.Created = time.Now().Unix()
-			}
-			g.recordSuccess(ctx, span, obs, early, time.Since(start), true, hooksEnabled, obsEventsActive)
-			plugin.PutContext(pctx)
-			pctx = nil
-			releasePluginManager()
-			return responseStream(early), nil
-		}
-	} else {
-		releasePluginManager()
+	pctx, early, err := g.runBeforePluginsStream(ctx, span, obs, plugins, releasePluginManager, &req, start, hooksEnabled, obsEventsActive)
+	if err != nil {
+		return nil, err
+	}
+	if early != nil {
+		return responseStream(early), nil
 	}
 
 	// Resolve provider according to strategy mode.
-	g.mu.Lock()
-	g.ensureCircuitBreakersLocked()
-	g.mu.Unlock()
-	g.mu.RLock()
-	sp, orderErr := g.resolveStreamingProviderLocked(req)
-	g.mu.RUnlock()
-
-	if orderErr != nil {
-		err = orderErr
-		span.SetError(err)
-		if pctx != nil {
-			pctx.Error = err
-			plugins.RunOnError(ctx, pctx)
-			plugin.PutContext(pctx)
-			releasePluginManager()
-		}
-		return nil, err
-	}
-
-	if sp == nil {
-		err = fmt.Errorf("no streaming-capable provider found for model: %s", req.Model)
-		span.SetError(err)
-		if pctx != nil {
-			pctx.Error = err
-			plugins.RunOnError(ctx, pctx)
-			plugin.PutContext(pctx)
-			releasePluginManager()
-		}
+	sp, err := g.resolveStreamOrError(ctx, span, plugins, pctx, releasePluginManager, req)
+	if err != nil {
 		return nil, err
 	}
 
@@ -319,6 +267,82 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 		}
 	})
 	return streamwrap.Meter(ctx, rawCh, start, meta), nil
+}
+
+// runBeforePluginsStream runs before-request plugins for the streaming path
+// and finalizes bookkeeping on every path except "continue routing": a
+// non-nil err means the caller must return (nil, err) immediately (metrics,
+// plugin-context release, and plugin-manager release are already done); a
+// non-nil early means the caller must return (responseStream(early), nil)
+// immediately (success recording and release already done). Otherwise the
+// returned pctx (nil if no plugins are configured, non-nil and still live
+// otherwise) is what the rest of RouteStream continues to use.
+func (g *Gateway) runBeforePluginsStream(ctx context.Context, span observability.Span, obs observability.Provider, plugins *plugin.Manager, releasePluginManager func(), req *providers.Request, start time.Time, hooksEnabled, obsEventsActive bool) (pctx *plugin.Context, early *providers.Response, err error) {
+	if !plugins.HasPlugins() {
+		releasePluginManager()
+		return nil, nil, nil
+	}
+
+	pctx = plugin.NewContext(req)
+	// Propagate the opaque key identifier so per-key plugins (rate-limit,
+	// budget) can scope limits to the authenticated caller. The raw bearer
+	// secret is never exposed here — only the stable APIKey.ID.
+	if keyID, ok := authctx.KeyID(ctx); ok {
+		pctx.Metadata["api_key"] = keyID
+	}
+	trace.WithRegion(ctx, "gateway.route_stream.plugins.before", func() {
+		early, err = g.runBeforePlugins(ctx, plugins, pctx, req)
+	})
+	if err != nil {
+		plugin.PutContext(pctx)
+		releasePluginManager()
+		metrics.ForRequest("", req.Model).Rejected.Inc()
+		return nil, nil, err
+	}
+	if early != nil {
+		if early.Created == 0 {
+			early.Created = time.Now().Unix()
+		}
+		g.recordSuccess(ctx, span, obs, early, time.Since(start), true, hooksEnabled, obsEventsActive)
+		plugin.PutContext(pctx)
+		releasePluginManager()
+		return nil, early, nil
+	}
+	return pctx, nil, nil
+}
+
+// resolveStreamOrError resolves the streaming-capable provider for req under
+// the gateway lock. On failure (resolution error, or no streaming-capable
+// provider found) it finalizes bookkeeping (span error, plugin error hook if
+// pctx is live, plugin-context release, plugin-manager release) and returns
+// a non-nil error — the caller must return (nil, err) immediately, same as
+// every other terminal error path in RouteStream.
+func (g *Gateway) resolveStreamOrError(ctx context.Context, span observability.Span, plugins *plugin.Manager, pctx *plugin.Context, releasePluginManager func(), req providers.Request) (providers.StreamProvider, error) {
+	g.mu.Lock()
+	g.ensureCircuitBreakersLocked()
+	g.mu.Unlock()
+	g.mu.RLock()
+	sp, orderErr := g.resolveStreamingProviderLocked(req)
+	g.mu.RUnlock()
+
+	fail := func(err error) (providers.StreamProvider, error) {
+		span.SetError(err)
+		if pctx != nil {
+			pctx.Error = err
+			plugins.RunOnError(ctx, pctx)
+			plugin.PutContext(pctx)
+			releasePluginManager()
+		}
+		return nil, err
+	}
+
+	if orderErr != nil {
+		return fail(orderErr)
+	}
+	if sp == nil {
+		return fail(fmt.Errorf("no streaming-capable provider found for model: %s", req.Model))
+	}
+	return sp, nil
 }
 
 func responseStream(resp *providers.Response) <-chan providers.StreamChunk {

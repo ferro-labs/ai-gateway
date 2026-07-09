@@ -276,6 +276,54 @@ func TestOpenAIProvider_Complete_DrainsSuccessfulResponseBody(t *testing.T) {
 	}
 }
 
+// TestOpenAIProvider_Complete_OversizedTrailingPaddingBounded verifies the
+// decode+drain reads on the success path are capped at
+// core.MaxProviderResponseBytes combined: a well-formed, small JSON body
+// followed by padding that pushes the total past the cap must still decode
+// successfully and return promptly, proving the drain does not attempt to
+// consume an unbounded amount of trailing data.
+func TestOpenAIProvider_Complete_OversizedTrailingPaddingBounded(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"chatcmpl-1",
+			"object":"chat.completion",
+			"created":1234567890,
+			"model":"gpt-4o-mini",
+			"choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],
+			"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}
+		}`))
+		_, _ = w.Write([]byte(strings.Repeat(" ", core.MaxProviderResponseBytes)))
+	}))
+	defer srv.Close()
+
+	provider, err := New("sk-test-key", srv.URL)
+	if err != nil {
+		t.Fatalf("New() returned error: %v", err)
+	}
+
+	done := make(chan struct{})
+	var resp *core.Response
+	go func() {
+		resp, err = provider.Complete(context.Background(), core.Request{
+			Model:    "gpt-4o-mini",
+			Messages: []core.Message{{Role: "user", Content: "hi"}},
+		})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Complete() did not return within 10s; drain may be unbounded")
+	}
+	if err != nil {
+		t.Fatalf("Complete() error: %v", err)
+	}
+	if resp == nil || resp.ID != "chatcmpl-1" {
+		t.Fatalf("unexpected response: %+v", resp)
+	}
+}
+
 func TestOpenAIProvider_Complete_MockHTTPError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusTooManyRequests)

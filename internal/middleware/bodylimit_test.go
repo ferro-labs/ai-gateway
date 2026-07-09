@@ -25,7 +25,7 @@ func TestMaxRequestBody_UnderLimit(t *testing.T) {
 	h := MaxRequestBody(limit)(inner)
 
 	body := strings.Repeat("x", 50)
-	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/", strings.NewReader(body))
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 
@@ -53,7 +53,7 @@ func TestMaxRequestBody_OverLimit(t *testing.T) {
 	h := MaxRequestBody(limit)(inner)
 
 	body := strings.Repeat("x", 100) // well over limit
-	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/", strings.NewReader(body))
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 

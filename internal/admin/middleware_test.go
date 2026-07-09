@@ -15,7 +15,7 @@ func TestAuthMiddleware_ValidKey(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 	req.Header.Set("Authorization", "Bearer "+created.Key)
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
@@ -32,7 +32,7 @@ func TestAuthMiddleware_NoAuthHeader(t *testing.T) {
 		t.Error("handler should not be called")
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 
@@ -48,7 +48,7 @@ func TestAuthMiddleware_InvalidKey(t *testing.T) {
 		t.Error("handler should not be called")
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 	req.Header.Set("Authorization", "Bearer gw-invalid-key")
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
@@ -67,7 +67,7 @@ func TestAuthMiddleware_RevokedKey(t *testing.T) {
 		t.Error("handler should not be called")
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 	req.Header.Set("Authorization", "Bearer "+created.Key)
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
@@ -92,7 +92,7 @@ func TestAuthMiddleware_BootstrapKey(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 	req.Header.Set("Authorization", "Bearer bootstrap-secret")
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
@@ -110,7 +110,7 @@ func TestAuthMiddleware_BootstrapKeyMismatch(t *testing.T) {
 		t.Error("handler should not be called")
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 	req.Header.Set("Authorization", "Bearer wrong-secret")
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
@@ -135,7 +135,7 @@ func TestAuthMiddleware_BootstrapReadOnlyKey(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 	req.Header.Set("Authorization", "Bearer readonly-secret")
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
@@ -153,7 +153,7 @@ func TestAuthMiddleware_BootstrapReadOnlyRequiresScope(t *testing.T) {
 		t.Error("handler should not be called")
 	})))
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 	req.Header.Set("Authorization", "Bearer readonly-secret")
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
@@ -172,7 +172,7 @@ func TestAuthMiddleware_BootstrapDisabled(t *testing.T) {
 		t.Error("handler should not be called")
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 	req.Header.Set("Authorization", "Bearer bootstrap-secret")
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
@@ -191,7 +191,7 @@ func TestAuthMiddleware_BootstrapOnlyWhenStoreEmpty(t *testing.T) {
 		t.Error("handler should not be called")
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 	req.Header.Set("Authorization", "Bearer bootstrap-secret")
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
@@ -214,7 +214,7 @@ func TestAuthMiddleware_MasterKey(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/admin/keys", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/admin/keys", nil)
 	req.Header.Set("Authorization", "Bearer test-master-key")
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
@@ -230,7 +230,7 @@ func TestAuthMiddleware_MasterKey_WrongKey(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/admin/keys", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/admin/keys", nil)
 	req.Header.Set("Authorization", "Bearer wrong-key")
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
@@ -247,7 +247,7 @@ func TestAuthMiddleware_MasterKey_Empty(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/admin/keys", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/admin/keys", nil)
 	req.Header.Set("Authorization", "Bearer some-key")
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)

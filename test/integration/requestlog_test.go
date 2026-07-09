@@ -12,7 +12,7 @@ import (
 )
 
 func TestPostgresRequestLog_WriteAndList(t *testing.T) {
-	w, err := requestlog.NewPostgresWriter(testDSN)
+	w, err := requestlog.NewPostgresWriter(t.Context(), testDSN)
 	if err != nil {
 		t.Fatalf("new writer: %v", err)
 	}
@@ -46,7 +46,7 @@ func TestPostgresRequestLog_WriteAndList(t *testing.T) {
 }
 
 func TestPostgresRequestLog_Pagination(t *testing.T) {
-	w, err := requestlog.NewPostgresWriter(testDSN)
+	w, err := requestlog.NewPostgresWriter(t.Context(), testDSN)
 	if err != nil {
 		t.Fatalf("new writer: %v", err)
 	}
@@ -87,7 +87,7 @@ func TestPostgresRequestLog_Pagination(t *testing.T) {
 }
 
 func TestPostgresRequestLog_Delete(t *testing.T) {
-	w, err := requestlog.NewPostgresWriter(testDSN)
+	w, err := requestlog.NewPostgresWriter(t.Context(), testDSN)
 	if err != nil {
 		t.Fatalf("new writer: %v", err)
 	}

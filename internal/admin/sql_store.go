@@ -43,7 +43,7 @@ type SQLStore struct {
 
 // NewSQLiteStore creates a SQLite-backed key store.
 // dsn can be a file path (e.g. /tmp/keys.db) or SQLite DSN.
-func NewSQLiteStore(dsn string) (*SQLStore, error) {
+func NewSQLiteStore(ctx context.Context, dsn string) (*SQLStore, error) {
 	dsn = strings.TrimSpace(dsn)
 	if dsn == "" {
 		dsn = "ferrogw-keys.db"
@@ -54,7 +54,7 @@ func NewSQLiteStore(dsn string) (*SQLStore, error) {
 	}
 	tuneDBPool(db, string(dialectSQLite))
 	store := &SQLStore{db: db, dialect: dialectSQLite}
-	if err := store.init(); err != nil {
+	if err := store.init(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -66,7 +66,7 @@ func NewSQLiteStore(dsn string) (*SQLStore, error) {
 }
 
 // NewPostgresStore creates a Postgres-backed key store.
-func NewPostgresStore(dsn string) (*SQLStore, error) {
+func NewPostgresStore(ctx context.Context, dsn string) (*SQLStore, error) {
 	dsn = strings.TrimSpace(dsn)
 	if dsn == "" {
 		return nil, fmt.Errorf("postgres dsn is required")
@@ -77,15 +77,15 @@ func NewPostgresStore(dsn string) (*SQLStore, error) {
 	}
 	tuneDBPool(db, string(dialectPostgres))
 	store := &SQLStore{db: db, dialect: dialectPostgres}
-	if err := store.init(); err != nil {
+	if err := store.init(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
 	return store, nil
 }
 
-func (s *SQLStore) init() error {
-	if err := s.db.Ping(); err != nil {
+func (s *SQLStore) init(ctx context.Context) error {
+	if err := s.db.PingContext(ctx); err != nil {
 		return fmt.Errorf("ping %s store: %w", s.dialect, err)
 	}
 
@@ -121,16 +121,16 @@ CREATE TABLE IF NOT EXISTS api_keys (
 CREATE INDEX IF NOT EXISTS idx_api_keys_key ON api_keys(key);`
 	}
 
-	if _, err := s.db.Exec(ddl); err != nil {
+	if _, err := s.db.ExecContext(ctx, ddl); err != nil {
 		return fmt.Errorf("initialize %s store schema: %w", s.dialect, err)
 	}
-	if err := s.ensureUsageColumns(); err != nil {
+	if err := s.ensureUsageColumns(ctx); err != nil {
 		return err
 	}
-	return s.prepareStmts()
+	return s.prepareStmts(ctx)
 }
 
-func (s *SQLStore) prepareStmts() error {
+func (s *SQLStore) prepareStmts(ctx context.Context) error {
 	stmts := []struct {
 		dest  **sql.Stmt
 		query string
@@ -145,7 +145,11 @@ func (s *SQLStore) prepareStmts() error {
 		{&s.stmtRotate, `UPDATE api_keys SET key = ?, rotated_at = ? WHERE id = ?`},
 	}
 	for _, s2 := range stmts {
-		stmt, err := s.db.Prepare(s.bind(s2.query))
+		// These are long-lived prepared statements cached on the SQLStore for
+		// its whole lifetime, not a per-call resource — closed in Close()
+		// (below), which sqlclosecheck's static analysis can't trace through
+		// the *s2.dest indirection.
+		stmt, err := s.db.PrepareContext(ctx, s.bind(s2.query)) //nolint:sqlclosecheck // closed in (*SQLStore).Close
 		if err != nil {
 			return fmt.Errorf("prepare statement: %w", err)
 		}
@@ -154,7 +158,7 @@ func (s *SQLStore) prepareStmts() error {
 	return nil
 }
 
-func (s *SQLStore) ensureUsageColumns() error {
+func (s *SQLStore) ensureUsageColumns(ctx context.Context) error {
 	alterStatements := []string{
 		"ALTER TABLE api_keys ADD COLUMN usage_count INTEGER NOT NULL DEFAULT 0",
 	}
@@ -170,7 +174,7 @@ func (s *SQLStore) ensureUsageColumns() error {
 	}
 
 	for _, stmt := range alterStatements {
-		if _, err := s.db.Exec(stmt); err != nil && !isDuplicateColumnError(err) {
+		if _, err := s.db.ExecContext(ctx, stmt); err != nil && !isDuplicateColumnError(err) {
 			return fmt.Errorf("ensure api_keys usage columns: %w", err)
 		}
 	}

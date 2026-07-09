@@ -88,6 +88,37 @@ func TestPostStream_UpstreamError(t *testing.T) {
 	}
 }
 
+// TestPostStream_UpstreamErrorBodyExceedsCap verifies that when a non-200
+// stream response body itself exceeds the read cap, the resulting read error
+// is surfaced to the caller instead of being silently discarded (which would
+// otherwise produce a misleading empty-message error).
+func TestPostStream_UpstreamErrorBodyExceedsCap(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write(make([]byte, core.MaxProviderResponseBytes+1))
+	}))
+	defer srv.Close()
+
+	ch, err := PostStream(context.Background(), ChatParams{
+		HTTPClient: srv.Client(),
+		URL:        srv.URL,
+		Headers:    map[string]string{"Content-Type": "application/json"},
+		Provider:   "test",
+		Label:      "test",
+	}, core.Request{Model: "m", Messages: []core.Message{{Role: core.RoleUser, Content: "hi"}}})
+
+	if err == nil {
+		t.Fatal("expected an error for an oversized non-200 stream response body")
+	}
+	if ch != nil {
+		t.Errorf("PostStream() channel = %v, want nil on error", ch)
+	}
+	if !strings.Contains(err.Error(), "byte limit") {
+		t.Errorf("error = %q, want it to mention the byte limit (read error must not be discarded)", err.Error())
+	}
+}
+
 // TestPostChat_NormalizesFinishReason verifies a provider-specific finish reason
 // (Mistral's model_length) is normalized to the canonical OpenAI value.
 func TestPostChat_NormalizesFinishReason(t *testing.T) {
@@ -176,5 +207,30 @@ func TestPostEmbeddings_ForwardsInputType(t *testing.T) {
 	}
 	if got := string(body["input_type"]); got != `"query"` {
 		t.Errorf("input_type = %s, want \"query\"", got)
+	}
+}
+
+// TestPostChat_OversizedResponseRejected verifies the shared chat path bounds
+// the response read via core.ReadResponseBody instead of buffering an
+// unbounded upstream body.
+func TestPostChat_OversizedResponseRejected(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(make([]byte, core.MaxProviderResponseBytes+1))
+	}))
+	defer srv.Close()
+
+	_, err := PostChat(context.Background(), ChatParams{
+		HTTPClient: srv.Client(),
+		URL:        srv.URL,
+		Headers:    map[string]string{"Content-Type": "application/json"},
+		Provider:   "test",
+		Label:      "test",
+	}, core.Request{Model: "m", Messages: []core.Message{{Role: core.RoleUser, Content: "hi"}}})
+	if err == nil {
+		t.Fatal("expected an error for a response exceeding the byte limit")
+	}
+	if !strings.Contains(err.Error(), "byte limit") {
+		t.Errorf("error = %q, want it to mention the byte limit", err.Error())
 	}
 }

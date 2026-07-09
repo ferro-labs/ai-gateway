@@ -203,12 +203,15 @@ func createReadOnlyKey(t *testing.T, h *Handlers) *APIKey {
 	return key
 }
 
+// No *testing.T is available in this standalone builder (74 call sites across
+// this file; threading t through all of them buys nothing since these tests
+// exercise handler auth/routing, not context cancellation).
 func authedRequest(method, url string, body string, apiKey *APIKey) *http.Request {
 	var req *http.Request
 	if body != "" {
-		req = httptest.NewRequest(method, url, bytes.NewBufferString(body))
+		req = httptest.NewRequestWithContext(context.Background(), method, url, bytes.NewBufferString(body))
 	} else {
-		req = httptest.NewRequest(method, url, nil)
+		req = httptest.NewRequestWithContext(context.Background(), method, url, nil)
 	}
 	req.Header.Set("Authorization", "Bearer "+apiKey.Key)
 	return req
@@ -546,7 +549,7 @@ func TestRBACReadOnlyCannotCreateKey(t *testing.T) {
 func TestUnauthorizedRequest(t *testing.T) {
 	_, r := setupTestRouter()
 
-	req := httptest.NewRequest(http.MethodGet, "/admin/keys", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/admin/keys", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -1056,7 +1059,7 @@ func TestKeyUsageOffsetAndSort(t *testing.T) {
 	time.Sleep(5 * time.Millisecond)
 	_, _ = h.Keys.ValidateKey(context.Background(), keyC.Key)
 
-	req := httptest.NewRequest(http.MethodGet, "/admin/keys/usage?sort=usage&limit=4", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/admin/keys/usage?sort=usage&limit=4", nil)
 	w := httptest.NewRecorder()
 	h.keyUsage(w, req)
 	if w.Code != http.StatusOK {
@@ -1077,7 +1080,7 @@ func TestKeyUsageOffsetAndSort(t *testing.T) {
 	}
 
 	secondExpected := usagePayload.Data[1].ID
-	req = httptest.NewRequest(http.MethodGet, "/admin/keys/usage?sort=usage&limit=1&offset=1", nil)
+	req = httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/admin/keys/usage?sort=usage&limit=1&offset=1", nil)
 	w = httptest.NewRecorder()
 	h.keyUsage(w, req)
 	if w.Code != http.StatusOK {
@@ -1095,7 +1098,7 @@ func TestKeyUsageOffsetAndSort(t *testing.T) {
 		t.Fatalf("offset pagination mismatch: expected id %s got %s", secondExpected, offsetPayload.Data[0].ID)
 	}
 
-	req = httptest.NewRequest(http.MethodGet, "/admin/keys/usage?sort=last_used&limit=4", nil)
+	req = httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/admin/keys/usage?sort=last_used&limit=4", nil)
 	w = httptest.NewRecorder()
 	h.keyUsage(w, req)
 	if w.Code != http.StatusOK {

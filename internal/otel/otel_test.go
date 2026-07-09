@@ -288,7 +288,7 @@ func TestMiddlewarePassthrough(t *testing.T) {
 	}))
 
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/health", nil)
 	h.ServeHTTP(rr, req)
 
 	if !called {

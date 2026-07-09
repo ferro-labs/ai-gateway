@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 
@@ -252,13 +251,19 @@ func cohereContentParts(parts []core.ContentPart) []any {
 // cohereAPIError builds a provider error from a non-2xx Cohere response, whose
 // error envelope is a flat {"message":…} (not the OpenAI {"error":{…}} shape),
 // so core.APIError cannot decode it. prefix is the full message prefix (e.g.
-// "cohere API error"), unlike core.APIError's bare provider-name label.
+// "cohere API error"), unlike core.APIError's bare provider-name label. The
+// returned *core.HTTPStatusError lets core.ParseStatusCode recover the status
+// via errors.As, same as core.APIError.
 func cohereAPIError(prefix string, status int, body []byte) error {
+	msg := string(body)
 	var errResp cohereErrorResponse
 	if json.Unmarshal(body, &errResp) == nil && errResp.Message != "" {
-		return fmt.Errorf("%s (%d): %s", prefix, status, errResp.Message)
+		msg = errResp.Message
 	}
-	return fmt.Errorf("%s (%d): %s", prefix, status, string(body))
+	return &core.HTTPStatusError{
+		StatusCode: status,
+		Message:    fmt.Sprintf("%s (%d): %s", prefix, status, msg),
+	}
 }
 
 // Complete sends a chat completion request to Cohere.
@@ -298,7 +303,7 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 	}
 	defer func() { _ = httpResp.Body.Close() }()
 
-	respBody, err := io.ReadAll(httpResp.Body)
+	respBody, err := core.ReadResponseBody(httpResp.Body, core.MaxProviderResponseBytes)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
@@ -453,7 +458,10 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 
 	if httpResp.StatusCode != http.StatusOK {
 		defer func() { _ = httpResp.Body.Close() }()
-		respBody, _ := io.ReadAll(httpResp.Body)
+		respBody, err := core.ReadResponseBody(httpResp.Body, core.MaxProviderResponseBytes)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read response: %w", err)
+		}
 		return nil, cohereAPIError("cohere API error", httpResp.StatusCode, respBody)
 	}
 
@@ -665,7 +673,7 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 	}
 	defer func() { _ = httpResp.Body.Close() }()
 
-	respBody, err := io.ReadAll(httpResp.Body)
+	respBody, err := core.ReadResponseBody(httpResp.Body, core.MaxProviderResponseBytes)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read embed response: %w", err)
 	}
