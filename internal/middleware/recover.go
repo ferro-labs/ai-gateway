@@ -15,6 +15,7 @@ import (
 // still recovered and every inner deferred span is closed on the way out.
 func RecoverJSON(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cw := &committedWriter{ResponseWriter: w}
 		defer func() {
 			recovered := recover()
 			if recovered == nil {
@@ -30,14 +31,45 @@ func RecoverJSON(next http.Handler) http.Handler {
 			// derived request that never reaches this closure. The header it sets
 			// on the shared ResponseWriter is the only handle we have on it.
 			logger := logging.Logger
-			if traceID := w.Header().Get("X-Request-ID"); traceID != "" {
+			if traceID := cw.Header().Get(logging.RequestIDHeader); traceID != "" {
 				logger = logger.With("trace_id", traceID)
 			}
 			// debug.Stack() inside the deferred function still unwinds through
 			// runtime.gopanic to the frame that panicked.
-			logger.Error("panic recovered", "panic", recovered, "stack", string(debug.Stack()))
-			apierror.WriteOpenAI(w, http.StatusInternalServerError, "internal server error", "server_error", "internal_error")
+			logger.Error("panic recovered",
+				"panic", recovered,
+				"response_committed", cw.committed,
+				"stack", string(debug.Stack()),
+			)
+			// Once the status line or any body byte has gone out — a streamed
+			// response, say — an error envelope would append garbage to what the
+			// client already has. Log it and let the truncated response stand.
+			if !cw.committed {
+				apierror.WriteOpenAI(w, http.StatusInternalServerError, "internal server error", "server_error", "internal_error")
+			}
 		}()
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(cw, r)
 	})
+}
+
+// committedWriter records whether any response bytes have reached the client.
+//
+// It implements Unwrap so http.NewResponseController still reaches the real
+// writer's Flush, Hijack, and SetWriteDeadline; no gateway code type-asserts a
+// request ResponseWriter to http.Flusher or http.Hijacker directly.
+type committedWriter struct {
+	http.ResponseWriter
+	committed bool
+}
+
+func (w *committedWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+func (w *committedWriter) WriteHeader(status int) {
+	w.committed = true
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *committedWriter) Write(p []byte) (int, error) {
+	w.committed = true
+	return w.ResponseWriter.Write(p)
 }

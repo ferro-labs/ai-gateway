@@ -27,9 +27,14 @@ func runStatus(cmd *cobra.Command, _ []string) error {
 
 	// /health answers 503 while degraded (e.g. no providers configured). The
 	// gateway is up; say what is actually wrong instead of "unreachable".
-	status, symbol, color := "healthy", SymOK, ColorGreen
-	if s, ok := health["status"].(string); ok && s != "ok" {
-		status, symbol, color = s, SymWARN, ColorYellow
+	// A body with no usable status is reported as such rather than as healthy.
+	status, symbol, color := "unknown", SymWARN, ColorYellow
+	if s, ok := health["status"].(string); ok {
+		if s == "ok" {
+			status, symbol, color = "healthy", SymOK, ColorGreen
+		} else {
+			status = s
+		}
 	}
 	fmt.Printf("  %s %s -- %s (%s)\n",
 		Clr(color, symbol),

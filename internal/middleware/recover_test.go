@@ -51,6 +51,34 @@ func TestRecoverJSONLogsStackAndTraceID(t *testing.T) {
 	}
 }
 
+// A panic partway through a streamed response must not append an error envelope
+// to bytes the client has already received.
+func TestRecoverJSONDoesNotCorruptCommittedResponse(t *testing.T) {
+	captureLogs(t)
+
+	handler := RecoverJSON(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: {\"id\":\"chunk-1\"}\n\n"))
+		panic("exploded mid-stream")
+	}))
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/stream", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want the already-sent 200", w.Code)
+	}
+	body := w.Body.String()
+	if body != "data: {\"id\":\"chunk-1\"}\n\n" {
+		t.Fatalf("recovery appended bytes to a committed response: %q", body)
+	}
+	if strings.Contains(body, "internal_error") {
+		t.Fatal("error envelope was appended to an in-flight stream")
+	}
+}
+
 // The ordering contract: RecoverJSON sits above logging (and tracing), so a
 // panic raised inside those layers still produces the JSON envelope.
 func TestRecoverJSONRecoversPanicRaisedInsideLoggingLayer(t *testing.T) {
