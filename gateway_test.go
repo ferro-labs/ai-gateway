@@ -2699,21 +2699,9 @@ func TestGateway_Route_PluginRejectsRequest(t *testing.T) {
 	}
 }
 
-type wildcardMetricProvider struct {
-	mockProvider
-}
-
-func (p *wildcardMetricProvider) SupportsModel(string) bool { return true }
-func (p *wildcardMetricProvider) Models() []providers.ModelInfo {
-	return []providers.ModelInfo{{ID: "known-model", Object: "model", OwnedBy: p.name}}
-}
-
-func TestGateway_Route_PluginRejectsUnknownModelBucketsMetricLabel(t *testing.T) {
-	rawModel := "user-supplied-high-cardinality-" + strings.NewReplacer("/", "_", " ", "_").Replace(t.Name())
-	if requestMetricLabelExists(t, "", rawModel, "rejected") {
-		t.Fatalf("raw model label %q already exists before test", rawModel)
-	}
-
+// newMetricLabelGateway returns a gateway serving exactly "known-model".
+func newMetricLabelGateway(t *testing.T) *Gateway {
+	t.Helper()
 	gw, err := New(Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
 		Targets:  []Target{{VirtualKey: mockProviderName}},
@@ -2721,12 +2709,43 @@ func TestGateway_Route_PluginRejectsUnknownModelBucketsMetricLabel(t *testing.T)
 	if err != nil {
 		t.Fatalf("New gateway: %v", err)
 	}
-	gw.RegisterProvider(&wildcardMetricProvider{mockProvider: mockProvider{
+	gw.RegisterProvider(&mockProvider{
 		name:   mockProviderName,
 		models: []string{"known-model"},
 		resp:   &providers.Response{ID: "should-not-reach"},
-	}})
+	})
+	return gw
+}
 
+func TestGateway_metricModel(t *testing.T) {
+	gw := newMetricLabelGateway(t)
+
+	tests := []struct {
+		name  string
+		model string
+		want  string
+	}{
+		{name: "known model passes through", model: "known-model", want: "known-model"},
+		{name: "empty model buckets", model: "", want: metrics.UnknownModelLabel},
+		{name: "arbitrary model buckets", model: "totally-made-up-model", want: metrics.UnknownModelLabel},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := gw.metricModel(tt.model); got != tt.want {
+				t.Fatalf("metricModel(%q) = %q, want %q", tt.model, got, tt.want)
+			}
+		})
+	}
+}
+
+// A plugin rejection carries the raw client model to the "rejected" counter.
+func TestGateway_Route_PluginRejectsUnknownModelBucketsMetricLabel(t *testing.T) {
+	const rawModel = "user-supplied-high-cardinality-rejected"
+	if requestMetricLabelExists(t, "", rawModel, "rejected") {
+		t.Fatalf("raw model label %q already exists before test", rawModel)
+	}
+
+	gw := newMetricLabelGateway(t)
 	_ = gw.RegisterPlugin(plugin.StageBeforeRequest, &testPlugin{
 		name: "blocker",
 		typ:  plugin.TypeGuardrail,
@@ -2739,7 +2758,7 @@ func TestGateway_Route_PluginRejectsUnknownModelBucketsMetricLabel(t *testing.T)
 
 	unknownCounter := metrics.ForRequest("", metrics.UnknownModelLabel).Rejected
 	before := counterValue(t, unknownCounter)
-	_, err = gw.Route(context.Background(), providers.Request{
+	_, err := gw.Route(context.Background(), providers.Request{
 		Model:    rawModel,
 		Messages: []providers.Message{{Role: "user", Content: "hi"}},
 	})
@@ -2752,8 +2771,77 @@ func TestGateway_Route_PluginRejectsUnknownModelBucketsMetricLabel(t *testing.T)
 	if requestMetricLabelExists(t, "", rawModel, "rejected") {
 		t.Fatalf("raw rejected model label %q should not be created", rawModel)
 	}
-	if got := gw.rejectedMetricModel("known-model"); got != "known-model" {
-		t.Fatalf("known rejected metric model = %q, want known-model", got)
+}
+
+// The error path needs no plugin at all: any unroutable model reaches it, which
+// makes it the cardinality vector a client can trigger against a stock gateway.
+func TestGateway_Route_UnroutableModelBucketsErrorMetricLabel(t *testing.T) {
+	const rawModel = "user-supplied-high-cardinality-error"
+	if requestMetricLabelExists(t, "", rawModel, "error") {
+		t.Fatalf("raw model label %q already exists before test", rawModel)
+	}
+
+	gw := newMetricLabelGateway(t)
+	unknownCounter := metrics.ForRequest("", metrics.UnknownModelLabel).Error
+	before := counterValue(t, unknownCounter)
+
+	_, err := gw.Route(context.Background(), providers.Request{
+		Model:    rawModel,
+		Messages: []providers.Message{{Role: "user", Content: "hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected routing error for unsupported model")
+	}
+	if delta := counterValue(t, unknownCounter) - before; delta != 1 {
+		t.Fatalf("unknown error counter delta = %v, want 1", delta)
+	}
+	if requestMetricLabelExists(t, "", rawModel, "error") {
+		t.Fatalf("raw error model label %q should not be created", rawModel)
+	}
+}
+
+// wildcardStreamProvider mirrors the 14 providers that accept any model ID
+// (openrouter, ollama, azure_openai, …). They route a raw client model all the
+// way to a provider call, so a CompleteStream failure lands on the error counter
+// with that raw value.
+type wildcardStreamProvider struct {
+	mockStreamProvider
+}
+
+func (p *wildcardStreamProvider) SupportsModel(string) bool { return true }
+
+func TestGateway_RouteStream_WildcardProviderBucketsErrorMetricLabel(t *testing.T) {
+	const rawModel = "user-supplied-high-cardinality-stream"
+	if requestMetricLabelExists(t, mockProviderName, rawModel, "error") {
+		t.Fatalf("raw model label %q already exists before test", rawModel)
+	}
+
+	gw, err := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: mockProviderName}},
+	})
+	if err != nil {
+		t.Fatalf("New gateway: %v", err)
+	}
+	gw.RegisterProvider(&wildcardStreamProvider{mockStreamProvider: mockStreamProvider{
+		mockProvider: mockProvider{name: mockProviderName, models: []string{"known-model"}},
+		streamErr:    errors.New("upstream rejected model"),
+	}})
+
+	unknownCounter := metrics.ForRequest(mockProviderName, metrics.UnknownModelLabel).Error
+	before := counterValue(t, unknownCounter)
+
+	if _, err := gw.RouteStream(context.Background(), providers.Request{
+		Model:    rawModel,
+		Messages: []providers.Message{{Role: "user", Content: "hi"}},
+	}); err == nil {
+		t.Fatal("expected streaming error")
+	}
+	if delta := counterValue(t, unknownCounter) - before; delta != 1 {
+		t.Fatalf("unknown stream error counter delta = %v, want 1", delta)
+	}
+	if requestMetricLabelExists(t, mockProviderName, rawModel, "error") {
+		t.Fatalf("raw stream error model label %q should not be created", rawModel)
 	}
 }
 

@@ -3,6 +3,7 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -83,7 +84,12 @@ func Completions(registry *providers.Registry) http.HandlerFunc {
 				apierror.WriteOpenAI(w, http.StatusInternalServerError, err.Error(), "server_error", "internal_error")
 				return
 			}
-			outReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, target, bytes.NewReader(body))
+			// Streaming clears http.Server's WriteTimeout per write, so an idle
+			// upstream is bounded by cancelling this context instead.
+			upstreamCtx, cancelUpstream := context.WithCancel(r.Context())
+			defer cancelUpstream()
+
+			outReq, err := http.NewRequestWithContext(upstreamCtx, http.MethodPost, target, bytes.NewReader(body))
 			if err != nil {
 				apierror.WriteOpenAI(w, http.StatusInternalServerError, "failed to create upstream request: "+err.Error(), "server_error", "internal_error")
 				return
@@ -107,6 +113,15 @@ func Completions(registry *providers.Registry) http.HandlerFunc {
 			}
 			defer func() { _ = resp.Body.Close() }()
 
+			upstreamBody := io.Reader(resp.Body)
+			if legacyReq.Stream {
+				// Closing the wrapper stops its idle timer; it also closes
+				// resp.Body, which net/http makes idempotent.
+				idle := streamio.NewIdleReadCloser(resp.Body, streamio.IdleTimeout(), cancelUpstream)
+				defer func() { _ = idle.Close() }()
+				upstreamBody = idle
+			}
+
 			// Mirror status + content-type and stream the body back.
 			for k, vs := range resp.Header {
 				for _, v := range vs {
@@ -116,9 +131,9 @@ func Completions(registry *providers.Registry) http.HandlerFunc {
 			w.Header().Set("X-Gateway-Provider", p.Name())
 			w.WriteHeader(resp.StatusCode)
 			if legacyReq.Stream {
-				_, _ = streamio.Copy(r.Context(), w, resp.Body)
+				_, _ = streamio.Copy(r.Context(), w, upstreamBody)
 			} else {
-				_, _ = io.Copy(w, resp.Body) //nolint:gosec
+				_, _ = io.Copy(w, upstreamBody) //nolint:gosec
 			}
 			return
 		}

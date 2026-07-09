@@ -500,8 +500,10 @@ func TestHealthCheck(t *testing.T) {
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusServiceUnavailable {
-		t.Fatalf("expected 503, got %d: %s", w.Code, w.Body.String())
+	// 200 even while degraded: the dashboard login probe and providers page read
+	// any non-2xx here as an auth failure. The body carries the real status.
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
 	var result map[string]any

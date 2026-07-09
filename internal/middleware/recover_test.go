@@ -1,12 +1,80 @@
 package middleware
 
 import (
+	"bytes"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/ferro-labs/ai-gateway/internal/logging"
 )
+
+// captureLogs redirects the package logger for the duration of a test.
+func captureLogs(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := logging.Logger
+	logging.Logger = slog.New(slog.NewTextHandler(&buf, nil))
+	t.Cleanup(func() { logging.Logger = prev })
+	return &buf
+}
+
+func panicsAt(http.ResponseWriter, *http.Request) { panic("boom") }
+
+func TestRecoverJSONLogsStackAndTraceID(t *testing.T) {
+	logs := captureLogs(t)
+
+	// logging.Middleware sets X-Request-ID on the shared ResponseWriter; that is
+	// the only way the outermost recover can correlate the panic to the request.
+	handler := RecoverJSON(logging.Middleware(http.HandlerFunc(panicsAt)))
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/panic", nil)
+	req.Header.Set("X-Request-ID", "trace-abc123")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", w.Code)
+	}
+	out := logs.String()
+	if !strings.Contains(out, "trace_id=trace-abc123") {
+		t.Fatalf("panic log is missing the request trace_id: %s", out)
+	}
+	if !strings.Contains(out, "panicsAt") {
+		t.Fatalf("panic log is missing a stack trace through the panicking frame: %s", out)
+	}
+	if got := w.Header().Get("X-Request-ID"); got != "trace-abc123" {
+		t.Fatalf("X-Request-ID = %q, want trace-abc123", got)
+	}
+}
+
+// The ordering contract: RecoverJSON sits above logging (and tracing), so a
+// panic raised inside those layers still produces the JSON envelope.
+func TestRecoverJSONRecoversPanicRaisedInsideLoggingLayer(t *testing.T) {
+	captureLogs(t)
+
+	panicInLoggingLayer := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			_ = next
+			panic("middleware exploded")
+		})
+	}
+	handler := RecoverJSON(panicInLoggingLayer(logging.Middleware(http.HandlerFunc(panicsAt))))
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/panic", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500: %s", w.Code, w.Body.String())
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.Contains(ct, "application/json") {
+		t.Fatalf("Content-Type = %q, want application/json", ct)
+	}
+}
 
 func TestRecoverJSONReturnsErrorEnvelope(t *testing.T) {
 	handler := RecoverJSON(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {

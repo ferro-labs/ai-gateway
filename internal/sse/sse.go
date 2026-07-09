@@ -14,9 +14,10 @@ import (
 	"github.com/ferro-labs/ai-gateway/providers"
 )
 
-var (
-	idleTimeout = 2 * time.Minute
-)
+// idleTimeout bounds the gap between two chunks arriving on the provider
+// channel. The proxy and legacy-completions paths bound their upstream reads
+// with streamio.IdleTimeout instead.
+var idleTimeout = 2 * time.Minute
 
 // SetIdleTimeoutForTest overrides the idle timeout for testing and returns a restore function.
 func SetIdleTimeoutForTest(d time.Duration) func() {

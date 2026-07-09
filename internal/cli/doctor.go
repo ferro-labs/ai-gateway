@@ -82,11 +82,16 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 		Status string `json:"status"`
 	}
 	start := time.Now()
-	err := c.Get(cmd.Context(), "/health", &h)
+	// GetHealth, not Get: /health answers 503 while degraded, and a degraded
+	// gateway is exactly what doctor exists to diagnose.
+	err := c.GetHealth(cmd.Context(), "/health", &h)
 	latency := time.Since(start)
-	if err != nil {
+	switch {
+	case err != nil:
 		fmt.Printf("    %s %s: %v\n", Clr(ColorRed, SymFAIL), c.BaseURL, err)
-	} else {
+	case h.Status != "ok":
+		fmt.Printf("    %s %s -- %s (%dms)\n", Clr(ColorYellow, SymWARN), c.BaseURL, h.Status, latency.Milliseconds())
+	default:
 		fmt.Printf("    %s %s -- healthy (%dms)\n", Clr(ColorGreen, SymOK), c.BaseURL, latency.Milliseconds())
 	}
 

@@ -63,6 +63,18 @@ var (
 		[]string{"provider", "error_type"},
 	)
 
+	// ProviderInitFailures counts providers whose factory failed at startup. A
+	// failure is warned-and-skipped so one bad credential cannot stop the
+	// gateway, which makes this counter the only machine-readable signal that a
+	// configured provider is missing. Alert on any non-zero value.
+	ProviderInitFailures = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "gateway_provider_init_failures_total",
+			Help: "Total providers skipped because their factory failed at startup.",
+		},
+		[]string{"provider"},
+	)
+
 	// CircuitBreakerState tracks per-provider circuit breaker state as a gauge:
 	// 0 = closed, 1 = open, 2 = half_open.
 	CircuitBreakerState = promauto.NewGaugeVec(

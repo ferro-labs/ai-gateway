@@ -178,10 +178,12 @@ func (h *Handlers) healthCheck(w http.ResponseWriter, r *http.Request) {
 		resp["scopes"] = apiKey.Scopes
 	}
 
+	// Deliberately always 200: this endpoint is bearer-authenticated, so it is
+	// never an LB or k8s probe target, and three clients read a non-2xx here as
+	// "auth failed" or "gateway down" — the dashboard login probe, the dashboard
+	// providers page, and `ferrogw admin health`. Degradation is reported in the
+	// body. Probes should use the unauthenticated /health, which does return 503.
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
-	if overallStatus != "healthy" {
-		w.WriteHeader(http.StatusServiceUnavailable)
-	}
 	_ = json.NewEncoder(w).Encode(resp)
 }

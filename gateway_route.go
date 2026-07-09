@@ -109,7 +109,7 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 			early, err = g.runBeforePlugins(ctx, plugins, pctx, &req)
 		})
 		if err != nil {
-			metrics.ForRequest("", g.rejectedMetricModel(req.Model)).Rejected.Inc()
+			metrics.ForRequest("", g.metricModel(req.Model)).Rejected.Inc()
 			return nil, err
 		}
 		if early != nil {
@@ -235,14 +235,20 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	return resp, nil
 }
 
-func (g *Gateway) rejectedMetricModel(model string) string {
+// metricModel bounds the Prometheus "model" label. Client-supplied model names
+// reach the reject and error paths verbatim, so any name the gateway cannot
+// route is collapsed to metrics.UnknownModelLabel rather than minting a new
+// time series. The exact-match routing index is the authoritative set of known
+// model IDs and is already rebuilt whenever providers or discovery change.
+func (g *Gateway) metricModel(model string) string {
 	if model == "" {
 		return metrics.UnknownModelLabel
 	}
-	for _, known := range g.AllModels() {
-		if known.ID == model {
-			return model
-		}
+	g.mu.RLock()
+	_, known := g.modelIndex.exactProviders[model]
+	g.mu.RUnlock()
+	if known {
+		return model
 	}
 	return metrics.UnknownModelLabel
 }
@@ -317,7 +323,9 @@ func (g *Gateway) routeError(ctx context.Context, span observability.Span, obs o
 	if errors.Is(err, circuitbreaker.ErrCircuitOpen) {
 		errType = "circuit_open"
 	}
-	metrics.ForRequest(provider, model).Error.Inc()
+	// Bucket the label, not the log/span: model here is still the raw client
+	// value on the "no provider supports this model" path.
+	metrics.ForRequest(provider, g.metricModel(model)).Error.Inc()
 	metrics.ForProviderError(provider, errType).Inc()
 
 	span.SetError(err)

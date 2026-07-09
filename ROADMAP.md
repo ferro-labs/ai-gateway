@@ -77,7 +77,7 @@ Weekly patch line. Each release is backward-compatible bug-fixing on a single th
 
 ### Next patch
 
-- **v1.1.20** — Streaming deadlines and serving robustness: long-lived proxy and legacy-completions streams, recoverable provider initialization failures, degraded health status codes, CSP/Permissions-Policy headers, panic recovery order, and metrics-cardinality hardening.
+- **v1.1.20** — Streaming deadlines and serving robustness: long-lived proxy and legacy-completions streams with an upstream idle bound, recoverable provider initialization failures, degraded health status codes, CSP/Permissions-Policy headers, panic recovery order, and metrics-cardinality hardening.
 
 ## v1.2.0 — Provider Parameter Capability Matrix
 

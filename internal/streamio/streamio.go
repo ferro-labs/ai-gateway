@@ -12,8 +12,57 @@ import (
 const (
 	// DefaultWriteDeadline bounds each client-facing streaming write.
 	DefaultWriteDeadline = 15 * time.Second
-	copyBufferSize       = 32 * 1024
+
+	copyBufferSize = 32 * 1024
 )
+
+// idleTimeout bounds the gap between two upstream reads. Clearing the write
+// deadline after every write also clears http.Server's WriteTimeout for the
+// connection, so without this a trickling upstream would hold a goroutine and a
+// connection open indefinitely. Generous enough for a reasoning model's
+// time-to-first-chunk; every real provider heartbeats well inside it.
+var idleTimeout = 5 * time.Minute
+
+// IdleTimeout returns the active upstream idle bound.
+func IdleTimeout() time.Duration { return idleTimeout }
+
+// SetIdleTimeoutForTest overrides the idle bound and returns a restore function.
+func SetIdleTimeoutForTest(d time.Duration) func() {
+	prev := idleTimeout
+	idleTimeout = d
+	return func() { idleTimeout = prev }
+}
+
+// NewIdleReadCloser wraps rc so onIdle fires when no read completes within idle.
+// Pass the CancelFunc of the context driving the upstream request: cancelling it
+// unblocks the in-flight Read instead of leaving it parked forever. Closing the
+// returned ReadCloser stops the timer and closes rc. A non-positive idle
+// disables the bound and returns rc unchanged.
+func NewIdleReadCloser(rc io.ReadCloser, idle time.Duration, onIdle func()) io.ReadCloser {
+	if idle <= 0 {
+		return rc
+	}
+	return &idleReadCloser{rc: rc, idle: idle, timer: time.AfterFunc(idle, onIdle)}
+}
+
+type idleReadCloser struct {
+	rc    io.ReadCloser
+	timer *time.Timer
+	idle  time.Duration
+}
+
+// Read re-arms the timer after each read returns, so the timer that is running
+// while Read blocks is always the one armed by the previous read.
+func (r *idleReadCloser) Read(p []byte) (int, error) {
+	n, err := r.rc.Read(p)
+	r.timer.Reset(r.idle)
+	return n, err
+}
+
+func (r *idleReadCloser) Close() error {
+	r.timer.Stop()
+	return r.rc.Close()
+}
 
 // WrapResponseWriter returns a ResponseWriter that sets a short write deadline
 // around every Write call. Unsupported deadline operations are ignored.
@@ -40,14 +89,11 @@ func (w *deadlineResponseWriter) Write(p []byte) (int, error) {
 		return 0, err
 	}
 	n, err := w.ResponseWriter.Write(p)
-	clearErr := ClearWriteDeadline(w.controller)
-	if err != nil {
-		return n, err
-	}
-	if clearErr != nil {
-		return n, clearErr
-	}
-	return n, nil
+	// The write already happened; a failure to clear the deadline is not a write
+	// error. Clearing it matters so the gap until the next write stays unbounded
+	// by http.Server's WriteTimeout — the idle bound is the reader's job.
+	_ = ClearWriteDeadline(w.controller)
+	return n, err
 }
 
 // Copy streams src to w, applying the default write deadline to each write and

@@ -17,6 +17,7 @@ import (
 	"github.com/ferro-labs/ai-gateway/internal/admin"
 	"github.com/ferro-labs/ai-gateway/internal/httpserver"
 	"github.com/ferro-labs/ai-gateway/internal/logging"
+	"github.com/ferro-labs/ai-gateway/internal/metrics"
 	gwotel "github.com/ferro-labs/ai-gateway/internal/otel"
 	"github.com/ferro-labs/ai-gateway/internal/ratelimit"
 	"github.com/ferro-labs/ai-gateway/internal/requestlog"
@@ -326,7 +327,11 @@ func registerProviderEntries(registry *providers.Registry, entries []providers.P
 
 		p, err := entry.Build(cfg)
 		if err != nil {
+			// Warn-and-skip so one bad credential cannot stop the whole gateway.
+			// The counter is what keeps that from being a silent partial outage:
+			// /health only counts registered providers, so it stays 200 here.
 			logging.Logger.Warn("provider init skipped", "provider", entry.ID, "error", err)
+			metrics.ProviderInitFailures.WithLabelValues(entry.ID).Inc()
 			continue
 		}
 		registry.Register(p)
