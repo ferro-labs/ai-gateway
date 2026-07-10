@@ -4,6 +4,8 @@
 set -e
 
 echo "── test ─────────────────────────────────────"
-go test -v -short -race -timeout 180s ./...
+# The root package suite runs ~160s under -race; 180s left too little headroom
+# and killed legitimate runs on a loaded machine. 300s is a safe margin.
+go test -v -short -race -timeout 300s ./...
 
 echo "✅ Pre-push checks passed"
