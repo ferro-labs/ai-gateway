@@ -391,11 +391,18 @@ func responseStream(resp *providers.Response) <-chan providers.StreamChunk {
 }
 
 // resolveStreamProviderFromKeysLocked walks orderedKeys and returns the first
-// streaming-capable, model-supporting provider whose circuit is closed. If every
-// ordered target has an open circuit it returns the last such target so the
-// caller still attempts it (and surfaces the open-circuit error). Failing all
-// ordered targets it falls back to any registered streaming-capable provider for
-// the model. Returns nil when nothing matches. Caller must hold g.mu.
+// streaming-capable, model-supporting provider whose circuit is not open. If
+// every ordered target has an open circuit it returns the last such target so
+// the caller still attempts it (and surfaces the open-circuit error). Failing
+// all ordered targets it falls back to any registered streaming-capable provider
+// for the model. Returns nil when nothing matches. Caller must hold g.mu.
+//
+// The breaker is probed with State() (non-consuming) rather than Allow() here:
+// the single Allow() inside cbProvider.CompleteStream is the one probe per
+// streaming request, matching the non-streaming path where cbProvider.Complete
+// performs the sole Allow(). Consuming a half-open permit at resolve time would
+// leave no permit for the actual stream, so a recovering provider could never be
+// probed by a streaming request.
 func (g *Gateway) resolveStreamProviderFromKeysLocked(orderedKeys []string, model string) providers.StreamProvider {
 	var openCircuitTarget providers.StreamProvider
 	for _, key := range orderedKeys {
@@ -403,7 +410,7 @@ func (g *Gateway) resolveStreamProviderFromKeysLocked(orderedKeys []string, mode
 		if !ok {
 			continue
 		}
-		if wrapped, isCB := sp.(*cbProvider); isCB && !wrapped.cb.Allow() {
+		if wrapped, isCB := sp.(*cbProvider); isCB && wrapped.cb.State() == circuitbreaker.StateOpen {
 			openCircuitTarget = sp
 			continue
 		}

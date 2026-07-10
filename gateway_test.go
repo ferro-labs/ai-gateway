@@ -1301,6 +1301,83 @@ func TestGateway_RouteStream_ProviderTimeoutTripsCircuit(t *testing.T) {
 	}
 }
 
+// TestGateway_RouteStream_HalfOpenAllowsSingleProbe guards against a resolve-time
+// double probe: the stream provider resolver must not consume the half-open
+// permit, so the recovering provider's single probe reaches CompleteStream and
+// succeeds. An open circuit (timeout not elapsed) must still be skipped.
+func TestGateway_RouteStream_HalfOpenAllowsSingleProbe(t *testing.T) {
+	var streamCalls atomic.Int32
+	gw, err := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets: []Target{{
+			VirtualKey: "recovering-stream",
+			CircuitBreaker: &CircuitBreakerConfig{
+				FailureThreshold: 1,
+				SuccessThreshold: 1,
+				MaxHalfThreshold: 1,
+				Timeout:          "1ms",
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	gw.RegisterProvider(&mockStreamProvider{
+		mockProvider: mockProvider{
+			name:   "recovering-stream",
+			models: []string{"gpt-4o"},
+		},
+		streamFn: func(_ context.Context, _ providers.Request) (<-chan providers.StreamChunk, error) {
+			if streamCalls.Add(1) == 1 {
+				return nil, errors.New("stream startup failed")
+			}
+			ch := make(chan providers.StreamChunk, 1)
+			ch <- providers.StreamChunk{
+				ID:      "recovered",
+				Choices: []providers.StreamChoice{{Delta: providers.MessageDelta{Content: "ok"}}},
+			}
+			close(ch)
+			return ch, nil
+		},
+	})
+
+	req := streamTestRequest()
+
+	// First stream fails and trips the breaker (FailureThreshold=1 → open).
+	if _, err := gw.RouteStream(context.Background(), req); err == nil {
+		t.Fatal("expected first stream startup failure to open the breaker")
+	}
+
+	gw.mu.RLock()
+	cb := gw.circuitBreakers["recovering-stream"]
+	gw.mu.RUnlock()
+	if cb == nil {
+		t.Fatal("expected circuit breaker for recovering-stream")
+	}
+	if cb.State() != circuitbreaker.StateOpen {
+		t.Fatalf("breaker state = %v, want open after failure", cb.State())
+	}
+
+	// While still open (timeout not elapsed) the provider is skipped and the
+	// open-circuit error surfaces — no probe is consumed.
+	if _, err := gw.RouteStream(context.Background(), req); !errors.Is(err, circuitbreaker.ErrCircuitOpen) {
+		t.Fatalf("open breaker: error = %v, want ErrCircuitOpen", err)
+	}
+
+	// Let the open timeout elapse so the breaker is half-open, then the single
+	// probe must reach CompleteStream and succeed (regression: resolve-time
+	// Allow() would have burned the only permit and rejected the real call).
+	time.Sleep(5 * time.Millisecond)
+	ch, err := gw.RouteStream(context.Background(), req)
+	if err != nil {
+		t.Fatalf("half-open probe: RouteStream error = %v, want success", err)
+	}
+	drainMeteredStream(t, ch)
+	if got := streamCalls.Load(); got != 2 {
+		t.Fatalf("CompleteStream calls = %d, want 2 (initial failure + single half-open probe)", got)
+	}
+}
+
 func TestShouldRecordCircuitBreakerFailure(t *testing.T) {
 	t.Parallel()
 
