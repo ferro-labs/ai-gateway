@@ -2379,16 +2379,14 @@ func TestGateway_PublishEvent_AfterCloseDoesNotPanic(t *testing.T) {
 
 func TestGateway_PublishEvent_AfterShutdownWithFullQueueDoesNotPanic(t *testing.T) {
 	gw := &Gateway{
-		hookDispatchQ: make(chan hookDispatch, 1),
+		hooks: newHookBus(1),
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	gw.shutdownCtx = ctx
 	gw.shutdownCancel = cancel
-	gw.hookSnapshot.Store([]EventHookFunc{
-		func(context.Context, string, map[string]any) {},
-		func(context.Context, string, map[string]any) {},
-	})
-	gw.startHookWorkers()
+	gw.AddHook(func(context.Context, string, map[string]any) {})
+	gw.AddHook(func(context.Context, string, map[string]any) {})
+	gw.hooks.start(gw.shutdownCtx)
 	t.Cleanup(cancel)
 
 	// Fill the queue so the next publishEvent hits the default branch.
@@ -2551,9 +2549,8 @@ func TestGateway_Close_MultipleHooksDuringRouteDoesNotPanic(t *testing.T) {
 
 func TestGateway_PublishEvent_NoHooks(_ *testing.T) {
 	gw := &Gateway{
-		hookDispatchQ: make(chan hookDispatch, 1),
+		hooks: newHookBus(1),
 	}
-	gw.hookSnapshot.Store([]EventHookFunc{})
 
 	gw.publishEvent(context.Background(), completedHookEvent("no-hooks"))
 }
@@ -2649,13 +2646,11 @@ func TestGateway_PublishEvent_CallsAllHooks(t *testing.T) {
 
 func TestGateway_PublishEvent_EnqueuesEachHookIndividually(t *testing.T) {
 	gw := &Gateway{
-		hookDispatchQ: make(chan hookDispatch, 2),
+		hooks: newHookBus(2),
 	}
 
-	gw.hookSnapshot.Store([]EventHookFunc{
-		func(context.Context, string, map[string]any) {},
-		func(context.Context, string, map[string]any) {},
-	})
+	gw.AddHook(func(context.Context, string, map[string]any) {})
+	gw.AddHook(func(context.Context, string, map[string]any) {})
 
 	gw.publishEvent(context.Background(), events.CompletedRequest(
 		"trace-123",
@@ -2669,7 +2664,7 @@ func TestGateway_PublishEvent_EnqueuesEachHookIndividually(t *testing.T) {
 		true,
 	))
 
-	if got := len(gw.hookDispatchQ); got != 2 {
+	if got := len(gw.hooks.dispatchQ); got != 2 {
 		t.Fatalf("queued hook dispatches = %d, want 2 (one per hook)", got)
 	}
 }
@@ -2719,11 +2714,9 @@ func TestGateway_PublishEvent_IncrementsDropMetricWhenQueueFull(t *testing.T) {
 	before := counterValue(t, counter)
 
 	gw := &Gateway{
-		hookDispatchQ: make(chan hookDispatch, 1),
+		hooks: newHookBus(1),
 	}
-	gw.hookSnapshot.Store([]EventHookFunc{
-		func(context.Context, string, map[string]any) {},
-	})
+	gw.AddHook(func(context.Context, string, map[string]any) {})
 
 	// Fill the queue.
 	gw.publishEvent(context.Background(), events.CompletedRequest(

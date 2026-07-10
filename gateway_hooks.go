@@ -3,6 +3,8 @@ package aigateway
 import (
 	"context"
 	"runtime"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ferro-labs/ai-gateway/internal/events"
@@ -33,24 +35,49 @@ type hookDispatch struct {
 	hook  EventHookFunc
 }
 
-// AddHook registers an EventHookFunc that is called asynchronously on each
-// completed or failed request. Multiple hooks may be registered; all are
-// invoked for every event on the shared bounded hook worker pool, so hook
-// implementations should return promptly and avoid indefinite blocking.
-func (g *Gateway) AddHook(fn EventHookFunc) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.hooks = append(g.hooks, fn)
-	g.hookSnapshot.Store(append([]EventHookFunc(nil), g.hooks...))
+// hookBus owns the asynchronous event-hook subsystem: the registered hooks,
+// their lock-free snapshot, the bounded dispatch queue, and the worker pool. Its
+// own mutex serializes hook registration; every read path goes through the
+// atomic snapshot, so the bus holds no locking relationship with the rest of the
+// Gateway and can guard its state independently of g.mu.
+type hookBus struct {
+	mu          sync.Mutex
+	hooks       []EventHookFunc
+	snapshot    atomic.Value // []EventHookFunc
+	dispatchQ   chan hookDispatch
+	workersDone sync.WaitGroup
 }
 
-func (g *Gateway) hasHooks() bool {
-	return len(g.currentHooks()) > 0
+// newHookBus returns a hookBus with an empty snapshot and a dispatch queue of
+// the given capacity. Workers are started separately via start.
+func newHookBus(queueSize int) *hookBus {
+	b := &hookBus{dispatchQ: make(chan hookDispatch, queueSize)}
+	b.snapshot.Store([]EventHookFunc{})
+	return b
 }
 
-// publishEvent calls all registered hooks asynchronously.
-func (g *Gateway) publishEvent(ctx context.Context, event events.HookEvent) {
-	hooks := g.currentHooks()
+// add registers a hook and republishes the snapshot read by the hot path.
+func (b *hookBus) add(fn EventHookFunc) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.hooks = append(b.hooks, fn)
+	b.snapshot.Store(append([]EventHookFunc(nil), b.hooks...))
+}
+
+func (b *hookBus) current() []EventHookFunc {
+	hooks, _ := b.snapshot.Load().([]EventHookFunc)
+	return hooks
+}
+
+func (b *hookBus) hasHooks() bool {
+	return len(b.current()) > 0
+}
+
+// publish enqueues event to every registered hook. shutdownCtx governs the
+// drop-vs-block decision on a shutting-down bus; a nil shutdownCtx keeps the
+// pre-New literal-Gateway behavior used by a handful of unit tests.
+func (b *hookBus) publish(ctx, shutdownCtx context.Context, event events.HookEvent) {
+	hooks := b.current()
 	if len(hooks) == 0 {
 		return
 	}
@@ -60,7 +87,7 @@ func (g *Gateway) publishEvent(ctx context.Context, event events.HookEvent) {
 	// cancelled. WithoutCancel drops cancellation (so ctx-aware hook work like
 	// DB writes / outbound calls is not dead-on-arrival) while preserving the
 	// request's trace context and values. Worker shutdown is governed by
-	// g.shutdownCtx, not this context.
+	// shutdownCtx, not this context.
 	detachedCtx := context.WithoutCancel(ctx)
 
 	for _, hook := range hooks {
@@ -73,18 +100,18 @@ func (g *Gateway) publishEvent(ctx context.Context, event events.HookEvent) {
 		// Bias toward the shutdown check first so we never race a Close()
 		// that has already cancelled. Once shutdownCtx is Done we drop the
 		// event rather than risk a send on what used to be a closed channel
-		// (we no longer close hookDispatchQ — workers exit via shutdownCtx).
+		// (we no longer close dispatchQ — workers exit via shutdownCtx).
 		// The nil-shutdownCtx branch supports a handful of unit tests that
 		// build Gateway literals directly without going through New().
-		if g.shutdownCtx != nil {
+		if shutdownCtx != nil {
 			select {
-			case <-g.shutdownCtx.Done():
+			case <-shutdownCtx.Done():
 				return
 			default:
 			}
 			select {
-			case g.hookDispatchQ <- dispatch:
-			case <-g.shutdownCtx.Done():
+			case b.dispatchQ <- dispatch:
+			case <-shutdownCtx.Done():
 				return
 			default:
 				metrics.HookEventsDroppedTotal.WithLabelValues(event.Subject).Inc()
@@ -92,7 +119,7 @@ func (g *Gateway) publishEvent(ctx context.Context, event events.HookEvent) {
 			continue
 		}
 		select {
-		case g.hookDispatchQ <- dispatch:
+		case b.dispatchQ <- dispatch:
 		default:
 			// Queue full — drop hook dispatches to avoid unbounded goroutine creation.
 			metrics.HookEventsDroppedTotal.WithLabelValues(event.Subject).Inc()
@@ -100,12 +127,8 @@ func (g *Gateway) publishEvent(ctx context.Context, event events.HookEvent) {
 	}
 }
 
-func (g *Gateway) currentHooks() []EventHookFunc {
-	hooks, _ := g.hookSnapshot.Load().([]EventHookFunc)
-	return hooks
-}
-
-func (g *Gateway) startHookWorkers() {
+// start spawns the worker pool. shutdownCtx signals workers to drain and exit.
+func (b *hookBus) start(shutdownCtx context.Context) {
 	workerCount := runtime.GOMAXPROCS(0)
 	if workerCount < 1 {
 		workerCount = 1
@@ -115,28 +138,50 @@ func (g *Gateway) startHookWorkers() {
 	}
 
 	for range workerCount {
-		g.hookWorkersDone.Add(1)
+		b.workersDone.Add(1)
 		go func() {
-			defer g.hookWorkersDone.Done()
+			defer b.workersDone.Done()
 			for {
 				select {
-				case <-g.shutdownCtx.Done():
+				case <-shutdownCtx.Done():
 					// Best-effort drain anything queued before exiting so we
 					// don't lose events that were already enqueued.
 					for {
 						select {
-						case dispatch := <-g.hookDispatchQ:
+						case dispatch := <-b.dispatchQ:
 							runHookDispatch(dispatch)
 						default:
 							return
 						}
 					}
-				case dispatch := <-g.hookDispatchQ:
+				case dispatch := <-b.dispatchQ:
 					runHookDispatch(dispatch)
 				}
 			}
 		}()
 	}
+}
+
+// wait blocks until every hook worker has exited.
+func (b *hookBus) wait() {
+	b.workersDone.Wait()
+}
+
+// AddHook registers an EventHookFunc that is called asynchronously on each
+// completed or failed request. Multiple hooks may be registered; all are
+// invoked for every event on the shared bounded hook worker pool, so hook
+// implementations should return promptly and avoid indefinite blocking.
+func (g *Gateway) AddHook(fn EventHookFunc) {
+	g.hooks.add(fn)
+}
+
+func (g *Gateway) hasHooks() bool {
+	return g.hooks.hasHooks()
+}
+
+// publishEvent calls all registered hooks asynchronously.
+func (g *Gateway) publishEvent(ctx context.Context, event events.HookEvent) {
+	g.hooks.publish(ctx, g.shutdownCtx, event)
 }
 
 func runHookDispatch(dispatch hookDispatch) {

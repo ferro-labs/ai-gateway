@@ -16,7 +16,6 @@ import (
 	"log/slog"
 	"maps"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/ferro-labs/ai-gateway/internal/circuitbreaker"
@@ -44,10 +43,7 @@ type Gateway struct {
 	plugins            *plugin.Manager
 	requestLogWriter   requestlog.Writer
 	closeOnce          sync.Once
-	hooks              []EventHookFunc
-	hookSnapshot       atomic.Value
-	hookDispatchQ      chan hookDispatch
-	hookWorkersDone    sync.WaitGroup
+	hooks              *hookBus
 	catalogRefreshDone sync.WaitGroup
 	// shutdownCtx is a lifecycle context, not a request context. Storing it on the
 	// struct is the intended idiom here: it is created once in New, parents the
@@ -125,12 +121,11 @@ func New(cfg Config) (*Gateway, error) {
 			exactEmbedProviders:  make(map[string][]string),
 			exactImageProviders:  make(map[string][]string),
 		},
-		hookDispatchQ: make(chan hookDispatch, hookDispatchQueueSize),
-		obs:           observability.NoOp(),
+		hooks: newHookBus(hookDispatchQueueSize),
+		obs:   observability.NoOp(),
 	}
 	gw.shutdownCtx, gw.shutdownCancel = context.WithCancel(context.Background()) //nolint:gosec // canceled by Gateway.Close()
-	gw.hookSnapshot.Store([]EventHookFunc{})
-	gw.startHookWorkers()
+	gw.hooks.start(gw.shutdownCtx)
 	gw.startCatalogRefresh()
 
 	// Wire MCP from config. In New the gateway is not yet published, so no lock
@@ -505,7 +500,7 @@ func (g *Gateway) Close() error {
 		}
 		done := make(chan struct{})
 		go func() {
-			g.hookWorkersDone.Wait()
+			g.hooks.wait()
 			g.catalogRefreshDone.Wait()
 			close(done)
 		}()
