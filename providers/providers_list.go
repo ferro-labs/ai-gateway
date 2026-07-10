@@ -15,6 +15,7 @@ import (
 	databrickspkg "github.com/ferro-labs/ai-gateway/providers/databricks"
 	deepinfrapkg "github.com/ferro-labs/ai-gateway/providers/deepinfra"
 	deepseekpkg "github.com/ferro-labs/ai-gateway/providers/deepseek"
+	edenaipkg "github.com/ferro-labs/ai-gateway/providers/edenai"
 	fireworkspkg "github.com/ferro-labs/ai-gateway/providers/fireworks"
 	geminipkg "github.com/ferro-labs/ai-gateway/providers/gemini"
 	groqpkg "github.com/ferro-labs/ai-gateway/providers/groq"
@@ -138,6 +139,17 @@ var allProviders = []ProviderEntry{
 		},
 		Build: func(cfg ProviderConfig) (Provider, error) {
 			return cerebraspkg.New(cfg[CfgKeyAPIKey], cfg[CfgKeyBaseURL])
+		},
+	},
+	{
+		ID:           NameEdenAI,
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityDiscovery, CapabilityProxy},
+		EnvMappings: []EnvMapping{
+			{CfgKeyAPIKey, "EDENAI_API_KEY", true},
+			{CfgKeyBaseURL, "EDENAI_BASE_URL", false},
+		},
+		Build: func(cfg ProviderConfig) (Provider, error) {
+			return edenaipkg.New(cfg[CfgKeyAPIKey], cfg[CfgKeyBaseURL])
 		},
 	},
 	{
