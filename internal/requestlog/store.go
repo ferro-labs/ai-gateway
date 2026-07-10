@@ -214,7 +214,7 @@ func (w *SQLWriter) ensureCreatedAtIndex(ctx context.Context) error {
 	if w.dialect != requestLogDialectPostgres {
 		// createdAtIndex is a package constant, not input; identifiers cannot be
 		// bound as parameters.
-		if _, err := w.db.ExecContext(ctx, "CREATE INDEX IF NOT EXISTS "+createdAtIndex+" ON request_logs (created_at)"); err != nil { //nolint:gosec // G202: identifier is a constant.
+		if _, err := w.db.ExecContext(ctx, "CREATE INDEX IF NOT EXISTS "+createdAtIndex+" ON request_logs (created_at)"); err != nil {
 			return fmt.Errorf("initialize request log index: %w", err)
 		}
 		return nil
@@ -236,7 +236,7 @@ func (w *SQLWriter) ensureCreatedAtIndex(ctx context.Context) error {
 			"index", createdAtIndex)
 		return nil
 	default: // indexAbsent
-		if _, err := w.db.ExecContext(ctx, "CREATE INDEX CONCURRENTLY IF NOT EXISTS "+createdAtIndex+" ON request_logs (created_at)"); err != nil { //nolint:gosec // G202: identifier is a constant.
+		if _, err := w.db.ExecContext(ctx, "CREATE INDEX CONCURRENTLY IF NOT EXISTS "+createdAtIndex+" ON request_logs (created_at)"); err != nil {
 			// A failed concurrent build usually leaves an invalid index behind,
 			// which the next start reports as indexInvalid (and points at
 			// REINDEX) rather than silently rebuilding. Until then queries scan.

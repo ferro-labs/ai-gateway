@@ -408,7 +408,7 @@ func TestGateway_RouteStream_ContentBasedPromptRegex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RouteStream: %v", err)
 	}
-	for range out { //nolint:revive
+	for range out { //nolint:revive // empty-block: intentionally draining the stream to completion
 	}
 
 	select {
@@ -972,7 +972,7 @@ func streamTestRequest() providers.Request {
 
 func drainMeteredStream(t *testing.T, ch <-chan providers.StreamChunk) {
 	t.Helper()
-	for range ch { //nolint:revive
+	for range ch { //nolint:revive // empty-block: intentionally draining the stream to completion
 	}
 }
 
@@ -1480,7 +1480,7 @@ func TestGateway_RouteStream_ClientDeadlineDoesNotTripCircuit(t *testing.T) {
 			cancel()
 			t.Fatalf("attempt %d: RouteStream error = %v", i+1, streamErr)
 		}
-		for range ch { //nolint:revive
+		for range ch { //nolint:revive // empty-block: intentionally draining the stream to completion
 		}
 		cancel()
 	}
@@ -3419,7 +3419,7 @@ func newMCPTestServer(t *testing.T) *httptest.Server {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		defer r.Body.Close() //nolint:errcheck
+		defer r.Body.Close() //nolint:errcheck // test HTTP server handler; request body close error is irrelevant
 
 		var rpcReq struct {
 			JSONRPC string          `json:"jsonrpc"`
@@ -3819,7 +3819,7 @@ func BenchmarkRouteStream(b *testing.B) {
 		if err != nil {
 			b.Fatal(err)
 		}
-		for range out { //nolint:revive
+		for range out { //nolint:revive // empty-block: intentionally draining the stream to completion
 		}
 	}
 }

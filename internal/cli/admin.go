@@ -171,7 +171,7 @@ var configSetCmd = &cobra.Command{
 		if filePath == "" {
 			return fmt.Errorf("--file is required")
 		}
-		raw, err := os.ReadFile(filePath) //nolint:gosec
+		raw, err := os.ReadFile(filePath) //nolint:gosec // G304: file path comes from the operator's --file CLI flag, not request input
 		if err != nil {
 			return fmt.Errorf("read file: %w", err)
 		}

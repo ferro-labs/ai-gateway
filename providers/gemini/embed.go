@@ -64,7 +64,7 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 	}
 
 	url := fmt.Sprintf("%s/v1beta/models/%s:batchEmbedContents", p.baseURL, url.PathEscape(model))
-	httpResp, release, err := p.doJSONRequest(ctx, http.MethodPost, url, "embed ", geminiReq)
+	httpResp, release, err := p.doJSONRequest(ctx, url, "embed ", geminiReq)
 	if err != nil {
 		return nil, err
 	}

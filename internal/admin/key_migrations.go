@@ -140,7 +140,7 @@ func hashStoredKeys(dialect migrations.Dialect) func(context.Context, *sql.Tx) e
 			return fmt.Errorf("create hashed api_keys table: %w", err)
 		}
 		copyRows := fmt.Sprintf("INSERT INTO api_keys_new (%s) SELECT %s FROM api_keys", keyRowColumns, keyRowColumns)
-		if _, err := tx.ExecContext(ctx, copyRows); err != nil { //nolint:gosec // G202: keyRowColumns is a package constant, not input.
+		if _, err := tx.ExecContext(ctx, copyRows); err != nil {
 			return fmt.Errorf("copy api_keys rows: %w", err)
 		}
 		if _, err := tx.ExecContext(ctx, "DROP TABLE api_keys"); err != nil {

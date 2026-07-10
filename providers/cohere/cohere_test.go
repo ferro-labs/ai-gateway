@@ -108,7 +108,6 @@ func TestCohereProvider_CompleteStream_MockSSE(t *testing.T) {
 	if chunks[0].Choices[0].Delta.Content != "Hello" {
 		t.Errorf("delta content = %q, want Hello", chunks[0].Choices[0].Delta.Content)
 	}
-	//nolint:goconst // " there" appears in multiple test strings; fine in tests
 	if chunks[1].Choices[0].Delta.Content != " there" {
 		t.Errorf("delta content = %q, want ' there'", chunks[1].Choices[0].Delta.Content)
 	}

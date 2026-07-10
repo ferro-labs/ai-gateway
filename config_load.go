@@ -14,7 +14,7 @@ import (
 // LoadConfig reads and parses a config file from the given path.
 // Supported formats: JSON (.json), YAML (.yaml, .yml).
 func LoadConfig(path string) (*Config, error) {
-	data, err := os.ReadFile(path) //nolint:gosec
+	data, err := os.ReadFile(path) //nolint:gosec // G304: config path is an operator-supplied startup argument, not request input
 	if err != nil {
 		return nil, fmt.Errorf("reading config file: %w", err)
 	}

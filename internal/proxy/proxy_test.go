@@ -93,7 +93,7 @@ func TestResolveProvider_BodyRestoredAfterRead(t *testing.T) {
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/test", strings.NewReader(body))
 	req.ContentLength = int64(len(body))
 
-	ResolveProvider(req, reg) //nolint:errcheck
+	ResolveProvider(req, reg)
 
 	// Body should be restored and readable again.
 	data, err := io.ReadAll(req.Body)

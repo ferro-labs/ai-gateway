@@ -475,7 +475,7 @@ func (g *Gateway) streamingTargetOrderLocked(req providers.Request) ([]string, e
 			total += w
 		}
 		if total > 0 {
-			r := rand.Float64() * total //nolint:gosec
+			r := rand.Float64() * total //nolint:gosec // G404: math/rand is fine for A/B variant weight selection, not security-sensitive
 			cumulative := 0.0
 			for _, v := range g.config.Strategy.ABVariants {
 				w := v.Weight
@@ -550,7 +550,7 @@ func (g *Gateway) streamingLatencyOrderLocked(targets []Target, req providers.Re
 	if len(unseen) > 1 {
 		rand.Shuffle(len(unseen), func(i, j int) {
 			unseen[i], unseen[j] = unseen[j], unseen[i]
-		}) //nolint:gosec
+		})
 	}
 	sort.SliceStable(sampled, func(i, j int) bool {
 		return sampled[i].p50 < sampled[j].p50
@@ -698,7 +698,7 @@ func weightedStartIndex(targets []Target) int {
 		return 0
 	}
 
-	r := rand.Float64() * totalWeight //nolint:gosec
+	r := rand.Float64() * totalWeight //nolint:gosec // G404: math/rand is fine for load-balancing weight selection, not security-sensitive
 	cumulative := 0.0
 	for i, t := range targets {
 		w := t.Weight

@@ -191,7 +191,7 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 	return &core.EmbeddingResponse{
 		Object: string(result.Object),
 		Data:   embeddings,
-		Model:  string(result.Model),
+		Model:  result.Model,
 		Usage: core.EmbeddingUsage{
 			PromptTokens: int(result.Usage.PromptTokens),
 			TotalTokens:  int(result.Usage.TotalTokens),
@@ -203,7 +203,7 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*core.ImageResponse, error) {
 	params := oai.ImageGenerateParams{
 		Prompt: req.Prompt,
-		Model:  oai.ImageModel(req.Model),
+		Model:  req.Model,
 	}
 	if req.N != nil {
 		params.N = oai.Int(int64(*req.N))
@@ -346,14 +346,14 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 	}
 	defer release()
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.chatCompletionsEndpoint(), bodyReader) //nolint:gosec // baseURL validated in New()
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.chatCompletionsEndpoint(), bodyReader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	httpResp, err := p.httpClient.Do(httpReq) //nolint:gosec // baseURL validated in New()
+	httpResp, err := p.httpClient.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}

@@ -70,7 +70,7 @@ func hashKey(key string) string {
 	// slow password KDF would add a hash to every authenticated request while
 	// defending nothing. One SHA-256 over a full-entropy value is the right
 	// primitive.
-	sum := sha256.Sum256([]byte(key)) //nolint:gosec // G401: hashing a 256-bit CSPRNG token, not a password.
+	sum := sha256.Sum256([]byte(key))
 	return hex.EncodeToString(sum[:])
 }
 

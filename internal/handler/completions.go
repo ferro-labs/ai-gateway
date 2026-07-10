@@ -136,7 +136,7 @@ func Completions(registry *providers.Registry) http.HandlerFunc {
 			if legacyReq.Stream {
 				_, copyErr = streamio.Copy(r.Context(), w, upstreamBody)
 			} else {
-				_, copyErr = io.Copy(w, upstreamBody) //nolint:gosec
+				_, copyErr = io.Copy(w, upstreamBody)
 			}
 			// Headers are already out, so this cannot become an error response —
 			// but an idle-timeout cut of a stalled upstream would otherwise be
@@ -212,7 +212,7 @@ func Completions(registry *providers.Registry) http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("X-Gateway-Provider", p.Name())
-		json.NewEncoder(w).Encode(legacy) //nolint:errcheck,gosec
+		json.NewEncoder(w).Encode(legacy) //nolint:errcheck,gosec // response headers already committed; an encode error to the client cannot be reported
 	}
 }
 

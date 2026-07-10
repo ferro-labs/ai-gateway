@@ -60,7 +60,7 @@ func newChatRequest(ctx context.Context, p ChatParams, req core.Request, stream 
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.URL, bodyReader) //nolint:gosec // URL derived from a base URL validated at construction
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.URL, bodyReader)
 	if err != nil {
 		release()
 		return nil, nil, fmt.Errorf("failed to create request: %w", err)
@@ -68,7 +68,7 @@ func newChatRequest(ctx context.Context, p ChatParams, req core.Request, stream 
 	for k, v := range p.Headers {
 		httpReq.Header.Set(k, v)
 	}
-	httpResp, err := p.HTTPClient.Do(httpReq) //nolint:gosec // see above
+	httpResp, err := p.HTTPClient.Do(httpReq)
 	if err != nil {
 		release()
 		return nil, nil, fmt.Errorf("request failed: %w", err)

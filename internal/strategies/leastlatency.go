@@ -67,7 +67,7 @@ func (l *LeastLatency) Execute(ctx context.Context, req providers.Request) (*pro
 	if len(unseen) > 0 {
 		// Round-robin through unseen providers to gather latency samples for each
 		// before settling on the best-known option.
-		pick := unseen[rand.Intn(len(unseen))] //nolint:gosec
+		pick := unseen[rand.Intn(len(unseen))] //nolint:gosec // G404: math/rand is fine for cold-start provider sampling, not security-sensitive
 		return dispatch(ctx, l.lookup, pick.target, req, "least latency based routing: provider not found")
 	}
 

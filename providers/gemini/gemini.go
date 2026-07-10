@@ -512,12 +512,12 @@ func geminiToolConfigFor(choice any) *geminiToolConfig {
 // Gemini API. It returns the live response plus a release func the caller must
 // defer to return the pooled request buffer. The label is woven into error
 // messages so callers can distinguish operations.
-func (p *Provider) doJSONRequest(ctx context.Context, method, reqURL, label string, body any) (*http.Response, func(), error) {
+func (p *Provider) doJSONRequest(ctx context.Context, reqURL, label string, body any) (*http.Response, func(), error) {
 	bodyReader, _, release, err := core.JSONBodyReader(body)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to marshal %srequest: %w", label, err)
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, method, reqURL, bodyReader)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, bodyReader)
 	if err != nil {
 		release()
 		return nil, nil, fmt.Errorf("failed to create %srequest: %w", label, err)
@@ -591,7 +591,7 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 
 	model := strings.TrimPrefix(req.Model, "models/")
 	url := fmt.Sprintf("%s/v1beta/models/%s:generateContent", p.baseURL, url.PathEscape(model))
-	httpResp, release, err := p.doJSONRequest(ctx, http.MethodPost, url, "", geminiReq)
+	httpResp, release, err := p.doJSONRequest(ctx, url, "", geminiReq)
 	if err != nil {
 		return nil, err
 	}
@@ -653,7 +653,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 
 	model := strings.TrimPrefix(req.Model, "models/")
 	url := fmt.Sprintf("%s/v1beta/models/%s:streamGenerateContent?alt=sse", p.baseURL, url.PathEscape(model))
-	httpResp, release, err := p.doJSONRequest(ctx, http.MethodPost, url, "", geminiReq)
+	httpResp, release, err := p.doJSONRequest(ctx, url, "", geminiReq)
 	if err != nil {
 		return nil, err
 	}

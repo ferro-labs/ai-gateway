@@ -50,7 +50,7 @@ func TestFallback_PerTargetRetry_Attempts(t *testing.T) {
 	fb := NewFallback(targets, newLookup(ep)).
 		WithTargetRetry("openai", 3, nil, 0)
 
-	fb.Execute(context.Background(), providers.Request{Model: "gpt-4o"}) //nolint:errcheck,gosec
+	fb.Execute(context.Background(), providers.Request{Model: "gpt-4o"}) //nolint:errcheck,gosec // test asserts on attempt count, not the returned response or error
 
 	if ep.calls != 3 {
 		t.Errorf("expected 3 attempts, got %d", ep.calls)
@@ -67,7 +67,7 @@ func TestFallback_StatusCodeFilter_RetriesOnAllowedCode(t *testing.T) {
 	fb := NewFallback(targets, newLookup(ep)).
 		WithTargetRetry("openai", 3, []int{429}, 0)
 
-	fb.Execute(context.Background(), providers.Request{Model: "gpt-4o"}) //nolint:errcheck,gosec
+	fb.Execute(context.Background(), providers.Request{Model: "gpt-4o"}) //nolint:errcheck,gosec // test asserts on attempt count, not the returned response or error
 
 	if ep.calls != 3 {
 		t.Errorf("expected 3 attempts for allowed 429, got %d", ep.calls)
@@ -85,7 +85,7 @@ func TestFallback_StatusCodeFilter_StopsOnDisallowedCode(t *testing.T) {
 	fb := NewFallback(targets, newLookup(ep)).
 		WithTargetRetry("openai", 3, []int{429}, 0)
 
-	fb.Execute(context.Background(), providers.Request{Model: "gpt-4o"}) //nolint:errcheck,gosec
+	fb.Execute(context.Background(), providers.Request{Model: "gpt-4o"}) //nolint:errcheck,gosec // test asserts on attempt count, not the returned response or error
 
 	if ep.calls != 1 {
 		t.Errorf("expected 1 attempt for disallowed 400, got %d", ep.calls)

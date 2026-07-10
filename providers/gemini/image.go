@@ -106,7 +106,7 @@ func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*c
 
 	model := strings.TrimPrefix(req.Model, "models/")
 	reqURL := fmt.Sprintf("%s/v1beta/models/%s:predict", p.baseURL, url.PathEscape(model))
-	httpResp, release, err := p.doJSONRequest(ctx, http.MethodPost, reqURL, "image ", imagenReq)
+	httpResp, release, err := p.doJSONRequest(ctx, reqURL, "image ", imagenReq)
 	if err != nil {
 		return nil, err
 	}

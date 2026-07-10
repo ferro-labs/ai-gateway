@@ -7,7 +7,7 @@ import (
 )
 
 func TestNoOpProviderImplementsInterface(t *testing.T) {
-	p := Provider(NoOp())
+	p := NoOp()
 	if p == nil {
 		t.Fatal("expected non-nil NoOp provider")
 	}
