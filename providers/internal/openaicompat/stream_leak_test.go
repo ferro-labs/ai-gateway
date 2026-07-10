@@ -29,8 +29,19 @@ func TestStreamSSE_ClientCancelMidStream_NoGoroutineLeak(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	ch := StreamSSE(ctx, sseBody(manyFrames(100)))
 
+	// Require a genuine first chunk before cancelling: a closed channel or an
+	// error chunk would mean the stream never really started, so accepting it
+	// here would let the leak regression pass without exercising a live stream.
 	select {
-	case <-ch:
+	case chunk, ok := <-ch:
+		if !ok {
+			cancel()
+			t.Fatal("stream channel closed before any chunk")
+		}
+		if chunk.Error != nil {
+			cancel()
+			t.Fatalf("first chunk carried error: %v", chunk.Error)
+		}
 	case <-time.After(2 * time.Second):
 		cancel()
 		t.Fatal("no first chunk within 2s")
