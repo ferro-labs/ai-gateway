@@ -365,3 +365,39 @@ func TestNewQwen_RejectsInvalidBaseURL(t *testing.T) {
 		t.Fatal("New accepted an invalid base URL")
 	}
 }
+
+// TestQwenProvider_DiscoverModels verifies live discovery issues a GET to
+// /models with bearer auth and parses the returned model metadata.
+func TestQwenProvider_DiscoverModels(t *testing.T) {
+	const wantModel = "qwen-plus"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("method = %q, want GET", r.Method)
+		}
+		if r.URL.Path != "/models" {
+			t.Errorf("path = %q, want /models", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != testBearerAPIKey {
+			t.Errorf("Authorization = %q, want %s", got, testBearerAPIKey)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"` + wantModel + `","object":"model","created":1700000000,"owned_by":"qwen"}]}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	models, err := p.DiscoverModels(context.Background())
+	if err != nil {
+		t.Fatalf("DiscoverModels() error: %v", err)
+	}
+	if len(models) != 1 {
+		t.Fatalf("expected 1 model, got %d", len(models))
+	}
+	if models[0].ID != wantModel {
+		t.Errorf("model[0].ID = %q, want %s", models[0].ID, wantModel)
+	}
+	if models[0].OwnedBy != "qwen" {
+		t.Errorf("model[0].OwnedBy = %q, want qwen", models[0].OwnedBy)
+	}
+}

@@ -351,7 +351,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameQwen,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityDiscovery, CapabilityProxy},
 		EnvMappings: []EnvMapping{
 			{CfgKeyAPIKey, "QWEN_API_KEY", true},
 			{CfgKeyBaseURL, "QWEN_BASE_URL", false},
