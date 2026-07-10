@@ -349,6 +349,20 @@ func TestLoadConfig_RejectsUnknownKey(t *testing.T) {
 			data:    `{"strategy":{"modee":"single"},"targets":[{"virtual_key":"openai"}]}`,
 			wantKey: "modee",
 		},
+		{
+			// Underscore-prefixed keys against the typed schema are ordinary
+			// unknown keys, not tolerated pseudo-comments.
+			name:    "json underscore-prefixed top-level key",
+			file:    "config.json",
+			data:    `{"_note":"x","strategy":{"mode":"single"},"targets":[{"virtual_key":"openai"}]}`,
+			wantKey: "_note",
+		},
+		{
+			name:    "yaml underscore-prefixed top-level key",
+			file:    "config.yaml",
+			data:    "_note: x\nstrategy:\n  mode: single\ntargets:\n  - virtual_key: openai\n",
+			wantKey: "_note",
+		},
 	}
 
 	for _, tt := range tests {
@@ -365,21 +379,65 @@ func TestLoadConfig_RejectsUnknownKey(t *testing.T) {
 	}
 }
 
-func TestLoadConfig_JSONCommentKeysIgnored(t *testing.T) {
-	// Underscore-prefixed keys are a documentation convention for JSON (which
-	// has no comments); strict decoding must skip them, not reject them.
-	data := `{
-		"_note": "top-level comment",
-		"strategy": {"mode": "single", "_hint": "nested comment"},
-		"targets": [{"virtual_key": "openai"}]
-	}`
-	path := writeTempFile(t, "config.json", data)
-	cfg, err := LoadConfig(path)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+func TestLoadConfig_PreservesUnderscoreKeysInPluginConfig(t *testing.T) {
+	// A plugin's free-form "config" map accepts arbitrary keys, including
+	// underscore-prefixed ones a plugin may use (e.g. "_token_source"). Strict
+	// decoding must not strip them: they have to reach the plugin unchanged.
+	tests := []struct {
+		name string
+		file string
+		data string
+	}{
+		{
+			name: "json",
+			file: "config.json",
+			data: `{
+				"strategy": {"mode": "single"},
+				"targets": [{"virtual_key": "openai"}],
+				"plugins": [{
+					"name": "request-logger",
+					"type": "logging",
+					"stage": "before_request",
+					"enabled": true,
+					"config": {"_x": "y", "level": "info"}
+				}]
+			}`,
+		},
+		{
+			name: "yaml",
+			file: "config.yaml",
+			data: "strategy:\n  mode: single\n" +
+				"targets:\n  - virtual_key: openai\n" +
+				"plugins:\n  - name: request-logger\n    type: logging\n" +
+				"    stage: before_request\n    enabled: true\n" +
+				"    config:\n      _x: y\n      level: info\n",
+		},
 	}
-	if cfg.Strategy.Mode != ModeSingle {
-		t.Errorf("expected mode %q, got %q", ModeSingle, cfg.Strategy.Mode)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeTempFile(t, tt.file, tt.data)
+			cfg, err := LoadConfig(path)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(cfg.Plugins) != 1 {
+				t.Fatalf("expected 1 plugin, got %d", len(cfg.Plugins))
+			}
+			if got := cfg.Plugins[0].Config["_x"]; got != "y" {
+				t.Errorf("plugin config[_x] = %v, want \"y\"", got)
+			}
+		})
+	}
+}
+
+func TestLoadConfig_JSONRejectsTrailingData(t *testing.T) {
+	// A second top-level value after the config object is rejected, matching a
+	// whole-document json.Unmarshal.
+	data := `{"strategy":{"mode":"single"},"targets":[{"virtual_key":"openai"}]}{"extra":true}`
+	path := writeTempFile(t, "config.json", data)
+	if _, err := LoadConfig(path); err == nil {
+		t.Fatal("expected error for trailing JSON data, got nil")
 	}
 }
 

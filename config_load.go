@@ -18,11 +18,12 @@ import (
 // LoadConfig reads and parses a config file from the given path.
 // Supported formats: JSON (.json), YAML (.yaml, .yml).
 //
-// Decoding is strict: an unknown or misspelled key is rejected rather than
-// silently ignored, so a typo cannot quietly disable the setting it was meant
-// to change. JSON has no comment syntax, so keys prefixed with "_" are treated
-// as documentation comments and skipped at every nesting level. The returned
-// Config is Normalize-d so it carries its effective defaults.
+// Decoding is strict: an unknown or misspelled key against the typed schema is
+// rejected rather than silently ignored, so a typo cannot quietly disable the
+// setting it was meant to change. Free-form config blocks (plugin and exporter
+// "config" maps) accept arbitrary keys and are preserved verbatim. Trailing
+// data after the top-level JSON value is rejected rather than silently dropped.
+// The returned Config is Normalize-d so it carries its effective defaults.
 func LoadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // G304: config path is an operator-supplied startup argument, not request input
 	if err != nil {
@@ -41,14 +42,15 @@ func LoadConfig(path string) (*Config, error) {
 			return nil, fmt.Errorf("parsing YAML config: %w", err)
 		}
 	case ".json":
-		clean, err := stripJSONCommentKeys(data)
-		if err != nil {
-			return nil, fmt.Errorf("parsing JSON config: %w", err)
-		}
-		dec := json.NewDecoder(bytes.NewReader(clean))
+		dec := json.NewDecoder(bytes.NewReader(data))
 		dec.DisallowUnknownFields()
 		if err := dec.Decode(&cfg); err != nil {
 			return nil, fmt.Errorf("parsing JSON config: %w", err)
+		}
+		// Reject trailing data after the top-level object, matching the
+		// strictness of a whole-document json.Unmarshal.
+		if err := dec.Decode(new(json.RawMessage)); !errors.Is(err, io.EOF) {
+			return nil, fmt.Errorf("parsing JSON config: unexpected data after top-level object")
 		}
 	default:
 		return nil, fmt.Errorf("unsupported config file extension %q: use .json, .yaml, or .yml", ext)
@@ -61,49 +63,6 @@ func LoadConfig(path string) (*Config, error) {
 	}
 
 	return &cfg, nil
-}
-
-// stripJSONCommentKeys removes object keys prefixed with "_" at every nesting
-// level and returns the cleaned JSON. JSON lacks a comment syntax, so config
-// files (including config.example.json) document fields with "_name"-prefixed
-// pseudo-comment keys. Stripping them lets strict decoding reject genuine typos
-// while tolerating this convention. UseNumber preserves numeric literals
-// verbatim across the round-trip so no precision is lost.
-func stripJSONCommentKeys(data []byte) ([]byte, error) {
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.UseNumber()
-	var raw any
-	if err := dec.Decode(&raw); err != nil {
-		return nil, err
-	}
-	// Reject trailing data after the top-level value, matching the strictness
-	// of the previous json.Unmarshal-based parse.
-	if err := dec.Decode(new(json.RawMessage)); !errors.Is(err, io.EOF) {
-		return nil, errors.New("unexpected trailing data after top-level JSON value")
-	}
-	return json.Marshal(stripCommentKeys(raw))
-}
-
-// stripCommentKeys recursively drops map entries whose key starts with "_".
-func stripCommentKeys(v any) any {
-	switch t := v.(type) {
-	case map[string]any:
-		for k, val := range t {
-			if strings.HasPrefix(k, "_") {
-				delete(t, k)
-				continue
-			}
-			t[k] = stripCommentKeys(val)
-		}
-		return t
-	case []any:
-		for i, val := range t {
-			t[i] = stripCommentKeys(val)
-		}
-		return t
-	default:
-		return v
-	}
 }
 
 // ValidateConfig validates a Config for correctness.
