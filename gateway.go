@@ -68,9 +68,9 @@ type Gateway struct {
 
 	// obsEventsActive is true when the installed Provider implements
 	// observability.EventRecordingProvider and RecordingEnabled() returned
-	// true at the time SetObservability was called.  It is read on the
-	// hot path without holding the gateway mutex — it is set once before
-	// traffic starts, so no additional synchronisation is required.
+	// true at the time SetObservability was called. It is written under g.mu
+	// in SetObservability and read under g.mu (alongside g.obs) at the top of
+	// Route and RouteStream, so the same lock that guards g.obs guards it.
 	obsEventsActive bool
 
 	// MCP fields — nil when no MCPServers are configured.

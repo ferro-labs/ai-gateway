@@ -3,7 +3,6 @@ package strategies
 import (
 	"context"
 	"fmt"
-	"sync"
 
 	"github.com/ferro-labs/ai-gateway/providers"
 )
@@ -12,7 +11,6 @@ import (
 type LoadBalance struct {
 	targets []Target
 	lookup  ProviderLookup
-	mu      sync.Mutex
 }
 
 // NewLoadBalance creates a new load balance strategy.
@@ -50,11 +48,10 @@ func (lb *LoadBalance) Execute(ctx context.Context, req providers.Request) (*pro
 	return dispatch(ctx, lb.lookup, target, req, "load balancing based routing: provider not found")
 }
 
-// selectFromTargets picks a target from the given slice using weighted random selection.
+// selectFromTargets picks a target from the given slice using weighted random
+// selection. weightedPick draws from the top-level math/rand source, which is
+// safe for concurrent use, so no additional locking is required here.
 func (lb *LoadBalance) selectFromTargets(targets []Target) (Target, error) {
-	lb.mu.Lock()
-	defer lb.mu.Unlock()
-
 	t, ok := weightedPick(targets, func(t Target) float64 {
 		return effectiveWeight(t.Weight)
 	})

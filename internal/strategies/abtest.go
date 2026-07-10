@@ -3,7 +3,6 @@ package strategies
 import (
 	"context"
 	"fmt"
-	"sync"
 
 	"github.com/ferro-labs/ai-gateway/internal/logging"
 	"github.com/ferro-labs/ai-gateway/providers"
@@ -43,7 +42,6 @@ type ABTestVariant struct {
 type ABTest struct {
 	variants []ABTestVariant
 	lookup   ProviderLookup
-	mu       sync.Mutex
 }
 
 // NewABTest creates an ABTest strategy.
@@ -92,10 +90,9 @@ func (ab *ABTest) Execute(ctx context.Context, req providers.Request) (*provider
 
 // selectVariant picks a variant using weighted random sampling.
 // Variants with zero weight are treated as weight 1 (equal distribution).
+// weightedPick draws from the top-level math/rand source, which is safe for
+// concurrent use, so no additional locking is required here.
 func (ab *ABTest) selectVariant() (ABTestVariant, error) {
-	ab.mu.Lock()
-	defer ab.mu.Unlock()
-
 	v, ok := weightedPick(ab.variants, func(v ABTestVariant) float64 {
 		return effectiveWeight(v.Weight)
 	})
