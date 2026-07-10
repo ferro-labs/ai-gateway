@@ -165,3 +165,49 @@ func TestUpdateConfigRejectsRedirectedPluginStorage(t *testing.T) {
 		t.Fatalf("running dsn = %v; the rejected config was applied anyway", got)
 	}
 }
+
+// A history entry is sanitized when it is accepted, but rollback re-resolves
+// against the running config so a poisoned entry — however it got into the
+// history — cannot redirect storage on the way back in.
+func TestRollbackConfigRejectsRedirectedStorage(t *testing.T) {
+	store := NewKeyStore()
+	running := aigateway.Config{
+		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeSingle},
+		Targets:  []aigateway.Target{{VirtualKey: "openai"}},
+		Plugins: []aigateway.PluginConfig{
+			{Name: "request-logger", Type: "logging", Stage: "after_request", Enabled: true,
+				Config: map[string]any{"persist": true, "dsn": "/var/lib/ferrogw/requests.db"}},
+		},
+	}
+	cm := &testConfigManager{cfg: running, initial: running}
+	h := &Handlers{Keys: store, Configs: cm}
+
+	// Seed a historical version that names a different path.
+	h.configHistory = []ConfigHistoryEntry{{
+		Version: 1,
+		Config: aigateway.Config{
+			Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeSingle},
+			Targets:  []aigateway.Target{{VirtualKey: "openai"}},
+			Plugins: []aigateway.PluginConfig{
+				{Name: "request-logger", Type: "logging", Stage: "after_request", Enabled: true,
+					Config: map[string]any{"persist": true, "dsn": "/tmp/ferrogw-attacker.db"}},
+			},
+		},
+	}}
+
+	r := chi.NewRouter()
+	r.Use(AuthMiddleware(store, ""))
+	r.Mount("/admin", h.Routes())
+	adminKey := createAdminKey(t, h)
+
+	req := authedRequest(http.MethodPost, "/admin/config/rollback/1", "", adminKey)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: rollback redirected the request log", w.Code)
+	}
+	if got := cm.GetConfig().Plugins[0].Config["dsn"]; got != "/var/lib/ferrogw/requests.db" {
+		t.Fatalf("running dsn = %v; the rejected rollback was applied", got)
+	}
+}

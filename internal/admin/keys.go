@@ -64,21 +64,13 @@ const (
 )
 
 // hashKey derives the value stored and looked up in place of the secret.
-//
-// The keys are 32 bytes of crypto/rand output (see generateAPIKeyString), not
-// user-chosen passwords: there is no low-entropy space to grind, so a slow
-// password KDF (bcrypt, argon2) would add a hash to every authenticated request
-// while defending against nothing. A single SHA-256 over a full-entropy random
-// value is the right primitive, and matches how LiteLLM and Langfuse store
-// gateway-issued keys — Langfuse specifically moved off bcrypt to a plain
-// SHA-256 for this on the request hot path.
-//
-// CodeQL's go/weak-sensitive-data-hashing flags this because it classifies the
-// input as a password; that premise does not hold here. The finding is left
-// open with this rationale rather than silenced with a KDF that trades real
-// per-request cost for no security.
 func hashKey(key string) string {
-	sum := sha256.Sum256([]byte(key)) //nolint:gosec // G401/CWE-916: hashing a 256-bit CSPRNG token, not a password; a KDF adds cost without entropy.
+	// The keys are 32 bytes of crypto/rand output (see generateAPIKeyString),
+	// not user-chosen passwords, so there is no low-entropy space to grind: a
+	// slow password KDF would add a hash to every authenticated request while
+	// defending nothing. One SHA-256 over a full-entropy value is the right
+	// primitive.
+	sum := sha256.Sum256([]byte(key)) //nolint:gosec // G401: hashing a 256-bit CSPRNG token, not a password.
 	return hex.EncodeToString(sum[:])
 }
 

@@ -429,8 +429,8 @@ func TestRun_NoTxFailureIsNotRecorded(t *testing.T) {
 			return errStub
 		}},
 	}
-	if err := Run(ctx, db, SQLite, "", steps); err == nil {
-		t.Fatal("Run should have failed on the NoTx error")
+	if err := Run(ctx, db, SQLite, "", steps); !errors.Is(err, errStub) {
+		t.Fatalf("Run error = %v, want it to wrap errStub", err)
 	}
 	if got := ledgerVersions(t, db); !slices.Equal(got, []int{1}) {
 		t.Fatalf("ledger = %v, want [1]: the failed NoTx step was recorded", got)

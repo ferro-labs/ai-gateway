@@ -204,50 +204,71 @@ const createdAtIndex = "idx_request_logs_created_at"
 // logged rather than fatal: the next start retries it.
 func (w *SQLWriter) ensureCreatedAtIndex(ctx context.Context) error {
 	if w.dialect != requestLogDialectPostgres {
-		if _, err := w.db.ExecContext(ctx, "CREATE INDEX IF NOT EXISTS "+createdAtIndex+" ON request_logs (created_at)"); err != nil {
+		// createdAtIndex is a package constant, not input; identifiers cannot be
+		// bound as parameters.
+		if _, err := w.db.ExecContext(ctx, "CREATE INDEX IF NOT EXISTS "+createdAtIndex+" ON request_logs (created_at)"); err != nil { //nolint:gosec // G202: identifier is a constant.
 			return fmt.Errorf("initialize request log index: %w", err)
 		}
 		return nil
 	}
 
-	built, err := w.concurrentIndexIsBuilt(ctx)
-	if err != nil {
-		return err
-	}
-	if built {
+	switch w.postgresIndexState(ctx) {
+	case indexValid:
+		return nil
+	case indexInvalid:
+		// An interrupted CREATE INDEX CONCURRENTLY leaves the index in place but
+		// marked invalid, and CREATE ... IF NOT EXISTS then skips it forever.
+		// Healing it means dropping and rebuilding, but a bare-name check cannot
+		// tell an abandoned index from one another instance is building right
+		// now, and dropping that would abort the live build. Rather than
+		// coordinate a fleet-wide drop, surface it: an operator reindexes once.
+		//
+		// ponytail: log-and-defer, not auto-heal. A cross-instance safe rebuild
+		// needs an advisory lock around the whole probe/drop/create — add it if
+		// interrupted builds turn out to be common.
+		slog.Warn("request log index is invalid from an interrupted build; run REINDEX INDEX CONCURRENTLY to rebuild it",
+			"index", createdAtIndex)
+		return nil
+	default: // indexAbsent
+		if _, err := w.db.ExecContext(ctx, "CREATE INDEX CONCURRENTLY IF NOT EXISTS "+createdAtIndex+" ON request_logs (created_at)"); err != nil { //nolint:gosec // G202: identifier is a constant.
+			slog.Warn("request log index build failed; queries will scan until the next start rebuilds it",
+				"index", createdAtIndex, "error", err)
+		}
 		return nil
 	}
-
-	if _, err := w.db.ExecContext(ctx, "CREATE INDEX CONCURRENTLY IF NOT EXISTS "+createdAtIndex+" ON request_logs (created_at)"); err != nil {
-		slog.Warn("request log index build failed; queries will scan until the next start rebuilds it",
-			"index", createdAtIndex, "error", err)
-	}
-	return nil
 }
 
-// concurrentIndexIsBuilt reports whether the index exists and is usable.
+type indexState int
+
+const (
+	indexAbsent indexState = iota
+	indexValid
+	indexInvalid
+)
+
+// postgresIndexState reports whether the created_at index is absent, present
+// and usable, or present but invalid.
 //
-// An interrupted concurrent build leaves the index in place but marked invalid,
-// and CREATE INDEX ... IF NOT EXISTS would then skip it forever. Drop that
-// remnant so the caller rebuilds.
-func (w *SQLWriter) concurrentIndexIsBuilt(ctx context.Context) (bool, error) {
-	const probe = `SELECT i.indisvalid FROM pg_class c JOIN pg_index i ON i.indexrelid = c.oid WHERE c.relname = $1`
+// to_regclass resolves the name through search_path, so the probe inspects the
+// index the writer would actually use rather than a same-named index in another
+// schema. It returns NULL — and the join no rows — when the index does not
+// exist. A probe failure is treated as absent so a transient error at most
+// triggers a redundant IF NOT EXISTS build.
+func (w *SQLWriter) postgresIndexState(ctx context.Context) indexState {
+	const probe = `SELECT i.indisvalid FROM pg_index i WHERE i.indexrelid = to_regclass($1)`
 
 	var valid bool
-	err := w.db.QueryRowContext(ctx, probe, createdAtIndex).Scan(&valid)
-	switch {
+	switch err := w.db.QueryRowContext(ctx, probe, createdAtIndex).Scan(&valid); {
 	case errors.Is(err, sql.ErrNoRows):
-		return false, nil
+		return indexAbsent
 	case err != nil:
-		return false, fmt.Errorf("probe request log index: %w", err)
+		slog.Warn("could not probe request log index; assuming it is absent", "index", createdAtIndex, "error", err)
+		return indexAbsent
 	case valid:
-		return true, nil
+		return indexValid
+	default:
+		return indexInvalid
 	}
-
-	if _, err := w.db.ExecContext(ctx, "DROP INDEX CONCURRENTLY IF EXISTS "+createdAtIndex); err != nil {
-		return false, fmt.Errorf("drop invalid request log index: %w", err)
-	}
-	return false, nil
 }
 
 func (w *SQLWriter) Write(ctx context.Context, entry Entry) error {

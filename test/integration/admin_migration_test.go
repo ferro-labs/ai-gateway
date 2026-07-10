@@ -34,10 +34,11 @@ func openTestDB(t *testing.T) *sql.DB {
 }
 
 // resetKeySchema removes everything the key store owns so each test starts from
-// a known point.
+// a known point. It runs on context.Background() because it is used from
+// t.Cleanup, where t.Context() is already canceled.
 func resetKeySchema(t *testing.T, db *sql.DB) {
 	t.Helper()
-	if _, err := db.ExecContext(t.Context(), "DROP TABLE IF EXISTS api_keys, api_keys_new, schema_migrations"); err != nil {
+	if _, err := db.ExecContext(context.Background(), "DROP TABLE IF EXISTS api_keys, api_keys_new, schema_migrations"); err != nil {
 		t.Fatalf("reset key schema: %v", err)
 	}
 }
