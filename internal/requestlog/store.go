@@ -4,7 +4,9 @@ package requestlog
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -63,14 +65,33 @@ type ListResult struct {
 	Total int
 }
 
+// StatsResult is an aggregated summary of the request logs matching a Query's filters.
+type StatsResult struct {
+	TotalEntries int
+	ErrorEntries int
+	TotalTokens  int
+	ByStage      map[string]int
+	ByProvider   map[string]int
+	ByModel      map[string]int
+}
+
 // Writer persists request log entries.
 type Writer interface {
 	Write(ctx context.Context, entry Entry) error
 }
 
+// WriterReceiver is implemented by components — request-logging plugins — that
+// record through a Writer the gateway supplies at startup, rather than opening
+// a store of their own. The supplied Writer is owned by the gateway and must
+// not be closed by the receiver.
+type WriterReceiver interface {
+	SetRequestLogWriter(Writer)
+}
+
 // Reader loads request log entries from persistent storage.
 type Reader interface {
 	List(ctx context.Context, query Query) (ListResult, error)
+	Stats(ctx context.Context, query Query) (StatsResult, error)
 }
 
 // Maintainer provides cleanup operations over persistent request logs.
@@ -95,17 +116,20 @@ func NewSQLiteWriter(ctx context.Context, dsn string) (*SQLWriter, error) {
 	if dsn == "" {
 		dsn = "ferrogw-requests.db"
 	}
+	// Restrict the file before SQLite touches it: a file created under the
+	// process umask is world-readable until something narrows it.
+	if err := sqlitefile.Secure(dsn); err != nil {
+		return nil, err
+	}
+
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite request log writer: %w", err)
 	}
 	tuneDBPool(db, requestLogDialectSQLite)
+
 	w := &SQLWriter{db: db, dialect: requestLogDialectSQLite}
 	if err := w.init(ctx); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-	if err := sqlitefile.Secure(dsn); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -169,7 +193,91 @@ CREATE TABLE IF NOT EXISTS request_logs (
 	if _, err := w.db.ExecContext(ctx, ddl); err != nil {
 		return fmt.Errorf("initialize request log schema: %w", err)
 	}
-	return nil
+	return w.ensureCreatedAtIndex(ctx)
+}
+
+// createdAtIndex serves List's created_at ordering and range, Delete's
+// created_at range, and Stats' since filter.
+const createdAtIndex = "idx_request_logs_created_at"
+
+// ensureCreatedAtIndex builds the created_at index if it is missing.
+//
+// request_logs takes a write per request per stage. On Postgres a plain
+// CREATE INDEX holds a lock that blocks those writes for the length of the
+// build, which on an existing table means every other instance stalls while one
+// restarts. Building concurrently trades a slower build for not blocking
+// writers. It cannot run inside a transaction, and this is not one.
+//
+// A missing index costs query time, not correctness, so a failed build is
+// logged rather than fatal: the next start retries it.
+func (w *SQLWriter) ensureCreatedAtIndex(ctx context.Context) error {
+	if w.dialect != requestLogDialectPostgres {
+		// createdAtIndex is a package constant, not input; identifiers cannot be
+		// bound as parameters.
+		if _, err := w.db.ExecContext(ctx, "CREATE INDEX IF NOT EXISTS "+createdAtIndex+" ON request_logs (created_at)"); err != nil { //nolint:gosec // G202: identifier is a constant.
+			return fmt.Errorf("initialize request log index: %w", err)
+		}
+		return nil
+	}
+
+	switch w.postgresIndexState(ctx) {
+	case indexValid:
+		return nil
+	case indexInvalid:
+		// An interrupted CREATE INDEX CONCURRENTLY leaves the index in place but
+		// marked invalid, and CREATE ... IF NOT EXISTS then skips it forever.
+		// Healing it means dropping and rebuilding, but a bare-name check cannot
+		// tell an abandoned index from one another instance is building right
+		// now, and dropping that would abort the live build. So this logs and
+		// defers to the operator rather than coordinating a fleet-wide drop. A
+		// self-healing rebuild would need an advisory lock around the whole
+		// probe/drop/create; add it only if interrupted builds prove common.
+		slog.Warn("request log index is invalid from an interrupted build; run REINDEX INDEX CONCURRENTLY to rebuild it",
+			"index", createdAtIndex)
+		return nil
+	default: // indexAbsent
+		if _, err := w.db.ExecContext(ctx, "CREATE INDEX CONCURRENTLY IF NOT EXISTS "+createdAtIndex+" ON request_logs (created_at)"); err != nil { //nolint:gosec // G202: identifier is a constant.
+			// A failed concurrent build usually leaves an invalid index behind,
+			// which the next start reports as indexInvalid (and points at
+			// REINDEX) rather than silently rebuilding. Until then queries scan.
+			slog.Warn("request log index build failed; queries will scan until it is rebuilt with REINDEX INDEX CONCURRENTLY",
+				"index", createdAtIndex, "error", err)
+		}
+		return nil
+	}
+}
+
+type indexState int
+
+const (
+	indexAbsent indexState = iota
+	indexValid
+	indexInvalid
+)
+
+// postgresIndexState reports whether the created_at index is absent, present
+// and usable, or present but invalid.
+//
+// to_regclass resolves the name through search_path, so the probe inspects the
+// index the writer would actually use rather than a same-named index in another
+// schema. It returns NULL — and the join no rows — when the index does not
+// exist. A probe failure is treated as absent so a transient error at most
+// triggers a redundant IF NOT EXISTS build.
+func (w *SQLWriter) postgresIndexState(ctx context.Context) indexState {
+	const probe = `SELECT i.indisvalid FROM pg_index i WHERE i.indexrelid = to_regclass($1)`
+
+	var valid bool
+	switch err := w.db.QueryRowContext(ctx, probe, createdAtIndex).Scan(&valid); {
+	case errors.Is(err, sql.ErrNoRows):
+		return indexAbsent
+	case err != nil:
+		slog.Warn("could not probe request log index; assuming it is absent", "index", createdAtIndex, "error", err)
+		return indexAbsent
+	case valid:
+		return indexValid
+	default:
+		return indexInvalid
+	}
 }
 
 func (w *SQLWriter) Write(ctx context.Context, entry Entry) error {
@@ -297,6 +405,119 @@ func (w *SQLWriter) List(ctx context.Context, query Query) (ListResult, error) {
 	}
 
 	return ListResult{Data: entries, Total: total}, nil
+}
+
+// statsQueryTemplate aggregates matching rows across three dimensions in one
+// round trip. SQLite lacks GROUPING SETS, so a UNION ALL stands in. The %[1]s
+// verb is the shared WHERE clause; its bound args repeat once per branch.
+// COALESCE(NULLIF(col,”),'unknown') folds NULL and ” into a single group so
+// nullable provider/model columns match the historical Go aggregation.
+const statsQueryTemplate = `SELECT 'stage' AS dim,
+       COALESCE(NULLIF(stage, ''), 'unknown') AS grp,
+       COUNT(*) AS cnt,
+       SUM(CASE WHEN (error_message IS NOT NULL AND error_message <> '') OR stage = 'on_error' THEN 1 ELSE 0 END) AS errs,
+       COALESCE(SUM(total_tokens), 0) AS toks
+FROM request_logs%[1]s
+GROUP BY COALESCE(NULLIF(stage, ''), 'unknown')
+UNION ALL
+SELECT 'provider', COALESCE(NULLIF(provider, ''), 'unknown'), COUNT(*),
+       SUM(CASE WHEN (error_message IS NOT NULL AND error_message <> '') OR stage = 'on_error' THEN 1 ELSE 0 END),
+       COALESCE(SUM(total_tokens), 0)
+FROM request_logs%[1]s
+GROUP BY COALESCE(NULLIF(provider, ''), 'unknown')
+UNION ALL
+SELECT 'model', COALESCE(NULLIF(model, ''), 'unknown'), COUNT(*),
+       SUM(CASE WHEN (error_message IS NOT NULL AND error_message <> '') OR stage = 'on_error' THEN 1 ELSE 0 END),
+       COALESCE(SUM(total_tokens), 0)
+FROM request_logs%[1]s
+GROUP BY COALESCE(NULLIF(model, ''), 'unknown')`
+
+// Stats aggregates request logs matching the query filters (Stage, Model,
+// Provider, Since) entirely in SQL. Limit and Offset are ignored. Returned maps
+// are always non-nil. TotalEntries/ErrorEntries/TotalTokens are derived from the
+// stage rows, which partition every matching row exactly once.
+func (w *SQLWriter) Stats(ctx context.Context, query Query) (StatsResult, error) {
+	whereClauses := make([]string, 0)
+	args := make([]any, 0)
+
+	if query.Stage != "" {
+		whereClauses = append(whereClauses, "stage = ?")
+		args = append(args, query.Stage)
+	}
+	if query.Model != "" {
+		whereClauses = append(whereClauses, "model = ?")
+		args = append(args, query.Model)
+	}
+	if query.Provider != "" {
+		whereClauses = append(whereClauses, "provider = ?")
+		args = append(args, query.Provider)
+	}
+	if query.Since != nil {
+		whereClauses = append(whereClauses, "created_at >= ?")
+		args = append(args, query.Since.UTC())
+	}
+
+	whereSQL := ""
+	if len(whereClauses) > 0 {
+		whereSQL = " WHERE " + strings.Join(whereClauses, " AND ")
+	}
+
+	// #nosec G201 -- dimension/column names are fixed literals; whereSQL contains only bound placeholders.
+	statsQuery := fmt.Sprintf(statsQueryTemplate, whereSQL)
+
+	// whereSQL's placeholders appear once per UNION ALL branch, so its args bind
+	// three times in branch order. bindPostgres renumbers ? sequentially across
+	// the whole statement, keeping the tripled args aligned.
+	allArgs := make([]any, 0, len(args)*3)
+	allArgs = append(allArgs, args...)
+	allArgs = append(allArgs, args...)
+	allArgs = append(allArgs, args...)
+
+	if w.dialect == requestLogDialectPostgres {
+		statsQuery = bindPostgres(statsQuery)
+	}
+
+	rows, err := w.db.QueryContext(ctx, statsQuery, allArgs...)
+	if err != nil {
+		return StatsResult{}, fmt.Errorf("aggregate request log stats: %w", err)
+	}
+	defer func() {
+		_ = rows.Close()
+	}()
+
+	result := StatsResult{
+		ByStage:    map[string]int{},
+		ByProvider: map[string]int{},
+		ByModel:    map[string]int{},
+	}
+	for rows.Next() {
+		var (
+			dim  string
+			grp  string
+			cnt  int
+			errs int
+			toks int
+		)
+		if err := rows.Scan(&dim, &grp, &cnt, &errs, &toks); err != nil {
+			return StatsResult{}, fmt.Errorf("scan request log stats row: %w", err)
+		}
+		switch dim {
+		case "stage":
+			result.ByStage[grp] = cnt
+			result.TotalEntries += cnt
+			result.ErrorEntries += errs
+			result.TotalTokens += toks
+		case "provider":
+			result.ByProvider[grp] = cnt
+		case "model":
+			result.ByModel[grp] = cnt
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return StatsResult{}, fmt.Errorf("iterate request log stats: %w", err)
+	}
+
+	return result, nil
 }
 
 // Delete removes request log entries matching maintenance filters.

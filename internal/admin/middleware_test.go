@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -255,5 +256,35 @@ func TestAuthMiddleware_MasterKey_Empty(t *testing.T) {
 	// No master key, no stored keys → 401.
 	if rr.Code != http.StatusUnauthorized {
 		t.Errorf("expected 401 with no master key and no stored keys, got %d", rr.Code)
+	}
+}
+
+// unavailableStore stands in for a key store whose backing database cannot be
+// reached.
+type unavailableStore struct {
+	*KeyStore
+}
+
+func (unavailableStore) IsEmpty(context.Context) (bool, error) {
+	return false, errors.New("database unavailable")
+}
+
+// Bootstrap credentials are only valid against a genuinely empty store. When
+// the store cannot answer, the middleware must treat it as populated: an outage
+// must not re-open a credential that exists to seed a fresh deployment.
+func TestAuthMiddleware_BootstrapRejectedWhenStoreCannotAnswer(t *testing.T) {
+	t.Setenv("ADMIN_BOOTSTRAP_KEY", "bootstrap-secret")
+
+	handler := AuthMiddleware(unavailableStore{NewKeyStore()}, "")(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		t.Error("handler should not be called")
+	}))
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer bootstrap-secret")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("got status %d, want %d", rr.Code, http.StatusUnauthorized)
 	}
 }

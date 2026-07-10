@@ -5,7 +5,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 )
@@ -79,8 +78,11 @@ func runStoreContract(t *testing.T, store Store) {
 	if len(listed) != 1 {
 		t.Fatalf("expected 1 key in list, got %d", len(listed))
 	}
-	if !strings.HasSuffix(listed[0].Key, "...") {
-		t.Fatalf("expected listed key to be masked, got %s", listed[0].Key)
+	if listed[0].Key == created.Key {
+		t.Fatalf("List returned the full secret: %s", listed[0].Key)
+	}
+	if listed[0].Key != displayKey(created.Key) {
+		t.Fatalf("expected the display key %s, got %s", displayKey(created.Key), listed[0].Key)
 	}
 
 	updated, err := store.Update(context.Background(), created.ID, "store-key-updated", []string{ScopeReadOnly})

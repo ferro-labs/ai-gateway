@@ -30,6 +30,11 @@ const fallbackConfigBody = `{"strategy":{"mode":"fallback"},"targets":[{"virtual
 
 type fakeLogReader struct {
 	entries []requestlog.Entry
+	stats   requestlog.StatsResult
+}
+
+func (f *fakeLogReader) Stats(_ context.Context, _ requestlog.Query) (requestlog.StatsResult, error) {
+	return f.stats, nil
 }
 
 func (f *fakeLogReader) List(_ context.Context, query requestlog.Query) (requestlog.ListResult, error) {
@@ -73,6 +78,14 @@ type fakeLogStore struct {
 func (f *fakeLogStore) List(_ context.Context, query requestlog.Query) (requestlog.ListResult, error) {
 	reader := &fakeLogReader{entries: f.entries}
 	return reader.List(context.Background(), query)
+}
+
+func (f *fakeLogStore) Stats(_ context.Context, _ requestlog.Query) (requestlog.StatsResult, error) {
+	return requestlog.StatsResult{
+		ByStage:    map[string]int{},
+		ByProvider: map[string]int{},
+		ByModel:    map[string]int{},
+	}, nil
 }
 
 func (f *fakeLogStore) Delete(_ context.Context, query requestlog.MaintenanceQuery) (int, error) {
@@ -294,8 +307,8 @@ func TestListKeys(t *testing.T) {
 		t.Fatalf("expected 3 keys, got %d", len(keys))
 	}
 	for _, k := range keys {
-		if len(k.Key) > 11 {
-			t.Errorf("expected masked key, got %s", k.Key)
+		if !strings.Contains(k.Key, "...") {
+			t.Errorf("expected a display key, got %s", k.Key)
 		}
 	}
 }
@@ -320,8 +333,11 @@ func TestGetKeyByID(t *testing.T) {
 	if got.ID != created.ID {
 		t.Fatalf("expected id %s, got %s", created.ID, got.ID)
 	}
-	if got.Key == created.Key || len(got.Key) > 11 {
-		t.Fatalf("expected masked key, got %q", got.Key)
+	if got.Key == created.Key {
+		t.Fatalf("the full secret was returned by GET /admin/keys/{id}: %q", got.Key)
+	}
+	if got.Key != displayKey(created.Key) {
+		t.Fatalf("expected the display key %q, got %q", displayKey(created.Key), got.Key)
 	}
 }
 
@@ -1339,11 +1355,13 @@ func TestLogsEndpointInvalidSince(t *testing.T) {
 }
 
 func TestLogsStatsEndpoint(t *testing.T) {
-	now := time.Now().UTC()
-	reader := &fakeLogReader{entries: []requestlog.Entry{
-		{TraceID: "1", Stage: "after_request", Model: "gpt-4", Provider: "openai", TotalTokens: 10, CreatedAt: now.Add(-3 * time.Minute)},
-		{TraceID: "2", Stage: "on_error", Model: "gpt-4", Provider: "openai", ErrorMessage: "boom", TotalTokens: 20, CreatedAt: now.Add(-2 * time.Minute)},
-		{TraceID: "3", Stage: "after_request", Model: "claude", Provider: "anthropic", TotalTokens: 5, CreatedAt: now.Add(-1 * time.Minute)},
+	reader := &fakeLogReader{stats: requestlog.StatsResult{
+		TotalEntries: 3,
+		ErrorEntries: 1,
+		TotalTokens:  35,
+		ByStage:      map[string]int{"after_request": 2, "on_error": 1},
+		ByProvider:   map[string]int{"openai": 2, "anthropic": 1},
+		ByModel:      map[string]int{"gpt-4": 2, "claude": 1},
 	}}
 	h, r := setupTestRouterWithLogs(reader)
 	adminKey := createAdminKey(t, h)
@@ -1390,11 +1408,11 @@ func TestLogsStatsEndpoint(t *testing.T) {
 }
 
 func TestLogsStatsEndpointWithLimit(t *testing.T) {
-	now := time.Now().UTC()
-	reader := &fakeLogReader{entries: []requestlog.Entry{
-		{TraceID: "1", Stage: "after_request", Model: "gpt-4", Provider: "openai", TotalTokens: 10, CreatedAt: now.Add(-3 * time.Minute)},
-		{TraceID: "2", Stage: "on_error", Model: "gpt-4", Provider: "openai", ErrorMessage: "boom", TotalTokens: 20, CreatedAt: now.Add(-2 * time.Minute)},
-		{TraceID: "3", Stage: "after_request", Model: "claude", Provider: "anthropic", TotalTokens: 5, CreatedAt: now.Add(-1 * time.Minute)},
+	reader := &fakeLogReader{stats: requestlog.StatsResult{
+		TotalEntries: 3,
+		ByStage:      map[string]int{"after_request": 2, "on_error": 1},
+		ByProvider:   map[string]int{"openai": 2, "anthropic": 1},
+		ByModel:      map[string]int{"gpt-4": 2, "claude": 1},
 	}}
 	h, r := setupTestRouterWithLogs(reader)
 	adminKey := createAdminKey(t, h)
@@ -1434,22 +1452,17 @@ func TestLogsStatsEndpointWithLimit(t *testing.T) {
 	}
 }
 
-func TestLogsStatsEndpointTruncatesLargeDatasets(t *testing.T) {
-	now := time.Now().UTC()
-	entries := make([]requestlog.Entry, 0, logsStatsMaxScannedEntries+10)
-	for i := 0; i < logsStatsMaxScannedEntries+10; i++ {
-		entries = append(entries, requestlog.Entry{
-			TraceID:      "trace",
-			Stage:        "after_request",
-			Model:        "gpt-4",
-			Provider:     "openai",
-			TotalTokens:  1,
-			ErrorMessage: "",
-			CreatedAt:    now.Add(-time.Duration(i) * time.Second),
-		})
-	}
-
-	reader := &fakeLogReader{entries: entries}
+func TestLogsStatsEndpointReturnsExactCounts(t *testing.T) {
+	// Stats is now an exact SQL aggregation: the summary reports the true total
+	// and the scan-cap fields are gone.
+	reader := &fakeLogReader{stats: requestlog.StatsResult{
+		TotalEntries: 5010,
+		ErrorEntries: 7,
+		TotalTokens:  5010,
+		ByStage:      map[string]int{"after_request": 5010},
+		ByProvider:   map[string]int{"openai": 5010},
+		ByModel:      map[string]int{"gpt-4": 5010},
+	}}
 	h, r := setupTestRouterWithLogs(reader)
 	adminKey := createAdminKey(t, h)
 
@@ -1462,28 +1475,25 @@ func TestLogsStatsEndpointTruncatesLargeDatasets(t *testing.T) {
 	}
 
 	var payload struct {
-		Summary struct {
-			TotalEntries     int  `json:"total_entries"`
-			AvailableEntries int  `json:"available_entries"`
-			Truncated        bool `json:"truncated"`
-			ScanLimit        int  `json:"scan_limit"`
-		} `json:"summary"`
+		Summary map[string]any `json:"summary"`
 	}
 	if err := json.NewDecoder(w.Body).Decode(&payload); err != nil {
 		t.Fatalf("decode logs stats response: %v", err)
 	}
 
-	if !payload.Summary.Truncated {
-		t.Fatal("expected truncated=true for oversized dataset")
+	if got := payload.Summary["total_entries"]; got != float64(5010) {
+		t.Fatalf("expected total_entries=5010, got %v", got)
 	}
-	if payload.Summary.TotalEntries != logsStatsMaxScannedEntries {
-		t.Fatalf("expected total_entries=%d, got %d", logsStatsMaxScannedEntries, payload.Summary.TotalEntries)
+	if got := payload.Summary["error_entries"]; got != float64(7) {
+		t.Fatalf("expected error_entries=7, got %v", got)
 	}
-	if payload.Summary.AvailableEntries != logsStatsMaxScannedEntries+10 {
-		t.Fatalf("expected available_entries=%d, got %d", logsStatsMaxScannedEntries+10, payload.Summary.AvailableEntries)
+	if got := payload.Summary["total_tokens"]; got != float64(5010) {
+		t.Fatalf("expected total_tokens=5010, got %v", got)
 	}
-	if payload.Summary.ScanLimit != logsStatsMaxScannedEntries {
-		t.Fatalf("expected scan_limit=%d, got %d", logsStatsMaxScannedEntries, payload.Summary.ScanLimit)
+	for _, removed := range []string{"truncated", "available_entries", "scan_limit"} {
+		if _, ok := payload.Summary[removed]; ok {
+			t.Fatalf("expected summary key %q to be removed", removed)
+		}
 	}
 }
 

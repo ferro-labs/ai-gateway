@@ -5,6 +5,38 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.21] — 2026-07-10
+
+Key hashing and storage hardening — the fourth phase of the v1.1.x hardening release line. The Go API is unchanged; two admin endpoints change their response values (see **Changed**).
+
+### Security
+
+- **API keys are now stored hashed at rest.** The gateway persists `sha256(key)` plus a display form, and looks a key up by its hash. The full secret is returned exactly once, from `POST /admin/keys` and `POST /admin/keys/{id}/rotate`, and cannot be recovered afterwards. Existing databases are migrated in place on first start.
+- The migration **rebuilds the key table** rather than dropping the plaintext column, so the secrets are removed from the database file itself. Dropping the column would leave them readable on disk: SQLite retains freed pages until `VACUUM`, and Postgres `DROP COLUMN` only updates the catalog. On SQLite the migration additionally vacuums and truncates the write-ahead log.
+- Operators who need a hard guarantee that no earlier copy of a key survives — in backups, WAL archives, replicas, or unlinked filesystem blocks — should **rotate their keys after upgrading**. No schema migration can reach those copies.
+- **Bootstrap credentials now fail closed.** `ADMIN_BOOTSTRAP_KEY` and `ADMIN_BOOTSTRAP_READ_ONLY_KEY` are accepted only against a key store that is confirmed empty. Previously a key store that could not be read reported zero keys, which re-opened the bootstrap credentials during a database outage.
+- **SQLite database files are restricted to owner-only access before any data is written to them**, rather than after the schema is initialized. SQLite creates files honoring the process umask, so a database could previously be world-readable for the duration of startup.
+- An `Authorization: Bearer` header with an empty value is no longer matched against the key store.
+- **The request-logger plugin no longer opens its own database from plugin config.** It records through the shared request-log store the gateway builds from `REQUEST_LOG_STORE_BACKEND` / `REQUEST_LOG_STORE_DSN`, so no request-supplied value reaches the filesystem. This removes a path where a config submitted over `POST/PUT /admin/config` could create a file at an arbitrary location.
+
+### Added
+
+- **Versioned schema migrations.** Schema changes now run through a `schema_migrations` ledger, replacing repeated `ALTER TABLE` statements whose failures were classified by matching the error message text. Databases created by earlier releases are adopted at the baseline version rather than re-initialized. On Postgres the runner holds an advisory lock for its duration, so several gateway instances sharing one database can start at the same time.
+
+### Changed
+
+- `GET /admin/keys`, `/admin/keys/{id}` and `/admin/keys/usage` return the `key` field as `fgw_ab12...cd34`, keeping both ends of the secret so an operator can match a key they hold against a listed record. It was previously truncated to a leading fragment.
+- `GET /admin/logs/stats` computes its aggregates in the database instead of scanning up to 5,000 rows into memory, so its counts are now exact for any number of matching entries. The `truncated`, `scan_limit`, and `available_entries` summary fields described the old scan cap and have been removed.
+- **The request-logger plugin's `backend` and `dsn` options are obsolete and ignored** (with a startup warning). Persistence now targets the shared request-log store; configure it with `REQUEST_LOG_STORE_BACKEND` and `REQUEST_LOG_STORE_DSN`. A deployment that previously set only the plugin's `dsn` should move that value to `REQUEST_LOG_STORE_DSN`. This also fixes a case where the admin log views read a different database than the plugin wrote to.
+
+### Fixed
+
+- The admin dashboard's key table showed every key as `fgw_...` because it truncated a value the server had already truncated. Keys are now distinguishable from one another.
+- `request_logs` gains an index on `created_at`, which serves the log listing's ordering, the retention delete, and the stats time filter. On Postgres it is built with `CREATE INDEX CONCURRENTLY` so an existing table's writers are not blocked during a rolling restart.
+- The bootstrap-key check no longer loads every API key on unauthenticated admin requests.
+
+---
+
 ## [1.1.20] — 2026-07-09
 
 Streaming deadlines and serving robustness — the third phase of the v1.1.x hardening release line. All changes are additive/behavior-preserving for the public API.

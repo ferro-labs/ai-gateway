@@ -31,9 +31,6 @@ type Handlers struct {
 	configHistory []ConfigHistoryEntry
 }
 
-const unknownLabel = "unknown"
-const logsStatsMaxScannedEntries = 5000
-
 // Routes returns a chi.Router with all admin endpoints mounted.
 func (h *Handlers) Routes() chi.Router {
 	r := chi.NewRouter()

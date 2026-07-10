@@ -160,16 +160,93 @@ func TestRequestLogger_Init_ErrorLevel(t *testing.T) {
 	}
 }
 
-func TestRequestLogger_Init_UnsupportedBackend(t *testing.T) {
+// The plugin no longer opens a store from config, so obsolete backend/dsn
+// options are ignored rather than validated. Persistence targets the shared
+// store the gateway injects.
+func TestRequestLogger_Init_IgnoresObsoleteStorageOptions(t *testing.T) {
 	l := &RequestLogger{}
-	err := l.Init(map[string]any{
+	if err := l.Init(map[string]any{
 		"persist": true,
-		"backend": "cassandra",
-		"dsn":     "",
-	})
-	if err == nil {
-		t.Error("expected error for unsupported backend")
+		"backend": "cassandra", // once an error; now ignored
+		"dsn":     "/etc/passwd",
+	}); err != nil {
+		t.Fatalf("Init must not fail on obsolete storage options: %v", err)
 	}
+	// With no injected store, persistence falls back to the no-op writer; a
+	// request-supplied dsn is never opened.
+	if _, ok := l.writer.(requestlog.NoopWriter); !ok {
+		t.Fatalf("writer = %T, want NoopWriter when no store is injected", l.writer)
+	}
+}
+
+// persist:true directs writes at the injected shared store.
+func TestRequestLogger_Init_PersistsToInjectedWriter(t *testing.T) {
+	rec := &recordingWriter{}
+	l := &RequestLogger{}
+	l.SetRequestLogWriter(rec)
+	if err := l.Init(map[string]any{"persist": true}); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	if l.writer != requestlog.Writer(rec) {
+		t.Fatalf("writer = %T, want the injected recordingWriter", l.writer)
+	}
+
+	pctx := plugin.NewContext(&providers.Request{Model: "gpt-4"})
+	if err := l.Execute(context.Background(), pctx); err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if len(rec.entries) == 0 {
+		t.Fatal("a persisted request produced no entry in the injected store")
+	}
+}
+
+// persist:false records nothing even when a store is injected — the operator
+// wants stdout logging only.
+func TestRequestLogger_Init_PersistFalseDoesNotWrite(t *testing.T) {
+	rec := &recordingWriter{}
+	l := &RequestLogger{}
+	l.SetRequestLogWriter(rec)
+	if err := l.Init(map[string]any{"persist": false}); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	if _, ok := l.writer.(requestlog.NoopWriter); !ok {
+		t.Fatalf("writer = %T, want NoopWriter when persist is false", l.writer)
+	}
+
+	pctx := plugin.NewContext(&providers.Request{Model: "gpt-4"})
+	if err := l.Execute(context.Background(), pctx); err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if len(rec.entries) != 0 {
+		t.Fatalf("persist:false wrote %d entries to the store", len(rec.entries))
+	}
+}
+
+// Close must not close the shared store; the gateway owns it, and the admin log
+// reader keeps using it after a plugin reload.
+func TestRequestLogger_Close_DoesNotCloseSharedStore(t *testing.T) {
+	closed := false
+	l := &RequestLogger{}
+	l.SetRequestLogWriter(closeRecordingWriter{onClose: func() { closed = true }})
+	if err := l.Init(map[string]any{"persist": true}); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	if err := l.Close(); err != nil {
+		t.Fatalf("Close error: %v", err)
+	}
+	if closed {
+		t.Fatal("Close closed the shared request-log store")
+	}
+}
+
+type closeRecordingWriter struct {
+	onClose func()
+}
+
+func (closeRecordingWriter) Write(context.Context, requestlog.Entry) error { return nil }
+func (w closeRecordingWriter) Close() error {
+	w.onClose()
+	return nil
 }
 
 func TestRequestLogger_ExecuteErrorRedactsKeyInLog(t *testing.T) {

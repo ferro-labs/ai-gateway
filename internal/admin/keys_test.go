@@ -50,7 +50,10 @@ func TestGet_NonExisting(t *testing.T) {
 
 func TestList_KeysMasked(t *testing.T) {
 	store := NewKeyStore()
-	_, _ = store.Create(context.Background(), "key-1", nil, nil)
+	first, err := store.Create(context.Background(), "key-1", nil, nil)
+	if err != nil {
+		t.Fatalf("create key: %v", err)
+	}
 	_, _ = store.Create(context.Background(), "key-2", nil, nil)
 
 	keys := store.List(context.Background())
@@ -58,12 +61,98 @@ func TestList_KeysMasked(t *testing.T) {
 		t.Fatalf("got %d keys, want 2", len(keys))
 	}
 	for _, k := range keys {
-		if !strings.HasSuffix(k.Key, "...") {
-			t.Errorf("key %q is not masked", k.Key)
+		if k.Key == first.Key {
+			t.Errorf("List returned the full secret %q", k.Key)
 		}
-		if len(k.Key) != 11 { // 8 chars + "..."
-			t.Errorf("masked key %q has unexpected length %d", k.Key, len(k.Key))
+		if !strings.Contains(k.Key, "...") {
+			t.Errorf("key %q is not a display form", k.Key)
 		}
+		if len(k.Key) != keyDisplayHead+3+keyDisplayTail {
+			t.Errorf("display key %q has unexpected length %d", k.Key, len(k.Key))
+		}
+	}
+}
+
+// The display form keeps both ends of the secret so an operator can match a key
+// they hold against a stored record.
+func TestDisplayKeyKeepsBothEnds(t *testing.T) {
+	const key = "fgw_0123456789abcdef0123456789abcdef"
+	if got, want := displayKey(key), "fgw_0123...cdef"; got != want {
+		t.Fatalf("displayKey = %q, want %q", got, want)
+	}
+	if got := displayKey("fgw_short"); got != "..." {
+		t.Fatalf("displayKey of a short value = %q, want %q", got, "...")
+	}
+}
+
+// ValidateKey must accept the plaintext even though only its hash is stored,
+// and reject anything else.
+func TestValidateKeyMatchesOnHash(t *testing.T) {
+	store := NewKeyStore()
+	created, err := store.Create(context.Background(), "key", nil, nil)
+	if err != nil {
+		t.Fatalf("create key: %v", err)
+	}
+
+	if _, ok := store.ValidateKey(context.Background(), created.Key); !ok {
+		t.Fatal("the plaintext returned by Create does not validate")
+	}
+	if _, ok := store.ValidateKey(context.Background(), hashKey(created.Key)); ok {
+		t.Fatal("the stored hash was accepted as a bearer token")
+	}
+	if _, ok := store.ValidateKey(context.Background(), displayKey(created.Key)); ok {
+		t.Fatal("the display form was accepted as a bearer token")
+	}
+}
+
+func TestIsEmpty(t *testing.T) {
+	store := NewKeyStore()
+	empty, err := store.IsEmpty(context.Background())
+	if err != nil || !empty {
+		t.Fatalf("IsEmpty on a new store = (%v, %v), want (true, nil)", empty, err)
+	}
+
+	created, err := store.Create(context.Background(), "key", nil, nil)
+	if err != nil {
+		t.Fatalf("create key: %v", err)
+	}
+	if empty, _ := store.IsEmpty(context.Background()); empty {
+		t.Fatal("IsEmpty is true with a key present")
+	}
+
+	if err := store.Delete(context.Background(), created.ID); err != nil {
+		t.Fatalf("delete key: %v", err)
+	}
+	if empty, _ := store.IsEmpty(context.Background()); !empty {
+		t.Fatal("IsEmpty is false after the only key was deleted")
+	}
+}
+
+// Delete and RotateKey both retire the old hash; a stale entry would leave the
+// previous secret usable.
+func TestRotateAndDeleteRetireTheOldHash(t *testing.T) {
+	store := NewKeyStore()
+	created, err := store.Create(context.Background(), "key", nil, nil)
+	if err != nil {
+		t.Fatalf("create key: %v", err)
+	}
+
+	rotated, err := store.RotateKey(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("rotate key: %v", err)
+	}
+	if _, ok := store.ValidateKey(context.Background(), created.Key); ok {
+		t.Fatal("the pre-rotation secret still validates")
+	}
+	if _, ok := store.ValidateKey(context.Background(), rotated.Key); !ok {
+		t.Fatal("the rotated secret does not validate")
+	}
+
+	if err := store.Delete(context.Background(), created.ID); err != nil {
+		t.Fatalf("delete key: %v", err)
+	}
+	if _, ok := store.ValidateKey(context.Background(), rotated.Key); ok {
+		t.Fatal("a deleted key still validates")
 	}
 }
 

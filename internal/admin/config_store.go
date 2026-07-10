@@ -58,17 +58,21 @@ func NewSQLiteConfigStore(ctx context.Context, dsn string) (*SQLConfigStore, err
 	if dsn == "" {
 		dsn = "ferrogw-config.db"
 	}
+	// Restrict the file before SQLite touches it: a file created under the
+	// process umask is world-readable until something narrows it, and the stored
+	// config can carry provider credentials.
+	if err := sqlitefile.Secure(dsn); err != nil {
+		return nil, err
+	}
+
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite config store: %w", err)
 	}
 	tuneDBPool(db, string(configDialectSQLite))
+
 	s := &SQLConfigStore{db: db, dialect: configDialectSQLite}
 	if err := s.init(ctx); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-	if err := sqlitefile.Secure(dsn); err != nil {
 		_ = db.Close()
 		return nil, err
 	}

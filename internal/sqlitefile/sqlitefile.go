@@ -9,10 +9,15 @@ import (
 	"strings"
 )
 
-// Secure restricts a SQLite database file to owner-only read/write (0600).
-// SQLite creates new files honoring the process umask, which can leave them
-// world-readable; call this immediately after the file is known to exist
-// (e.g. after a successful Ping()).
+// Secure creates the SQLite database file if it does not exist and restricts it
+// to owner-only read/write (0600). Call it *before* opening the database.
+//
+// SQLite creates missing files honoring the process umask, which can leave them
+// world-readable. Chmod-ing afterwards is not enough: a process that opened the
+// file during that window keeps its descriptor, and reads everything written
+// later. Creating the file ourselves closes the window. It also means SQLite's
+// rollback journal and write-ahead log inherit 0600, since SQLite gives those
+// the mode of the database file.
 //
 // dsn is the same string passed to sql.Open("sqlite", dsn) — a bare file
 // path, or a "file:"/"file://" URI with an optional "?query" suffix (see
@@ -25,6 +30,15 @@ func Secure(dsn string) error {
 	if path == "" {
 		return nil
 	}
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600) //nolint:gosec // G304: path is the operator-supplied DSN.
+	if err != nil {
+		return fmt.Errorf("create sqlite file: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("create sqlite file: %w", err)
+	}
+	// An existing file keeps whatever mode it already had, and the umask can
+	// strip bits from the mode above, so restrict it explicitly.
 	if err := os.Chmod(path, 0o600); err != nil {
 		return fmt.Errorf("restrict sqlite file permissions: %w", err)
 	}

@@ -145,6 +145,10 @@ func (noopReader) List(_ context.Context, _ requestlog.Query) (requestlog.ListRe
 	return requestlog.ListResult{}, nil
 }
 
+func (noopReader) Stats(_ context.Context, _ requestlog.Query) (requestlog.StatsResult, error) {
+	return requestlog.StatsResult{}, nil
+}
+
 // noopMaintainer satisfies requestlog.Maintainer without a database.
 type noopMaintainer struct{}
 

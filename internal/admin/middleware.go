@@ -104,7 +104,7 @@ func AuthMiddleware(store Store, masterKey string) func(http.Handler) http.Handl
 			}
 
 			// 2. Bootstrap key check (only when store is empty and no master key is configured).
-			if masterKey == "" && bootstrapEnabled && len(store.List(r.Context())) == 0 {
+			if masterKey == "" && bootstrapEnabled && storeIsEmpty(r.Context(), store) {
 				if bootstrapAdminKey != "" && subtle.ConstantTimeCompare([]byte(key), []byte(bootstrapAdminKey)) == 1 {
 					next.ServeHTTP(w, r.WithContext(storeKeyInContext(r.Context(), bootstrapAdminAPIKey)))
 					return
@@ -126,6 +126,18 @@ func AuthMiddleware(store Store, masterKey string) func(http.Handler) http.Handl
 			next.ServeHTTP(w, r.WithContext(storeKeyInContext(r.Context(), apiKey)))
 		})
 	}
+}
+
+// storeIsEmpty reports whether the key store holds no keys, failing closed when
+// the store cannot answer. Bootstrap credentials exist to seed a fresh
+// deployment and are only valid against a genuinely empty store, so a store
+// outage must not re-open them.
+func storeIsEmpty(ctx context.Context, store Store) bool {
+	empty, err := store.IsEmpty(ctx)
+	if err != nil {
+		return false
+	}
+	return empty
 }
 
 // RequireScope returns a middleware that checks whether the authenticated key

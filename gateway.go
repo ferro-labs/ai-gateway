@@ -23,6 +23,7 @@ import (
 	"github.com/ferro-labs/ai-gateway/internal/latency"
 	"github.com/ferro-labs/ai-gateway/internal/mcp"
 	"github.com/ferro-labs/ai-gateway/internal/metrics"
+	"github.com/ferro-labs/ai-gateway/internal/requestlog"
 	"github.com/ferro-labs/ai-gateway/internal/strategies"
 	"github.com/ferro-labs/ai-gateway/models"
 	"github.com/ferro-labs/ai-gateway/observability"
@@ -41,6 +42,7 @@ type Gateway struct {
 	strategy           strategies.Strategy
 	streamingContent   []streamingContentCondition
 	plugins            *plugin.Manager
+	requestLogWriter   requestlog.Writer
 	closeOnce          sync.Once
 	hooks              []EventHookFunc
 	hookSnapshot       atomic.Value
@@ -165,6 +167,21 @@ func (g *Gateway) SetObservability(p observability.Provider) {
 	}
 }
 
+// SetRequestLogWriter installs the shared request-log store that logging
+// plugins write through, instead of each opening its own. Pass the store built
+// from REQUEST_LOG_STORE_BACKEND / REQUEST_LOG_STORE_DSN, or nil to leave
+// logging plugins without a persistence target.
+//
+// Safe to call only at startup, before serving traffic and before LoadPlugins,
+// since the writer is injected into plugins as they are built. The store is
+// owned by the caller (closed on shutdown); the gateway only hands it to
+// plugins.
+func (g *Gateway) SetRequestLogWriter(w requestlog.Writer) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.requestLogWriter = w
+}
+
 // Observability returns the current observability.Provider. Always
 // non-nil; defaults to NoOp.
 func (g *Gateway) Observability() observability.Provider {
@@ -282,7 +299,7 @@ func (g *Gateway) ReloadConfig(ctx context.Context, cfg Config) error {
 	if err != nil {
 		return fmt.Errorf("invalid config: %w", err)
 	}
-	plugins, err := buildPluginManager(cfg.Plugins)
+	plugins, err := g.buildPluginManager(cfg.Plugins)
 	if err != nil {
 		return err
 	}
@@ -327,7 +344,7 @@ func (g *Gateway) LoadPlugins() error {
 	g.mu.RLock()
 	configs := append([]PluginConfig(nil), g.config.Plugins...)
 	g.mu.RUnlock()
-	plugins, err := buildPluginManager(configs)
+	plugins, err := g.buildPluginManager(configs)
 	if err != nil {
 		return err
 	}
@@ -342,7 +359,11 @@ func (g *Gateway) LoadPlugins() error {
 	return nil
 }
 
-func buildPluginManager(configs []PluginConfig) (*plugin.Manager, error) {
+func (g *Gateway) buildPluginManager(configs []PluginConfig) (*plugin.Manager, error) {
+	g.mu.RLock()
+	sharedLogWriter := g.requestLogWriter
+	g.mu.RUnlock()
+
 	plugins := plugin.NewManager()
 	for _, pc := range configs {
 		if !pc.Enabled {
@@ -354,6 +375,15 @@ func buildPluginManager(configs []PluginConfig) (*plugin.Manager, error) {
 			return nil, fmt.Errorf("unknown plugin: %s", pc.Name)
 		}
 		p := factory()
+		// Hand the shared request-log store to plugins that record through it,
+		// before Init so Init can direct persistence at it. Plugins never open
+		// their own store from config, so no request-supplied value reaches the
+		// filesystem.
+		if sharedLogWriter != nil {
+			if r, ok := p.(requestlog.WriterReceiver); ok {
+				r.SetRequestLogWriter(sharedLogWriter)
+			}
+		}
 		if err := p.Init(pc.Config); err != nil {
 			_ = plugins.Close()
 			_ = p.Close()

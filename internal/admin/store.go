@@ -15,6 +15,10 @@ type Store interface {
 	Create(ctx context.Context, name string, scopes []string, expiresAt *time.Time) (*APIKey, error)
 	Get(ctx context.Context, id string) (*APIKey, bool)
 	List(ctx context.Context) []*APIKey
+	// IsEmpty reports whether the store holds no keys. It returns an error
+	// rather than a bare bool so callers can distinguish "no keys" from a
+	// store that could not answer.
+	IsEmpty(ctx context.Context) (bool, error)
 	Revoke(ctx context.Context, id string) error
 	Update(ctx context.Context, id string, name string, scopes []string) (*APIKey, error)
 	SetExpiration(ctx context.Context, id string, expiresAt *time.Time) error
