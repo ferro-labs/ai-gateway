@@ -220,18 +220,19 @@ func (w *SQLWriter) ensureCreatedAtIndex(ctx context.Context) error {
 		// marked invalid, and CREATE ... IF NOT EXISTS then skips it forever.
 		// Healing it means dropping and rebuilding, but a bare-name check cannot
 		// tell an abandoned index from one another instance is building right
-		// now, and dropping that would abort the live build. Rather than
-		// coordinate a fleet-wide drop, surface it: an operator reindexes once.
-		//
-		// ponytail: log-and-defer, not auto-heal. A cross-instance safe rebuild
-		// needs an advisory lock around the whole probe/drop/create — add it if
-		// interrupted builds turn out to be common.
+		// now, and dropping that would abort the live build. So this logs and
+		// defers to the operator rather than coordinating a fleet-wide drop. A
+		// self-healing rebuild would need an advisory lock around the whole
+		// probe/drop/create; add it only if interrupted builds prove common.
 		slog.Warn("request log index is invalid from an interrupted build; run REINDEX INDEX CONCURRENTLY to rebuild it",
 			"index", createdAtIndex)
 		return nil
 	default: // indexAbsent
 		if _, err := w.db.ExecContext(ctx, "CREATE INDEX CONCURRENTLY IF NOT EXISTS "+createdAtIndex+" ON request_logs (created_at)"); err != nil { //nolint:gosec // G202: identifier is a constant.
-			slog.Warn("request log index build failed; queries will scan until the next start rebuilds it",
+			// A failed concurrent build usually leaves an invalid index behind,
+			// which the next start reports as indexInvalid (and points at
+			// REINDEX) rather than silently rebuilding. Until then queries scan.
+			slog.Warn("request log index build failed; queries will scan until it is rebuilt with REINDEX INDEX CONCURRENTLY",
 				"index", createdAtIndex, "error", err)
 		}
 		return nil

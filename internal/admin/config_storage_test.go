@@ -129,8 +129,8 @@ func TestStringOptionIgnoresNonStrings(t *testing.T) {
 	}
 }
 
-// The end-to-end path CodeQL reported: a request body reaching
-// requestlog.NewSQLiteWriter, which creates a file at the path it is given.
+// The end-to-end path: a request body reaching requestlog.NewSQLiteWriter,
+// which creates a file at the path it is given.
 func TestUpdateConfigRejectsRedirectedPluginStorage(t *testing.T) {
 	store := NewKeyStore()
 	cm := &testConfigManager{
