@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"maps"
 	"regexp"
-	"strings"
 
 	"github.com/ferro-labs/ai-gateway/internal/strategies"
 	"github.com/ferro-labs/ai-gateway/providers"
@@ -104,7 +103,7 @@ func (g *Gateway) getStrategy() (strategies.Strategy, error) {
 				Target: strategies.Target{VirtualKey: cond.TargetKey},
 			})
 		}
-		s = strategies.NewConditional(rules, targets[0], lookup)
+		s = strategies.NewConditional(rules, targets[0], lookup).WithRoutingTargets(targets)
 	case ModeContentBased:
 		cbs, err := g.buildContentBasedStrategy(targets, lookup)
 		if err != nil {
@@ -112,7 +111,7 @@ func (g *Gateway) getStrategy() (strategies.Strategy, error) {
 		}
 		s = cbs
 	case ModeABTest:
-		abt, err := g.buildABTestStrategy(lookup)
+		abt, err := g.buildABTestStrategy(targets, lookup)
 		if err != nil {
 			return nil, err
 		}
@@ -141,11 +140,15 @@ func (g *Gateway) buildContentBasedStrategy(targets []strategies.Target, lookup 
 			Target: strategies.Target{VirtualKey: cc.TargetKey},
 		})
 	}
-	return strategies.NewContentBased(rules, targets[0], lookup)
+	cb, err := strategies.NewContentBased(rules, targets[0], lookup)
+	if err != nil {
+		return nil, err
+	}
+	return cb.WithRoutingTargets(targets), nil
 }
 
 // buildABTestStrategy constructs an ABTest strategy from the gateway config.
-func (g *Gateway) buildABTestStrategy(lookup strategies.ProviderLookup) (strategies.Strategy, error) {
+func (g *Gateway) buildABTestStrategy(targets []strategies.Target, lookup strategies.ProviderLookup) (strategies.Strategy, error) {
 	if len(g.config.Strategy.ABVariants) == 0 {
 		return nil, fmt.Errorf("no ab_variants configured for ab-test strategy")
 	}
@@ -157,18 +160,11 @@ func (g *Gateway) buildABTestStrategy(lookup strategies.ProviderLookup) (strateg
 			Label:  v.Label,
 		})
 	}
-	return strategies.NewABTest(variants, lookup)
-}
-
-func conditionMatches(cond Condition, model string) bool {
-	switch cond.Key {
-	case "model":
-		return model == cond.Value
-	case "model_prefix":
-		return strings.HasPrefix(model, cond.Value)
-	default:
-		return false
+	abt, err := strategies.NewABTest(variants, lookup)
+	if err != nil {
+		return nil, err
 	}
+	return abt.WithRoutingTargets(targets), nil
 }
 
 func compileStreamingContentConditions(mode StrategyMode, conditions []ContentCondition) ([]streamingContentCondition, error) {
@@ -188,39 +184,4 @@ func compileStreamingContentConditions(mode StrategyMode, conditions []ContentCo
 		compiled[i].re = re
 	}
 	return compiled, nil
-}
-
-// streamingContentConditionMatches evaluates a single ContentCondition against
-// a request, mirroring the logic in internal/strategies/contentbased.go.
-func streamingContentConditionMatches(cond streamingContentCondition, req providers.Request) bool {
-	switch cond.Type {
-	case "prompt_contains":
-		lower := strings.ToLower(cond.Value)
-		for _, msg := range req.Messages {
-			if msg.Role == roleUser && strings.Contains(strings.ToLower(msg.Content), lower) {
-				return true
-			}
-		}
-		return false
-	case "prompt_not_contains":
-		lower := strings.ToLower(cond.Value)
-		for _, msg := range req.Messages {
-			if msg.Role == roleUser && strings.Contains(strings.ToLower(msg.Content), lower) {
-				return false
-			}
-		}
-		return true
-	case "prompt_regex":
-		if cond.re == nil {
-			return false
-		}
-		for _, msg := range req.Messages {
-			if msg.Role == roleUser && cond.re.MatchString(msg.Content) {
-				return true
-			}
-		}
-		return false
-	default:
-		return false
-	}
 }

@@ -47,6 +47,7 @@ type ContentRule struct {
 type ContentBased struct {
 	rules    []ContentRule
 	fallback Target
+	targets  []Target
 	lookup   ProviderLookup
 }
 
@@ -72,6 +73,28 @@ func NewContentBased(rules []ContentRule, fallback Target, lookup ProviderLookup
 		fallback: fallback,
 		lookup:   lookup,
 	}, nil
+}
+
+// WithRoutingTargets records the full ordered target list. SelectTargets appends
+// these as fallbacks after the matched content target. Returns the receiver so
+// callers can chain it after the constructor.
+func (c *ContentBased) WithRoutingTargets(targets []Target) *ContentBased {
+	c.targets = targets
+	return c
+}
+
+// SelectTargets returns the first matching rule's target followed by every
+// configured target as a fallback. With no match it returns the targets in
+// declared order (targets[0] is the fallback used by Execute).
+func (c *ContentBased) SelectTargets(req providers.Request) ([]string, error) {
+	for _, rule := range c.rules {
+		if c.matches(rule, req) {
+			keys := make([]string, 0, len(c.targets)+1)
+			keys = appendUniqueKey(keys, rule.Target.VirtualKey)
+			return appendRemainingTargetKeys(keys, c.targets), nil
+		}
+	}
+	return targetKeys(c.targets), nil
 }
 
 // Execute evaluates content rules in order and dispatches the request to the

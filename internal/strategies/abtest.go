@@ -41,6 +41,7 @@ type ABTestVariant struct {
 // All traffic still goes to a real provider — this is not a shadow-traffic mode.
 type ABTest struct {
 	variants []ABTestVariant
+	targets  []Target
 	lookup   ProviderLookup
 }
 
@@ -58,6 +59,28 @@ func NewABTest(variants []ABTestVariant, lookup ProviderLookup) (*ABTest, error)
 		}
 	}
 	return &ABTest{variants: variants, lookup: lookup}, nil
+}
+
+// WithRoutingTargets records the full ordered target list. SelectTargets appends
+// these as fallbacks after the selected variant's target. Returns the receiver
+// so callers can chain it after the constructor.
+func (ab *ABTest) WithRoutingTargets(targets []Target) *ABTest {
+	ab.targets = targets
+	return ab
+}
+
+// SelectTargets picks a variant by weighted random sampling (matching Execute)
+// and returns its target followed by every configured target as a fallback.
+func (ab *ABTest) SelectTargets(_ providers.Request) ([]string, error) {
+	v, ok := weightedPick(ab.variants, func(v ABTestVariant) float64 {
+		return effectiveWeight(v.Weight)
+	})
+	if !ok {
+		return targetKeys(ab.targets), nil
+	}
+	keys := make([]string, 0, len(ab.targets)+1)
+	keys = appendUniqueKey(keys, v.Target.VirtualKey)
+	return appendRemainingTargetKeys(keys, ab.targets), nil
 }
 
 // Execute selects a variant by weighted random sampling, routes the request to

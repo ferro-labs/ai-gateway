@@ -60,3 +60,18 @@ func (lb *LoadBalance) selectFromTargets(targets []Target) (Target, error) {
 	}
 	return t, nil
 }
+
+// SelectTargets returns all targets rotated from a weight-biased start index,
+// so the first attempted target is chosen by weight while the remainder stay
+// available as fallbacks.
+func (lb *LoadBalance) SelectTargets(_ providers.Request) ([]string, error) {
+	if len(lb.targets) == 0 {
+		return nil, nil
+	}
+	startIdx := weightedStartIndex(lb.targets)
+	keys := make([]string, 0, len(lb.targets))
+	for i := 0; i < len(lb.targets); i++ {
+		keys = append(keys, lb.targets[(startIdx+i)%len(lb.targets)].VirtualKey)
+	}
+	return keys, nil
+}
