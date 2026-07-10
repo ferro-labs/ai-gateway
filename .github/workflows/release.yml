@@ -35,6 +35,15 @@ jobs:
           go-version: "1.25.12"
           cache: true
 
+      # Gate the release on the test suite. CI does not run on tag pushes, so a
+      # broken commit could otherwise be tagged and published; this fails the
+      # release before any artifact is built.
+      - name: Gate release on tests
+        run: |
+          go build ./...
+          go vet ./...
+          go test -short -race ./...
+
       - name: Set up QEMU (for cross-platform Docker builds)
         uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3 # v4
 
@@ -50,6 +59,15 @@ jobs:
 
       - name: Verify embedded catalog backup
         run: go test ./models -run TestCatalogBackupParseable -count=1
+
+      # cosign signs the checksum file and the Docker images (keyless, via the
+      # workflow's OIDC token); syft generates the SBOMs. Both must be on PATH
+      # for the GoReleaser signs/sboms stages below.
+      - name: Install cosign
+        uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
+
+      - name: Install syft (SBOM generator)
+        uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
 
       - name: Generate release notes
         env:
