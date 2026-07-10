@@ -9,10 +9,23 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/ferro-labs/ai-gateway/internal/sqldb"
 )
+
+// ErrDeferStep is returned by a Fn or NoTx step to report that it did not
+// complete but startup must continue. Run does not record the version in the
+// ledger and does not abort the run: later steps still apply, and the deferred
+// step is retried on the next call. Wrap it (fmt.Errorf("...: %w",
+// ErrDeferStep)) so a step can attach its own context.
+//
+// Use it only for a step whose failure costs performance, not correctness — for
+// example a concurrent index build a transient error left incomplete — where
+// crashing the process would be worse than running without the change until the
+// next start retries it. A step that returns any other error is fatal to Run.
+var ErrDeferStep = errors.New("migrations: step deferred; not recorded")
 
 // Dialect selects the SQL flavor used for the ledger table and placeholder
 // binding. It aliases sqldb.Dialect so the runner and every store share one
@@ -152,6 +165,14 @@ func RunNamed(ctx context.Context, db *sql.DB, dialect Dialect, ledger, primaryT
 			continue
 		}
 		if err := applyStep(ctx, db, ledgerInsert, step); err != nil {
+			if errors.Is(err, ErrDeferStep) {
+				// The step chose not to complete (see ErrDeferStep). It is not
+				// recorded, so the next start retries it; later independent
+				// steps still run this time.
+				slog.Warn("migration step deferred; not recorded, will retry on next start",
+					"version", step.Version, "name", step.Name, "error", err)
+				continue
+			}
 			return err
 		}
 	}

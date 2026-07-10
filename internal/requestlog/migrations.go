@@ -74,15 +74,18 @@ CREATE TABLE IF NOT EXISTS request_logs (
 // restarts. Building concurrently trades a slower build for not blocking
 // writers. It cannot run inside a transaction, which is why this is a NoTx step.
 //
-// A missing index costs query time, not correctness, so a failed build is
-// logged rather than fatal. The step is not recorded in the ledger on failure,
-// so the next start retries it.
+// A missing index costs query time, not correctness, so a failed or incomplete
+// build is non-fatal: the step returns migrations.ErrDeferStep so the runner
+// keeps startup alive but does not record the version, and the next start
+// retries the build. Only a valid index records the step as done.
 func ensureCreatedAtIndex(ctx context.Context, db *sql.DB, dialect sqldb.Dialect) error {
 	if dialect != sqldb.Postgres {
 		// createdAtIndex is a package constant, not input; identifiers cannot be
 		// bound as parameters.
 		if _, err := db.ExecContext(ctx, "CREATE INDEX IF NOT EXISTS "+createdAtIndex+" ON request_logs (created_at)"); err != nil {
-			return fmt.Errorf("initialize request log index: %w", err)
+			slog.Warn("request log index build failed; queries will scan until the next start retries it",
+				"index", createdAtIndex, "error", err)
+			return fmt.Errorf("build request log index: %w", migrations.ErrDeferStep)
 		}
 		return nil
 	}
@@ -99,9 +102,11 @@ func ensureCreatedAtIndex(ctx context.Context, db *sql.DB, dialect sqldb.Dialect
 		// defers to the operator rather than coordinating a fleet-wide drop. A
 		// self-healing rebuild would need an advisory lock around the whole
 		// probe/drop/create; add it only if interrupted builds prove common.
+		// Deferring keeps the step unrecorded, so once the operator rebuilds it
+		// the next start records it.
 		slog.Warn("request log index is invalid from an interrupted build; run REINDEX INDEX CONCURRENTLY to rebuild it",
 			"index", createdAtIndex)
-		return nil
+		return fmt.Errorf("request log index is invalid: %w", migrations.ErrDeferStep)
 	default: // indexAbsent
 		if _, err := db.ExecContext(ctx, "CREATE INDEX CONCURRENTLY IF NOT EXISTS "+createdAtIndex+" ON request_logs (created_at)"); err != nil {
 			// A failed concurrent build usually leaves an invalid index behind,
@@ -109,6 +114,7 @@ func ensureCreatedAtIndex(ctx context.Context, db *sql.DB, dialect sqldb.Dialect
 			// REINDEX) rather than silently rebuilding. Until then queries scan.
 			slog.Warn("request log index build failed; queries will scan until it is rebuilt with REINDEX INDEX CONCURRENTLY",
 				"index", createdAtIndex, "error", err)
+			return fmt.Errorf("request log index build failed: %w", migrations.ErrDeferStep)
 		}
 		return nil
 	}

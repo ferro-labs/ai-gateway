@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -452,6 +453,51 @@ func TestRun_NoTxFailureIsNotRecorded(t *testing.T) {
 	}
 	if got := ledgerVersions(t, db); !slices.Equal(got, []int{1}) {
 		t.Fatalf("ledger = %v, want [1]: the failed NoTx step was recorded", got)
+	}
+}
+
+// A step returning ErrDeferStep is not recorded and does not abort Run: later
+// steps still apply, and the deferred step retries on the next call.
+func TestRun_DeferredStepNotRecordedAndRetried(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+
+	deferIndex := true
+	attempts := 0
+	steps := []Step{
+		{Version: 1, Name: "create_a", SQL: "CREATE TABLE a (id INTEGER PRIMARY KEY)"},
+		{Version: 2, Name: "deferrable", NoTx: func(context.Context, *sql.DB) error {
+			attempts++
+			if deferIndex {
+				return fmt.Errorf("transient build failure: %w", ErrDeferStep)
+			}
+			return nil
+		}},
+		{Version: 3, Name: "create_c", SQL: "CREATE TABLE c (id INTEGER PRIMARY KEY)"},
+	}
+
+	// First run: v2 defers. Run must not error, v2 must not be recorded, and the
+	// independent later step v3 must still apply.
+	if err := Run(ctx, db, SQLite, "", steps); err != nil {
+		t.Fatalf("first Run returned error for a deferred step: %v", err)
+	}
+	if got := ledgerVersions(t, db); !slices.Equal(got, []int{1, 3}) {
+		t.Fatalf("ledger = %v, want [1 3] (deferred v2 not recorded, v3 applied)", got)
+	}
+	if !tableExistsT(t, db, "c") {
+		t.Error("later step v3 did not apply after v2 deferred")
+	}
+
+	// Second run: the deferred step retries. Now that it succeeds it is recorded.
+	deferIndex = false
+	if err := Run(ctx, db, SQLite, "", steps); err != nil {
+		t.Fatalf("second Run: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("deferred step ran %d times, want 2 (retried on second Run)", attempts)
+	}
+	if got := ledgerVersions(t, db); !slices.Equal(got, []int{1, 2, 3}) {
+		t.Fatalf("ledger = %v, want [1 2 3] after the deferred step succeeds on retry", got)
 	}
 }
 
