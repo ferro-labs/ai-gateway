@@ -21,9 +21,10 @@ import (
 // Decoding is strict: an unknown or misspelled key against the typed schema is
 // rejected rather than silently ignored, so a typo cannot quietly disable the
 // setting it was meant to change. Free-form config blocks (plugin and exporter
-// "config" maps) accept arbitrary keys and are preserved verbatim. Trailing
-// data after the top-level JSON value is rejected rather than silently dropped.
-// The returned Config is Normalize-d so it carries its effective defaults.
+// "config" maps) accept arbitrary keys and are preserved verbatim. Exactly one
+// document is permitted: trailing JSON data or a second YAML document (after
+// "---") is rejected rather than silently dropped. The returned Config is
+// Normalize-d so it carries its effective defaults.
 func LoadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // G304: config path is an operator-supplied startup argument, not request input
 	if err != nil {
@@ -38,8 +39,15 @@ func LoadConfig(path string) (*Config, error) {
 		dec.KnownFields(true)
 		// An empty document decodes to io.EOF; treat it as an empty config so
 		// validation (not decoding) reports the missing required fields.
-		if err := dec.Decode(&cfg); err != nil && !errors.Is(err, io.EOF) {
-			return nil, fmt.Errorf("parsing YAML config: %w", err)
+		if err := dec.Decode(&cfg); err != nil {
+			if !errors.Is(err, io.EOF) {
+				return nil, fmt.Errorf("parsing YAML config: %w", err)
+			}
+		} else if err := dec.Decode(new(yaml.Node)); !errors.Is(err, io.EOF) {
+			// A valid first document must be the only one. Reject a trailing
+			// second document rather than silently ignoring it, mirroring the
+			// JSON path's trailing-data rejection.
+			return nil, fmt.Errorf("parsing YAML config: unexpected additional document; only one is allowed")
 		}
 	case ".json":
 		dec := json.NewDecoder(bytes.NewReader(data))

@@ -431,6 +431,46 @@ func TestLoadConfig_PreservesUnderscoreKeysInPluginConfig(t *testing.T) {
 	}
 }
 
+func TestLoadConfig_YAMLRejectsSecondDocument(t *testing.T) {
+	tests := []struct {
+		name    string
+		data    string
+		wantErr bool
+	}{
+		{
+			name: "single valid document loads",
+			data: "strategy:\n  mode: single\ntargets:\n  - virtual_key: openai\n",
+		},
+		{
+			name:    "trailing second document rejected",
+			data:    "strategy:\n  mode: single\ntargets:\n  - virtual_key: openai\n---\nstrategy:\n  mode: fallback\n",
+			wantErr: true,
+		},
+		{
+			name:    "trailing malformed second document rejected",
+			data:    "strategy:\n  mode: single\ntargets:\n  - virtual_key: openai\n---\n[unterminated\n",
+			wantErr: true,
+		},
+		{
+			name: "empty document still tolerated",
+			data: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeTempFile(t, "config.yaml", tt.data)
+			_, err := LoadConfig(path)
+			if tt.wantErr && err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
 func TestLoadConfig_JSONRejectsTrailingData(t *testing.T) {
 	// A second top-level value after the config object is rejected, matching a
 	// whole-document json.Unmarshal.
