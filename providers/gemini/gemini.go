@@ -713,10 +713,12 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 					CacheReadTokens:  chunk.UsageMetadata.CachedContentTokenCount,
 				}
 			}
-			ch <- sc
+			if !core.SendChunk(ctx, ch, sc) {
+				return
+			}
 		}
 		if err := scanErr(); err != nil {
-			ch <- core.StreamChunk{Error: err}
+			core.SendChunk(ctx, ch, core.StreamChunk{Error: err})
 		}
 	}()
 

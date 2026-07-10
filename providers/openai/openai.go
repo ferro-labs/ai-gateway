@@ -368,12 +368,10 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 	}
 
 	ch := make(chan core.StreamChunk)
-	// The producer uses unguarded blocking sends (ch <- ...), matching every
-	// other provider. It stays leak-free because the gateway routes every
-	// provider stream through streamwrap.Meter, which ALWAYS drains this channel
-	// to completion — even on consumer abandonment or context cancellation — so
-	// this goroutine reaches close(ch) and Body.Close(). See the "Stream-send
-	// drain contract" in internal/streamwrap.
+	// Sends are guarded by core.SendChunk: on ctx cancellation the pending send
+	// is abandoned and the deferred close(ch)/Body.Close() run, so a direct
+	// consumer that stops reading cannot leak this goroutine or the upstream
+	// connection. Gateway-routed traffic drains through streamwrap.Meter as well.
 	go func() {
 		defer close(ch)
 		defer func() { _ = httpResp.Body.Close() }()
@@ -391,10 +389,12 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 			if json.Unmarshal([]byte(data), &chunk) != nil {
 				continue
 			}
-			ch <- chunk.toStreamChunk()
+			if !core.SendChunk(ctx, ch, chunk.toStreamChunk()) {
+				return
+			}
 		}
 		if err := scanner.Err(); err != nil {
-			ch <- core.StreamChunk{Error: err}
+			core.SendChunk(ctx, ch, core.StreamChunk{Error: err})
 		}
 	}()
 

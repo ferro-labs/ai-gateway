@@ -484,7 +484,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 				if json.Unmarshal(event.Delta, &delta) != nil {
 					continue
 				}
-				ch <- core.StreamChunk{
+				if !core.SendChunk(ctx, ch, core.StreamChunk{
 					Choices: []core.StreamChoice{
 						{
 							Index: 0,
@@ -493,6 +493,8 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 							},
 						},
 					},
+				}) {
+					return
 				}
 			case "tool-call-start":
 				var delta cohereToolCallDelta
@@ -503,7 +505,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 				if !ok {
 					continue
 				}
-				ch <- core.StreamChunk{
+				if !core.SendChunk(ctx, ch, core.StreamChunk{
 					ID: event.ID,
 					Choices: []core.StreamChoice{
 						{
@@ -513,6 +515,8 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 							},
 						},
 					},
+				}) {
+					return
 				}
 			case "tool-call-delta":
 				var delta cohereToolCallDelta
@@ -523,7 +527,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 				if !ok {
 					continue
 				}
-				ch <- core.StreamChunk{
+				if !core.SendChunk(ctx, ch, core.StreamChunk{
 					ID: event.ID,
 					Choices: []core.StreamChoice{
 						{
@@ -533,6 +537,8 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 							},
 						},
 					},
+				}) {
+					return
 				}
 			case "message-end":
 				var delta cohereMessageEndDelta
@@ -554,12 +560,12 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 						TotalTokens:      u.InputTokens + u.OutputTokens,
 					}
 				}
-				ch <- sc
+				core.SendChunk(ctx, ch, sc)
 				return
 			}
 		}
 		if err := scanErr(); err != nil {
-			ch <- core.StreamChunk{Error: err}
+			core.SendChunk(ctx, ch, core.StreamChunk{Error: err})
 		}
 	}()
 

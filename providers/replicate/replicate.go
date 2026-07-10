@@ -625,26 +625,26 @@ func (p *Provider) readStream(ctx context.Context, body io.ReadCloser, ch chan<-
 		payload := strings.TrimSuffix(data.String(), "\n")
 		switch event {
 		case "output":
-			ch <- core.StreamChunk{
+			return core.SendChunk(ctx, ch, core.StreamChunk{
 				ID:    predictionID,
 				Model: model,
 				Choices: []core.StreamChoice{{
 					Index: 0,
 					Delta: core.MessageDelta{Content: payload},
 				}},
-			}
+			})
 		case "error":
-			ch <- core.StreamChunk{Error: fmt.Errorf("replicate stream error: %s", payload)}
+			core.SendChunk(ctx, ch, core.StreamChunk{Error: fmt.Errorf("replicate stream error: %s", payload)})
 			return false
 		case "done":
-			ch <- core.StreamChunk{
+			core.SendChunk(ctx, ch, core.StreamChunk{
 				ID:    predictionID,
 				Model: model,
 				Choices: []core.StreamChoice{{
 					Index:        0,
 					FinishReason: doneFinishReason(payload),
 				}},
-			}
+			})
 			return false
 		}
 		return true
@@ -653,7 +653,7 @@ func (p *Provider) readStream(ctx context.Context, body io.ReadCloser, ch chan<-
 	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
-			ch <- core.StreamChunk{Error: ctx.Err()}
+			core.SendChunk(ctx, ch, core.StreamChunk{Error: ctx.Err()})
 			return
 		default:
 		}
@@ -683,6 +683,6 @@ func (p *Provider) readStream(ctx context.Context, body io.ReadCloser, ch chan<-
 		_ = dispatch()
 	}
 	if err := scanner.Err(); err != nil {
-		ch <- core.StreamChunk{Error: fmt.Errorf("stream read error: %w", err)}
+		core.SendChunk(ctx, ch, core.StreamChunk{Error: fmt.Errorf("stream read error: %w", err)})
 	}
 }

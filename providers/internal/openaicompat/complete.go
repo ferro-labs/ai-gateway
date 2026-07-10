@@ -168,5 +168,5 @@ func PostStream(ctx context.Context, p ChatParams, req core.Request) (<-chan cor
 		}
 		return nil, APIError(p.Label, httpResp.StatusCode, respBody)
 	}
-	return StreamSSE(httpResp.Body), nil
+	return StreamSSE(ctx, httpResp.Body), nil
 }
