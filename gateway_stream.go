@@ -287,6 +287,7 @@ func (g *Gateway) runBeforePluginsStream(ctx context.Context, span observability
 	}
 
 	pctx = plugin.NewContext(req)
+	pctx.Span = span // per-plugin child spans nest under the request span.
 	// Propagate the opaque key identifier so per-key plugins (rate-limit,
 	// budget) can scope limits to the authenticated caller. The raw bearer
 	// secret is never exposed here — only the stable APIKey.ID.
