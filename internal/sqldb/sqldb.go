@@ -106,21 +106,69 @@ func tune(db *sql.DB, dialect Dialect) {
 // Bind rewrites '?' placeholders to Postgres '$N' form; SQLite keeps '?'. It is
 // guarded on dialect so callers can route every statement through it
 // unconditionally without renumbering SQLite queries.
+//
+// Only real placeholders are renumbered. A '?' inside a single-quoted string
+// literal (with doubled single-quote escapes handled), a '--' line comment, or
+// a '/* */' block comment is copied verbatim, so literal text survives intact.
+// A bare '?' outside all of those is still treated as a placeholder — the
+// Postgres jsonb '?' operator must be written as jsonb_exists(...) or a bound
+// parameter, since it is indistinguishable from a placeholder without a full
+// SQL parser.
 func Bind(dialect Dialect, query string) string {
 	if dialect != Postgres {
 		return query
 	}
-	var (
-		b      strings.Builder
-		argNum = 1
-	)
-	for i := 0; i < len(query); i++ {
-		if query[i] == '?' {
+	var b strings.Builder
+	b.Grow(len(query) + 8)
+	argNum := 1
+	i, n := 0, len(query)
+	for i < n {
+		switch c := query[i]; {
+		case c == '\'':
+			// Single-quoted literal: copy through the closing quote, treating a
+			// doubled single-quote as an escaped quote, not the terminator.
+			b.WriteByte(c)
+			i++
+			for i < n {
+				b.WriteByte(query[i])
+				if query[i] == '\'' {
+					if i+1 < n && query[i+1] == '\'' {
+						b.WriteByte(query[i+1])
+						i += 2
+						continue
+					}
+					i++
+					break
+				}
+				i++
+			}
+		case c == '-' && i+1 < n && query[i+1] == '-':
+			// Line comment: copy to (and including) the newline, or to the end.
+			for i < n && query[i] != '\n' {
+				b.WriteByte(query[i])
+				i++
+			}
+		case c == '/' && i+1 < n && query[i+1] == '*':
+			// Block comment: copy through the closing */.
+			b.WriteString("/*")
+			i += 2
+			for i < n {
+				if query[i] == '*' && i+1 < n && query[i+1] == '/' {
+					b.WriteString("*/")
+					i += 2
+					break
+				}
+				b.WriteByte(query[i])
+				i++
+			}
+		case c == '?':
 			fmt.Fprintf(&b, "$%d", argNum)
 			argNum++
-			continue
+			i++
+		default:
+			b.WriteByte(c)
+			i++
 		}
-		b.WriteByte(query[i])
 	}
 	return b.String()
 }
