@@ -40,6 +40,14 @@ type SQLConfigStore struct {
 	dialect sqldb.Dialect
 }
 
+// PersistedConfigVersion is one durable config_history record: a config snapshot
+// and the version and time at which it became the active config.
+type PersistedConfigVersion struct {
+	Version   int
+	Config    aigateway.Config
+	UpdatedAt time.Time
+}
+
 // NewSQLiteConfigStore creates a SQLite-backed config store.
 func NewSQLiteConfigStore(ctx context.Context, dsn string) (*SQLConfigStore, error) {
 	db, err := sqldb.Open(ctx, sqldb.SQLite, dsn, "ferrogw-config.db")
@@ -75,12 +83,25 @@ func (s *SQLConfigStore) init(ctx context.Context) error {
 	return nil
 }
 
-// Save persists the current gateway config snapshot.
+// Save persists the current gateway config snapshot and appends it to the
+// config_history audit trail in a single transaction. Writing both together
+// guarantees the persisted active config and its audit trail can never diverge:
+// a crash either leaves both updated or neither, never one without the other.
 func (s *SQLConfigStore) Save(ctx context.Context, cfg aigateway.Config) error {
 	data, err := json.Marshal(cfg)
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
 	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin config save: %w", err)
+	}
+	// Rollback is a no-op once Commit succeeds; it undoes the upsert if any
+	// later statement in this transaction fails.
+	defer func() { _ = tx.Rollback() }()
+
+	now := time.Now().UTC()
 
 	// A single upsert serves both dialects: 'excluded' resolves case-insensitively
 	// on Postgres and SQLite alike, so only the placeholders differ.
@@ -88,10 +109,54 @@ func (s *SQLConfigStore) Save(ctx context.Context, cfg aigateway.Config) error {
 INSERT INTO gateway_config(id, config_json, updated_at)
 VALUES(1, ?, ?)
 ON CONFLICT(id) DO UPDATE SET config_json = excluded.config_json, updated_at = excluded.updated_at`)
-	if _, err := s.db.ExecContext(ctx, upsert, string(data), time.Now().UTC()); err != nil {
+	if _, err := tx.ExecContext(ctx, upsert, string(data), now); err != nil {
 		return fmt.Errorf("save config: %w", err)
 	}
+
+	var nextVersion int
+	if err := tx.QueryRowContext(ctx, "SELECT COALESCE(MAX(version), 0) + 1 FROM config_history").Scan(&nextVersion); err != nil {
+		return fmt.Errorf("next config history version: %w", err)
+	}
+	histInsert := sqldb.Bind(s.dialect, "INSERT INTO config_history(version, config_json, updated_at) VALUES(?, ?, ?)")
+	if _, err := tx.ExecContext(ctx, histInsert, nextVersion, string(data), now); err != nil {
+		return fmt.Errorf("append config history: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit config save: %w", err)
+	}
 	return nil
+}
+
+// LoadHistory returns the persisted config audit trail in version order. Each
+// record is a snapshot that was active at that version; Save writes these
+// atomically with the active config, so the trail never diverges from what was
+// persisted as active.
+func (s *SQLConfigStore) LoadHistory(ctx context.Context) ([]PersistedConfigVersion, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT version, config_json, updated_at FROM config_history ORDER BY version")
+	if err != nil {
+		return nil, fmt.Errorf("load config history: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var history []PersistedConfigVersion
+	for rows.Next() {
+		var (
+			rec PersistedConfigVersion
+			raw string
+		)
+		if err := rows.Scan(&rec.Version, &raw, &rec.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan config history row: %w", err)
+		}
+		if err := json.Unmarshal([]byte(raw), &rec.Config); err != nil {
+			return nil, fmt.Errorf("decode config history: %w", err)
+		}
+		history = append(history, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate config history: %w", err)
+	}
+	return history, nil
 }
 
 // Load returns the persisted config snapshot when one exists.

@@ -2,6 +2,8 @@ package admin
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -9,6 +11,180 @@ import (
 
 	aigateway "github.com/ferro-labs/ai-gateway"
 )
+
+func sqliteObjectExists(t *testing.T, db *sql.DB, name string) bool {
+	t.Helper()
+	var got string
+	err := db.QueryRowContext(context.Background(),
+		"SELECT name FROM sqlite_master WHERE name = ?", name).Scan(&got)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false
+	}
+	if err != nil {
+		t.Fatalf("probe sqlite object %q: %v", name, err)
+	}
+	return true
+}
+
+func fallbackConfig() aigateway.Config {
+	return aigateway.Config{
+		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeFallback},
+		Targets:  []aigateway.Target{{VirtualKey: "openai"}, {VirtualKey: "anthropic"}},
+	}
+}
+
+func singleConfig() aigateway.Config {
+	return aigateway.Config{
+		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeSingle},
+		Targets:  []aigateway.Target{{VirtualKey: "openai"}},
+	}
+}
+
+// TestSQLConfigStore_SaveWritesConfigAndHistoryAtomically proves both the active
+// config and its audit trail commit together: after two saves the active config
+// is the latest and config_history holds one versioned row per save.
+func TestSQLConfigStore_SaveWritesConfigAndHistoryAtomically(t *testing.T) {
+	store, err := NewSQLiteConfigStore(t.Context(), filepath.Join(t.TempDir(), "config.db"))
+	if err != nil {
+		t.Fatalf("new config store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	first, second := singleConfig(), fallbackConfig()
+	if err := store.Save(context.Background(), first); err != nil {
+		t.Fatalf("save first: %v", err)
+	}
+	if err := store.Save(context.Background(), second); err != nil {
+		t.Fatalf("save second: %v", err)
+	}
+
+	loaded, ok, err := store.Load(context.Background())
+	if err != nil || !ok {
+		t.Fatalf("load: ok=%v err=%v", ok, err)
+	}
+	if loaded.Strategy.Mode != second.Strategy.Mode {
+		t.Fatalf("active config mode = %q, want %q", loaded.Strategy.Mode, second.Strategy.Mode)
+	}
+
+	history, err := store.LoadHistory(context.Background())
+	if err != nil {
+		t.Fatalf("load history: %v", err)
+	}
+	if len(history) != 2 {
+		t.Fatalf("history len = %d, want 2", len(history))
+	}
+	if history[0].Version != 1 || history[1].Version != 2 {
+		t.Fatalf("history versions = %d,%d, want 1,2", history[0].Version, history[1].Version)
+	}
+	if history[0].Config.Strategy.Mode != first.Strategy.Mode {
+		t.Fatalf("history[0] mode = %q, want %q", history[0].Config.Strategy.Mode, first.Strategy.Mode)
+	}
+	if history[1].Config.Strategy.Mode != second.Strategy.Mode {
+		t.Fatalf("history[1] mode = %q, want %q", history[1].Config.Strategy.Mode, second.Strategy.Mode)
+	}
+}
+
+// TestSQLConfigStore_SaveRollsBackConfigWhenHistoryFails proves the write is
+// atomic in the other direction: when the history portion of the transaction
+// fails, the active-config upsert is rolled back with it, so the persisted
+// active config never advances without a matching history record.
+func TestSQLConfigStore_SaveRollsBackConfigWhenHistoryFails(t *testing.T) {
+	store, err := NewSQLiteConfigStore(t.Context(), filepath.Join(t.TempDir(), "config.db"))
+	if err != nil {
+		t.Fatalf("new config store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	first := singleConfig()
+	if err := store.Save(context.Background(), first); err != nil {
+		t.Fatalf("save first: %v", err)
+	}
+
+	// Remove the history table so the second save's history step fails inside the
+	// transaction, after the gateway_config upsert has already run.
+	if _, err := store.db.ExecContext(context.Background(), "DROP TABLE config_history"); err != nil {
+		t.Fatalf("drop config_history: %v", err)
+	}
+
+	if err := store.Save(context.Background(), fallbackConfig()); err == nil {
+		t.Fatal("expected save to fail once history table is missing")
+	}
+
+	// The active config must still be the first one: the failed history write
+	// rolled the config upsert back.
+	loaded, ok, err := store.Load(context.Background())
+	if err != nil || !ok {
+		t.Fatalf("load: ok=%v err=%v", ok, err)
+	}
+	if loaded.Strategy.Mode != first.Strategy.Mode {
+		t.Fatalf("active config mode = %q, want %q (config write not rolled back)", loaded.Strategy.Mode, first.Strategy.Mode)
+	}
+}
+
+// TestSQLConfigStore_MigrationSchema confirms the config store runs on the
+// migration runner: its own ledger, the baseline table, and config_history are
+// all present after construction.
+func TestSQLConfigStore_MigrationSchema(t *testing.T) {
+	store, err := NewSQLiteConfigStore(t.Context(), filepath.Join(t.TempDir(), "config.db"))
+	if err != nil {
+		t.Fatalf("new config store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	for _, name := range []string{configLedger, "gateway_config", "config_history"} {
+		if !sqliteObjectExists(t, store.db, name) {
+			t.Errorf("expected %q to exist after construction", name)
+		}
+	}
+}
+
+// TestSQLConfigStore_AdoptsPreRunnerDatabase confirms a gateway_config database
+// created before the runner existed is adopted at the baseline (not re-created)
+// and gains config_history, with its existing active config still loadable.
+func TestSQLConfigStore_AdoptsPreRunnerDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy-config.db")
+
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open raw sqlite: %v", err)
+	}
+	if _, err := raw.ExecContext(context.Background(), `
+CREATE TABLE gateway_config (
+	id INTEGER PRIMARY KEY,
+	config_json TEXT NOT NULL,
+	updated_at TIMESTAMP NOT NULL
+)`); err != nil {
+		t.Fatalf("create legacy table: %v", err)
+	}
+	data, err := json.Marshal(fallbackConfig())
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	if _, err := raw.ExecContext(context.Background(),
+		"INSERT INTO gateway_config(id, config_json, updated_at) VALUES(1, ?, datetime('now'))", string(data)); err != nil {
+		t.Fatalf("seed legacy row: %v", err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatalf("close raw sqlite: %v", err)
+	}
+
+	store, err := NewSQLiteConfigStore(t.Context(), path)
+	if err != nil {
+		t.Fatalf("open store on legacy db: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	loaded, ok, err := store.Load(context.Background())
+	if err != nil || !ok {
+		t.Fatalf("load legacy config: ok=%v err=%v", ok, err)
+	}
+	if loaded.Strategy.Mode != aigateway.ModeFallback {
+		t.Fatalf("legacy config mode = %q, want %q", loaded.Strategy.Mode, aigateway.ModeFallback)
+	}
+	if !sqliteObjectExists(t, store.db, "config_history") {
+		t.Error("config_history was not created for an adopted legacy database")
+	}
+}
 
 func TestNewSQLiteConfigStore_FilePermissions(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.db")

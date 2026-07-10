@@ -15,10 +15,12 @@ const configLedger = "config_schema_migrations"
 //
 // Version 1 is the pre-runner schema. Databases created before the runner
 // existed already have this shape, so Run adopts it as a baseline rather than
-// executing it.
+// executing it. Version 2 adds config_history, the durable audit trail that Save
+// writes in the same transaction as the active-config upsert.
 func configStoreSteps(dialect sqldb.Dialect) []migrations.Step {
 	return []migrations.Step{
 		{Version: 1, Name: "gateway_config_baseline", SQL: configBaselineDDL(dialect)},
+		{Version: 2, Name: "config_history", SQL: configHistoryDDL(dialect)},
 	}
 }
 
@@ -34,6 +36,23 @@ CREATE TABLE IF NOT EXISTS gateway_config (
 	return `
 CREATE TABLE IF NOT EXISTS gateway_config (
 	id INTEGER PRIMARY KEY,
+	config_json TEXT NOT NULL,
+	updated_at TIMESTAMP NOT NULL
+);`
+}
+
+func configHistoryDDL(dialect sqldb.Dialect) string {
+	if dialect == sqldb.Postgres {
+		return `
+CREATE TABLE IF NOT EXISTS config_history (
+	version INTEGER PRIMARY KEY,
+	config_json TEXT NOT NULL,
+	updated_at TIMESTAMPTZ NOT NULL
+);`
+	}
+	return `
+CREATE TABLE IF NOT EXISTS config_history (
+	version INTEGER PRIMARY KEY,
 	config_json TEXT NOT NULL,
 	updated_at TIMESTAMP NOT NULL
 );`
