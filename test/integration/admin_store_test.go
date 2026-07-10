@@ -152,8 +152,11 @@ func TestPostgresStore_ListMasked(t *testing.T) {
 		t.Fatalf("expected 3 keys, got %d", len(listed))
 	}
 	for _, k := range listed {
-		if !strings.HasSuffix(k.Key, "...") {
-			t.Fatalf("expected masked key, got %s", k.Key)
+		if !strings.Contains(k.Key, "...") {
+			t.Fatalf("expected a display key, got %s", k.Key)
+		}
+		if strings.HasPrefix(k.Key, "fgw_") && len(k.Key) > 20 {
+			t.Fatalf("List returned what looks like a full secret: %s", k.Key)
 		}
 	}
 }

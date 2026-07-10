@@ -4,7 +4,9 @@ package requestlog
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -183,13 +185,69 @@ CREATE TABLE IF NOT EXISTS request_logs (
 	if _, err := w.db.ExecContext(ctx, ddl); err != nil {
 		return fmt.Errorf("initialize request log schema: %w", err)
 	}
+	return w.ensureCreatedAtIndex(ctx)
+}
 
-	// Serves List's created_at ordering/range, Delete's created_at range, and
-	// Stats' since filter. Identical DDL on both dialects.
-	if _, err := w.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_request_logs_created_at ON request_logs (created_at);`); err != nil {
-		return fmt.Errorf("initialize request log index: %w", err)
+// createdAtIndex serves List's created_at ordering and range, Delete's
+// created_at range, and Stats' since filter.
+const createdAtIndex = "idx_request_logs_created_at"
+
+// ensureCreatedAtIndex builds the created_at index if it is missing.
+//
+// request_logs takes a write per request per stage. On Postgres a plain
+// CREATE INDEX holds a lock that blocks those writes for the length of the
+// build, which on an existing table means every other instance stalls while one
+// restarts. Building concurrently trades a slower build for not blocking
+// writers. It cannot run inside a transaction, and this is not one.
+//
+// A missing index costs query time, not correctness, so a failed build is
+// logged rather than fatal: the next start retries it.
+func (w *SQLWriter) ensureCreatedAtIndex(ctx context.Context) error {
+	if w.dialect != requestLogDialectPostgres {
+		if _, err := w.db.ExecContext(ctx, "CREATE INDEX IF NOT EXISTS "+createdAtIndex+" ON request_logs (created_at)"); err != nil {
+			return fmt.Errorf("initialize request log index: %w", err)
+		}
+		return nil
+	}
+
+	built, err := w.concurrentIndexIsBuilt(ctx)
+	if err != nil {
+		return err
+	}
+	if built {
+		return nil
+	}
+
+	if _, err := w.db.ExecContext(ctx, "CREATE INDEX CONCURRENTLY IF NOT EXISTS "+createdAtIndex+" ON request_logs (created_at)"); err != nil {
+		slog.Warn("request log index build failed; queries will scan until the next start rebuilds it",
+			"index", createdAtIndex, "error", err)
 	}
 	return nil
+}
+
+// concurrentIndexIsBuilt reports whether the index exists and is usable.
+//
+// An interrupted concurrent build leaves the index in place but marked invalid,
+// and CREATE INDEX ... IF NOT EXISTS would then skip it forever. Drop that
+// remnant so the caller rebuilds.
+func (w *SQLWriter) concurrentIndexIsBuilt(ctx context.Context) (bool, error) {
+	const probe = `SELECT i.indisvalid FROM pg_class c JOIN pg_index i ON i.indexrelid = c.oid WHERE c.relname = $1`
+
+	var valid bool
+	err := w.db.QueryRowContext(ctx, probe, createdAtIndex).Scan(&valid)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("probe request log index: %w", err)
+	case valid:
+		return true, nil
+	}
+
+	if _, err := w.db.ExecContext(ctx, "DROP INDEX CONCURRENTLY IF EXISTS "+createdAtIndex); err != nil {
+		return false, fmt.Errorf("drop invalid request log index: %w", err)
+	}
+	return false, nil
 }
 
 func (w *SQLWriter) Write(ctx context.Context, entry Entry) error {

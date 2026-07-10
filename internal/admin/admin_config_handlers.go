@@ -77,9 +77,15 @@ func (h *Handlers) applyConfigUpdate(w http.ResponseWriter, r *http.Request, sta
 		return
 	}
 
-	var cfg aigateway.Config
-	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+	var submitted aigateway.Config
+	if err := json.NewDecoder(r.Body).Decode(&submitted); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body", "invalid_request_error", "invalid_request")
+		return
+	}
+
+	cfg, err := resolveStorageOptions(h.Configs.GetConfig(), submitted)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error(), "invalid_request_error", "invalid_request")
 		return
 	}
 
@@ -150,13 +156,22 @@ func (h *Handlers) rollbackConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.Configs.ReloadConfig(r.Context(), target.Config); err != nil {
+	// History entries were sanitized when they were accepted, so this restores
+	// the running storage options rather than changing them. Re-resolving keeps
+	// that true if an entry ever arrives from somewhere else.
+	restored, err := resolveStorageOptions(h.Configs.GetConfig(), target.Config)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error(), "invalid_request_error", "invalid_request")
+		return
+	}
+
+	if err := h.Configs.ReloadConfig(r.Context(), restored); err != nil {
 		writeConfigReloadError(w, err)
 		return
 	}
 
 	rollbackFrom := latestVersion
-	h.appendConfigHistory(target.Config, &rollbackFrom)
+	h.appendConfigHistory(restored, &rollbackFrom)
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{

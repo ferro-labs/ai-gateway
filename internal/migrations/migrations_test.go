@@ -380,3 +380,65 @@ func TestRun_RefusesDatabaseMigratedByNewerBuild(t *testing.T) {
 		t.Fatalf("error = %v, want a newer-version error", err)
 	}
 }
+
+func TestBind(t *testing.T) {
+	const query = "INSERT INTO t(a, b, c) VALUES(?, ?, ?)"
+
+	if got := bind(SQLite, query); got != query {
+		t.Fatalf("SQLite bind rewrote the query: %q", got)
+	}
+
+	want := "INSERT INTO t(a, b, c) VALUES($1, $2, $3)"
+	if got := bind(Postgres, query); got != want {
+		t.Fatalf("Postgres bind = %q, want %q", got, want)
+	}
+
+	// No placeholders: unchanged on either dialect.
+	const noParams = "SELECT 1"
+	if got := bind(Postgres, noParams); got != noParams {
+		t.Fatalf("bind altered a parameterless query: %q", got)
+	}
+}
+
+// ensureLedger and tableExists must both speak the Postgres dialect, even where
+// no Postgres is available to run against: exercise the SQLite branches so the
+// dialect switch itself is covered, and confirm the ledger DDL is idempotent.
+func TestEnsureLedgerIsIdempotent(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+
+	if err := ensureLedger(ctx, db, SQLite); err != nil {
+		t.Fatalf("first ensureLedger: %v", err)
+	}
+	if err := ensureLedger(ctx, db, SQLite); err != nil {
+		t.Fatalf("second ensureLedger: %v", err)
+	}
+	if !tableExistsT(t, db, "schema_migrations") {
+		t.Fatal("schema_migrations was not created")
+	}
+}
+
+// A NoTx step whose function fails is reported and not recorded, so it re-runs.
+func TestRun_NoTxFailureIsNotRecorded(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+
+	steps := []Step{
+		{Version: 1, Name: "create", SQL: "CREATE TABLE t (id INTEGER)"},
+		{Version: 2, Name: "broken_notx", NoTx: func(context.Context, *sql.DB) error {
+			return errStub
+		}},
+	}
+	if err := Run(ctx, db, SQLite, "", steps); err == nil {
+		t.Fatal("Run should have failed on the NoTx error")
+	}
+	if got := ledgerVersions(t, db); !slices.Equal(got, []int{1}) {
+		t.Fatalf("ledger = %v, want [1]: the failed NoTx step was recorded", got)
+	}
+}
+
+var errStub = errorString("stub failure")
+
+type errorString string
+
+func (e errorString) Error() string { return string(e) }
