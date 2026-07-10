@@ -589,7 +589,8 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 
 	geminiReq := buildRequest(req)
 
-	url := fmt.Sprintf("%s/v1beta/models/%s:generateContent", p.baseURL, url.PathEscape(req.Model))
+	model := strings.TrimPrefix(req.Model, "models/")
+	url := fmt.Sprintf("%s/v1beta/models/%s:generateContent", p.baseURL, url.PathEscape(model))
 	httpResp, release, err := p.doJSONRequest(ctx, http.MethodPost, url, "", geminiReq)
 	if err != nil {
 		return nil, err
@@ -650,7 +651,8 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 
 	geminiReq := buildRequest(req)
 
-	url := fmt.Sprintf("%s/v1beta/models/%s:streamGenerateContent?alt=sse", p.baseURL, url.PathEscape(req.Model))
+	model := strings.TrimPrefix(req.Model, "models/")
+	url := fmt.Sprintf("%s/v1beta/models/%s:streamGenerateContent?alt=sse", p.baseURL, url.PathEscape(model))
 	httpResp, release, err := p.doJSONRequest(ctx, http.MethodPost, url, "", geminiReq)
 	if err != nil {
 		return nil, err
