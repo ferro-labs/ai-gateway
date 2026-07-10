@@ -25,10 +25,15 @@ type Conditional struct {
 // NewConditional creates a new conditional strategy.
 // Rules are evaluated in order; the first match wins.
 // The fallback target is used when no rule matches.
+//
+// targets seeds SelectTargets with the fallback so, absent WithRoutingTargets,
+// streaming still selects the same fallback Execute routes to. WithRoutingTargets
+// replaces it with the full ordered target list.
 func NewConditional(rules []ConditionRule, fallback Target, lookup ProviderLookup) *Conditional {
 	return &Conditional{
 		rules:    rules,
 		fallback: fallback,
+		targets:  []Target{fallback},
 		lookup:   lookup,
 	}
 }

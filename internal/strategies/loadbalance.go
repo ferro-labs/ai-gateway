@@ -28,14 +28,7 @@ func (lb *LoadBalance) Execute(ctx context.Context, req providers.Request) (*pro
 		return nil, fmt.Errorf("no targets configured for loadbalance")
 	}
 
-	// Filter to targets that support the requested model.
-	var compatible []Target
-	for _, t := range lb.targets {
-		p, ok := lb.lookup(t.VirtualKey)
-		if ok && p.SupportsModel(req.Model) {
-			compatible = append(compatible, t)
-		}
-	}
+	compatible := lb.compatibleTargets(req.Model)
 	if len(compatible) == 0 {
 		return nil, fmt.Errorf("no provider supports model %s", req.Model)
 	}
@@ -46,6 +39,21 @@ func (lb *LoadBalance) Execute(ctx context.Context, req providers.Request) (*pro
 	}
 
 	return dispatch(ctx, lb.lookup, target, req, "load balancing based routing: provider not found")
+}
+
+// compatibleTargets returns the subset of lb.targets whose provider is
+// registered and supports model, preserving declared order. Both Execute and
+// SelectTargets weight over this same set so streaming and non-streaming
+// selection draw from identical candidates.
+func (lb *LoadBalance) compatibleTargets(model string) []Target {
+	var compatible []Target
+	for _, t := range lb.targets {
+		p, ok := lb.lookup(t.VirtualKey)
+		if ok && p.SupportsModel(model) {
+			compatible = append(compatible, t)
+		}
+	}
+	return compatible
 }
 
 // selectFromTargets picks a target from the given slice using weighted random
@@ -61,17 +69,20 @@ func (lb *LoadBalance) selectFromTargets(targets []Target) (Target, error) {
 	return t, nil
 }
 
-// SelectTargets returns all targets rotated from a weight-biased start index,
-// so the first attempted target is chosen by weight while the remainder stay
-// available as fallbacks.
-func (lb *LoadBalance) SelectTargets(_ providers.Request) ([]string, error) {
-	if len(lb.targets) == 0 {
+// SelectTargets returns the model-compatible targets rotated from a
+// weight-biased start index, so the first attempted target is chosen by weight
+// while the remainder stay available as fallbacks. Targets whose provider is
+// missing or does not support the model are excluded, matching Execute's
+// candidate set so streaming and non-streaming selection agree.
+func (lb *LoadBalance) SelectTargets(req providers.Request) ([]string, error) {
+	compatible := lb.compatibleTargets(req.Model)
+	if len(compatible) == 0 {
 		return nil, nil
 	}
-	startIdx := weightedStartIndex(lb.targets)
-	keys := make([]string, 0, len(lb.targets))
-	for i := 0; i < len(lb.targets); i++ {
-		keys = append(keys, lb.targets[(startIdx+i)%len(lb.targets)].VirtualKey)
+	startIdx := weightedStartIndex(compatible)
+	keys := make([]string, 0, len(compatible))
+	for i := 0; i < len(compatible); i++ {
+		keys = append(keys, compatible[(startIdx+i)%len(compatible)].VirtualKey)
 	}
 	return keys, nil
 }

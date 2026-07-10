@@ -71,7 +71,11 @@ func NewContentBased(rules []ContentRule, fallback Target, lookup ProviderLookup
 	return &ContentBased{
 		rules:    compiled,
 		fallback: fallback,
-		lookup:   lookup,
+		// Seed with the fallback so, absent WithRoutingTargets, SelectTargets
+		// still returns the same fallback Execute routes to on no match.
+		// WithRoutingTargets replaces it with the full ordered target list.
+		targets: []Target{fallback},
+		lookup:  lookup,
 	}, nil
 }
 
