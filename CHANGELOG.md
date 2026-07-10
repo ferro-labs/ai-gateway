@@ -17,6 +17,7 @@ Key hashing and storage hardening — the fourth phase of the v1.1.x hardening r
 - **Bootstrap credentials now fail closed.** `ADMIN_BOOTSTRAP_KEY` and `ADMIN_BOOTSTRAP_READ_ONLY_KEY` are accepted only against a key store that is confirmed empty. Previously a key store that could not be read reported zero keys, which re-opened the bootstrap credentials during a database outage.
 - **SQLite database files are restricted to owner-only access before any data is written to them**, rather than after the schema is initialized. SQLite creates files honoring the process umask, so a database could previously be world-readable for the duration of startup.
 - An `Authorization: Bearer` header with an empty value is no longer matched against the key store.
+- **Plugin storage locations can no longer be changed through the admin config API.** A plugin's `dsn` and `backend` options are taken from the running configuration; a config submitted over `POST/PUT /admin/config` that changes one is rejected. These options select where the gateway reads and writes on disk and are set from the config file or the environment, not from a request.
 
 ### Added
 
@@ -30,7 +31,7 @@ Key hashing and storage hardening — the fourth phase of the v1.1.x hardening r
 ### Fixed
 
 - The admin dashboard's key table showed every key as `fgw_...` because it truncated a value the server had already truncated. Keys are now distinguishable from one another.
-- `request_logs` gains an index on `created_at`, which serves the log listing's ordering, the retention delete, and the stats time filter.
+- `request_logs` gains an index on `created_at`, which serves the log listing's ordering, the retention delete, and the stats time filter. On Postgres it is built with `CREATE INDEX CONCURRENTLY` so an existing table's writers are not blocked during a rolling restart.
 - The bootstrap-key check no longer loads every API key on unauthenticated admin requests.
 
 ---
