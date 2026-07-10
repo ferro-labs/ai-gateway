@@ -138,13 +138,11 @@ plugins:
     enabled: true
     config:
       level: info
-      # Optional persistent request log storage.
-      # When disabled, logs are emitted only to stdout.
+      # Persist each request to the shared request-log store when one is
+      # configured; otherwise logs are emitted only to stdout. The store's
+      # location is process configuration, set with the REQUEST_LOG_STORE_BACKEND
+      # and REQUEST_LOG_STORE_DSN environment variables — not here.
       persist: false
-      # backend: sqlite | postgres
-      backend: sqlite
-      # SQLite file path or Postgres DSN (required for postgres backend).
-      dsn: ferrogw-requests.db
 
   # Advanced guardrails (pii-redact, secret-scan, prompt-shield, schema-guard,
   # regex-guard) are available in FerroCloud. See https://docs.ferrolabs.ai/guardrails

@@ -80,6 +80,14 @@ type Writer interface {
 	Write(ctx context.Context, entry Entry) error
 }
 
+// WriterReceiver is implemented by components — request-logging plugins — that
+// record through a Writer the gateway supplies at startup, rather than opening
+// a store of their own. The supplied Writer is owned by the gateway and must
+// not be closed by the receiver.
+type WriterReceiver interface {
+	SetRequestLogWriter(Writer)
+}
+
 // Reader loads request log entries from persistent storage.
 type Reader interface {
 	List(ctx context.Context, query Query) (ListResult, error)

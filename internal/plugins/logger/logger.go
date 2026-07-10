@@ -6,9 +6,7 @@ package logger
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/ferro-labs/ai-gateway/internal/logging"
@@ -28,6 +26,7 @@ func init() {
 type RequestLogger struct {
 	logLevel slog.Level
 	writer   requestlog.Writer
+	shared   requestlog.Writer
 	redactor *redact.Redactor
 }
 
@@ -37,7 +36,20 @@ func (l *RequestLogger) Name() string { return "request-logger" }
 // Type returns the plugin lifecycle hook type.
 func (l *RequestLogger) Type() plugin.PluginType { return plugin.TypeLogging }
 
+// SetRequestLogWriter receives the shared request-log store the gateway builds
+// from REQUEST_LOG_STORE_BACKEND / REQUEST_LOG_STORE_DSN. The gateway calls this
+// before Init. The store is owned by the gateway, so Close does not touch it.
+func (l *RequestLogger) SetRequestLogWriter(w requestlog.Writer) {
+	l.shared = w
+}
+
 // Init configures the plugin from the provided options map.
+//
+// Persistence is directed at the shared request-log store, not a per-plugin
+// database. `backend`/`dsn` here are obsolete — persistence targets and
+// credentials are process configuration, set once via
+// REQUEST_LOG_STORE_BACKEND / REQUEST_LOG_STORE_DSN — and are ignored with a
+// warning so an operator running an old config learns where the setting moved.
 func (l *RequestLogger) Init(config map[string]any) error {
 	l.logLevel = slog.LevelInfo
 	l.writer = requestlog.NoopWriter{}
@@ -53,28 +65,21 @@ func (l *RequestLogger) Init(config map[string]any) error {
 		}
 	}
 
+	if _, ok := config["dsn"]; ok {
+		slog.Warn("request-logger: the dsn option is ignored; set the request log store with REQUEST_LOG_STORE_DSN")
+	}
+	if _, ok := config["backend"]; ok {
+		slog.Warn("request-logger: the backend option is ignored; set the request log store with REQUEST_LOG_STORE_BACKEND")
+	}
+
 	persist, _ := config["persist"].(bool)
-	if persist {
-		backend, _ := config["backend"].(string)
-		dsn, _ := config["dsn"].(string)
-		// plugin.Plugin.Init has no ctx parameter (config-load time, not a
-		// request), so there is no caller context to thread through here.
-		switch strings.ToLower(strings.TrimSpace(backend)) {
-		case "sqlite", "":
-			writer, err := requestlog.NewSQLiteWriter(context.Background(), dsn)
-			if err != nil {
-				return err
-			}
-			l.writer = writer
-		case "postgres", "postgresql":
-			writer, err := requestlog.NewPostgresWriter(context.Background(), dsn)
-			if err != nil {
-				return err
-			}
-			l.writer = writer
-		default:
-			return fmt.Errorf("unsupported request log backend %q", backend)
-		}
+	switch {
+	case !persist:
+		// stdout only; l.writer stays NoopWriter.
+	case l.shared != nil:
+		l.writer = l.shared
+	default:
+		slog.Warn("request-logger: persist is set but no request log store is configured; set REQUEST_LOG_STORE_BACKEND to persist logs")
 	}
 	return nil
 }
@@ -149,11 +154,9 @@ func (l *RequestLogger) Execute(ctx context.Context, pctx *plugin.Context) error
 	return nil
 }
 
-// Close releases the persistent request-log writer, when one is configured.
+// Close is a no-op. The request-log store the plugin writes to is owned by the
+// gateway, which closes it on shutdown; closing it here would break the admin
+// log reader that shares the same store.
 func (l *RequestLogger) Close() error {
-	closer, ok := l.writer.(interface{ Close() error })
-	if !ok {
-		return nil
-	}
-	return closer.Close()
+	return nil
 }

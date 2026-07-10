@@ -95,7 +95,18 @@ func buildServer() (
 		logging.Logger.Warn("no providers configured; set provider API keys (e.g. OPENAI_API_KEY) or OLLAMA_HOST, or add them later via the admin API")
 	}
 
-	gw := BuildGateway(cfg, registry)
+	// Build the request-log store before the gateway so it can be handed to
+	// logging plugins as they load. The reader is also the writer (one
+	// *SQLWriter serves both the admin log views and the plugin), or nil when
+	// no request-log backend is configured.
+	logReader, logMaintainer, logReaderBackend, err := CreateRequestLogReaderFromEnv(context.Background())
+	if err != nil {
+		logging.Logger.Error("failed to initialize request log reader", "error", err)
+		os.Exit(1)
+	}
+	logWriter, _ := logReader.(requestlog.Writer)
+
+	gw := BuildGateway(cfg, registry, logWriter)
 
 	// Initialise OpenTelemetry. Init returns a NoOp provider (and a
 	// no-op shutdown) when neither an OTLP endpoint nor any enabled
@@ -143,11 +154,6 @@ func buildServer() (
 	}
 
 	rlStore := NewRateLimitStore()
-	logReader, logMaintainer, logReaderBackend, err := CreateRequestLogReaderFromEnv(context.Background())
-	if err != nil {
-		logging.Logger.Error("failed to initialize request log reader", "error", err)
-		os.Exit(1)
-	}
 
 	r := httpserver.NewRouter(registry, keyStore, corsOrigins, gw, cfgManager, rlStore, logReader, logMaintainer, masterKey, trustedProxies)
 
@@ -366,7 +372,7 @@ func registerBedrockProvider(registry *providers.Registry) {
 
 // BuildGateway constructs the Gateway, wires providers, and loads plugins.
 // If cfg is nil a default fallback config is created from the registry.
-func BuildGateway(cfg *aigateway.Config, registry *providers.Registry) *aigateway.Gateway {
+func BuildGateway(cfg *aigateway.Config, registry *providers.Registry, logWriter requestlog.Writer) *aigateway.Gateway {
 	if cfg == nil {
 		defaultTargets := make([]aigateway.Target, 0, len(registry.List()))
 		for _, name := range registry.List() {
@@ -387,6 +393,9 @@ func BuildGateway(cfg *aigateway.Config, registry *providers.Registry) *aigatewa
 		logging.Logger.Error("failed to create gateway", "error", err)
 		os.Exit(1)
 	}
+	// Install the shared request-log store before LoadPlugins, so a logging
+	// plugin records through it instead of opening its own.
+	gw.SetRequestLogWriter(logWriter)
 	for _, name := range registry.List() {
 		if p, ok := registry.Get(name); ok {
 			gw.RegisterProvider(p)

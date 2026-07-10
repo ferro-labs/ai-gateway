@@ -20,6 +20,7 @@ import (
 	"github.com/ferro-labs/ai-gateway/internal/logging"
 	"github.com/ferro-labs/ai-gateway/internal/metrics"
 	cacheplugin "github.com/ferro-labs/ai-gateway/internal/plugins/cache"
+	"github.com/ferro-labs/ai-gateway/internal/requestlog"
 	"github.com/ferro-labs/ai-gateway/mcp"
 	"github.com/ferro-labs/ai-gateway/models"
 	"github.com/ferro-labs/ai-gateway/plugin"
@@ -2889,6 +2890,90 @@ func init() {
 	plugin.RegisterFactory("test-plugin", func() plugin.Plugin {
 		return &testPlugin{name: "test-plugin", typ: plugin.TypeGuardrail}
 	})
+	plugin.RegisterFactory("test-log-receiver", func() plugin.Plugin {
+		p := &logReceiverPlugin{}
+		lastLogReceiver = p
+		return p
+	})
+}
+
+// lastLogReceiver holds the most recently constructed logReceiverPlugin. The
+// receiver tests below run sequentially and build exactly one, so this is a
+// safe way to reach the instance buildPluginManager created and injected.
+var lastLogReceiver *logReceiverPlugin
+
+// logReceiverPlugin records the writer the gateway injects, to prove
+// buildPluginManager hands the shared request-log store to receiver plugins.
+type logReceiverPlugin struct {
+	injected    requestlog.Writer
+	wasInjected bool
+}
+
+func (p *logReceiverPlugin) Name() string                                   { return "test-log-receiver" }
+func (p *logReceiverPlugin) Type() plugin.PluginType                        { return plugin.TypeLogging }
+func (p *logReceiverPlugin) Init(map[string]any) error                      { return nil }
+func (p *logReceiverPlugin) Execute(context.Context, *plugin.Context) error { return nil }
+func (p *logReceiverPlugin) Close() error                                   { return nil }
+func (p *logReceiverPlugin) SetRequestLogWriter(w requestlog.Writer) {
+	p.injected = w
+	p.wasInjected = true
+}
+
+func loadReceiverPlugin(t *testing.T, gw *Gateway) *logReceiverPlugin {
+	t.Helper()
+	lastLogReceiver = nil
+	if err := gw.LoadPlugins(); err != nil {
+		t.Fatalf("LoadPlugins failed: %v", err)
+	}
+	if lastLogReceiver == nil {
+		t.Fatal("receiver plugin was never constructed")
+	}
+	return lastLogReceiver
+}
+
+// The shared request-log store the gateway holds is injected into a receiver
+// plugin as it loads.
+func TestGateway_InjectsRequestLogWriterIntoPlugins(t *testing.T) {
+	rec := &recordingLogWriter{}
+	gw, _ := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: mockProviderName}},
+		Plugins: []PluginConfig{
+			{Name: "test-log-receiver", Type: "logging", Stage: "after_request", Enabled: true},
+		},
+	})
+	gw.SetRequestLogWriter(rec)
+
+	p := loadReceiverPlugin(t, gw)
+	if p.injected != requestlog.Writer(rec) {
+		t.Fatalf("plugin injected writer = %v, want the store set via SetRequestLogWriter", p.injected)
+	}
+}
+
+// Without a shared store, buildPluginManager does not call the receiver at all,
+// so the plugin decides its own fallback rather than being handed nil.
+func TestGateway_NoRequestLogWriter_PluginNotInjected(t *testing.T) {
+	gw, _ := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: mockProviderName}},
+		Plugins: []PluginConfig{
+			{Name: "test-log-receiver", Type: "logging", Stage: "after_request", Enabled: true},
+		},
+	})
+
+	p := loadReceiverPlugin(t, gw)
+	if p.wasInjected {
+		t.Fatalf("SetRequestLogWriter was called with %v; want no injection when the gateway has no store", p.injected)
+	}
+}
+
+type recordingLogWriter struct {
+	entries []requestlog.Entry
+}
+
+func (w *recordingLogWriter) Write(_ context.Context, e requestlog.Entry) error {
+	w.entries = append(w.entries, e)
+	return nil
 }
 
 func TestGateway_LoadPlugins(t *testing.T) {
