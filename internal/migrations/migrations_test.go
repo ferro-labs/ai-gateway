@@ -381,25 +381,6 @@ func TestRun_RefusesDatabaseMigratedByNewerBuild(t *testing.T) {
 	}
 }
 
-func TestBind(t *testing.T) {
-	const query = "INSERT INTO t(a, b, c) VALUES(?, ?, ?)"
-
-	if got := bind(SQLite, query); got != query {
-		t.Fatalf("SQLite bind rewrote the query: %q", got)
-	}
-
-	want := "INSERT INTO t(a, b, c) VALUES($1, $2, $3)"
-	if got := bind(Postgres, query); got != want {
-		t.Fatalf("Postgres bind = %q, want %q", got, want)
-	}
-
-	// No placeholders: unchanged on either dialect.
-	const noParams = "SELECT 1"
-	if got := bind(Postgres, noParams); got != noParams {
-		t.Fatalf("bind altered a parameterless query: %q", got)
-	}
-}
-
 // ensureLedger and tableExists must both speak the Postgres dialect, even where
 // no Postgres is available to run against: exercise the SQLite branches so the
 // dialect switch itself is covered, and confirm the ledger DDL is idempotent.
@@ -407,14 +388,51 @@ func TestEnsureLedgerIsIdempotent(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
 
-	if err := ensureLedger(ctx, db, SQLite); err != nil {
+	if err := ensureLedger(ctx, db, SQLite, defaultLedger); err != nil {
 		t.Fatalf("first ensureLedger: %v", err)
 	}
-	if err := ensureLedger(ctx, db, SQLite); err != nil {
+	if err := ensureLedger(ctx, db, SQLite, defaultLedger); err != nil {
 		t.Fatalf("second ensureLedger: %v", err)
 	}
-	if !tableExistsT(t, db, "schema_migrations") {
+	if !tableExistsT(t, db, defaultLedger) {
 		t.Fatal("schema_migrations was not created")
+	}
+}
+
+// RunNamed keeps each schema's versions in its own ledger, so two schemas can
+// share one database without their version sequences colliding.
+func TestRunNamed_SeparateLedgersDoNotCollide(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+
+	keysSteps := []Step{{Version: 1, Name: "create_keys", SQL: "CREATE TABLE keys (id INTEGER PRIMARY KEY)"}}
+	logsSteps := []Step{
+		{Version: 1, Name: "create_logs", SQL: "CREATE TABLE logs (id INTEGER PRIMARY KEY)"},
+		{Version: 2, Name: "index_logs", SQL: "CREATE INDEX idx_logs ON logs (id)"},
+	}
+
+	if err := RunNamed(ctx, db, SQLite, "keys_migrations", "keys", keysSteps); err != nil {
+		t.Fatalf("run keys: %v", err)
+	}
+	// Sharing the same database, a second schema on its own ledger must not trip
+	// checkNotAhead against the first schema's recorded versions.
+	if err := RunNamed(ctx, db, SQLite, "logs_migrations", "logs", logsSteps); err != nil {
+		t.Fatalf("run logs: %v", err)
+	}
+
+	if !tableExistsT(t, db, "keys") || !tableExistsT(t, db, "logs") {
+		t.Fatal("expected both schemas to be created")
+	}
+	if !tableExistsT(t, db, "keys_migrations") || !tableExistsT(t, db, "logs_migrations") {
+		t.Fatal("expected a separate ledger table per schema")
+	}
+}
+
+func TestRunNamed_RequiresLedger(t *testing.T) {
+	db := newTestDB(t)
+	steps := []Step{{Version: 1, Name: "a", SQL: "CREATE TABLE a (id INTEGER)"}}
+	if err := RunNamed(context.Background(), db, SQLite, "", "", steps); err == nil {
+		t.Fatal("RunNamed with an empty ledger returned nil")
 	}
 }
 

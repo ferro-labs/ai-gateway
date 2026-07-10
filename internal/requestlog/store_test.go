@@ -2,6 +2,8 @@ package requestlog
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -9,6 +11,89 @@ import (
 	"testing"
 	"time"
 )
+
+func sqliteObjectExists(t *testing.T, db *sql.DB, name string) bool {
+	t.Helper()
+	var got string
+	err := db.QueryRowContext(context.Background(),
+		"SELECT name FROM sqlite_master WHERE name = ?", name).Scan(&got)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false
+	}
+	if err != nil {
+		t.Fatalf("probe sqlite object %q: %v", name, err)
+	}
+	return true
+}
+
+// TestSQLiteWriter_MigrationSchema confirms the request log store runs on the
+// migration runner: its own ledger table is present alongside the created_at
+// index after construction.
+func TestSQLiteWriter_MigrationSchema(t *testing.T) {
+	w, err := NewSQLiteWriter(t.Context(), filepath.Join(t.TempDir(), "requests.db"))
+	if err != nil {
+		t.Fatalf("new sqlite writer: %v", err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+
+	for _, name := range []string{requestLogLedger, "request_logs", createdAtIndex} {
+		if !sqliteObjectExists(t, w.db, name) {
+			t.Errorf("expected %q to exist after construction", name)
+		}
+	}
+}
+
+// TestSQLiteWriter_AdoptsPreRunnerDatabase confirms a request_logs database
+// created before the runner existed is adopted at the baseline (not re-created)
+// and gains the created_at index, with its existing rows still listable.
+func TestSQLiteWriter_AdoptsPreRunnerDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy-requests.db")
+
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open raw sqlite: %v", err)
+	}
+	if _, err := raw.ExecContext(context.Background(), `
+CREATE TABLE request_logs (
+	id INTEGER PRIMARY KEY,
+	trace_id TEXT,
+	stage TEXT NOT NULL,
+	model TEXT,
+	provider TEXT,
+	prompt_tokens INTEGER NOT NULL,
+	completion_tokens INTEGER NOT NULL,
+	total_tokens INTEGER NOT NULL,
+	error_message TEXT,
+	created_at TIMESTAMP NOT NULL
+)`); err != nil {
+		t.Fatalf("create legacy table: %v", err)
+	}
+	if _, err := raw.ExecContext(context.Background(),
+		`INSERT INTO request_logs(trace_id, stage, model, provider, prompt_tokens, completion_tokens, total_tokens, error_message, created_at)
+		VALUES('legacy-trace', 'after_request', 'gpt-4', 'openai', 1, 2, 3, '', ?)`, time.Now().UTC()); err != nil {
+		t.Fatalf("seed legacy row: %v", err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatalf("close raw sqlite: %v", err)
+	}
+
+	w, err := NewSQLiteWriter(t.Context(), path)
+	if err != nil {
+		t.Fatalf("open writer on legacy db: %v", err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+
+	result, err := w.List(context.Background(), Query{Limit: 10})
+	if err != nil {
+		t.Fatalf("list legacy logs: %v", err)
+	}
+	if result.Total != 1 || len(result.Data) != 1 || result.Data[0].TraceID != "legacy-trace" {
+		t.Fatalf("expected the pre-existing legacy row, got total=%d data=%+v", result.Total, result.Data)
+	}
+	if !sqliteObjectExists(t, w.db, createdAtIndex) {
+		t.Error("created_at index was not built for an adopted legacy database")
+	}
+}
 
 func TestNewSQLiteWriter_FilePermissions(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "requests.db")
@@ -280,15 +365,9 @@ func TestNewPostgresWriterRequiresDSN(t *testing.T) {
 	}
 }
 
-func TestNoopWriterBindPostgresAndClose(t *testing.T) {
+func TestNoopWriterAndNilClose(t *testing.T) {
 	if err := (NoopWriter{}).Write(context.Background(), Entry{}); err != nil {
 		t.Fatalf("noop writer returned error: %v", err)
-	}
-
-	got := bindPostgres("SELECT * FROM request_logs WHERE stage = ? AND model = ? LIMIT ? OFFSET ?")
-	want := "SELECT * FROM request_logs WHERE stage = $1 AND model = $2 LIMIT $3 OFFSET $4"
-	if got != want {
-		t.Fatalf("unexpected postgres bind query:\nwant: %s\ngot:  %s", want, got)
 	}
 
 	var w *SQLWriter

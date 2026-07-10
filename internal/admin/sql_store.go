@@ -9,29 +9,16 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/ferro-labs/ai-gateway/internal/migrations"
-	"github.com/ferro-labs/ai-gateway/internal/sqlitefile"
-
-	// Register Postgres SQL driver.
-	_ "github.com/lib/pq"
-	// Register SQLite SQL driver.
-	_ "modernc.org/sqlite"
-)
-
-type sqlDialect string
-
-const (
-	dialectSQLite   sqlDialect = "sqlite"
-	dialectPostgres sqlDialect = "postgres"
+	"github.com/ferro-labs/ai-gateway/internal/sqldb"
 )
 
 // SQLStore persists API keys in SQL backends (SQLite or Postgres).
 type SQLStore struct {
 	db            *sql.DB
-	dialect       sqlDialect
+	dialect       sqldb.Dialect
 	stmtGetByID   *sql.Stmt
 	stmtGetByHash *sql.Stmt
 	stmtRevoke    *sql.Stmt
@@ -45,24 +32,11 @@ type SQLStore struct {
 // NewSQLiteStore creates a SQLite-backed key store.
 // dsn can be a file path (e.g. /tmp/keys.db) or SQLite DSN.
 func NewSQLiteStore(ctx context.Context, dsn string) (*SQLStore, error) {
-	dsn = strings.TrimSpace(dsn)
-	if dsn == "" {
-		dsn = "ferrogw-keys.db"
-	}
-	// Restrict the file before SQLite touches it. The migration below reads and
-	// rewrites every stored key, and a file created under the process umask is
-	// world-readable until something narrows it.
-	if err := sqlitefile.Secure(dsn); err != nil {
+	db, err := sqldb.Open(ctx, sqldb.SQLite, dsn, "ferrogw-keys.db")
+	if err != nil {
 		return nil, err
 	}
-
-	db, err := sql.Open("sqlite", dsn)
-	if err != nil {
-		return nil, fmt.Errorf("open sqlite store: %w", err)
-	}
-	tuneDBPool(db, string(dialectSQLite))
-
-	store := &SQLStore{db: db, dialect: dialectSQLite}
+	store := &SQLStore{db: db, dialect: sqldb.SQLite}
 	if err := store.init(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -72,16 +46,11 @@ func NewSQLiteStore(ctx context.Context, dsn string) (*SQLStore, error) {
 
 // NewPostgresStore creates a Postgres-backed key store.
 func NewPostgresStore(ctx context.Context, dsn string) (*SQLStore, error) {
-	dsn = strings.TrimSpace(dsn)
-	if dsn == "" {
-		return nil, fmt.Errorf("postgres dsn is required")
-	}
-	db, err := sql.Open("postgres", dsn)
+	db, err := sqldb.Open(ctx, sqldb.Postgres, dsn, "")
 	if err != nil {
-		return nil, fmt.Errorf("open postgres store: %w", err)
+		return nil, err
 	}
-	tuneDBPool(db, string(dialectPostgres))
-	store := &SQLStore{db: db, dialect: dialectPostgres}
+	store := &SQLStore{db: db, dialect: sqldb.Postgres}
 	if err := store.init(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -90,12 +59,7 @@ func NewPostgresStore(ctx context.Context, dsn string) (*SQLStore, error) {
 }
 
 func (s *SQLStore) init(ctx context.Context) error {
-	if err := s.db.PingContext(ctx); err != nil {
-		return fmt.Errorf("ping %s store: %w", s.dialect, err)
-	}
-
-	dialect := migrations.Dialect(s.dialect)
-	if err := migrations.Run(ctx, s.db, dialect, "api_keys", keyStoreSteps(dialect)); err != nil {
+	if err := migrations.Run(ctx, s.db, s.dialect, "api_keys", keyStoreSteps(s.dialect)); err != nil {
 		return fmt.Errorf("migrate %s store schema: %w", s.dialect, err)
 	}
 	return s.prepareStmts(ctx)
@@ -124,7 +88,7 @@ func (s *SQLStore) prepareStmts(ctx context.Context) error {
 		// its whole lifetime, not a per-call resource — closed in Close()
 		// (below), which sqlclosecheck's static analysis can't trace through
 		// the *s2.dest indirection.
-		stmt, err := s.db.PrepareContext(ctx, s.bind(s2.query)) //nolint:sqlclosecheck // closed in (*SQLStore).Close
+		stmt, err := s.db.PrepareContext(ctx, sqldb.Bind(s.dialect, s2.query)) //nolint:sqlclosecheck // closed in (*SQLStore).Close
 		if err != nil {
 			return fmt.Errorf("prepare statement: %w", err)
 		}
@@ -172,7 +136,7 @@ func (s *SQLStore) Create(ctx context.Context, name string, scopes []string, exp
 		return nil, fmt.Errorf("encode scopes: %w", err)
 	}
 
-	q := s.bind(`
+	q := sqldb.Bind(s.dialect, `
 INSERT INTO api_keys(id, key_hash, key_display, name, scopes, created_at, revoked_at, expires_at, rotated_at, active, usage_count, last_used_at)
 VALUES(?, ?, ?, ?, ?, ?, NULL, ?, NULL, ?, ?, NULL)`)
 
@@ -443,30 +407,6 @@ func scanAPIKey(scanner interface {
 		k.LastUsedAt = &t
 	}
 	return &k, nil
-}
-
-func (s *SQLStore) bind(query string) string {
-	return bindPlaceholders(migrations.Dialect(s.dialect), query)
-}
-
-// bindPlaceholders rewrites '?' placeholders to Postgres '$N' form.
-func bindPlaceholders(dialect migrations.Dialect, query string) string {
-	if dialect != migrations.Postgres {
-		return query
-	}
-	var (
-		b      strings.Builder
-		argNum = 1
-	)
-	for i := 0; i < len(query); i++ {
-		if query[i] == '?' {
-			fmt.Fprintf(&b, "$%d", argNum)
-			argNum++
-			continue
-		}
-		b.WriteByte(query[i])
-	}
-	return b.String()
 }
 
 func generateAPIKeyString() (string, error) {

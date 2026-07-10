@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/ferro-labs/ai-gateway/internal/migrations"
+	"github.com/ferro-labs/ai-gateway/internal/sqldb"
 )
 
 // keyRowColumns is the column list shared by the rebuild's INSERT and SELECT.
@@ -129,7 +130,7 @@ func hashStoredKeys(dialect migrations.Dialect) func(context.Context, *sql.Tx) e
 			return err
 		}
 
-		update := bindPlaceholders(dialect, "UPDATE api_keys SET key_hash = ?, key_display = ? WHERE id = ?")
+		update := sqldb.Bind(dialect, "UPDATE api_keys SET key_hash = ?, key_display = ? WHERE id = ?")
 		for _, s := range secrets {
 			if _, err := tx.ExecContext(ctx, update, hashKey(s.key), displayKey(s.key), s.id); err != nil {
 				return fmt.Errorf("hash stored key: %w", err)
