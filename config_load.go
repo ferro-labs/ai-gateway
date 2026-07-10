@@ -1,8 +1,12 @@
 package aigateway
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +17,12 @@ import (
 
 // LoadConfig reads and parses a config file from the given path.
 // Supported formats: JSON (.json), YAML (.yaml, .yml).
+//
+// Decoding is strict: an unknown or misspelled key is rejected rather than
+// silently ignored, so a typo cannot quietly disable the setting it was meant
+// to change. JSON has no comment syntax, so keys prefixed with "_" are treated
+// as documentation comments and skipped at every nesting level. The returned
+// Config is Normalize-d so it carries its effective defaults.
 func LoadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // G304: config path is an operator-supplied startup argument, not request input
 	if err != nil {
@@ -23,29 +33,88 @@ func LoadConfig(path string) (*Config, error) {
 	ext := strings.ToLower(filepath.Ext(path))
 	switch ext {
 	case ".yaml", ".yml":
-		if err := yaml.Unmarshal(data, &cfg); err != nil {
+		dec := yaml.NewDecoder(bytes.NewReader(data))
+		dec.KnownFields(true)
+		// An empty document decodes to io.EOF; treat it as an empty config so
+		// validation (not decoding) reports the missing required fields.
+		if err := dec.Decode(&cfg); err != nil && !errors.Is(err, io.EOF) {
 			return nil, fmt.Errorf("parsing YAML config: %w", err)
 		}
 	case ".json":
-		if err := json.Unmarshal(data, &cfg); err != nil {
+		clean, err := stripJSONCommentKeys(data)
+		if err != nil {
+			return nil, fmt.Errorf("parsing JSON config: %w", err)
+		}
+		dec := json.NewDecoder(bytes.NewReader(clean))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&cfg); err != nil {
 			return nil, fmt.Errorf("parsing JSON config: %w", err)
 		}
 	default:
 		return nil, fmt.Errorf("unsupported config file extension %q: use .json, .yaml, or .yml", ext)
 	}
 
+	cfg.Normalize()
+	if cfg.APIVersion != CurrentAPIVersion {
+		slog.Warn("config: unrecognized apiVersion; proceeding for forward compatibility",
+			"apiVersion", cfg.APIVersion, "expected", CurrentAPIVersion)
+	}
+
 	return &cfg, nil
+}
+
+// stripJSONCommentKeys removes object keys prefixed with "_" at every nesting
+// level and returns the cleaned JSON. JSON lacks a comment syntax, so config
+// files (including config.example.json) document fields with "_name"-prefixed
+// pseudo-comment keys. Stripping them lets strict decoding reject genuine typos
+// while tolerating this convention. UseNumber preserves numeric literals
+// verbatim across the round-trip so no precision is lost.
+func stripJSONCommentKeys(data []byte) ([]byte, error) {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	var raw any
+	if err := dec.Decode(&raw); err != nil {
+		return nil, err
+	}
+	// Reject trailing data after the top-level value, matching the strictness
+	// of the previous json.Unmarshal-based parse.
+	if err := dec.Decode(new(json.RawMessage)); !errors.Is(err, io.EOF) {
+		return nil, errors.New("unexpected trailing data after top-level JSON value")
+	}
+	return json.Marshal(stripCommentKeys(raw))
+}
+
+// stripCommentKeys recursively drops map entries whose key starts with "_".
+func stripCommentKeys(v any) any {
+	switch t := v.(type) {
+	case map[string]any:
+		for k, val := range t {
+			if strings.HasPrefix(k, "_") {
+				delete(t, k)
+				continue
+			}
+			t[k] = stripCommentKeys(val)
+		}
+		return t
+	case []any:
+		for i, val := range t {
+			t[i] = stripCommentKeys(val)
+		}
+		return t
+	default:
+		return v
+	}
 }
 
 // ValidateConfig validates a Config for correctness.
 func ValidateConfig(cfg Config) error {
-	// Default to single strategy when mode is omitted to match runtime behavior.
-	mode := cfg.Strategy.Mode
-	if mode == "" {
-		mode = ModeSingle
-	}
+	// Validate against normalized defaults (e.g. an omitted strategy mode means
+	// single). cfg is passed by value, so normalizing this copy leaves the
+	// caller's Config untouched while keeping validation consistent with the
+	// Config LoadConfig returns.
+	cfg.Normalize()
 
-	switch mode {
+	switch cfg.Strategy.Mode {
 	case ModeSingle, ModeFallback, ModeLoadBalance, ModeConditional, ModeLatency, ModeCostOptimized,
 		ModeContentBased, ModeABTest:
 	default:
@@ -56,19 +125,19 @@ func ValidateConfig(cfg Config) error {
 		return fmt.Errorf("at least one target is required")
 	}
 
-	if mode == ModeConditional && len(cfg.Strategy.Conditions) == 0 {
+	if cfg.Strategy.Mode == ModeConditional && len(cfg.Strategy.Conditions) == 0 {
 		return fmt.Errorf("conditional strategy requires at least one condition")
 	}
 
-	if mode == ModeContentBased && len(cfg.Strategy.ContentConditions) == 0 {
+	if cfg.Strategy.Mode == ModeContentBased && len(cfg.Strategy.ContentConditions) == 0 {
 		return fmt.Errorf("content-based strategy requires at least one content_condition")
 	}
 
-	if mode == ModeABTest && len(cfg.Strategy.ABVariants) == 0 {
+	if cfg.Strategy.Mode == ModeABTest && len(cfg.Strategy.ABVariants) == 0 {
 		return fmt.Errorf("ab-test strategy requires at least one ab_variant")
 	}
 
-	if mode == ModeCostOptimized {
+	if cfg.Strategy.Mode == ModeCostOptimized {
 		switch cfg.Strategy.UnpricedStrategy {
 		case "", unpricedStrategyFallback, unpricedStrategySkip, unpricedStrategyAllow:
 		default:
@@ -76,7 +145,7 @@ func ValidateConfig(cfg Config) error {
 		}
 	}
 
-	if mode == ModeLoadBalance {
+	if cfg.Strategy.Mode == ModeLoadBalance {
 		var sum float64
 		for _, t := range cfg.Targets {
 			if t.Weight < 0 {
