@@ -10,8 +10,14 @@ import (
 	"github.com/ferro-labs/ai-gateway/internal/sqldb"
 )
 
-// keyRowColumns is the column list shared by the rebuild's INSERT and SELECT.
-const keyRowColumns = "id, key_hash, key_display, name, scopes, created_at, revoked_at, expires_at, rotated_at, active, usage_count, last_used_at"
+const (
+	// keyStoreLedger keeps API-key versions separate from conventional external
+	// schema_migrations tables and the other gateway stores' version sequences.
+	keyStoreLedger = "api_key_schema_migrations"
+
+	// keyRowColumns is the column list shared by the rebuild's INSERT and SELECT.
+	keyRowColumns = "id, key_hash, key_display, name, scopes, created_at, revoked_at, expires_at, rotated_at, active, usage_count, last_used_at"
+)
 
 // keyStoreSteps returns the migration sequence for the api_keys database.
 //
@@ -116,6 +122,28 @@ func hashStoredKeys(dialect migrations.Dialect) func(context.Context, *sql.Tx) e
 			}
 		}
 
+		plaintext, err := columnExists(ctx, tx, dialect, "api_keys", "key")
+		if err != nil {
+			return err
+		}
+		if !plaintext {
+			hasHash, err := columnExists(ctx, tx, dialect, "api_keys", "key_hash")
+			if err != nil {
+				return err
+			}
+			hasDisplay, err := columnExists(ctx, tx, dialect, "api_keys", "key_display")
+			if err != nil {
+				return err
+			}
+			if hasHash && hasDisplay {
+				// v1.1.21 already applied the hash migration through the legacy
+				// schema_migrations ledger. The dedicated ledger can safely record
+				// this step without rebuilding the table again.
+				return nil
+			}
+			return errors.New("api_keys has neither a plaintext key column nor a complete hashed-key schema")
+		}
+
 		// A database last opened by a release that predates the usage columns
 		// is adopted at the baseline without them, so the rebuild's SELECT
 		// would fail. Add whatever is missing before reading.
@@ -216,6 +244,21 @@ func rebuildColumns(dialect migrations.Dialect) []columnSpec {
 // real table without the column. attisdropped excludes columns Postgres retains
 // in the catalog after a DROP COLUMN.
 func ensureColumn(ctx context.Context, tx *sql.Tx, dialect migrations.Dialect, table, column, ddl string) error {
+	exists, err := columnExists(ctx, tx, dialect, table, column)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
+
+	if _, err := tx.ExecContext(ctx, ddl); err != nil {
+		return fmt.Errorf("add column %s.%s: %w", table, column, err)
+	}
+	return nil
+}
+
+func columnExists(ctx context.Context, tx *sql.Tx, dialect migrations.Dialect, table, column string) (bool, error) {
 	probe := "SELECT 1 FROM pragma_table_info(?) WHERE name = ?"
 	if dialect == migrations.Postgres {
 		probe = `SELECT 1 FROM pg_attribute
@@ -226,15 +269,12 @@ WHERE attrelid = to_regclass($1) AND attname = $2 AND attnum > 0 AND NOT attisdr
 	err := tx.QueryRowContext(ctx, probe, table, column).Scan(&one)
 	switch {
 	case err == nil:
-		return nil
-	case !errors.Is(err, sql.ErrNoRows):
-		return fmt.Errorf("probe column %s.%s: %w", table, column, err)
+		return true, nil
+	case errors.Is(err, sql.ErrNoRows):
+		return false, nil
+	default:
+		return false, fmt.Errorf("probe column %s.%s: %w", table, column, err)
 	}
-
-	if _, err := tx.ExecContext(ctx, ddl); err != nil {
-		return fmt.Errorf("add column %s.%s: %w", table, column, err)
-	}
-	return nil
 }
 
 // scrubFreedPages erases the pages the rebuild released.

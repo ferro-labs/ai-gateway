@@ -25,6 +25,9 @@ func TestCreate(t *testing.T) {
 	if key.ID == "" {
 		t.Error("expected non-empty ID")
 	}
+	if key.CreatedAt.IsZero() || key.CreatedAt.Location() != time.UTC {
+		t.Errorf("expected non-zero created_at in UTC, got %v", key.CreatedAt)
+	}
 }
 
 func TestGet_Existing(t *testing.T) {
@@ -147,6 +150,9 @@ func TestRotateAndDeleteRetireTheOldHash(t *testing.T) {
 	if _, ok := store.ValidateKey(context.Background(), rotated.Key); !ok {
 		t.Fatal("the rotated secret does not validate")
 	}
+	if rotated.RotatedAt == nil || rotated.RotatedAt.Location() != time.UTC {
+		t.Fatalf("expected rotated_at in UTC, got %v", rotated.RotatedAt)
+	}
 
 	if err := store.Delete(context.Background(), created.ID); err != nil {
 		t.Fatalf("delete key: %v", err)
@@ -173,6 +179,9 @@ func TestRevoke(t *testing.T) {
 	}
 	if got.RevokedAt == nil {
 		t.Error("expected RevokedAt to be set")
+	}
+	if got.RevokedAt != nil && got.RevokedAt.Location() != time.UTC {
+		t.Errorf("expected revoked_at in UTC, got %v", got.RevokedAt.Location())
 	}
 
 	_, valid := store.ValidateKey(context.Background(), created.Key)

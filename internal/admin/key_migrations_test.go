@@ -8,11 +8,23 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/ferro-labs/ai-gateway/internal/migrations"
 )
 
 // plaintextKey is a recognizable marker so the on-disk assertions below can
 // prove the secret is gone rather than merely absent from the table.
 const plaintextKey = "fgw_deadbeefcafe0123456789abcdef0123456789abcdef0123456789abcdef01"
+
+// v1121KeyStoreSteps freezes the ledger identities shipped by v1.1.21 so the
+// adoption test does not silently change when a later migration is added.
+func v1121KeyStoreSteps(dialect migrations.Dialect) []migrations.Step {
+	return []migrations.Step{
+		{Version: 1, Name: "api_keys_baseline", SQL: baselineDDL(dialect)},
+		{Version: 2, Name: "api_keys_hash", Fn: hashStoredKeys(dialect)},
+		{Version: 3, Name: "api_keys_scrub", NoTx: scrubFreedPages(dialect)},
+	}
+}
 
 // legacySchema is the api_keys table as v1.1.20 and earlier created it: the
 // secret in a plaintext UNIQUE column, with a redundant secondary index.
@@ -129,6 +141,41 @@ func hasColumn(names []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func assertMigrationLedger(t *testing.T, db *sql.DB, query string, want []migrations.Step) {
+	t.Helper()
+
+	rows, err := db.QueryContext(t.Context(), query)
+	if err != nil {
+		t.Fatalf("read migration ledger: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	type identity struct {
+		version int
+		name    string
+	}
+	var got []identity
+	for rows.Next() {
+		var migration identity
+		if err := rows.Scan(&migration.version, &migration.name); err != nil {
+			t.Fatalf("scan migration ledger: %v", err)
+		}
+		got = append(got, migration)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate migration ledger: %v", err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("migration ledger has %d rows, want %d: %v", len(got), len(want), got)
+	}
+	for i, step := range want {
+		expected := identity{version: step.Version, name: step.Name}
+		if got[i] != expected {
+			t.Fatalf("migration ledger row %d = %+v, want %+v", i, got[i], expected)
+		}
+	}
 }
 
 // A database written by an earlier release is migrated in place: the key it
@@ -264,12 +311,105 @@ func TestMigrationIsIdempotentAcrossRestarts(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 
-	var applied int
-	if err := db.QueryRowContext(t.Context(), "SELECT COUNT(*) FROM schema_migrations").Scan(&applied); err != nil {
-		t.Fatalf("count applied migrations: %v", err)
+	assertMigrationLedger(t, db,
+		"SELECT version, name FROM api_key_schema_migrations ORDER BY version",
+		keyStoreSteps(migrations.SQLite))
+}
+
+func TestKeyStoreMigrationIgnoresUnrelatedDefaultLedger(t *testing.T) {
+	path := writeLegacyDB(t, true)
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open fixture: %v", err)
 	}
-	if want := len(keyStoreSteps("sqlite")); applied != want {
-		t.Fatalf("schema_migrations holds %d rows, want %d", applied, want)
+	if _, err := db.ExecContext(t.Context(), `
+		CREATE TABLE schema_migrations (version TEXT PRIMARY KEY, dirty BOOLEAN NOT NULL);
+		INSERT INTO schema_migrations(version, dirty) VALUES ('external-v7', 0)`); err != nil {
+		_ = db.Close()
+		t.Fatalf("create unrelated ledger: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close fixture: %v", err)
+	}
+
+	store, err := NewSQLiteStore(t.Context(), path)
+	if err != nil {
+		t.Fatalf("open key store alongside unrelated ledger: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if _, ok := store.ValidateKey(context.Background(), plaintextKey); !ok {
+		t.Fatal("legacy key stopped authenticating")
+	}
+
+	var (
+		externalVersion string
+		externalDirty   bool
+	)
+	if err := store.db.QueryRowContext(t.Context(),
+		"SELECT version, dirty FROM schema_migrations WHERE version = ?", "external-v7",
+	).Scan(&externalVersion, &externalDirty); err != nil {
+		t.Fatalf("read unrelated ledger: %v", err)
+	}
+	if externalVersion != "external-v7" || externalDirty {
+		t.Fatalf("unrelated ledger row changed to version=%q dirty=%t", externalVersion, externalDirty)
+	}
+	var externalRows int
+	if err := store.db.QueryRowContext(t.Context(), "SELECT COUNT(*) FROM schema_migrations").Scan(&externalRows); err != nil {
+		t.Fatalf("count unrelated ledger: %v", err)
+	}
+	if externalRows != 1 {
+		t.Fatalf("unrelated ledger holds %d rows, want 1", externalRows)
+	}
+	assertMigrationLedger(t, store.db,
+		"SELECT version, name FROM api_key_schema_migrations ORDER BY version",
+		keyStoreSteps(migrations.SQLite))
+}
+
+func TestKeyStoreAdoptsV1121DefaultLedger(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		withUsageColumns bool
+	}{
+		{name: "with usage columns", withUsageColumns: true},
+		{name: "without usage columns", withUsageColumns: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeLegacyDB(t, tc.withUsageColumns)
+			legacySteps := v1121KeyStoreSteps(migrations.SQLite)
+			db, err := sql.Open("sqlite", path)
+			if err != nil {
+				t.Fatalf("open v1.1.21 fixture: %v", err)
+			}
+			db.SetMaxOpenConns(1)
+			if err := migrations.Run(t.Context(), db, migrations.SQLite, "api_keys", legacySteps); err != nil {
+				_ = db.Close()
+				t.Fatalf("apply v1.1.21 migrations: %v", err)
+			}
+			if err := db.Close(); err != nil {
+				t.Fatalf("close v1.1.21 fixture: %v", err)
+			}
+
+			store, err := NewSQLiteStore(t.Context(), path)
+			if err != nil {
+				t.Fatalf("open migrated v1.1.21 store: %v", err)
+			}
+			t.Cleanup(func() { _ = store.Close() })
+			if _, ok := store.ValidateKey(context.Background(), plaintextKey); !ok {
+				t.Fatal("v1.1.21 key stopped authenticating")
+			}
+
+			for _, want := range []string{"usage_count", "last_used_at"} {
+				if cols := columnNames(t, store.db, "api_keys"); !hasColumn(cols, want) {
+					t.Fatalf("column %s is missing after adoption: %v", want, cols)
+				}
+			}
+
+			assertMigrationLedger(t, store.db,
+				"SELECT version, name FROM schema_migrations ORDER BY version", legacySteps)
+			assertMigrationLedger(t, store.db,
+				"SELECT version, name FROM api_key_schema_migrations ORDER BY version",
+				keyStoreSteps(migrations.SQLite))
+		})
 	}
 }
 

@@ -59,7 +59,7 @@ func NewPostgresStore(ctx context.Context, dsn string) (*SQLStore, error) {
 }
 
 func (s *SQLStore) init(ctx context.Context) error {
-	if err := migrations.Run(ctx, s.db, s.dialect, "api_keys", keyStoreSteps(s.dialect)); err != nil {
+	if err := migrations.RunNamed(ctx, s.db, s.dialect, keyStoreLedger, "api_keys", keyStoreSteps(s.dialect)); err != nil {
 		return fmt.Errorf("migrate %s store schema: %w", s.dialect, err)
 	}
 	return s.prepareStmts(ctx)

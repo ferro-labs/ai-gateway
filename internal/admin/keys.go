@@ -129,7 +129,7 @@ func (s *KeyStore) Create(_ context.Context, name string, scopes []string, expir
 		Key:        displayKey(key),
 		Name:       name,
 		Scopes:     append([]string(nil), scopes...),
-		CreatedAt:  time.Now(),
+		CreatedAt:  time.Now().UTC(),
 		ExpiresAt:  cloneTime(expiresAt),
 		UsageCount: 0,
 		Active:     true,
@@ -183,7 +183,7 @@ func (s *KeyStore) Revoke(_ context.Context, id string) error {
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrKeyNotFound, id)
 	}
-	now := time.Now()
+	now := time.Now().UTC()
 	rec.apiKey.RevokedAt = &now
 	rec.apiKey.Active = false
 	return nil
@@ -257,7 +257,7 @@ func (s *KeyStore) RotateKey(_ context.Context, id string) (*APIKey, error) {
 	rec.hash = hashKey(newKey)
 	s.byHash[rec.hash] = id
 	rec.apiKey.Key = displayKey(newKey)
-	now := time.Now()
+	now := time.Now().UTC()
 	rec.apiKey.RotatedAt = &now
 
 	rotated := cloneAPIKey(rec.apiKey)
