@@ -74,10 +74,11 @@ Weekly patch line. Each release is backward-compatible bug-fixing on a single th
 - **v1.1.10–v1.1.17** — Provider readiness remediation: proxy governance, native provider fidelity, enterprise endpoints, OpenAI-compatible provider coverage, local/prediction API providers, and provider-readiness closeout.
 - **v1.1.18** — Critical fixes and security hardening: concurrent cache-hit race fix, SQLite file permissions restricted to `0600`, safe default per-IP rate limiting, and Go 1.25.11 toolchain pin.
 - **v1.1.19** — Provider read bounds and typed errors: upstream provider response reads capped at 50 MiB, typed provider HTTP status errors for retry/circuit-breaker classification, DeepSeek streaming token accounting, and cross-provider status conformance.
-
-### Next patch
-
 - **v1.1.20** — Streaming deadlines and serving robustness: long-lived proxy and legacy-completions streams with an upstream idle bound, recoverable provider initialization failures, degraded health status codes, CSP/Permissions-Policy headers, panic recovery order, and metrics-cardinality hardening.
+- **v1.1.21** — Key hashing and storage hardening: API keys stored as `sha256(key)` at rest with a table rebuild that purges the plaintext from the file, fail-closed bootstrap credentials, pre-write SQLite file permissions, versioned schema migrations, request-logger persistence through the shared store, and exact in-database log stats.
+- **v1.1.22** — v1.1.x hardening closeout: streaming goroutine-leak and single circuit-breaker-probe fixes, streaming/non-streaming target parity, strict unknown-key config decode with an advisory `apiVersion`, a unified store schema-migration path, atomic config-history persistence, Gemini/Bedrock provider fixes, and Qwen live model discovery.
+
+The v1.1.x hardening patch line is complete; further work continues in the v1.2.0+ minors below.
 
 ## v1.2.0 — Provider Parameter Capability Matrix
 
