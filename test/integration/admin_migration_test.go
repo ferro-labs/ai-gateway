@@ -21,6 +21,13 @@ import (
 // baseline, hash-and-rebuild, and scrub.
 const migrationSteps = 3
 
+// keyStoreLedger is the dedicated ledger the key store records its migration
+// versions in (keyStoreLedger in internal/admin/key_migrations.go). Tests that
+// reset or count the key store's migrations must target this table, not the
+// default schema_migrations — a stale ledger makes the next open skip table
+// creation and every later Postgres test fail with "relation does not exist".
+const keyStoreLedger = "api_key_schema_migrations"
+
 const legacyPlaintextKey = "fgw_deadbeefcafe0123456789abcdef0123456789abcdef0123456789abcdef01"
 
 func openTestDB(t *testing.T) *sql.DB {
@@ -38,7 +45,7 @@ func openTestDB(t *testing.T) *sql.DB {
 // t.Cleanup, where t.Context() is already canceled.
 func resetKeySchema(t *testing.T, db *sql.DB) {
 	t.Helper()
-	if _, err := db.ExecContext(context.Background(), "DROP TABLE IF EXISTS api_keys, api_keys_new, schema_migrations"); err != nil {
+	if _, err := db.ExecContext(context.Background(), "DROP TABLE IF EXISTS api_keys, api_keys_new, schema_migrations, "+keyStoreLedger); err != nil {
 		t.Fatalf("reset key schema: %v", err)
 	}
 }
@@ -97,7 +104,7 @@ func columnExists(t *testing.T, db *sql.DB, table, column string) bool {
 func appliedMigrations(t *testing.T, db *sql.DB) int {
 	t.Helper()
 	var n int
-	if err := db.QueryRowContext(t.Context(), "SELECT COUNT(*) FROM schema_migrations").Scan(&n); err != nil {
+	if err := db.QueryRowContext(t.Context(), "SELECT COUNT(*) FROM "+keyStoreLedger).Scan(&n); err != nil {
 		t.Fatalf("count applied migrations: %v", err)
 	}
 	return n
@@ -178,7 +185,7 @@ func TestPostgresMigration_IsIdempotent(t *testing.T) {
 	}
 
 	if got := appliedMigrations(t, db); got != migrationSteps {
-		t.Fatalf("schema_migrations holds %d rows, want %d", got, migrationSteps)
+		t.Fatalf("%s holds %d rows, want %d", keyStoreLedger, got, migrationSteps)
 	}
 }
 
@@ -223,7 +230,7 @@ func TestPostgresMigration_ConcurrentStartupsSerialize(t *testing.T) {
 	}
 
 	if got := appliedMigrations(t, db); got != migrationSteps {
-		t.Fatalf("schema_migrations holds %d rows, want %d: a step was applied twice", got, migrationSteps)
+		t.Fatalf("%s holds %d rows, want %d: a step was applied twice", keyStoreLedger, got, migrationSteps)
 	}
 	if _, ok := stores[0].ValidateKey(context.Background(), legacyPlaintextKey); !ok {
 		t.Fatal("the pre-migration key no longer authenticates")
