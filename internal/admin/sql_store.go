@@ -354,6 +354,14 @@ func (s *SQLStore) RotateKey(ctx context.Context, id string) (*APIKey, error) {
 	return updated, nil
 }
 
+// Ping verifies the backing database is reachable.
+func (s *SQLStore) Ping(ctx context.Context) error {
+	if err := s.db.PingContext(ctx); err != nil {
+		return fmt.Errorf("key store ping: %w", err)
+	}
+	return nil
+}
+
 func (s *SQLStore) scanOne(ctx context.Context, stmt *sql.Stmt, arg any) (*APIKey, error) {
 	return scanAPIKey(stmt.QueryRowContext(ctx, arg))
 }

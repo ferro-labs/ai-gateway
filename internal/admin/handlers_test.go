@@ -137,12 +137,20 @@ func (m *testConfigManager) ResetConfig(_ context.Context) error {
 	return nil
 }
 
+func (m *testConfigManager) Ping(_ context.Context) error {
+	return nil
+}
+
 func (m *persistenceFailingConfigManager) GetConfig() aigateway.Config {
 	return m.cfg
 }
 
 func (m *persistenceFailingConfigManager) ReloadConfig(_ context.Context, _ aigateway.Config) error {
 	return fmt.Errorf("%w: write failed", errConfigPersistence)
+}
+
+func (m *persistenceFailingConfigManager) Ping(_ context.Context) error {
+	return nil
 }
 
 func setupTestRouterWithConfigManager(cm ConfigManager) (*Handlers, chi.Router) {

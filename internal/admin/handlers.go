@@ -17,6 +17,9 @@ import (
 type ConfigManager interface {
 	GetConfig() aigateway.Config
 	ReloadConfig(ctx context.Context, cfg aigateway.Config) error
+	// Ping reports whether the config manager's backing store is reachable.
+	// Readiness probes call it to gate traffic; it must be cheap.
+	Ping(ctx context.Context) error
 }
 
 // Handlers holds dependencies for admin HTTP handlers.

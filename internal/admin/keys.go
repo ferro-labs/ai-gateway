@@ -291,3 +291,9 @@ func (s *KeyStore) ValidateKey(_ context.Context, key string) (*APIKey, bool) {
 	k.UsageCount++
 	return cloneAPIKey(k), true
 }
+
+// Ping reports whether the store is reachable. The in-memory KeyStore is always
+// reachable, so it returns nil.
+func (s *KeyStore) Ping(_ context.Context) error {
+	return nil
+}

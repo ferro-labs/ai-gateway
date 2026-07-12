@@ -91,7 +91,7 @@ func NewRouter(
 		r.Use(middleware.RateLimit(rlStore))
 	}
 
-	mountOperationalRoutes(r, gw, keyStore, masterKey)
+	mountOperationalRoutes(r, gw, keyStore, cfgManager, masterKey)
 	mountDashboardRoutes(r)
 	mountAdminRoutes(r, gw, keyStore, cfgManager, logReader, logMaintainer, masterKey)
 	mountOpenAIRoutes(r, gw, registry, keyStore, masterKey)
@@ -127,8 +127,12 @@ func ensureGateway(gw *aigateway.Gateway, registry *providers.Registry) *aigatew
 	return created
 }
 
-func mountOperationalRoutes(r chi.Router, gw *aigateway.Gateway, store admin.Store, masterKey string) {
+func mountOperationalRoutes(r chi.Router, gw *aigateway.Gateway, store admin.Store, cfgManager admin.ConfigManager, masterKey string) {
 	r.Get("/health", handler.Health(gw))
+	// Split liveness/readiness probes for orchestrator rollout gating: /livez is
+	// process-only, /readyz gates on config, store reachability, and providers.
+	r.Get("/livez", handler.Livez())
+	r.Get("/readyz", handler.Readyz(gw, store, cfgManager))
 	obsAuth := admin.AuthMiddleware(store, masterKey)
 	r.Group(func(r chi.Router) {
 		r.Use(obsAuth)

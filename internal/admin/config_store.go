@@ -187,6 +187,14 @@ func (s *SQLConfigStore) Delete(ctx context.Context) error {
 	return nil
 }
 
+// Ping verifies the backing database is reachable.
+func (s *SQLConfigStore) Ping(ctx context.Context) error {
+	if err := s.db.PingContext(ctx); err != nil {
+		return fmt.Errorf("config store ping: %w", err)
+	}
+	return nil
+}
+
 // Close closes the underlying SQL connection.
 func (s *SQLConfigStore) Close() error {
 	if s == nil || s.db == nil {
@@ -236,6 +244,21 @@ func NewGatewayConfigManager(gw *aigateway.Gateway, store ConfigStore) (*Gateway
 // GetConfig returns the active runtime config.
 func (m *GatewayConfigManager) GetConfig() aigateway.Config {
 	return m.gw.GetConfig()
+}
+
+// Ping reports whether the config manager's backing store is reachable. A
+// manager with no persistent store keeps config in memory and is always
+// reachable, so it returns nil.
+func (m *GatewayConfigManager) Ping(ctx context.Context) error {
+	if m.store == nil {
+		return nil
+	}
+	if p, ok := m.store.(interface{ Ping(context.Context) error }); ok {
+		if err := p.Ping(ctx); err != nil {
+			return fmt.Errorf("config store ping: %w", err)
+		}
+	}
+	return nil
 }
 
 // ReloadConfig validates/applies config and persists it when a store is configured.
