@@ -117,9 +117,14 @@ type ExporterConfig struct {
 // optional; sensible defaults apply when omitted (see
 // internal/otel.DefaultConfig).
 type TracingConfig struct {
-	// Enabled is the master switch. Defaults to true; the pipeline
-	// still short-circuits to NoOp when no OTLP endpoint is configured.
-	Enabled bool `json:"enabled" yaml:"enabled"`
+	// Enabled is the master switch, a tri-state pointer:
+	//   nil   — infer activation from a configured endpoint/exporters
+	//           (the default when the key is omitted).
+	//   false — hard off: tracing stays disabled even when an endpoint or
+	//           OTEL_EXPORTER_OTLP_ENDPOINT is set.
+	//   true  — force on.
+	// The pipeline still short-circuits to NoOp when nothing is configured.
+	Enabled *bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
 	// Endpoint overrides OTEL_EXPORTER_OTLP_ENDPOINT (host:port form).
 	Endpoint string `json:"endpoint,omitempty" yaml:"endpoint,omitempty"`
 	// Protocol selects the OTLP transport: "grpc" (default) or "http/protobuf".

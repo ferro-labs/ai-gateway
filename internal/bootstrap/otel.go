@@ -33,12 +33,19 @@ func otelConfigFromGateway(obs aigateway.ObservabilityConfig) gwotel.Config {
 		}
 	}
 
-	// The public Enabled defaults to false (Go zero value); only honour
-	// it as a hard "off" switch. When the user did not set it but provided
-	// an endpoint (config OR OTEL_EXPORTER_OTLP_ENDPOINT) or enabled
-	// exporters, we treat the section as opting in.
+	// Enabled is a tri-state pointer. nil infers activation from a configured
+	// endpoint (config OR OTEL_EXPORTER_OTLP_ENDPOINT) or enabled exporters;
+	// an explicit false is a hard kill switch that wins over all of those; an
+	// explicit true forces the pipeline on.
 	envEndpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
-	cfg.Enabled = t.Enabled || t.Endpoint != "" || envEndpoint != "" || enabledExporters > 0
+	switch {
+	case t.Enabled != nil && !*t.Enabled:
+		cfg.Enabled = false
+	case t.Enabled != nil && *t.Enabled:
+		cfg.Enabled = true
+	default:
+		cfg.Enabled = t.Endpoint != "" || envEndpoint != "" || enabledExporters > 0
+	}
 	if t.Endpoint != "" {
 		cfg.Endpoint = t.Endpoint
 	}
