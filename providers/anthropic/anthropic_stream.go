@@ -18,7 +18,9 @@ import (
 // bounds time-to-first-byte (headers), not the duration of the streamed body, so
 // it is safe for streaming: a slow model still streams tokens past the timeout.
 func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan core.StreamChunk, error) {
-	core.WarnUnsupportedParams(ctx, p.Name(), req.Model, req, anthropicSupportedParams...)
+	if err := core.EnforceUnsupportedParams(ctx, p.Name(), req.Model, req); err != nil {
+		return nil, err
+	}
 
 	aReq := buildAnthropicRequest(ctx, req, true)
 

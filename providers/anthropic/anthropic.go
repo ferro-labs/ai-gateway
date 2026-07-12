@@ -129,10 +129,6 @@ type anthropicMetadata struct {
 	UserID string `json:"user_id,omitempty"`
 }
 
-// anthropicSupportedParams lists the OpenAI parameters the Anthropic Messages
-// API can express. Anything else the caller sets is warn-and-dropped (#140).
-var anthropicSupportedParams = []string{"temperature", "top_p", "max_tokens", "stop", "tools", "tool_choice", "user"}
-
 // buildContent renders a non-system message's content for the Anthropic API.
 // Plain text turns stay a JSON string (the common path); multimodal turns and
 // assistant tool calls become an array of content blocks. It is passed to
@@ -284,7 +280,9 @@ func (p *Provider) newMessagesRequest(ctx context.Context, aReq anthropicRequest
 
 // Complete sends a chat completion request to Anthropic.
 func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
-	core.WarnUnsupportedParams(ctx, p.Name(), req.Model, req, anthropicSupportedParams...)
+	if err := core.EnforceUnsupportedParams(ctx, p.Name(), req.Model, req); err != nil {
+		return nil, err
+	}
 
 	aReq := buildAnthropicRequest(ctx, req, false)
 

@@ -21,7 +21,9 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 	if !strings.HasPrefix(bedrockModelRoutingID(req.Model), "anthropic.") {
 		return nil, fmt.Errorf("streaming on Bedrock is currently only supported for anthropic.claude-* models")
 	}
-	core.WarnUnsupportedParams(ctx, p.Name(), req.Model, req, bedrockSupportedParams(bedrockModelRoutingID(req.Model))...)
+	if err := core.EnforceUnsupportedParamsList(ctx, p.Name(), req.Model, req, bedrockSupportedParams(bedrockModelRoutingID(req.Model))...); err != nil {
+		return nil, err
+	}
 
 	anthropicReq, err := buildBedrockAnthropicRequest(ctx, req)
 	if err != nil {

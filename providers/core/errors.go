@@ -26,6 +26,10 @@ func ParseStatusCode(err error) int {
 	if err == nil {
 		return 0
 	}
+	var unsupportedErr *UnsupportedParamError
+	if errors.As(err, &unsupportedErr) {
+		return unsupportedErr.HTTPStatus()
+	}
 	var statusErr *HTTPStatusError
 	if errors.As(err, &statusErr) {
 		return statusErr.StatusCode

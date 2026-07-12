@@ -215,5 +215,8 @@
       "headers": {}
     },
     "exporters": []
+  },
+  "compatibility": {
+    "on_unsupported_param": "warn"
   }
 }

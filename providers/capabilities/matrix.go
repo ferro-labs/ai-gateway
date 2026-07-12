@@ -1,12 +1,13 @@
 // Package capabilities declares, from a single source of truth, which OpenAI
 // chat-completion parameters each provider can express.
 //
-// The matrix is DERIVED from the parameter lists the providers already declare
-// in their own request builders (the `supported` slices passed to
-// core.WarnUnsupportedParams). It records exceptions only: any parameter not
-// listed for a provider defaults to Forward, and any provider without an entry
-// forwards everything. Nothing here invents support a provider does not have —
-// each entry mirrors the provider's existing declared behaviour.
+// The matrix is the authoritative record of provider parameter support: native
+// providers consult it via core.EnforceUnsupportedParams (which applies the
+// configured warn/drop/reject mode), and GET /v1/capabilities serializes it.
+// It records exceptions only: any parameter not listed for a provider defaults
+// to Forward, and any provider without an entry forwards everything. The values
+// were originally derived from each provider's own supported-parameter list, so
+// they mirror real provider behaviour rather than inventing support.
 package capabilities
 
 // Support classifies how a provider handles a given OpenAI chat parameter.
@@ -80,15 +81,13 @@ func unsupported(params ...string) Profile {
 // which imports this package. The drift-guard test cross-checks every key
 // against providers.AllProviders(), and the unit tests pin each Unsupported set.
 //
-// Each entry is the complement of the provider's declared supported list:
-//   - anthropic → providers/anthropic anthropicSupportedParams
-//   - bedrock   → providers/bedrock bedrockSupportedParams (model-dependent; see below)
-//   - cohere    → providers/cohere cohereSupportedParams
-//   - gemini    → providers/gemini geminiSupportedParams
-//   - replicate → providers/replicate forwardedTextParams
-//   - ai21      → providers/ai21 inline WarnUnsupportedParams list
+// Each entry lists the parameters the provider cannot express — the complement
+// of its supported set. Bedrock support is model-dependent and stays computed
+// per-model in providers/bedrock (see the bedrock entry below); the other
+// entries are provider-level. These sets are the single source consumed by
+// core.EnforceUnsupportedParams; the providers no longer keep their own lists.
 //
-// Only the parameters governed by the providers' warn mechanism are derived
+// Only the parameters governed by the compatibility mechanism are recorded
 // here; stream, stream_options, and parallel_tool_calls fall outside it
 // (streaming is handled natively) and default to Forward.
 var matrix = map[string]Profile{
@@ -122,9 +121,9 @@ var matrix = map[string]Profile{
 	),
 }
 
-// geminiProfile derives Gemini's profile from geminiSupportedParams, then marks
-// response_format as Translate: providers/gemini/gemini.go maps the json_object
-// and json_schema response formats onto Gemini's native responseMimeType.
+// geminiProfile marks Gemini's unsupported parameters, then response_format as
+// Translate: providers/gemini/gemini.go maps the json_object and json_schema
+// response formats onto Gemini's native responseMimeType.
 func geminiProfile() Profile {
 	p := unsupported("max_completion_tokens", "logprobs", "top_logprobs", "user", "logit_bias")
 	p["response_format"] = Translate

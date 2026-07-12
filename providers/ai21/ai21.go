@@ -150,8 +150,9 @@ func (p *Provider) completeJurassic(ctx context.Context, req core.Request) (*cor
 		}
 	}
 
-	core.WarnUnsupportedParams(ctx, p.Name(), req.Model, req,
-		"max_tokens", "temperature", "top_p", "stop")
+	if err := core.EnforceUnsupportedParams(ctx, p.Name(), req.Model, req); err != nil {
+		return nil, err
+	}
 
 	completeReq := ai21CompleteRequest{
 		Prompt:        prompt,

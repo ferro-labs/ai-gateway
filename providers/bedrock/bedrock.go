@@ -318,7 +318,9 @@ func bedrockSupportedParams(modelID string) []string {
 // to the model family (Anthropic, Titan, Llama) that matches the model prefix.
 func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
 	modelID := bedrockModelRoutingID(req.Model)
-	core.WarnUnsupportedParams(ctx, p.Name(), modelID, req, bedrockSupportedParams(modelID)...)
+	if err := core.EnforceUnsupportedParamsList(ctx, p.Name(), modelID, req, bedrockSupportedParams(modelID)...); err != nil {
+		return nil, err
+	}
 	if strings.HasPrefix(modelID, "anthropic.") {
 		return p.completeAnthropic(ctx, req)
 	}

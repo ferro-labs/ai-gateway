@@ -33,14 +33,6 @@ const (
 	finishReasonStop = "stop"
 )
 
-// forwardedTextParams lists the OpenAI request parameters buildTextInput
-// forwards to Replicate. Any other populated parameter is reported by
-// core.WarnUnsupportedParams so the drop is observable instead of silent.
-var forwardedTextParams = []string{
-	"max_tokens", "temperature", "top_p", "seed", "stop",
-	"presence_penalty", "frequency_penalty",
-}
-
 // Provider implements the Replicate API client.
 // It supports text generation models via chat completion and image generation
 // models via the ImageProvider interface.
@@ -222,11 +214,10 @@ func buildPrompt(req core.Request) string {
 }
 
 // buildTextInput translates an OpenAI-style request into Replicate's prediction
-// input, forwarding the sampling parameters Replicate language models accept and
-// warning (issue #140) about any populated parameter that is dropped.
-func buildTextInput(ctx context.Context, req core.Request) replicatePredictionInput {
-	core.WarnUnsupportedParams(ctx, Name, req.Model, req, forwardedTextParams...)
-
+// input, forwarding the sampling parameters Replicate language models accept.
+// Parameters Replicate cannot express are handled by the compatibility mode in
+// Complete/CompleteStream before this runs.
+func buildTextInput(req core.Request) replicatePredictionInput {
 	input := replicatePredictionInput{Prompt: buildPrompt(req)}
 	if req.MaxTokens != nil {
 		input.MaxTokens = *req.MaxTokens
@@ -324,7 +315,10 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 	if err != nil {
 		return nil, err
 	}
-	predReq := replicatePredictionRequest{Version: version, Input: buildTextInput(ctx, req)}
+	if err := core.EnforceUnsupportedParams(ctx, Name, req.Model, req); err != nil {
+		return nil, err
+	}
+	predReq := replicatePredictionRequest{Version: version, Input: buildTextInput(req)}
 
 	bodyReader, _, release, err := core.JSONBodyReader(predReq)
 	if err != nil {
@@ -360,7 +354,10 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 	if err != nil {
 		return nil, err
 	}
-	predReq := replicatePredictionRequest{Version: version, Input: buildTextInput(ctx, req), Stream: true}
+	if err := core.EnforceUnsupportedParams(ctx, Name, req.Model, req); err != nil {
+		return nil, err
+	}
+	predReq := replicatePredictionRequest{Version: version, Input: buildTextInput(req), Stream: true}
 
 	bodyReader, _, release, err := core.JSONBodyReader(predReq)
 	if err != nil {

@@ -158,6 +158,28 @@ func TestRouteErrorDetails_NonRejectionError(t *testing.T) {
 	}
 }
 
+func TestRouteErrorDetails_UnsupportedParam(t *testing.T) {
+	err := core.NewUnsupportedParamError("gemini", []string{"logit_bias"})
+	status, errType, code := RouteErrorDetails(err)
+	if status != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", status)
+	}
+	if errType != "invalid_request_error" {
+		t.Fatalf("expected invalid_request_error, got %q", errType)
+	}
+	if code != "unsupported_parameter" {
+		t.Fatalf("expected unsupported_parameter, got %q", code)
+	}
+}
+
+func TestRouteErrorDetails_UnsupportedParamWrapped(t *testing.T) {
+	// A wrapped reject error must still classify as a 400, not the 500 fallback.
+	err := fmt.Errorf("routing: %w", core.NewUnsupportedParamError("gemini", []string{"seed"}))
+	if status, _, _ := RouteErrorDetails(err); status != http.StatusBadRequest {
+		t.Fatalf("wrapped unsupported-param error: expected 400, got %d", status)
+	}
+}
+
 func TestRouteErrorDetails_NoCapableProvider(t *testing.T) {
 	err := fmt.Errorf("%w: no embedding provider for %q", core.ErrNoCapableProvider, "unknown-model")
 	status, errType, code := RouteErrorDetails(err)

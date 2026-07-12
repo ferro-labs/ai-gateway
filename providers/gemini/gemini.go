@@ -172,15 +172,6 @@ type geminiGenerationConfig struct {
 	ResponseMimeType string   `json:"responseMimeType,omitempty"`
 }
 
-// geminiSupportedParams lists the OpenAI parameters mappable onto Gemini's
-// generationConfig (plus native tool calling). Anything else the caller sets is
-// warn-and-dropped (#140).
-var geminiSupportedParams = []string{
-	"temperature", "top_p", "n", "seed", "max_tokens",
-	"presence_penalty", "frequency_penalty", "stop", "response_format",
-	"tools", "tool_choice",
-}
-
 type geminiRequest struct {
 	Contents          []geminiContent         `json:"contents"`
 	SystemInstruction *geminiContent          `json:"systemInstruction,omitempty"`
@@ -585,7 +576,9 @@ func parseCandidateParts(parts []geminiPart, candidateIndex int, withIndex bool,
 
 // Complete sends a chat completion request to Gemini.
 func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
-	core.WarnUnsupportedParams(ctx, p.Name(), req.Model, req, geminiSupportedParams...)
+	if err := core.EnforceUnsupportedParams(ctx, p.Name(), req.Model, req); err != nil {
+		return nil, err
+	}
 
 	geminiReq := buildRequest(req)
 
@@ -647,7 +640,9 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 
 // CompleteStream sends a streaming chat completion request to Gemini.
 func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan core.StreamChunk, error) {
-	core.WarnUnsupportedParams(ctx, p.Name(), req.Model, req, geminiSupportedParams...)
+	if err := core.EnforceUnsupportedParams(ctx, p.Name(), req.Model, req); err != nil {
+		return nil, err
+	}
 
 	geminiReq := buildRequest(req)
 

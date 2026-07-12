@@ -5,6 +5,7 @@ import (
 	"slices"
 
 	"github.com/ferro-labs/ai-gateway/internal/logging"
+	"github.com/ferro-labs/ai-gateway/providers/capabilities"
 )
 
 // optionalParamOrder is the stable, deterministic ordering used when reporting
@@ -89,9 +90,9 @@ func DroppedParams(req Request, supported ...string) []string {
 // express, so the drop is observable instead of silent (issue #140). It is a
 // no-op when nothing populated is unsupported.
 //
-// This is warn-and-drop, not a hard failure: forwarding-only providers never
-// need it because the shared openaicompat builder forwards everything. The
-// supported argument lists the OpenAI parameter names the provider translates.
+// Deprecated: use EnforceUnsupportedParams (matrix-driven) or
+// EnforceUnsupportedParamsList (explicit per-model list) instead. Both honor the
+// configured compatibility mode (warn/drop/reject) rather than only warning.
 func WarnUnsupportedParams(ctx context.Context, provider, model string, req Request, supported ...string) {
 	dropped := DroppedParams(req, supported...)
 	if len(dropped) == 0 {
@@ -103,6 +104,59 @@ func WarnUnsupportedParams(ctx context.Context, provider, model string, req Requ
 		"model", model,
 		"dropped_params", dropped,
 	)
+}
+
+// DroppedParamsForProvider returns, in stable order, the optional OpenAI
+// parameters the caller populated on req that the capability matrix declares
+// Unsupported for provider. It is the matrix-driven counterpart of
+// DroppedParams: the matrix (providers/capabilities) is the single source of
+// provider parameter support, so native providers no longer hardcode their own
+// supported lists.
+func DroppedParamsForProvider(req Request, provider string) []string {
+	var dropped []string
+	for _, name := range optionalParamOrder {
+		if capabilities.SupportOf(provider, name) == capabilities.Unsupported && ParamPopulated(req, name) {
+			dropped = append(dropped, name)
+		}
+	}
+	return dropped
+}
+
+// EnforceUnsupportedParams applies the compatibility mode carried by ctx to the
+// parameters req sets that provider cannot express, per the capability matrix.
+// warn and drop log the dropped parameters and return nil — native providers
+// build a native payload that never forwards them, so both modes are observable
+// no-ops on the request. reject returns an *UnsupportedParamError (HTTP 400)
+// naming the parameters and does not proceed. It is the single enforcement seam
+// for matrix-declared native providers.
+func EnforceUnsupportedParams(ctx context.Context, provider, model string, req Request) error {
+	return enforceUnsupportedParams(ctx, provider, model, DroppedParamsForProvider(req, provider))
+}
+
+// EnforceUnsupportedParamsList is EnforceUnsupportedParams for providers whose
+// supported set is model-dependent (Bedrock): the caller passes the resolved
+// per-model supported parameters instead of relying on the provider-level matrix.
+func EnforceUnsupportedParamsList(ctx context.Context, provider, model string, req Request, supported ...string) error {
+	return enforceUnsupportedParams(ctx, provider, model, DroppedParams(req, supported...))
+}
+
+// enforceUnsupportedParams logs (warn/drop) or rejects (reject) the given
+// dropped parameters according to the compatibility mode carried by ctx. It is
+// a no-op when nothing populated is unsupported.
+func enforceUnsupportedParams(ctx context.Context, provider, model string, dropped []string) error {
+	if len(dropped) == 0 {
+		return nil
+	}
+	if UnsupportedParamModeFromContext(ctx) == UnsupportedParamReject {
+		return NewUnsupportedParamError(provider, dropped)
+	}
+	logging.FromContext(ctx).Warn(
+		"provider does not support request parameter(s); dropping",
+		"provider", provider,
+		"model", model,
+		"dropped_params", dropped,
+	)
+	return nil
 }
 
 // UnsupportedParamMode selects how the shared request builder treats a request

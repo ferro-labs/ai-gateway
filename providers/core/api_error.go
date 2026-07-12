@@ -49,16 +49,32 @@ func APIError(label string, status int, body []byte) error {
 	}
 }
 
-// NewUnsupportedParamError builds an HTTP 400 error naming the request
-// parameters the provider cannot express, for the reject compatibility mode. The
-// message names only parameter names and the provider — never prompt content or
-// secrets — so it is safe to return to the caller.
+// UnsupportedParamError is returned by the reject compatibility mode when a
+// request sets parameters the target provider cannot express. It is a distinct
+// type (not a generic upstream HTTPStatusError) so the HTTP layer can map it to
+// a 400 invalid_request_error without affecting how upstream provider errors are
+// classified. It names only parameter names and the provider — never prompt
+// content or secrets — so it is safe to return to the caller.
+type UnsupportedParamError struct {
+	// Provider is the target provider that cannot express the parameters.
+	Provider string
+	// Params are the offending OpenAI parameter names, in stable order.
+	Params []string
+}
+
+// Error implements error.
+func (e *UnsupportedParamError) Error() string {
+	return fmt.Sprintf(
+		"provider %q does not support request parameter(s): %s",
+		e.Provider, strings.Join(e.Params, ", "),
+	)
+}
+
+// HTTPStatus reports the HTTP status this error maps to (400 Bad Request).
+func (e *UnsupportedParamError) HTTPStatus() int { return http.StatusBadRequest }
+
+// NewUnsupportedParamError builds the reject-mode error naming the request
+// parameters the provider cannot express.
 func NewUnsupportedParamError(provider string, params []string) error {
-	return &HTTPStatusError{
-		StatusCode: http.StatusBadRequest,
-		Message: fmt.Sprintf(
-			"provider %q does not support request parameter(s): %s",
-			provider, strings.Join(params, ", "),
-		),
-	}
+	return &UnsupportedParamError{Provider: provider, Params: params}
 }

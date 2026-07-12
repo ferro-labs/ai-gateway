@@ -50,5 +50,10 @@ func RouteErrorDetails(err error) (status int, errType, code string) {
 		return http.StatusNotFound, "invalid_request_error", codeModelNotFound
 	}
 
+	var unsupportedParam *core.UnsupportedParamError
+	if errors.As(err, &unsupportedParam) {
+		return http.StatusBadRequest, "invalid_request_error", "unsupported_parameter"
+	}
+
 	return status, errType, code
 }

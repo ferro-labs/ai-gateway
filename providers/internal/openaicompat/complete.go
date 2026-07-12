@@ -108,7 +108,7 @@ func resolveUnsupportedMode(ctx context.Context, p ChatParams) core.UnsupportedP
 // enforceUnsupportedParams applies the compatibility mode to any populated
 // parameter the provider declares Unsupported in the capabilities matrix.
 // It mutates the caller's local copy of req only (never shared state). In warn
-// mode it is a no-op: native providers already warn via core.WarnUnsupportedParams
+// mode it is a no-op: native providers enforce via core.EnforceUnsupportedParams
 // in their own builders, and providers routed through this builder forward
 // everything (no matrix entry), so there is nothing to double-log here.
 func enforceUnsupportedParams(ctx context.Context, p ChatParams, req *core.Request) error {

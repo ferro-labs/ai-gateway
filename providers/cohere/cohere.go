@@ -115,14 +115,6 @@ type cohereRequest struct {
 	Stream           bool                   `json:"stream,omitempty"`
 }
 
-// cohereSupportedParams lists the OpenAI parameters mappable onto the Cohere v2
-// chat API (including native tool calling). Anything else the caller sets is
-// warn-and-dropped (#140).
-var cohereSupportedParams = []string{
-	"temperature", "top_p", "max_tokens", "stop",
-	"seed", "presence_penalty", "frequency_penalty", "tools", "tool_choice",
-}
-
 type cohereRequestMessage struct {
 	Role       string          `json:"role"`
 	Content    any             `json:"content,omitempty"`
@@ -268,7 +260,9 @@ func cohereAPIError(prefix string, status int, body []byte) error {
 
 // Complete sends a chat completion request to Cohere.
 func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
-	core.WarnUnsupportedParams(ctx, p.Name(), req.Model, req, cohereSupportedParams...)
+	if err := core.EnforceUnsupportedParams(ctx, p.Name(), req.Model, req); err != nil {
+		return nil, err
+	}
 
 	cohReq := cohereRequest{
 		Model:            req.Model,
@@ -421,7 +415,9 @@ func cohereStreamToolCallDelta(raw json.RawMessage, index int) (core.ToolCall, b
 
 // CompleteStream sends a streaming chat completion request to Cohere.
 func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan core.StreamChunk, error) {
-	core.WarnUnsupportedParams(ctx, p.Name(), req.Model, req, cohereSupportedParams...)
+	if err := core.EnforceUnsupportedParams(ctx, p.Name(), req.Model, req); err != nil {
+		return nil, err
+	}
 
 	cohReq := cohereRequest{
 		Model:            req.Model,
