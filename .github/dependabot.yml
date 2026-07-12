@@ -16,3 +16,14 @@ updates:
     labels:
       - "dependencies"
       - "ci"
+
+  # Track base-image patches for the Dockerfiles. The shipped binary is safe
+  # only while the runtime base stays current with its own security fixes.
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "docker"

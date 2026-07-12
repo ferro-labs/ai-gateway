@@ -1,8 +1,11 @@
 package aigateway
 
 import (
+	"bytes"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -313,6 +316,251 @@ targets:
 	if cb.MaxHalfThreshold != 2 {
 		t.Errorf("MaxHalfThreshold = %d, want 2", cb.MaxHalfThreshold)
 	}
+}
+
+func TestLoadConfig_RejectsUnknownKey(t *testing.T) {
+	tests := []struct {
+		name    string
+		file    string
+		data    string
+		wantKey string
+	}{
+		{
+			name:    "yaml top-level typo",
+			file:    "config.yaml",
+			data:    "strategy:\n  mode: single\ntargetz:\n  - virtual_key: openai\n",
+			wantKey: "targetz",
+		},
+		{
+			name:    "yaml nested typo",
+			file:    "config.yaml",
+			data:    "strategy:\n  modee: single\ntargets:\n  - virtual_key: openai\n",
+			wantKey: "modee",
+		},
+		{
+			name:    "json top-level typo",
+			file:    "config.json",
+			data:    `{"strategy":{"mode":"single"},"targetz":[{"virtual_key":"openai"}]}`,
+			wantKey: "targetz",
+		},
+		{
+			name:    "json nested typo",
+			file:    "config.json",
+			data:    `{"strategy":{"modee":"single"},"targets":[{"virtual_key":"openai"}]}`,
+			wantKey: "modee",
+		},
+		{
+			// Underscore-prefixed keys against the typed schema are ordinary
+			// unknown keys, not tolerated pseudo-comments.
+			name:    "json underscore-prefixed top-level key",
+			file:    "config.json",
+			data:    `{"_note":"x","strategy":{"mode":"single"},"targets":[{"virtual_key":"openai"}]}`,
+			wantKey: "_note",
+		},
+		{
+			name:    "yaml underscore-prefixed top-level key",
+			file:    "config.yaml",
+			data:    "_note: x\nstrategy:\n  mode: single\ntargets:\n  - virtual_key: openai\n",
+			wantKey: "_note",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeTempFile(t, tt.file, tt.data)
+			_, err := LoadConfig(path)
+			if err == nil {
+				t.Fatalf("expected error for unknown key %q, got nil", tt.wantKey)
+			}
+			if !strings.Contains(err.Error(), tt.wantKey) {
+				t.Errorf("error %q should name the unknown key %q", err, tt.wantKey)
+			}
+		})
+	}
+}
+
+func TestLoadConfig_PreservesUnderscoreKeysInPluginConfig(t *testing.T) {
+	// A plugin's free-form "config" map accepts arbitrary keys, including
+	// underscore-prefixed ones a plugin may use (e.g. "_token_source"). Strict
+	// decoding must not strip them: they have to reach the plugin unchanged.
+	tests := []struct {
+		name string
+		file string
+		data string
+	}{
+		{
+			name: "json",
+			file: "config.json",
+			data: `{
+				"strategy": {"mode": "single"},
+				"targets": [{"virtual_key": "openai"}],
+				"plugins": [{
+					"name": "request-logger",
+					"type": "logging",
+					"stage": "before_request",
+					"enabled": true,
+					"config": {"_x": "y", "level": "info"}
+				}]
+			}`,
+		},
+		{
+			name: "yaml",
+			file: "config.yaml",
+			data: "strategy:\n  mode: single\n" +
+				"targets:\n  - virtual_key: openai\n" +
+				"plugins:\n  - name: request-logger\n    type: logging\n" +
+				"    stage: before_request\n    enabled: true\n" +
+				"    config:\n      _x: y\n      level: info\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeTempFile(t, tt.file, tt.data)
+			cfg, err := LoadConfig(path)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(cfg.Plugins) != 1 {
+				t.Fatalf("expected 1 plugin, got %d", len(cfg.Plugins))
+			}
+			if got := cfg.Plugins[0].Config["_x"]; got != "y" {
+				t.Errorf("plugin config[_x] = %v, want \"y\"", got)
+			}
+		})
+	}
+}
+
+func TestLoadConfig_YAMLRejectsSecondDocument(t *testing.T) {
+	tests := []struct {
+		name    string
+		data    string
+		wantErr bool
+	}{
+		{
+			name: "single valid document loads",
+			data: "strategy:\n  mode: single\ntargets:\n  - virtual_key: openai\n",
+		},
+		{
+			name:    "trailing second document rejected",
+			data:    "strategy:\n  mode: single\ntargets:\n  - virtual_key: openai\n---\nstrategy:\n  mode: fallback\n",
+			wantErr: true,
+		},
+		{
+			name:    "trailing malformed second document rejected",
+			data:    "strategy:\n  mode: single\ntargets:\n  - virtual_key: openai\n---\n[unterminated\n",
+			wantErr: true,
+		},
+		{
+			name: "empty document still tolerated",
+			data: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeTempFile(t, "config.yaml", tt.data)
+			_, err := LoadConfig(path)
+			if tt.wantErr && err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestLoadConfig_JSONRejectsTrailingData(t *testing.T) {
+	// A second top-level value after the config object is rejected, matching a
+	// whole-document json.Unmarshal.
+	data := `{"strategy":{"mode":"single"},"targets":[{"virtual_key":"openai"}]}{"extra":true}`
+	path := writeTempFile(t, "config.json", data)
+	if _, err := LoadConfig(path); err == nil {
+		t.Fatal("expected error for trailing JSON data, got nil")
+	}
+}
+
+func TestLoadConfig_ExampleFilesParse(t *testing.T) {
+	// The shipped example configs must survive strict decoding and validation.
+	for _, name := range []string{"config.example.yaml", "config.example.json"} {
+		t.Run(name, func(t *testing.T) {
+			cfg, err := LoadConfig(name)
+			if err != nil {
+				t.Fatalf("LoadConfig(%q) failed: %v", name, err)
+			}
+			if err := ValidateConfig(*cfg); err != nil {
+				t.Fatalf("ValidateConfig(%q) failed: %v", name, err)
+			}
+		})
+	}
+}
+
+func TestNormalize_AppliesDefaults(t *testing.T) {
+	cfg := Config{Targets: []Target{{VirtualKey: "openai"}}}
+	cfg.Normalize()
+	if cfg.Strategy.Mode != ModeSingle {
+		t.Errorf("Strategy.Mode = %q, want %q", cfg.Strategy.Mode, ModeSingle)
+	}
+	if cfg.APIVersion != CurrentAPIVersion {
+		t.Errorf("APIVersion = %q, want %q", cfg.APIVersion, CurrentAPIVersion)
+	}
+
+	// Idempotent and non-clobbering: an explicit mode survives a second pass.
+	cfg.Strategy.Mode = ModeFallback
+	cfg.Normalize()
+	if cfg.Strategy.Mode != ModeFallback {
+		t.Errorf("Normalize overwrote explicit mode: got %q", cfg.Strategy.Mode)
+	}
+}
+
+func TestLoadConfig_APIVersion(t *testing.T) {
+	tests := []struct {
+		name       string
+		apiVersion string // "" means field omitted
+		wantStored string
+		wantWarn   bool
+	}{
+		{name: "omitted defaults to current", apiVersion: "", wantStored: CurrentAPIVersion, wantWarn: false},
+		{name: "known value accepted", apiVersion: CurrentAPIVersion, wantStored: CurrentAPIVersion, wantWarn: false},
+		{name: "unknown value warns but loads", apiVersion: "v2", wantStored: "v2", wantWarn: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logs := captureSlog(t)
+
+			data := `{"strategy":{"mode":"single"},"targets":[{"virtual_key":"openai"}]`
+			if tt.apiVersion != "" {
+				data += `,"apiVersion":"` + tt.apiVersion + `"`
+			}
+			data += `}`
+			path := writeTempFile(t, "config.json", data)
+
+			cfg, err := LoadConfig(path)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if cfg.APIVersion != tt.wantStored {
+				t.Errorf("APIVersion = %q, want %q", cfg.APIVersion, tt.wantStored)
+			}
+			gotWarn := strings.Contains(logs.String(), "apiVersion")
+			if gotWarn != tt.wantWarn {
+				t.Errorf("warning emitted = %v, want %v (logs: %q)", gotWarn, tt.wantWarn, logs.String())
+			}
+		})
+	}
+}
+
+// captureSlog redirects the default slog logger to a buffer for the duration of
+// the test and restores it afterwards.
+func captureSlog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	buf := &bytes.Buffer{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return buf
 }
 
 func writeTempFile(t *testing.T, name, content string) string {

@@ -135,7 +135,7 @@ func getStore(id string, maxKeys int) *spendStore {
 		spend:   make(map[string]float64),
 		maxKeys: maxKeys,
 	})
-	return v.(*spendStore) //nolint:forcetypeassert
+	return v.(*spendStore) //nolint:forcetypeassert // globalStores only ever holds *spendStore values
 }
 
 // ResetStoreKey removes the accumulated spend for apiKey from the named store.
@@ -145,7 +145,7 @@ func ResetStoreKey(storeID, apiKey string) {
 	if !ok {
 		return
 	}
-	v.(*spendStore).reset(apiKey) //nolint:forcetypeassert
+	v.(*spendStore).reset(apiKey) //nolint:forcetypeassert // globalStores only ever holds *spendStore values
 }
 
 // ResetStore clears all accumulated spend for every key in the named store.
@@ -154,7 +154,7 @@ func ResetStore(storeID string) {
 	if !ok {
 		return
 	}
-	v.(*spendStore).resetAll() //nolint:forcetypeassert
+	v.(*spendStore).resetAll() //nolint:forcetypeassert // globalStores only ever holds *spendStore values
 }
 
 // Plugin enforces per-API-key USD spend limits.

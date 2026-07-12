@@ -553,6 +553,63 @@ func TestBedrockProvider_Embed_CohereV4MapsTypedFloatResponse(t *testing.T) {
 	}
 }
 
+func TestBedrockProvider_Embed_CohereThreadsInputType(t *testing.T) {
+	tests := []struct {
+		name          string
+		inputType     string
+		wantInputType string
+	}{
+		{name: "search_query override", inputType: "search_query", wantInputType: "search_query"},
+		{name: "empty defaults to search_document", inputType: "", wantInputType: "search_document"},
+		{name: "classification override", inputType: "classification", wantInputType: "classification"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := &fakeBedrockRuntimeClient{
+				responses: [][]byte{
+					[]byte(`{"embeddings":[[0.1,0.2]],"meta":{"billed_units":{"input_tokens":3}}}`),
+				},
+			}
+			p := &Provider{name: Name, client: fake}
+
+			if _, err := p.Embed(context.Background(), core.EmbeddingRequest{
+				Model:     "cohere.embed-english-v3",
+				Input:     "hello",
+				InputType: tt.inputType,
+			}); err != nil {
+				t.Fatalf("Embed() error: %v", err)
+			}
+
+			if len(fake.invokeCalls) != 1 {
+				t.Fatalf("InvokeModel calls = %d, want 1", len(fake.invokeCalls))
+			}
+			var body bedrockCohereEmbedRequest
+			mustUnmarshalBody(t, fake.invokeCalls[0].Body, &body)
+			if body.InputType != tt.wantInputType {
+				t.Errorf("Cohere input_type = %q, want %q", body.InputType, tt.wantInputType)
+			}
+		})
+	}
+}
+
+func TestBedrockProvider_Embed_CohereRejectsUnknownInputType(t *testing.T) {
+	fake := &fakeBedrockRuntimeClient{}
+	p := &Provider{name: Name, client: fake}
+
+	_, err := p.Embed(context.Background(), core.EmbeddingRequest{
+		Model:     "cohere.embed-english-v3",
+		Input:     "hello",
+		InputType: "bogus",
+	})
+	if err == nil {
+		t.Fatal("Embed() error = nil, want unsupported input_type error")
+	}
+	if len(fake.invokeCalls) != 0 {
+		t.Fatalf("InvokeModel calls = %d, want 0 for validation error", len(fake.invokeCalls))
+	}
+}
+
 func TestBedrockProvider_CompleteAnthropic_ForwardsToolsAndDecodesToolUse(t *testing.T) {
 	fake := &fakeBedrockRuntimeClient{
 		responses: [][]byte{

@@ -9,18 +9,33 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strings"
+	"log/slog"
 	"time"
+
+	"github.com/ferro-labs/ai-gateway/internal/sqldb"
 )
 
+// ErrDeferStep is returned by a Fn or NoTx step to report that it did not
+// complete but startup must continue. Run does not record the version in the
+// ledger and does not abort the run: later steps still apply, and the deferred
+// step is retried on the next call. Wrap it (fmt.Errorf("...: %w",
+// ErrDeferStep)) so a step can attach its own context.
+//
+// Use it only for a step whose failure costs performance, not correctness — for
+// example a concurrent index build a transient error left incomplete — where
+// crashing the process would be worse than running without the change until the
+// next start retries it. A step that returns any other error is fatal to Run.
+var ErrDeferStep = errors.New("migrations: step deferred; not recorded")
+
 // Dialect selects the SQL flavor used for the ledger table and placeholder
-// binding.
-type Dialect string
+// binding. It aliases sqldb.Dialect so the runner and every store share one
+// dialect type rather than converting between parallel definitions.
+type Dialect = sqldb.Dialect
 
 // Supported dialects.
 const (
-	SQLite   Dialect = "sqlite"
-	Postgres Dialect = "postgres"
+	SQLite   = sqldb.SQLite
+	Postgres = sqldb.Postgres
 )
 
 // Step is one migration for one database. Exactly one of SQL, Fn, or NoTx must
@@ -54,23 +69,41 @@ type Step struct {
 // with an application lock.
 const lockID int64 = 4872193001
 
-// Run applies every step whose version is not yet recorded, in ascending order,
-// and is safe to call on every process start.
+// defaultLedger is the ledger table Run uses. Stores that may share one physical
+// database pass a distinct ledger via RunNamed so their version sequences do not
+// collide.
+const defaultLedger = "schema_migrations"
+
+// Run applies steps against the default schema_migrations ledger. See RunNamed.
+func Run(ctx context.Context, db *sql.DB, dialect Dialect, primaryTable string, steps []Step) error {
+	return RunNamed(ctx, db, dialect, defaultLedger, primaryTable, steps)
+}
+
+// RunNamed applies every step whose version is not yet recorded, in ascending
+// order, and is safe to call on every process start.
+//
+// ledger names the bookkeeping table. Each schema that might share a physical
+// database with another (several Postgres tables in one instance) passes its own
+// ledger name so their independent version sequences never collide in a shared
+// ledger.
 //
 // If the ledger is empty, primaryTable is non-empty, and that table already
 // exists, steps[0] is recorded as applied without executing it: the database
 // predates the runner and its baseline schema is already present.
 //
 // Concurrent callers are serialized. On Postgres, where several gateway
-// instances can share one database, Run holds an advisory lock for its whole
-// duration, so a second instance waits and then finds every step already
+// instances can share one database, RunNamed holds an advisory lock for its
+// whole duration, so a second instance waits and then finds every step already
 // recorded. SQLite serializes writers itself.
-func Run(ctx context.Context, db *sql.DB, dialect Dialect, primaryTable string, steps []Step) error {
+func RunNamed(ctx context.Context, db *sql.DB, dialect Dialect, ledger, primaryTable string, steps []Step) error {
 	// Everything below treats "not Postgres" as SQLite — the ledger DDL, the
 	// table probe, and the placeholder form. An unrecognized dialect would
 	// silently take the SQLite path rather than fail.
 	if dialect != SQLite && dialect != Postgres {
 		return fmt.Errorf("migrations: unsupported dialect %q", dialect)
+	}
+	if ledger == "" {
+		return errors.New("migrations: ledger table name is required")
 	}
 	if err := validate(steps); err != nil {
 		return err
@@ -98,10 +131,10 @@ func Run(ctx context.Context, db *sql.DB, dialect Dialect, primaryTable string, 
 		}()
 	}
 
-	if err := ensureLedger(ctx, db, dialect); err != nil {
+	if err := ensureLedger(ctx, db, dialect, ledger); err != nil {
 		return err
 	}
-	applied, err := appliedVersions(ctx, db)
+	applied, err := appliedVersions(ctx, db, ledger)
 	if err != nil {
 		return err
 	}
@@ -109,7 +142,9 @@ func Run(ctx context.Context, db *sql.DB, dialect Dialect, primaryTable string, 
 		return err
 	}
 
-	ledgerInsert := bind(dialect, "INSERT INTO schema_migrations(version, name, applied_at) VALUES(?, ?, ?)")
+	// ledger is a caller-supplied constant, never user input, so it is safe to
+	// interpolate into the statement text (identifiers cannot be bound).
+	ledgerInsert := sqldb.Bind(dialect, "INSERT INTO "+ledger+"(version, name, applied_at) VALUES(?, ?, ?)")
 
 	if len(applied) == 0 && primaryTable != "" {
 		exists, err := tableExists(ctx, db, dialect, primaryTable)
@@ -130,6 +165,14 @@ func Run(ctx context.Context, db *sql.DB, dialect Dialect, primaryTable string, 
 			continue
 		}
 		if err := applyStep(ctx, db, ledgerInsert, step); err != nil {
+			if errors.Is(err, ErrDeferStep) {
+				// The step chose not to complete (see ErrDeferStep). It is not
+				// recorded, so the next start retries it; later independent
+				// steps still run this time.
+				slog.Warn("migration step deferred; not recorded, will retry on next start",
+					"version", step.Version, "name", step.Name, "error", err)
+				continue
+			}
 			return err
 		}
 	}
@@ -224,27 +267,26 @@ func validate(steps []Step) error {
 	return nil
 }
 
-func ensureLedger(ctx context.Context, db *sql.DB, dialect Dialect) error {
-	ddl := `CREATE TABLE IF NOT EXISTS schema_migrations (
-	version INTEGER PRIMARY KEY,
-	name TEXT NOT NULL,
-	applied_at DATETIME NOT NULL
-)`
+func ensureLedger(ctx context.Context, db *sql.DB, dialect Dialect, ledger string) error {
+	appliedAt := "DATETIME"
 	if dialect == Postgres {
-		ddl = `CREATE TABLE IF NOT EXISTS schema_migrations (
-	version INTEGER PRIMARY KEY,
-	name TEXT NOT NULL,
-	applied_at TIMESTAMPTZ NOT NULL
-)`
+		appliedAt = "TIMESTAMPTZ"
 	}
+	// ledger and appliedAt are trusted internal constants, never user input;
+	// table and column names cannot be bound as parameters.
+	// #nosec G202
+	ddl := "CREATE TABLE IF NOT EXISTS " + ledger +
+		" (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at " + appliedAt + " NOT NULL)"
 	if _, err := db.ExecContext(ctx, ddl); err != nil {
-		return fmt.Errorf("create schema_migrations table: %w", err)
+		return fmt.Errorf("create %s ledger table: %w", ledger, err)
 	}
 	return nil
 }
 
-func appliedVersions(ctx context.Context, db *sql.DB) (map[int]struct{}, error) {
-	rows, err := db.QueryContext(ctx, "SELECT version FROM schema_migrations")
+func appliedVersions(ctx context.Context, db *sql.DB, ledger string) (map[int]struct{}, error) {
+	// ledger is a trusted internal constant, not user input.
+	// #nosec G202
+	rows, err := db.QueryContext(ctx, "SELECT version FROM "+ledger)
 	if err != nil {
 		return nil, fmt.Errorf("read applied migrations: %w", err)
 	}
@@ -285,24 +327,4 @@ func tableExists(ctx context.Context, db *sql.DB, dialect Dialect, table string)
 		return false, fmt.Errorf("probe table %q: %w", table, err)
 	}
 	return true, nil
-}
-
-// bind rewrites '?' placeholders to Postgres '$N' form. SQLite keeps '?'.
-func bind(dialect Dialect, query string) string {
-	if dialect != Postgres {
-		return query
-	}
-	var (
-		b      strings.Builder
-		argNum = 1
-	)
-	for i := 0; i < len(query); i++ {
-		if query[i] == '?' {
-			fmt.Fprintf(&b, "$%d", argNum)
-			argNum++
-			continue
-		}
-		b.WriteByte(query[i])
-	}
-	return b.String()
 }

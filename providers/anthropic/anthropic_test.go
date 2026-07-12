@@ -188,7 +188,6 @@ data: {"type":"message_stop"}
 	if chunks[0].ID != "msg_123" {
 		t.Errorf("chunk ID = %q, want msg_123", chunks[0].ID)
 	}
-	//nolint:goconst // "Hello" appears in multiple test strings; fine in tests
 	if chunks[0].Choices[0].Delta.Content != "Hello" {
 		t.Errorf("first delta content = %q, want Hello", chunks[0].Choices[0].Delta.Content)
 	}

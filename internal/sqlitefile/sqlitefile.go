@@ -26,7 +26,10 @@ import (
 // query parameter — including named shared-cache in-memory databases like
 // "file:mydb?mode=memory&cache=shared") have no backing file and are a no-op.
 func Secure(dsn string) error {
-	path := filePath(dsn)
+	path, err := filePath(dsn)
+	if err != nil {
+		return err
+	}
 	if path == "" {
 		return nil
 	}
@@ -45,24 +48,41 @@ func Secure(dsn string) error {
 	return nil
 }
 
-// filePath extracts the on-disk file path from a SQLite DSN: it strips any
-// "?query" suffix and a leading "file://" or "file:" scheme, returning "" for
-// in-memory databases (":memory:", or any DSN whose query string sets
-// "mode=memory") that have no file to secure.
-func filePath(dsn string) string {
+// filePath extracts the on-disk file path from a SQLite DSN. SQLite decodes
+// percent escapes in file: URIs before opening the file, so this helper must
+// resolve the same path before creating and restricting it.
+func filePath(dsn string) (string, error) {
 	path := dsn
 	query := ""
 	if i := strings.IndexByte(path, '?'); i >= 0 {
 		query = path[i+1:]
 		path = path[:i]
 	}
-	path = strings.TrimPrefix(path, "file://")
-	path = strings.TrimPrefix(path, "file:")
+	if strings.HasPrefix(path, "file:") {
+		if q, err := url.ParseQuery(query); err == nil && q.Get("mode") == "memory" {
+			return "", nil
+		}
+
+		parsed, err := url.Parse(path)
+		if err != nil {
+			return "", fmt.Errorf("parse sqlite file URI: %w", err)
+		}
+
+		switch {
+		case parsed.Opaque != "":
+			path, err = url.PathUnescape(parsed.Opaque)
+			if err != nil {
+				return "", fmt.Errorf("decode sqlite file URI path: %w", err)
+			}
+		case parsed.Host == "" || parsed.Host == "localhost":
+			path = parsed.Path
+		default:
+			return "", fmt.Errorf("unsupported sqlite file URI authority %q", parsed.Host)
+		}
+	}
+
 	if path == "" || path == ":memory:" {
-		return ""
+		return "", nil
 	}
-	if q, err := url.ParseQuery(query); err == nil && q.Get("mode") == "memory" {
-		return ""
-	}
-	return filepath.Clean(path)
+	return filepath.Clean(path), nil
 }

@@ -69,7 +69,7 @@ func PostEmbeddings(ctx context.Context, p EmbeddingParams, req core.EmbeddingRe
 	}
 	defer release()
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.URL, bodyReader) //nolint:gosec // URL derived from a base URL validated at construction
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.URL, bodyReader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -77,7 +77,7 @@ func PostEmbeddings(ctx context.Context, p EmbeddingParams, req core.EmbeddingRe
 		httpReq.Header.Set(k, v)
 	}
 
-	httpResp, err := p.HTTPClient.Do(httpReq) //nolint:gosec // see above
+	httpResp, err := p.HTTPClient.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}

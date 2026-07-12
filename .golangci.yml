@@ -7,6 +7,7 @@ linters:
   enable:
     - bodyclose
     - copyloopvar
+    - dupl
     - errcheck
     - errorlint
     - goconst
@@ -16,8 +17,13 @@ linters:
     - govet
     - ineffassign
     - misspell
+    - nolintlint
+    - prealloc
     - revive
+    - spancheck
     - staticcheck
+    - unconvert
+    - unparam
     - unused
     - noctx
     - maintidx
@@ -25,9 +31,34 @@ linters:
   settings:
     gocyclo:
       min-complexity: 30
+    dupl:
+      threshold: 150
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+      allow-unused: false
 
   exclusions:
     rules:
+      # dupl on tests is noise — table fixtures and mock setups legitimately
+      # repeat structure across cases. Enforce it on production code only.
+      - path: _test\.go
+        linters:
+          - dupl
+      # unparam on tests is noise: mock methods satisfy production interfaces
+      # (so a mandatory error return may always be nil), and helper return
+      # values exist for symmetry. Enforce it on production code only.
+      - path: _test\.go
+        linters:
+          - unparam
+      # otelSpan.StartChild is a span factory: it returns the child span
+      # (wrapped in otelSpan) for the caller to end via End, per the
+      # observability.Span contract. spancheck cannot follow the span through
+      # the wrapper, so it wrongly reports a leak on the child span here.
+      - path: internal/otel/provider\.go
+        linters:
+          - spancheck
+        text: "child.End"
       # Test fixtures legitimately repeat literals (tool names, IDs, JSON
       # fragments); enforce the constant rule on production code only.
       - path: _test\.go

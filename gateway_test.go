@@ -141,6 +141,168 @@ func requireKeys(t *testing.T, got []string, want ...string) {
 	}
 }
 
+// streamTargetOrder resolves the strategy exactly as RouteStream does and
+// returns the streaming target order it selects, failing on any error.
+func streamTargetOrder(t *testing.T, gw *Gateway, req providers.Request) []string {
+	t.Helper()
+	s, err := gw.getStrategy()
+	if err != nil {
+		t.Fatalf("getStrategy: %v", err)
+	}
+	keys, err := s.SelectTargets(req)
+	if err != nil {
+		t.Fatalf("SelectTargets: %v", err)
+	}
+	return keys
+}
+
+func assertSameTargetSet(t *testing.T, got []string, targets []Target) {
+	t.Helper()
+	want := make(map[string]bool, len(targets))
+	for _, tgt := range targets {
+		want[tgt.VirtualKey] = true
+	}
+	if len(got) != len(want) {
+		t.Fatalf("SelectTargets = %v, want the %d configured targets", got, len(want))
+	}
+	for _, k := range got {
+		if !want[k] {
+			t.Fatalf("SelectTargets = %v, contains unexpected key %q", got, k)
+		}
+	}
+}
+
+func assertInTargets(t *testing.T, key string, targets []Target) {
+	t.Helper()
+	for _, tgt := range targets {
+		if tgt.VirtualKey == key {
+			return
+		}
+	}
+	t.Fatalf("resolved provider %q not in configured targets %v", key, targets)
+}
+
+// TestRouteStream_And_Route_SameTargetOrder asserts Route (Strategy.Execute) and
+// RouteStream (Strategy.SelectTargets) resolve consistently per strategy: for
+// deterministic strategies both pick the same first target and SelectTargets
+// exposes every configured target; for weighted-random strategies both pick
+// within the configured target set from the one shared selection implementation.
+func TestRouteStream_And_Route_SameTargetOrder(t *testing.T) {
+	req := providers.Request{
+		Model:    "gpt-4o",
+		Messages: []providers.Message{{Role: "user", Content: "please write code"}},
+	}
+
+	tests := []struct {
+		name          string
+		strategy      StrategyConfig
+		targets       []Target
+		deterministic bool
+		wantFirst     string
+		// exposesAllTargets is false only for single, which intentionally offers
+		// no fallbacks — every other strategy appends the remaining targets.
+		exposesAllTargets bool
+	}{
+		{
+			name:          "single",
+			strategy:      StrategyConfig{Mode: ModeSingle},
+			targets:       []Target{{VirtualKey: "a"}, {VirtualKey: "b"}},
+			deterministic: true,
+			wantFirst:     "a",
+		},
+		{
+			name:              "fallback",
+			strategy:          StrategyConfig{Mode: ModeFallback},
+			targets:           []Target{{VirtualKey: "a"}, {VirtualKey: "b"}, {VirtualKey: "c"}},
+			deterministic:     true,
+			wantFirst:         "a",
+			exposesAllTargets: true,
+		},
+		{
+			name:              "conditional",
+			strategy:          StrategyConfig{Mode: ModeConditional, Conditions: []Condition{{Key: "model", Value: "gpt-4o", TargetKey: "b"}}},
+			targets:           []Target{{VirtualKey: "a"}, {VirtualKey: "b"}},
+			deterministic:     true,
+			wantFirst:         "b",
+			exposesAllTargets: true,
+		},
+		{
+			name:              "content-based",
+			strategy:          StrategyConfig{Mode: ModeContentBased, ContentConditions: []ContentCondition{{Type: "prompt_contains", Value: "code", TargetKey: "b"}}},
+			targets:           []Target{{VirtualKey: "a"}, {VirtualKey: "b"}},
+			deterministic:     true,
+			wantFirst:         "b",
+			exposesAllTargets: true,
+		},
+		{
+			name:              "load-balance",
+			strategy:          StrategyConfig{Mode: ModeLoadBalance},
+			targets:           []Target{{VirtualKey: "a", Weight: 1}, {VirtualKey: "b", Weight: 1}},
+			exposesAllTargets: true,
+		},
+		{
+			name:              "ab-test",
+			strategy:          StrategyConfig{Mode: ModeABTest, ABVariants: []ABVariantConfig{{TargetKey: "a", Weight: 1, Label: "control"}, {TargetKey: "b", Weight: 1, Label: "challenger"}}},
+			targets:           []Target{{VirtualKey: "a"}, {VirtualKey: "b"}},
+			exposesAllTargets: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gw, err := New(Config{Strategy: tt.strategy, Targets: tt.targets})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			defer func() { _ = gw.Close() }()
+
+			var served string
+			for _, tgt := range tt.targets {
+				name := tgt.VirtualKey
+				gw.RegisterProvider(&mockStreamProvider{
+					mockProvider: mockProvider{name: name, models: []string{"gpt-4o"}, resp: &providers.Response{ID: name, Model: "gpt-4o"}},
+					streamFn: func(context.Context, providers.Request) (<-chan providers.StreamChunk, error) {
+						served = name
+						ch := make(chan providers.StreamChunk)
+						close(ch)
+						return ch, nil
+					},
+				})
+			}
+
+			order := streamTargetOrder(t, gw, req)
+			if tt.exposesAllTargets {
+				assertSameTargetSet(t, order, tt.targets)
+			}
+
+			resp, err := gw.Route(context.Background(), req)
+			if err != nil {
+				t.Fatalf("Route: %v", err)
+			}
+			ch, err := gw.RouteStream(context.Background(), req)
+			if err != nil {
+				t.Fatalf("RouteStream: %v", err)
+			}
+			drainStream(t, ch)
+
+			if tt.deterministic {
+				if order[0] != tt.wantFirst {
+					t.Fatalf("SelectTargets first = %q, want %q", order[0], tt.wantFirst)
+				}
+				if resp.Provider != tt.wantFirst {
+					t.Fatalf("Route provider = %q, want %q", resp.Provider, tt.wantFirst)
+				}
+				if served != tt.wantFirst {
+					t.Fatalf("RouteStream served %q, want %q", served, tt.wantFirst)
+				}
+				return
+			}
+			assertInTargets(t, resp.Provider, tt.targets)
+			assertInTargets(t, served, tt.targets)
+		})
+	}
+}
+
 func TestGateway_Route_Single(t *testing.T) {
 	gw, _ := New(Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
@@ -408,7 +570,7 @@ func TestGateway_RouteStream_ContentBasedPromptRegex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RouteStream: %v", err)
 	}
-	for range out { //nolint:revive
+	for range out { //nolint:revive // empty-block: intentionally draining the stream to completion
 	}
 
 	select {
@@ -518,35 +680,6 @@ func TestGateway_ReloadConfigRebuildsStreamingContentRegex(t *testing.T) {
 	}
 	if gw.streamingContent[1].re == nil {
 		t.Fatal("prompt_regex rule should have a compiled regex")
-	}
-}
-
-func TestStreamingContentConditionMatchesPromptRegexRequiresCompiledRegex(t *testing.T) {
-	req := providers.Request{
-		Messages: []providers.Message{{Role: "user", Content: "write docs"}},
-	}
-
-	if streamingContentConditionMatches(streamingContentCondition{
-		ContentCondition: ContentCondition{Type: "prompt_regex", Value: "docs"},
-	}, req) {
-		t.Fatal("uncompiled prompt_regex should not match")
-	}
-
-	compiled, err := compileStreamingContentConditions(ModeContentBased, []ContentCondition{{
-		Type:      "prompt_regex",
-		Value:     "docs",
-		TargetKey: "general-stream",
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !streamingContentConditionMatches(compiled[0], req) {
-		t.Fatal("compiled prompt_regex should match")
-	}
-	if streamingContentConditionMatches(streamingContentCondition{
-		ContentCondition: ContentCondition{Type: "unknown", Value: "docs"},
-	}, req) {
-		t.Fatal("unknown streaming content condition should not match")
 	}
 }
 
@@ -798,13 +931,10 @@ func TestGateway_StreamingCostOrderHandlesUnpricedStrategies(t *testing.T) {
 				models: []string{"gpt-4o"},
 			})
 
-			got, err := gw.streamingCostOrderLocked(gw.config.Targets, providers.Request{
+			got := streamTargetOrder(t, gw, providers.Request{
 				Model:    "gpt-4o",
 				Messages: []providers.Message{{Role: "user", Content: "hello world"}},
 			})
-			if err != nil {
-				t.Fatal(err)
-			}
 			requireKeys(t, got, tt.want...)
 		})
 	}
@@ -830,7 +960,7 @@ func TestGateway_StreamingLatencyOrderFallsBackWithoutStreamingCandidates(t *tes
 		mockProvider: mockProvider{name: "unsupported", models: []string{"other-model"}},
 	})
 
-	got := gw.streamingLatencyOrderLocked(gw.config.Targets, providers.Request{Model: "gpt-4o"})
+	got := streamTargetOrder(t, gw, providers.Request{Model: "gpt-4o"})
 	requireKeys(t, got, "plain", "unsupported", "missing")
 }
 
@@ -857,7 +987,7 @@ func TestGateway_StreamingLatencyOrderTriesUnseenBeforeSampled(t *testing.T) {
 	})
 	gw.latencyTracker.Record("sampled", 10*time.Millisecond)
 
-	got := gw.streamingLatencyOrderLocked(gw.config.Targets, providers.Request{Model: "gpt-4o"})
+	got := streamTargetOrder(t, gw, providers.Request{Model: "gpt-4o"})
 	if got[2] != "sampled" {
 		t.Fatalf("got keys %v, want sampled provider after unseen providers", got)
 	}
@@ -888,10 +1018,7 @@ func TestGateway_StreamingCostOrderFallsBackWithoutStreamingCandidates(t *testin
 		mockProvider: mockProvider{name: "unsupported", models: []string{"other-model"}},
 	})
 
-	got, err := gw.streamingCostOrderLocked(gw.config.Targets, providers.Request{Model: "gpt-4o"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	got := streamTargetOrder(t, gw, providers.Request{Model: "gpt-4o"})
 	requireKeys(t, got, "plain", "unsupported", "missing")
 }
 
@@ -972,7 +1099,7 @@ func streamTestRequest() providers.Request {
 
 func drainMeteredStream(t *testing.T, ch <-chan providers.StreamChunk) {
 	t.Helper()
-	for range ch { //nolint:revive
+	for range ch { //nolint:revive // empty-block: intentionally draining the stream to completion
 	}
 }
 
@@ -1171,6 +1298,83 @@ func TestGateway_RouteStream_ProviderTimeoutTripsCircuit(t *testing.T) {
 	_, err = gw.RouteStream(context.Background(), req)
 	if !errors.Is(err, circuitbreaker.ErrCircuitOpen) {
 		t.Fatalf("expected circuit open after provider timeouts, got %v", err)
+	}
+}
+
+// TestGateway_RouteStream_HalfOpenAllowsSingleProbe guards against a resolve-time
+// double probe: the stream provider resolver must not consume the half-open
+// permit, so the recovering provider's single probe reaches CompleteStream and
+// succeeds. An open circuit (timeout not elapsed) must still be skipped.
+func TestGateway_RouteStream_HalfOpenAllowsSingleProbe(t *testing.T) {
+	var streamCalls atomic.Int32
+	gw, err := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets: []Target{{
+			VirtualKey: "recovering-stream",
+			CircuitBreaker: &CircuitBreakerConfig{
+				FailureThreshold: 1,
+				SuccessThreshold: 1,
+				MaxHalfThreshold: 1,
+				Timeout:          "1ms",
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	gw.RegisterProvider(&mockStreamProvider{
+		mockProvider: mockProvider{
+			name:   "recovering-stream",
+			models: []string{"gpt-4o"},
+		},
+		streamFn: func(_ context.Context, _ providers.Request) (<-chan providers.StreamChunk, error) {
+			if streamCalls.Add(1) == 1 {
+				return nil, errors.New("stream startup failed")
+			}
+			ch := make(chan providers.StreamChunk, 1)
+			ch <- providers.StreamChunk{
+				ID:      "recovered",
+				Choices: []providers.StreamChoice{{Delta: providers.MessageDelta{Content: "ok"}}},
+			}
+			close(ch)
+			return ch, nil
+		},
+	})
+
+	req := streamTestRequest()
+
+	// First stream fails and trips the breaker (FailureThreshold=1 → open).
+	if _, err := gw.RouteStream(context.Background(), req); err == nil {
+		t.Fatal("expected first stream startup failure to open the breaker")
+	}
+
+	gw.mu.RLock()
+	cb := gw.circuitBreakers["recovering-stream"]
+	gw.mu.RUnlock()
+	if cb == nil {
+		t.Fatal("expected circuit breaker for recovering-stream")
+	}
+	if cb.State() != circuitbreaker.StateOpen {
+		t.Fatalf("breaker state = %v, want open after failure", cb.State())
+	}
+
+	// While still open (timeout not elapsed) the provider is skipped and the
+	// open-circuit error surfaces — no probe is consumed.
+	if _, err := gw.RouteStream(context.Background(), req); !errors.Is(err, circuitbreaker.ErrCircuitOpen) {
+		t.Fatalf("open breaker: error = %v, want ErrCircuitOpen", err)
+	}
+
+	// Let the open timeout elapse so the breaker is half-open, then the single
+	// probe must reach CompleteStream and succeed (regression: resolve-time
+	// Allow() would have burned the only permit and rejected the real call).
+	time.Sleep(5 * time.Millisecond)
+	ch, err := gw.RouteStream(context.Background(), req)
+	if err != nil {
+		t.Fatalf("half-open probe: RouteStream error = %v, want success", err)
+	}
+	drainMeteredStream(t, ch)
+	if got := streamCalls.Load(); got != 2 {
+		t.Fatalf("CompleteStream calls = %d, want 2 (initial failure + single half-open probe)", got)
 	}
 }
 
@@ -1480,7 +1684,7 @@ func TestGateway_RouteStream_ClientDeadlineDoesNotTripCircuit(t *testing.T) {
 			cancel()
 			t.Fatalf("attempt %d: RouteStream error = %v", i+1, streamErr)
 		}
-		for range ch { //nolint:revive
+		for range ch { //nolint:revive // empty-block: intentionally draining the stream to completion
 		}
 		cancel()
 	}
@@ -2252,16 +2456,14 @@ func TestGateway_PublishEvent_AfterCloseDoesNotPanic(t *testing.T) {
 
 func TestGateway_PublishEvent_AfterShutdownWithFullQueueDoesNotPanic(t *testing.T) {
 	gw := &Gateway{
-		hookDispatchQ: make(chan hookDispatch, 1),
+		hooks: newHookBus(1),
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	gw.shutdownCtx = ctx
 	gw.shutdownCancel = cancel
-	gw.hookSnapshot.Store([]EventHookFunc{
-		func(context.Context, string, map[string]any) {},
-		func(context.Context, string, map[string]any) {},
-	})
-	gw.startHookWorkers()
+	gw.AddHook(func(context.Context, string, map[string]any) {})
+	gw.AddHook(func(context.Context, string, map[string]any) {})
+	gw.hooks.start(gw.shutdownCtx)
 	t.Cleanup(cancel)
 
 	// Fill the queue so the next publishEvent hits the default branch.
@@ -2424,9 +2626,8 @@ func TestGateway_Close_MultipleHooksDuringRouteDoesNotPanic(t *testing.T) {
 
 func TestGateway_PublishEvent_NoHooks(_ *testing.T) {
 	gw := &Gateway{
-		hookDispatchQ: make(chan hookDispatch, 1),
+		hooks: newHookBus(1),
 	}
-	gw.hookSnapshot.Store([]EventHookFunc{})
 
 	gw.publishEvent(context.Background(), completedHookEvent("no-hooks"))
 }
@@ -2522,13 +2723,11 @@ func TestGateway_PublishEvent_CallsAllHooks(t *testing.T) {
 
 func TestGateway_PublishEvent_EnqueuesEachHookIndividually(t *testing.T) {
 	gw := &Gateway{
-		hookDispatchQ: make(chan hookDispatch, 2),
+		hooks: newHookBus(2),
 	}
 
-	gw.hookSnapshot.Store([]EventHookFunc{
-		func(context.Context, string, map[string]any) {},
-		func(context.Context, string, map[string]any) {},
-	})
+	gw.AddHook(func(context.Context, string, map[string]any) {})
+	gw.AddHook(func(context.Context, string, map[string]any) {})
 
 	gw.publishEvent(context.Background(), events.CompletedRequest(
 		"trace-123",
@@ -2542,7 +2741,7 @@ func TestGateway_PublishEvent_EnqueuesEachHookIndividually(t *testing.T) {
 		true,
 	))
 
-	if got := len(gw.hookDispatchQ); got != 2 {
+	if got := len(gw.hooks.dispatchQ); got != 2 {
 		t.Fatalf("queued hook dispatches = %d, want 2 (one per hook)", got)
 	}
 }
@@ -2592,11 +2791,9 @@ func TestGateway_PublishEvent_IncrementsDropMetricWhenQueueFull(t *testing.T) {
 	before := counterValue(t, counter)
 
 	gw := &Gateway{
-		hookDispatchQ: make(chan hookDispatch, 1),
+		hooks: newHookBus(1),
 	}
-	gw.hookSnapshot.Store([]EventHookFunc{
-		func(context.Context, string, map[string]any) {},
-	})
+	gw.AddHook(func(context.Context, string, map[string]any) {})
 
 	// Fill the queue.
 	gw.publishEvent(context.Background(), events.CompletedRequest(
@@ -3419,7 +3616,7 @@ func newMCPTestServer(t *testing.T) *httptest.Server {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		defer r.Body.Close() //nolint:errcheck
+		defer r.Body.Close() //nolint:errcheck // test HTTP server handler; request body close error is irrelevant
 
 		var rpcReq struct {
 			JSONRPC string          `json:"jsonrpc"`
@@ -3819,7 +4016,7 @@ func BenchmarkRouteStream(b *testing.B) {
 		if err != nil {
 			b.Fatal(err)
 		}
-		for range out { //nolint:revive
+		for range out { //nolint:revive // empty-block: intentionally draining the stream to completion
 		}
 	}
 }

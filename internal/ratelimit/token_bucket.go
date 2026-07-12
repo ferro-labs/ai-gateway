@@ -104,9 +104,9 @@ func (s *Store) Allow(key string) bool {
 	if s.maxKeys > 0 && len(s.limiters) >= s.maxKeys {
 		oldest, oldestTime := "", time.Now()
 		s.lastSeen.Range(func(k, v any) bool {
-			t := v.(time.Time) //nolint:forcetypeassert
+			t := v.(time.Time) //nolint:forcetypeassert // lastSeen only ever stores time.Time values
 			if t.Before(oldestTime) {
-				oldest = k.(string) //nolint:forcetypeassert
+				oldest = k.(string) //nolint:forcetypeassert // lastSeen keys are always string
 				oldestTime = t
 			}
 			return true

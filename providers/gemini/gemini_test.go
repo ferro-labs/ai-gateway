@@ -713,3 +713,63 @@ func TestBuildImagenRequest_MapsSizeToAspectRatio(t *testing.T) {
 		}
 	}
 }
+
+// TestGeminiProvider_ModelPrefixNormalization verifies that Complete and
+// CompleteStream strip a leading "models/" prefix so the request URL never
+// carries a doubled "/models/models/" segment.
+func TestGeminiProvider_ModelPrefixNormalization(t *testing.T) {
+	const completeBody = `{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`
+	const streamBody = "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"ok\"}],\"role\":\"model\"},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":1,\"candidatesTokenCount\":1,\"totalTokenCount\":2}}\n\n"
+
+	tests := []struct {
+		name   string
+		model  string
+		stream bool
+	}{
+		{"complete bare model", "gemini-2.0-flash", false},
+		{"complete prefixed model", "models/gemini-2.0-flash", false},
+		{"stream bare model", "gemini-2.0-flash", true},
+		{"stream prefixed model", "models/gemini-2.0-flash", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var gotPath string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotPath = r.URL.Path
+				if tt.stream {
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = w.Write([]byte(streamBody))
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(completeBody))
+			}))
+			defer srv.Close()
+
+			p, _ := New("test-key", srv.URL)
+			req := core.Request{
+				Model:    tt.model,
+				Messages: []core.Message{{Role: core.RoleUser, Content: "hi"}},
+			}
+
+			if tt.stream {
+				ch, err := p.CompleteStream(context.Background(), req)
+				if err != nil {
+					t.Fatalf("CompleteStream() error: %v", err)
+				}
+				for range ch { //nolint:revive // drain to completion
+				}
+			} else if _, err := p.Complete(context.Background(), req); err != nil {
+				t.Fatalf("Complete() error: %v", err)
+			}
+
+			if !strings.Contains(gotPath, "/v1beta/models/gemini-2.0-flash") {
+				t.Errorf("request path = %q, want it to contain /v1beta/models/gemini-2.0-flash", gotPath)
+			}
+			if strings.Contains(gotPath, "/models/models/") {
+				t.Errorf("request path = %q, has doubled models/ prefix", gotPath)
+			}
+		})
+	}
+}

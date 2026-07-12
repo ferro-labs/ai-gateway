@@ -1,38 +1,7 @@
 {
-  "_max_request_bytes_comment": "Max request body bytes for /v1/* and admin write routes. Default: 10485760 (10 MiB). Exceeding returns HTTP 413.",
   "max_request_bytes": 10485760,
   "strategy": {
-    "mode": "fallback",
-    "_unpriced_strategy_comment": "cost-optimized only: fallback (default) | skip | allow",
-    "_comment": "mode: single | fallback | loadbalance | conditional | content-based | ab-test | least-latency | cost-optimized"
-  },
-  "_conditional_example": {
-    "strategy": {
-      "mode": "conditional",
-      "conditions": [
-        { "key": "model", "value": "gpt-4o",                      "target_key": "openai" },
-        { "key": "model", "value": "claude-sonnet-4-6",  "target_key": "anthropic" }
-      ]
-    }
-  },
-  "_content_based_example": {
-    "strategy": {
-      "mode": "content-based",
-      "content_conditions": [
-        { "type": "prompt_regex",       "value": "(?i)\\b(code|function|class|implement)\\b", "target_key": "deepseek" },
-        { "type": "prompt_contains",    "value": "translate",   "target_key": "gemini" },
-        { "type": "prompt_not_contains","value": "confidential","target_key": "openai" }
-      ]
-    }
-  },
-  "_ab_test_example": {
-    "strategy": {
-      "mode": "ab-test",
-      "ab_variants": [
-        { "target_key": "openai",    "weight": 70, "label": "control" },
-        { "target_key": "anthropic", "weight": 30, "label": "challenger" }
-      ]
-    }
+    "mode": "fallback"
   },
   "targets": [
     {

@@ -5,9 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math/rand"
 	"runtime/trace"
-	"sort"
 	"sync"
 	"time"
 
@@ -17,7 +15,6 @@ import (
 	"github.com/ferro-labs/ai-gateway/internal/logging"
 	"github.com/ferro-labs/ai-gateway/internal/metrics"
 	"github.com/ferro-labs/ai-gateway/internal/streamwrap"
-	"github.com/ferro-labs/ai-gateway/models"
 	"github.com/ferro-labs/ai-gateway/observability"
 	"github.com/ferro-labs/ai-gateway/plugin"
 	"github.com/ferro-labs/ai-gateway/providers"
@@ -290,6 +287,7 @@ func (g *Gateway) runBeforePluginsStream(ctx context.Context, span observability
 	}
 
 	pctx = plugin.NewContext(req)
+	pctx.Span = span // per-plugin child spans nest under the request span.
 	// Propagate the opaque key identifier so per-key plugins (rate-limit,
 	// budget) can scope limits to the authenticated caller. The raw bearer
 	// secret is never exposed here — only the stable APIKey.ID.
@@ -327,9 +325,6 @@ func (g *Gateway) resolveStreamOrError(ctx context.Context, span observability.S
 	g.mu.Lock()
 	g.ensureCircuitBreakersLocked()
 	g.mu.Unlock()
-	g.mu.RLock()
-	sp, orderErr := g.resolveStreamingProviderLocked(req)
-	g.mu.RUnlock()
 
 	fail := func(err error) (providers.StreamProvider, error) {
 		span.SetError(err)
@@ -342,13 +337,31 @@ func (g *Gateway) resolveStreamOrError(ctx context.Context, span observability.S
 		return nil, err
 	}
 
+	orderedKeys, orderErr := g.streamingTargetOrder(req)
 	if orderErr != nil {
 		return fail(orderErr)
 	}
+
+	g.mu.RLock()
+	sp := g.resolveStreamProviderFromKeysLocked(orderedKeys, req.Model)
+	g.mu.RUnlock()
+
 	if sp == nil {
 		return fail(fmt.Errorf("no streaming-capable provider found for model: %s", req.Model))
 	}
 	return sp, nil
+}
+
+// streamingTargetOrder resolves the strategy — the same object Route executes —
+// and asks it for the streaming target order, so both paths share one ordering
+// implementation. A getStrategy error surfaces identically on both paths; for
+// ValidateConfig-passing gateways getStrategy does not error here.
+func (g *Gateway) streamingTargetOrder(req providers.Request) ([]string, error) {
+	s, err := g.getStrategy()
+	if err != nil {
+		return nil, err
+	}
+	return s.SelectTargets(req)
 }
 
 func responseStream(resp *providers.Response) <-chan providers.StreamChunk {
@@ -377,36 +390,45 @@ func responseStream(resp *providers.Response) <-chan providers.StreamChunk {
 	return ch
 }
 
-func (g *Gateway) resolveStreamingProviderLocked(req providers.Request) (providers.StreamProvider, error) {
-	orderedKeys, err := g.streamingTargetOrderLocked(req)
-	if err != nil {
-		return nil, err
-	}
+// resolveStreamProviderFromKeysLocked walks orderedKeys and returns the first
+// streaming-capable, model-supporting provider whose circuit is not open. If
+// every ordered target has an open circuit it returns the last such target so
+// the caller still attempts it (and surfaces the open-circuit error). Failing
+// all ordered targets it falls back to any registered streaming-capable provider
+// for the model. Returns nil when nothing matches. Caller must hold g.mu.
+//
+// The breaker is probed with State() (non-consuming) rather than Allow() here:
+// the single Allow() inside cbProvider.CompleteStream is the one probe per
+// streaming request, matching the non-streaming path where cbProvider.Complete
+// performs the sole Allow(). Consuming a half-open permit at resolve time would
+// leave no permit for the actual stream, so a recovering provider could never be
+// probed by a streaming request.
+func (g *Gateway) resolveStreamProviderFromKeysLocked(orderedKeys []string, model string) providers.StreamProvider {
 	var openCircuitTarget providers.StreamProvider
 	for _, key := range orderedKeys {
-		sp, ok := g.streamingProviderForTargetLocked(key, req.Model)
+		sp, ok := g.streamingProviderForTargetLocked(key, model)
 		if !ok {
 			continue
 		}
-		if wrapped, isCB := sp.(*cbProvider); isCB && !wrapped.cb.Allow() {
+		if wrapped, isCB := sp.(*cbProvider); isCB && wrapped.cb.State() == circuitbreaker.StateOpen {
 			openCircuitTarget = sp
 			continue
 		}
-		return sp, nil
+		return sp
 	}
 	if openCircuitTarget != nil {
-		return openCircuitTarget, nil
+		return openCircuitTarget
 	}
 
 	// Fallback: any registered provider that supports this model and streaming.
-	name, fallback, ok := g.findStreamingProviderMatchByModelLocked(req.Model)
+	name, fallback, ok := g.findStreamingProviderMatchByModelLocked(model)
 	if !ok {
-		return nil, nil
+		return nil
 	}
 	if cb, hasCB := g.circuitBreakers[name]; hasCB {
-		return &cbProvider{Provider: g.providers[name], cb: cb, name: name}, nil
+		return &cbProvider{Provider: g.providers[name], cb: cb, name: name}
 	}
-	return fallback, nil
+	return fallback
 }
 
 func (g *Gateway) streamingProviderForTargetLocked(key, model string) (providers.StreamProvider, bool) {
@@ -425,291 +447,4 @@ func (g *Gateway) streamingProviderForTargetLocked(key, model string) (providers
 		return &cbProvider{Provider: p, cb: cb, name: key}, true
 	}
 	return sp, true
-}
-
-func (g *Gateway) streamingTargetOrderLocked(req providers.Request) ([]string, error) {
-	targets := g.config.Targets
-	if len(targets) == 0 {
-		return nil, nil
-	}
-
-	switch g.config.Strategy.Mode {
-	case ModeSingle, "":
-		return []string{targets[0].VirtualKey}, nil
-	case ModeFallback:
-		return targetKeys(targets), nil
-	case ModeConditional:
-		keys := make([]string, 0, len(targets))
-		for _, cond := range g.config.Strategy.Conditions {
-			if conditionMatches(cond, req.Model) {
-				keys = appendUniqueKey(keys, cond.TargetKey)
-				break
-			}
-		}
-		for _, t := range targets {
-			keys = appendUniqueKey(keys, t.VirtualKey)
-		}
-		return keys, nil
-	case ModeContentBased:
-		// Evaluate content rules in order; first match wins, fallback is targets[0].
-		for _, cond := range g.streamingContent {
-			if streamingContentConditionMatches(cond, req) {
-				// Matched target first, then remaining targets as fallback.
-				keys := []string{cond.TargetKey}
-				for _, t := range targets {
-					keys = appendUniqueKey(keys, t.VirtualKey)
-				}
-				return keys, nil
-			}
-		}
-		// No rule matched — use declared target order (targets[0] is the fallback).
-		return targetKeys(targets), nil
-	case ModeABTest:
-		// Weighted random variant selection mirrors ABTest.selectVariant.
-		total := 0.0
-		for _, v := range g.config.Strategy.ABVariants {
-			w := v.Weight
-			if w <= 0 {
-				w = 1
-			}
-			total += w
-		}
-		if total > 0 {
-			r := rand.Float64() * total //nolint:gosec
-			cumulative := 0.0
-			for _, v := range g.config.Strategy.ABVariants {
-				w := v.Weight
-				if w <= 0 {
-					w = 1
-				}
-				cumulative += w
-				if r < cumulative {
-					keys := []string{v.TargetKey}
-					for _, t := range targets {
-						keys = appendUniqueKey(keys, t.VirtualKey)
-					}
-					return keys, nil
-				}
-			}
-			// Floating-point safety net — use last variant.
-			last := g.config.Strategy.ABVariants[len(g.config.Strategy.ABVariants)-1]
-			keys := []string{last.TargetKey}
-			for _, t := range targets {
-				keys = appendUniqueKey(keys, t.VirtualKey)
-			}
-			return keys, nil
-		}
-		// No variants configured — fall through to raw order.
-		return targetKeys(targets), nil
-	case ModeLoadBalance:
-		startIdx := weightedStartIndex(targets)
-		keys := make([]string, 0, len(targets))
-		for i := 0; i < len(targets); i++ {
-			keys = append(keys, targets[(startIdx+i)%len(targets)].VirtualKey)
-		}
-		return keys, nil
-	case ModeLatency:
-		return g.streamingLatencyOrderLocked(targets, req), nil
-	case ModeCostOptimized:
-		return g.streamingCostOrderLocked(targets, req)
-	default:
-		return targetKeys(targets), nil
-	}
-}
-
-type streamingLatencyCandidate struct {
-	key        string
-	p50        time.Duration
-	hasSamples bool
-}
-
-func (g *Gateway) streamingLatencyOrderLocked(targets []Target, req providers.Request) []string {
-	var unseen []streamingLatencyCandidate
-	var sampled []streamingLatencyCandidate
-	for _, t := range targets {
-		if !g.isStreamingTargetCandidateLocked(t, req.Model) {
-			continue
-		}
-		p50, hasSamples := g.latencyTracker.Stats(t.VirtualKey)
-		candidate := streamingLatencyCandidate{
-			key:        t.VirtualKey,
-			p50:        p50,
-			hasSamples: hasSamples,
-		}
-		if candidate.hasSamples {
-			sampled = append(sampled, candidate)
-		} else {
-			unseen = append(unseen, candidate)
-		}
-	}
-
-	if len(unseen) == 0 && len(sampled) == 0 {
-		return targetKeys(targets)
-	}
-
-	if len(unseen) > 1 {
-		rand.Shuffle(len(unseen), func(i, j int) {
-			unseen[i], unseen[j] = unseen[j], unseen[i]
-		}) //nolint:gosec
-	}
-	sort.SliceStable(sampled, func(i, j int) bool {
-		return sampled[i].p50 < sampled[j].p50
-	})
-
-	keys := make([]string, 0, len(targets))
-	for _, candidate := range unseen {
-		keys = appendUniqueKey(keys, candidate.key)
-	}
-	for _, candidate := range sampled {
-		keys = appendUniqueKey(keys, candidate.key)
-	}
-	return appendRemainingTargetKeys(keys, targets)
-}
-
-type streamingCostCandidate struct {
-	key        string
-	costUSD    float64
-	hasPrice   bool
-	modelFound bool
-}
-
-func (g *Gateway) streamingCostOrderLocked(targets []Target, req providers.Request) ([]string, error) {
-	estimatedPromptTokens := estimatePromptTokens(req)
-	candidates := make([]streamingCostCandidate, 0, len(targets))
-	for _, t := range targets {
-		if !g.isStreamingTargetCandidateLocked(t, req.Model) {
-			continue
-		}
-		result := models.Calculate(g.catalog, t.VirtualKey+"/"+req.Model, models.Usage{
-			PromptTokens: estimatedPromptTokens,
-		})
-		candidates = append(candidates, streamingCostCandidate{
-			key:        t.VirtualKey,
-			costUSD:    result.InputUSD,
-			hasPrice:   result.Priced,
-			modelFound: result.ModelFound,
-		})
-	}
-	if len(candidates) == 0 {
-		return targetKeys(targets), nil
-	}
-
-	ranked := make([]streamingCostCandidate, 0, len(candidates))
-	switch g.config.Strategy.UnpricedStrategy {
-	case unpricedStrategyAllow:
-		for _, candidate := range candidates {
-			if candidate.modelFound {
-				ranked = append(ranked, candidate)
-			}
-		}
-	case unpricedStrategySkip:
-		for _, candidate := range candidates {
-			if candidate.modelFound && candidate.hasPrice {
-				ranked = append(ranked, candidate)
-			}
-		}
-	default:
-		for _, candidate := range candidates {
-			if candidate.modelFound && candidate.hasPrice {
-				ranked = append(ranked, candidate)
-			}
-		}
-	}
-
-	if len(ranked) == 0 {
-		if g.config.Strategy.UnpricedStrategy == unpricedStrategySkip {
-			return nil, fmt.Errorf("no priced provider supports model %s", req.Model)
-		}
-		return targetKeys(targets), nil
-	}
-
-	sort.SliceStable(ranked, func(i, j int) bool {
-		return ranked[i].costUSD < ranked[j].costUSD
-	})
-
-	keys := make([]string, 0, len(targets))
-	for _, candidate := range ranked {
-		keys = appendUniqueKey(keys, candidate.key)
-	}
-	for _, candidate := range candidates {
-		keys = appendUniqueKey(keys, candidate.key)
-	}
-	return appendRemainingTargetKeys(keys, targets), nil
-}
-
-func (g *Gateway) isStreamingTargetCandidateLocked(t Target, model string) bool {
-	p, ok := g.providers[t.VirtualKey]
-	if !ok || !p.SupportsModel(model) {
-		return false
-	}
-	_, ok = p.(providers.StreamProvider)
-	return ok
-}
-
-func estimatePromptTokens(req providers.Request) int {
-	promptChars := 0
-	for _, msg := range req.Messages {
-		promptChars += len(msg.Content)
-	}
-	return promptChars/4 + 1
-}
-
-func targetKeys(targets []Target) []string {
-	keys := make([]string, 0, len(targets))
-	for _, t := range targets {
-		keys = append(keys, t.VirtualKey)
-	}
-	return keys
-}
-
-func appendRemainingTargetKeys(keys []string, targets []Target) []string {
-	for _, t := range targets {
-		keys = appendUniqueKey(keys, t.VirtualKey)
-	}
-	return keys
-}
-
-func appendUniqueKey(keys []string, key string) []string {
-	if key == "" {
-		return keys
-	}
-	for _, existing := range keys {
-		if existing == key {
-			return keys
-		}
-	}
-	return append(keys, key)
-}
-
-func weightedStartIndex(targets []Target) int {
-	if len(targets) == 0 {
-		return 0
-	}
-
-	totalWeight := 0.0
-	for _, t := range targets {
-		w := t.Weight
-		if w <= 0 {
-			w = 1
-		}
-		totalWeight += w
-	}
-	if totalWeight <= 0 {
-		return 0
-	}
-
-	r := rand.Float64() * totalWeight //nolint:gosec
-	cumulative := 0.0
-	for i, t := range targets {
-		w := t.Weight
-		if w <= 0 {
-			w = 1
-		}
-		cumulative += w
-		if r < cumulative {
-			return i
-		}
-	}
-
-	return len(targets) - 1
 }

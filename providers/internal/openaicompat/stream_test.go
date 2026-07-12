@@ -1,6 +1,7 @@
 package openaicompat
 
 import (
+	"context"
 	"io"
 	"strings"
 	"testing"
@@ -38,7 +39,7 @@ func TestStreamSSE_Contract(t *testing.T) {
 			`data: {"id":"a","choices":[{"delta":{"content":"AFTER"}}]}`, // never read
 		}, "\n\n") + "\n\n"
 
-		chunks := collect(StreamSSE(sseBody(body)))
+		chunks := collect(StreamSSE(context.Background(), sseBody(body)))
 
 		if len(chunks) != 2 {
 			t.Fatalf("got %d chunks, want 2 (malformed skipped, [DONE] stops)", len(chunks))
@@ -62,7 +63,7 @@ func TestStreamSSE_Contract(t *testing.T) {
 			`data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}` + "\n\n" +
 			"data: [DONE]\n\n"
 
-		chunks := collect(StreamSSE(sseBody(body)))
+		chunks := collect(StreamSSE(context.Background(), sseBody(body)))
 		if len(chunks) != 2 {
 			t.Fatalf("got %d chunks, want 2", len(chunks))
 		}

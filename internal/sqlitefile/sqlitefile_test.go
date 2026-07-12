@@ -1,6 +1,7 @@
 package sqlitefile
 
 import (
+	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
@@ -116,6 +117,21 @@ func TestSecure_DSNVariants(t *testing.T) {
 		}
 	})
 
+	t.Run("bare path with mode query remains on disk", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "test.db")
+
+		if err := Secure(path + "?mode=memory"); err != nil {
+			t.Fatalf("Secure: %v", err)
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("stat: %v", err)
+		}
+		if perm := info.Mode().Perm(); perm != 0o600 {
+			t.Errorf("expected mode 0600, got %o", perm)
+		}
+	})
+
 	t.Run("file scheme with query params", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "test.db")
 		newFile(t, path)
@@ -148,4 +164,48 @@ func TestSecure_DSNVariants(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestSecure_PercentEncodedFileURI(t *testing.T) {
+	dir := t.TempDir()
+	encodedPath := filepath.Join(dir, "encoded%20name.db")
+	actualPath := filepath.Join(dir, "encoded name.db")
+
+	dsn := (&url.URL{Scheme: "file", Path: filepath.ToSlash(actualPath)}).String()
+	if err := Secure(dsn); err != nil {
+		t.Fatalf("Secure: %v", err)
+	}
+
+	info, err := os.Stat(actualPath)
+	if err != nil {
+		t.Fatalf("stat decoded path: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("expected mode 0600, got %o", perm)
+	}
+	if _, err := os.Stat(encodedPath); !os.IsNotExist(err) {
+		t.Fatalf("encoded path should not have been created: %v", err)
+	}
+}
+
+func TestSecure_LocalhostFileURI(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "localhost.db")
+	dsn := (&url.URL{Scheme: "file", Host: "localhost", Path: filepath.ToSlash(path)}).String()
+	if err := Secure(dsn); err != nil {
+		t.Fatalf("Secure: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat localhost URI path: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("expected mode 0600, got %o", perm)
+	}
+}
+
+func TestSecure_InvalidFileURI(t *testing.T) {
+	dsn := "file:" + filepath.Join(t.TempDir(), "bad%zz.db")
+	if err := Secure(dsn); err == nil {
+		t.Fatal("expected an invalid percent escape to fail")
+	}
 }

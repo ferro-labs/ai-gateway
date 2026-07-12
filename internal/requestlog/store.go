@@ -4,24 +4,15 @@ package requestlog
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
-	"log/slog"
 	"strings"
 	"time"
 
-	"github.com/ferro-labs/ai-gateway/internal/sqlitefile"
-
-	// Register Postgres SQL driver.
-	_ "github.com/lib/pq"
-	// Register SQLite SQL driver.
-	_ "modernc.org/sqlite"
+	"github.com/ferro-labs/ai-gateway/internal/migrations"
+	"github.com/ferro-labs/ai-gateway/internal/sqldb"
 )
 
 const (
-	requestLogDialectSQLite   = "sqlite"
-	requestLogDialectPostgres = "postgres"
-
 	// defaultListLimit is the page size applied when a List query omits Limit.
 	defaultListLimit = 50
 	// maxListLimit caps the page size a List query may request.
@@ -107,28 +98,16 @@ func (NoopWriter) Write(_ context.Context, _ Entry) error { return nil }
 // SQLWriter persists entries to SQLite/Postgres.
 type SQLWriter struct {
 	db      *sql.DB
-	dialect string
+	dialect sqldb.Dialect
 }
 
 // NewSQLiteWriter creates a SQLite-backed request log writer.
 func NewSQLiteWriter(ctx context.Context, dsn string) (*SQLWriter, error) {
-	dsn = strings.TrimSpace(dsn)
-	if dsn == "" {
-		dsn = "ferrogw-requests.db"
-	}
-	// Restrict the file before SQLite touches it: a file created under the
-	// process umask is world-readable until something narrows it.
-	if err := sqlitefile.Secure(dsn); err != nil {
+	db, err := sqldb.Open(ctx, sqldb.SQLite, dsn, "ferrogw-requests.db")
+	if err != nil {
 		return nil, err
 	}
-
-	db, err := sql.Open("sqlite", dsn)
-	if err != nil {
-		return nil, fmt.Errorf("open sqlite request log writer: %w", err)
-	}
-	tuneDBPool(db, requestLogDialectSQLite)
-
-	w := &SQLWriter{db: db, dialect: requestLogDialectSQLite}
+	w := &SQLWriter{db: db, dialect: sqldb.SQLite}
 	if err := w.init(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -138,16 +117,11 @@ func NewSQLiteWriter(ctx context.Context, dsn string) (*SQLWriter, error) {
 
 // NewPostgresWriter creates a Postgres-backed request log writer.
 func NewPostgresWriter(ctx context.Context, dsn string) (*SQLWriter, error) {
-	dsn = strings.TrimSpace(dsn)
-	if dsn == "" {
-		return nil, fmt.Errorf("postgres dsn is required")
-	}
-	db, err := sql.Open("postgres", dsn)
+	db, err := sqldb.Open(ctx, sqldb.Postgres, dsn, "")
 	if err != nil {
-		return nil, fmt.Errorf("open postgres request log writer: %w", err)
+		return nil, err
 	}
-	tuneDBPool(db, requestLogDialectPostgres)
-	w := &SQLWriter{db: db, dialect: requestLogDialectPostgres}
+	w := &SQLWriter{db: db, dialect: sqldb.Postgres}
 	if err := w.init(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -156,128 +130,10 @@ func NewPostgresWriter(ctx context.Context, dsn string) (*SQLWriter, error) {
 }
 
 func (w *SQLWriter) init(ctx context.Context) error {
-	if err := w.db.PingContext(ctx); err != nil {
-		return fmt.Errorf("ping %s request log writer: %w", w.dialect, err)
+	if err := migrations.RunNamed(ctx, w.db, w.dialect, requestLogLedger, "request_logs", requestLogSteps(w.dialect)); err != nil {
+		return fmt.Errorf("migrate %s request log schema: %w", w.dialect, err)
 	}
-
-	ddl := `
-CREATE TABLE IF NOT EXISTS request_logs (
-	id INTEGER PRIMARY KEY,
-	trace_id TEXT,
-	stage TEXT NOT NULL,
-	model TEXT,
-	provider TEXT,
-	prompt_tokens INTEGER NOT NULL,
-	completion_tokens INTEGER NOT NULL,
-	total_tokens INTEGER NOT NULL,
-	error_message TEXT,
-	created_at TIMESTAMP NOT NULL
-);`
-
-	if w.dialect == requestLogDialectPostgres {
-		ddl = `
-CREATE TABLE IF NOT EXISTS request_logs (
-	id BIGSERIAL PRIMARY KEY,
-	trace_id TEXT,
-	stage TEXT NOT NULL,
-	model TEXT,
-	provider TEXT,
-	prompt_tokens INTEGER NOT NULL,
-	completion_tokens INTEGER NOT NULL,
-	total_tokens INTEGER NOT NULL,
-	error_message TEXT,
-	created_at TIMESTAMPTZ NOT NULL
-);`
-	}
-
-	if _, err := w.db.ExecContext(ctx, ddl); err != nil {
-		return fmt.Errorf("initialize request log schema: %w", err)
-	}
-	return w.ensureCreatedAtIndex(ctx)
-}
-
-// createdAtIndex serves List's created_at ordering and range, Delete's
-// created_at range, and Stats' since filter.
-const createdAtIndex = "idx_request_logs_created_at"
-
-// ensureCreatedAtIndex builds the created_at index if it is missing.
-//
-// request_logs takes a write per request per stage. On Postgres a plain
-// CREATE INDEX holds a lock that blocks those writes for the length of the
-// build, which on an existing table means every other instance stalls while one
-// restarts. Building concurrently trades a slower build for not blocking
-// writers. It cannot run inside a transaction, and this is not one.
-//
-// A missing index costs query time, not correctness, so a failed build is
-// logged rather than fatal: the next start retries it.
-func (w *SQLWriter) ensureCreatedAtIndex(ctx context.Context) error {
-	if w.dialect != requestLogDialectPostgres {
-		// createdAtIndex is a package constant, not input; identifiers cannot be
-		// bound as parameters.
-		if _, err := w.db.ExecContext(ctx, "CREATE INDEX IF NOT EXISTS "+createdAtIndex+" ON request_logs (created_at)"); err != nil { //nolint:gosec // G202: identifier is a constant.
-			return fmt.Errorf("initialize request log index: %w", err)
-		}
-		return nil
-	}
-
-	switch w.postgresIndexState(ctx) {
-	case indexValid:
-		return nil
-	case indexInvalid:
-		// An interrupted CREATE INDEX CONCURRENTLY leaves the index in place but
-		// marked invalid, and CREATE ... IF NOT EXISTS then skips it forever.
-		// Healing it means dropping and rebuilding, but a bare-name check cannot
-		// tell an abandoned index from one another instance is building right
-		// now, and dropping that would abort the live build. So this logs and
-		// defers to the operator rather than coordinating a fleet-wide drop. A
-		// self-healing rebuild would need an advisory lock around the whole
-		// probe/drop/create; add it only if interrupted builds prove common.
-		slog.Warn("request log index is invalid from an interrupted build; run REINDEX INDEX CONCURRENTLY to rebuild it",
-			"index", createdAtIndex)
-		return nil
-	default: // indexAbsent
-		if _, err := w.db.ExecContext(ctx, "CREATE INDEX CONCURRENTLY IF NOT EXISTS "+createdAtIndex+" ON request_logs (created_at)"); err != nil { //nolint:gosec // G202: identifier is a constant.
-			// A failed concurrent build usually leaves an invalid index behind,
-			// which the next start reports as indexInvalid (and points at
-			// REINDEX) rather than silently rebuilding. Until then queries scan.
-			slog.Warn("request log index build failed; queries will scan until it is rebuilt with REINDEX INDEX CONCURRENTLY",
-				"index", createdAtIndex, "error", err)
-		}
-		return nil
-	}
-}
-
-type indexState int
-
-const (
-	indexAbsent indexState = iota
-	indexValid
-	indexInvalid
-)
-
-// postgresIndexState reports whether the created_at index is absent, present
-// and usable, or present but invalid.
-//
-// to_regclass resolves the name through search_path, so the probe inspects the
-// index the writer would actually use rather than a same-named index in another
-// schema. It returns NULL — and the join no rows — when the index does not
-// exist. A probe failure is treated as absent so a transient error at most
-// triggers a redundant IF NOT EXISTS build.
-func (w *SQLWriter) postgresIndexState(ctx context.Context) indexState {
-	const probe = `SELECT i.indisvalid FROM pg_index i WHERE i.indexrelid = to_regclass($1)`
-
-	var valid bool
-	switch err := w.db.QueryRowContext(ctx, probe, createdAtIndex).Scan(&valid); {
-	case errors.Is(err, sql.ErrNoRows):
-		return indexAbsent
-	case err != nil:
-		slog.Warn("could not probe request log index; assuming it is absent", "index", createdAtIndex, "error", err)
-		return indexAbsent
-	case valid:
-		return indexValid
-	default:
-		return indexInvalid
-	}
+	return nil
 }
 
 func (w *SQLWriter) Write(ctx context.Context, entry Entry) error {
@@ -285,13 +141,10 @@ func (w *SQLWriter) Write(ctx context.Context, entry Entry) error {
 		entry.CreatedAt = time.Now().UTC()
 	}
 
-	query := `INSERT INTO request_logs(trace_id, stage, model, provider, prompt_tokens, completion_tokens, total_tokens, error_message, created_at)
-	VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`
-	if w.dialect == requestLogDialectPostgres {
-		query = `INSERT INTO request_logs(trace_id, stage, model, provider, prompt_tokens, completion_tokens, total_tokens, error_message, created_at)
-		VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9)`
-	}
+	query := sqldb.Bind(w.dialect, `INSERT INTO request_logs(trace_id, stage, model, provider, prompt_tokens, completion_tokens, total_tokens, error_message, created_at)
+	VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 
+	// #nosec G701 -- query is a fixed literal routed through sqldb.Bind; every value is a bound parameter.
 	_, err := w.db.ExecContext(ctx, query,
 		entry.TraceID,
 		entry.Stage,
@@ -346,25 +199,22 @@ func (w *SQLWriter) List(ctx context.Context, query Query) (ListResult, error) {
 		whereSQL = " WHERE " + strings.Join(whereClauses, " AND ")
 	}
 
-	countQuery := "SELECT COUNT(*) FROM request_logs" + whereSQL
-	if w.dialect == requestLogDialectPostgres {
-		countQuery = bindPostgres(countQuery)
-	}
+	// #nosec G202 G701 -- whereSQL is built only from fixed predicates; every value is a bound placeholder.
+	countQuery := sqldb.Bind(w.dialect, "SELECT COUNT(*) FROM request_logs"+whereSQL)
 
 	var total int
+	// #nosec G701 -- countQuery is assembled from fixed predicates and bound placeholders.
 	if err := w.db.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
 		return ListResult{}, fmt.Errorf("count request logs: %w", err)
 	}
 
 	// #nosec G202 -- whereSQL is built only from fixed predicates and bound placeholders.
-	listQuery := "SELECT trace_id, stage, model, provider, prompt_tokens, completion_tokens, total_tokens, error_message, created_at FROM request_logs" + whereSQL + " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+	listQuery := sqldb.Bind(w.dialect, "SELECT trace_id, stage, model, provider, prompt_tokens, completion_tokens, total_tokens, error_message, created_at FROM request_logs"+whereSQL+" ORDER BY created_at DESC LIMIT ? OFFSET ?")
 	listArgs := make([]any, 0, len(args)+2)
 	listArgs = append(listArgs, args...)
 	listArgs = append(listArgs, query.Limit, query.Offset)
-	if w.dialect == requestLogDialectPostgres {
-		listQuery = bindPostgres(listQuery)
-	}
 
+	// #nosec G701 -- listQuery is assembled from fixed predicates and bound placeholders.
 	rows, err := w.db.QueryContext(ctx, listQuery, listArgs...)
 	if err != nil {
 		return ListResult{}, fmt.Errorf("list request logs: %w", err)
@@ -466,16 +316,14 @@ func (w *SQLWriter) Stats(ctx context.Context, query Query) (StatsResult, error)
 	statsQuery := fmt.Sprintf(statsQueryTemplate, whereSQL)
 
 	// whereSQL's placeholders appear once per UNION ALL branch, so its args bind
-	// three times in branch order. bindPostgres renumbers ? sequentially across
-	// the whole statement, keeping the tripled args aligned.
+	// three times in branch order. sqldb.Bind renumbers ? sequentially across the
+	// whole statement, keeping the tripled args aligned.
 	allArgs := make([]any, 0, len(args)*3)
 	allArgs = append(allArgs, args...)
 	allArgs = append(allArgs, args...)
 	allArgs = append(allArgs, args...)
 
-	if w.dialect == requestLogDialectPostgres {
-		statsQuery = bindPostgres(statsQuery)
-	}
+	statsQuery = sqldb.Bind(w.dialect, statsQuery)
 
 	rows, err := w.db.QueryContext(ctx, statsQuery, allArgs...)
 	if err != nil {
@@ -543,10 +391,7 @@ func (w *SQLWriter) Delete(ctx context.Context, query MaintenanceQuery) (int, er
 	}
 
 	// #nosec G202 -- delete predicates are assembled from a fixed allowlist with placeholders.
-	deleteQuery := "DELETE FROM request_logs WHERE " + strings.Join(whereClauses, " AND ")
-	if w.dialect == requestLogDialectPostgres {
-		deleteQuery = bindPostgres(deleteQuery)
-	}
+	deleteQuery := sqldb.Bind(w.dialect, "DELETE FROM request_logs WHERE "+strings.Join(whereClauses, " AND "))
 
 	result, err := w.db.ExecContext(ctx, deleteQuery, args...)
 	if err != nil {
@@ -559,22 +404,6 @@ func (w *SQLWriter) Delete(ctx context.Context, query MaintenanceQuery) (int, er
 	}
 
 	return int(affected), nil
-}
-
-func bindPostgres(query string) string {
-	var (
-		builder strings.Builder
-		index   = 1
-	)
-	for i := 0; i < len(query); i++ {
-		if query[i] == '?' {
-			fmt.Fprintf(&builder, "$%d", index)
-			index++
-			continue
-		}
-		builder.WriteByte(query[i])
-	}
-	return builder.String()
 }
 
 // Close closes the underlying SQL connection.

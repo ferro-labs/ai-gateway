@@ -35,7 +35,7 @@ func weightedPick[T any](items []T, weight func(T) float64) (T, bool) {
 		return zero, false
 	}
 
-	r := rand.Float64() * total //nolint:gosec
+	r := rand.Float64() * total //nolint:gosec // G404: math/rand is fine for load-balancing weight selection, not security-sensitive
 	cumulative := 0.0
 	for _, it := range items {
 		cumulative += weight(it)

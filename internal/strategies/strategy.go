@@ -21,6 +21,14 @@ import (
 type Strategy interface {
 	// Execute runs the strategy and returns a response.
 	Execute(ctx context.Context, req providers.Request) (*providers.Response, error)
+
+	// SelectTargets returns the ordered target virtual keys the strategy would
+	// try for req, most-preferred first, with any remaining configured targets
+	// appended as fallbacks. It is the streaming counterpart to Execute's
+	// implicit provider selection so Route and RouteStream share one ordering.
+	// Only CostOptimized returns an error: in skip mode when no priced provider
+	// supports the model. All other strategies return a nil error.
+	SelectTargets(req providers.Request) ([]string, error)
 }
 
 // ProviderLookup resolves a provider name to a Provider instance.

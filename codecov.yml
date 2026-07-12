@@ -1,0 +1,12 @@
+# Conservative coverage gate: allow small dips on the project total, ask new
+# code to be well covered. Tuned to fail on real regressions, not to flap.
+coverage:
+  status:
+    project:
+      default:
+        target: auto
+        threshold: 0.5%   # allow small dips; fail on a real regression
+    patch:
+      default:
+        target: 75%       # new code should be well-covered
+comment: false

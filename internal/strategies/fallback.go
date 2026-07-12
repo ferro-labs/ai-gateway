@@ -172,3 +172,9 @@ func (f *Fallback) Execute(ctx context.Context, req providers.Request) (*provide
 
 	return nil, fmt.Errorf("all providers failed: %w", lastErr)
 }
+
+// SelectTargets returns every target key in declared order, matching the order
+// Execute attempts providers.
+func (f *Fallback) SelectTargets(_ providers.Request) ([]string, error) {
+	return targetKeys(f.targets), nil
+}

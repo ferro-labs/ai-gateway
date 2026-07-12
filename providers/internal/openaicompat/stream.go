@@ -1,6 +1,7 @@
 package openaicompat
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -34,7 +35,9 @@ func DecodeStreamChunk(data []byte) (core.StreamChunk, error) {
 // error is surfaced as a final chunk.
 //
 // Callers must perform the non-200 status check before handing the body over.
-func StreamSSE(body io.ReadCloser) <-chan core.StreamChunk {
+// ctx cancellation stops the reader promptly: a pending send is abandoned and
+// body is closed, so a consumer that stops reading cannot leak the goroutine.
+func StreamSSE(ctx context.Context, body io.ReadCloser) <-chan core.StreamChunk {
 	ch := make(chan core.StreamChunk)
 	go func() {
 		defer close(ch)
@@ -53,10 +56,12 @@ func StreamSSE(body io.ReadCloser) <-chan core.StreamChunk {
 			if err != nil {
 				continue
 			}
-			ch <- chunk
+			if !core.SendChunk(ctx, ch, chunk) {
+				return
+			}
 		}
 		if err := scanner.Err(); err != nil {
-			ch <- core.StreamChunk{Error: err}
+			core.SendChunk(ctx, ch, core.StreamChunk{Error: err})
 		}
 	}()
 	return ch

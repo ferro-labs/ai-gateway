@@ -91,7 +91,7 @@ func (e *Executor) callAuditFn(ctx context.Context, serverName, toolName, status
 		defer func() {
 			// Swallow any panic from the user-supplied callback — audit logging
 			// must never crash tool execution.
-			recover() //nolint:errcheck
+			recover() //nolint:errcheck // recover returns the panic value, intentionally discarded here
 		}()
 		fn(ctx, serverName, toolName, status, latencyMs, errMsg)
 	}()

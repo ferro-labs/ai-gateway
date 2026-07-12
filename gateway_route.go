@@ -97,6 +97,7 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	var pctx *plugin.Context
 	if plugins.HasPlugins() {
 		pctx = plugin.NewContext(&req)
+		pctx.Span = span // per-plugin child spans nest under the request span.
 		defer plugin.PutContext(pctx)
 		// Propagate the opaque key identifier so per-key plugins (rate-limit,
 		// budget) can scope limits to the authenticated caller. The raw bearer

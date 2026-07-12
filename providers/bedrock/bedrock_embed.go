@@ -134,14 +134,45 @@ func (p *Provider) embedTitan(ctx context.Context, req core.EmbeddingRequest, mo
 	}, nil
 }
 
+// cohereEmbedDefaultInputType is Cohere's document-indexing distribution, used
+// when the caller does not specify an input_type.
+const cohereEmbedDefaultInputType = "search_document"
+
+// cohereEmbedInputTypes are the input_type values Bedrock's Cohere embedding
+// models accept. Mirrors the standalone Cohere provider so both paths reject the
+// same unknown values.
+var cohereEmbedInputTypes = map[string]bool{
+	cohereEmbedDefaultInputType: true,
+	"search_query":              true,
+	"classification":            true,
+	"clustering":                true,
+}
+
+// resolveCohereInputType validates a caller-supplied input_type, defaulting to
+// "search_document" when unset. Query embeddings must use "search_query" for
+// retrieval to work, so honoring the override is what lets that succeed.
+func resolveCohereInputType(requested string) (string, error) {
+	if requested == "" {
+		return cohereEmbedDefaultInputType, nil
+	}
+	if !cohereEmbedInputTypes[requested] {
+		return "", fmt.Errorf("embed: unsupported input_type %q; want one of search_document, search_query, classification, clustering", requested)
+	}
+	return requested, nil
+}
+
 func (p *Provider) embedCohere(ctx context.Context, req core.EmbeddingRequest, modelID string, texts []string) (*core.EmbeddingResponse, error) {
 	if req.Dimensions != nil {
 		return nil, fmt.Errorf("embed: dimensions are not supported for Bedrock Cohere embeddings")
 	}
 
+	inputType, err := resolveCohereInputType(req.InputType)
+	if err != nil {
+		return nil, err
+	}
 	cohereReq := bedrockCohereEmbedRequest{
 		Texts:     texts,
-		InputType: "search_document",
+		InputType: inputType,
 	}
 	if strings.HasPrefix(modelID, "cohere.embed-v4") {
 		cohereReq.EmbeddingTypes = []string{"float"}

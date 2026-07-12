@@ -1,5 +1,21 @@
 package core
 
+import "context"
+
+// SendChunk sends c on ch unless ctx is done. It returns false when ctx was
+// cancelled before the send completed, signalling the producer goroutine to
+// stop and close its upstream response body. Streaming providers use it for
+// every send so a direct consumer that stops reading after cancellation cannot
+// block the producer forever and leak it along with the upstream connection.
+func SendChunk(ctx context.Context, ch chan<- StreamChunk, c StreamChunk) bool {
+	select {
+	case ch <- c:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
 // StreamChunk represents a single SSE chunk in a streaming response.
 type StreamChunk struct {
 	ID      string         `json:"id"`

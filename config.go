@@ -6,8 +6,18 @@ import "github.com/ferro-labs/ai-gateway/mcp"
 // Operators may lower or raise this via Config.MaxRequestBytes.
 const DefaultMaxRequestBytes int64 = 10 * 1024 * 1024
 
+// CurrentAPIVersion is the config schema version this build understands.
+// Normalize stamps it onto Config.APIVersion when the field is omitted.
+const CurrentAPIVersion = "v1"
+
 // Config holds the configuration for the AI Gateway.
 type Config struct {
+	// APIVersion is an optional, advisory config schema version (e.g. "v1").
+	// It is informational only: an empty value defaults to CurrentAPIVersion in
+	// Normalize, a recognized value is accepted as-is, and an unrecognized value
+	// is preserved and only logged as a warning so newer config files remain
+	// forward-compatible with older binaries. It never causes a load to fail.
+	APIVersion string `json:"apiVersion,omitempty" yaml:"apiVersion,omitempty"`
 	// Strategy defines how requests are routed (e.g., single, fallback, loadbalance).
 	Strategy StrategyConfig `json:"strategy" yaml:"strategy"`
 	// Targets is a list of provider targets to route requests to.
@@ -38,6 +48,23 @@ type Config struct {
 	// gateway runs with a NoOp provider (zero allocations on the hot
 	// path). See internal/otel.
 	Observability ObservabilityConfig `json:"observability,omitempty" yaml:"observability,omitempty"`
+}
+
+// Normalize applies config-level defaults in a single place. It is idempotent
+// and mutates the receiver. LoadConfig calls it after decoding so a loaded
+// Config carries its effective defaults; callers that build a Config
+// programmatically may call it before New for the same result.
+//
+// Scope is deliberately limited to top-level defaults that would otherwise be
+// applied inline during load/validate. Strategy-internal defaults (e.g. retry
+// backoff) are applied where the strategy runs, not here.
+func (c *Config) Normalize() {
+	if c.APIVersion == "" {
+		c.APIVersion = CurrentAPIVersion
+	}
+	if c.Strategy.Mode == "" {
+		c.Strategy.Mode = ModeSingle
+	}
 }
 
 // ObservabilityConfig is the user-facing observability section of

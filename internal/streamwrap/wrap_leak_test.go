@@ -77,7 +77,7 @@ func TestMeter_ClientDisconnect_NoGoroutineLeak(t *testing.T) {
 	// a clearer failure message).
 	done := make(chan struct{})
 	go func() {
-		for range out { //nolint:revive
+		for range out { //nolint:revive // empty-block: intentionally draining the stream to completion
 		}
 		close(done)
 	}()
@@ -137,7 +137,7 @@ func TestMeter_ConsumerStopsReading_NoLeak(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		for range out { //nolint:revive
+		for range out { //nolint:revive // empty-block: intentionally draining the stream to completion
 		}
 		close(done)
 	}()

@@ -89,7 +89,7 @@ func TestMeter_CallsPublishFn_OnSuccess(t *testing.T) {
 
 	// Drain. PublishFn is called synchronously inside the Meter goroutine
 	// before close(out), so once the range completes the callback has already run.
-	for range out { //nolint:revive
+	for range out { //nolint:revive // empty-block: intentionally draining the stream to completion
 	}
 
 	mu.Lock()
@@ -136,7 +136,7 @@ func TestMeter_CallsPublishFn_OnError(t *testing.T) {
 		PublishFn:   publishFn,
 	})
 	// PublishFn is called synchronously before close(out); no sleep needed.
-	for range out { //nolint:revive
+	for range out { //nolint:revive // empty-block: intentionally draining the stream to completion
 	}
 
 	mu.Lock()
@@ -165,7 +165,7 @@ func TestMeter_IncrementsProviderErrors_OnError(t *testing.T) {
 		MetricModel: "llama-3",
 		Catalog:     models.Catalog{},
 	})
-	for range out { //nolint:revive
+	for range out { //nolint:revive // empty-block: intentionally draining the stream to completion
 	}
 
 	afterReq := counterValue(t, metrics.RequestsTotal.WithLabelValues("groq", "llama-3", "error"))
@@ -193,7 +193,7 @@ func TestMeter_IncrementsProviderErrors_CircuitOpen(t *testing.T) {
 		MetricModel: "llama-3",
 		Catalog:     models.Catalog{},
 	})
-	for range out { //nolint:revive
+	for range out { //nolint:revive // empty-block: intentionally draining the stream to completion
 	}
 
 	afterReq := counterValue(t, metrics.RequestsTotal.WithLabelValues("groq", "llama-3", "error"))
@@ -246,7 +246,7 @@ func TestMeter_CircuitBreakerOutcome_PreservesProviderErrorOnClientCancel(t *tes
 	cancel()
 	close(sendErr)
 
-	for range out { //nolint:revive
+	for range out { //nolint:revive // empty-block: intentionally draining the stream to completion
 	}
 
 	mu.Lock()
@@ -282,7 +282,7 @@ func TestMeter_CallsCircuitBreakerOutcome_OnSuccessAndError(t *testing.T) {
 			Catalog:               models.Catalog{},
 			CircuitBreakerOutcome: outcomeFn,
 		})
-		for range out { //nolint:revive
+		for range out { //nolint:revive // empty-block: intentionally draining the stream to completion
 		}
 
 		mu.Lock()
@@ -309,7 +309,7 @@ func TestMeter_CallsCircuitBreakerOutcome_OnSuccessAndError(t *testing.T) {
 			Catalog:               models.Catalog{},
 			CircuitBreakerOutcome: outcomeFn,
 		})
-		for range out { //nolint:revive
+		for range out { //nolint:revive // empty-block: intentionally draining the stream to completion
 		}
 
 		mu.Lock()
@@ -344,7 +344,7 @@ func TestMeter_CallsCircuitBreakerOutcome_OnAfterPluginError(t *testing.T) {
 			outcomeErr = err
 		},
 	})
-	for range out { //nolint:revive
+	for range out { //nolint:revive // empty-block: intentionally draining the stream to completion
 	}
 
 	if outcomeErr != nil {
@@ -362,7 +362,7 @@ func TestMeter_NilPublishFn_NoPanic(t *testing.T) {
 		Catalog:     models.Catalog{},
 		PublishFn:   nil,
 	})
-	for range out { //nolint:revive
+	for range out { //nolint:revive // empty-block: intentionally draining the stream to completion
 	}
 }
 

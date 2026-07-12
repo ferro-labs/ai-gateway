@@ -195,7 +195,7 @@ func TestRouteStream_MCPRegistrySnapshotRace(t *testing.T) {
 				if err != nil {
 					continue
 				}
-				for range out { //nolint:revive
+				for range out { //nolint:revive // empty-block: intentionally draining the stream to completion
 				}
 			}
 		}()

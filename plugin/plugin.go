@@ -13,6 +13,7 @@ import (
 	"context"
 	"sync"
 
+	"github.com/ferro-labs/ai-gateway/observability"
 	"github.com/ferro-labs/ai-gateway/providers"
 )
 
@@ -79,6 +80,12 @@ type Context struct {
 	// Reason is the human-readable explanation reported to the client when
 	// Reject is set.
 	Reason string
+	// Span is the request root observability span, supplied by the gateway.
+	// When non-nil the plugin manager opens one child span per plugin
+	// invocation through it (recording outcome and redacted errors via the
+	// observability seam); when nil no plugin spans are emitted. Setting it
+	// never alters pipeline control flow.
+	Span observability.Span
 }
 
 // pluginContextPool recycles Context objects to reduce GC pressure.
@@ -109,7 +116,7 @@ func PutContext(c *Context) {
 	pluginContextPool.Put(c)
 }
 
-// reset clears all 7 fields before returning to the pool.
+// reset clears all 8 fields before returning to the pool.
 // Metadata map entries are deleted but the map itself is kept
 // to preserve its bucket array capacity for the next request.
 // SECURITY: every field must be listed explicitly.
@@ -121,4 +128,5 @@ func (c *Context) reset() {
 	c.Skip = false    // field 5: bool
 	c.Reject = false  // field 6: bool
 	c.Reason = ""     // field 7: string
+	c.Span = nil      // field 8: observability.Span
 }

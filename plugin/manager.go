@@ -4,38 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"reflect"
 	"runtime/debug"
 	"sync"
 
-	"github.com/ferro-labs/ai-gateway/internal/logging"
-	gwotel "github.com/ferro-labs/ai-gateway/internal/otel"
 	"github.com/ferro-labs/ai-gateway/observability"
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/trace"
 )
 
 const defaultRejectionReason = "rejected"
-
-// pluginTracer returns the OTel tracer used for plugin-stage child
-// spans. When no global TracerProvider is installed (the default no-op
-// case) this is a cheap no-op tracer — calls are inlined and emit
-// nothing.
-func pluginTracer() trace.Tracer {
-	return otel.Tracer("github.com/ferro-labs/ai-gateway/plugin")
-}
-
-// pluginAttrs returns the standard span attribute set for a plugin
-// invocation. Keys are sourced from the observability package constants
-// so attribute names stay in sync with the schema doc.
-func pluginAttrs(name, kind, stage string) []attribute.KeyValue {
-	return []attribute.KeyValue{
-		attribute.String(observability.AttrFerroPluginName, name),
-		attribute.String(observability.AttrFerroPluginKind, kind),
-		attribute.String(observability.AttrFerroPluginStage, stage),
-	}
-}
 
 // Manager manages plugin lifecycle and execution.
 type Manager struct {
@@ -96,7 +73,7 @@ func (m *Manager) Register(stage Stage, p Plugin) error {
 	default:
 		return fmt.Errorf("unknown plugin stage: %s", stage)
 	}
-	logging.Logger.Info("plugin registered", "name", p.Name(), "type", p.Type(), "stage", stage)
+	slog.Default().Info("plugin registered", "name", p.Name(), "type", p.Type(), "stage", stage)
 	return nil
 }
 
@@ -151,7 +128,7 @@ func (m *Manager) RunAfter(ctx context.Context, pctx *Context) error {
 			return &RejectionError{Plugin: p.Name(), PluginType: p.Type(), Stage: StageAfterRequest, Reason: reason}
 		}
 		if err != nil {
-			logging.Logger.Warn("after-request plugin error", "plugin", p.Name(), "error", err)
+			slog.Default().Warn("after-request plugin error", "plugin", p.Name(), "error", err)
 		}
 		if pctx.Skip {
 			break
@@ -167,49 +144,59 @@ func (m *Manager) RunOnError(ctx context.Context, pctx *Context) {
 	m.mu.RUnlock()
 	for _, p := range plugins {
 		if err := m.executePlugin(ctx, p, pctx, string(StageOnError)); err != nil {
-			logging.Logger.Warn("on-error plugin error", "plugin", p.Name(), "error", err)
+			slog.Default().Warn("on-error plugin error", "plugin", p.Name(), "error", err)
 		}
 	}
 }
 
-// executePlugin runs a single plugin under a child OTel span. When no
-// global TracerProvider is installed the span is a no-op and adds
-// effectively zero overhead. The span records the rejection outcome
-// via ferro.plugin.outcome / ferro.plugin.reason attributes.
+// executePlugin runs a single plugin under a child span opened through the
+// observability seam. When the request carries a root span (pctx.Span) the
+// child records the plugin name/kind/stage plus the rejection or error
+// outcome; error messages are redacted by the seam per the configured
+// privacy level. With the NoOp provider — or when no root span is set — the
+// child is a no-op and adds effectively zero overhead.
 func (m *Manager) executePlugin(ctx context.Context, p Plugin, pctx *Context, stage string) (err error) {
-	spanName := "plugin." + stage + "." + p.Name()
-	ctx, span := pluginTracer().Start(ctx, spanName, trace.WithAttributes(
-		pluginAttrs(p.Name(), string(p.Type()), stage)...,
-	))
+	var span observability.Span
+	if pctx.Span != nil {
+		ctx, span = pctx.Span.StartChild(ctx, "plugin."+stage+"."+p.Name(), observability.SpanKindInternal)
+		span.SetAttribute(observability.AttrFerroPluginName, p.Name())
+		span.SetAttribute(observability.AttrFerroPluginKind, string(p.Type()))
+		span.SetAttribute(observability.AttrFerroPluginStage, stage)
+		defer span.End()
+	}
+
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			stack := debug.Stack()
 			err = fmt.Errorf("plugin %s panicked at %s", p.Name(), stage)
-			logging.Logger.Error("plugin panicked",
+			slog.Default().Error("plugin panicked",
 				"plugin", p.Name(),
 				"stage", stage,
 				"panic", recovered,
 				"stack", string(stack),
 			)
-			span.SetAttributes(attribute.String(observability.AttrFerroPluginOutcome, "error"))
-			gwotel.RecordSpanError(span, err)
+			if span != nil {
+				span.SetAttribute(observability.AttrFerroPluginOutcome, "error")
+				span.SetError(err)
+			}
 		}
-		span.End()
 	}()
 
 	err = p.Execute(ctx, pctx)
 
-	switch {
-	case pctx.Reject:
-		span.SetAttributes(attribute.String(observability.AttrFerroPluginOutcome, "rejected"))
-		if pctx.Reason != "" {
-			span.SetAttributes(attribute.String(observability.AttrFerroPluginReason, pctx.Reason))
+	if span != nil {
+		switch {
+		case pctx.Reject:
+			span.SetAttribute(observability.AttrFerroPluginOutcome, "rejected")
+			if pctx.Reason != "" {
+				span.SetAttribute(observability.AttrFerroPluginReason, pctx.Reason)
+			}
+		case err != nil:
+			span.SetAttribute(observability.AttrFerroPluginOutcome, "error")
+			span.SetError(err)
+		default:
+			span.SetAttribute(observability.AttrFerroPluginOutcome, "ok")
 		}
-	case err != nil:
-		span.SetAttributes(attribute.String(observability.AttrFerroPluginOutcome, "error"))
-		gwotel.RecordSpanError(span, err)
-	default:
-		span.SetAttributes(attribute.String(observability.AttrFerroPluginOutcome, "ok"))
 	}
 	return err
 }
@@ -244,7 +231,7 @@ func (m *Manager) closeWhenDrained() {
 	m.lifecycleMu.Unlock()
 
 	if err := m.closePlugins(); err != nil {
-		logging.Logger.Warn("deferred plugin close failed", "error", err)
+		slog.Default().Warn("deferred plugin close failed", "error", err)
 	}
 }
 

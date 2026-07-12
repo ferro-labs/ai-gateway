@@ -39,3 +39,8 @@ func (s *Single) Execute(ctx context.Context, req providers.Request) (*providers
 	}
 	return responseWithProvider(resp, s.target.VirtualKey), nil
 }
+
+// SelectTargets returns the single configured target key.
+func (s *Single) SelectTargets(_ providers.Request) ([]string, error) {
+	return []string{s.target.VirtualKey}, nil
+}

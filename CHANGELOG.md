@@ -5,6 +5,36 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.22] — 2026-07-11
+
+The closeout of the v1.1.x hardening release line — streaming lifecycle, configuration validation, persistence consolidation, and provider fixes. One behavior change to note: configuration files are now rejected when they contain unrecognized keys (see **Changed**). The public Go API is otherwise unchanged.
+
+### Added
+
+- **Config `apiVersion` field.** An optional, advisory `apiVersion` (currently `v1`) can be set at the top of a config file. It is informational: an omitted value defaults to the current version, and an unrecognized value is accepted with a warning for forward compatibility.
+- **Qwen live model discovery.** The Qwen provider can now refresh its model list from the provider's `/models` endpoint, opt-in via `FERRO_MODEL_DISCOVERY_INTERVAL`, like the other OpenAI-compatible providers.
+
+### Changed
+
+- **Configuration is now strictly validated: an unrecognized key fails the load** instead of being silently ignored, so a typo like `strategy:` is reported at startup rather than dropping a whole block. Free-form plugin and exporter `config` maps still accept any key. JSON configs can no longer carry `_`-prefixed pseudo-comment keys; the field documentation lives in the YAML example instead.
+- **All persistent stores share one schema-migration path.** The API-key, config, and request-log stores now open, bind placeholders, and migrate through a single internal SQL layer, and each store's schema is versioned through the migration runner (baseline-adopted on databases from earlier releases). Behavior is unchanged; the consolidation removes the per-store SQL variations that previously drifted.
+
+### Fixed
+
+- **Streaming responses no longer leak a goroutine when a client disconnects mid-stream.** Every provider's streaming producer now abandons a pending send once the request context is cancelled, so the producer returns and its upstream HTTP body is closed instead of blocking forever.
+- **Streaming requests probe a recovering provider's circuit breaker exactly once.** The streaming path previously consumed the single half-open probe permit at provider-selection time and again at send time, so a recovering provider could never be retried by a streaming request.
+- **Streaming target selection now matches non-streaming.** The load-balance, conditional, and content-based strategies select the same candidate targets on both paths, so a streaming request can no longer be weighted toward or routed to a target that does not serve the requested model.
+- **Gemini** requests no longer emit a doubled `models/` prefix in `generateContent` URLs when a model id already carries it.
+- **Bedrock** Cohere embedding requests now forward the `input_type` parameter, so embed calls that depend on it are handled correctly upstream.
+- **Config history is persisted atomically with the active config.** A save now writes the active config and its history record in one transaction, so a crash can no longer leave the stored config ahead of its audit trail (#292).
+- **A concurrent index build that fails transiently is retried on the next start** rather than being recorded as applied and skipped permanently.
+- **Key-store file permissions are applied to the real file even for `file:` URI DSNs.** The SQLite path resolver now decodes percent-escapes and query suffixes the way SQLite opens the file, so the owner-only restriction always targets the actual database file. The API-key schema also migrates through its own dedicated ledger, keeping its version sequence independent of the other stores that may share a database.
+
+### Internal
+
+- Consolidated gateway internals: extracted the plugin hook bus, added a shared target-selection seam between the streaming and non-streaming routers, routed plugin and tool spans through the observability seam, and removed redundant locking around `math/rand`.
+- Enabled a stricter linter set and cleared the findings; added fuzz targets and goroutine-leak coverage for the streaming and parser paths; the release build now gates on the test suite and signs its artifacts.
+
 ## [1.1.21] — 2026-07-10
 
 Key hashing and storage hardening — the fourth phase of the v1.1.x hardening release line. The Go API is unchanged; two admin endpoints change their response values (see **Changed**).

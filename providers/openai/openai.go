@@ -191,7 +191,7 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 	return &core.EmbeddingResponse{
 		Object: string(result.Object),
 		Data:   embeddings,
-		Model:  string(result.Model),
+		Model:  result.Model,
 		Usage: core.EmbeddingUsage{
 			PromptTokens: int(result.Usage.PromptTokens),
 			TotalTokens:  int(result.Usage.TotalTokens),
@@ -203,7 +203,7 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*core.ImageResponse, error) {
 	params := oai.ImageGenerateParams{
 		Prompt: req.Prompt,
-		Model:  oai.ImageModel(req.Model),
+		Model:  req.Model,
 	}
 	if req.N != nil {
 		params.N = oai.Int(int64(*req.N))
@@ -346,14 +346,14 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 	}
 	defer release()
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.chatCompletionsEndpoint(), bodyReader) //nolint:gosec // baseURL validated in New()
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.chatCompletionsEndpoint(), bodyReader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	httpResp, err := p.httpClient.Do(httpReq) //nolint:gosec // baseURL validated in New()
+	httpResp, err := p.httpClient.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
@@ -368,12 +368,10 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 	}
 
 	ch := make(chan core.StreamChunk)
-	// The producer uses unguarded blocking sends (ch <- ...), matching every
-	// other provider. It stays leak-free because the gateway routes every
-	// provider stream through streamwrap.Meter, which ALWAYS drains this channel
-	// to completion — even on consumer abandonment or context cancellation — so
-	// this goroutine reaches close(ch) and Body.Close(). See the "Stream-send
-	// drain contract" in internal/streamwrap.
+	// Sends are guarded by core.SendChunk: on ctx cancellation the pending send
+	// is abandoned and the deferred close(ch)/Body.Close() run, so a direct
+	// consumer that stops reading cannot leak this goroutine or the upstream
+	// connection. Gateway-routed traffic drains through streamwrap.Meter as well.
 	go func() {
 		defer close(ch)
 		defer func() { _ = httpResp.Body.Close() }()
@@ -391,10 +389,12 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 			if json.Unmarshal([]byte(data), &chunk) != nil {
 				continue
 			}
-			ch <- chunk.toStreamChunk()
+			if !core.SendChunk(ctx, ch, chunk.toStreamChunk()) {
+				return
+			}
 		}
 		if err := scanner.Err(); err != nil {
-			ch <- core.StreamChunk{Error: err}
+			core.SendChunk(ctx, ch, core.StreamChunk{Error: err})
 		}
 	}()
 

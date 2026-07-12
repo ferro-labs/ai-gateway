@@ -223,3 +223,44 @@ func TestContentBased_ProviderNotFound(t *testing.T) {
 		t.Fatal("expected error when provider not found")
 	}
 }
+
+// TestContentBased_SelectTargets_FallbackWithoutRoutingTargets asserts that a
+// ContentBased built without WithRoutingTargets still surfaces the fallback that
+// Execute routes to on no match, rather than an empty streaming list.
+func TestContentBased_SelectTargets_FallbackWithoutRoutingTargets(t *testing.T) {
+	provA := &mockProvider{name: "code-model", models: []string{"gpt-4o"}}
+	provB := &mockProvider{name: "general-model", models: []string{"gpt-4o"}}
+	rules := []ContentRule{
+		{Type: PromptContains, Value: "python", Target: Target{VirtualKey: "code-model"}},
+	}
+	s, err := NewContentBased(rules, Target{VirtualKey: "general-model"}, newLookup(provA, provB))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	keys, err := s.SelectTargets(req("what is the weather?"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertKeys(t, keys, "general-model")
+}
+
+// TestContentBased_SelectTargets_MatchThenFallback asserts a matched rule leads,
+// with the fallback appended, even without WithRoutingTargets.
+func TestContentBased_SelectTargets_MatchThenFallback(t *testing.T) {
+	provA := &mockProvider{name: "code-model", models: []string{"gpt-4o"}}
+	provB := &mockProvider{name: "general-model", models: []string{"gpt-4o"}}
+	rules := []ContentRule{
+		{Type: PromptContains, Value: "python", Target: Target{VirtualKey: "code-model"}},
+	}
+	s, err := NewContentBased(rules, Target{VirtualKey: "general-model"}, newLookup(provA, provB))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	keys, err := s.SelectTargets(req("write python code"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertKeys(t, keys, "code-model", "general-model")
+}

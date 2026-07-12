@@ -269,6 +269,10 @@ type otelSpan struct {
 // StartChild starts a nested span under the receiver.
 func (s *otelSpan) StartChild(ctx context.Context, name string, kind observability.SpanKind) (context.Context, observability.Span) {
 	tr := s.span.TracerProvider().Tracer("github.com/ferro-labs/ai-gateway")
+	// StartChild is a span factory: the child is returned to the caller (wrapped
+	// in otelSpan) and ended via End per the observability.Span contract, so it
+	// is intentionally not ended here. spancheck is excluded for this span in
+	// .golangci.yml because it cannot see the span escape through the wrapper.
 	ctx, child := tr.Start(ctx, name, trace.WithSpanKind(toOTelSpanKind(kind)))
 	return ctx, &otelSpan{span: child, redactor: s.redactor, privacy: s.privacy}
 }

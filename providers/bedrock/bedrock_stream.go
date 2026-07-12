@@ -58,15 +58,17 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 			}
 			chunks, evtErr := dec.Event(e.Value.Bytes)
 			for _, c := range chunks {
-				ch <- c
+				if !core.SendChunk(ctx, ch, c) {
+					return
+				}
 			}
 			if evtErr != nil {
-				ch <- core.StreamChunk{Error: evtErr}
+				core.SendChunk(ctx, ch, core.StreamChunk{Error: evtErr})
 				return
 			}
 		}
 		if err := stream.Err(); err != nil {
-			ch <- core.StreamChunk{Error: err}
+			core.SendChunk(ctx, ch, core.StreamChunk{Error: err})
 		}
 	}()
 
