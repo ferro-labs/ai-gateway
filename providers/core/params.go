@@ -28,10 +28,10 @@ var optionalParamOrder = []string{
 	"logit_bias",
 }
 
-// paramPopulated reports whether the named optional OpenAI parameter carries a
+// ParamPopulated reports whether the named optional OpenAI parameter carries a
 // caller-supplied value on req. Required fields (model, messages) are never
 // considered optional params.
-func paramPopulated(req Request, name string) bool {
+func ParamPopulated(req Request, name string) bool {
 	switch name {
 	case "temperature":
 		return req.Temperature != nil
@@ -77,7 +77,7 @@ func paramPopulated(req Request, name string) bool {
 func DroppedParams(req Request, supported ...string) []string {
 	var dropped []string
 	for _, name := range optionalParamOrder {
-		if !slices.Contains(supported, name) && paramPopulated(req, name) {
+		if !slices.Contains(supported, name) && ParamPopulated(req, name) {
 			dropped = append(dropped, name)
 		}
 	}
@@ -103,4 +103,69 @@ func WarnUnsupportedParams(ctx context.Context, provider, model string, req Requ
 		"model", model,
 		"dropped_params", dropped,
 	)
+}
+
+// UnsupportedParamMode selects how the shared request builder treats a request
+// parameter the target provider cannot express. Warn is the zero value, so
+// callers that never set a mode keep the historical warn-and-forward behaviour.
+type UnsupportedParamMode int
+
+const (
+	// UnsupportedParamWarn logs the unsupported parameter and forwards the
+	// request unchanged. It is the default (zero value).
+	UnsupportedParamWarn UnsupportedParamMode = iota
+	// UnsupportedParamDrop omits the unsupported parameter from the forwarded
+	// upstream request and logs a warning.
+	UnsupportedParamDrop
+	// UnsupportedParamReject fails the request with an HTTP 400 error naming the
+	// unsupported parameter.
+	UnsupportedParamReject
+)
+
+// String returns the config wire name of the mode ("warn", "drop", "reject").
+func (m UnsupportedParamMode) String() string {
+	switch m {
+	case UnsupportedParamDrop:
+		return "drop"
+	case UnsupportedParamReject:
+		return "reject"
+	default:
+		return "warn"
+	}
+}
+
+// ParseUnsupportedParamMode maps a config string to an UnsupportedParamMode. An
+// empty string and "warn" both map to UnsupportedParamWarn. ok is false for any
+// other value (the caller should treat that as a config error); the returned
+// mode is UnsupportedParamWarn in that case so a misconfiguration fails safe.
+func ParseUnsupportedParamMode(s string) (mode UnsupportedParamMode, ok bool) {
+	switch s {
+	case "", "warn":
+		return UnsupportedParamWarn, true
+	case "drop":
+		return UnsupportedParamDrop, true
+	case "reject":
+		return UnsupportedParamReject, true
+	default:
+		return UnsupportedParamWarn, false
+	}
+}
+
+// unsupportedParamModeKey is the private context key for the compatibility mode.
+type unsupportedParamModeKey struct{}
+
+// WithUnsupportedParamMode returns a context carrying mode, read by the shared
+// request builder. The gateway sets it once per request from config; providers
+// need no changes.
+func WithUnsupportedParamMode(ctx context.Context, mode UnsupportedParamMode) context.Context {
+	return context.WithValue(ctx, unsupportedParamModeKey{}, mode)
+}
+
+// UnsupportedParamModeFromContext returns the mode stored by
+// WithUnsupportedParamMode, or UnsupportedParamWarn when none is set.
+func UnsupportedParamModeFromContext(ctx context.Context) UnsupportedParamMode {
+	if mode, ok := ctx.Value(unsupportedParamModeKey{}).(UnsupportedParamMode); ok {
+		return mode
+	}
+	return UnsupportedParamWarn
 }

@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/ferro-labs/ai-gateway/internal/tracingpolicy"
+	"github.com/ferro-labs/ai-gateway/providers/core"
 	"gopkg.in/yaml.v3"
 )
 
@@ -207,6 +208,11 @@ func ValidateConfig(cfg Config) error {
 	// truth in the internal tracingpolicy package (shared with internal/otel).
 	if err := tracingpolicy.ValidatePrivacyLevel(cfg.Observability.Tracing.PrivacyLevel); err != nil {
 		return fmt.Errorf("observability.tracing: %w", err)
+	}
+
+	// Validate compatibility.on_unsupported_param: "" (⇒ warn), warn, drop, reject.
+	if _, ok := core.ParseUnsupportedParamMode(cfg.Compatibility.OnUnsupportedParam); !ok {
+		return fmt.Errorf("compatibility.on_unsupported_param must be one of warn, drop, reject")
 	}
 
 	// Validate aliases: no alias may point to another alias (no cycles/chains).

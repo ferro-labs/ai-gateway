@@ -271,6 +271,36 @@ func TestValidateConfig_CostOptimizedUnpricedStrategy(t *testing.T) {
 	}
 }
 
+func TestValidateConfig_CompatibilityOnUnsupportedParam(t *testing.T) {
+	tests := []struct {
+		name              string
+		mode              string
+		wantValidationErr bool
+	}{
+		{name: "default empty"},
+		{name: "warn", mode: "warn"},
+		{name: "drop", mode: "drop"},
+		{name: "reject", mode: "reject"},
+		{name: "invalid", mode: "explode", wantValidationErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Config{
+				Strategy:      StrategyConfig{Mode: ModeSingle},
+				Targets:       []Target{{VirtualKey: "key1"}},
+				Compatibility: CompatibilityConfig{OnUnsupportedParam: tt.mode},
+			}
+			err := ValidateConfig(cfg)
+			if tt.wantValidationErr && err == nil {
+				t.Fatal("expected validation error")
+			}
+			if !tt.wantValidationErr && err != nil {
+				t.Fatalf("unexpected validation error: %v", err)
+			}
+		})
+	}
+}
+
 func TestValidateConfig_InvalidWeights(t *testing.T) {
 	tests := []struct {
 		name    string

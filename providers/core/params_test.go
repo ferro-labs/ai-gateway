@@ -43,10 +43,10 @@ func TestDroppedParams_AllSupported(t *testing.T) {
 }
 
 func TestParamPopulated_BooleanLogprobs(t *testing.T) {
-	if paramPopulated(Request{}, "logprobs") {
+	if ParamPopulated(Request{}, "logprobs") {
 		t.Error("logprobs should not be populated when false")
 	}
-	if !paramPopulated(Request{LogProbs: true}, "logprobs") {
+	if !ParamPopulated(Request{LogProbs: true}, "logprobs") {
 		t.Error("logprobs should be populated when true")
 	}
 }

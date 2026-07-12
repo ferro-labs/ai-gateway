@@ -245,6 +245,7 @@ func mountOpenAIRoutes(r chi.Router, gw *aigateway.Gateway, registry *providers.
 		r.Use(auth)
 		r.Use(middleware.MaxRequestBody(maxBytes))
 		r.Get("/v1/models", handler.Models(gw))
+		r.Get("/v1/capabilities", handler.Capabilities(registry))
 		r.Post("/v1/chat/completions", handler.ChatCompletions(gw))
 
 		// Legacy text completions.

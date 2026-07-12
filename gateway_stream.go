@@ -18,6 +18,7 @@ import (
 	"github.com/ferro-labs/ai-gateway/observability"
 	"github.com/ferro-labs/ai-gateway/plugin"
 	"github.com/ferro-labs/ai-gateway/providers"
+	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
 // Streaming request path (RouteStream) plus its streaming provider-resolution
@@ -49,12 +50,19 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 	// explicitly. streamEnded prevents a double-End.
 	g.mu.RLock()
 	strategyMode := string(g.config.Strategy.Mode)
+	compatMode := g.config.Compatibility.OnUnsupportedParam
 	obs := g.obs
 	obsEventsActive := g.obsEventsActive
 	mcpRegistrySnapshot := g.mcpRegistry
 	plugins := g.plugins
 	releasePlugins := acquirePluginManager(plugins)
 	g.mu.RUnlock()
+
+	// Carry the compatibility mode to the shared request builder. Only inject a
+	// non-default mode so the warn (default) streaming path is unaffected.
+	if mode, _ := core.ParseUnsupportedParamMode(compatMode); mode != core.UnsupportedParamWarn {
+		ctx = core.WithUnsupportedParamMode(ctx, mode)
+	}
 	var releasePluginsOnce sync.Once
 	releasePluginManager := func() {
 		releasePluginsOnce.Do(releasePlugins)

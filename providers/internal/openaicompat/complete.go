@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/ferro-labs/ai-gateway/internal/logging"
+	"github.com/ferro-labs/ai-gateway/providers/capabilities"
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
@@ -43,9 +45,26 @@ type ChatParams struct {
 	// (e.g. Perplexity's "citations", "search_results") into core.Response.Metadata,
 	// surfacing provider-specific data the canonical response shape doesn't model.
 	ExtraResponseFields []string
+
+	// OnUnsupportedParam selects how a request parameter the provider cannot
+	// express (per the capabilities matrix) is handled: warn, drop, or reject.
+	// The zero value (UnsupportedParamWarn) preserves the historical
+	// warn-and-forward behaviour. When left at the zero value, the mode is
+	// resolved from the request context, which the gateway sets from config.
+	OnUnsupportedParam core.UnsupportedParamMode
 }
 
 func newChatRequest(ctx context.Context, p ChatParams, req core.Request, stream bool) (*http.Response, func(), error) {
+	// Enforce the provider parameter capability matrix (issue #207) on a local
+	// copy of req before the body is built. Drop/reject only affect params the
+	// provider declares Unsupported; the default warn mode is a no-op here.
+	if err := enforceUnsupportedParams(ctx, p, &req); err != nil {
+		return nil, nil, err
+	}
+	// ponytail: emission of the observability.AttrFerroForwardedParams span
+	// attribute is deferred — the shared builder has no observability.Span in
+	// scope, and threading one through ChatParams/context for a debug-only
+	// attribute is not worth the plumbing. See observability/attributes.go.
 	var (
 		bodyReader io.Reader
 		release    func()
@@ -74,6 +93,93 @@ func newChatRequest(ctx context.Context, p ChatParams, req core.Request, stream 
 		return nil, nil, fmt.Errorf("request failed: %w", err)
 	}
 	return httpResp, release, nil
+}
+
+// resolveUnsupportedMode returns the effective compatibility mode: the explicit
+// ChatParams override when set, otherwise the gateway-supplied context value
+// (which itself defaults to warn).
+func resolveUnsupportedMode(ctx context.Context, p ChatParams) core.UnsupportedParamMode {
+	if p.OnUnsupportedParam != core.UnsupportedParamWarn {
+		return p.OnUnsupportedParam
+	}
+	return core.UnsupportedParamModeFromContext(ctx)
+}
+
+// enforceUnsupportedParams applies the compatibility mode to any populated
+// parameter the provider declares Unsupported in the capabilities matrix.
+// It mutates the caller's local copy of req only (never shared state). In warn
+// mode it is a no-op: native providers already warn via core.WarnUnsupportedParams
+// in their own builders, and providers routed through this builder forward
+// everything (no matrix entry), so there is nothing to double-log here.
+func enforceUnsupportedParams(ctx context.Context, p ChatParams, req *core.Request) error {
+	mode := resolveUnsupportedMode(ctx, p)
+	if mode == core.UnsupportedParamWarn {
+		return nil
+	}
+	var offending []string
+	for _, param := range capabilities.AllParams {
+		if capabilities.SupportOf(p.Provider, param) == capabilities.Unsupported &&
+			core.ParamPopulated(*req, param) {
+			offending = append(offending, param)
+		}
+	}
+	if len(offending) == 0 {
+		return nil
+	}
+	if mode == core.UnsupportedParamReject {
+		return core.NewUnsupportedParamError(p.Provider, offending)
+	}
+	// Drop mode: strip each offending param from the forwarded body, then warn once.
+	for _, param := range offending {
+		clearParam(req, param)
+	}
+	logging.FromContext(ctx).Warn(
+		"provider does not support request parameter(s); dropping",
+		"provider", p.Provider,
+		"dropped_params", offending,
+	)
+	return nil
+}
+
+// clearParam zeroes the named optional parameter on req so that, with the
+// omitempty JSON tags on core.Request, it is omitted from the forwarded upstream
+// body. It operates on the caller's local copy of the request, never shared
+// state. Unknown names are ignored.
+func clearParam(req *core.Request, name string) {
+	switch name {
+	case "temperature":
+		req.Temperature = nil
+	case "top_p":
+		req.TopP = nil
+	case "n":
+		req.N = nil
+	case "seed":
+		req.Seed = nil
+	case "max_tokens":
+		req.MaxTokens = nil
+	case "max_completion_tokens":
+		req.MaxCompletionTokens = nil
+	case "presence_penalty":
+		req.PresencePenalty = nil
+	case "frequency_penalty":
+		req.FrequencyPenalty = nil
+	case "stop":
+		req.Stop = nil
+	case "tools":
+		req.Tools = nil
+	case "tool_choice":
+		req.ToolChoice = nil
+	case "response_format":
+		req.ResponseFormat = nil
+	case "logprobs":
+		req.LogProbs = false
+	case "top_logprobs":
+		req.TopLogProbs = nil
+	case "user":
+		req.User = ""
+	case "logit_bias":
+		req.LogitBias = nil
+	}
 }
 
 // PostChat sends a non-streaming OpenAI-compatible chat completion and decodes

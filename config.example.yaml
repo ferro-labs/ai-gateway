@@ -209,6 +209,14 @@ mcp_servers:
       - web_read
     timeout_seconds: 20
 
+# Compatibility controls how the gateway treats OpenAI request parameters that a
+# routed provider cannot express (see GET /v1/capabilities for the matrix).
+#   warn   — forward the parameter and log a warning (default)
+#   drop   — remove the parameter from the upstream request and log
+#   reject — fail the request with HTTP 400 naming the parameter
+# compatibility:
+#   on_unsupported_param: warn
+
 # OpenTelemetry tracing (v1.1.0+).
 # When unset (or endpoint empty) the gateway runs with a zero-alloc
 # NoOp provider — there is no cost to leaving this section out.

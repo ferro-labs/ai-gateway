@@ -48,6 +48,20 @@ type Config struct {
 	// gateway runs with a NoOp provider (zero allocations on the hot
 	// path). See internal/otel.
 	Observability ObservabilityConfig `json:"observability,omitempty" yaml:"observability,omitempty"`
+	// Compatibility configures how the gateway treats request parameters a
+	// target provider cannot express. Omitted (the default) means warn.
+	Compatibility CompatibilityConfig `json:"compatibility,omitempty" yaml:"compatibility,omitempty"`
+}
+
+// CompatibilityConfig controls the gateway's handling of OpenAI request
+// parameters that a routed provider does not support (per the capability
+// matrix in providers/capabilities).
+type CompatibilityConfig struct {
+	// OnUnsupportedParam selects the behaviour for an unsupported parameter:
+	// "warn" (default) forwards it and logs, "drop" removes it from the
+	// upstream request and logs, and "reject" fails the request with HTTP 400.
+	// An empty value is treated as "warn".
+	OnUnsupportedParam string `json:"on_unsupported_param,omitempty" yaml:"on_unsupported_param,omitempty"`
 }
 
 // Normalize applies config-level defaults in a single place. It is idempotent

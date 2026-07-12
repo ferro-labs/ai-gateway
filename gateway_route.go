@@ -61,6 +61,7 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	// zero-allocation call when tracing is disabled.
 	g.mu.RLock()
 	strategyMode := string(g.config.Strategy.Mode)
+	compatMode := g.config.Compatibility.OnUnsupportedParam
 	obs := g.obs
 	obsEventsActive := g.obsEventsActive
 	mcpRegistrySnapshot := g.mcpRegistry
@@ -69,6 +70,13 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	releasePlugins := acquirePluginManager(plugins)
 	g.mu.RUnlock()
 	defer releasePlugins()
+
+	// Carry the compatibility mode to the shared request builder. Only inject
+	// when a non-default mode is configured so the warn (default) hot path keeps
+	// its zero-allocation baseline.
+	if mode, _ := core.ParseUnsupportedParamMode(compatMode); mode != core.UnsupportedParamWarn {
+		ctx = core.WithUnsupportedParamMode(ctx, mode)
+	}
 	ctx, span := obs.StartRequestSpan(ctx, observability.RequestAttrs{
 		Operation:       "chat",
 		RequestModel:    req.Model,

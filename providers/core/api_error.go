@@ -3,6 +3,8 @@ package core
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"strings"
 )
 
 // apiErrorEnvelope covers the OpenAI {"error":{"message":…}} error body shape and
@@ -44,5 +46,19 @@ func APIError(label string, status int, body []byte) error {
 	return &HTTPStatusError{
 		StatusCode: status,
 		Message:    fmt.Sprintf("%s API error (%d): %s", label, status, msg),
+	}
+}
+
+// NewUnsupportedParamError builds an HTTP 400 error naming the request
+// parameters the provider cannot express, for the reject compatibility mode. The
+// message names only parameter names and the provider — never prompt content or
+// secrets — so it is safe to return to the caller.
+func NewUnsupportedParamError(provider string, params []string) error {
+	return &HTTPStatusError{
+		StatusCode: http.StatusBadRequest,
+		Message: fmt.Sprintf(
+			"provider %q does not support request parameter(s): %s",
+			provider, strings.Join(params, ", "),
+		),
 	}
 }
