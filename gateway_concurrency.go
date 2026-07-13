@@ -27,6 +27,12 @@ import (
 // in-flight slot when a target sets max_concurrency but omits queue_size.
 const DefaultConcurrencyQueueSize = 1000
 
+// MaxTargetConcurrency is the highest value ValidateConfig accepts for a target's
+// max_concurrency or queue_size. A real in-flight cap is bounded by upstream
+// connection limits, not memory; a value this high is a config typo, not an
+// intentional one, and left unchecked it becomes the channel buffer size below.
+const MaxTargetConcurrency = 100_000
+
 // providerLimiter bounds how many requests may be in flight against a single
 // target, and how many may wait for a slot.
 type providerLimiter struct {

@@ -30,12 +30,11 @@ func (e *RejectionError) Error() string {
 // FailureError indicates a fail-closed plugin could not complete: it returned an
 // error or panicked. The request was not denied — it was never evaluated.
 //
-// This is deliberately a different type from RejectionError, because the two mean
-// opposite things to the caller. A rejection is a verdict on the client's request;
-// a failure is the gateway's own component breaking. Reporting a failure as a
-// rejection tells the client to fix a request that was fine, and — for a rate-limit
-// plugin whose backend is down — tells every SDK to back off and retry a 429 that
-// nothing will clear. A failure is a server error, and the gateway says so.
+// It is a distinct type from RejectionError because the two carry opposite
+// meanings: a rejection is a verdict on the client's request, a failure is the
+// gateway's own component breaking. A failure is reported as a server error, so a
+// rate-limit plugin whose backend is down does not answer 429 and invite every SDK
+// to retry a limit that nothing will clear.
 type FailureError struct {
 	Plugin     string
 	PluginType PluginType

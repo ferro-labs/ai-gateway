@@ -75,8 +75,11 @@ func (g *Gateway) wireMCPLocked(cfg Config, failLogMsg string) {
 		// persisted to the config store nor served by GET /admin/config.
 		headers, err := envref.StringMap(mcpCfg.Headers)
 		if err != nil {
+			// Skip only this server: an unrelated server's config must not be able to
+			// disable every other server, and the caller (ReloadConfig) must still get
+			// a registry rebuilt from cfg rather than keep serving the pre-reload one.
 			slog.Error(failLogMsg, "server", mcpCfg.Name, "error", err)
-			return
+			continue
 		}
 		mcpCfg.Headers = headers
 		reg.RegisterConfig(mcpCfg)

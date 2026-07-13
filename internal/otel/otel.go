@@ -282,27 +282,28 @@ func newSpanExporter(ctx context.Context, cfg Config) (sdktrace.SpanExporter, er
 // plugins, exporters and MCP use, so ${VAR} means exactly one thing everywhere, and
 // a literal "$" is always data.
 //
-// A header that ends up empty is dropped rather than sent blank: an empty auth
-// header is never intentional and would only earn a 401 from the backend. An
-// undefined reference drops the headers with a warning instead of failing startup —
-// tracing is auxiliary, and a mistyped trace header must not stop the gateway from
-// serving requests.
+// Headers are resolved independently: a header that ends up empty is dropped
+// rather than sent blank, since an empty auth header is never intentional and
+// would only earn a 401 from the backend. A header with an undefined reference
+// is dropped with a warning naming it, rather than failing startup or discarding
+// every other header — tracing is auxiliary, and one mistyped trace header must
+// not take the rest down with it.
 func resolveHeaders(raw map[string]string) map[string]string {
 	if len(raw) == 0 {
 		return nil
 	}
-	resolved, err := envref.StringMap(raw)
-	if err != nil {
-		logging.Logger.Warn("otel: tracing headers have undefined environment references; dropping them", "error", err)
-		return nil
-	}
-	out := make(map[string]string, len(resolved))
-	for k, v := range resolved {
-		if v == "" {
+	out := make(map[string]string, len(raw))
+	for k, v := range raw {
+		resolved, err := envref.Expand(v)
+		if err != nil {
+			logging.Logger.Warn("otel: tracing header has an undefined environment reference; dropping it", "header", k, "error", err)
+			continue
+		}
+		if resolved == "" {
 			logging.Logger.Warn("otel: tracing header resolved to an empty value; dropping it", "header", k)
 			continue
 		}
-		out[k] = v
+		out[k] = resolved
 	}
 	if len(out) == 0 {
 		return nil

@@ -251,8 +251,12 @@ func (m *GatewayConfigManager) GetConfig() aigateway.Config {
 
 // Ping reports whether the config manager's backing store is reachable. A
 // manager with no persistent store keeps config in memory and is always
-// reachable, so it returns nil.
+// reachable, so it returns nil. A nil manager is not initialized and must
+// fail closed rather than dereference m.store.
 func (m *GatewayConfigManager) Ping(ctx context.Context) error {
+	if m == nil {
+		return fmt.Errorf("config manager ping: manager not initialized")
+	}
 	if m.store == nil {
 		return nil
 	}

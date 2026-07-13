@@ -666,6 +666,24 @@ func TestResolveHeaders_UnsetEnvVarSkipped(t *testing.T) {
 	}
 }
 
+func TestResolveHeaders_UndefinedVarKeepsOtherHeaders(t *testing.T) {
+	// FERRO_OTEL_TEST_TRULY_UNDEFINED_VAR must never be set in this test's environment.
+	raw := map[string]string{
+		"x-bad":  "${FERRO_OTEL_TEST_TRULY_UNDEFINED_VAR}",
+		"x-good": "static-value",
+	}
+	got := resolveHeaders(raw)
+	if got["x-good"] != "static-value" {
+		t.Errorf("expected x-good to survive an unrelated undefined reference, got %q", got["x-good"])
+	}
+	if _, exists := got["x-bad"]; exists {
+		t.Errorf("expected x-bad to be dropped, got %q", got["x-bad"])
+	}
+	if len(got) != 1 {
+		t.Errorf("expected 1 surviving header, got %d: %v", len(got), got)
+	}
+}
+
 func TestResolveHeaders_MixedMap(t *testing.T) {
 	t.Setenv("FERRO_OTEL_TEST_SET_VAR", "my-api-key")
 	t.Setenv("FERRO_OTEL_TEST_EMPTY_VAR", "")

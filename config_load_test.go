@@ -220,6 +220,37 @@ func TestValidateConfig_InvalidWeights(t *testing.T) {
 	}
 }
 
+func TestValidateConfig_ConcurrencyBounds(t *testing.T) {
+	tests := []struct {
+		name        string
+		concurrency *ConcurrencyConfig
+		wantErr     bool
+	}{
+		{name: "nil concurrency is unlimited", concurrency: nil, wantErr: false},
+		{name: "positive max_concurrency", concurrency: &ConcurrencyConfig{MaxConcurrency: 10}, wantErr: false},
+		{name: "zero max_concurrency rejected", concurrency: &ConcurrencyConfig{MaxConcurrency: 0}, wantErr: true},
+		{name: "negative max_concurrency rejected", concurrency: &ConcurrencyConfig{MaxConcurrency: -1}, wantErr: true},
+		{name: "absurd max_concurrency rejected", concurrency: &ConcurrencyConfig{MaxConcurrency: 100_000_000}, wantErr: true},
+		{name: "negative queue_size rejected", concurrency: &ConcurrencyConfig{MaxConcurrency: 10, QueueSize: -1}, wantErr: true},
+		{name: "absurd queue_size rejected", concurrency: &ConcurrencyConfig{MaxConcurrency: 10, QueueSize: 100_000_000}, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Config{
+				Strategy: StrategyConfig{Mode: ModeSingle},
+				Targets:  []Target{{VirtualKey: "key1", Concurrency: tt.concurrency}},
+			}
+			err := ValidateConfig(cfg)
+			if tt.wantErr && err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
 func TestLoadConfig_YAML(t *testing.T) {
 	data := `
 strategy:

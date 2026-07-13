@@ -67,8 +67,9 @@ type ChatParams struct {
 
 func newChatRequest(ctx context.Context, p ChatParams, req core.Request, stream bool) (*http.Response, func(), error) {
 	// Enforce the provider parameter capability matrix (issue #207) on a local
-	// copy of req before the body is built. Drop/reject only affect params the
-	// provider declares Unsupported; the default warn mode is a no-op here.
+	// copy of req before the body is built. warn/drop/reject all key off params
+	// the provider declares Unsupported; only drop/reject change what is
+	// actually forwarded.
 	if err := enforceUnsupportedParams(ctx, p, &req); err != nil {
 		return nil, nil, err
 	}
@@ -117,16 +118,18 @@ func resolveUnsupportedMode(ctx context.Context, p ChatParams) core.UnsupportedP
 }
 
 // enforceUnsupportedParams applies the compatibility mode to any populated
-// parameter the provider declares Unsupported in the capabilities matrix.
-// It mutates the caller's local copy of req only (never shared state). In warn
-// mode it is a no-op: native providers enforce via core.EnforceUnsupportedParams
-// in their own builders, and providers routed through this builder forward
-// everything (no matrix entry), so there is nothing to double-log here.
+// parameter the provider declares Unsupported in the capabilities matrix. It
+// mutates the caller's local copy of req only (never shared state). warn logs
+// the offending params and forwards them unchanged; drop clears them from req
+// and logs; reject fails the request naming them. A provider absent from the
+// matrix (capabilities.HasProfile) short-circuits before the AllParams scan,
+// since it forwards everything by definition — the common case for providers
+// routed through this builder today.
 func enforceUnsupportedParams(ctx context.Context, p ChatParams, req *core.Request) error {
-	mode := resolveUnsupportedMode(ctx, p)
-	if mode == core.UnsupportedParamWarn {
+	if !capabilities.HasProfile(p.Provider) {
 		return nil
 	}
+	mode := resolveUnsupportedMode(ctx, p)
 	var offending []string
 	for _, param := range capabilities.AllParams {
 		if capabilities.SupportOf(p.Provider, param) == capabilities.Unsupported &&
@@ -140,14 +143,24 @@ func enforceUnsupportedParams(ctx context.Context, p ChatParams, req *core.Reque
 	if mode == core.UnsupportedParamReject {
 		return core.NewUnsupportedParamError(p.Provider, offending)
 	}
-	// Drop mode: strip each offending param from the forwarded body, then warn once.
-	for _, param := range offending {
-		clearParam(req, param)
+	if mode == core.UnsupportedParamDrop {
+		// Drop mode: strip each offending param from the forwarded body, then warn once.
+		for _, param := range offending {
+			clearParam(req, param)
+		}
+		logging.FromContext(ctx).Warn(
+			"provider does not support request parameter(s); dropping",
+			"provider", p.Provider,
+			"dropped_params", offending,
+		)
+		return nil
 	}
+	// Warn mode: log once, but forward unchanged — dropping here would make
+	// warn indistinguishable from drop.
 	logging.FromContext(ctx).Warn(
-		"provider does not support request parameter(s); dropping",
+		"provider does not support request parameter(s); forwarding",
 		"provider", p.Provider,
-		"dropped_params", offending,
+		"forwarded_params", offending,
 	)
 	return nil
 }

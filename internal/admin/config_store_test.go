@@ -431,6 +431,16 @@ func TestGatewayConfigManager_Ping_DoesNotDoubleWrapStoreError(t *testing.T) {
 	}
 }
 
+// TestGatewayConfigManager_Ping_NilReceiver proves a nil *GatewayConfigManager
+// reports an error instead of panicking: readiness must fail closed for an
+// uninitialized manager, not crash on the m.store dereference.
+func TestGatewayConfigManager_Ping_NilReceiver(t *testing.T) {
+	var mgr *GatewayConfigManager
+	if err := mgr.Ping(context.Background()); err == nil {
+		t.Fatal("expected error pinging a nil config manager")
+	}
+}
+
 // TestSQLConfigStore_Ping_NilReceiver proves a nil *SQLConfigStore reports an
 // error instead of panicking: an uninitialized store is not reachable, so
 // readiness must fail closed rather than crash.

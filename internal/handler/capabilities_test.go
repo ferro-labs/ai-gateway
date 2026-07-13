@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/ferro-labs/ai-gateway/providers"
+	"github.com/ferro-labs/ai-gateway/providers/capabilities"
 )
 
 // TestCapabilities_ReturnsProfiles verifies GET /v1/capabilities reports a
@@ -54,8 +55,14 @@ func TestCapabilities_ReturnsProfiles(t *testing.T) {
 	if openai["seed"] != "forward" {
 		t.Errorf("openai.seed = %q, want forward (no matrix entry)", openai["seed"])
 	}
-	// Every canonical param must be present for a materialised profile.
-	if len(openai) == 0 {
-		t.Error("openai profile is empty")
+	// Every canonical param must be present for a materialised profile, and
+	// none beyond it.
+	if len(openai) != len(capabilities.AllParams) {
+		t.Fatalf("openai profile has %d params, want %d", len(openai), len(capabilities.AllParams))
+	}
+	for _, param := range capabilities.AllParams {
+		if _, ok := openai[param]; !ok {
+			t.Errorf("openai profile missing canonical param %q", param)
+		}
 	}
 }

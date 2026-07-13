@@ -7,6 +7,7 @@ import (
 	"time"
 
 	aigateway "github.com/ferro-labs/ai-gateway"
+	"github.com/ferro-labs/ai-gateway/internal/logging"
 )
 
 // readyzPingTimeout bounds how long Readyz waits for all backing-store pings
@@ -54,7 +55,8 @@ func Readyz(gw *aigateway.Gateway, pingers ...Pinger) http.HandlerFunc {
 				continue
 			}
 			if err := p.Ping(ctx); err != nil {
-				writeNotReady(w, "store unreachable: "+err.Error())
+				logging.FromContext(r.Context()).Error("readyz store ping failed", "error", err)
+				writeNotReady(w, "store unreachable")
 				return
 			}
 		}
@@ -74,7 +76,9 @@ func Readyz(gw *aigateway.Gateway, pingers ...Pinger) http.HandlerFunc {
 }
 
 // writeNotReady emits a 503 with a JSON body naming the failed readiness check.
-// Reasons never include secrets — store pings surface connection errors only.
+// /readyz is unauthenticated, so reason must stay a fixed, generic string —
+// never the underlying error, which can carry a DSN, host, or credential.
+// Callers log the real error server-side before calling this.
 func writeNotReady(w http.ResponseWriter, reason string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusServiceUnavailable)

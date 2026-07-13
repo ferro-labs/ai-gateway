@@ -1,13 +1,17 @@
 package openaicompat
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"github.com/ferro-labs/ai-gateway/internal/logging"
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
@@ -170,5 +174,70 @@ func TestEnforce_StreamingDropParity(t *testing.T) {
 	}
 	if _, ok := body["seed"]; ok {
 		t.Error("streaming drop mode must omit unsupported seed from the upstream body")
+	}
+}
+
+// TestEnforce_WarnLogsUnsupported verifies warn mode forwards the unsupported
+// param (see TestEnforce_WarnForwardsUnsupported) AND logs it. A warn mode
+// that never warns is indistinguishable from having no compatibility mode at
+// all, and the drift guard cannot catch that on its own.
+func TestEnforce_WarnLogsUnsupported(t *testing.T) {
+	var logs bytes.Buffer
+	prevLogger := logging.Logger
+	logging.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+	defer func() { logging.Logger = prevLogger }()
+
+	var body map[string]json.RawMessage
+	srv := capturingServer(t, &body)
+	defer srv.Close()
+
+	_, err := PostChat(context.Background(), ChatParams{
+		HTTPClient: srv.Client(),
+		URL:        srv.URL,
+		Provider:   "anthropic",
+		Label:      "anthropic",
+		Headers:    map[string]string{"Content-Type": "application/json"},
+		// OnUnsupportedParam left at zero value (warn); no context mode set.
+	}, unsupportedParamReq())
+	if err != nil {
+		t.Fatalf("PostChat: %v", err)
+	}
+	if _, ok := body["seed"]; !ok {
+		t.Error("warn mode must forward unsupported seed, but it was dropped")
+	}
+	if !strings.Contains(logs.String(), "seed") {
+		t.Errorf("warn mode must log the unsupported param, got logs: %q", logs.String())
+	}
+}
+
+// TestEnforce_NoProfileSkipsWithoutLogging verifies a provider absent from the
+// matrix (fireworks, per TestProfileOf_UnknownProviderAllForward) short-circuits
+// before the AllParams scan: no log line, even though the request populates a
+// param that anthropic's profile marks Unsupported.
+func TestEnforce_NoProfileSkipsWithoutLogging(t *testing.T) {
+	var logs bytes.Buffer
+	prevLogger := logging.Logger
+	logging.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+	defer func() { logging.Logger = prevLogger }()
+
+	var body map[string]json.RawMessage
+	srv := capturingServer(t, &body)
+	defer srv.Close()
+
+	_, err := PostChat(context.Background(), ChatParams{
+		HTTPClient: srv.Client(),
+		URL:        srv.URL,
+		Provider:   "fireworks",
+		Label:      "fireworks",
+		Headers:    map[string]string{"Content-Type": "application/json"},
+	}, unsupportedParamReq())
+	if err != nil {
+		t.Fatalf("PostChat: %v", err)
+	}
+	if _, ok := body["seed"]; !ok {
+		t.Error("provider with no matrix entry must forward seed")
+	}
+	if logs.Len() != 0 {
+		t.Errorf("provider with no matrix entry must not log anything, got: %q", logs.String())
 	}
 }

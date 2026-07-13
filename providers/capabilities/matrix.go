@@ -137,6 +137,16 @@ func SupportOf(providerID, param string) Support {
 	return Forward
 }
 
+// HasProfile reports whether providerID has any exceptions recorded in the
+// matrix at all. It is a single map lookup, cheap enough for callers on the
+// request hot path (e.g. the shared openaicompat builder) to skip a per-param
+// AllParams scan for the common case of a provider with no entry: such a
+// provider forwards everything by definition, so there is nothing to find.
+func HasProfile(providerID string) bool {
+	_, ok := matrix[providerID]
+	return ok
+}
+
 // ProfileOf materialises the full Support profile for a provider over AllParams
 // (defaults plus overrides), for the /v1/capabilities response.
 func ProfileOf(providerID string) map[string]Support {

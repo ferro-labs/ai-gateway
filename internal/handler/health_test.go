@@ -169,6 +169,33 @@ func TestReadyzNilGateway(t *testing.T) {
 	}
 }
 
+func TestReadyzDoesNotLeakStoreErrorDetail(t *testing.T) {
+	gw, err := aigateway.New(aigateway.Config{
+		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeSingle},
+		Targets:  []aigateway.Target{{VirtualKey: "health-provider"}},
+	})
+	if err != nil {
+		t.Fatalf("New gateway: %v", err)
+	}
+	t.Cleanup(func() { _ = gw.Close() })
+	gw.RegisterProvider(healthProvider{})
+
+	//nolint:gosec // G101: a fake DSN; the point of the test is that /readyz never echoes it
+	const secret = "postgres://admin:hunter2@db.internal:5432/gateway"
+	pinger := fakePinger{err: errors.New("dial tcp: " + secret + ": connection refused")}
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/readyz", nil)
+	w := httptest.NewRecorder()
+	Readyz(gw, pinger).ServeHTTP(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status code = %d, want %d", w.Code, http.StatusServiceUnavailable)
+	}
+	if strings.Contains(w.Body.String(), secret) {
+		t.Fatalf("response body leaked store error detail: %s", w.Body.String())
+	}
+}
+
 type healthProvider struct{}
 
 func (healthProvider) Name() string              { return "health-provider" }
