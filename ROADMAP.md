@@ -82,17 +82,24 @@ The v1.1.x hardening patch line is complete; further work continues in the v1.2.
 
 ## v1.2.0 — Provider Parameter Capability Matrix
 
-Status: Planning (target 2026-07-10). Tracking issue: [#207](https://github.com/ferro-labs/ai-gateway/issues/207).
+Status: **Shipped** (2026-07-13). Tracking issue: [#207](https://github.com/ferro-labs/ai-gateway/issues/207).
 
 Builds on the v1.1.4 forwarding fix to make per-provider parameter support **explicit and machine-readable**, so a changed model behaviour can be traced to either provider capability or gateway forwarding.
 
-### Priorities
+### What shipped
 
-- **Per-provider capability matrix** — provider profiles declaring per-param support (`forward` / `translate` / `unsupported`), built on a shared OpenAI-compatible request builder so providers can't drift.
+- **Per-provider capability matrix** — one declarative source of per-param support (`forward` / `translate` / `unsupported`). Providers no longer carry private supported-parameter lists; the matrix is the only source enforcement reads, so a provider and its declared capabilities cannot drift apart.
 - **`GET /v1/capabilities`** — the matrix exposed so users can compare providers programmatically.
 - **Opt-in strict mode** — `compatibility.on_unsupported_param: warn | drop | reject`; default `warn` stays backward-compatible, `reject` returns a clear unsupported-parameter error.
-- **Sanitized debug echo** — forwarded parameter *names* surfaced via observability (never prompts or keys).
-- **Docs** — "OpenAI-compatible request shape" documented separately from "OpenAI-identical feature support."
+- **Cross-provider conformance suite** — every provider is constructed through its registration seam and asserted against its real native payload, closing the gap between what a provider advertises and what it delivers ([#276](https://github.com/ferro-labs/ai-gateway/issues/276)).
+- **Per-request deadlines and retry hygiene** — `request_timeout` bounds a non-streaming request end to end; retries are limited to retryable statuses with jittered backoff ([#277](https://github.com/ferro-labs/ai-gateway/issues/277), [#278](https://github.com/ferro-labs/ai-gateway/issues/278)).
+- **Per-target concurrency limits** — `targets[].concurrency` bounds in-flight requests per provider and sheds with 429 when saturated ([#248](https://github.com/ferro-labs/ai-gateway/issues/248)).
+- **Split liveness and readiness probes** — `/livez` and `/readyz` for orchestrator rollout gating ([#279](https://github.com/ferro-labs/ai-gateway/issues/279)).
+- **Plugin failure policy** — a plugin that denies a request and a plugin that breaks are now distinct, so a broken rate-limit plugin no longer answers 429 and invite SDKs to retry into the outage ([#288](https://github.com/ferro-labs/ai-gateway/issues/288)).
+
+### Deferred
+
+- **Sanitized debug echo** — the `ferro.forwarded_params` attribute is defined but not emitted: the shared request builder has no span in scope, and threading one through for a debug-only attribute costs more than it returns. It stays marked Planned in `observability/attributes.go` until the builder carries a span for another reason.
 
 ## v1.3.0 — MCP stdio Transport
 

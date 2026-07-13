@@ -72,10 +72,10 @@ func newChatRequest(ctx context.Context, p ChatParams, req core.Request, stream 
 	if err := enforceUnsupportedParams(ctx, p, &req); err != nil {
 		return nil, nil, err
 	}
-	// ponytail: emission of the observability.AttrFerroForwardedParams span
-	// attribute is deferred — the shared builder has no observability.Span in
-	// scope, and threading one through ChatParams/context for a debug-only
-	// attribute is not worth the plumbing. See observability/attributes.go.
+	// The observability.AttrFerroForwardedParams attribute is not emitted here:
+	// the shared builder has no span in scope, and threading one through
+	// ChatParams for a debug-only attribute costs more than it returns. The
+	// constant is marked Planned in observability/attributes.go.
 	var (
 		bodyReader io.Reader
 		release    func()

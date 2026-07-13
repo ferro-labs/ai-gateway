@@ -21,6 +21,12 @@
 - **Metrics** — Prometheus metrics exposed at `/metrics` (`internal/metrics/`).
 - **Circuit breaker** — per-provider circuit breaker in `internal/circuitbreaker/`.
 - **Observability (v1.1.0)** — OpenTelemetry tracing. Public `observability/` package (stable `Provider`/`Span`/`Exporter`/`Event` seam + `gen_ai.*`/`ferro.*` attribute constants); `internal/otel/` wires the OTLP exporter, W3C propagation, and a custom `IDGenerator` that unifies the OTel `trace_id` with the logging trace ID / `X-Request-ID`; `internal/redact/` redacts error messages. Defaults to a zero-allocation NoOp when no OTLP endpoint **and** no exporter are configured.
+- **Capability matrix (v1.2.0)** — `providers/capabilities/matrix.go` is the single source of truth for which OpenAI chat parameters each provider can express. Providers no longer keep private supported-parameter lists; `core.EnforceUnsupportedParams` reads the matrix and applies `compatibility.on_unsupported_param` (warn | drop | reject). Served by `GET /v1/capabilities`.
+- **Conformance suite (v1.2.0)** — `test/conformance/` builds every provider through its `ProviderEntry`, points it at an httptest stub returning that provider's *native* payload, and asserts the translated `core.Response`. No build tag, no network: it runs with `make test`. `TestConformanceCoverage` fails on any provider with neither a fixture nor an allowlist reason.
+- **Plugin failure policy (v1.2.0)** — a plugin that *denies* (`Context.Reject`) and a plugin that *breaks* (error/panic) are distinct: `RejectionError` keeps its 4xx/429, `FailureError` is a 500. Logging and metrics plugins fail open; guardrail, auth, ratelimit, transform, and unknown types fail closed. `Reject` is honoured for every type.
+- **Env references (v1.2.0)** — `internal/envref` resolves `${VAR}` **at component construction**, never at config load, so the `Config` never carries a materialised secret into the config-history store, `GET /admin/config`, or a rollback. A bare `$` is data (`$100`, `pa$$w0rd` survive); an undefined variable is an error.
+- **Per-target concurrency (v1.2.0)** — `targets[].concurrency` bounds in-flight requests per provider with a queue; overflow returns `ErrProviderSaturated` → 429. The limiter decorates the provider at the call site (innermost, circuit breaker outermost) and never forges capability interfaces.
+- **Health split (v1.2.0)** — `/livez` (process alive) and `/readyz` (ready to serve) replace the single `/health` semantics; `/health` is retained.
 
 ---
 
@@ -77,6 +83,7 @@ ai-gateway/
 ├── plugin/               # Public plugin framework (interfaces + manager + registry)
 ├── observability/        # Public OTel seam: Provider/Span/Exporter/Event + attribute constants + NoOp + exporter registry
 ├── providers/
+│   ├── capabilities/     # Provider × parameter support matrix — single source of truth (v1.2.0)
 │   ├── core/             # Shared interfaces (contracts.go) and types (chat, stream, embedding, image, model)
 │   ├── <id>/             # One subpackage per provider
 │   ├── factory.go        # ProviderConfig, ProviderEntry, CfgKey* & Capability* consts, lookup funcs
@@ -89,6 +96,7 @@ ai-gateway/
 │   ├── cache/            # Cache interface + in-memory implementation
 │   ├── circuitbreaker/   # Per-provider circuit breaker
 │   ├── discovery/        # Shared OpenAI-compatible model discovery helper
+│   ├── envref/           # Shared ${VAR} resolver — applied at component construction, not config load
 │   ├── latency/          # Latency tracking for least-latency strategy
 │   ├── metrics/          # Prometheus metrics
 │   ├── migrations/       # Versioned schema-migration runner (schema_migrations ledger)
@@ -128,6 +136,10 @@ ai-gateway/
 | `providers/providers_list.go` | All built-in `ProviderEntry` registrations with `Build` closures |
 | `providers/names.go` | Canonical `NameXxx` constants (re-exported from subpackages) |
 | `providers/registry.go` | `Registry` — runtime lookup by provider name |
+| `providers/capabilities/matrix.go` | Provider × parameter support matrix — the single source consumed by `core.EnforceUnsupportedParams` and `GET /v1/capabilities` |
+| `internal/envref/envref.go` | Shared `${VAR}` resolver (`Expand`/`StringMap`/`AnyMap`) — used at plugin/exporter/MCP construction |
+| `gateway_concurrency.go` | Per-target concurrency limiter + provider decoration (limiter innermost, circuit breaker outermost) |
+| `test/conformance/conformance_test.go` | Cross-provider conformance suite + coverage drift guard |
 | `plugin/plugin.go` | `Plugin` interface, `PluginType`, `Stage`, `Context` |
 | `plugin/manager.go` | Plugin lifecycle: before/after/error stage execution (emits per-plugin child spans) |
 | `observability/observability.go` | `Provider`, `Span`, `Exporter`, `Event`, `EventRecordingProvider` interfaces — the gateway↔backend seam |
@@ -260,7 +272,10 @@ observability:
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/health` | GET | Health check |
+| `/livez` | GET | Liveness — the process is up |
+| `/readyz` | GET | Readiness — the gateway can serve traffic |
 | `/v1/models` | GET | List all available models |
+| `/v1/capabilities` | GET | Per-provider parameter support, serialized from the capability matrix |
 | `/v1/chat/completions` | POST | Chat completion (supports `stream: true`) |
 | `/v1/completions` | POST | Legacy text completion |
 | `/v1/*` | Any | Pass-through proxy to provider |
@@ -307,11 +322,15 @@ Minimal by design — no heavy logging framework, no ORM.
    const NameNew = newpkg.Name
    ```
 3. Add a `ProviderEntry` to the `allProviders` slice in `providers/providers_list.go` — fill in `ID`, `Capabilities`, `EnvMappings`, and `Build`.
-4. Add `providers/<id>/<id>_test.go` — the stability tests in `providers/stability_test.go` automatically catch name drift and missing capabilities.
-5. Add a `{ "virtual_key": "<id>" }` entry to `config.example.json` and a `- virtual_key: <id>` line to `config.example.yaml`.
-6. Add the provider's env var(s) (commented out) to `docker-compose.yml`.
+4. If the provider **cannot express** some OpenAI chat parameters, add an entry to the matrix in `providers/capabilities/matrix.go` listing them (the complement of what it supports). Anything absent defaults to `Forward`. Do **not** keep a supported-parameter list inside the provider — the matrix is the only source, and `core.EnforceUnsupportedParams` reads it. A provider whose params are all forwarded needs no entry.
+5. Add a conformance fixture to `test/conformance/conformance_test.go` — the provider's *native* success payload — so the suite proves your translation produces a correct `core.Response`. If the provider genuinely cannot be pointed at an httptest stub (e.g. an SDK-signed transport), add it to `uncoveredProviders()` with the reason instead. `TestConformanceCoverage` fails if you do neither.
+6. Add `providers/<id>/<id>_test.go` — the stability tests in `providers/stability_test.go` automatically catch name drift and missing capabilities.
+7. Add a `{ "virtual_key": "<id>" }` entry to `config.example.json` and a `- virtual_key: <id>` line to `config.example.yaml`.
+8. Add the provider's env var(s) (commented out) to `docker-compose.yml`.
 
 ## Adding a New Plugin
+
+**Deny with `pctx.Reject` + `pctx.Reason`, and return `nil`.** Return an error only when the plugin itself failed — an error means "I broke", and for every type except logging and metrics it aborts the request as a 500. See the `plugin` package docs.
 
 1. Create `internal/plugins/<name>/<name>.go` (package `<name>`) implementing `plugin.Plugin`.
 2. Register a factory via `plugin.RegisterFactory("my-plugin", ...)` in an `init()` function.
