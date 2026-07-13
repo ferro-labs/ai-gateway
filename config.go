@@ -261,6 +261,23 @@ type Target struct {
 	Retry *RetryConfig `json:"retry,omitempty" yaml:"retry,omitempty"`
 	// CircuitBreaker configuration for this target (optional).
 	CircuitBreaker *CircuitBreakerConfig `json:"circuit_breaker,omitempty" yaml:"circuit_breaker,omitempty"`
+	// Concurrency bounds simultaneous in-flight requests to this target (optional).
+	Concurrency *ConcurrencyConfig `json:"concurrency,omitempty" yaml:"concurrency,omitempty"`
+}
+
+// ConcurrencyConfig bounds how many requests may be in flight against a single
+// target at once. Providers often cap simultaneous connections independently of
+// any RPM/TPM quota; without a gate the gateway can saturate one and collect
+// 429s or connection resets that needlessly trip its circuit breaker.
+type ConcurrencyConfig struct {
+	// MaxConcurrency is the maximum number of simultaneous in-flight requests to
+	// this target. It must be positive; omit the whole block to leave a target
+	// unlimited. A streaming request holds its slot until the stream ends.
+	MaxConcurrency int `json:"max_concurrency" yaml:"max_concurrency"`
+	// QueueSize is how many requests may wait for a slot once MaxConcurrency is
+	// reached. Requests beyond it fail fast with HTTP 429 rather than blocking.
+	// 0 (the default when omitted) applies DefaultConcurrencyQueueSize.
+	QueueSize int `json:"queue_size,omitempty" yaml:"queue_size,omitempty"`
 }
 
 // RetryConfig defines retry behavior for the fallback strategy.

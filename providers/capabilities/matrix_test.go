@@ -60,10 +60,15 @@ func TestSupportOf_DerivedMatrix(t *testing.T) {
 		{"replicate drops tools", "replicate", "tools", Unsupported},
 		{"replicate drops response_format", "replicate", "response_format", Unsupported},
 
-		// ai21: supports only max_tokens/temperature/top_p/stop.
-		{"ai21 supported stop", "ai21", "stop", Forward},
-		{"ai21 drops tools", "ai21", "tools", Unsupported},
-		{"ai21 drops seed", "ai21", "seed", Unsupported},
+		// ai21 is dual-path and must therefore have NO provider-level entry. The only
+		// models it advertises are Jamba, which speak the OpenAI-compatible chat API
+		// and do support tools/response_format/seed. The four-parameter limit belongs
+		// to the deprecated Jurassic /complete endpoint, so it is enforced there —
+		// declaring it provider-wide would strip tools from every Jamba request.
+		{"ai21 forwards stop", "ai21", "stop", Forward},
+		{"ai21 forwards tools (Jamba supports them)", "ai21", "tools", Forward},
+		{"ai21 forwards seed (Jamba supports it)", "ai21", "seed", Forward},
+		{"ai21 forwards response_format (Jamba supports it)", "ai21", "response_format", Forward},
 
 		// Streaming-control params are outside the warn mechanism ⇒ always Forward.
 		{"anthropic forwards stream", "anthropic", "stream", Forward},

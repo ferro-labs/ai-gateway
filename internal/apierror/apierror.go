@@ -50,6 +50,13 @@ func RouteErrorDetails(err error) (status int, errType, code string) {
 		return http.StatusNotFound, "invalid_request_error", codeModelNotFound
 	}
 
+	// The target is at its concurrency limit and its queue is full. This is
+	// backpressure, not a failure: 429 tells the caller to back off and retry,
+	// which is exactly the desired behaviour under saturation.
+	if errors.Is(err, core.ErrProviderSaturated) {
+		return http.StatusTooManyRequests, "rate_limit_error", "provider_saturated"
+	}
+
 	var unsupportedParam *core.UnsupportedParamError
 	if errors.As(err, &unsupportedParam) {
 		return http.StatusBadRequest, "invalid_request_error", "unsupported_parameter"

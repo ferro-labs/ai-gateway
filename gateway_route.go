@@ -48,6 +48,17 @@ func (g *Gateway) runBeforePlugins(ctx context.Context, plugins *plugin.Manager,
 	return nil, nil
 }
 
+// ErrRequestTimeout is the cause attached to a context cancelled by the gateway's
+// own per-request deadline (Config.RequestTimeout). Retrieve it with
+// context.Cause(ctx).
+//
+// It exists so a deadline the GATEWAY imposed can be told apart from a
+// caller-side cancellation or a caller-supplied deadline. That distinction is
+// load-bearing: when the gateway's deadline fires, the provider was too slow to
+// answer — a provider failure that must trip its circuit breaker. When the caller
+// walks away, the provider is not at fault and its breaker must be left alone.
+var ErrRequestTimeout = errors.New("gateway request timeout")
+
 // noopCancel is the CancelFunc returned when no per-request deadline applies. It
 // is a package-level func, not a closure, so the default path allocates nothing.
 func noopCancel() {}
@@ -69,14 +80,16 @@ func requestDeadline(requestTimeout string) time.Duration {
 	return d
 }
 
-// withRequestDeadline bounds ctx by the configured per-request timeout. It
-// returns ctx untouched, with a no-op cancel, when no timeout is configured.
+// withRequestDeadline bounds ctx by the configured per-request timeout, tagging
+// the cancellation with ErrRequestTimeout so downstream code can attribute the
+// deadline to the gateway rather than to the caller. It returns ctx untouched,
+// with a no-op cancel, when no timeout is configured.
 func withRequestDeadline(ctx context.Context, requestTimeout string) (context.Context, context.CancelFunc) {
 	d := requestDeadline(requestTimeout)
 	if d <= 0 {
 		return ctx, noopCancel
 	}
-	return context.WithTimeout(ctx, d)
+	return context.WithTimeoutCause(ctx, d, ErrRequestTimeout)
 }
 
 // Route routes a request to the appropriate provider based on the configuration.

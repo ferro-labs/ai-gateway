@@ -63,10 +63,22 @@ targets:
   - virtual_key: openai
     retry:
       attempts: 3
-      # Only retry on these HTTP status codes (omit to retry on any error).
+      # Only retry on these HTTP status codes. Omit to use the default policy:
+      # transport errors plus 408, 429 and 5xx. Other 4xx are deterministic client
+      # errors and are never retried.
       on_status_codes: [429, 502, 503]
-      # Base backoff in ms for exponential back-off: delay = initial_backoff_ms * 2^(attempt-1).
+      # Base backoff in ms for exponential back-off with full jitter: the wait is
+      # picked uniformly from [0, initial_backoff_ms * 2^(attempt-1)). An upstream
+      # Retry-After header, when present, takes precedence over the computed backoff.
       initial_backoff_ms: 100
+    # Optional per-target concurrency limit. Providers often cap simultaneous
+    # connections independently of any RPM/TPM quota; without a gate the gateway can
+    # saturate one and collect 429s that needlessly trip its circuit breaker.
+    concurrency:
+      max_concurrency: 32   # simultaneous in-flight requests to this target
+      queue_size: 500       # requests allowed to wait for a slot; beyond it => HTTP 429
+      # A streaming request holds its slot until the stream ends, not just until
+      # response headers arrive.
   - virtual_key: anthropic
     # Optional per-target circuit breaker.
     circuit_breaker:

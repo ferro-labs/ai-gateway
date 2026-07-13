@@ -354,7 +354,9 @@ mcp_servers:
     timeout_seconds: 30
 ```
 
-When loading YAML/JSON through `LoadConfig`, the gateway expands `$VAR` and `${VAR}` references in MCP headers, plugin config, and observability exporter config before those components are initialized. This keeps secrets in environment variables instead of hard-coding them in config files.
+When loading YAML/JSON through `LoadConfig`, the gateway substitutes `${VAR}` references in MCP headers, plugin config, and observability exporter config before those components are initialized, so secrets live in environment variables rather than in config files.
+
+Only the braced form is a reference. A bare `$` is treated as data and preserved verbatim, so a blocked word like `$100`, a price like `costs $5`, or a password like `pa$$w0rd` survives config loading unchanged. A `${VAR}` whose variable is not set is an error at load time — the gateway will not start with a silently blank secret or an empty guardrail rule.
 
 See [config.example.yaml](config.example.yaml) and [config.example.json](config.example.json) for the full template with all options.
 
@@ -444,7 +446,7 @@ observability:
 
 Standard `OTEL_*` environment variables (e.g. `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_TRACES_SAMPLER`) always take precedence over the config file — this matches the OTel SDK convention and is required for predictable container deployments.
 
-`observability.tracing.headers` lets you send OTLP traces to authenticated managed backends (Datadog, New Relic, Honeycomb, Grafana Cloud) by setting vendor-specific headers such as API keys. Values support `${ENV_VAR}` interpolation so secrets are never stored literally in the config file. The standard `OTEL_EXPORTER_OTLP_HEADERS` environment variable also applies per OTel convention. Observability exporter `config` blocks loaded from YAML/JSON also support `$VAR` and `${VAR}` interpolation.
+`observability.tracing.headers` lets you send OTLP traces to authenticated managed backends (Datadog, New Relic, Honeycomb, Grafana Cloud) by setting vendor-specific headers such as API keys. Values support `${ENV_VAR}` interpolation so secrets are never stored literally in the config file. The standard `OTEL_EXPORTER_OTLP_HEADERS` environment variable also applies per OTel convention. Observability exporter `config` blocks loaded from YAML/JSON also support `${VAR}` interpolation.
 
 The **endpoint scheme selects transport security**: an `https://` endpoint uses TLS, while an `http://` endpoint or a bare `host:port` (e.g. `localhost:4317`) connects in plaintext. Managed backends require the `https://` form.
 

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -72,84 +73,140 @@ func LoadConfig(path string) (*Config, error) {
 			"apiVersion", cfg.APIVersion, "expected", CurrentAPIVersion)
 	}
 
-	resolveEnv(&cfg)
+	if err := resolveEnv(&cfg); err != nil {
+		return nil, fmt.Errorf("resolving environment references: %w", err)
+	}
 
 	return &cfg, nil
 }
 
-// resolveEnv materialises environment-variable references in config sections
-// that carry user/plugin-owned secrets. It intentionally leaves
-// observability.tracing.headers alone: those are still resolved lazily by
-// internal/otel so programmatic configs keep the historical behaviour.
-func resolveEnv(cfg *Config) {
+// envRefPattern matches an explicit ${VAR} reference.
+//
+// ONLY the brace form is a reference. A bare "$" is data, not a template: a price
+// ("costs $5"), a generated password ("pa$$w0rd"), and a blocked word ("$100") must
+// survive config loading byte-for-byte. os.Expand cannot do this — it treats $1,
+// $$ and $w0rd as shell variables and silently eats them, which would corrupt
+// guardrail word lists and mangle secrets.
+var envRefPattern = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
+
+// expandEnvRefs substitutes every ${VAR} in s.
+//
+// An unset variable is an operator error, not a default: it returns an error naming
+// the variable rather than substituting "". Silently blanking a value turns a secret
+// into a baffling upstream auth failure and a guardrail's blocked word into an empty
+// rule — failures that surface far from their cause. Fail at load, where the fix is obvious.
+func expandEnvRefs(s string) (string, error) {
+	var missing []string
+	out := envRefPattern.ReplaceAllStringFunc(s, func(ref string) string {
+		name := envRefPattern.FindStringSubmatch(ref)[1]
+		val, ok := os.LookupEnv(name)
+		if !ok {
+			missing = append(missing, name)
+			return ref
+		}
+		return val
+	})
+	if len(missing) > 0 {
+		return "", fmt.Errorf("undefined environment variable(s): %s", strings.Join(missing, ", "))
+	}
+	return out, nil
+}
+
+// resolveEnv materialises ${VAR} references in the config sections that carry
+// user/plugin-owned secrets: MCP headers, observability exporter config, and plugin
+// config. It intentionally leaves observability.tracing.headers alone — those are
+// resolved lazily by internal/otel, so programmatic configs keep their behaviour.
+func resolveEnv(cfg *Config) error {
 	if cfg == nil {
-		return
+		return nil
 	}
 
 	for i := range cfg.MCPServers {
-		cfg.MCPServers[i].Headers = resolveEnvStringMap(cfg.MCPServers[i].Headers, true)
+		resolved, err := resolveEnvStringMap(cfg.MCPServers[i].Headers)
+		if err != nil {
+			return fmt.Errorf("mcp_servers[%d] (%s) headers: %w", i, cfg.MCPServers[i].Name, err)
+		}
+		cfg.MCPServers[i].Headers = resolved
 	}
 
 	for i := range cfg.Observability.Exporters {
-		cfg.Observability.Exporters[i].Config = resolveEnvAnyMap(cfg.Observability.Exporters[i].Config)
+		resolved, err := resolveEnvAnyMap(cfg.Observability.Exporters[i].Config)
+		if err != nil {
+			return fmt.Errorf("observability.exporters[%d] (%s) config: %w", i, cfg.Observability.Exporters[i].Name, err)
+		}
+		cfg.Observability.Exporters[i].Config = resolved
 	}
 
 	for i := range cfg.Plugins {
-		cfg.Plugins[i].Config = resolveEnvAnyMap(cfg.Plugins[i].Config)
+		resolved, err := resolveEnvAnyMap(cfg.Plugins[i].Config)
+		if err != nil {
+			return fmt.Errorf("plugins[%d] (%s) config: %w", i, cfg.Plugins[i].Name, err)
+		}
+		cfg.Plugins[i].Config = resolved
 	}
+	return nil
 }
 
-func resolveEnvStringMap(raw map[string]string, skipEmpty bool) map[string]string {
+func resolveEnvStringMap(raw map[string]string) (map[string]string, error) {
 	if len(raw) == 0 {
-		return nil
+		return nil, nil
 	}
 	out := make(map[string]string, len(raw))
 	for k, v := range raw {
-		resolved := os.Expand(v, os.Getenv)
-		if skipEmpty && resolved == "" {
-			continue
+		resolved, err := expandEnvRefs(v)
+		if err != nil {
+			return nil, fmt.Errorf("key %q: %w", k, err)
 		}
 		out[k] = resolved
 	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
+	return out, nil
 }
 
-func resolveEnvAnyMap(raw map[string]any) map[string]any {
+func resolveEnvAnyMap(raw map[string]any) (map[string]any, error) {
 	if raw == nil {
-		return nil
+		return nil, nil
 	}
 	out := make(map[string]any, len(raw))
 	for k, v := range raw {
-		out[k] = resolveEnvAnyValue(v)
+		resolved, err := resolveEnvAnyValue(v)
+		if err != nil {
+			return nil, fmt.Errorf("key %q: %w", k, err)
+		}
+		out[k] = resolved
 	}
-	return out
+	return out, nil
 }
 
-func resolveEnvAnyValue(v any) any {
+func resolveEnvAnyValue(v any) (any, error) {
 	switch val := v.(type) {
 	case string:
-		return os.Expand(val, os.Getenv)
+		return expandEnvRefs(val)
 	case map[string]any:
 		return resolveEnvAnyMap(val)
 	case map[string]string:
-		return resolveEnvStringMap(val, false)
+		return resolveEnvStringMap(val)
 	case []any:
 		out := make([]any, len(val))
 		for i, elem := range val {
-			out[i] = resolveEnvAnyValue(elem)
+			resolved, err := resolveEnvAnyValue(elem)
+			if err != nil {
+				return nil, fmt.Errorf("index %d: %w", i, err)
+			}
+			out[i] = resolved
 		}
-		return out
+		return out, nil
 	case []string:
 		out := make([]string, len(val))
 		for i, elem := range val {
-			out[i] = os.Expand(elem, os.Getenv)
+			resolved, err := expandEnvRefs(elem)
+			if err != nil {
+				return nil, fmt.Errorf("index %d: %w", i, err)
+			}
+			out[i] = resolved
 		}
-		return out
+		return out, nil
 	default:
-		return v
+		return v, nil
 	}
 }
 
@@ -170,6 +227,18 @@ func ValidateConfig(cfg Config) error {
 
 	if len(cfg.Targets) == 0 {
 		return fmt.Errorf("at least one target is required")
+	}
+
+	for _, t := range cfg.Targets {
+		if t.Concurrency == nil {
+			continue
+		}
+		if t.Concurrency.MaxConcurrency <= 0 {
+			return fmt.Errorf("target %q: concurrency.max_concurrency must be positive (omit the concurrency block to leave the target unlimited)", t.VirtualKey)
+		}
+		if t.Concurrency.QueueSize < 0 {
+			return fmt.Errorf("target %q: concurrency.queue_size cannot be negative", t.VirtualKey)
+		}
 	}
 
 	if cfg.RequestTimeout != "" {

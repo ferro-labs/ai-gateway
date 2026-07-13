@@ -65,14 +65,41 @@ func (p *cbProvider) CompleteStream(ctx context.Context, req providers.Request) 
 }
 
 // shouldRecordCircuitBreakerFailure reports whether an error should count toward
-// opening the circuit. Caller-side cancellation/deadlines and rate limits are
-// excluded so transient client behavior does not block healthy traffic.
-// Provider-side timeouts that surface as context.DeadlineExceeded while the
-// request context is still active are counted as failures.
+// opening the circuit.
+//
+// The distinction that matters is WHOSE fault the failure is:
+//
+//   - The gateway's own request deadline (Config.RequestTimeout) firing means the
+//     provider was too slow to answer. That is a provider failure and MUST trip the
+//     breaker. Treating it as caller cancellation would leave a hung provider in
+//     rotation forever while /readyz — whose only provider signal is circuit state —
+//     kept reporting the pod ready.
+//   - A caller-side cancellation or a caller-supplied deadline is not the provider's
+//     fault and is excluded, so transient client behavior cannot block healthy traffic.
+//   - A rejection the gateway raised itself before ever reaching the provider (an
+//     unsupported parameter under compatibility.on_unsupported_param=reject) is a
+//     client error that never touched the network, and must never blame the provider.
+//   - Rate limits are expected and temporary, and stay excluded.
 func shouldRecordCircuitBreakerFailure(ctx context.Context, err error) bool {
 	if err == nil {
 		return false
 	}
+
+	// Errors the gateway produced itself, without ever calling the provider: an
+	// unsupported-parameter rejection, and shedding under our own concurrency
+	// limit. Neither is evidence that the upstream is unhealthy.
+	var unsupportedParam *providers.UnsupportedParamError
+	if errors.As(err, &unsupportedParam) || errors.Is(err, providers.ErrProviderSaturated) {
+		return false
+	}
+
+	// The gateway's own deadline fired: the provider was too slow. context.Cause
+	// carries ErrRequestTimeout only for a deadline this gateway installed; a
+	// caller-supplied deadline or cancellation carries the stdlib sentinels.
+	if errors.Is(context.Cause(ctx), ErrRequestTimeout) {
+		return !isRateLimitError(err)
+	}
+
 	if ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
 		return false
 	}

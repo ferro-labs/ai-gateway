@@ -52,6 +52,7 @@ type Gateway struct {
 	shutdownCtx      context.Context
 	shutdownCancel   context.CancelFunc
 	circuitBreakers  map[string]*circuitbreaker.CircuitBreaker
+	limiters         map[string]*providerLimiter
 	discoveredModels map[string][]providers.ModelInfo
 	latencyTracker   *latency.Tracker
 	modelIndex       modelLookupIndex
@@ -113,6 +114,7 @@ func New(cfg Config) (*Gateway, error) {
 		streamingContent: streamingContent,
 		plugins:          plugin.NewManager(),
 		circuitBreakers:  make(map[string]*circuitbreaker.CircuitBreaker),
+		limiters:         make(map[string]*providerLimiter),
 		discoveredModels: make(map[string][]providers.ModelInfo),
 		latencyTracker:   latency.New(0), // default window size (100 samples)
 		modelIndex: modelLookupIndex{
@@ -134,6 +136,7 @@ func New(cfg Config) (*Gateway, error) {
 
 	gw.mu.Lock()
 	gw.ensureCircuitBreakersLocked()
+	gw.ensureProviderLimitersLocked()
 	gw.mu.Unlock()
 
 	return gw, nil
@@ -316,6 +319,8 @@ func (g *Gateway) ReloadConfig(ctx context.Context, cfg Config) error {
 	g.strategy = nil // force rebuild on next request
 	g.circuitBreakers = make(map[string]*circuitbreaker.CircuitBreaker)
 	g.ensureCircuitBreakersLocked()
+	g.limiters = make(map[string]*providerLimiter)
+	g.ensureProviderLimitersLocked()
 
 	// Re-register MCP servers from the new config (clears MCP state when none).
 	g.wireMCPLocked(cfg, "mcp: server initialization failed after reload")

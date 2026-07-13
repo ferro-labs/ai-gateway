@@ -111,8 +111,12 @@ plugins:
 	if got := cfg.MCPServers[0].Headers["Authorization"]; got != "Bearer mcp-token" {
 		t.Errorf("MCP Authorization header = %q, want %q", got, "Bearer mcp-token")
 	}
-	if _, ok := cfg.MCPServers[0].Headers["X-Empty"]; ok {
-		t.Errorf("MCP X-Empty header should be omitted when env resolves empty: %v", cfg.MCPServers[0].Headers)
+	// An unset ${VAR} is an operator error, not a silent default — see
+	// TestExpandEnvRefs_UnsetVariableIsAnError. The empty-ref header in this
+	// fixture therefore resolves from a variable that IS set (to an empty string),
+	// which is a deliberate operator choice and is preserved as such.
+	if got, ok := cfg.MCPServers[0].Headers["X-Empty"]; !ok || got != "" {
+		t.Errorf("MCP X-Empty header = %q (present=%v), want an empty, preserved value", got, ok)
 	}
 
 	exporterCfg := cfg.Observability.Exporters[0].Config
@@ -626,6 +630,10 @@ func TestLoadConfig_JSONRejectsTrailingData(t *testing.T) {
 }
 
 func TestLoadConfig_ExampleFilesParse(t *testing.T) {
+	// The shipped examples demonstrate ${VAR} substitution. An unset reference is a
+	// hard error by design, so provide the variables the examples reference.
+	t.Setenv("MCP_DB_TOKEN", "example-token")
+
 	// The shipped example configs must survive strict decoding and validation.
 	for _, name := range []string{"config.example.yaml", "config.example.json"} {
 		t.Run(name, func(t *testing.T) {

@@ -332,6 +332,7 @@ func (g *Gateway) runBeforePluginsStream(ctx context.Context, span observability
 func (g *Gateway) resolveStreamOrError(ctx context.Context, span observability.Span, plugins *plugin.Manager, pctx *plugin.Context, releasePluginManager func(), req providers.Request) (providers.StreamProvider, error) {
 	g.mu.Lock()
 	g.ensureCircuitBreakersLocked()
+	g.ensureProviderLimitersLocked()
 	g.mu.Unlock()
 
 	fail := func(err error) (providers.StreamProvider, error) {
@@ -433,8 +434,8 @@ func (g *Gateway) resolveStreamProviderFromKeysLocked(orderedKeys []string, mode
 	if !ok {
 		return nil
 	}
-	if cb, hasCB := g.circuitBreakers[name]; hasCB {
-		return &cbProvider{Provider: g.providers[name], cb: cb, name: name}
+	if decorated, ok := decorateProvider(name, g.providers[name], g.circuitBreakers[name], g.limiters[name]).(providers.StreamProvider); ok {
+		return decorated
 	}
 	return fallback
 }
@@ -450,9 +451,9 @@ func (g *Gateway) streamingProviderForTargetLocked(key, model string) (providers
 		return nil, false
 	}
 
-	// Apply circuit breaker if configured.
-	if cb, hasCB := g.circuitBreakers[key]; hasCB {
-		return &cbProvider{Provider: p, cb: cb, name: key}, true
+	// Apply the circuit breaker and concurrency limit configured for this target.
+	if decorated, ok := decorateProvider(key, p, g.circuitBreakers[key], g.limiters[key]).(providers.StreamProvider); ok {
+		return decorated, true
 	}
 	return sp, true
 }

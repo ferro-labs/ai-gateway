@@ -24,12 +24,7 @@ import (
 	"github.com/ferro-labs/ai-gateway/internal/version"
 	"github.com/ferro-labs/ai-gateway/providers"
 	bedrockpkg "github.com/ferro-labs/ai-gateway/providers/bedrock"
-	"github.com/ferro-labs/ai-gateway/providers/concurrency"
 )
-
-// defaultConcurrencyQueueSize is the queue depth applied to a concurrency-limited
-// provider when max_concurrency is set but queue_size is omitted.
-const defaultConcurrencyQueueSize = 1000
 
 // CheckProductionSafety returns an error if ALLOW_UNAUTHENTICATED_PROXY=true is
 // combined with GATEWAY_ENV=production.  Allowing unauthenticated proxy access
@@ -89,7 +84,7 @@ func buildServer() (
 	gwotel.ShutdownFunc,
 ) {
 	cfg := LoadConfig()
-	registry, providerCleanup := RegisterProviders()
+	registry := RegisterProviders()
 	masterKey := ResolveMasterKey()
 
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("ALLOW_UNAUTHENTICATED_PROXY")), "true") {
@@ -126,14 +121,6 @@ func buildServer() (
 		os.Exit(1)
 	}
 	gw.SetObservability(obsProvider)
-
-	// Close provider worker pools as part of the OTel shutdown step, which
-	// gracefulShutdown runs last — after connections drain and stores close.
-	baseOtelShutdown := otelShutdown
-	otelShutdown = func(ctx context.Context) error {
-		providerCleanup()
-		return baseOtelShutdown(ctx)
-	}
 
 	// No lifecycle context exists yet at this point in startup (signal.NotifyContext
 	// is only set up later, in runUntilShutdown), matching the gwotel.Init call
@@ -325,24 +312,15 @@ func LoadConfig() *aigateway.Config {
 	return loaded
 }
 
-// RegisterProviders auto-registers all providers found via environment
-// variables. It returns the registry and a cleanup func that closes the worker
-// pools of any concurrency-limited providers; callers must invoke cleanup on
-// shutdown. When no provider sets max_concurrency, cleanup is a no-op.
-func RegisterProviders() (*providers.Registry, func()) {
+// RegisterProviders auto-registers all providers found via environment variables.
+func RegisterProviders() *providers.Registry {
 	registry := providers.NewRegistry()
-	var limited []*concurrency.LimitedProvider
-	registerProviderEntries(registry, providers.AllProviders(), &limited)
+	registerProviderEntries(registry, providers.AllProviders())
 	registerBedrockProvider(registry)
-	cleanup := func() {
-		for _, lp := range limited {
-			lp.Close()
-		}
-	}
-	return registry, cleanup
+	return registry
 }
 
-func registerProviderEntries(registry *providers.Registry, entries []providers.ProviderEntry, limited *[]*concurrency.LimitedProvider) {
+func registerProviderEntries(registry *providers.Registry, entries []providers.ProviderEntry) {
 	for _, entry := range entries {
 		if entry.ID == providers.NameBedrock {
 			continue // handled below with its dual-key detection
@@ -362,36 +340,9 @@ func registerProviderEntries(registry *providers.Registry, entries []providers.P
 			metrics.ProviderInitFailures.WithLabelValues(entry.ID).Inc()
 			continue
 		}
-		p = applyConcurrencyLimit(entry.ID, p, cfg, limited)
 		registry.Register(p)
 		logging.Logger.Info("provider registered", "provider", entry.ID)
 	}
-}
-
-// applyConcurrencyLimit wraps p in a concurrency-limited provider when the
-// provider config sets max_concurrency. Any LimitedProvider created is appended
-// to limited so its worker pool can be closed on shutdown. Providers without a
-// max_concurrency setting are returned unchanged.
-func applyConcurrencyLimit(id string, p providers.Provider, cfg map[string]string, limited *[]*concurrency.LimitedProvider) providers.Provider {
-	mc := cfg[providers.CfgKeyMaxConcurrency]
-	if mc == "" {
-		return p
-	}
-	workerCount, err := strconv.Atoi(mc)
-	if err != nil || workerCount <= 0 {
-		logging.Logger.Warn("invalid max_concurrency value, skipping concurrency limit", "provider", id, "value", mc)
-		return p
-	}
-	queueSize := defaultConcurrencyQueueSize
-	if qs := cfg[providers.CfgKeyQueueSize]; qs != "" {
-		if n, qErr := strconv.Atoi(qs); qErr == nil && n > 0 {
-			queueSize = n
-		}
-	}
-	lp := concurrency.Wrap(p, workerCount, queueSize)
-	*limited = append(*limited, lp)
-	logging.Logger.Info("provider concurrency limit applied", "provider", id, "workers", workerCount, "queue", queueSize)
-	return lp
 }
 
 func registerBedrockProvider(registry *providers.Registry) {

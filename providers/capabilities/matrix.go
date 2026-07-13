@@ -114,11 +114,6 @@ var matrix = map[string]Profile{
 		"n", "max_completion_tokens", "tools", "tool_choice",
 		"response_format", "logprobs", "top_logprobs", "user", "logit_bias",
 	),
-	"ai21": unsupported(
-		"n", "seed", "max_completion_tokens", "presence_penalty", "frequency_penalty",
-		"tools", "tool_choice", "response_format", "logprobs", "top_logprobs",
-		"user", "logit_bias",
-	),
 }
 
 // geminiProfile marks Gemini's unsupported parameters, then response_format as

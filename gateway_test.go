@@ -1576,6 +1576,60 @@ func TestGateway_RouteStream_FallbackSkipsOpenCircuitBreakerTarget(t *testing.T)
 
 // ── Per-request deadline (#277) ───────────────────────────────────────────────
 
+// TestShouldRecordCircuitBreakerFailure_ClientErrorNeverBlamesProvider guards the
+// other attribution direction: an unsupported-parameter rejection under
+// compatibility.on_unsupported_param=reject is raised by the gateway BEFORE the
+// provider is called. Counting it as a provider failure would let one client
+// sending a bad parameter take a healthy provider offline for everyone else.
+func TestShouldRecordCircuitBreakerFailure_ClientErrorNeverBlamesProvider(t *testing.T) {
+	err := &providers.UnsupportedParamError{Provider: "gemini", Params: []string{"logit_bias"}}
+	if shouldRecordCircuitBreakerFailure(context.Background(), err) {
+		t.Error("a reject-mode unsupported-parameter error is a client error; it must not trip the provider circuit")
+	}
+}
+
+// TestGateway_Route_RequestTimeoutTripsCircuitBreaker guards the attribution of a
+// gateway-imposed deadline. A provider that hangs past request_timeout is a
+// PROVIDER failure and must trip its breaker. If it is misread as caller
+// cancellation the breaker never opens, the hung provider stays in rotation
+// forever, and /readyz — whose only provider signal is circuit state — keeps
+// reporting the pod ready while every request fails.
+func TestGateway_Route_RequestTimeoutTripsCircuitBreaker(t *testing.T) {
+	gw, err := New(Config{
+		Strategy:       StrategyConfig{Mode: ModeSingle},
+		RequestTimeout: "30ms",
+		Targets: []Target{{
+			VirtualKey:     "hung",
+			CircuitBreaker: &CircuitBreakerConfig{FailureThreshold: 2, Timeout: "1m"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = gw.Close() }()
+
+	gw.RegisterProvider(&slowCompleteProvider{
+		mockProvider: mockProvider{name: "hung", models: []string{"gpt-4o"}},
+	})
+
+	for range 3 {
+		if _, err := gw.Route(context.Background(), providers.Request{Model: "gpt-4o"}); err == nil {
+			t.Fatal("expected the hung provider to exceed request_timeout")
+		}
+	}
+
+	circuit := ""
+	for _, p := range gw.Readiness().Providers {
+		if p.Name == "hung" {
+			circuit = p.Circuit
+		}
+	}
+	if circuit != "open" {
+		t.Errorf("circuit = %q, want \"open\": a provider hanging past the gateway's own request_timeout "+
+			"is a provider failure and must trip the breaker", circuit)
+	}
+}
+
 func TestGateway_Route_RequestTimeoutBoundsTheRequest(t *testing.T) {
 	gw, err := New(Config{
 		Strategy:       StrategyConfig{Mode: ModeSingle},

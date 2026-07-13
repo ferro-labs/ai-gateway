@@ -81,8 +81,7 @@ func TestRegisterProvidersRegistersBedrockWithBearerTokenOnly(t *testing.T) {
 	t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
 	t.Setenv("AWS_BEARER_TOKEN_BEDROCK", "test-bearer-token")
 
-	registry, cleanup := RegisterProviders()
-	defer cleanup()
+	registry := RegisterProviders()
 	p, ok := registry.Get(providers.NameBedrock)
 	if !ok {
 		t.Fatal("Bedrock provider was not registered")

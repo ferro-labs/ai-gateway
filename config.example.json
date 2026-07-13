@@ -1,6 +1,5 @@
 {
   "max_request_bytes": 10485760,
-  "request_timeout": "60s",
   "strategy": {
     "mode": "fallback"
   },
@@ -9,8 +8,16 @@
       "virtual_key": "openai",
       "retry": {
         "attempts": 3,
-        "on_status_codes": [429, 502, 503],
+        "on_status_codes": [
+          429,
+          502,
+          503
+        ],
         "initial_backoff_ms": 100
+      },
+      "concurrency": {
+        "max_concurrency": 32,
+        "queue_size": 500
       }
     },
     {
@@ -119,7 +126,10 @@
       "stage": "before_request",
       "enabled": true,
       "config": {
-        "blocked_words": ["password", "secret"],
+        "blocked_words": [
+          "password",
+          "secret"
+        ],
         "case_sensitive": false
       }
     },
@@ -193,14 +203,20 @@
       "headers": {
         "Authorization": "Bearer ${MCP_DB_TOKEN}"
       },
-      "allowed_tools": ["query_readonly", "list_tables"],
+      "allowed_tools": [
+        "query_readonly",
+        "list_tables"
+      ],
       "timeout_seconds": 15,
       "max_call_depth": 5
     },
     {
       "name": "web-search",
       "url": "https://mcp-search.example.com/mcp",
-      "allowed_tools": ["web_search", "web_read"],
+      "allowed_tools": [
+        "web_search",
+        "web_read"
+      ],
       "timeout_seconds": 20
     }
   ],
