@@ -320,8 +320,9 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 
 	tokens := cohResp.Usage.Tokens
 	return &core.Response{
-		ID:    cohResp.ID,
-		Model: req.Model,
+		ID:       cohResp.ID,
+		Model:    req.Model,
+		Provider: p.name,
 		Choices: []core.Choice{
 			{
 				Index: 0,

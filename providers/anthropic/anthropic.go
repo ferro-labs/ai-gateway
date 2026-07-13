@@ -317,8 +317,9 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 	totalTokens := aResp.Usage.InputTokens + aResp.Usage.OutputTokens
 
 	return &core.Response{
-		ID:    aResp.ID,
-		Model: aResp.Model,
+		ID:       aResp.ID,
+		Model:    aResp.Model,
+		Provider: p.name,
 		Choices: []core.Choice{
 			{
 				Index: 0,
