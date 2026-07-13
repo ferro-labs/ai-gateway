@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -667,7 +668,13 @@ func TestResolveHeaders_UnsetEnvVarSkipped(t *testing.T) {
 }
 
 func TestResolveHeaders_UndefinedVarKeepsOtherHeaders(t *testing.T) {
-	// FERRO_OTEL_TEST_TRULY_UNDEFINED_VAR must never be set in this test's environment.
+	// Enforce the undefined variable rather than assuming it: t.Setenv registers the
+	// restore, then Unsetenv makes it undefined for this test even if the surrounding
+	// environment happens to define it.
+	t.Setenv("FERRO_OTEL_TEST_TRULY_UNDEFINED_VAR", "")
+	if err := os.Unsetenv("FERRO_OTEL_TEST_TRULY_UNDEFINED_VAR"); err != nil {
+		t.Fatalf("unset: %v", err)
+	}
 	raw := map[string]string{
 		"x-bad":  "${FERRO_OTEL_TEST_TRULY_UNDEFINED_VAR}",
 		"x-good": "static-value",

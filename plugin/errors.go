@@ -28,13 +28,9 @@ func (e *RejectionError) Error() string {
 }
 
 // FailureError indicates a fail-closed plugin could not complete: it returned an
-// error or panicked. The request was not denied — it was never evaluated.
-//
-// It is a distinct type from RejectionError because the two carry opposite
-// meanings: a rejection is a verdict on the client's request, a failure is the
-// gateway's own component breaking. A failure is reported as a server error, so a
-// rate-limit plugin whose backend is down does not answer 429 and invite every SDK
-// to retry a limit that nothing will clear.
+// error or panicked. The request was not denied — it was never evaluated, so the
+// gateway reports it as a server error rather than a rejection. See the package
+// documentation for why the two are distinct.
 type FailureError struct {
 	Plugin     string
 	PluginType PluginType

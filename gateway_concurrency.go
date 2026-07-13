@@ -28,10 +28,14 @@ import (
 const DefaultConcurrencyQueueSize = 1000
 
 // MaxTargetConcurrency is the highest value ValidateConfig accepts for a target's
-// max_concurrency or queue_size. A real in-flight cap is bounded by upstream
-// connection limits, not memory; a value this high is a config typo, not an
-// intentional one, and left unchecked it becomes the channel buffer size below.
-const MaxTargetConcurrency = 100_000
+// max_concurrency or queue_size.
+//
+// The bound is about intent, not memory: slots is a chan struct{}, whose zero-size
+// element means capacity costs no buffer at all. What an absurd value does instead
+// is admit every request, so the cap the operator asked for silently stops applying.
+// Real per-target concurrency is bounded by what the upstream provider will accept —
+// orders of magnitude below this — so a larger value is a typo, not a deployment.
+const MaxTargetConcurrency = 10_000
 
 // providerLimiter bounds how many requests may be in flight against a single
 // target, and how many may wait for a slot.
