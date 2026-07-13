@@ -11,6 +11,8 @@
 # call, and every retry and fallback attempt combined. Omitted means no
 # gateway-imposed deadline (the provider HTTP clients' own timeouts still apply).
 # Streaming requests are exempt: a stream legitimately outlives a fixed deadline.
+# (With MCP tool servers configured, a "stream" runs the agentic loop to completion
+# and arrives as one chunk — that is not really a stream, and the deadline applies.)
 # request_timeout: 60s
 
 strategy:

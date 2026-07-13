@@ -134,7 +134,8 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	// every retry/fallback attempt — when a request timeout is configured. The
 	// deadline rides ctx, so the retry loop and provider clients already honor it.
 	// RouteStream is deliberately exempt: a stream legitimately outlives any fixed
-	// deadline.
+	// deadline. Its MCP path is not — it delegates here, and an agentic loop that
+	// returns one complete chunk is a non-streaming request in all but name.
 	ctx, cancelDeadline := withRequestDeadline(ctx, requestTimeout)
 	defer cancelDeadline()
 

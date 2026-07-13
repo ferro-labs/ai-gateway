@@ -35,6 +35,11 @@ type Config struct {
 	//
 	// Streaming requests are exempt: a stream legitimately outlives any fixed
 	// deadline, and its idle bound is enforced by the streaming write deadline.
+	//
+	// One exception, and it is not a loophole: when MCP tool servers are
+	// configured, a stream request runs the agentic loop to completion and is
+	// delivered as a single chunk. That is a non-streaming request wearing a
+	// stream's clothes, so the deadline applies to it like any other.
 	RequestTimeout string `json:"request_timeout,omitempty" yaml:"request_timeout,omitempty"`
 	// Plugins configuration (optional).
 	Plugins []PluginConfig `json:"plugins,omitempty" yaml:"plugins,omitempty"`
