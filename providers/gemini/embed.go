@@ -77,7 +77,7 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 	}
 
 	if httpResp.StatusCode != http.StatusOK {
-		return nil, core.APIError("gemini embed", httpResp.StatusCode, respBody)
+		return nil, core.APIErrorFromResponse("gemini embed", httpResp, respBody)
 	}
 
 	var geminiResp geminiBatchEmbedResponse

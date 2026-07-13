@@ -48,6 +48,37 @@ func (g *Gateway) runBeforePlugins(ctx context.Context, plugins *plugin.Manager,
 	return nil, nil
 }
 
+// noopCancel is the CancelFunc returned when no per-request deadline applies. It
+// is a package-level func, not a closure, so the default path allocates nothing.
+func noopCancel() {}
+
+// requestDeadline returns the configured per-request timeout, or 0 when none is
+// set. Config.RequestTimeout is validated at load, so an unparseable or
+// non-positive value can only reach here from a programmatically-built Config;
+// it is treated as "no deadline" rather than failing an otherwise valid request.
+// The empty case short-circuits before parsing, so the default hot path neither
+// parses nor allocates.
+func requestDeadline(requestTimeout string) time.Duration {
+	if requestTimeout == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(requestTimeout)
+	if err != nil || d <= 0 {
+		return 0
+	}
+	return d
+}
+
+// withRequestDeadline bounds ctx by the configured per-request timeout. It
+// returns ctx untouched, with a no-op cancel, when no timeout is configured.
+func withRequestDeadline(ctx context.Context, requestTimeout string) (context.Context, context.CancelFunc) {
+	d := requestDeadline(requestTimeout)
+	if d <= 0 {
+		return ctx, noopCancel
+	}
+	return context.WithTimeout(ctx, d)
+}
+
 // Route routes a request to the appropriate provider based on the configuration.
 func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.Response, error) {
 	ctx, task := trace.NewTask(ctx, "gateway.route")
@@ -62,6 +93,7 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	g.mu.RLock()
 	strategyMode := string(g.config.Strategy.Mode)
 	compatMode := g.config.Compatibility.OnUnsupportedParam
+	requestTimeout := g.config.RequestTimeout
 	obs := g.obs
 	obsEventsActive := g.obsEventsActive
 	mcpRegistrySnapshot := g.mcpRegistry
@@ -70,6 +102,14 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	releasePlugins := acquirePluginManager(plugins)
 	g.mu.RUnlock()
 	defer releasePlugins()
+
+	// Bound the whole non-streaming request — plugin stages, provider call, and
+	// every retry/fallback attempt — when a request timeout is configured. The
+	// deadline rides ctx, so the retry loop and provider clients already honor it.
+	// RouteStream is deliberately exempt: a stream legitimately outlives any fixed
+	// deadline.
+	ctx, cancelDeadline := withRequestDeadline(ctx, requestTimeout)
+	defer cancelDeadline()
 
 	// Carry the compatibility mode to the shared request builder. Only inject
 	// when a non-default mode is configured so the warn (default) hot path keeps

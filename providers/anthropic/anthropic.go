@@ -301,7 +301,7 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 		if err != nil {
 			return nil, fmt.Errorf("failed to read response: %w", err)
 		}
-		return nil, core.APIError("anthropic", httpResp.StatusCode, respBody)
+		return nil, core.APIErrorFromResponse("anthropic", httpResp, respBody)
 	}
 
 	// Success path streams the decode straight off the response body, avoiding

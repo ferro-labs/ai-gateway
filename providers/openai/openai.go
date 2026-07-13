@@ -282,7 +282,7 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 		if err != nil {
 			return nil, fmt.Errorf("failed to read response: %w", err)
 		}
-		return nil, core.APIError(p.name, httpResp.StatusCode, respBody)
+		return nil, core.APIErrorFromResponse(p.name, httpResp, respBody)
 	}
 
 	// Bound decode + drain together so an oversized upstream response can't
@@ -364,7 +364,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 		if err != nil {
 			return nil, fmt.Errorf("failed to read response: %w", err)
 		}
-		return nil, core.APIError(p.name, httpResp.StatusCode, respBody)
+		return nil, core.APIErrorFromResponse(p.name, httpResp, respBody)
 	}
 
 	ch := make(chan core.StreamChunk)

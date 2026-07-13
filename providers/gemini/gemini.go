@@ -597,7 +597,7 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 	}
 
 	if httpResp.StatusCode != http.StatusOK {
-		return nil, core.APIError("gemini", httpResp.StatusCode, respBody)
+		return nil, core.APIErrorFromResponse("gemini", httpResp, respBody)
 	}
 
 	var geminiResp geminiResponse
@@ -660,7 +660,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 		if err != nil {
 			return nil, fmt.Errorf("failed to read response: %w", err)
 		}
-		return nil, core.APIError("gemini", httpResp.StatusCode, respBody)
+		return nil, core.APIErrorFromResponse("gemini", httpResp, respBody)
 	}
 
 	ch := make(chan core.StreamChunk)

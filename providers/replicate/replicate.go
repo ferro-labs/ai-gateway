@@ -394,7 +394,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 		if err != nil {
 			return nil, fmt.Errorf("failed to read response: %w", err)
 		}
-		return nil, core.APIError(Name, httpResp.StatusCode, respBody)
+		return nil, core.APIErrorFromResponse(Name, httpResp, respBody)
 	}
 
 	ch := make(chan core.StreamChunk)
@@ -496,7 +496,7 @@ func (p *Provider) submit(ctx context.Context, url string, body io.Reader, wait 
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 	if httpResp.StatusCode != http.StatusCreated && httpResp.StatusCode != http.StatusOK {
-		return nil, core.APIError(Name, httpResp.StatusCode, respBody)
+		return nil, core.APIErrorFromResponse(Name, httpResp, respBody)
 	}
 	return respBody, nil
 }
@@ -582,7 +582,7 @@ func (p *Provider) pollOnce(ctx context.Context, pollURL string) (*Prediction, e
 		return nil, fmt.Errorf("failed to read poll response body: %w", readErr)
 	}
 	if pollResp.StatusCode != http.StatusOK {
-		return nil, core.APIError(Name, pollResp.StatusCode, pollBody)
+		return nil, core.APIErrorFromResponse(Name, pollResp, pollBody)
 	}
 	var pred Prediction
 	if err := json.Unmarshal(pollBody, &pred); err != nil {

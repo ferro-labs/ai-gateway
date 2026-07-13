@@ -188,7 +188,7 @@ func (p *Provider) completeJurassic(ctx context.Context, req core.Request) (*cor
 	}
 
 	if httpResp.StatusCode != http.StatusOK {
-		return nil, core.APIError(Name, httpResp.StatusCode, respBody)
+		return nil, core.APIErrorFromResponse(Name, httpResp, respBody)
 	}
 
 	var completeResp ai21CompleteResponse

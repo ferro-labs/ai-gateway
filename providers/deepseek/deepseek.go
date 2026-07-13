@@ -156,7 +156,7 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 	}
 
 	if httpResp.StatusCode != http.StatusOK {
-		return nil, core.APIError("deepseek", httpResp.StatusCode, respBody)
+		return nil, core.APIErrorFromResponse("deepseek", httpResp, respBody)
 	}
 
 	var pResp response

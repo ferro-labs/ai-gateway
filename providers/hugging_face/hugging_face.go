@@ -162,7 +162,7 @@ func (p *Provider) postTask(ctx context.Context, url string, body io.Reader) ([]
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 	if httpResp.StatusCode != http.StatusOK {
-		return nil, core.APIError("hugging face", httpResp.StatusCode, respBody)
+		return nil, core.APIErrorFromResponse("hugging face", httpResp, respBody)
 	}
 	return respBody, nil
 }

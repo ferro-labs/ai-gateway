@@ -124,3 +124,6 @@ const (
 
 // ParseStatusCode re-exports core.ParseStatusCode.
 var ParseStatusCode = core.ParseStatusCode
+
+// RetryAfterFrom re-exports core.RetryAfterFrom.
+var RetryAfterFrom = core.RetryAfterFrom

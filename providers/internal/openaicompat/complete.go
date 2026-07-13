@@ -23,8 +23,19 @@ type ChatResponse struct {
 // APIError builds a provider error from a non-200 response body. It delegates to
 // core.APIError, which uses the OpenAI {"error":{"message":…}} envelope when
 // present and falls back to the raw body. label is the human-facing provider name.
+//
+// Deprecated: use APIErrorFromResponse where the *http.Response is in hand, so
+// the upstream Retry-After hint is captured for retry backoff.
 func APIError(label string, status int, body []byte) error {
 	return core.APIError(label, status, body)
+}
+
+// APIErrorFromResponse builds a provider error from a non-success response,
+// capturing the upstream Retry-After hint alongside the status. Every
+// OpenAI-compatible provider routes its errors through here, so this one call
+// gives the whole compatible fleet throttling-aware retries.
+func APIErrorFromResponse(label string, resp *http.Response, body []byte) error {
+	return core.APIErrorFromResponse(label, resp, body)
 }
 
 // ChatParams configures a request to an OpenAI-compatible chat endpoint.
@@ -198,7 +209,7 @@ func PostChat(ctx context.Context, p ChatParams, req core.Request) (*core.Respon
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 	if httpResp.StatusCode != http.StatusOK {
-		return nil, APIError(p.Label, httpResp.StatusCode, respBody)
+		return nil, APIErrorFromResponse(p.Label, httpResp, respBody)
 	}
 
 	var pResp ChatResponse
@@ -272,7 +283,7 @@ func PostStream(ctx context.Context, p ChatParams, req core.Request) (<-chan cor
 		if err != nil {
 			return nil, fmt.Errorf("failed to read response: %w", err)
 		}
-		return nil, APIError(p.Label, httpResp.StatusCode, respBody)
+		return nil, APIErrorFromResponse(p.Label, httpResp, respBody)
 	}
 	return StreamSSE(ctx, httpResp.Body), nil
 }

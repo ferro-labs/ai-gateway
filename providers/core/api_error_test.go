@@ -3,9 +3,77 @@ package core
 import (
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestParseRetryAfter(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  time.Duration
+	}{
+		{"delta-seconds", "120", 120 * time.Second},
+		{"delta-seconds with surrounding space", "  30 ", 30 * time.Second},
+		{"zero seconds yields no hint", "0", 0},
+		{"negative seconds yields no hint", "-5", 0},
+		{"absent header yields no hint", "", 0},
+		{"unparseable value yields no hint", "soon-ish", 0},
+		{"http-date in the past yields no hint", "Fri, 31 Dec 1999 23:59:59 GMT", 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ParseRetryAfter(tt.value); got != tt.want {
+				t.Errorf("ParseRetryAfter(%q) = %v, want %v", tt.value, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseRetryAfter_FutureHTTPDate(t *testing.T) {
+	future := time.Now().Add(2 * time.Minute).UTC().Format(http.TimeFormat)
+	got := ParseRetryAfter(future)
+	// The value is computed against wall-clock now, so assert a sane window
+	// rather than an exact duration.
+	if got <= 0 || got > 2*time.Minute {
+		t.Errorf("ParseRetryAfter(future date) = %v, want a positive duration within 2m", got)
+	}
+}
+
+func TestAPIErrorFromResponse_CapturesRetryAfter(t *testing.T) {
+	resp := &http.Response{
+		StatusCode: http.StatusTooManyRequests,
+		Header:     http.Header{"Retry-After": []string{"7"}},
+	}
+	err := APIErrorFromResponse("groq", resp, []byte(`{"error":{"message":"slow down"}}`))
+
+	if code := ParseStatusCode(err); code != http.StatusTooManyRequests {
+		t.Errorf("ParseStatusCode = %d, want 429", code)
+	}
+	if got := RetryAfterFrom(err); got != 7*time.Second {
+		t.Errorf("RetryAfterFrom = %v, want 7s", got)
+	}
+	if !strings.Contains(err.Error(), "slow down") {
+		t.Errorf("message lost the upstream detail: %q", err.Error())
+	}
+}
+
+func TestAPIErrorFromResponse_NoRetryAfterHeader(t *testing.T) {
+	resp := &http.Response{StatusCode: http.StatusInternalServerError, Header: http.Header{}}
+	err := APIErrorFromResponse("groq", resp, []byte("boom"))
+
+	if got := RetryAfterFrom(err); got != 0 {
+		t.Errorf("RetryAfterFrom = %v, want 0 when the header is absent", got)
+	}
+}
+
+func TestRetryAfterFrom_NonStatusErrorIsZero(t *testing.T) {
+	if got := RetryAfterFrom(errors.New("transport failure")); got != 0 {
+		t.Errorf("RetryAfterFrom = %v, want 0 for a non-status error", got)
+	}
+}
 
 // TestAPIError_Envelopes verifies APIError extracts the message from the OpenAI
 // envelope and the FastAPI {"detail":…} envelope, and falls back to the raw body.

@@ -28,6 +28,14 @@ type Config struct {
 	// 0 (the default when omitted) applies DefaultMaxRequestBytes (10 MiB), which
 	// is well above any realistic chat completion payload.
 	MaxRequestBytes int64 `json:"max_request_bytes,omitempty" yaml:"max_request_bytes,omitempty"`
+	// RequestTimeout bounds a single non-streaming request end to end — plugin
+	// stages, provider call, and every retry and fallback attempt combined — as a
+	// Go duration string (e.g. "30s"). Omitted or empty means no gateway-imposed
+	// deadline; the provider HTTP clients' own timeouts still apply.
+	//
+	// Streaming requests are exempt: a stream legitimately outlives any fixed
+	// deadline, and its idle bound is enforced by the streaming write deadline.
+	RequestTimeout string `json:"request_timeout,omitempty" yaml:"request_timeout,omitempty"`
 	// Plugins configuration (optional).
 	Plugins []PluginConfig `json:"plugins,omitempty" yaml:"plugins,omitempty"`
 	// Aliases maps friendly model names (e.g. "fast", "smart") to concrete model IDs.

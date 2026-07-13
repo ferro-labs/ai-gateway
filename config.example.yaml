@@ -7,6 +7,12 @@
 # POST attacks; set higher only if you need to send very large prompts.
 # max_request_bytes: 10485760
 
+# Bounds a single non-streaming request end to end — plugin stages, the provider
+# call, and every retry and fallback attempt combined. Omitted means no
+# gateway-imposed deadline (the provider HTTP clients' own timeouts still apply).
+# Streaming requests are exempt: a stream legitimately outlives a fixed deadline.
+# request_timeout: 60s
+
 strategy:
   mode: fallback  # single | fallback | loadbalance | conditional | content-based | ab-test | least-latency | cost-optimized
   # For cost-optimized mode only: fallback (default) | skip | allow.

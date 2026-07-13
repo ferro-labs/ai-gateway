@@ -640,6 +640,37 @@ func TestLoadConfig_ExampleFilesParse(t *testing.T) {
 	}
 }
 
+func TestValidateConfig_RequestTimeout(t *testing.T) {
+	tests := []struct {
+		name    string
+		timeout string
+		wantErr bool
+	}{
+		{"omitted is valid", "", false},
+		{"valid duration", "30s", false},
+		{"sub-second duration", "500ms", false},
+		{"missing unit is rejected", "30", true},
+		{"unparseable value is rejected", "soon", true},
+		{"zero is rejected", "0s", true},
+		{"negative is rejected", "-5s", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Config{
+				Targets:        []Target{{VirtualKey: "openai"}},
+				RequestTimeout: tt.timeout,
+			}
+			err := ValidateConfig(cfg)
+			if tt.wantErr && err == nil {
+				t.Errorf("request_timeout %q: expected an error, got nil", tt.timeout)
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("request_timeout %q: unexpected error: %v", tt.timeout, err)
+			}
+		})
+	}
+}
+
 func TestNormalize_AppliesDefaults(t *testing.T) {
 	cfg := Config{Targets: []Target{{VirtualKey: "openai"}}}
 	cfg.Normalize()

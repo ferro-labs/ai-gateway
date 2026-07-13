@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/ferro-labs/ai-gateway/internal/tracingpolicy"
 	"github.com/ferro-labs/ai-gateway/providers/core"
@@ -169,6 +170,16 @@ func ValidateConfig(cfg Config) error {
 
 	if len(cfg.Targets) == 0 {
 		return fmt.Errorf("at least one target is required")
+	}
+
+	if cfg.RequestTimeout != "" {
+		d, err := time.ParseDuration(cfg.RequestTimeout)
+		if err != nil {
+			return fmt.Errorf("invalid request_timeout %q: %w", cfg.RequestTimeout, err)
+		}
+		if d <= 0 {
+			return fmt.Errorf("request_timeout must be positive, got %q", cfg.RequestTimeout)
+		}
 	}
 
 	if cfg.Strategy.Mode == ModeConditional && len(cfg.Strategy.Conditions) == 0 {

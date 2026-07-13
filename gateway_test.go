@@ -1574,6 +1574,61 @@ func TestGateway_RouteStream_FallbackSkipsOpenCircuitBreakerTarget(t *testing.T)
 	}
 }
 
+// ── Per-request deadline (#277) ───────────────────────────────────────────────
+
+func TestGateway_Route_RequestTimeoutBoundsTheRequest(t *testing.T) {
+	gw, err := New(Config{
+		Strategy:       StrategyConfig{Mode: ModeSingle},
+		Targets:        []Target{{VirtualKey: "slow"}},
+		RequestTimeout: "50ms",
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = gw.Close() }()
+
+	gw.RegisterProvider(&slowCompleteProvider{
+		mockProvider: mockProvider{name: "slow", models: []string{"gpt-4o"}},
+	})
+
+	start := time.Now()
+	_, err = gw.Route(context.Background(), providers.Request{Model: "gpt-4o"})
+	elapsed := time.Since(start)
+
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Route error = %v, want context.DeadlineExceeded", err)
+	}
+	// The provider would take 500ms; the 50ms request_timeout must cut it short.
+	if elapsed >= 500*time.Millisecond {
+		t.Errorf("request took %v — the 50ms request_timeout did not bound it", elapsed)
+	}
+}
+
+func TestGateway_Route_NoRequestTimeout_LeavesRequestUnbounded(t *testing.T) {
+	// With request_timeout omitted the gateway imposes no deadline of its own, so
+	// the slow provider runs to completion.
+	gw, err := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: "slow"}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = gw.Close() }()
+
+	gw.RegisterProvider(&slowCompleteProvider{
+		mockProvider: mockProvider{name: "slow", models: []string{"gpt-4o"}},
+	})
+
+	resp, err := gw.Route(context.Background(), providers.Request{Model: "gpt-4o"})
+	if err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	if resp.ID != "ok" {
+		t.Errorf("response ID = %q, want %q", resp.ID, "ok")
+	}
+}
+
 type slowCompleteProvider struct {
 	mockProvider
 }

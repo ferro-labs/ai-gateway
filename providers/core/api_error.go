@@ -2,9 +2,12 @@ package core
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // apiErrorEnvelope covers the OpenAI {"error":{"message":…}} error body shape and
@@ -23,9 +26,61 @@ type apiErrorEnvelope struct {
 type HTTPStatusError struct {
 	StatusCode int
 	Message    string // fully formatted message, e.g. "groq API error (429): rate limited"
+	// RetryAfter carries the upstream Retry-After hint, or 0 when the response
+	// did not supply a usable one. The fallback strategy honors it in preference
+	// to its own computed backoff, so a 429/503 is retried when the provider says
+	// it is ready rather than on a guess.
+	RetryAfter time.Duration
 }
 
+// Error implements error.
 func (e *HTTPStatusError) Error() string { return e.Message }
+
+// ParseRetryAfter parses an HTTP Retry-After header value (RFC 9110 §10.2.3),
+// which is either delta-seconds ("120") or an HTTP-date. It returns 0 when the
+// value is absent, unparseable, non-positive, or already in the past — all of
+// which mean "no usable hint", never a negative wait.
+func ParseRetryAfter(value string) time.Duration {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(value); err == nil {
+		if secs <= 0 {
+			return 0
+		}
+		return time.Duration(secs) * time.Second
+	}
+	if t, err := http.ParseTime(value); err == nil {
+		if d := time.Until(t); d > 0 {
+			return d
+		}
+	}
+	return 0
+}
+
+// RetryAfterFrom returns the Retry-After hint carried by err, or 0 when err is
+// not a provider status error or carried no usable hint.
+func RetryAfterFrom(err error) time.Duration {
+	var statusErr *HTTPStatusError
+	if errors.As(err, &statusErr) {
+		return statusErr.RetryAfter
+	}
+	return 0
+}
+
+// APIErrorFromResponse builds a provider error from a non-success HTTP response,
+// capturing the Retry-After hint alongside the status code. Prefer it over
+// APIError wherever the *http.Response is in hand, so throttling responses can
+// drive retry backoff instead of being guessed at.
+func APIErrorFromResponse(label string, resp *http.Response, body []byte) error {
+	err := APIError(label, resp.StatusCode, body)
+	var statusErr *HTTPStatusError
+	if errors.As(err, &statusErr) {
+		statusErr.RetryAfter = ParseRetryAfter(resp.Header.Get("Retry-After"))
+	}
+	return err
+}
 
 // APIError builds a provider error from a non-success HTTP response body. It
 // extracts the message from the OpenAI {"error":{"message":…}} envelope, then the

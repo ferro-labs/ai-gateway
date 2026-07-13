@@ -36,7 +36,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 		if err != nil {
 			return nil, fmt.Errorf("failed to read response: %w", err)
 		}
-		return nil, core.APIError("anthropic", httpResp.StatusCode, respBody)
+		return nil, core.APIErrorFromResponse("anthropic", httpResp, respBody)
 	}
 
 	ch := make(chan core.StreamChunk)
