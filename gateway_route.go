@@ -48,6 +48,20 @@ func (g *Gateway) runBeforePlugins(ctx context.Context, plugins *plugin.Manager,
 	return nil, nil
 }
 
+// recordPluginAbort counts a request a plugin cut short, against the counter that
+// tells the truth about why: a deliberate rejection is a rejection, a broken plugin
+// is an error. Folding both into "rejected" would make a plugin outage look like a
+// wave of blocked prompts — the one shape that would send an operator hunting
+// through guardrail rules while the actual fault is a dead Redis.
+func recordPluginAbort(h *metrics.RequestMetricHandles, err error) {
+	var failure *plugin.FailureError
+	if errors.As(err, &failure) {
+		h.Error.Inc()
+		return
+	}
+	h.Rejected.Inc()
+}
+
 // ErrRequestTimeout is the cause attached to a context cancelled by the gateway's
 // own per-request deadline (Config.RequestTimeout). Retrieve it with
 // context.Cause(ctx).
@@ -171,7 +185,7 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 			early, err = g.runBeforePlugins(ctx, plugins, pctx, &req)
 		})
 		if err != nil {
-			metrics.ForRequest("", g.metricModel(req.Model)).Rejected.Inc()
+			recordPluginAbort(metrics.ForRequest("", g.metricModel(req.Model)), err)
 			return nil, err
 		}
 		if early != nil {
@@ -275,7 +289,7 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 			err = plugins.RunAfter(ctx, pctx)
 		})
 		if err != nil {
-			metrics.ForRequest(resp.Provider, resp.Model).Rejected.Inc()
+			recordPluginAbort(metrics.ForRequest(resp.Provider, resp.Model), err)
 			pctx.Error = err
 			plugins.RunOnError(ctx, pctx)
 			return nil, err

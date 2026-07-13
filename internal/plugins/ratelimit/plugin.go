@@ -109,7 +109,7 @@ func (p *Plugin) Execute(_ context.Context, pctx *plugin.Context) error {
 	if !p.limiter.Allow() {
 		pctx.Reject = true
 		pctx.Reason = "rate limit exceeded"
-		return fmt.Errorf("rate limit exceeded")
+		return nil
 	}
 
 	if p.keyStore != nil {
@@ -117,7 +117,7 @@ func (p *Plugin) Execute(_ context.Context, pctx *plugin.Context) error {
 			if !p.keyStore.Allow(key) {
 				pctx.Reject = true
 				pctx.Reason = "per-key rate limit exceeded"
-				return fmt.Errorf("per-key rate limit exceeded")
+				return nil
 			}
 		}
 	}
@@ -127,7 +127,7 @@ func (p *Plugin) Execute(_ context.Context, pctx *plugin.Context) error {
 			if !p.userStore.Allow(userID) {
 				pctx.Reject = true
 				pctx.Reason = "per-user rate limit exceeded"
-				return fmt.Errorf("per-user rate limit exceeded")
+				return nil
 			}
 		}
 	}

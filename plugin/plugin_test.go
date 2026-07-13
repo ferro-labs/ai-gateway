@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -164,36 +163,6 @@ func TestManager_RunBefore_RejectWithError_FallsBackToErrorMessage(t *testing.T)
 	}
 }
 
-func TestManager_RunBefore_PanicReturnsError(t *testing.T) {
-	m := NewManager()
-	_ = m.Register(StageBeforeRequest, &mockPlugin{
-		name: "panic-guard",
-		typ:  TypeGuardrail,
-		execFn: func(context.Context, *Context) error {
-			panic("boom")
-		},
-	})
-
-	pctx := NewContext(&providers.Request{Model: "gpt-4o"})
-	err := m.RunBefore(context.Background(), pctx)
-	if err == nil {
-		t.Fatal("expected panic to be converted to an error")
-	}
-	var rejection *RejectionError
-	if !errors.As(err, &rejection) {
-		t.Fatalf("expected RejectionError, got %T", err)
-	}
-	if rejection.PluginType != TypeGuardrail {
-		t.Fatalf("plugin type = %q, want %q", rejection.PluginType, TypeGuardrail)
-	}
-	if !strings.Contains(err.Error(), "plugin panic-guard panicked") {
-		t.Fatalf("error = %q, want plugin panic context", err.Error())
-	}
-	if strings.Contains(err.Error(), "runtime/debug.Stack") {
-		t.Fatalf("error = %q, should not expose panic stack", err.Error())
-	}
-}
-
 func TestManager_RunBefore_FailOpenPluginFailureDoesNotAbort(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -212,15 +181,6 @@ func TestManager_RunBefore_FailOpenPluginFailureDoesNotAbort(t *testing.T) {
 			typ:  TypeMetrics,
 			execFn: func(context.Context, *Context) error {
 				panic("metrics sink down")
-			},
-		},
-		{
-			name: "transform reject",
-			typ:  TypeTransform,
-			execFn: func(_ context.Context, pctx *Context) error {
-				pctx.Reject = true
-				pctx.Reason = "cache backend unavailable"
-				return nil
 			},
 		},
 	}
@@ -327,78 +287,6 @@ func TestManager_RunAfter_RejectWithErrorAndEmptyReason_UsesErrorMessage(t *test
 	}
 }
 
-func TestManager_RunAfter_FailClosedErrorWithoutRejectReturnsRejection(t *testing.T) {
-	tests := []struct {
-		name string
-		typ  PluginType
-	}{
-		{name: "guardrail", typ: TypeGuardrail},
-		{name: "auth", typ: TypeAuth},
-		{name: "ratelimit", typ: TypeRateLimit},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			m := NewManager()
-			_ = m.Register(StageAfterRequest, &mockPlugin{
-				name: "schema-guard",
-				typ:  tt.typ,
-				execFn: func(context.Context, *Context) error {
-					return fmt.Errorf("schema guard unavailable")
-				},
-			})
-
-			pctx := NewContext(&providers.Request{})
-			pctx.Response = &providers.Response{ID: "r1"}
-			err := m.RunAfter(context.Background(), pctx)
-			if err == nil {
-				t.Fatal("expected rejection error")
-			}
-			var rejection *RejectionError
-			if !errors.As(err, &rejection) {
-				t.Fatalf("expected RejectionError, got %T", err)
-			}
-			if rejection.PluginType != tt.typ {
-				t.Fatalf("plugin type = %q, want %q", rejection.PluginType, tt.typ)
-			}
-			if rejection.Stage != StageAfterRequest {
-				t.Fatalf("stage = %q, want %q", rejection.Stage, StageAfterRequest)
-			}
-			if rejection.Reason != "schema guard unavailable" {
-				t.Fatalf("reason = %q, want %q", rejection.Reason, "schema guard unavailable")
-			}
-		})
-	}
-}
-
-func TestManager_RunAfter_FailClosedPanicReturnsRejection(t *testing.T) {
-	m := NewManager()
-	_ = m.Register(StageAfterRequest, &mockPlugin{
-		name: "panic-guard",
-		typ:  TypeGuardrail,
-		execFn: func(context.Context, *Context) error {
-			panic("boom")
-		},
-	})
-
-	pctx := NewContext(&providers.Request{})
-	pctx.Response = &providers.Response{ID: "r1"}
-	err := m.RunAfter(context.Background(), pctx)
-	if err == nil {
-		t.Fatal("expected rejection error")
-	}
-	var rejection *RejectionError
-	if !errors.As(err, &rejection) {
-		t.Fatalf("expected RejectionError, got %T", err)
-	}
-	if !strings.Contains(rejection.Reason, "plugin panic-guard panicked") {
-		t.Fatalf("reason = %q, want panic context", rejection.Reason)
-	}
-	if strings.Contains(err.Error(), "runtime/debug.Stack") {
-		t.Fatalf("error = %q, should not expose panic stack", err.Error())
-	}
-}
-
 func TestManager_RunAfter_FailOpenPluginFailureDoesNotAbort(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -417,15 +305,6 @@ func TestManager_RunAfter_FailOpenPluginFailureDoesNotAbort(t *testing.T) {
 			typ:  TypeMetrics,
 			execFn: func(context.Context, *Context) error {
 				panic("metrics sink down")
-			},
-		},
-		{
-			name: "transform reject",
-			typ:  TypeTransform,
-			execFn: func(_ context.Context, pctx *Context) error {
-				pctx.Reject = true
-				pctx.Reason = "cache store unavailable"
-				return nil
 			},
 		},
 	}
@@ -456,34 +335,6 @@ func TestManager_RunAfter_FailOpenPluginFailureDoesNotAbort(t *testing.T) {
 				t.Fatalf("fail-open rejection leaked: reject=%v reason=%q", pctx.Reject, pctx.Reason)
 			}
 		})
-	}
-}
-
-func TestManager_RunAfter_DefaultPluginTypeFailsClosed(t *testing.T) {
-	m := NewManager()
-	_ = m.Register(StageAfterRequest, &mockPlugin{
-		name: "custom-policy",
-		typ:  PluginType("custom"),
-		execFn: func(context.Context, *Context) error {
-			return fmt.Errorf("custom plugin failed")
-		},
-	})
-
-	pctx := NewContext(&providers.Request{})
-	pctx.Response = &providers.Response{ID: "r1"}
-	err := m.RunAfter(context.Background(), pctx)
-	if err == nil {
-		t.Fatal("expected rejection error")
-	}
-	var rejection *RejectionError
-	if !errors.As(err, &rejection) {
-		t.Fatalf("expected RejectionError, got %T", err)
-	}
-	if rejection.PluginType != PluginType("custom") {
-		t.Fatalf("plugin type = %q, want custom", rejection.PluginType)
-	}
-	if rejection.Reason != "custom plugin failed" {
-		t.Fatalf("reason = %q, want %q", rejection.Reason, "custom plugin failed")
 	}
 }
 

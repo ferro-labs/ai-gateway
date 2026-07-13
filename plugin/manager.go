@@ -14,42 +14,47 @@ import (
 
 const defaultRejectionReason = "rejected"
 
-// pluginFailsClosed reports whether a plugin of the given type aborts the
-// request when it errors or rejects. Observability-only plugins (logging,
-// metrics, transform) fail open so a backend hiccup never takes down the
-// request path; everything else — guardrails in particular — fails closed.
-func pluginFailsClosed(pluginType PluginType) bool {
+// errorFailsOpen reports whether an ERROR from a plugin of the given type is
+// swallowed so the request can continue.
+//
+// Only observability plugins qualify: logging and metrics watch the request, they
+// do not gate it, so a dead log sink must never take down the request path.
+// Everything that participates in the decision fails closed — a guardrail that
+// could not run has approved nothing, an auth plugin that could not run has
+// authenticated nobody, and a transform that could not run has left the payload
+// unsanitised.
+//
+// This governs plugin failures only. A deliberate rejection is always honoured,
+// whatever the plugin's type: a plugin sets Context.Reject only when it has decided
+// to deny the request, and discarding that decision would make the documented
+// Reject contract a lie.
+func errorFailsOpen(pluginType PluginType) bool {
 	switch pluginType {
-	case TypeLogging, TypeMetrics, TypeTransform:
-		return false
-	default:
+	case TypeLogging, TypeMetrics:
 		return true
+	default:
+		return false
 	}
 }
 
-// handlePluginFailure applies the per-type failure policy after a plugin
-// stage runs. Fail-closed plugins turn an error or rejection into a
-// RejectionError that aborts the stage; fail-open plugins have the same
-// outcome logged and swallowed so the request continues.
+// handlePluginFailure applies the failure policy after a plugin stage runs, and
+// keeps two different events apart: a plugin that DENIED the request, and a plugin
+// that BROKE. The first is a RejectionError, the second a FailureError; the HTTP
+// layer maps them to a client error and a server error respectively.
 func handlePluginFailure(p Plugin, stage Stage, pctx *Context, err error) error {
-	if err == nil && !pctx.Reject {
-		return nil
-	}
-	if pluginFailsClosed(p.Type()) {
+	// A rejection outranks an error: the plugin reached a verdict, so report the
+	// verdict even if it also returned an error on its way out.
+	if pctx.Reject {
 		return rejectionErrorFor(p, stage, pctx, err)
 	}
-
-	rejected := pctx.Reject
-	reason := rejectionReason(pctx, err)
-	pctx.Reject = false
-	pctx.Reason = ""
-	if err != nil {
+	if err == nil {
+		return nil
+	}
+	if errorFailsOpen(p.Type()) {
 		slog.Default().Warn("fail-open plugin error ignored", "plugin", p.Name(), "type", p.Type(), "stage", stage, "error", err)
+		return nil
 	}
-	if rejected {
-		slog.Default().Warn("fail-open plugin rejection ignored", "plugin", p.Name(), "type", p.Type(), "stage", stage, "reason", reason)
-	}
-	return nil
+	return &FailureError{Plugin: p.Name(), PluginType: p.Type(), Stage: stage, Err: err}
 }
 
 func rejectionErrorFor(p Plugin, stage Stage, pctx *Context, err error) *RejectionError {

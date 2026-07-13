@@ -124,8 +124,8 @@ func TestPlugin_Execute_GlobalDeny(t *testing.T) {
 		Request:  &core.Request{},
 		Metadata: map[string]any{},
 	}
-	if p.Execute(context.Background(), pctx) == nil {
-		t.Error("expected error from Execute for exhausted global limiter")
+	if err := p.Execute(context.Background(), pctx); err != nil {
+		t.Fatalf("an exhausted limiter is a verdict, not a plugin malfunction: %v", err)
 	}
 	if !pctx.Reject {
 		t.Error("expected Reject=true for exhausted global limiter")

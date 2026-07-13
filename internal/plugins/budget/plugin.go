@@ -311,7 +311,7 @@ func (p *Plugin) checkBudget(pctx *plugin.Context, key string) error {
 	if current >= p.spendLimitUSD {
 		pctx.Reject = true
 		pctx.Reason = fmt.Sprintf("budget exceeded: spent $%.4f of $%.2f limit", current, p.spendLimitUSD)
-		return fmt.Errorf("budget exceeded for api key")
+		return nil
 	}
 	return nil
 }

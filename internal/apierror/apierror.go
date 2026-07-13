@@ -31,6 +31,16 @@ func RouteErrorDetails(err error) (status int, errType, code string) {
 	errType = "server_error"
 	code = "routing_error"
 
+	// A fail-closed plugin that broke did not deny anything — it never got far
+	// enough to have an opinion. That is a fault on our side of the wire, so it
+	// is reported as one. Dressing it up as a rejection would tell the client to
+	// fix a request that was fine, or — for a rate-limit plugin whose backend is
+	// down — hand back a 429 that invites every SDK to retry into the outage.
+	var failure *plugin.FailureError
+	if errors.As(err, &failure) {
+		return http.StatusInternalServerError, "server_error", "plugin_error"
+	}
+
 	var rejection *plugin.RejectionError
 	if errors.As(err, &rejection) {
 		switch rejection.Stage {

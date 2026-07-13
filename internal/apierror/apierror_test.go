@@ -206,3 +206,43 @@ func TestRouteErrorDetails_NoCapableProvider_DirectSentinel(t *testing.T) {
 		t.Fatalf("expected %s, got %q", codeModelNotFound, code)
 	}
 }
+
+func TestRouteErrorDetails_BrokenPluginIsAServerErrorNotARateLimit(t *testing.T) {
+	// A rate-limit plugin whose backend is down has not rate-limited anybody.
+	// Reporting 429 tells every OpenAI SDK to back off and retry — a retry
+	// storm against a gateway that is broken, not busy. It is a server error.
+	failure := &plugin.FailureError{
+		Plugin:     "rate-limit",
+		PluginType: plugin.TypeRateLimit,
+		Stage:      plugin.StageBeforeRequest,
+		Err:        errors.New("redis: connection refused"),
+	}
+
+	status, errType, code := RouteErrorDetails(failure)
+	if status == http.StatusTooManyRequests {
+		t.Fatal("a broken rate-limit plugin must not report 429: the client is not being rate limited, the gateway is broken")
+	}
+	if status != http.StatusInternalServerError {
+		t.Errorf("status = %d, want %d", status, http.StatusInternalServerError)
+	}
+	if errType != "server_error" || code != "plugin_error" {
+		t.Errorf("type/code = %q/%q, want server_error/plugin_error", errType, code)
+	}
+}
+
+func TestRouteErrorDetails_DeliberateRateLimitRejectionStays429(t *testing.T) {
+	rejection := &plugin.RejectionError{
+		Plugin:     "rate-limit",
+		PluginType: plugin.TypeRateLimit,
+		Stage:      plugin.StageBeforeRequest,
+		Reason:     "60 requests per minute exceeded",
+	}
+
+	status, errType, code := RouteErrorDetails(rejection)
+	if status != http.StatusTooManyRequests {
+		t.Errorf("status = %d, want %d: an actual rate-limit decision is still a 429", status, http.StatusTooManyRequests)
+	}
+	if errType != "rate_limit_error" || code != "rate_limit_exceeded" {
+		t.Errorf("type/code = %q/%q, want rate_limit_error/rate_limit_exceeded", errType, code)
+	}
+}
