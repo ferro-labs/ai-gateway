@@ -3,7 +3,9 @@ package core
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +24,8 @@ func TestParseRetryAfter(t *testing.T) {
 		{"absent header yields no hint", "", 0},
 		{"unparseable value yields no hint", "soon-ish", 0},
 		{"http-date in the past yields no hint", "Fri, 31 Dec 1999 23:59:59 GMT", 0},
+		{"delta-seconds just above the max representable duration yields no hint", "9223372037", 0},
+		{"delta-seconds at math.MaxInt64 yields no hint", strconv.FormatInt(math.MaxInt64, 10), 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

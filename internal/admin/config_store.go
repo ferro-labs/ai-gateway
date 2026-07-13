@@ -189,6 +189,9 @@ func (s *SQLConfigStore) Delete(ctx context.Context) error {
 
 // Ping verifies the backing database is reachable.
 func (s *SQLConfigStore) Ping(ctx context.Context) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("config store ping: store not initialized")
+	}
 	if err := s.db.PingContext(ctx); err != nil {
 		return fmt.Errorf("config store ping: %w", err)
 	}
@@ -254,9 +257,7 @@ func (m *GatewayConfigManager) Ping(ctx context.Context) error {
 		return nil
 	}
 	if p, ok := m.store.(interface{ Ping(context.Context) error }); ok {
-		if err := p.Ping(ctx); err != nil {
-			return fmt.Errorf("config store ping: %w", err)
-		}
+		return p.Ping(ctx)
 	}
 	return nil
 }

@@ -82,7 +82,7 @@ The v1.1.x hardening patch line is complete; further work continues in the v1.2.
 
 ## v1.2.0 — Provider Parameter Capability Matrix
 
-Status: **Shipped** (2026-07-13). Tracking issue: [#207](https://github.com/ferro-labs/ai-gateway/issues/207).
+Status: **Shipped** (2026-07-14). Tracking issue: [#207](https://github.com/ferro-labs/ai-gateway/issues/207).
 
 Builds on the v1.1.4 forwarding fix to make per-provider parameter support **explicit and machine-readable**, so a changed model behaviour can be traced to either provider capability or gateway forwarding.
 
@@ -95,7 +95,7 @@ Builds on the v1.1.4 forwarding fix to make per-provider parameter support **exp
 - **Per-request deadlines and retry hygiene** — `request_timeout` bounds a non-streaming request end to end; retries are limited to retryable statuses with jittered backoff ([#277](https://github.com/ferro-labs/ai-gateway/issues/277), [#278](https://github.com/ferro-labs/ai-gateway/issues/278)).
 - **Per-target concurrency limits** — `targets[].concurrency` bounds in-flight requests per provider and sheds with 429 when saturated ([#248](https://github.com/ferro-labs/ai-gateway/issues/248)).
 - **Split liveness and readiness probes** — `/livez` and `/readyz` for orchestrator rollout gating ([#279](https://github.com/ferro-labs/ai-gateway/issues/279)).
-- **Plugin failure policy** — a plugin that denies a request and a plugin that breaks are now distinct, so a broken rate-limit plugin no longer answers 429 and invite SDKs to retry into the outage ([#288](https://github.com/ferro-labs/ai-gateway/issues/288)).
+- **Plugin failure policy** — a plugin that denies a request and a plugin that breaks are now distinct, so a broken rate-limit plugin no longer answers 429 and invites SDKs to retry into the outage ([#288](https://github.com/ferro-labs/ai-gateway/issues/288)).
 
 ### Deferred
 

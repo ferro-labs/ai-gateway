@@ -84,3 +84,21 @@ func TestAnyMap_RecursesAndDoesNotMutateInput(t *testing.T) {
 		t.Errorf("nested input was mutated: %v", got)
 	}
 }
+
+func TestStringMap_NilVsNonNilEmpty(t *testing.T) {
+	out, err := StringMap(nil)
+	if err != nil {
+		t.Fatalf("StringMap(nil): %v", err)
+	}
+	if out != nil {
+		t.Errorf("StringMap(nil) = %#v, want nil", out)
+	}
+
+	out, err = StringMap(map[string]string{})
+	if err != nil {
+		t.Fatalf("StringMap(non-nil empty map): %v", err)
+	}
+	if out == nil {
+		t.Error("StringMap(non-nil empty map) = nil, want a non-nil empty map")
+	}
+}

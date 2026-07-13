@@ -56,7 +56,7 @@ func Expand(s string) (string, error) {
 // StringMap returns a copy of m with every value expanded. The input is never
 // mutated: the caller's Config must keep its ${VAR} references.
 func StringMap(m map[string]string) (map[string]string, error) {
-	if len(m) == 0 {
+	if m == nil {
 		return nil, nil
 	}
 	out := make(map[string]string, len(m))

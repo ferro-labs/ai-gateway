@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -36,17 +37,22 @@ type HTTPStatusError struct {
 // Error implements error.
 func (e *HTTPStatusError) Error() string { return e.Message }
 
+// maxRetryAfterSeconds is the largest delta-seconds value a time.Duration can
+// hold. Beyond it the multiply by time.Second wraps past MaxInt64 into a
+// negative duration, which the fallback strategy would honour as "retry now".
+const maxRetryAfterSeconds = int64(math.MaxInt64) / int64(time.Second)
+
 // ParseRetryAfter parses an HTTP Retry-After header value (RFC 9110 §10.2.3),
 // which is either delta-seconds ("120") or an HTTP-date. It returns 0 when the
-// value is absent, unparseable, non-positive, or already in the past — all of
-// which mean "no usable hint", never a negative wait.
+// value is absent, unparseable, non-positive, out of range, or already in the
+// past — all of which mean "no usable hint", never a negative wait.
 func ParseRetryAfter(value string) time.Duration {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return 0
 	}
-	if secs, err := strconv.Atoi(value); err == nil {
-		if secs <= 0 {
+	if secs, err := strconv.ParseInt(value, 10, 64); err == nil {
+		if secs <= 0 || secs > maxRetryAfterSeconds {
 			return 0
 		}
 		return time.Duration(secs) * time.Second

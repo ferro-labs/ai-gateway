@@ -5,7 +5,7 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.2.0] — 2026-07-13
+## [1.2.0] — 2026-07-14
 
 The capability release. The gateway now has a single, declarative record of what each provider can actually express, and enforces it — so a parameter a provider cannot honor is no longer silently dropped on the wire. Alongside it: per-request deadlines, per-target concurrency limits, split liveness/readiness probes, and a cross-provider conformance suite.
 

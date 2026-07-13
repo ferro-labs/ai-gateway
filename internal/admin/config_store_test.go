@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	aigateway "github.com/ferro-labs/ai-gateway"
@@ -391,5 +392,60 @@ func TestGatewayConfigManager_ResetConfig(t *testing.T) {
 	}
 	if mgr.GetConfig().Strategy.Mode != aigateway.ModeSingle {
 		t.Errorf("expected reset to single mode, got %q", mgr.GetConfig().Strategy.Mode)
+	}
+}
+
+// TestGatewayConfigManager_Ping_DoesNotDoubleWrapStoreError proves the manager
+// surfaces the underlying store's ping error as-is: SQLConfigStore.Ping already
+// prefixes its error with "config store ping: ", so a second wrap at the
+// manager level would make that prefix appear twice in the /readyz body.
+func TestGatewayConfigManager_Ping_DoesNotDoubleWrapStoreError(t *testing.T) {
+	store, err := NewSQLiteConfigStore(t.Context(), filepath.Join(t.TempDir(), "config.db"))
+	if err != nil {
+		t.Fatalf("new config store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	gw, err := aigateway.New(singleConfig())
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+	mgr, err := NewGatewayConfigManager(gw, store)
+	if err != nil {
+		t.Fatalf("new config manager: %v", err)
+	}
+
+	// Close the underlying connection directly so the store's own Ping fails
+	// and returns its wrapped error, without going through store.Close().
+	if err := store.db.Close(); err != nil {
+		t.Fatalf("close underlying db: %v", err)
+	}
+
+	err = mgr.Ping(context.Background())
+	if err == nil {
+		t.Fatal("expected ping error once the store is unreachable")
+	}
+	const wantPrefix = "config store ping: "
+	if got := strings.Count(err.Error(), wantPrefix); got != 1 {
+		t.Fatalf("Ping() error = %q, want %q to appear exactly once, appeared %d times", err.Error(), wantPrefix, got)
+	}
+}
+
+// TestSQLConfigStore_Ping_NilReceiver proves a nil *SQLConfigStore reports an
+// error instead of panicking: an uninitialized store is not reachable, so
+// readiness must fail closed rather than crash.
+func TestSQLConfigStore_Ping_NilReceiver(t *testing.T) {
+	var store *SQLConfigStore
+	if err := store.Ping(context.Background()); err == nil {
+		t.Fatal("expected error pinging a nil config store")
+	}
+}
+
+// TestSQLConfigStore_Ping_NilDB covers the other uninitialized shape: a
+// non-nil store whose db was never opened.
+func TestSQLConfigStore_Ping_NilDB(t *testing.T) {
+	store := &SQLConfigStore{}
+	if err := store.Ping(context.Background()); err == nil {
+		t.Fatal("expected error pinging a config store with a nil db")
 	}
 }

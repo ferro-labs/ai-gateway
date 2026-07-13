@@ -65,19 +65,20 @@ func TestProviderLimiter_QueueFullShedsImmediately(t *testing.T) {
 	}
 
 	// Occupy the single queue position.
-	queued := make(chan struct{})
-	go func() {
-		close(queued)
-		_ = lim.acquire(context.Background())
-	}()
-	<-queued
-	// Give the queued goroutine a moment to register as waiting.
+	queuedErr := make(chan error, 1)
+	go func() { queuedErr <- lim.acquire(context.Background()) }()
 	waitFor(t, func() bool { return lim.waiting.Load() == 1 })
 
 	// The queue is now full: the next caller must be shed, not blocked.
 	err := lim.acquire(context.Background())
 	if !errors.Is(err, providers.ErrProviderSaturated) {
 		t.Errorf("acquire beyond queue_size = %v, want ErrProviderSaturated (shed, never block)", err)
+	}
+
+	// Free the held slot so the queued acquire can complete, then join it.
+	lim.release()
+	if err := <-queuedErr; err != nil {
+		t.Errorf("queued acquire = %v, want nil once a slot freed", err)
 	}
 }
 
@@ -88,12 +89,13 @@ func TestProviderLimiter_CancelWhileWaitingHoldsNoSlot(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	go func() {
-		waitFor(t, func() bool { return lim.waiting.Load() == 1 })
-		cancel()
-	}()
+	acquireErr := make(chan error, 1)
+	go func() { acquireErr <- lim.acquire(ctx) }()
 
-	if err := lim.acquire(ctx); !errors.Is(err, context.Canceled) {
+	waitFor(t, func() bool { return lim.waiting.Load() == 1 })
+	cancel()
+
+	if err := <-acquireErr; !errors.Is(err, context.Canceled) {
 		t.Fatalf("acquire = %v, want context.Canceled", err)
 	}
 	// The cancelled caller must not have left a slot or a queue seat behind.

@@ -18,7 +18,6 @@ import (
 	"github.com/ferro-labs/ai-gateway/observability"
 	"github.com/ferro-labs/ai-gateway/plugin"
 	"github.com/ferro-labs/ai-gateway/providers"
-	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
 // Streaming request path (RouteStream) plus its streaming provider-resolution
@@ -58,11 +57,7 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 	releasePlugins := acquirePluginManager(plugins)
 	g.mu.RUnlock()
 
-	// Carry the compatibility mode to the shared request builder. Only inject a
-	// non-default mode so the warn (default) streaming path is unaffected.
-	if mode, _ := core.ParseUnsupportedParamMode(compatMode); mode != core.UnsupportedParamWarn {
-		ctx = core.WithUnsupportedParamMode(ctx, mode)
-	}
+	ctx = withUnsupportedParamMode(ctx, compatMode)
 	var releasePluginsOnce sync.Once
 	releasePluginManager := func() {
 		releasePluginsOnce.Do(releasePlugins)

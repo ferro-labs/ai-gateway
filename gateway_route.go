@@ -106,6 +106,17 @@ func withRequestDeadline(ctx context.Context, requestTimeout string) (context.Co
 	return context.WithTimeoutCause(ctx, d, ErrRequestTimeout)
 }
 
+// withUnsupportedParamMode carries the configured compatibility mode to the
+// shared request builder via ctx. It only decorates ctx when a non-default
+// mode is configured, so the warn (default) hot path keeps its
+// zero-allocation baseline.
+func withUnsupportedParamMode(ctx context.Context, compatMode string) context.Context {
+	if mode, _ := core.ParseUnsupportedParamMode(compatMode); mode != core.UnsupportedParamWarn {
+		return core.WithUnsupportedParamMode(ctx, mode)
+	}
+	return ctx
+}
+
 // Route routes a request to the appropriate provider based on the configuration.
 func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.Response, error) {
 	ctx, task := trace.NewTask(ctx, "gateway.route")
@@ -139,12 +150,7 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	ctx, cancelDeadline := withRequestDeadline(ctx, requestTimeout)
 	defer cancelDeadline()
 
-	// Carry the compatibility mode to the shared request builder. Only inject
-	// when a non-default mode is configured so the warn (default) hot path keeps
-	// its zero-allocation baseline.
-	if mode, _ := core.ParseUnsupportedParamMode(compatMode); mode != core.UnsupportedParamWarn {
-		ctx = core.WithUnsupportedParamMode(ctx, mode)
-	}
+	ctx = withUnsupportedParamMode(ctx, compatMode)
 	ctx, span := obs.StartRequestSpan(ctx, observability.RequestAttrs{
 		Operation:       "chat",
 		RequestModel:    req.Model,
