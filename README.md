@@ -354,9 +354,11 @@ mcp_servers:
     timeout_seconds: 30
 ```
 
-When loading YAML/JSON through `LoadConfig`, the gateway substitutes `${VAR}` references in MCP headers, plugin config, and observability exporter config before those components are initialized, so secrets live in environment variables rather than in config files.
+`${VAR}` references in MCP headers, plugin config, and observability exporter config are substituted **when that component is constructed**, not when the config file is read. The config itself keeps the `${VAR}` reference for its whole life, so a secret is never written to the config-history store, never returned by `GET /admin/config`, and never restored into the database on a rollback — while the plugin, exporter, or MCP client still receives the real value.
 
-Only the braced form is a reference. A bare `$` is treated as data and preserved verbatim, so a blocked word like `$100`, a price like `costs $5`, or a password like `pa$$w0rd` survives config loading unchanged. A `${VAR}` whose variable is not set is an error at load time — the gateway will not start with a silently blank secret or an empty guardrail rule.
+Because substitution happens at construction rather than at file load, a `${VAR}` pushed through the admin/GitOps config API is resolved exactly the same way.
+
+Only the braced form is a reference. A bare `$` is data and is preserved verbatim, so a blocked word like `$100`, a price like `costs $5`, or a password like `pa$$w0rd` survives unchanged. A `${VAR}` whose variable is undefined is an error rather than a silently blank secret or an empty guardrail rule.
 
 See [config.example.yaml](config.example.yaml) and [config.example.json](config.example.json) for the full template with all options.
 

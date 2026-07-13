@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/ferro-labs/ai-gateway/internal/envref"
 	"github.com/ferro-labs/ai-gateway/internal/mcp"
 	pubmcp "github.com/ferro-labs/ai-gateway/mcp"
 )
@@ -69,6 +70,15 @@ func (g *Gateway) wireMCPLocked(cfg Config, failLogMsg string) {
 
 	reg := mcp.NewRegistry()
 	for _, mcpCfg := range cfg.MCPServers {
+		// Resolve ${VAR} references into the MCP client's headers here, not in the
+		// Config: the Config keeps the references, so a bearer token is never
+		// persisted to the config store nor served by GET /admin/config.
+		headers, err := envref.StringMap(mcpCfg.Headers)
+		if err != nil {
+			slog.Error(failLogMsg, "server", mcpCfg.Name, "error", err)
+			return
+		}
+		mcpCfg.Headers = headers
 		reg.RegisterConfig(mcpCfg)
 	}
 

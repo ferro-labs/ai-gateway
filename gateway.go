@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/ferro-labs/ai-gateway/internal/circuitbreaker"
+	"github.com/ferro-labs/ai-gateway/internal/envref"
 	"github.com/ferro-labs/ai-gateway/internal/latency"
 	"github.com/ferro-labs/ai-gateway/internal/mcp"
 	"github.com/ferro-labs/ai-gateway/internal/metrics"
@@ -384,7 +385,16 @@ func (g *Gateway) buildPluginManager(configs []PluginConfig) (*plugin.Manager, e
 				r.SetRequestLogWriter(sharedLogWriter)
 			}
 		}
-		if err := p.Init(pc.Config); err != nil {
+		// Resolve ${VAR} references into the plugin's own config at construction.
+		// The Config itself keeps the references, so the secret is never persisted
+		// to the config store nor served by GET /admin/config.
+		pluginCfg, err := envref.AnyMap(pc.Config)
+		if err != nil {
+			_ = plugins.Close()
+			_ = p.Close()
+			return nil, fmt.Errorf("plugin %s config: %w", pc.Name, err)
+		}
+		if err := p.Init(pluginCfg); err != nil {
 			_ = plugins.Close()
 			_ = p.Close()
 			return nil, fmt.Errorf("plugin %s init failed: %w", pc.Name, err)

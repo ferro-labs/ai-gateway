@@ -2,7 +2,6 @@ package aigateway
 
 import (
 	"bytes"
-	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -47,123 +46,6 @@ func TestLoadConfig_CostOptimizedUnpricedStrategy(t *testing.T) {
 	}
 	if cfg.Strategy.UnpricedStrategy != unpricedStrategySkip {
 		t.Errorf("expected unpriced_strategy %q, got %q", unpricedStrategySkip, cfg.Strategy.UnpricedStrategy)
-	}
-}
-
-func TestLoadConfig_ResolvesEnvReferences(t *testing.T) {
-	t.Setenv("FERRO_TEST_MCP_TOKEN", "mcp-token")
-	t.Setenv("FERRO_TEST_EXPORTER_KEY", "exporter-key")
-	t.Setenv("FERRO_TEST_EXPORTER_HOST", "trace.example.com")
-	t.Setenv("FERRO_TEST_PLUGIN_DSN", "sqlite:///tmp/requests.db")
-	t.Setenv("FERRO_TEST_PLUGIN_TOKEN", "plugin-token")
-	t.Setenv("FERRO_TEST_EMPTY", "")
-
-	mcpTokenRef := "${" + "FERRO_TEST_MCP_TOKEN" + "}"
-	exporterKeyRef := "${" + "FERRO_TEST_EXPORTER_KEY" + "}"
-	exporterHostRef := "${" + "FERRO_TEST_EXPORTER_HOST" + "}"
-	pluginDSNRef := "${" + "FERRO_TEST_PLUGIN_DSN" + "}"
-	pluginTokenRef := "${" + "FERRO_TEST_PLUGIN_TOKEN" + "}"
-	emptyRef := "${" + "FERRO_TEST_EMPTY" + "}"
-
-	data := fmt.Sprintf(`
-strategy:
-  mode: single
-targets:
-  - virtual_key: openai
-mcp_servers:
-  - name: database
-    url: https://mcp-db.internal/mcp
-    headers:
-      Authorization: "Bearer %s"
-      X-Empty: "%s"
-observability:
-  exporters:
-    - name: langsmith
-      enabled: true
-      config:
-        api_key: "%s"
-        endpoint: "https://%s/v1"
-        nested:
-          token: "prefix-%s"
-        list:
-          - "%s"
-          - false
-plugins:
-  - name: request-logger
-    type: logging
-    stage: before_request
-    enabled: true
-    config:
-      dsn: "%s"
-      nested:
-        token: "%s"
-      list:
-        - "%s"
-        - 7
-`, mcpTokenRef, emptyRef, exporterKeyRef, exporterHostRef, exporterKeyRef, exporterKeyRef, pluginDSNRef, pluginTokenRef, pluginTokenRef)
-	path := writeTempFile(t, "config.yaml", data)
-
-	cfg, err := LoadConfig(path)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if got := cfg.MCPServers[0].Headers["Authorization"]; got != "Bearer mcp-token" {
-		t.Errorf("MCP Authorization header = %q, want %q", got, "Bearer mcp-token")
-	}
-	// An unset ${VAR} is an operator error, not a silent default — see
-	// TestExpandEnvRefs_UnsetVariableIsAnError. The empty-ref header in this
-	// fixture therefore resolves from a variable that IS set (to an empty string),
-	// which is a deliberate operator choice and is preserved as such.
-	if got, ok := cfg.MCPServers[0].Headers["X-Empty"]; !ok || got != "" {
-		t.Errorf("MCP X-Empty header = %q (present=%v), want an empty, preserved value", got, ok)
-	}
-
-	exporterCfg := cfg.Observability.Exporters[0].Config
-	if got := exporterCfg["api_key"]; got != "exporter-key" {
-		t.Errorf("exporter api_key = %v, want exporter-key", got)
-	}
-	if got := exporterCfg["endpoint"]; got != "https://trace.example.com/v1" {
-		t.Errorf("exporter endpoint = %v, want https://trace.example.com/v1", got)
-	}
-	exporterNested, ok := exporterCfg["nested"].(map[string]any)
-	if !ok {
-		t.Fatalf("exporter nested config: expected map[string]any, got %T", exporterCfg["nested"])
-	}
-	if got := exporterNested["token"]; got != "prefix-exporter-key" {
-		t.Errorf("exporter nested token = %v, want prefix-exporter-key", got)
-	}
-	exporterList, ok := exporterCfg["list"].([]any)
-	if !ok {
-		t.Fatalf("exporter list config: expected []any, got %T", exporterCfg["list"])
-	}
-	if got := exporterList[0]; got != "exporter-key" {
-		t.Errorf("exporter list[0] = %v, want exporter-key", got)
-	}
-	if got := exporterList[1]; got != false {
-		t.Errorf("exporter list[1] = %v, want false", got)
-	}
-
-	pluginCfg := cfg.Plugins[0].Config
-	if got := pluginCfg["dsn"]; got != "sqlite:///tmp/requests.db" {
-		t.Errorf("plugin dsn = %v, want sqlite:///tmp/requests.db", got)
-	}
-	pluginNested, ok := pluginCfg["nested"].(map[string]any)
-	if !ok {
-		t.Fatalf("plugin nested config: expected map[string]any, got %T", pluginCfg["nested"])
-	}
-	if got := pluginNested["token"]; got != "plugin-token" {
-		t.Errorf("plugin nested token = %v, want plugin-token", got)
-	}
-	pluginList, ok := pluginCfg["list"].([]any)
-	if !ok {
-		t.Fatalf("plugin list config: expected []any, got %T", pluginCfg["list"])
-	}
-	if got := pluginList[0]; got != "plugin-token" {
-		t.Errorf("plugin list[0] = %v, want plugin-token", got)
-	}
-	if got := pluginList[1]; got != 7 {
-		t.Errorf("plugin list[1] = %v, want 7", got)
 	}
 }
 
@@ -630,10 +512,6 @@ func TestLoadConfig_JSONRejectsTrailingData(t *testing.T) {
 }
 
 func TestLoadConfig_ExampleFilesParse(t *testing.T) {
-	// The shipped examples demonstrate ${VAR} substitution. An unset reference is a
-	// hard error by design, so provide the variables the examples reference.
-	t.Setenv("MCP_DB_TOKEN", "example-token")
-
 	// The shipped example configs must survive strict decoding and validation.
 	for _, name := range []string{"config.example.yaml", "config.example.json"} {
 		t.Run(name, func(t *testing.T) {

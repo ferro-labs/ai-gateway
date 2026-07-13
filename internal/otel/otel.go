@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ferro-labs/ai-gateway/internal/envref"
 	"github.com/ferro-labs/ai-gateway/internal/logging"
 	"github.com/ferro-labs/ai-gateway/observability"
 	"go.opentelemetry.io/otel"
@@ -217,7 +218,18 @@ func resolveExporters(ctx context.Context, cfgs []ExporterConfig) []observabilit
 			continue
 		}
 		ex := factory()
-		if err := ex.Init(ctx, ec.Config); err != nil {
+		// Resolve ${VAR} references into the exporter's own config here. The Config
+		// keeps the references, so an exporter API key is never persisted to the
+		// config store nor served by GET /admin/config.
+		exCfg, err := envref.AnyMap(ec.Config)
+		if err != nil {
+			logging.Logger.Warn("otel: exporter config has undefined environment references; skipping",
+				"name", ec.Name,
+				"error", err,
+			)
+			continue
+		}
+		if err := ex.Init(ctx, exCfg); err != nil {
 			logging.Logger.Warn("otel: exporter Init failed; skipping",
 				"name", ec.Name,
 				"error", err,
@@ -266,24 +278,31 @@ func newSpanExporter(ctx context.Context, cfg Config) (sdktrace.SpanExporter, er
 }
 
 // resolveHeaders materialises OTLP export headers from the configuration map.
-// Each value is expanded via os.Expand so both $VAR and ${VAR} references are
-// substituted with the corresponding environment variable. Headers whose
-// resolved value is empty (e.g. they referenced an unset env var) are omitted
-// and a warning is logged — sending an empty header value to the backend is
-// almost never intentional and may cause authentication failures. Literal
-// (non-$) values pass through unchanged.
+// Values are substituted through the shared internal/envref resolver — the same one
+// plugins, exporters and MCP use, so ${VAR} means exactly one thing everywhere, and
+// a literal "$" is always data.
+//
+// A header that ends up empty is dropped rather than sent blank: an empty auth
+// header is never intentional and would only earn a 401 from the backend. An
+// undefined reference drops the headers with a warning instead of failing startup —
+// tracing is auxiliary, and a mistyped trace header must not stop the gateway from
+// serving requests.
 func resolveHeaders(raw map[string]string) map[string]string {
 	if len(raw) == 0 {
 		return nil
 	}
-	out := make(map[string]string, len(raw))
-	for k, v := range raw {
-		resolved := os.Expand(v, os.Getenv)
-		if resolved == "" {
-			logging.Logger.Warn("otel: header resolved to empty; skipping", "header", k)
+	resolved, err := envref.StringMap(raw)
+	if err != nil {
+		logging.Logger.Warn("otel: tracing headers have undefined environment references; dropping them", "error", err)
+		return nil
+	}
+	out := make(map[string]string, len(resolved))
+	for k, v := range resolved {
+		if v == "" {
+			logging.Logger.Warn("otel: tracing header resolved to an empty value; dropping it", "header", k)
 			continue
 		}
-		out[k] = resolved
+		out[k] = v
 	}
 	if len(out) == 0 {
 		return nil
