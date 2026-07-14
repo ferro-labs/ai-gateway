@@ -18,10 +18,13 @@ import (
 // native Anthropic provider uses — so both paths report token usage from
 // message_start / message_delta rather than dropping it.
 func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan core.StreamChunk, error) {
-	if !strings.HasPrefix(bedrockModelRoutingID(req.Model), "anthropic.") {
+	modelID := bedrockModelRoutingID(req.Model)
+	// The family check precedes enforcement for the same reason it does in
+	// Complete: an unsupported model has no supported-params list to violate.
+	if !strings.HasPrefix(modelID, "anthropic.") {
 		return nil, fmt.Errorf("streaming on Bedrock is currently only supported for anthropic.claude-* models")
 	}
-	if err := core.EnforceUnsupportedParamsList(ctx, p.Name(), req.Model, req, bedrockSupportedParams(bedrockModelRoutingID(req.Model))...); err != nil {
+	if err := core.EnforceUnsupportedParamsList(ctx, p.Name(), modelID, req, bedrockSupportedParams(modelID)...); err != nil {
 		return nil, err
 	}
 

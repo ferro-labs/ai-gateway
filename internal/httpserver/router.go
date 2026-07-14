@@ -170,6 +170,17 @@ func mountProbeRoutes(r chi.Router, gw *aigateway.Gateway, store admin.Store, cf
 	// Split liveness/readiness probes for orchestrator rollout gating: /livez is
 	// process-only, /readyz gates on config, store reachability, and providers.
 	r.Get("/livez", handler.Livez())
+	// This limiter deliberately runs WITHOUT RealIPMiddleware, so it keys on the
+	// direct TCP peer rather than an X-Forwarded-For-resolved client address.
+	// Its job is to bound the total unauthenticated Ping() fan-out this process
+	// will aim at the backing stores. Keying on the resolved client address would
+	// hand every distinct client IP its own bucket, so a distributed caller could
+	// multiply the ceiling by the number of source addresses it presents and the
+	// cap would stop bounding database load at all. Keying on the peer collapses
+	// all traffic arriving through a shared proxy into one bucket, which is the
+	// conservative direction for a DoS bound. Probes are unaffected either way:
+	// an orchestrator connects to the pod directly, so the peer already IS the
+	// probe's real address.
 	readyzLimiter := ratelimit.NewStore(readyzRatePerSecond, readyzBurst)
 	r.With(middleware.RateLimit(readyzLimiter)).Get("/readyz", handler.Readyz(gw, store, cfgManager))
 }

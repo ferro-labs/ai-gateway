@@ -95,8 +95,12 @@ func TestReadyz_ExemptFromClientRateLimit(t *testing.T) {
 		return w
 	}
 
-	do(sameIPRequest(http.MethodGet, "/v1/models")) // 1st: consumes the only token
-	do(sameIPRequest(http.MethodGet, "/v1/models")) // 2nd: 429s, confirms exhaustion
+	do(sameIPRequest(http.MethodGet, "/v1/models")) // consumes the only token
+	// Assert the bucket really is exhausted. Without this the /readyz check below
+	// would still pass if the client limiter silently stopped applying at all.
+	if w := do(sameIPRequest(http.MethodGet, "/v1/models")); w.Code != http.StatusTooManyRequests {
+		t.Fatalf("second /v1/models = %d, want 429: the client bucket is not exhausted, so this test proves nothing", w.Code)
+	}
 	if w := do(sameIPRequest(http.MethodGet, "/readyz")); w.Code != http.StatusOK {
 		t.Fatalf("/readyz after client-bucket exhaustion = %d, want 200: %s", w.Code, w.Body.String())
 	}
