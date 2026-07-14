@@ -2,6 +2,7 @@ package httpserver_test
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -129,5 +130,39 @@ func TestReadyz_HasOwnDedicatedRateLimit(t *testing.T) {
 	}
 	if !saw429 {
 		t.Fatal("/readyz never 429d after 50 rapid calls from one IP -- it has no dedicated rate limit")
+	}
+}
+
+// TestReadyz_RateLimitIsGlobalNotPerSource is the assertion the single-IP test
+// above cannot make. /readyz is unauthenticated and every call fans out to
+// Ping() against the backing stores, so the ceiling that matters is the total
+// rate this process will serve -- a property of the stores, not of any one
+// caller. A per-IP bucket cannot express that: each new source address is handed
+// a fresh allowance, so a caller that varies its address multiplies the ceiling
+// and the store's per-key map grows with every address it presents.
+func TestReadyz_RateLimitIsGlobalNotPerSource(t *testing.T) {
+	gw := newProbeTestGateway(t)
+	router := buildTestRouterWithRateLimit(t, gw, nil) // client limiter disabled entirely
+
+	// Every request arrives from a DIFFERENT source address. Under a per-IP
+	// bucket each would get its own allowance and none would ever be shed.
+	saw429 := false
+	for i := range 60 {
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/readyz", nil)
+		req.RemoteAddr = fmt.Sprintf("198.51.100.%d:5555", i%256)
+
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		if w.Code == http.StatusTooManyRequests {
+			saw429 = true
+			break
+		}
+		if w.Code != http.StatusOK {
+			t.Fatalf("/readyz call %d = %d, want 200 or 429: %s", i, w.Code, w.Body.String())
+		}
+	}
+	if !saw429 {
+		t.Fatal("/readyz served 60 rapid calls from 60 distinct source addresses without shedding: " +
+			"the limit is per-source, so it does not bound the Ping() fan-out at all")
 	}
 }

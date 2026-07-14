@@ -63,415 +63,6 @@ var canonicalFinishReasons = []string{
 
 // fixture is one provider's conformance case: the native upstream success
 // payload its adapter must translate, plus the inputs needed to build it.
-type fixture struct {
-	// model is the request model. It must be advertised by SupportedModels().
-	model string
-
-	// body is the provider's NATIVE upstream success payload — the exact wire
-	// shape its own adapter and unit tests decode. It is never OpenAI-shaped
-	// unless the provider's upstream genuinely is.
-	body string
-
-	// extraCfg carries ProviderConfig keys beyond api_key/base_url that the
-	// entry needs (a Required EnvMapping, or a key the model resolution reads).
-	extraCfg providers.ProviderConfig
-}
-
-// fixtures maps a provider ID to its native upstream success payload.
-//
-// Roughly twenty providers share the providers/internal/openaicompat chat
-// translation path; groq covers that shared path on their behalf. The remaining
-// entries each own a bespoke translation from a non-OpenAI wire format, which is
-// exactly where "advertise vs deliver" drift hides.
-func fixtures() map[string]fixture {
-	return map[string]fixture{
-		// OpenAI — native OpenAI chat completion (the reference shape).
-		providers.NameOpenAI: {
-			model: "gpt-4o-mini",
-			body: `{
-				"id": "chatcmpl-conformance",
-				"object": "chat.completion",
-				"created": 1700000000,
-				"model": "gpt-4o-mini",
-				"choices": [{"index": 0, "message": {"role": "assistant", "content": "` + wantContent + `"}, "finish_reason": "stop"}],
-				"usage": {"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18}
-			}`,
-		},
-
-		// Anthropic — native Messages API: content blocks + stop_reason "end_turn".
-		providers.NameAnthropic: {
-			model: "claude-sonnet-4-6",
-			body: `{
-				"id": "msg_conformance",
-				"type": "message",
-				"role": "assistant",
-				"model": "claude-sonnet-4-6",
-				"content": [{"type": "text", "text": "` + wantContent + `"}],
-				"stop_reason": "end_turn",
-				"usage": {"input_tokens": 11, "output_tokens": 7}
-			}`,
-		},
-
-		// Gemini — native generateContent: candidates/parts + finishReason "STOP".
-		providers.NameGemini: {
-			model: "gemini-2.5-flash",
-			body: `{
-				"responseId": "gemini-conformance",
-				"candidates": [{
-					"content": {"role": "model", "parts": [{"text": "` + wantContent + `"}]},
-					"finishReason": "STOP"
-				}],
-				"usageMetadata": {"promptTokenCount": 11, "candidatesTokenCount": 7, "totalTokenCount": 18}
-			}`,
-		},
-
-		// Cohere — native v2 chat: message.content blocks + finish_reason "COMPLETE".
-		providers.NameCohere: {
-			model: "command-r",
-			body: `{
-				"id": "cohere-conformance",
-				"finish_reason": "COMPLETE",
-				"message": {"role": "assistant", "content": [{"type": "text", "text": "` + wantContent + `"}]},
-				"usage": {
-					"billed_units": {"input_tokens": 11, "output_tokens": 7},
-					"tokens": {"input_tokens": 11, "output_tokens": 7}
-				}
-			}`,
-		},
-
-		// Replicate — native prediction object. "Prefer: wait" makes the submit
-		// response already terminal, so the adapter never enters its poll loop
-		// and the subtest needs no sleeps.
-		providers.NameReplicate: {
-			model: "meta/meta-llama-3-8b-instruct",
-			body: `{
-				"id": "pred-conformance",
-				"status": "succeeded",
-				"output": "` + wantContent + `",
-				"metrics": {"input_token_count": 11, "output_token_count": 7}
-			}`,
-			extraCfg: providers.ProviderConfig{
-				providers.CfgKeyAPIToken:   testAPIKey, // Replicate's primary key is api_token, not api_key.
-				providers.CfgKeyTextModels: "meta/meta-llama-3-8b-instruct",
-			},
-		},
-
-		// AI21 — Jamba models speak the OpenAI-compatible chat endpoint.
-		providers.NameAI21: {
-			model: "jamba-mini-1.7",
-			body: `{
-				"id": "ai21-conformance",
-				"model": "jamba-mini-1.7",
-				"choices": [{"index": 0, "message": {"role": "assistant", "content": "` + wantContent + `"}, "finish_reason": "stop"}],
-				"usage": {"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18}
-			}`,
-		},
-
-		// Mistral — OpenAI-compatible, but returns the native finish reason
-		// "model_length" for a truncated completion, which must normalize to "length".
-		providers.NameMistral: {
-			model: "mistral-small-latest",
-			body: `{
-				"id": "mistral-conformance",
-				"model": "mistral-small-latest",
-				"choices": [{"index": 0, "message": {"role": "assistant", "content": "` + wantContent + `"}, "finish_reason": "model_length"}],
-				"usage": {"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18}
-			}`,
-		},
-
-		// DeepSeek — OpenAI-compatible with extended cache/reasoning usage, decoded
-		// by its own adapter rather than the shared helper.
-		providers.NameDeepSeek: {
-			model: "deepseek-chat",
-			body: `{
-				"id": "deepseek-conformance",
-				"model": "deepseek-chat",
-				"choices": [{"index": 0, "message": {"role": "assistant", "content": "` + wantContent + `"}, "finish_reason": "stop"}],
-				"usage": {
-					"prompt_tokens": 11,
-					"completion_tokens": 7,
-					"total_tokens": 18,
-					"prompt_cache_hit_tokens": 4,
-					"completion_tokens_details": {"reasoning_tokens": 3}
-				}
-			}`,
-		},
-
-		// Groq — stands in for every provider on the shared
-		// providers/internal/openaicompat chat path (see uncoveredProviders).
-		providers.NameGroq: {
-			model: "llama-3.1-8b-instant",
-			body: `{
-				"id": "groq-conformance",
-				"model": "llama-3.1-8b-instant",
-				"choices": [{"index": 0, "message": {"role": "assistant", "content": "` + wantContent + `"}, "finish_reason": "stop"}],
-				"usage": {"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18}
-			}`,
-		},
-	}
-}
-
-// uncoveredProviders lists every provider deliberately absent from the fixture
-// table, with the reason. TestConformanceCoverage fails on any provider that is
-// in neither map, so conformance coverage stays honest as providers are added.
-func uncoveredProviders() map[string]string {
-	const sharedOpenAICompat = "shares the providers/internal/openaicompat chat translation path, covered by the groq fixture"
-	return map[string]string{
-		providers.NameBedrock: "AWS SDK transport (SigV4-signed, endpoint resolved by the SDK); " +
-			"its ProviderEntry exposes no base-URL key, so it cannot be pointed at an httptest stub",
-		providers.NameVertexAI: "requires GCP OAuth (service account / ADC) and a project+region; " +
-			"its ProviderEntry exposes no base-URL key, so it cannot be pointed at an httptest stub",
-
-		providers.NameAzureFoundry: sharedOpenAICompat,
-		providers.NameAzureOpenAI:  sharedOpenAICompat,
-		providers.NameCerebras:     sharedOpenAICompat,
-		providers.NameCloudflare:   sharedOpenAICompat,
-		providers.NameDatabricks:   sharedOpenAICompat,
-		providers.NameDeepInfra:    sharedOpenAICompat,
-		providers.NameFireworks:    sharedOpenAICompat,
-		providers.NameHuggingFace:  sharedOpenAICompat,
-		providers.NameMoonshot:     sharedOpenAICompat,
-		providers.NameNovita:       sharedOpenAICompat,
-		providers.NameNVIDIANIM:    sharedOpenAICompat,
-		providers.NameOllama:       sharedOpenAICompat,
-		providers.NameOllamaCloud:  sharedOpenAICompat,
-		providers.NameOpenRouter:   sharedOpenAICompat,
-		providers.NamePerplexity:   sharedOpenAICompat,
-		providers.NameQwen:         sharedOpenAICompat,
-		providers.NameSambaNova:    sharedOpenAICompat,
-		providers.NameTogether:     sharedOpenAICompat,
-		providers.NameXAI:          sharedOpenAICompat,
-	}
-}
-
-// streamFixture is one provider's streaming conformance case: the native SSE
-// event stream its adapter's CompleteStream must translate into the canonical
-// <-chan core.StreamChunk sequence.
-type streamFixture struct {
-	// model is the request model; it must be advertised by SupportedModels().
-	model string
-
-	// sseBody is the provider's NATIVE streaming wire format for the single
-	// HTTP request its CompleteStream issues against baseURL. Every fixture
-	// but Replicate's fits this shape (Replicate's async prediction API needs a
-	// second endpoint for the stream itself, wired by newStub instead).
-	sseBody string
-
-	// extraCfg mirrors fixture.extraCfg — ProviderConfig keys beyond
-	// api_key/base_url that the entry needs.
-	extraCfg providers.ProviderConfig
-
-	// newStub builds the upstream stub when sseBody/newNativeStub cannot
-	// represent the provider's transport. Only Replicate sets this.
-	newStub func(t *testing.T) *httptest.Server
-
-	// noUsage marks a provider whose streaming path never reports usage at
-	// all, so the generic usage assertion is skipped rather than failing on a
-	// gap the adapter's own tests already document.
-	noUsage bool
-
-	// wantCacheReadTokens/wantReasoningTokens assert the extended usage fields
-	// core.Usage.UnmarshalJSON folds from alternate wire shapes (DeepSeek's
-	// flat prompt_cache_hit_tokens and nested completion_tokens_details.
-	// reasoning_tokens) survive the generic openaicompat stream decode, not
-	// just the bespoke non-streaming one.
-	wantCacheReadTokens int
-	wantReasoningTokens int
-}
-
-// streamFixtures maps a provider ID to its native streaming conformance case.
-// It covers every provider whose CompleteStream owns a genuinely distinct
-// translation: OpenAI (chat.completion.chunk), Anthropic (Messages stream
-// events), Gemini (streamGenerateContent SSE), Cohere (v2 stream events),
-// Replicate (prediction output/done events), and DeepSeek (whose stream usage
-// exercises core.Usage's alternate-shape folding). Groq stands in for the
-// providers/internal/openaicompat.PostStream path shared by AI21, Mistral and
-// the twenty-odd providers already lumped under sharedOpenAICompat for
-// Complete — see uncoveredStreamProviders.
-func streamFixtures() map[string]streamFixture {
-	return map[string]streamFixture{
-		// OpenAI — native chat.completion.chunk frames, content split across two
-		// deltas, terminal finish_reason chunk followed by a usage-only chunk.
-		providers.NameOpenAI: {
-			model: "gpt-4o-mini",
-			sseBody: `data: {"id":"chatcmpl-conformance","object":"chat.completion.chunk","created":1700000000,"model":"gpt-4o-mini","choices":[{"index":0,"delta":{"role":"assistant","content":"` + wantContentPart1 + `"},"finish_reason":null}]}
-
-data: {"id":"chatcmpl-conformance","object":"chat.completion.chunk","created":1700000000,"model":"gpt-4o-mini","choices":[{"index":0,"delta":{"content":"` + wantContentPart2 + `"},"finish_reason":null}]}
-
-data: {"id":"chatcmpl-conformance","object":"chat.completion.chunk","created":1700000000,"model":"gpt-4o-mini","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
-
-data: {"id":"chatcmpl-conformance","object":"chat.completion.chunk","created":1700000000,"model":"gpt-4o-mini","choices":[],"usage":{"prompt_tokens":11,"completion_tokens":7,"total_tokens":18}}
-
-data: [DONE]
-
-`,
-		},
-
-		// Anthropic — message_start carries input_tokens, two content_block_delta
-		// text frames, message_delta carries stop_reason + output_tokens.
-		providers.NameAnthropic: {
-			model: "claude-sonnet-4-6",
-			sseBody: `event: message_start
-data: {"type":"message_start","message":{"id":"msg_conformance","model":"claude-sonnet-4-6","role":"assistant","usage":{"input_tokens":11}}}
-
-event: content_block_delta
-data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"` + wantContentPart1 + `"}}
-
-event: content_block_delta
-data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"` + wantContentPart2 + `"}}
-
-event: message_delta
-data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":7}}
-
-`,
-		},
-
-		// Gemini — streamGenerateContent SSE: two candidate chunks, the final one
-		// carrying finishReason "STOP" and usageMetadata together, exactly as the
-		// real API emits them.
-		providers.NameGemini: {
-			model: "gemini-2.5-flash",
-			sseBody: `data: {"candidates":[{"content":{"role":"model","parts":[{"text":"` + wantContentPart1 + `"}]},"finishReason":""}]}
-
-data: {"candidates":[{"content":{"role":"model","parts":[{"text":"` + wantContentPart2 + `"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":11,"candidatesTokenCount":7,"totalTokenCount":18}}
-
-`,
-		},
-
-		// Cohere — v2 stream events: two content-delta events, then message-end
-		// carrying finish_reason "COMPLETE" and the tokens usage object.
-		providers.NameCohere: {
-			model: "command-r",
-			sseBody: `data: {"type":"content-delta","delta":{"message":{"content":{"text":"` + wantContentPart1 + `"}}}}
-
-data: {"type":"content-delta","delta":{"message":{"content":{"text":"` + wantContentPart2 + `"}}}}
-
-data: {"type":"message-end","delta":{"finish_reason":"COMPLETE","usage":{"tokens":{"input_tokens":11,"output_tokens":7}}}}
-
-`,
-		},
-
-		// Replicate — a two-phase transport: CompleteStream submits a prediction
-		// (JSON) and then GETs the URL it returns for the actual event/data SSE
-		// stream. newStub wires both legs against the same httptest.Server.
-		// Replicate's readStream never assembles a usage object (its Metrics are
-		// only read on the polled Complete path), so noUsage documents that gap
-		// rather than asserting around it.
-		providers.NameReplicate: {
-			model:   "meta/meta-llama-3-8b-instruct",
-			noUsage: true,
-			extraCfg: providers.ProviderConfig{
-				providers.CfgKeyAPIToken:   testAPIKey,
-				providers.CfgKeyTextModels: "meta/meta-llama-3-8b-instruct",
-			},
-			newStub: func(t *testing.T) *httptest.Server {
-				t.Helper()
-				var srv *httptest.Server
-				srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					if r.Method == http.MethodPost {
-						w.Header().Set("Content-Type", "application/json")
-						_, _ = w.Write([]byte(`{"id":"pred-conformance","status":"starting","urls":{"stream":"` + srv.URL + `/stream"}}`))
-						return
-					}
-					// wantContentPart2 already carries its own leading space (see the
-					// constant doc); "data: " + wantContentPart2 lays down two spaces
-					// after the colon, matching Replicate's own parser
-					// (strings.CutPrefix(line, "data:") then TrimPrefix(value, " ")),
-					// which strips exactly one and leaves the intended " ok" delta.
-					w.Header().Set("Content-Type", "text/event-stream")
-					_, _ = w.Write([]byte(
-						"event: output\ndata: " + wantContentPart1 + "\n\n" +
-							"event: output\ndata: " + wantContentPart2 + "\n\n" +
-							"event: done\ndata: {}\n\n"))
-				}))
-				return srv
-			},
-		},
-
-		// DeepSeek — routes through the generic providers/internal/openaicompat
-		// stream decode (unlike its bespoke Complete decode), so this fixture
-		// proves core.Usage's alternate-shape folding (prompt_cache_hit_tokens,
-		// completion_tokens_details.reasoning_tokens) also survives streaming.
-		providers.NameDeepSeek: {
-			model:               "deepseek-chat",
-			wantCacheReadTokens: 4,
-			wantReasoningTokens: 3,
-			sseBody: `data: {"id":"deepseek-conformance","model":"deepseek-chat","choices":[{"index":0,"delta":{"role":"assistant","content":"` + wantContentPart1 + `"},"finish_reason":null}]}
-
-data: {"id":"deepseek-conformance","model":"deepseek-chat","choices":[{"index":0,"delta":{"content":"` + wantContentPart2 + `"},"finish_reason":null}]}
-
-data: {"id":"deepseek-conformance","model":"deepseek-chat","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":7,"total_tokens":18,"prompt_cache_hit_tokens":4,"completion_tokens_details":{"reasoning_tokens":3}}}
-
-data: [DONE]
-
-`,
-		},
-
-		// Groq — stands in for every provider on the shared
-		// providers/internal/openaicompat.PostStream path (see
-		// uncoveredStreamProviders), which decodes core.StreamChunk directly with
-		// no provider-specific override.
-		providers.NameGroq: {
-			model: "llama-3.1-8b-instant",
-			sseBody: `data: {"id":"groq-conformance","model":"llama-3.1-8b-instant","choices":[{"index":0,"delta":{"role":"assistant","content":"` + wantContentPart1 + `"},"finish_reason":null}]}
-
-data: {"id":"groq-conformance","model":"llama-3.1-8b-instant","choices":[{"index":0,"delta":{"content":"` + wantContentPart2 + `"},"finish_reason":null}]}
-
-data: {"id":"groq-conformance","model":"llama-3.1-8b-instant","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":7,"total_tokens":18}}
-
-data: [DONE]
-
-`,
-		},
-	}
-}
-
-// uncoveredStreamProviders lists every provider deliberately absent from
-// streamFixtures, with a reason specific to streaming (not a copy of the
-// Complete-path reason, even where the underlying cause is the same
-// transport). TestConformanceCoverage fails on any provider in neither map.
-func uncoveredStreamProviders() map[string]string {
-	const sharedOpenAICompatStream = "CompleteStream forwards to the identical providers/internal/openaicompat.PostStream " +
-		"+ StreamSSE decode as groq; ChatParams differ per provider but only affect the request, never the response " +
-		"translation asserted here, so the groq stream fixture already covers this path"
-	return map[string]string{
-		providers.NameBedrock: "AWS SDK transport (SigV4-signed, endpoint resolved by the SDK); " +
-			"its ProviderEntry exposes no base-URL key, so it cannot be pointed at an httptest stub",
-		providers.NameVertexAI: "requires GCP OAuth (service account / ADC) and a project+region; " +
-			"its ProviderEntry exposes no base-URL key, so it cannot be pointed at an httptest stub",
-
-		// AI21 (Jamba) and Mistral each have their own Complete fixture because
-		// their request construction differs, but CompleteStream for both routes
-		// through the exact same shared decode Groq's stream fixture exercises.
-		providers.NameAI21:    sharedOpenAICompatStream,
-		providers.NameMistral: sharedOpenAICompatStream,
-
-		providers.NameAzureFoundry: sharedOpenAICompatStream,
-		providers.NameAzureOpenAI:  sharedOpenAICompatStream,
-		providers.NameCerebras:     sharedOpenAICompatStream,
-		providers.NameCloudflare:   sharedOpenAICompatStream,
-		providers.NameDatabricks:   sharedOpenAICompatStream,
-		providers.NameDeepInfra:    sharedOpenAICompatStream,
-		providers.NameFireworks:    sharedOpenAICompatStream,
-		providers.NameHuggingFace:  sharedOpenAICompatStream,
-		providers.NameMoonshot:     sharedOpenAICompatStream,
-		providers.NameNovita:       sharedOpenAICompatStream,
-		providers.NameNVIDIANIM:    sharedOpenAICompatStream,
-		providers.NameOllama:       sharedOpenAICompatStream,
-		providers.NameOllamaCloud:  sharedOpenAICompatStream,
-		providers.NameOpenRouter:   sharedOpenAICompatStream,
-		providers.NamePerplexity:   sharedOpenAICompatStream,
-		providers.NameQwen:         sharedOpenAICompatStream,
-		providers.NameSambaNova:    sharedOpenAICompatStream,
-		providers.NameTogether:     sharedOpenAICompatStream,
-		providers.NameXAI:          sharedOpenAICompatStream,
-	}
-}
-
-// newNativeStub starts a stub upstream that answers every path with the
-// provider's native success payload. Path routing is the adapter's business and
-// is already asserted by each provider's own tests; the conformance suite is
-// only interested in the translation of the response.
 func newNativeStub(body string) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -492,17 +83,23 @@ func canonicalRequest(model string) core.Request {
 }
 
 // buildProvider constructs the provider through its ProviderEntry — the seam the
-// gateway itself uses — pointed at the stub server.
-func buildProvider(t *testing.T, id string, extraCfg providers.ProviderConfig, baseURL string) core.Provider {
+// gateway itself uses — pointed at the stub server. baseURLKey redirects the
+// stub URL to a ProviderConfig key other than CfgKeyBaseURL (Ollama's
+// ProviderEntry reads CfgKeyHost instead); an empty baseURLKey means
+// CfgKeyBaseURL.
+func buildProvider(t *testing.T, id string, extraCfg providers.ProviderConfig, baseURLKey, baseURL string) core.Provider {
 	t.Helper()
 
 	entry, ok := providers.GetProviderEntry(id)
 	if !ok {
 		t.Fatalf("provider %q has no ProviderEntry", id)
 	}
+	if baseURLKey == "" {
+		baseURLKey = providers.CfgKeyBaseURL
+	}
 	cfg := providers.ProviderConfig{
-		providers.CfgKeyAPIKey:  testAPIKey,
-		providers.CfgKeyBaseURL: baseURL,
+		providers.CfgKeyAPIKey: testAPIKey,
+		baseURLKey:             baseURL,
 	}
 	for k, v := range extraCfg {
 		cfg[k] = v
@@ -522,7 +119,7 @@ func TestProviderResponseConformance(t *testing.T) {
 			srv := newNativeStub(fx.body)
 			defer srv.Close()
 
-			p := buildProvider(t, id, fx.extraCfg, srv.URL)
+			p := buildProvider(t, id, fx.extraCfg, fx.baseURLKey, srv.URL)
 
 			// The canonical request must use a model the provider advertises,
 			// so the suite exercises a supported path rather than a lucky one.
@@ -631,7 +228,7 @@ func TestProviderStreamConformance(t *testing.T) {
 			}
 			defer srv.Close()
 
-			p := buildProvider(t, id, fx.extraCfg, srv.URL)
+			p := buildProvider(t, id, fx.extraCfg, fx.baseURLKey, srv.URL)
 			sp, ok := p.(core.StreamProvider)
 			if !ok {
 				t.Fatalf("provider %q is in streamFixtures() but does not implement core.StreamProvider", id)
@@ -641,7 +238,15 @@ func TestProviderStreamConformance(t *testing.T) {
 				t.Fatalf("fixture model %q is not in %s SupportedModels() = %v", fx.model, id, sp.SupportedModels())
 			}
 
-			ch, err := sp.CompleteStream(context.Background(), canonicalRequest(fx.model))
+			// streamCtx bounds the producer goroutine to this subtest: canceling it
+			// once collection finishes (success or the collectStream timeout below)
+			// unblocks a pending send inside CompleteStream, so a stuck producer
+			// cannot leak past the subtest or make the deferred srv.Close() above
+			// block forever waiting on an outstanding request.
+			streamCtx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			ch, err := sp.CompleteStream(streamCtx, canonicalRequest(fx.model))
 			if err != nil {
 				t.Fatalf("CompleteStream(): %v", err)
 			}
@@ -655,19 +260,20 @@ func TestProviderStreamConformance(t *testing.T) {
 			var content strings.Builder
 			var finishReason string
 			var usage *core.Usage
-			finishIdx, usageIdx, lastChoiceIdx := -1, -1, -1
+			var finishIndices, usageIndices []int
+			lastChoiceIdx := -1
 			for i, c := range chunks {
 				for _, choice := range c.Choices {
 					lastChoiceIdx = i
 					content.WriteString(choice.Delta.Content)
 					if choice.FinishReason != "" {
 						finishReason = choice.FinishReason
-						finishIdx = i
+						finishIndices = append(finishIndices, i)
 					}
 				}
 				if c.Usage != nil {
 					usage = c.Usage
-					usageIdx = i
+					usageIndices = append(usageIndices, i)
 				}
 			}
 			if got := content.String(); got != wantContent {
@@ -675,36 +281,44 @@ func TestProviderStreamConformance(t *testing.T) {
 			}
 
 			// 2. finish_reason is canonical OpenAI (not a raw provider token —
-			// Anthropic's end_turn, Gemini's STOP, Cohere's COMPLETE) and terminal: it
-			// lands on the last chunk that carries a choice, and no chunk after it
-			// carries a content delta. An OpenAI-compatible client stops reading the
-			// stream once finish_reason arrives, so content the translator emits after
-			// it would never reach the client.
+			// Anthropic's end_turn, Gemini's STOP, Cohere's COMPLETE) and terminal.
+			// EVERY chunk carrying one is checked, not just the last: a premature
+			// finish_reason followed by a duplicate correct one on the true terminal
+			// chunk must still fail here, and so must any content delta that arrives
+			// after ANY of them. An OpenAI-compatible client stops reading the stream
+			// the moment the first finish_reason arrives, so content the translator
+			// emits after it would never reach the client.
 			if !slices.Contains(canonicalFinishReasons, finishReason) {
 				t.Errorf("terminal FinishReason = %q, want one of %v (a native token leaked through translation)",
 					finishReason, canonicalFinishReasons)
 			}
-			if finishIdx != -1 {
-				if finishIdx != lastChoiceIdx {
+			for _, idx := range finishIndices {
+				if idx != lastChoiceIdx {
 					t.Errorf("finish_reason set on chunk %d, but chunk %d is the last one carrying a choice; finish_reason must be terminal",
-						finishIdx, lastChoiceIdx)
+						idx, lastChoiceIdx)
 				}
-				for i := finishIdx + 1; i < len(chunks); i++ {
+				for i := idx + 1; i < len(chunks); i++ {
 					for _, choice := range chunks[i].Choices {
 						if choice.Delta.Content != "" {
 							t.Errorf("chunk %d carries content %q after the finish_reason chunk %d; the stream ended early",
-								i, choice.Delta.Content, finishIdx)
+								i, choice.Delta.Content, idx)
 						}
 					}
 				}
 			}
 
-			// 3. Usage never precedes the finish: the chunk that carries it is at or
-			// after the chunk carrying finish_reason, matching every real wire shape
+			// 3. Usage never precedes the finish: EVERY chunk that carries usage is
+			// checked against the true terminal finish_reason chunk, not just the last
+			// usage chunk — a premature usage chunk followed by a duplicate correct one
+			// at the terminal must still fail here. This matches every real wire shape
 			// (OpenAI-compatible: a trailing usage-only chunk after the finish chunk;
 			// Anthropic/Gemini/Cohere: finish_reason and usage share one chunk).
 			// Replicate's noUsage documents the one streaming path that genuinely never
 			// assembles usage at all, rather than asserting around the gap.
+			terminalFinishIdx := -1
+			if len(finishIndices) > 0 {
+				terminalFinishIdx = finishIndices[len(finishIndices)-1]
+			}
 			switch {
 			case fx.noUsage:
 				if usage != nil {
@@ -713,8 +327,10 @@ func TestProviderStreamConformance(t *testing.T) {
 			case usage == nil:
 				t.Errorf("no chunk carried usage; want prompt=%d completion=%d", wantPromptTokens, wantCompletionTokens)
 			default:
-				if usageIdx < finishIdx {
-					t.Errorf("usage landed on chunk %d, before the finish_reason chunk %d", usageIdx, finishIdx)
+				for _, idx := range usageIndices {
+					if idx < terminalFinishIdx {
+						t.Errorf("usage landed on chunk %d, before the finish_reason chunk %d", idx, terminalFinishIdx)
+					}
 				}
 				if usage.PromptTokens != wantPromptTokens {
 					t.Errorf("Usage.PromptTokens = %d, want %d", usage.PromptTokens, wantPromptTokens)

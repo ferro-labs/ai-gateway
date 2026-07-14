@@ -152,9 +152,10 @@ func ensureGateway(gw *aigateway.Gateway, registry *providers.Registry) *aigatew
 // and fans out to Ping() calls against the key store and config manager
 // (internal/handler/health.go) on every request, so it cannot be exempted
 // from rate limiting the way /health and /livez are without exposing those
-// backing stores to unbounded concurrent pings. These values are sized to
-// comfortably absorb many orchestrator replicas probing concurrently while
-// still capping the worst case.
+// backing stores to unbounded pings. The bucket is process-global (see
+// mountProbeRoutes): these values cap the aggregate probe rate this process
+// will serve, sized to absorb many orchestrator replicas probing on a normal
+// cadence while still bounding the worst case.
 const (
 	readyzRatePerSecond = 10
 	readyzBurst         = 20
@@ -170,19 +171,16 @@ func mountProbeRoutes(r chi.Router, gw *aigateway.Gateway, store admin.Store, cf
 	// Split liveness/readiness probes for orchestrator rollout gating: /livez is
 	// process-only, /readyz gates on config, store reachability, and providers.
 	r.Get("/livez", handler.Livez())
-	// This limiter deliberately runs WITHOUT RealIPMiddleware, so it keys on the
-	// direct TCP peer rather than an X-Forwarded-For-resolved client address.
-	// Its job is to bound the total unauthenticated Ping() fan-out this process
-	// will aim at the backing stores. Keying on the resolved client address would
-	// hand every distinct client IP its own bucket, so a distributed caller could
-	// multiply the ceiling by the number of source addresses it presents and the
-	// cap would stop bounding database load at all. Keying on the peer collapses
-	// all traffic arriving through a shared proxy into one bucket, which is the
-	// conservative direction for a DoS bound. Probes are unaffected either way:
-	// an orchestrator connects to the pod directly, so the peer already IS the
-	// probe's real address.
-	readyzLimiter := ratelimit.NewStore(readyzRatePerSecond, readyzBurst)
-	r.With(middleware.RateLimit(readyzLimiter)).Get("/readyz", handler.Readyz(gw, store, cfgManager))
+	// One process-global bucket, NOT a per-IP one. What has to be bounded here is
+	// the total Ping() fan-out this process aims at the key store and config
+	// manager, and that ceiling is a property of the stores, not of any one
+	// caller. A per-IP bucket cannot express it: /readyz is unauthenticated, so a
+	// caller presenting many source addresses would receive a fresh allowance for
+	// each one and the per-key map would grow with every address it presented.
+	// A single bucket caps the aggregate rate and holds no per-caller state.
+	readyzLimiter := ratelimit.New(readyzRatePerSecond, readyzBurst)
+	r.With(middleware.RateLimitGlobal(readyzLimiter, "readyz")).
+		Get("/readyz", handler.Readyz(gw, store, cfgManager))
 }
 
 // mountObservabilityRoutes mounts the auth-gated /metrics, /debug/vars, and
