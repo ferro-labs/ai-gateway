@@ -308,8 +308,15 @@ func TestBudget_ResetStoreKey(t *testing.T) {
 
 	// Reset the key and confirm budget is clear.
 	ResetStoreKey("test-reset-key", apiKey)
-	if err := p.Execute(context.Background(), pctxWithKey(apiKey)); err != nil {
+	afterReset := pctxWithKey(apiKey)
+	if err := p.Execute(context.Background(), afterReset); err != nil {
 		t.Errorf("after ResetStoreKey, request should pass: %v", err)
+	}
+	if afterReset.Reject {
+		t.Error("expected pctx.Reject to be false after ResetStoreKey")
+	}
+	if afterReset.Reason != "" {
+		t.Errorf("expected empty pctx.Reason after ResetStoreKey, got %q", afterReset.Reason)
 	}
 }
 
@@ -421,8 +428,15 @@ func TestBudget_ResetStore(t *testing.T) {
 	ResetStore("test-reset-all")
 
 	for _, k := range []string{"key-a", "key-b"} {
-		if err := p.Execute(context.Background(), pctxWithKey(k)); err != nil {
+		pctx := pctxWithKey(k)
+		if err := p.Execute(context.Background(), pctx); err != nil {
 			t.Errorf("after ResetStore, key %q should pass: %v", k, err)
+		}
+		if pctx.Reject {
+			t.Errorf("expected pctx.Reject to be false for key %q after ResetStore", k)
+		}
+		if pctx.Reason != "" {
+			t.Errorf("expected empty pctx.Reason for key %q after ResetStore, got %q", k, pctx.Reason)
 		}
 	}
 }

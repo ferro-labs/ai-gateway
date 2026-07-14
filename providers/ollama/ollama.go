@@ -119,8 +119,10 @@ type tagsResponse struct {
 // {"error":{"message":...}} shape core.APIError expects, so core.APIError
 // cannot decode it. The OpenAI-compat surface (/v1/chat/completions, used by
 // Complete/CompleteStream) is a different endpoint that genuinely does return
-// OpenAI-shaped errors and keeps using core.APIError via openaicompat.
-func ollamaAPIError(statusCode int, body []byte) error {
+// OpenAI-shaped errors and keeps using core.APIError via openaicompat. resp's
+// Retry-After hint is preserved so the fallback strategy can honor it instead
+// of guessing a backoff.
+func ollamaAPIError(resp *http.Response, body []byte) error {
 	msg := string(body)
 	var envelope struct {
 		Error string `json:"error"`
@@ -129,8 +131,9 @@ func ollamaAPIError(statusCode int, body []byte) error {
 		msg = envelope.Error
 	}
 	return &core.HTTPStatusError{
-		StatusCode: statusCode,
-		Message:    fmt.Sprintf("ollama API error (%d): %s", statusCode, msg),
+		StatusCode: resp.StatusCode,
+		Message:    fmt.Sprintf("ollama API error (%d): %s", resp.StatusCode, msg),
+		RetryAfter: core.ParseRetryAfter(resp.Header.Get("Retry-After")),
 	}
 }
 
@@ -160,7 +163,7 @@ func (p *Provider) DiscoverModels(ctx context.Context) ([]core.ModelInfo, error)
 	}
 
 	if httpResp.StatusCode != http.StatusOK {
-		return nil, ollamaAPIError(httpResp.StatusCode, respBody)
+		return nil, ollamaAPIError(httpResp, respBody)
 	}
 
 	var tags tagsResponse

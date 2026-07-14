@@ -35,7 +35,7 @@ type Fallback struct {
 }
 
 // NewFallback creates a new fallback strategy with default retry settings
-// (1 attempt per target, retry on any error).
+// (1 attempt per target — no retries until WithTargetRetry/WithMaxRetries is called).
 func NewFallback(targets []Target, lookup ProviderLookup) *Fallback {
 	return &Fallback{
 		targets: targets,
@@ -58,7 +58,7 @@ func (f *Fallback) WithMaxRetries(n int) *Fallback {
 // WithTargetRetry configures the retry policy for a specific target.
 // attempts is the total attempt count (1 = no retries).
 // onStatusCodes limits retries to requests that fail with those HTTP status
-// codes; pass nil or empty to retry on any error.
+// codes; pass nil or empty for the default policy (see shouldRetry).
 // initialBackoffMs is the base for exponential backoff (0 → defaultBackoffMs).
 func (f *Fallback) WithTargetRetry(virtualKey string, attempts int, onStatusCodes []int, initialBackoffMs int) *Fallback {
 	f.retries[virtualKey] = targetRetry{

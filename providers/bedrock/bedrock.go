@@ -259,7 +259,7 @@ func (p *Provider) invokeModelJSON(ctx context.Context, modelID string, payload 
 		Body:        body,
 	})
 	if err != nil {
-		return fmt.Errorf("bedrock invoke failed: %w", err)
+		return bedrockInvokeError("invoke", err)
 	}
 
 	if err := json.Unmarshal(output.Body, out); err != nil {
@@ -298,7 +298,10 @@ func isBedrockNovaTextModel(model string) bool {
 
 // bedrockSupportedParams returns the OpenAI parameters expressible on the given
 // Bedrock model family's inference shape. Anything else the caller set is
-// warn-and-dropped (#140).
+// warn-and-dropped (#140). Callers must only pass a modelID that
+// bedrockKnownModelFamily accepts — the nil default case here means "no
+// params supported", not "unrecognized model", so it is not a safe stand-in
+// for that check.
 func bedrockSupportedParams(modelID string) []string {
 	switch {
 	case strings.HasPrefix(modelID, "anthropic."):
@@ -314,10 +317,26 @@ func bedrockSupportedParams(modelID string) []string {
 	}
 }
 
+// bedrockKnownModelFamily reports whether modelID matches one of the model
+// families Complete dispatches to. It must be checked before
+// bedrockSupportedParams is used for enforcement: an unrecognized model has
+// no supported-params list to violate, so parameter enforcement must not run
+// (and misreport a parameter error) ahead of the real "unsupported model"
+// error.
+func bedrockKnownModelFamily(modelID string) bool {
+	return strings.HasPrefix(modelID, "anthropic.") ||
+		isBedrockNovaTextModel(modelID) ||
+		strings.HasPrefix(modelID, "amazon.titan") ||
+		strings.HasPrefix(modelID, "meta.llama")
+}
+
 // Complete sends a non-streaming chat completion request to Bedrock, dispatching
 // to the model family (Anthropic, Titan, Llama) that matches the model prefix.
 func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
 	modelID := bedrockModelRoutingID(req.Model)
+	if !bedrockKnownModelFamily(modelID) {
+		return nil, fmt.Errorf("unsupported Bedrock model prefix for model: %s", modelID)
+	}
 	if err := core.EnforceUnsupportedParamsList(ctx, p.Name(), modelID, req, bedrockSupportedParams(modelID)...); err != nil {
 		return nil, err
 	}
@@ -330,8 +349,5 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 	if strings.HasPrefix(modelID, "amazon.titan") {
 		return p.completeTitan(ctx, req)
 	}
-	if strings.HasPrefix(modelID, "meta.llama") {
-		return p.completeLlama(ctx, req)
-	}
-	return nil, fmt.Errorf("unsupported Bedrock model prefix for model: %s", modelID)
+	return p.completeLlama(ctx, req)
 }

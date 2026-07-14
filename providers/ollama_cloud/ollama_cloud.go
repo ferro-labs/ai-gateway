@@ -181,7 +181,11 @@ func (p *Provider) setHeaders(req *http.Request) {
 	req.Header.Set("Content-Type", "application/json")
 }
 
-func apiError(statusCode int, body []byte) error {
+// apiError builds a provider error from a non-2xx response, preserving resp's
+// Retry-After hint so the fallback strategy can honor it instead of guessing
+// a backoff.
+func apiError(resp *http.Response, body []byte) error {
+	statusCode := resp.StatusCode
 	msg := parseErrorMessage(body)
 	if msg == "" {
 		msg = http.StatusText(statusCode)
@@ -192,6 +196,7 @@ func apiError(statusCode int, body []byte) error {
 	return &core.HTTPStatusError{
 		StatusCode: statusCode,
 		Message:    fmt.Sprintf("ollama-cloud API error (%d): %s", statusCode, msg),
+		RetryAfter: core.ParseRetryAfter(resp.Header.Get("Retry-After")),
 	}
 }
 

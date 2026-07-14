@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/ferro-labs/ai-gateway/mcp"
+	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
 // TestWireMCPLocked_MalformedServerDoesNotBlockOthers verifies that one MCP
@@ -96,5 +97,52 @@ func TestReloadConfig_MalformedMCPServerDoesNotLeaveStaleRegistry(t *testing.T) 
 	}
 	if !slices.Contains(names, "good2") {
 		t.Errorf("ServerNames() = %v, want it to contain %q from the reloaded config", names, "good2")
+	}
+}
+
+// TestWireMCPLocked_MaxCallDepthIgnoresSkippedServers verifies that a server
+// skipped due to unresolvable headers does not contribute its MaxCallDepth to
+// the shared executor's depth limit.
+func TestWireMCPLocked_MaxCallDepthIgnoresSkippedServers(t *testing.T) {
+	gw := &Gateway{}
+	ctx, cancel := context.WithCancel(context.Background())
+	gw.shutdownCtx = ctx
+	gw.shutdownCancel = cancel
+	t.Cleanup(cancel)
+
+	cfg := Config{
+		MCPServers: []mcp.ServerConfig{
+			{
+				Name:         "broken",
+				URL:          "http://127.0.0.1:1/mcp",
+				MaxCallDepth: 1,
+				Headers: map[string]string{
+					"Authorization": "Bearer ${GATEWAY_MCP_TEST_UNDEFINED_VAR}",
+				},
+			},
+			{
+				Name:         "good",
+				URL:          "http://127.0.0.1:1/mcp",
+				MaxCallDepth: 5,
+			},
+		},
+	}
+
+	gw.wireMCPLocked(cfg, "test: mcp init failed")
+
+	if gw.mcpExecutor == nil {
+		t.Fatal("mcpExecutor is nil, want an executor built from the well-formed server")
+	}
+
+	resp := &core.Response{
+		Choices: []core.Choice{
+			{Message: core.Message{ToolCalls: []core.ToolCall{{ID: "1", Function: core.FunctionCall{Name: "x"}}}}},
+		},
+	}
+
+	// The broken server's max_call_depth: 1 must not clamp the shared
+	// executor's depth limit down from the good server's max_call_depth: 5.
+	if !gw.mcpExecutor.ShouldContinueLoop(resp, 4) {
+		t.Error("ShouldContinueLoop(resp, 4) = false, want true: depth limit should be 5 (the good server's), not 1 (the skipped server's)")
 	}
 }

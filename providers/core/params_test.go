@@ -154,3 +154,96 @@ func TestNormalizeCompletionTokenLimits_PreservesExplicitMaxTokens(t *testing.T)
 		t.Fatalf("MaxCompletionTokens = %v, want preserved %d", req.MaxCompletionTokens, maxCompletionTokens)
 	}
 }
+
+// TestDroppedParamsForProvider_ReconciledMaxCompletionTokensNotDropped covers
+// #141: a caller supplying only max_completion_tokens has it copied into
+// MaxTokens by NormalizeCompletionTokenLimits() before enforcement runs. Every
+// provider below reads req.MaxTokens natively, so the request is fully
+// satisfiable even though max_completion_tokens itself is Unsupported in the
+// matrix; it must not be reported as dropped, and reject mode must not fire.
+func TestDroppedParamsForProvider_ReconciledMaxCompletionTokensNotDropped(t *testing.T) {
+	req := Request{MaxCompletionTokens: pI(256)}
+	req.NormalizeCompletionTokenLimits()
+
+	providers := []string{"anthropic", "bedrock", "cohere", "gemini", "replicate"}
+	ctx := WithUnsupportedParamMode(context.Background(), UnsupportedParamReject)
+	for _, provider := range providers {
+		if got := DroppedParamsForProvider(req, provider); got != nil {
+			t.Errorf("provider %s: DroppedParamsForProvider = %v, want none", provider, got)
+		}
+		if err := EnforceUnsupportedParams(ctx, provider, "m", req); err != nil {
+			t.Errorf("provider %s: reject mode returned %v, want nil", provider, err)
+		}
+	}
+}
+
+// TestDroppedParamsForProvider_MaxCompletionTokensReconciliationScoping proves
+// the reconciliation guard is narrow: it only suppresses max_completion_tokens
+// when its value has actually migrated into MaxTokens, and it never masks a
+// genuinely unsupported parameter elsewhere on the same request.
+func TestDroppedParamsForProvider_MaxCompletionTokensReconciliationScoping(t *testing.T) {
+	tests := []struct {
+		name        string
+		req         Request
+		wantDropped []string
+	}{
+		{
+			name:        "not reconciled (NormalizeCompletionTokenLimits not called): still dropped",
+			req:         Request{MaxCompletionTokens: pI(256)},
+			wantDropped: []string{"max_completion_tokens"},
+		},
+		{
+			// Normalization only fills MaxTokens when it is nil, so an explicit,
+			// differing max_tokens is left untouched. Anthropic still cannot
+			// honor the caller's distinct max_completion_tokens value, so it must
+			// keep being reported (and rejected) like any other unsupported param.
+			name: "explicit max_tokens differs from max_completion_tokens: still dropped",
+			req: func() Request {
+				r := Request{MaxTokens: pI(100), MaxCompletionTokens: pI(256)}
+				r.NormalizeCompletionTokenLimits()
+				return r
+			}(),
+			wantDropped: []string{"max_completion_tokens"},
+		},
+		{
+			name: "explicit max_tokens equals max_completion_tokens: not dropped",
+			req: func() Request {
+				r := Request{MaxTokens: pI(256), MaxCompletionTokens: pI(256)}
+				r.NormalizeCompletionTokenLimits()
+				return r
+			}(),
+			wantDropped: nil,
+		},
+		{
+			name: "reconciled max_completion_tokens alongside a genuinely unsupported param",
+			req: func() Request {
+				r := Request{MaxCompletionTokens: pI(256), PresencePenalty: pF(0.1)}
+				r.NormalizeCompletionTokenLimits()
+				return r
+			}(),
+			// Only presence_penalty should surface: the reconciliation guard must
+			// not blanket-disable enforcement for the rest of the request.
+			wantDropped: []string{"presence_penalty"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := DroppedParamsForProvider(tt.req, "anthropic")
+			if len(got) != 0 || len(tt.wantDropped) != 0 {
+				if !reflect.DeepEqual(got, tt.wantDropped) {
+					t.Errorf("DroppedParamsForProvider = %v, want %v", got, tt.wantDropped)
+				}
+			}
+
+			ctx := WithUnsupportedParamMode(context.Background(), UnsupportedParamReject)
+			err := EnforceUnsupportedParams(ctx, "anthropic", "m", tt.req)
+			if len(tt.wantDropped) == 0 && err != nil {
+				t.Errorf("reject mode returned %v, want nil", err)
+			}
+			if len(tt.wantDropped) != 0 && err == nil {
+				t.Errorf("reject mode returned nil, want error naming %v", tt.wantDropped)
+			}
+		})
+	}
+}

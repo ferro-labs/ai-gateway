@@ -162,6 +162,31 @@ func decorateProvider(name string, p providers.Provider, cb *circuitbreaker.Circ
 	return p
 }
 
+// withTargetSlot runs fn under target's concurrency limiter, gating only the
+// upstream call — never the surrounding plugin-governance pipeline, so a
+// budget or rate-limit rejection never holds a slot. It returns fn(ctx)
+// directly when target has no limiter configured.
+//
+// This is the call-site equivalent of limitedProvider.Complete for surfaces
+// (Embed, GenerateImage) that resolve a capability interface directly out of
+// the registry instead of through decorateProvider: those values must not be
+// wrapped, since a wrapper embedding only providers.Provider would fail the
+// EmbeddingProvider / ImageProvider type assertion the caller already made.
+func (g *Gateway) withTargetSlot(ctx context.Context, target string, fn func(context.Context) error) error {
+	g.mu.RLock()
+	lim := g.limiters[target]
+	g.mu.RUnlock()
+
+	if lim == nil {
+		return fn(ctx)
+	}
+	if err := lim.acquire(ctx); err != nil {
+		return err
+	}
+	defer lim.release()
+	return fn(ctx)
+}
+
 // ensureProviderLimitersLocked creates a concurrency limiter for every target that
 // configures one. Caller must hold g.mu.
 func (g *Gateway) ensureProviderLimitersLocked() {

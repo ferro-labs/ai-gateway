@@ -118,12 +118,15 @@ func (g *Gateway) findStreamingProviderByModelLocked(model string) (providers.St
 	return sp, ok
 }
 
-func (g *Gateway) findEmbeddingProviderByModelLocked(model string) (providers.EmbeddingProvider, bool) {
-	_, ep, ok := findByModelLocked[providers.EmbeddingProvider](g, g.modelIndex.exactEmbedProviders, model)
-	return ep, ok
+// findEmbeddingProviderByModelLocked also returns the provider's registry name,
+// which callers need as the g.limiters key to enforce the target's concurrency
+// cap around the upstream call. Caller must hold g.mu.
+func (g *Gateway) findEmbeddingProviderByModelLocked(model string) (string, providers.EmbeddingProvider, bool) {
+	return findByModelLocked[providers.EmbeddingProvider](g, g.modelIndex.exactEmbedProviders, model)
 }
 
-func (g *Gateway) findImageProviderByModelLocked(model string) (providers.ImageProvider, bool) {
-	_, ip, ok := findByModelLocked[providers.ImageProvider](g, g.modelIndex.exactImageProviders, model)
-	return ip, ok
+// findImageProviderByModelLocked also returns the provider's registry name, for
+// the same reason as findEmbeddingProviderByModelLocked. Caller must hold g.mu.
+func (g *Gateway) findImageProviderByModelLocked(model string) (string, providers.ImageProvider, bool) {
+	return findByModelLocked[providers.ImageProvider](g, g.modelIndex.exactImageProviders, model)
 }

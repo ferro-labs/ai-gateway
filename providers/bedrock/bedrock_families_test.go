@@ -2,6 +2,7 @@ package bedrock
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -84,5 +85,34 @@ func TestBedrockProvider_Complete_NovaDropsImagePartsGracefully(t *testing.T) {
 	}
 	if !strings.HasPrefix(resp.ID, "bedrock-") {
 		t.Errorf("ID = %q, want a synthesized bedrock- id", resp.ID)
+	}
+}
+
+// TestBedrockProvider_Complete_UnknownModelReportsModelErrorNotParamError
+// verifies an unrecognized/mismatched model (an embeddings-only model routed
+// to chat completion) reports the real "unsupported model prefix" error
+// rather than a misleading "does not support request parameter(s)" error when
+// reject mode is active and an optional param is set. Family resolution must
+// happen before parameter enforcement, since bedrockSupportedParams' default
+// case (nil) is indistinguishable from "supports nothing" otherwise.
+func TestBedrockProvider_Complete_UnknownModelReportsModelErrorNotParamError(t *testing.T) {
+	p := &Provider{name: Name, client: &fakeBedrockRuntimeClient{}}
+	ctx := core.WithUnsupportedParamMode(context.Background(), core.UnsupportedParamReject)
+	temp := 0.5
+
+	_, err := p.Complete(ctx, core.Request{
+		Model:       "cohere.embed-english-v3",
+		Messages:    []core.Message{{Role: core.RoleUser, Content: "hi"}},
+		Temperature: &temp,
+	})
+	if err == nil {
+		t.Fatal("Complete() error = nil, want the unsupported-model-prefix error")
+	}
+	var paramErr *core.UnsupportedParamError
+	if errors.As(err, &paramErr) {
+		t.Fatalf("Complete() error = %v (*core.UnsupportedParamError), want the model-prefix error instead", err)
+	}
+	if !strings.Contains(err.Error(), "unsupported Bedrock model prefix") {
+		t.Errorf("Complete() error = %q, want it to name the unsupported model prefix", err.Error())
 	}
 }

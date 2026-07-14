@@ -91,7 +91,7 @@ func (g *Gateway) Embed(ctx context.Context, req providers.EmbeddingRequest) (*p
 	req.Model = g.resolveModelAlias(req.Model)
 
 	g.mu.RLock()
-	ep, ok := g.findEmbeddingProviderByModelLocked(req.Model)
+	name, ep, ok := g.findEmbeddingProviderByModelLocked(req.Model)
 	g.mu.RUnlock()
 
 	if !ok {
@@ -100,7 +100,12 @@ func (g *Gateway) Embed(ctx context.Context, req providers.EmbeddingRequest) (*p
 
 	var resp *providers.EmbeddingResponse
 	err := g.runSurfaceGovernance(ctx, "embeddings", func(ctx context.Context) (*providers.Usage, error) {
-		r, callErr := ep.Embed(ctx, req)
+		var r *providers.EmbeddingResponse
+		callErr := g.withTargetSlot(ctx, name, func(ctx context.Context) error {
+			var err error
+			r, err = ep.Embed(ctx, req)
+			return err
+		})
 		if callErr != nil {
 			return nil, callErr
 		}
@@ -127,7 +132,7 @@ func (g *Gateway) GenerateImage(ctx context.Context, req providers.ImageRequest)
 	req.Model = g.resolveModelAlias(req.Model)
 
 	g.mu.RLock()
-	ip, ok := g.findImageProviderByModelLocked(req.Model)
+	name, ip, ok := g.findImageProviderByModelLocked(req.Model)
 	g.mu.RUnlock()
 
 	if !ok {
@@ -136,11 +141,17 @@ func (g *Gateway) GenerateImage(ctx context.Context, req providers.ImageRequest)
 
 	var resp *providers.ImageResponse
 	err := g.runSurfaceGovernance(ctx, "images", func(ctx context.Context) (*providers.Usage, error) {
-		r, callErr := ip.GenerateImage(ctx, req)
+		callErr := g.withTargetSlot(ctx, name, func(ctx context.Context) error {
+			r, err := ip.GenerateImage(ctx, req)
+			if err != nil {
+				return err
+			}
+			resp = r
+			return nil
+		})
 		if callErr != nil {
 			return nil, callErr
 		}
-		resp = r
 		return nil, nil // image responses carry no token usage
 	})
 	if err != nil {

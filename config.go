@@ -292,7 +292,8 @@ type RetryConfig struct {
 	// OnStatusCodes, when non-empty, limits retries to the listed HTTP status
 	// codes. A retry is skipped when the provider returns a code not in the
 	// list, and the strategy moves on to the next target immediately.
-	// Leave empty to retry on any error (default behaviour).
+	// Leave empty for the default policy: retry transport failures and HTTP
+	// 408/429/5xx; a deterministic 4xx (e.g. 400/401/404) is not retried.
 	// Example: [429, 502, 503]
 	OnStatusCodes []int `json:"on_status_codes,omitempty" yaml:"on_status_codes,omitempty"`
 	// InitialBackoffMs is the base backoff in milliseconds for the exponential

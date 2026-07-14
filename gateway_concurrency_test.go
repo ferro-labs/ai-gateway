@@ -28,7 +28,10 @@ func newBlockingProvider(name string) *blockingProvider {
 	}
 }
 
-func (b *blockingProvider) Complete(ctx context.Context, _ providers.Request) (*providers.Response, error) {
+// block occupies an in-flight slot until release fires or ctx is cancelled,
+// tracking peak concurrency. Shared by Complete, Embed, and GenerateImage so
+// every surface can prove the target's limiter caps it the same way.
+func (b *blockingProvider) block(ctx context.Context) error {
 	n := b.inFlight.Add(1)
 	for {
 		peak := b.peak.Load()
@@ -40,10 +43,31 @@ func (b *blockingProvider) Complete(ctx context.Context, _ providers.Request) (*
 
 	select {
 	case <-b.release:
-		return &providers.Response{ID: "ok"}, nil
+		return nil
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return ctx.Err()
 	}
+}
+
+func (b *blockingProvider) Complete(ctx context.Context, _ providers.Request) (*providers.Response, error) {
+	if err := b.block(ctx); err != nil {
+		return nil, err
+	}
+	return &providers.Response{ID: "ok"}, nil
+}
+
+func (b *blockingProvider) Embed(ctx context.Context, _ providers.EmbeddingRequest) (*providers.EmbeddingResponse, error) {
+	if err := b.block(ctx); err != nil {
+		return nil, err
+	}
+	return &providers.EmbeddingResponse{}, nil
+}
+
+func (b *blockingProvider) GenerateImage(ctx context.Context, _ providers.ImageRequest) (*providers.ImageResponse, error) {
+	if err := b.block(ctx); err != nil {
+		return nil, err
+	}
+	return &providers.ImageResponse{}, nil
 }
 
 // ── Limiter admission control (issue #248 acceptance criteria) ────────────────
@@ -241,6 +265,127 @@ func TestDecorateProvider_CircuitBreakerIsOutermost(t *testing.T) {
 	}
 	if inner.inFlight.Load() != 0 {
 		t.Error("an open circuit must never reach the provider")
+	}
+}
+
+// ── Embed / GenerateImage concurrency wiring (issue #347) ─────────────────────
+//
+// Embed and GenerateImage resolve their provider through the capability-specific
+// model index (findEmbeddingProviderByModelLocked / findImageProviderByModelLocked),
+// not through decorateProvider, so these prove the target's limiter is applied at
+// the call site instead.
+
+// multiModalCalls exercises Embed and GenerateImage identically against the same
+// target so both surfaces are proven to share the concurrency wiring.
+var multiModalCalls = []struct {
+	name string
+	call func(ctx context.Context, gw *Gateway) error
+}{
+	{
+		name: "embed",
+		call: func(ctx context.Context, gw *Gateway) error {
+			_, err := gw.Embed(ctx, providers.EmbeddingRequest{Model: "gpt-4o"})
+			return err
+		},
+	},
+	{
+		name: "generate_image",
+		call: func(ctx context.Context, gw *Gateway) error {
+			_, err := gw.GenerateImage(ctx, providers.ImageRequest{Model: "gpt-4o"})
+			return err
+		},
+	},
+}
+
+func newConcurrencyBoundGateway(t *testing.T, ep *blockingProvider, maxConcurrency, queueSize int) *Gateway {
+	t.Helper()
+	gw, err := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets: []Target{{
+			VirtualKey:  mockProviderName,
+			Concurrency: &ConcurrencyConfig{MaxConcurrency: maxConcurrency, QueueSize: queueSize},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	gw.RegisterProvider(ep)
+	return gw
+}
+
+func TestGateway_MultiModalSurfaces_SaturatedTargetShedsRequest(t *testing.T) {
+	for _, tt := range multiModalCalls {
+		t.Run(tt.name, func(t *testing.T) {
+			ep := newBlockingProvider(mockProviderName)
+			gw := newConcurrencyBoundGateway(t, ep, 1, 1)
+
+			// Take the only in-flight slot.
+			go func() { _ = tt.call(context.Background(), gw) }()
+			waitFor(t, func() bool { return ep.inFlight.Load() == 1 })
+
+			// Take the single queue seat.
+			queuedErr := make(chan error, 1)
+			go func() { queuedErr <- tt.call(context.Background(), gw) }()
+			waitFor(t, func() bool { return gw.limiters[mockProviderName].waiting.Load() == 1 })
+
+			// A third caller must be shed, not blocked.
+			if err := tt.call(context.Background(), gw); !errors.Is(err, providers.ErrProviderSaturated) {
+				t.Fatalf("%s on a saturated target = %v, want ErrProviderSaturated", tt.name, err)
+			}
+
+			close(ep.release)
+			if err := <-queuedErr; err != nil {
+				t.Errorf("queued %s = %v, want nil once a slot freed", tt.name, err)
+			}
+		})
+	}
+}
+
+func TestGateway_MultiModalSurfaces_ReleaseSlotAfterCompletion(t *testing.T) {
+	for _, tt := range multiModalCalls {
+		t.Run(tt.name, func(t *testing.T) {
+			ep := newBlockingProvider(mockProviderName)
+			close(ep.release) // every call completes immediately
+			gw := newConcurrencyBoundGateway(t, ep, 1, 1)
+
+			if err := tt.call(context.Background(), gw); err != nil {
+				t.Fatalf("%s: %v", tt.name, err)
+			}
+			// A second call must not be shed: the first call's slot was released.
+			if err := tt.call(context.Background(), gw); err != nil {
+				t.Errorf("%s after prior completion = %v, want nil: the slot was not released", tt.name, err)
+			}
+		})
+	}
+}
+
+func TestGateway_MultiModalSurfaces_ReleaseSlotAfterCancellation(t *testing.T) {
+	for _, tt := range multiModalCalls {
+		t.Run(tt.name, func(t *testing.T) {
+			ep := newBlockingProvider(mockProviderName)
+			gw := newConcurrencyBoundGateway(t, ep, 1, 1)
+
+			// Occupy the only slot.
+			go func() { _ = tt.call(context.Background(), gw) }()
+			waitFor(t, func() bool { return ep.inFlight.Load() == 1 })
+
+			// A second caller waits for the slot, then is cancelled.
+			ctx, cancel := context.WithCancel(context.Background())
+			cancelledErr := make(chan error, 1)
+			go func() { cancelledErr <- tt.call(ctx, gw) }()
+			waitFor(t, func() bool { return gw.limiters[mockProviderName].waiting.Load() == 1 })
+			cancel()
+			if err := <-cancelledErr; !errors.Is(err, context.Canceled) {
+				t.Fatalf("%s = %v, want context.Canceled", tt.name, err)
+			}
+
+			// The cancelled caller must not have left the slot occupied: once the
+			// original holder releases, a fresh call must be admitted.
+			close(ep.release)
+			if err := tt.call(context.Background(), gw); err != nil {
+				t.Errorf("%s after cancellation and release = %v, want nil", tt.name, err)
+			}
+		})
 	}
 }
 

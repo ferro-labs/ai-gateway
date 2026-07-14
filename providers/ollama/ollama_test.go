@@ -399,6 +399,30 @@ func TestOllamaProvider_DiscoverModels_Non200Error(t *testing.T) {
 	}
 }
 
+// TestOllamaProvider_DiscoverModels_PreservesRetryAfter verifies a 429
+// response's Retry-After header survives ollamaAPIError so the fallback
+// strategy can honor the provider's own backoff hint instead of guessing.
+func TestOllamaProvider_DiscoverModels_PreservesRetryAfter(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "5")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":"rate limited"}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New(srv.URL, nil)
+	_, err := p.DiscoverModels(context.Background())
+	if err == nil {
+		t.Fatal("DiscoverModels() error = nil, want error on 429")
+	}
+	if got := core.ParseStatusCode(err); got != http.StatusTooManyRequests {
+		t.Errorf("ParseStatusCode(err) = %d, want 429", got)
+	}
+	if got := core.RetryAfterFrom(err); got != 5*time.Second {
+		t.Errorf("RetryAfterFrom(err) = %v, want 5s", got)
+	}
+}
+
 func mustUnix(t *testing.T, value string) int64 {
 	t.Helper()
 	parsed, err := time.Parse(time.RFC3339Nano, value)

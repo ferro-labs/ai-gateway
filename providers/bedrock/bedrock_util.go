@@ -4,6 +4,10 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
+	"fmt"
+
+	smithyhttp "github.com/aws/smithy-go/transport/http"
 
 	"github.com/ferro-labs/ai-gateway/internal/logging"
 	"github.com/ferro-labs/ai-gateway/providers/core"
@@ -36,5 +40,28 @@ func warnDroppedImageParts(ctx context.Context, provider, model string, messages
 				return
 			}
 		}
+	}
+}
+
+// bedrockInvokeError translates an InvokeModel/InvokeModelWithResponseStream
+// failure into a *core.HTTPStatusError when the AWS SDK received an upstream
+// HTTP response (e.g. a ThrottlingException or ValidationException), so
+// core.ParseStatusCode can recover the status: without it every Bedrock error
+// looks like status 0, which makes a genuine 429 trip the circuit breaker
+// (rate limits must not) and makes a deterministic 4xx get retried against the
+// same target instead of failing fast. verb names the failed call ("invoke",
+// "streaming invoke") for the message prefix. An error with no HTTP response
+// (network/credential failure before a response arrived) is returned
+// unchanged — it genuinely has no status to report.
+func bedrockInvokeError(verb string, err error) error {
+	wrapped := fmt.Errorf("bedrock %s failed: %w", verb, err)
+	var respErr *smithyhttp.ResponseError
+	if !errors.As(err, &respErr) {
+		return wrapped
+	}
+	return &core.HTTPStatusError{
+		StatusCode: respErr.HTTPStatusCode(),
+		Message:    wrapped.Error(),
+		RetryAfter: core.ParseRetryAfter(respErr.Response.Header.Get("Retry-After")),
 	}
 }

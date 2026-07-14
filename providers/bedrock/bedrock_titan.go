@@ -58,7 +58,7 @@ func (p *Provider) completeTitan(ctx context.Context, req core.Request) (*core.R
 		Body:        body,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("bedrock invoke failed: %w", err)
+		return nil, bedrockInvokeError("invoke", err)
 	}
 
 	var titanResp bedrockTitanResponse

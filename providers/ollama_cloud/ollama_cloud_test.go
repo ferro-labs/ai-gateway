@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
@@ -471,5 +472,33 @@ func TestEmbed_ForwardsDimensions(t *testing.T) {
 	}
 	if gotDims == nil || *gotDims != 8 {
 		t.Errorf("dimensions forwarded = %v, want 8", gotDims)
+	}
+}
+
+// TestEmbed_PreservesRetryAfter verifies a 429 response's Retry-After header
+// survives apiError so the fallback strategy can honor the provider's own
+// backoff hint instead of guessing.
+func TestEmbed_PreservesRetryAfter(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "5")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"rate limited"}}`))
+	}))
+	defer server.Close()
+
+	p, err := New(testCloudAPIKey, server.URL, []string{testCloudModel})
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	_, err = p.Embed(context.Background(), core.EmbeddingRequest{Model: "embed-model", Input: "hi"})
+	if err == nil {
+		t.Fatal("expected Embed to return an error")
+	}
+	if got := core.ParseStatusCode(err); got != http.StatusTooManyRequests {
+		t.Errorf("ParseStatusCode(err) = %d, want 429", got)
+	}
+	if got := core.RetryAfterFrom(err); got != 5*time.Second {
+		t.Errorf("RetryAfterFrom(err) = %v, want 5s", got)
 	}
 }

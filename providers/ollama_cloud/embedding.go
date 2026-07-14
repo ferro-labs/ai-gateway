@@ -63,7 +63,7 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 	if httpResp.StatusCode != http.StatusOK {
-		return nil, apiError(httpResp.StatusCode, respBody)
+		return nil, apiError(httpResp, respBody)
 	}
 
 	var apiResp embedResponse

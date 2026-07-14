@@ -4,7 +4,9 @@ import "fmt"
 
 // RejectionError indicates a plugin intentionally rejected a request/response:
 // the plugin ran, reached a decision, and that decision was "no". A blocked word,
-// an exhausted rate limit, and a failed auth check are rejections.
+// an exhausted rate limit, and a failed auth check are rejections. The mapped
+// HTTP status depends on stage: 400 (429 for rate limiting) before the request,
+// 502 after it; see internal/apierror.RouteErrorDetails for the exact mapping.
 //
 // A plugin that could not reach a decision — because it errored or panicked —
 // produces a FailureError instead. See that type for why the two are distinct.
@@ -29,7 +31,7 @@ func (e *RejectionError) Error() string {
 
 // FailureError indicates a fail-closed plugin could not complete: it returned an
 // error or panicked. The request was not denied — it was never evaluated, so the
-// gateway reports it as a server error rather than a rejection.
+// gateway reports it as a 500 server error rather than a rejection.
 type FailureError struct {
 	Plugin     string
 	PluginType PluginType

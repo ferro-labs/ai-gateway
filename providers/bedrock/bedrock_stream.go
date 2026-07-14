@@ -41,7 +41,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 		Body:        body,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("bedrock streaming invoke failed: %w", err)
+		return nil, bedrockInvokeError("streaming invoke", err)
 	}
 
 	ch := make(chan core.StreamChunk)

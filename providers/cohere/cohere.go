@@ -245,16 +245,18 @@ func cohereContentParts(parts []core.ContentPart) []any {
 // so core.APIError cannot decode it. prefix is the full message prefix (e.g.
 // "cohere API error"), unlike core.APIError's bare provider-name label. The
 // returned *core.HTTPStatusError lets core.ParseStatusCode recover the status
-// via errors.As, same as core.APIError.
-func cohereAPIError(prefix string, status int, body []byte) error {
+// via errors.As, same as core.APIError, and carries resp's Retry-After hint so
+// the fallback strategy can honor it instead of guessing a backoff.
+func cohereAPIError(prefix string, resp *http.Response, body []byte) error {
 	msg := string(body)
 	var errResp cohereErrorResponse
 	if json.Unmarshal(body, &errResp) == nil && errResp.Message != "" {
 		msg = errResp.Message
 	}
 	return &core.HTTPStatusError{
-		StatusCode: status,
-		Message:    fmt.Sprintf("%s (%d): %s", prefix, status, msg),
+		StatusCode: resp.StatusCode,
+		Message:    fmt.Sprintf("%s (%d): %s", prefix, resp.StatusCode, msg),
+		RetryAfter: core.ParseRetryAfter(resp.Header.Get("Retry-After")),
 	}
 }
 
@@ -303,7 +305,7 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 	}
 
 	if httpResp.StatusCode != http.StatusOK {
-		return nil, cohereAPIError("cohere API error", httpResp.StatusCode, respBody)
+		return nil, cohereAPIError("cohere API error", httpResp, respBody)
 	}
 
 	var cohResp cohereResponse
@@ -459,7 +461,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 		if err != nil {
 			return nil, fmt.Errorf("failed to read response: %w", err)
 		}
-		return nil, cohereAPIError("cohere API error", httpResp.StatusCode, respBody)
+		return nil, cohereAPIError("cohere API error", httpResp, respBody)
 	}
 
 	ch := make(chan core.StreamChunk)
@@ -682,7 +684,7 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 	}
 
 	if httpResp.StatusCode != http.StatusOK {
-		return nil, cohereAPIError("cohere embed API error", httpResp.StatusCode, respBody)
+		return nil, cohereAPIError("cohere embed API error", httpResp, respBody)
 	}
 
 	var cohResp cohereEmbedResponse

@@ -45,7 +45,7 @@ func ParamPopulated(req Request, name string) bool {
 	case "max_tokens":
 		return req.MaxTokens != nil
 	case "max_completion_tokens":
-		return req.MaxCompletionTokens != nil
+		return maxCompletionTokensPopulated(req)
 	case "presence_penalty":
 		return req.PresencePenalty != nil
 	case "frequency_penalty":
@@ -69,6 +69,22 @@ func ParamPopulated(req Request, name string) bool {
 	default:
 		return false
 	}
+}
+
+// maxCompletionTokensPopulated reports whether max_completion_tokens still
+// carries an unresolved caller value. Request.NormalizeCompletionTokenLimits
+// copies MaxCompletionTokens into MaxTokens when MaxTokens is nil, so a
+// caller who set only max_completion_tokens is already satisfiable through
+// max_tokens by the time enforcement runs, even on a provider that cannot
+// express max_completion_tokens natively — reporting it dropped there would
+// be misleading. A caller who sets both fields to different values still has
+// the max_completion_tokens value silently ignored (normalization never
+// overwrites an explicit max_tokens), so that case is still reported.
+func maxCompletionTokensPopulated(req Request) bool {
+	if req.MaxCompletionTokens == nil {
+		return false
+	}
+	return req.MaxTokens == nil || *req.MaxTokens != *req.MaxCompletionTokens
 }
 
 // DroppedParams returns, in stable order, the optional OpenAI parameters that
