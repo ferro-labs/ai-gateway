@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -663,6 +664,30 @@ func TestResolveHeaders_UnsetEnvVarSkipped(t *testing.T) {
 	}
 	if got != nil {
 		t.Errorf("expected nil map when all headers resolve to empty, got %v", got)
+	}
+}
+
+func TestResolveHeaders_UndefinedVarKeepsOtherHeaders(t *testing.T) {
+	// Enforce the undefined variable rather than assuming it: t.Setenv registers the
+	// restore, then Unsetenv makes it undefined for this test even if the surrounding
+	// environment happens to define it.
+	t.Setenv("FERRO_OTEL_TEST_TRULY_UNDEFINED_VAR", "")
+	if err := os.Unsetenv("FERRO_OTEL_TEST_TRULY_UNDEFINED_VAR"); err != nil {
+		t.Fatalf("unset: %v", err)
+	}
+	raw := map[string]string{
+		"x-bad":  "${FERRO_OTEL_TEST_TRULY_UNDEFINED_VAR}",
+		"x-good": "static-value",
+	}
+	got := resolveHeaders(raw)
+	if got["x-good"] != "static-value" {
+		t.Errorf("expected x-good to survive an unrelated undefined reference, got %q", got["x-good"])
+	}
+	if _, exists := got["x-bad"]; exists {
+		t.Errorf("expected x-bad to be dropped, got %q", got["x-bad"])
+	}
+	if len(got) != 1 {
+		t.Errorf("expected 1 surviving header, got %d: %v", len(got), got)
 	}
 }
 

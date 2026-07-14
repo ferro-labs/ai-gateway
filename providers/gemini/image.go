@@ -119,7 +119,7 @@ func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*c
 	}
 
 	if httpResp.StatusCode != http.StatusOK {
-		return nil, core.APIError("gemini image", httpResp.StatusCode, respBody)
+		return nil, core.APIErrorFromResponse("gemini image", httpResp, respBody)
 	}
 
 	var imagenResp imagenResponse

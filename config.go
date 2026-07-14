@@ -28,6 +28,19 @@ type Config struct {
 	// 0 (the default when omitted) applies DefaultMaxRequestBytes (10 MiB), which
 	// is well above any realistic chat completion payload.
 	MaxRequestBytes int64 `json:"max_request_bytes,omitempty" yaml:"max_request_bytes,omitempty"`
+	// RequestTimeout bounds a single non-streaming request end to end — plugin
+	// stages, provider call, and every retry and fallback attempt combined — as a
+	// Go duration string (e.g. "30s"). Omitted or empty means no gateway-imposed
+	// deadline; the provider HTTP clients' own timeouts still apply.
+	//
+	// Streaming requests are exempt: a stream legitimately outlives any fixed
+	// deadline, and its idle bound is enforced by the streaming write deadline.
+	//
+	// One exception, and it is not a loophole: when MCP tool servers are
+	// configured, a stream request runs the agentic loop to completion and is
+	// delivered as a single chunk. That is a non-streaming request wearing a
+	// stream's clothes, so the deadline applies to it like any other.
+	RequestTimeout string `json:"request_timeout,omitempty" yaml:"request_timeout,omitempty"`
 	// Plugins configuration (optional).
 	Plugins []PluginConfig `json:"plugins,omitempty" yaml:"plugins,omitempty"`
 	// Aliases maps friendly model names (e.g. "fast", "smart") to concrete model IDs.
@@ -48,6 +61,20 @@ type Config struct {
 	// gateway runs with a NoOp provider (zero allocations on the hot
 	// path). See internal/otel.
 	Observability ObservabilityConfig `json:"observability,omitempty" yaml:"observability,omitempty"`
+	// Compatibility configures how the gateway treats request parameters a
+	// target provider cannot express. Omitted (the default) means warn.
+	Compatibility CompatibilityConfig `json:"compatibility,omitempty" yaml:"compatibility,omitempty"`
+}
+
+// CompatibilityConfig controls the gateway's handling of OpenAI request
+// parameters that a routed provider does not support (per the capability
+// matrix in providers/capabilities).
+type CompatibilityConfig struct {
+	// OnUnsupportedParam selects the behaviour for an unsupported parameter:
+	// "warn" (default) forwards it and logs, "drop" removes it from the
+	// upstream request and logs, and "reject" fails the request with HTTP 400.
+	// An empty value is treated as "warn".
+	OnUnsupportedParam string `json:"on_unsupported_param,omitempty" yaml:"on_unsupported_param,omitempty"`
 }
 
 // Normalize applies config-level defaults in a single place. It is idempotent
@@ -107,8 +134,9 @@ type ExporterConfig struct {
 	// Enabled gates the exporter. Set to false to temporarily disable
 	// without removing the config block.
 	Enabled bool `json:"enabled" yaml:"enabled"`
-	// Config is the exporter-specific configuration map. Passed
-	// verbatim to Exporter.Init at gateway startup.
+	// Config is the exporter-specific configuration map. When loaded via
+	// LoadConfig, string values may reference environment variables using $VAR
+	// or ${VAR}; resolved values are passed to Exporter.Init at gateway startup.
 	Config map[string]any `json:"config,omitempty" yaml:"config,omitempty"`
 }
 
@@ -116,9 +144,14 @@ type ExporterConfig struct {
 // optional; sensible defaults apply when omitted (see
 // internal/otel.DefaultConfig).
 type TracingConfig struct {
-	// Enabled is the master switch. Defaults to true; the pipeline
-	// still short-circuits to NoOp when no OTLP endpoint is configured.
-	Enabled bool `json:"enabled" yaml:"enabled"`
+	// Enabled is the master switch, a tri-state pointer:
+	//   nil   — infer activation from a configured endpoint/exporters
+	//           (the default when the key is omitted).
+	//   false — hard off: tracing stays disabled even when an endpoint or
+	//           OTEL_EXPORTER_OTLP_ENDPOINT is set.
+	//   true  — force on.
+	// The pipeline still short-circuits to NoOp when nothing is configured.
+	Enabled *bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
 	// Endpoint overrides OTEL_EXPORTER_OTLP_ENDPOINT (host:port form).
 	Endpoint string `json:"endpoint,omitempty" yaml:"endpoint,omitempty"`
 	// Protocol selects the OTLP transport: "grpc" (default) or "http/protobuf".
@@ -233,6 +266,23 @@ type Target struct {
 	Retry *RetryConfig `json:"retry,omitempty" yaml:"retry,omitempty"`
 	// CircuitBreaker configuration for this target (optional).
 	CircuitBreaker *CircuitBreakerConfig `json:"circuit_breaker,omitempty" yaml:"circuit_breaker,omitempty"`
+	// Concurrency bounds simultaneous in-flight requests to this target (optional).
+	Concurrency *ConcurrencyConfig `json:"concurrency,omitempty" yaml:"concurrency,omitempty"`
+}
+
+// ConcurrencyConfig bounds how many requests may be in flight against a single
+// target at once. Providers often cap simultaneous connections independently of
+// any RPM/TPM quota; without a gate the gateway can saturate one and collect
+// 429s or connection resets that needlessly trip its circuit breaker.
+type ConcurrencyConfig struct {
+	// MaxConcurrency is the maximum number of simultaneous in-flight requests to
+	// this target. It must be positive; omit the whole block to leave a target
+	// unlimited. A streaming request holds its slot until the stream ends.
+	MaxConcurrency int `json:"max_concurrency" yaml:"max_concurrency"`
+	// QueueSize is how many requests may wait for a slot once MaxConcurrency is
+	// reached. Requests beyond it fail fast with HTTP 429 rather than blocking.
+	// 0 (the default when omitted) applies DefaultConcurrencyQueueSize.
+	QueueSize int `json:"queue_size,omitempty" yaml:"queue_size,omitempty"`
 }
 
 // RetryConfig defines retry behavior for the fallback strategy.
@@ -242,7 +292,8 @@ type RetryConfig struct {
 	// OnStatusCodes, when non-empty, limits retries to the listed HTTP status
 	// codes. A retry is skipped when the provider returns a code not in the
 	// list, and the strategy moves on to the next target immediately.
-	// Leave empty to retry on any error (default behaviour).
+	// Leave empty for the default policy: retry transport failures and HTTP
+	// 408/429/5xx; a deterministic 4xx (e.g. 400/401/404) is not retried.
 	// Example: [429, 502, 503]
 	OnStatusCodes []int `json:"on_status_codes,omitempty" yaml:"on_status_codes,omitempty"`
 	// InitialBackoffMs is the base backoff in milliseconds for the exponential
@@ -267,7 +318,8 @@ type CircuitBreakerConfig struct {
 	Timeout string `json:"timeout" yaml:"timeout"`
 }
 
-// PluginConfig holds plugin configuration.
+// PluginConfig holds plugin configuration. When loaded via LoadConfig, string
+// values in Config may reference environment variables using $VAR or ${VAR}.
 type PluginConfig struct {
 	Name    string         `json:"name" yaml:"name"`
 	Type    string         `json:"type" yaml:"type"`

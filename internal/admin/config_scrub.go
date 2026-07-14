@@ -4,6 +4,7 @@ import (
 	"reflect"
 
 	aigateway "github.com/ferro-labs/ai-gateway"
+	"github.com/ferro-labs/ai-gateway/mcp"
 )
 
 // isEnvRef reports whether s is a bare environment-variable reference of the
@@ -157,6 +158,7 @@ func scrubAnyMap(m map[string]any) map[string]any {
 //
 // Fields scrubbed:
 //   - Observability.Tracing.Headers (map[string]string)
+//   - each MCPServers[i].Headers (map[string]string)
 //   - each Observability.Exporters[i].Config (map[string]any)
 //   - each Plugins[i].Config (map[string]interface{})
 //
@@ -165,6 +167,15 @@ func scrubAnyMap(m map[string]any) map[string]any {
 // environment at runtime.
 func scrubConfigSecrets(cfg aigateway.Config) aigateway.Config {
 	cfg.Observability.Tracing.Headers = scrubStringMap(cfg.Observability.Tracing.Headers)
+
+	if cfg.MCPServers != nil {
+		servers := make([]mcp.ServerConfig, len(cfg.MCPServers))
+		for i, server := range cfg.MCPServers {
+			server.Headers = scrubStringMap(server.Headers)
+			servers[i] = server
+		}
+		cfg.MCPServers = servers
+	}
 
 	if cfg.Observability.Exporters != nil {
 		exporters := make([]aigateway.ExporterConfig, len(cfg.Observability.Exporters))

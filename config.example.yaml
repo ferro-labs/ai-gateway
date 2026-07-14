@@ -7,6 +7,14 @@
 # POST attacks; set higher only if you need to send very large prompts.
 # max_request_bytes: 10485760
 
+# Bounds a single non-streaming request end to end — plugin stages, the provider
+# call, and every retry and fallback attempt combined. Omitted means no
+# gateway-imposed deadline (the provider HTTP clients' own timeouts still apply).
+# Streaming requests are exempt: a stream legitimately outlives a fixed deadline.
+# (With MCP tool servers configured, a "stream" runs the agentic loop to completion
+# and arrives as one chunk — that is not really a stream, and the deadline applies.)
+# request_timeout: 60s
+
 strategy:
   mode: fallback  # single | fallback | loadbalance | conditional | content-based | ab-test | least-latency | cost-optimized
   # For cost-optimized mode only: fallback (default) | skip | allow.
@@ -57,10 +65,22 @@ targets:
   - virtual_key: openai
     retry:
       attempts: 3
-      # Only retry on these HTTP status codes (omit to retry on any error).
+      # Only retry on these HTTP status codes. Omit to use the default policy:
+      # transport errors plus 408, 429 and 5xx. Other 4xx are deterministic client
+      # errors and are never retried.
       on_status_codes: [429, 502, 503]
-      # Base backoff in ms for exponential back-off: delay = initial_backoff_ms * 2^(attempt-1).
+      # Base backoff in ms for exponential back-off with full jitter: the wait is
+      # picked uniformly from [0, initial_backoff_ms * 2^(attempt-1)). An upstream
+      # Retry-After header, when present, takes precedence over the computed backoff.
       initial_backoff_ms: 100
+    # Optional per-target concurrency limit. Providers often cap simultaneous
+    # connections independently of any RPM/TPM quota; without a gate the gateway can
+    # saturate one and collect 429s that needlessly trip its circuit breaker.
+    concurrency:
+      max_concurrency: 32   # simultaneous in-flight requests to this target
+      queue_size: 500       # requests allowed to wait for a slot; beyond it => HTTP 429
+      # A streaming request holds its slot until the stream ends, not just until
+      # response headers arrive.
   - virtual_key: anthropic
     # Optional per-target circuit breaker.
     circuit_breaker:
@@ -105,6 +125,7 @@ aliases:
   code: deepseek-coder
 
 # Optional plugins
+# Plugin config string values loaded via LoadConfig support $VAR / ${VAR} interpolation.
 plugins:
   - name: word-filter
     type: guardrail
@@ -192,6 +213,7 @@ mcp_servers:
   - name: database
     url: "https://mcp-db.internal/mcp"
     headers:
+      # Values loaded via LoadConfig support $VAR / ${VAR} interpolation.
       Authorization: "Bearer ${MCP_DB_TOKEN}"
     allowed_tools:
       - query_readonly
@@ -206,6 +228,14 @@ mcp_servers:
       - web_search
       - web_read
     timeout_seconds: 20
+
+# Compatibility controls how the gateway treats OpenAI request parameters that a
+# routed provider cannot express (see GET /v1/capabilities for the matrix).
+#   warn   — forward the parameter and log a warning (default)
+#   drop   — remove the parameter from the upstream request and log
+#   reject — fail the request with HTTP 400 naming the parameter
+# compatibility:
+#   on_unsupported_param: warn
 
 # OpenTelemetry tracing (v1.1.0+).
 # When unset (or endpoint empty) the gateway runs with a zero-alloc
@@ -226,6 +256,7 @@ observability:
 
   # exporters lists plugin observability exporters that receive
   # gateway.request.completed / gateway.request.failed events.
+  # Config string values loaded via LoadConfig support $VAR / ${VAR} interpolation.
   # Each entry names a factory registered via observability.RegisterExporter
   # in a plugin's init().  Unrecognised names emit a warning and are skipped
   # (non-fatal).  No built-in exporters ship with this repo — they are

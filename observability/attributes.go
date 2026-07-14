@@ -33,8 +33,8 @@ const (
 // AttrFerroRoutingAttempt, AttrFerroRoutingABVariantLabel, AttrFerroCacheHit,
 // AttrFerroCacheKind, AttrFerroMCPDepth, AttrFerroCircuitBreakerState,
 // AttrFerroCircuitBreakerOpened, AttrFerroRequestAPIKeyID,
-// AttrFerroRequestTenantID, AttrFerroErrorUpstreamStatus, and
-// AttrFerroErrorRetryCount.
+// AttrFerroRequestTenantID, AttrFerroErrorUpstreamStatus,
+// AttrFerroErrorRetryCount, and AttrFerroForwardedParams.
 const (
 	AttrFerroSchemaVersion            = "ferro.schema.version"
 	AttrFerroGatewayTraceID           = "ferro.gateway.trace_id"
@@ -69,6 +69,11 @@ const (
 	AttrFerroRequestTenantID          = "ferro.request.tenant_id"
 	AttrFerroErrorUpstreamStatus      = "ferro.error.upstream_status"
 	AttrFerroErrorRetryCount          = "ferro.error.retry_count"
+	// AttrFerroForwardedParams carries the sanitized NAMES (never values) of the
+	// request parameters forwarded to the provider, for debug visibility of the
+	// capability matrix. Planned: emission is deferred — the shared request
+	// builder has no span in scope (see providers/internal/openaicompat).
+	AttrFerroForwardedParams = "ferro.forwarded_params"
 )
 
 // SchemaVersion is the ferro.observability.v1 schema version this

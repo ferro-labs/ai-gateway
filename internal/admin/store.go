@@ -25,4 +25,7 @@ type Store interface {
 	Delete(ctx context.Context, id string) error
 	ValidateKey(ctx context.Context, key string) (*APIKey, bool)
 	RotateKey(ctx context.Context, id string) (*APIKey, error)
+	// Ping reports whether the store is reachable. Readiness probes call it to
+	// gate traffic; it must be cheap and return quickly.
+	Ping(ctx context.Context) error
 }

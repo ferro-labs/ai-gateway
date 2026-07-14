@@ -253,3 +253,22 @@ func TestSQLStore_RespectsCancelledContext(t *testing.T) {
 		t.Fatalf("expected context.Canceled, got: %v", err)
 	}
 }
+
+// TestSQLStore_Ping_NilReceiver proves a nil *SQLStore reports an error
+// instead of panicking: an uninitialized store is not reachable, so
+// readiness must fail closed rather than crash.
+func TestSQLStore_Ping_NilReceiver(t *testing.T) {
+	var store *SQLStore
+	if err := store.Ping(context.Background()); err == nil {
+		t.Fatal("expected error pinging a nil key store")
+	}
+}
+
+// TestSQLStore_Ping_NilDB covers the other uninitialized shape: a non-nil
+// store whose db was never opened.
+func TestSQLStore_Ping_NilDB(t *testing.T) {
+	store := &SQLStore{}
+	if err := store.Ping(context.Background()); err == nil {
+		t.Fatal("expected error pinging a key store with a nil db")
+	}
+}

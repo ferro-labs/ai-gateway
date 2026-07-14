@@ -12,6 +12,15 @@ import (
 // unsupported" (HTTP 404, invalid_request_error) from upstream server faults.
 var ErrNoCapableProvider = errors.New("no capable provider for model")
 
+// ErrProviderSaturated signals that a target is already at its configured
+// concurrency limit and its wait queue is full, so the request was shed rather
+// than queued indefinitely.
+//
+// It is backpressure, not a provider fault: the upstream was never called, so it
+// must never count toward opening the provider's circuit breaker. The HTTP layer
+// surfaces it as 429 so callers back off instead of retrying immediately.
+var ErrProviderSaturated = errors.New("provider concurrency queue is full")
+
 // statusCodePattern matches HTTP status codes formatted as "(NNN)" inside
 // provider error messages (e.g. "provider API error (429): ...").
 var statusCodePattern = regexp.MustCompile(`\((\d{3})\)`)
@@ -25,6 +34,10 @@ var statusCodePattern = regexp.MustCompile(`\((\d{3})\)`)
 func ParseStatusCode(err error) int {
 	if err == nil {
 		return 0
+	}
+	var unsupportedErr *UnsupportedParamError
+	if errors.As(err, &unsupportedErr) {
+		return unsupportedErr.HTTPStatus()
 	}
 	var statusErr *HTTPStatusError
 	if errors.As(err, &statusErr) {

@@ -88,7 +88,7 @@ func PostEmbeddings(ctx context.Context, p EmbeddingParams, req core.EmbeddingRe
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 	if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
-		return nil, APIError(p.Label, httpResp.StatusCode, respBody)
+		return nil, APIErrorFromResponse(p.Label, httpResp, respBody)
 	}
 
 	var pResp embeddingResponse

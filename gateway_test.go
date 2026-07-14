@@ -1503,7 +1503,7 @@ func TestRecordStreamCircuitBreakerOutcome_ReleasesHalfOpenProbeForClientCancel(
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	recordStreamCircuitBreakerOutcome(ctx, cb, mockProviderName, context.Canceled)
+	recordCircuitBreakerOutcome(ctx, cb, mockProviderName, context.Canceled)
 
 	if cb.State() != circuitbreaker.StateHalfOpen {
 		t.Fatalf("expected ignored client cancel to keep half-open state, got %s", cb.State())
@@ -1571,6 +1571,115 @@ func TestGateway_RouteStream_FallbackSkipsOpenCircuitBreakerTarget(t *testing.T)
 	drainMeteredStream(t, ch)
 	if got := selected.Load(); got != "healthy-stream" {
 		t.Fatalf("selected provider = %v, want healthy-stream", got)
+	}
+}
+
+// ── Per-request deadline (#277) ───────────────────────────────────────────────
+
+// TestShouldRecordCircuitBreakerFailure_ClientErrorNeverBlamesProvider guards the
+// other attribution direction: an unsupported-parameter rejection under
+// compatibility.on_unsupported_param=reject is raised by the gateway BEFORE the
+// provider is called. Counting it as a provider failure would let one client
+// sending a bad parameter take a healthy provider offline for everyone else.
+func TestShouldRecordCircuitBreakerFailure_ClientErrorNeverBlamesProvider(t *testing.T) {
+	err := &providers.UnsupportedParamError{Provider: "gemini", Params: []string{"logit_bias"}}
+	if shouldRecordCircuitBreakerFailure(context.Background(), err) {
+		t.Error("a reject-mode unsupported-parameter error is a client error; it must not trip the provider circuit")
+	}
+}
+
+// TestGateway_Route_RequestTimeoutTripsCircuitBreaker guards the attribution of a
+// gateway-imposed deadline. A provider that hangs past request_timeout is a
+// PROVIDER failure and must trip its breaker. If it is misread as caller
+// cancellation the breaker never opens, the hung provider stays in rotation
+// forever, and /readyz — whose only provider signal is circuit state — keeps
+// reporting the pod ready while every request fails.
+func TestGateway_Route_RequestTimeoutTripsCircuitBreaker(t *testing.T) {
+	gw, err := New(Config{
+		Strategy:       StrategyConfig{Mode: ModeSingle},
+		RequestTimeout: "30ms",
+		Targets: []Target{{
+			VirtualKey:     "hung",
+			CircuitBreaker: &CircuitBreakerConfig{FailureThreshold: 2, Timeout: "1m"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = gw.Close() }()
+
+	gw.RegisterProvider(&slowCompleteProvider{
+		mockProvider: mockProvider{name: "hung", models: []string{"gpt-4o"}},
+	})
+
+	for range 3 {
+		if _, err := gw.Route(context.Background(), providers.Request{Model: "gpt-4o"}); err == nil {
+			t.Fatal("expected the hung provider to exceed request_timeout")
+		}
+	}
+
+	circuit := ""
+	for _, p := range gw.Readiness().Providers {
+		if p.Name == "hung" {
+			circuit = p.Circuit
+		}
+	}
+	if circuit != "open" {
+		t.Errorf("circuit = %q, want \"open\": a provider hanging past the gateway's own request_timeout "+
+			"is a provider failure and must trip the breaker", circuit)
+	}
+}
+
+func TestGateway_Route_RequestTimeoutBoundsTheRequest(t *testing.T) {
+	gw, err := New(Config{
+		Strategy:       StrategyConfig{Mode: ModeSingle},
+		Targets:        []Target{{VirtualKey: "slow"}},
+		RequestTimeout: "50ms",
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = gw.Close() }()
+
+	gw.RegisterProvider(&slowCompleteProvider{
+		mockProvider: mockProvider{name: "slow", models: []string{"gpt-4o"}},
+	})
+
+	start := time.Now()
+	_, err = gw.Route(context.Background(), providers.Request{Model: "gpt-4o"})
+	elapsed := time.Since(start)
+
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Route error = %v, want context.DeadlineExceeded", err)
+	}
+	// The provider would take 500ms; the 50ms request_timeout must cut it short.
+	if elapsed >= 500*time.Millisecond {
+		t.Errorf("request took %v — the 50ms request_timeout did not bound it", elapsed)
+	}
+}
+
+func TestGateway_Route_NoRequestTimeout_LeavesRequestUnbounded(t *testing.T) {
+	// With request_timeout omitted the gateway imposes no deadline of its own, so
+	// the slow provider runs to completion.
+	gw, err := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: "slow"}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = gw.Close() }()
+
+	gw.RegisterProvider(&slowCompleteProvider{
+		mockProvider: mockProvider{name: "slow", models: []string{"gpt-4o"}},
+	})
+
+	resp, err := gw.Route(context.Background(), providers.Request{Model: "gpt-4o"})
+	if err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	if resp.ID != "ok" {
+		t.Errorf("response ID = %q, want %q", resp.ID, "ok")
 	}
 }
 
@@ -1935,7 +2044,7 @@ func TestGateway_RouteStream_AfterPluginRejectRunsOnError(t *testing.T) {
 	var onErrorCalls int
 	_ = gw.RegisterPlugin(plugin.StageAfterRequest, &testPlugin{
 		name: "after",
-		typ:  plugin.TypeLogging,
+		typ:  plugin.TypeGuardrail,
 		execFn: func(_ context.Context, pctx *plugin.Context) error {
 			pctx.Reject = true
 			pctx.Reason = "after plugin rejected"
@@ -1991,7 +2100,7 @@ func TestGateway_Route_AfterPluginRejectRunsOnError(t *testing.T) {
 	var onErrorCalls int
 	_ = gw.RegisterPlugin(plugin.StageAfterRequest, &testPlugin{
 		name: "after",
-		typ:  plugin.TypeLogging,
+		typ:  plugin.TypeGuardrail,
 		execFn: func(_ context.Context, pctx *plugin.Context) error {
 			pctx.Reject = true
 			pctx.Reason = "after plugin rejected"
@@ -2020,6 +2129,114 @@ func TestGateway_Route_AfterPluginRejectRunsOnError(t *testing.T) {
 	}
 	if onErrorCalls != 1 {
 		t.Fatalf("on-error plugin calls = %d, want 1", onErrorCalls)
+	}
+}
+
+func TestGateway_Route_AfterLoggingPanicStaysNonFatal(t *testing.T) {
+	gw, _ := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: mockProviderName}},
+	})
+	gw.RegisterProvider(&mockProvider{
+		name:   mockProviderName,
+		models: []string{"gpt-4o"},
+		resp:   &providers.Response{ID: "r1", Model: "gpt-4o", Provider: mockProviderName},
+	})
+
+	var onErrorCalls int
+	_ = gw.RegisterPlugin(plugin.StageAfterRequest, &testPlugin{
+		name: "after-logger",
+		typ:  plugin.TypeLogging,
+		execFn: func(context.Context, *plugin.Context) error {
+			panic("log sink down")
+		},
+	})
+	_ = gw.RegisterPlugin(plugin.StageOnError, &testPlugin{
+		name: "on-error",
+		typ:  plugin.TypeLogging,
+		execFn: func(context.Context, *plugin.Context) error {
+			onErrorCalls++
+			return nil
+		},
+	})
+
+	resp, err := gw.Route(context.Background(), providers.Request{
+		Model:    "gpt-4o",
+		Messages: []providers.Message{{Role: "user", Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Route() error = %v, want nil", err)
+	}
+	if resp.ID != "r1" {
+		t.Fatalf("response ID = %q, want r1", resp.ID)
+	}
+	if onErrorCalls != 0 {
+		t.Fatalf("on-error plugin calls = %d, want 0", onErrorCalls)
+	}
+}
+
+func TestGateway_RouteStream_AfterLoggingErrorStaysNonFatal(t *testing.T) {
+	gw, _ := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: mockProviderName}},
+	})
+	gw.RegisterProvider(&mockStreamProvider{
+		mockProvider: mockProvider{name: mockProviderName, models: []string{"gpt-4o"}},
+		streamFn: func(context.Context, providers.Request) (<-chan providers.StreamChunk, error) {
+			ch := make(chan providers.StreamChunk, 2)
+			ch <- providers.StreamChunk{
+				Model: "gpt-4o",
+				Choices: []providers.StreamChoice{{
+					Index:        0,
+					Delta:        providers.MessageDelta{Role: "assistant", Content: "ok"},
+					FinishReason: "stop",
+				}},
+			}
+			ch <- providers.StreamChunk{
+				Usage: &providers.Usage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2},
+			}
+			close(ch)
+			return ch, nil
+		},
+	})
+
+	var onErrorCalls int
+	_ = gw.RegisterPlugin(plugin.StageAfterRequest, &testPlugin{
+		name: "after-logger",
+		typ:  plugin.TypeLogging,
+		execFn: func(context.Context, *plugin.Context) error {
+			return fmt.Errorf("log sink down")
+		},
+	})
+	_ = gw.RegisterPlugin(plugin.StageOnError, &testPlugin{
+		name: "on-error",
+		typ:  plugin.TypeLogging,
+		execFn: func(context.Context, *plugin.Context) error {
+			onErrorCalls++
+			return nil
+		},
+	})
+
+	ch, err := gw.RouteStream(context.Background(), providers.Request{
+		Model:    "gpt-4o",
+		Messages: []providers.Message{{Role: "user", Content: "hi"}},
+		Stream:   true,
+	})
+	if err != nil {
+		t.Fatalf("RouteStream: %v", err)
+	}
+	var chunks int
+	for chunk := range ch {
+		chunks++
+		if chunk.Error != nil {
+			t.Fatalf("stream chunk error = %v, want nil", chunk.Error)
+		}
+	}
+	if chunks == 0 {
+		t.Fatal("expected stream chunks")
+	}
+	if onErrorCalls != 0 {
+		t.Fatalf("on-error plugin calls = %d, want 0", onErrorCalls)
 	}
 }
 

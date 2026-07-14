@@ -150,8 +150,16 @@ func (p *Provider) completeJurassic(ctx context.Context, req core.Request) (*cor
 		}
 	}
 
-	core.WarnUnsupportedParams(ctx, p.Name(), req.Model, req,
-		"max_tokens", "temperature", "top_p", "stop")
+	// AI21 is dual-path: Jamba speaks the OpenAI-compatible chat API (and forwards
+	// everything through the shared builder), while the deprecated Jurassic
+	// /complete endpoint expresses only these four. The support set is therefore a
+	// property of the ENDPOINT, not of the provider, so it is declared here rather
+	// than as a provider-level entry in the capability matrix — the same treatment
+	// Bedrock gets for its per-model families.
+	if err := core.EnforceUnsupportedParamsList(ctx, p.Name(), req.Model, req,
+		"max_tokens", "temperature", "top_p", "stop"); err != nil {
+		return nil, err
+	}
 
 	completeReq := ai21CompleteRequest{
 		Prompt:        prompt,
@@ -187,7 +195,7 @@ func (p *Provider) completeJurassic(ctx context.Context, req core.Request) (*cor
 	}
 
 	if httpResp.StatusCode != http.StatusOK {
-		return nil, core.APIError(Name, httpResp.StatusCode, respBody)
+		return nil, core.APIErrorFromResponse(Name, httpResp, respBody)
 	}
 
 	var completeResp ai21CompleteResponse

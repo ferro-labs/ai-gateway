@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -164,26 +163,53 @@ func TestManager_RunBefore_RejectWithError_FallsBackToErrorMessage(t *testing.T)
 	}
 }
 
-func TestManager_RunBefore_PanicReturnsError(t *testing.T) {
-	m := NewManager()
-	_ = m.Register(StageBeforeRequest, &mockPlugin{
-		name: "panic-guard",
-		typ:  TypeGuardrail,
-		execFn: func(context.Context, *Context) error {
-			panic("boom")
+func TestManager_RunBefore_FailOpenPluginFailureDoesNotAbort(t *testing.T) {
+	tests := []struct {
+		name   string
+		typ    PluginType
+		execFn func(context.Context, *Context) error
+	}{
+		{
+			name: "logging error",
+			typ:  TypeLogging,
+			execFn: func(context.Context, *Context) error {
+				return fmt.Errorf("log sink down")
+			},
 		},
-	})
+		{
+			name: "metrics panic",
+			typ:  TypeMetrics,
+			execFn: func(context.Context, *Context) error {
+				panic("metrics sink down")
+			},
+		},
+	}
 
-	pctx := NewContext(&providers.Request{Model: "gpt-4o"})
-	err := m.RunBefore(context.Background(), pctx)
-	if err == nil {
-		t.Fatal("expected panic to be converted to an error")
-	}
-	if !strings.Contains(err.Error(), "plugin panic-guard panicked") {
-		t.Fatalf("error = %q, want plugin panic context", err.Error())
-	}
-	if strings.Contains(err.Error(), "runtime/debug.Stack") {
-		t.Fatalf("error = %q, should not expose panic stack", err.Error())
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := NewManager()
+			_ = m.Register(StageBeforeRequest, &mockPlugin{name: "fail-open", typ: tt.typ, execFn: tt.execFn})
+			nextCalled := false
+			_ = m.Register(StageBeforeRequest, &mockPlugin{
+				name: "next",
+				typ:  TypeGuardrail,
+				execFn: func(context.Context, *Context) error {
+					nextCalled = true
+					return nil
+				},
+			})
+
+			pctx := NewContext(&providers.Request{Model: "gpt-4o"})
+			if err := m.RunBefore(context.Background(), pctx); err != nil {
+				t.Fatalf("RunBefore() error = %v, want nil", err)
+			}
+			if !nextCalled {
+				t.Fatal("fail-open plugin failure should not skip later plugins")
+			}
+			if pctx.Reject || pctx.Reason != "" {
+				t.Fatalf("fail-open rejection leaked: reject=%v reason=%q", pctx.Reject, pctx.Reason)
+			}
+		})
 	}
 }
 
@@ -258,6 +284,57 @@ func TestManager_RunAfter_RejectWithErrorAndEmptyReason_UsesErrorMessage(t *test
 	}
 	if rejection.Reason != "schema mismatch" {
 		t.Fatalf("reason = %q, want %q", rejection.Reason, "schema mismatch")
+	}
+}
+
+func TestManager_RunAfter_FailOpenPluginFailureDoesNotAbort(t *testing.T) {
+	tests := []struct {
+		name   string
+		typ    PluginType
+		execFn func(context.Context, *Context) error
+	}{
+		{
+			name: "logging error",
+			typ:  TypeLogging,
+			execFn: func(context.Context, *Context) error {
+				return fmt.Errorf("log sink down")
+			},
+		},
+		{
+			name: "metrics panic",
+			typ:  TypeMetrics,
+			execFn: func(context.Context, *Context) error {
+				panic("metrics sink down")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := NewManager()
+			_ = m.Register(StageAfterRequest, &mockPlugin{name: "fail-open", typ: tt.typ, execFn: tt.execFn})
+			nextCalled := false
+			_ = m.Register(StageAfterRequest, &mockPlugin{
+				name: "next",
+				typ:  TypeGuardrail,
+				execFn: func(context.Context, *Context) error {
+					nextCalled = true
+					return nil
+				},
+			})
+
+			pctx := NewContext(&providers.Request{})
+			pctx.Response = &providers.Response{ID: "r1"}
+			if err := m.RunAfter(context.Background(), pctx); err != nil {
+				t.Fatalf("RunAfter() error = %v, want nil", err)
+			}
+			if !nextCalled {
+				t.Fatal("fail-open plugin failure should not skip later plugins")
+			}
+			if pctx.Reject || pctx.Reason != "" {
+				t.Fatalf("fail-open rejection leaked: reject=%v reason=%q", pctx.Reject, pctx.Reason)
+			}
+		})
 	}
 }
 

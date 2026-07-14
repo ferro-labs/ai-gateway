@@ -152,7 +152,7 @@ func (p *Provider) completeAnthropic(ctx context.Context, req core.Request) (*co
 		Body:        body,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("bedrock invoke failed: %w", err)
+		return nil, bedrockInvokeError("invoke", err)
 	}
 
 	var anthropicResp anthropicwire.Response

@@ -49,12 +49,15 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 	// explicitly. streamEnded prevents a double-End.
 	g.mu.RLock()
 	strategyMode := string(g.config.Strategy.Mode)
+	compatMode := g.config.Compatibility.OnUnsupportedParam
 	obs := g.obs
 	obsEventsActive := g.obsEventsActive
 	mcpRegistrySnapshot := g.mcpRegistry
 	plugins := g.plugins
 	releasePlugins := acquirePluginManager(plugins)
 	g.mu.RUnlock()
+
+	ctx = withUnsupportedParamMode(ctx, compatMode)
 	var releasePluginsOnce sync.Once
 	releasePluginManager := func() {
 		releasePluginsOnce.Do(releasePlugins)
@@ -178,7 +181,7 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 		cb := wrapped.cb
 		cbName := wrapped.name
 		meta.CircuitBreakerOutcome = func(err error) {
-			recordStreamCircuitBreakerOutcome(ctx, cb, cbName, err)
+			recordCircuitBreakerOutcome(ctx, cb, cbName, err)
 		}
 	}
 	if pctx != nil {
@@ -300,7 +303,7 @@ func (g *Gateway) runBeforePluginsStream(ctx context.Context, span observability
 	if err != nil {
 		plugin.PutContext(pctx)
 		releasePluginManager()
-		metrics.ForRequest("", g.metricModel(req.Model)).Rejected.Inc()
+		recordPluginAbort(metrics.ForRequest("", g.metricModel(req.Model)), err)
 		return nil, nil, err
 	}
 	if early != nil {
@@ -324,6 +327,7 @@ func (g *Gateway) runBeforePluginsStream(ctx context.Context, span observability
 func (g *Gateway) resolveStreamOrError(ctx context.Context, span observability.Span, plugins *plugin.Manager, pctx *plugin.Context, releasePluginManager func(), req providers.Request) (providers.StreamProvider, error) {
 	g.mu.Lock()
 	g.ensureCircuitBreakersLocked()
+	g.ensureProviderLimitersLocked()
 	g.mu.Unlock()
 
 	fail := func(err error) (providers.StreamProvider, error) {
@@ -425,8 +429,8 @@ func (g *Gateway) resolveStreamProviderFromKeysLocked(orderedKeys []string, mode
 	if !ok {
 		return nil
 	}
-	if cb, hasCB := g.circuitBreakers[name]; hasCB {
-		return &cbProvider{Provider: g.providers[name], cb: cb, name: name}
+	if decorated, ok := decorateProvider(name, g.providers[name], g.circuitBreakers[name], g.limiters[name]).(providers.StreamProvider); ok {
+		return decorated
 	}
 	return fallback
 }
@@ -442,9 +446,9 @@ func (g *Gateway) streamingProviderForTargetLocked(key, model string) (providers
 		return nil, false
 	}
 
-	// Apply circuit breaker if configured.
-	if cb, hasCB := g.circuitBreakers[key]; hasCB {
-		return &cbProvider{Provider: p, cb: cb, name: key}, true
+	// Apply the circuit breaker and concurrency limit configured for this target.
+	if decorated, ok := decorateProvider(key, p, g.circuitBreakers[key], g.limiters[key]).(providers.StreamProvider); ok {
+		return decorated, true
 	}
 	return sp, true
 }

@@ -5,6 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/rand/v2"
+	"net/http"
+	"slices"
 	"time"
 
 	"github.com/ferro-labs/ai-gateway/internal/circuitbreaker"
@@ -32,7 +35,7 @@ type Fallback struct {
 }
 
 // NewFallback creates a new fallback strategy with default retry settings
-// (1 attempt per target, retry on any error).
+// (1 attempt per target — no retries until WithTargetRetry/WithMaxRetries is called).
 func NewFallback(targets []Target, lookup ProviderLookup) *Fallback {
 	return &Fallback{
 		targets: targets,
@@ -55,7 +58,7 @@ func (f *Fallback) WithMaxRetries(n int) *Fallback {
 // WithTargetRetry configures the retry policy for a specific target.
 // attempts is the total attempt count (1 = no retries).
 // onStatusCodes limits retries to requests that fail with those HTTP status
-// codes; pass nil or empty to retry on any error.
+// codes; pass nil or empty for the default policy (see shouldRetry).
 // initialBackoffMs is the base for exponential backoff (0 → defaultBackoffMs).
 func (f *Fallback) WithTargetRetry(virtualKey string, attempts int, onStatusCodes []int, initialBackoffMs int) *Fallback {
 	f.retries[virtualKey] = targetRetry{
@@ -78,32 +81,70 @@ func (f *Fallback) resolveRetry(virtualKey string) targetRetry {
 	return r
 }
 
-// shouldRetry returns true if the error is eligible for another attempt given
-// the configured onStatusCodes list. Cancellation and open-circuit sentinel
-// errors are never retryable. When onStatusCodes is empty, other errors are
-// retryable. When it is non-empty, only errors whose embedded HTTP status code
-// appears in the list are retried.
+// maxRetryAfter caps how long an upstream Retry-After hint may stall a retry. A
+// longer hint means the provider will not be ready within a useful window, so the
+// fallback abandons that target and moves on rather than holding the request open.
+const maxRetryAfter = 30 * time.Second
+
+// defaultRetryableStatus reports whether an HTTP status is retryable under the
+// default policy (no explicit on_status_codes): request timeout, throttling, and
+// server-side failures. Every other 4xx is a deterministic client error —
+// retrying it against the same provider cannot change the outcome and only burns
+// the retry budget.
+func defaultRetryableStatus(code int) bool {
+	return code == http.StatusRequestTimeout ||
+		code == http.StatusTooManyRequests ||
+		code >= http.StatusInternalServerError
+}
+
+// shouldRetry returns true if the error is eligible for another attempt against
+// the same target. Cancellation, deadline expiry, and open-circuit sentinels are
+// never retryable. With no configured onStatusCodes the default policy applies
+// (transport errors plus 408/429/5xx); when onStatusCodes is set, only those
+// codes are retried. A transport error carries no status code and is always
+// retryable — it is exactly the transient case retries exist for.
 func shouldRetry(err error, onStatusCodes []int) bool {
 	if errors.Is(err, context.Canceled) ||
 		errors.Is(err, context.DeadlineExceeded) ||
 		errors.Is(err, circuitbreaker.ErrCircuitOpen) {
 		return false
 	}
-	if len(onStatusCodes) == 0 {
-		return true
-	}
 	code := providers.ParseStatusCode(err)
 	if code == 0 {
-		// No parseable status code — treat as retryable so we don't silently
-		// swallow errors that don't follow the standard format.
+		// No parseable status code — a transport-level failure; retry it.
 		return true
 	}
-	for _, c := range onStatusCodes {
-		if c == code {
-			return true
-		}
+	if len(onStatusCodes) == 0 {
+		return defaultRetryableStatus(code)
 	}
-	return false
+	return slices.Contains(onStatusCodes, code)
+}
+
+// retryDelay returns how long to wait before a retry attempt (attempt >= 1). It
+// honors an upstream Retry-After hint from the previous failure when present —
+// the provider knows when it will be ready better than any local guess.
+// Otherwise it applies exponential backoff with FULL JITTER: a uniform random
+// wait in [0, exponential). Full jitter spreads a thundering herd of retrying
+// clients far better than a fixed exponential, which re-synchronises them.
+//
+// It returns a negative duration to signal that the Retry-After hint exceeds
+// maxRetryAfter and the caller should stop retrying this target.
+func retryDelay(attempt, initialBackoffMs int, prevErr error) time.Duration {
+	if hint := providers.RetryAfterFrom(prevErr); hint > 0 {
+		if hint > maxRetryAfter {
+			return -1
+		}
+		return hint
+	}
+	exponential := time.Duration(math.Pow(2, float64(attempt-1))) *
+		time.Duration(initialBackoffMs) * time.Millisecond
+	if exponential <= 0 {
+		return 0
+	}
+	//nolint:gosec // G404: retry jitter only needs to de-correlate concurrent
+	// clients, not resist prediction. A CSPRNG would buy nothing here and cost
+	// entropy on every retry.
+	return rand.N(exponential)
 }
 
 // Execute attempts each provider in order, retrying according to the per-target
@@ -130,30 +171,45 @@ func (f *Fallback) Execute(ctx context.Context, req providers.Request) (*provide
 
 		retry := f.resolveRetry(target.VirtualKey)
 
+		// attemptErr is the previous attempt's failure on THIS target; it carries
+		// any upstream Retry-After hint that should drive the next wait.
+		var attemptErr error
 		for attempt := 0; attempt < retry.attempts; attempt++ {
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
 			if attempt > 0 {
-				backoff := time.Duration(math.Pow(2, float64(attempt-1))) *
-					time.Duration(retry.initialBackoffMs) * time.Millisecond
+				delay := retryDelay(attempt, retry.initialBackoffMs, attemptErr)
+				if delay < 0 {
+					logging.Logger.Info("abandoning provider: Retry-After exceeds the cap",
+						"provider", target.VirtualKey,
+						"retry_after", providers.RetryAfterFrom(attemptErr),
+						"max_retry_after", maxRetryAfter,
+					)
+					break
+				}
 				select {
 				case <-ctx.Done():
 					return nil, ctx.Err()
-				case <-time.After(backoff):
+				case <-time.After(delay):
 				}
-				logging.Logger.Info("retrying provider", "provider", target.VirtualKey, "attempt", attempt+1)
+				logging.Logger.Info("retrying provider",
+					"provider", target.VirtualKey,
+					"attempt", attempt+1,
+					"delay", delay,
+				)
 			}
 
 			resp, err := p.Complete(ctx, req)
 			if err == nil {
 				return responseWithProvider(resp, target.VirtualKey), nil
 			}
+			attemptErr = err
 			lastErr = fmt.Errorf("provider %s attempt %d: %w", target.VirtualKey, attempt+1, err)
 
-			// Stop retrying this target if the status code is not in the allow list.
+			// Stop retrying this target when the failure is not retryable.
 			if !shouldRetry(err, retry.onStatusCodes) {
-				logging.Logger.Debug("skipping retries for provider: status code not in retry list",
+				logging.Logger.Debug("skipping retries for provider: error not retryable",
 					"provider", target.VirtualKey,
 					"status_code", providers.ParseStatusCode(err),
 				)

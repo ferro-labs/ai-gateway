@@ -62,7 +62,8 @@ func NewRouter(
 		}
 	}
 
-	// Core middleware stack.
+	// Root middleware stack: safe for every request, including unauthenticated
+	// orchestrator probes, so it runs ahead of any per-client rate limiting.
 	// RecoverJSON is outermost so panics anywhere below this point still return
 	// the gateway's JSON error envelope while inner middleware defers can run.
 	r.Use(middleware.RecoverJSON)
@@ -78,23 +79,42 @@ func NewRouter(
 	// It must come before CORS so that security headers are present on all responses,
 	// including preflight rejections and error responses.
 	r.Use(middleware.SecurityHeaders)
+
+	// Orchestrator probes are mounted directly on the root router, ahead of
+	// RealIPMiddleware/CORS/the per-client rate limiter (installed below on a
+	// separate child router). Otherwise a traffic burst against /v1/* that
+	// exhausts one source IP's rate-limit bucket would also 429 that same
+	// IP's liveness probe (e.g. behind a shared load balancer), turning a
+	// load spike into an orchestrator restart loop. See mountProbeRoutes for
+	// why /readyz is not fully exempted the way /health and /livez are.
+	mountProbeRoutes(r, gw, keyStore, cfgManager)
+
+	// Everything else sits behind RealIPMiddleware, CORS, and the per-client
+	// rate limiter, mounted on a genuine child router rather than a
+	// chi.Group: a chi Mux bakes its Use() stack into every route already
+	// registered on it (and panics if Use() is called after a route is
+	// added), and Group can only layer extra middleware onto a subset of
+	// routes -- it can never exempt a route from middleware already
+	// installed on the parent. Mounting a separate router is the only way to
+	// keep /health, /livez, and /readyz's own limiter out of this chain.
+	app := chi.NewRouter()
 	// RealIPMiddleware resolves the client IP from X-Forwarded-For / X-Real-IP
 	// only when the direct TCP peer is within a trusted-proxy CIDR, writing the
 	// resolved host (no port) back into r.RemoteAddr. This replaces the
 	// deprecated chi middleware.RealIP, which honored those headers
 	// unconditionally and could be exploited by a caller that controlled them.
-	r.Use(RealIPMiddleware(resolvedProxies))
-	r.Use(middleware.CORS(corsOrigins...))
-
+	app.Use(RealIPMiddleware(resolvedProxies))
+	app.Use(middleware.CORS(corsOrigins...))
 	// Optional per-IP rate limiting middleware.
 	if rlStore != nil {
-		r.Use(middleware.RateLimit(rlStore))
+		app.Use(middleware.RateLimit(rlStore))
 	}
 
-	mountOperationalRoutes(r, gw, keyStore, masterKey)
-	mountDashboardRoutes(r)
-	mountAdminRoutes(r, gw, keyStore, cfgManager, logReader, logMaintainer, masterKey)
-	mountOpenAIRoutes(r, gw, registry, keyStore, masterKey)
+	mountObservabilityRoutes(app, keyStore, masterKey)
+	mountDashboardRoutes(app)
+	mountAdminRoutes(app, gw, keyStore, cfgManager, logReader, logMaintainer, masterKey)
+	mountOpenAIRoutes(app, gw, registry, keyStore, masterKey)
+	r.Mount("/", app)
 
 	return r
 }
@@ -127,8 +147,45 @@ func ensureGateway(gw *aigateway.Gateway, registry *providers.Registry) *aigatew
 	return created
 }
 
-func mountOperationalRoutes(r chi.Router, gw *aigateway.Gateway, store admin.Store, masterKey string) {
+// readyzRatePerSecond and readyzBurst bound /readyz with its own dedicated
+// limit, separate from the per-client rate limiter. /readyz is unauthenticated
+// and fans out to Ping() calls against the key store and config manager
+// (internal/handler/health.go) on every request, so it cannot be exempted
+// from rate limiting the way /health and /livez are without exposing those
+// backing stores to unbounded pings. The bucket is process-global (see
+// mountProbeRoutes): these values cap the aggregate probe rate this process
+// will serve, sized to absorb many orchestrator replicas probing on a normal
+// cadence while still bounding the worst case.
+const (
+	readyzRatePerSecond = 10
+	readyzBurst         = 20
+)
+
+// mountProbeRoutes mounts the orchestrator health probes on r, ahead of the
+// per-client middleware installed on the child router in NewRouter. /health
+// and /livez are pure in-memory reads with no dependency I/O, so they are
+// fully exempt from rate limiting. /readyz gets its own dedicated limiter
+// instead of a blanket exemption or the shared client bucket.
+func mountProbeRoutes(r chi.Router, gw *aigateway.Gateway, store admin.Store, cfgManager admin.ConfigManager) {
 	r.Get("/health", handler.Health(gw))
+	// Split liveness/readiness probes for orchestrator rollout gating: /livez is
+	// process-only, /readyz gates on config, store reachability, and providers.
+	r.Get("/livez", handler.Livez())
+	// One process-global bucket, NOT a per-IP one. What has to be bounded here is
+	// the total Ping() fan-out this process aims at the key store and config
+	// manager, and that ceiling is a property of the stores, not of any one
+	// caller. A per-IP bucket cannot express it: /readyz is unauthenticated, so a
+	// caller presenting many source addresses would receive a fresh allowance for
+	// each one and the per-key map would grow with every address it presented.
+	// A single bucket caps the aggregate rate and holds no per-caller state.
+	readyzLimiter := ratelimit.New(readyzRatePerSecond, readyzBurst)
+	r.With(middleware.RateLimitGlobal(readyzLimiter, "readyz")).
+		Get("/readyz", handler.Readyz(gw, store, cfgManager))
+}
+
+// mountObservabilityRoutes mounts the auth-gated /metrics, /debug/vars, and
+// pprof routes.
+func mountObservabilityRoutes(r chi.Router, store admin.Store, masterKey string) {
 	obsAuth := admin.AuthMiddleware(store, masterKey)
 	r.Group(func(r chi.Router) {
 		r.Use(obsAuth)
@@ -241,6 +298,7 @@ func mountOpenAIRoutes(r chi.Router, gw *aigateway.Gateway, registry *providers.
 		r.Use(auth)
 		r.Use(middleware.MaxRequestBody(maxBytes))
 		r.Get("/v1/models", handler.Models(gw))
+		r.Get("/v1/capabilities", handler.Capabilities(registry))
 		r.Post("/v1/chat/completions", handler.ChatCompletions(gw))
 
 		// Legacy text completions.

@@ -5,6 +5,30 @@
 // gateway at startup. The plugin.Context carries the request and response
 // through each stage, and plugins may modify, reject, or skip requests.
 //
+// # Rejection and failure
+//
+// A plugin can end a request two ways, and the gateway treats them differently:
+//
+//   - Rejection — the plugin ran and DECIDED to deny the request, by setting
+//     Context.Reject. This is always honoured, for every plugin type, and reaches
+//     the client as a RejectionError: a 429 for a rate-limit plugin, a 4xx for
+//     anything else.
+//   - Failure — the plugin BROKE: it returned an error or panicked, so it never
+//     reached a decision. Guardrail, auth, ratelimit, transform, and any unknown
+//     plugin type fail closed, aborting the request with a FailureError, which the
+//     client sees as a 500. Logging and metrics plugins fail open — a dead log sink
+//     watches the request, it does not gate it — so their errors are logged and the
+//     request proceeds.
+//
+// The distinction matters at the wire: a rate-limit plugin whose backend is down has
+// not rate-limited anyone, and answering 429 would invite every SDK to retry into
+// the outage. It is a server fault, and the gateway reports it as one.
+//
+// Note that an after_request plugin on a streaming response runs once the stream has
+// already been delivered chunk by chunk. It can observe the completed response, but
+// it cannot unsend it — a guardrail that must withhold content has to run at
+// before_request, or the caller must not stream.
+//
 // Built-in plugins live in the internal/plugins/* packages and are registered
 // by importing them with a blank import (e.g. _ "github.com/ferro-labs/ai-gateway/internal/plugins/wordfilter").
 package plugin
@@ -28,6 +52,11 @@ type Plugin interface {
 	// Execute runs the plugin for the current stage against the request and
 	// response carried by pctx. It may mutate them or set pctx.Reject / pctx.Skip
 	// to influence the pipeline (see Context).
+	//
+	// Return an error only when the plugin could not do its job. To deny a request,
+	// set pctx.Reject — that is a verdict, and the gateway reports it as one. An
+	// error means the plugin broke, and for every type but logging and metrics it
+	// aborts the request as a server-side failure. See the package documentation.
 	Execute(ctx context.Context, pctx *Context) error
 	// Close releases resources owned by the plugin. Implementations should be
 	// safe to close more than once across reload and shutdown paths.
@@ -76,6 +105,10 @@ type Context struct {
 	Skip bool
 	// Reject, when set true, aborts the request and returns a rejection error to
 	// the client. Reason supplies the human-readable cause.
+	//
+	// It is honoured for every plugin type, including logging and metrics: a plugin
+	// sets Reject only when it has decided to deny the request, and a decision the
+	// gateway silently discarded would be worse than one it never allowed.
 	Reject bool
 	// Reason is the human-readable explanation reported to the client when
 	// Reject is set.

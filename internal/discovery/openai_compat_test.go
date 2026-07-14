@@ -5,6 +5,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
+
+	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
 func TestDiscoverOpenAICompatibleModels_Success(t *testing.T) {
@@ -165,5 +168,29 @@ func TestDiscoverModelsWithHeaders_Non200Status(t *testing.T) {
 	_, err := DiscoverModelsWithHeaders(context.Background(), srv.Client(), srv.URL, nil, "p")
 	if err == nil {
 		t.Fatal("expected error for non-200 status, got nil")
+	}
+}
+
+// TestDiscoverOpenAICompatibleModels_PreservesRetryAfter verifies a 429
+// response's Retry-After header survives discovery errors as a typed
+// core.HTTPStatusError so the fallback strategy can honor the provider's own
+// backoff hint instead of guessing.
+func TestDiscoverOpenAICompatibleModels_PreservesRetryAfter(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "5")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"rate limited"}}`))
+	}))
+	defer srv.Close()
+
+	_, err := DiscoverOpenAICompatibleModels(context.Background(), srv.Client(), srv.URL, "test-key", "test-provider")
+	if err == nil {
+		t.Fatal("expected error for 429 status, got nil")
+	}
+	if got := core.ParseStatusCode(err); got != http.StatusTooManyRequests {
+		t.Errorf("core.ParseStatusCode(err) = %d, want 429", got)
+	}
+	if got := core.RetryAfterFrom(err); got != 5*time.Second {
+		t.Errorf("core.RetryAfterFrom(err) = %v, want 5s", got)
 	}
 }

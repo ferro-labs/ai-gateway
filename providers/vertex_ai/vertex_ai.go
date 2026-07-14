@@ -314,7 +314,7 @@ func (p *Provider) doPredict(ctx context.Context, model string, body any, label 
 		return nil, fmt.Errorf("failed to read %s response: %w", label, err)
 	}
 	if httpResp.StatusCode != http.StatusOK {
-		return nil, core.APIError("vertex ai "+label, httpResp.StatusCode, respBody)
+		return nil, core.APIErrorFromResponse("vertex ai "+label, httpResp, respBody)
 	}
 	return respBody, nil
 }

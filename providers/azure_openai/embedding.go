@@ -74,7 +74,7 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 	if httpResp.StatusCode != http.StatusOK {
-		return nil, core.APIError("azure openai", httpResp.StatusCode, respBody)
+		return nil, core.APIErrorFromResponse("azure openai", httpResp, respBody)
 	}
 
 	var pResp embeddingResponse

@@ -74,22 +74,32 @@ func ChatCompletions(gw *aigateway.Gateway) http.HandlerFunc {
 // Health handles GET /health.
 func Health(gw *aigateway.Gateway) http.HandlerFunc {
 	type providerHealth struct {
-		Name   string `json:"name"`
-		Status string `json:"status"`
-		Models int    `json:"models"`
+		Name    string `json:"name"`
+		Status  string `json:"status"`
+		Circuit string `json:"circuit"`
+		Models  int    `json:"models"`
 	}
 
 	return func(w http.ResponseWriter, _ *http.Request) {
+		circuits := make(map[string]string)
+		for _, pr := range gw.Readiness().Providers {
+			circuits[pr.Name] = pr.Circuit
+		}
 		var providerStatuses []providerHealth
 		for _, name := range gw.ListProviders() {
 			p, ok := gw.GetProvider(name)
 			if !ok {
 				continue
 			}
+			circuit := circuits[name]
+			if circuit == "" {
+				circuit = "closed"
+			}
 			providerStatuses = append(providerStatuses, providerHealth{
-				Name:   name,
-				Status: "available",
-				Models: len(p.Models()),
+				Name:    name,
+				Status:  "available",
+				Circuit: circuit,
+				Models:  len(p.Models()),
 			})
 		}
 		if providerStatuses == nil {

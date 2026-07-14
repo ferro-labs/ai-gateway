@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/ferro-labs/ai-gateway/internal/envref"
 	"github.com/ferro-labs/ai-gateway/internal/mcp"
 	pubmcp "github.com/ferro-labs/ai-gateway/mcp"
 )
@@ -68,11 +69,27 @@ func (g *Gateway) wireMCPLocked(cfg Config, failLogMsg string) {
 	}
 
 	reg := mcp.NewRegistry()
+	registered := make([]pubmcp.ServerConfig, 0, len(cfg.MCPServers))
 	for _, mcpCfg := range cfg.MCPServers {
+		// Resolve ${VAR} references into the MCP client's headers here, not in the
+		// Config: the Config keeps the references, so a bearer token is never
+		// persisted to the config store nor served by GET /admin/config.
+		headers, err := envref.StringMap(mcpCfg.Headers)
+		if err != nil {
+			// Skip only this server: an unrelated server's config must not be able to
+			// disable every other server, and the caller (ReloadConfig) must still get
+			// a registry rebuilt from cfg rather than keep serving the pre-reload one.
+			slog.Error(failLogMsg, "server", mcpCfg.Name, "error", err)
+			continue
+		}
+		mcpCfg.Headers = headers
 		reg.RegisterConfig(mcpCfg)
+		registered = append(registered, mcpCfg)
 	}
 
-	maxDepth := minPositiveMaxCallDepth(cfg.MCPServers)
+	// Only servers that actually registered can contribute to the shared
+	// executor's depth limit — a skipped server must not clamp it for everyone else.
+	maxDepth := minPositiveMaxCallDepth(registered)
 
 	g.mcpRegistry = reg
 	g.mcpExecutor = mcp.NewExecutor(reg, maxDepth, buildMCPAuditFn(cfg.MCPToolCallAuditFn))
@@ -100,7 +117,9 @@ func (g *Gateway) wireMCPLocked(cfg Config, failLogMsg string) {
 
 // minPositiveMaxCallDepth returns the smallest positive MaxCallDepth across the
 // given MCP servers, or 0 when none specify a positive depth. A returned 0 lets
-// mcp.NewExecutor apply its default (5).
+// mcp.NewExecutor apply its default (5). Callers must pass only the servers
+// that actually registered — a server skipped for a config error must not
+// contribute its MaxCallDepth to this minimum.
 func minPositiveMaxCallDepth(servers []pubmcp.ServerConfig) int {
 	maxDepth := 0
 	for _, mcpCfg := range servers {

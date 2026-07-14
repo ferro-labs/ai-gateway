@@ -70,7 +70,7 @@ func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*c
 	}
 
 	if httpResp.StatusCode != http.StatusOK {
-		return nil, core.APIError("xai", httpResp.StatusCode, respBody)
+		return nil, core.APIErrorFromResponse("xai", httpResp, respBody)
 	}
 
 	var decoded core.ImageResponse

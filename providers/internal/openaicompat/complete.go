@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/ferro-labs/ai-gateway/internal/logging"
+	"github.com/ferro-labs/ai-gateway/providers/capabilities"
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
@@ -21,8 +23,19 @@ type ChatResponse struct {
 // APIError builds a provider error from a non-200 response body. It delegates to
 // core.APIError, which uses the OpenAI {"error":{"message":…}} envelope when
 // present and falls back to the raw body. label is the human-facing provider name.
+//
+// Deprecated: use APIErrorFromResponse where the *http.Response is in hand, so
+// the upstream Retry-After hint is captured for retry backoff.
 func APIError(label string, status int, body []byte) error {
 	return core.APIError(label, status, body)
+}
+
+// APIErrorFromResponse builds a provider error from a non-success response,
+// capturing the upstream Retry-After hint alongside the status. Every
+// OpenAI-compatible provider routes its errors through here, so this one call
+// gives the whole compatible fleet throttling-aware retries.
+func APIErrorFromResponse(label string, resp *http.Response, body []byte) error {
+	return core.APIErrorFromResponse(label, resp, body)
 }
 
 // ChatParams configures a request to an OpenAI-compatible chat endpoint.
@@ -43,9 +56,27 @@ type ChatParams struct {
 	// (e.g. Perplexity's "citations", "search_results") into core.Response.Metadata,
 	// surfacing provider-specific data the canonical response shape doesn't model.
 	ExtraResponseFields []string
+
+	// OnUnsupportedParam selects how a request parameter the provider cannot
+	// express (per the capabilities matrix) is handled: warn, drop, or reject.
+	// The zero value (UnsupportedParamWarn) preserves the historical
+	// warn-and-forward behaviour. When left at the zero value, the mode is
+	// resolved from the request context, which the gateway sets from config.
+	OnUnsupportedParam core.UnsupportedParamMode
 }
 
 func newChatRequest(ctx context.Context, p ChatParams, req core.Request, stream bool) (*http.Response, func(), error) {
+	// Enforce the provider parameter capability matrix (issue #207) on a local
+	// copy of req before the body is built. warn/drop/reject all key off params
+	// the provider declares Unsupported; only drop/reject change what is
+	// actually forwarded.
+	if err := enforceUnsupportedParams(ctx, p, &req); err != nil {
+		return nil, nil, err
+	}
+	// The observability.AttrFerroForwardedParams attribute is not emitted here:
+	// the shared builder has no span in scope, and threading one through
+	// ChatParams for a debug-only attribute costs more than it returns. The
+	// constant is marked Planned in observability/attributes.go.
 	var (
 		bodyReader io.Reader
 		release    func()
@@ -76,6 +107,105 @@ func newChatRequest(ctx context.Context, p ChatParams, req core.Request, stream 
 	return httpResp, release, nil
 }
 
+// resolveUnsupportedMode returns the effective compatibility mode: the explicit
+// ChatParams override when set, otherwise the gateway-supplied context value
+// (which itself defaults to warn).
+func resolveUnsupportedMode(ctx context.Context, p ChatParams) core.UnsupportedParamMode {
+	if p.OnUnsupportedParam != core.UnsupportedParamWarn {
+		return p.OnUnsupportedParam
+	}
+	return core.UnsupportedParamModeFromContext(ctx)
+}
+
+// enforceUnsupportedParams applies the compatibility mode to any populated
+// parameter the provider declares Unsupported in the capabilities matrix. It
+// mutates the caller's local copy of req only (never shared state). warn logs
+// the offending params and forwards them unchanged; drop clears them from req
+// and logs; reject fails the request naming them. A provider absent from the
+// matrix (capabilities.HasProfile) short-circuits before the AllParams scan,
+// since it forwards everything by definition — the common case for providers
+// routed through this builder today.
+func enforceUnsupportedParams(ctx context.Context, p ChatParams, req *core.Request) error {
+	if !capabilities.HasProfile(p.Provider) {
+		return nil
+	}
+	mode := resolveUnsupportedMode(ctx, p)
+	var offending []string
+	for _, param := range capabilities.AllParams {
+		if capabilities.SupportOf(p.Provider, param) == capabilities.Unsupported &&
+			core.ParamPopulated(*req, param) {
+			offending = append(offending, param)
+		}
+	}
+	if len(offending) == 0 {
+		return nil
+	}
+	if mode == core.UnsupportedParamReject {
+		return core.NewUnsupportedParamError(p.Provider, offending)
+	}
+	if mode == core.UnsupportedParamDrop {
+		// Drop mode: strip each offending param from the forwarded body, then warn once.
+		for _, param := range offending {
+			clearParam(req, param)
+		}
+		logging.FromContext(ctx).Warn(
+			"provider does not support request parameter(s); dropping",
+			"provider", p.Provider,
+			"dropped_params", offending,
+		)
+		return nil
+	}
+	// Warn mode: log once, but forward unchanged — dropping here would make
+	// warn indistinguishable from drop.
+	logging.FromContext(ctx).Warn(
+		"provider does not support request parameter(s); forwarding",
+		"provider", p.Provider,
+		"forwarded_params", offending,
+	)
+	return nil
+}
+
+// clearParam zeroes the named optional parameter on req so that, with the
+// omitempty JSON tags on core.Request, it is omitted from the forwarded upstream
+// body. It operates on the caller's local copy of the request, never shared
+// state. Unknown names are ignored.
+func clearParam(req *core.Request, name string) {
+	switch name {
+	case "temperature":
+		req.Temperature = nil
+	case "top_p":
+		req.TopP = nil
+	case "n":
+		req.N = nil
+	case "seed":
+		req.Seed = nil
+	case "max_tokens":
+		req.MaxTokens = nil
+	case "max_completion_tokens":
+		req.MaxCompletionTokens = nil
+	case "presence_penalty":
+		req.PresencePenalty = nil
+	case "frequency_penalty":
+		req.FrequencyPenalty = nil
+	case "stop":
+		req.Stop = nil
+	case "tools":
+		req.Tools = nil
+	case "tool_choice":
+		req.ToolChoice = nil
+	case "response_format":
+		req.ResponseFormat = nil
+	case "logprobs":
+		req.LogProbs = false
+	case "top_logprobs":
+		req.TopLogProbs = nil
+	case "user":
+		req.User = ""
+	case "logit_bias":
+		req.LogitBias = nil
+	}
+}
+
 // PostChat sends a non-streaming OpenAI-compatible chat completion and decodes
 // the canonical response. Providers with extended response fields (e.g. DeepSeek
 // cache/reasoning usage) should decode the body themselves instead.
@@ -92,7 +222,7 @@ func PostChat(ctx context.Context, p ChatParams, req core.Request) (*core.Respon
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 	if httpResp.StatusCode != http.StatusOK {
-		return nil, APIError(p.Label, httpResp.StatusCode, respBody)
+		return nil, APIErrorFromResponse(p.Label, httpResp, respBody)
 	}
 
 	var pResp ChatResponse
@@ -166,7 +296,7 @@ func PostStream(ctx context.Context, p ChatParams, req core.Request) (<-chan cor
 		if err != nil {
 			return nil, fmt.Errorf("failed to read response: %w", err)
 		}
-		return nil, APIError(p.Label, httpResp.StatusCode, respBody)
+		return nil, APIErrorFromResponse(p.Label, httpResp, respBody)
 	}
 	return StreamSSE(ctx, httpResp.Body), nil
 }

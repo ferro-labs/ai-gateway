@@ -119,12 +119,11 @@ func TestBudget_RecordAndExceed(t *testing.T) {
 	}
 	// Now the before_request check should reject (spend > limit).
 	beforePctx := pctxWithKey(apiKey)
-	err := p.Execute(context.Background(), beforePctx)
-	if err == nil {
-		t.Fatal("expected rejection after exceeding spend limit")
+	if err := p.Execute(context.Background(), beforePctx); err != nil {
+		t.Fatalf("exceeding the budget is a verdict, not a plugin malfunction: %v", err)
 	}
 	if !beforePctx.Reject {
-		t.Error("pctx.Reject should be set to true when budget exceeded")
+		t.Fatal("expected pctx.Reject after exceeding the spend limit")
 	}
 }
 
@@ -153,10 +152,11 @@ func TestBudget_RecordsUsageFromMetadata_NonChatSurface(t *testing.T) {
 	// The before_request check must now reject (spend > limit).
 	beforePctx := pctxWithKey(apiKey)
 	beforePctx.Request = nil
-	if err := p.Execute(context.Background(), beforePctx); err == nil {
-		t.Fatal("expected rejection after embedding spend exceeded the limit")
-	} else if !beforePctx.Reject {
-		t.Error("pctx.Reject should be true when budget exceeded via embedding usage")
+	if err := p.Execute(context.Background(), beforePctx); err != nil {
+		t.Fatalf("exceeding the budget is a verdict, not a plugin malfunction: %v", err)
+	}
+	if !beforePctx.Reject {
+		t.Fatal("expected pctx.Reject after embedding spend exceeded the limit")
 	}
 }
 
@@ -239,8 +239,10 @@ func TestBudget_SharedStore_TwoInstances(t *testing.T) {
 	_ = recorder.Execute(context.Background(), afterPctx)
 	// Check via other instance — they share the same store.
 	beforePctx := pctxWithKey(apiKey)
-	err := checker.Execute(context.Background(), beforePctx)
-	if err == nil {
+	if err := checker.Execute(context.Background(), beforePctx); err != nil {
+		t.Fatalf("exceeding the budget is a verdict, not a plugin malfunction: %v", err)
+	}
+	if !beforePctx.Reject {
 		t.Fatal("shared store: checker should see spend recorded by recorder")
 	}
 }
@@ -296,14 +298,25 @@ func TestBudget_ResetStoreKey(t *testing.T) {
 	_ = p.Execute(context.Background(), afterPctx)
 
 	// Confirm over budget.
-	if err := p.Execute(context.Background(), pctxWithKey(apiKey)); err == nil {
-		t.Fatal("expected budget exceeded before reset")
+	overBudget := pctxWithKey(apiKey)
+	if err := p.Execute(context.Background(), overBudget); err != nil {
+		t.Fatalf("exceeding the budget is a verdict, not a plugin malfunction: %v", err)
+	}
+	if !overBudget.Reject {
+		t.Fatal("expected pctx.Reject before reset")
 	}
 
 	// Reset the key and confirm budget is clear.
 	ResetStoreKey("test-reset-key", apiKey)
-	if err := p.Execute(context.Background(), pctxWithKey(apiKey)); err != nil {
+	afterReset := pctxWithKey(apiKey)
+	if err := p.Execute(context.Background(), afterReset); err != nil {
 		t.Errorf("after ResetStoreKey, request should pass: %v", err)
+	}
+	if afterReset.Reject {
+		t.Error("expected pctx.Reject to be false after ResetStoreKey")
+	}
+	if afterReset.Reason != "" {
+		t.Errorf("expected empty pctx.Reason after ResetStoreKey, got %q", afterReset.Reason)
 	}
 }
 
@@ -381,12 +394,11 @@ func TestBudget_CheckBudget_BoundaryAndReason(t *testing.T) {
 	// At exactly the limit: must reject (spend >= limit).
 	store.add(apiKey, 0.25) // committed now 1.00
 	reject := pctxWithKey(apiKey)
-	err := p.Execute(context.Background(), reject)
-	if err == nil {
-		t.Fatal("at limit (spend >= limit) should reject")
+	if err := p.Execute(context.Background(), reject); err != nil {
+		t.Fatalf("hitting the limit is a verdict, not a plugin malfunction: %v", err)
 	}
 	if !reject.Reject {
-		t.Error("pctx.Reject should be set at the limit")
+		t.Fatal("at limit (spend >= limit) should set pctx.Reject")
 	}
 
 	// The reason must report the real committed spend ($1.0000) and limit ($1.00),
@@ -416,8 +428,15 @@ func TestBudget_ResetStore(t *testing.T) {
 	ResetStore("test-reset-all")
 
 	for _, k := range []string{"key-a", "key-b"} {
-		if err := p.Execute(context.Background(), pctxWithKey(k)); err != nil {
+		pctx := pctxWithKey(k)
+		if err := p.Execute(context.Background(), pctx); err != nil {
 			t.Errorf("after ResetStore, key %q should pass: %v", k, err)
+		}
+		if pctx.Reject {
+			t.Errorf("expected pctx.Reject to be false for key %q after ResetStore", k)
+		}
+		if pctx.Reason != "" {
+			t.Errorf("expected empty pctx.Reason for key %q after ResetStore, got %q", k, pctx.Reason)
 		}
 	}
 }

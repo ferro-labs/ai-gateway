@@ -27,6 +27,7 @@ func (g *Gateway) getStrategy() (strategies.Strategy, error) {
 	}
 
 	g.ensureCircuitBreakersLocked()
+	g.ensureProviderLimitersLocked()
 
 	// Snapshot both maps under the write lock already held. The lookup closure
 	// runs inside Strategy.Execute with no lock held, so capturing local copies
@@ -35,8 +36,10 @@ func (g *Gateway) getStrategy() (strategies.Strategy, error) {
 	// themselves immutable references; we never mutate through them in the closure.
 	providerSnap := maps.Clone(g.providers)
 	cbSnap := maps.Clone(g.circuitBreakers)
+	limSnap := maps.Clone(g.limiters)
 
-	// Provider lookup with transparent circuit-breaker wrapping.
+	// Provider lookup with transparent circuit-breaker and concurrency-limit
+	// decoration.
 	//
 	// The closure is captured into the strategy and invoked later from the
 	// request hot path, AFTER Route/RouteStream have released g.mu. It reads
@@ -46,10 +49,7 @@ func (g *Gateway) getStrategy() (strategies.Strategy, error) {
 		if !ok {
 			return nil, false
 		}
-		if cb, hasCB := cbSnap[name]; hasCB {
-			return &cbProvider{Provider: p, cb: cb, name: name}, true
-		}
-		return p, ok
+		return decorateProvider(name, p, cbSnap[name], limSnap[name]), true
 	}
 
 	targets := make([]strategies.Target, len(g.config.Targets))

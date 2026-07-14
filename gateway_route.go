@@ -48,6 +48,75 @@ func (g *Gateway) runBeforePlugins(ctx context.Context, plugins *plugin.Manager,
 	return nil, nil
 }
 
+// recordPluginAbort counts a request a plugin cut short, against the counter that
+// tells the truth about why: a deliberate rejection is a rejection, a broken plugin
+// is an error. Folding both into "rejected" would make a plugin outage look like a
+// wave of blocked prompts — the one shape that would send an operator hunting
+// through guardrail rules while the actual fault is a dead Redis.
+func recordPluginAbort(h *metrics.RequestMetricHandles, err error) {
+	var failure *plugin.FailureError
+	if errors.As(err, &failure) {
+		h.Error.Inc()
+		return
+	}
+	h.Rejected.Inc()
+}
+
+// ErrRequestTimeout is the cause attached to a context cancelled by the gateway's
+// own per-request deadline (Config.RequestTimeout). Retrieve it with
+// context.Cause(ctx).
+//
+// It exists so a deadline the GATEWAY imposed can be told apart from a
+// caller-side cancellation or a caller-supplied deadline. That distinction is
+// load-bearing: when the gateway's deadline fires, the provider was too slow to
+// answer — a provider failure that must trip its circuit breaker. When the caller
+// walks away, the provider is not at fault and its breaker must be left alone.
+var ErrRequestTimeout = errors.New("gateway request timeout")
+
+// noopCancel is the CancelFunc returned when no per-request deadline applies. It
+// is a package-level func, not a closure, so the default path allocates nothing.
+func noopCancel() {}
+
+// requestDeadline returns the configured per-request timeout, or 0 when none is
+// set. Config.RequestTimeout is validated at load, so an unparseable or
+// non-positive value can only reach here from a programmatically-built Config;
+// it is treated as "no deadline" rather than failing an otherwise valid request.
+// The empty case short-circuits before parsing, so the default hot path neither
+// parses nor allocates.
+func requestDeadline(requestTimeout string) time.Duration {
+	if requestTimeout == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(requestTimeout)
+	if err != nil || d <= 0 {
+		return 0
+	}
+	return d
+}
+
+// withRequestDeadline bounds ctx by the configured per-request timeout, tagging
+// the cancellation with ErrRequestTimeout so downstream code can attribute the
+// deadline to the gateway rather than to the caller. It returns ctx untouched,
+// with a no-op cancel, when no timeout is configured.
+func withRequestDeadline(ctx context.Context, requestTimeout string) (context.Context, context.CancelFunc) {
+	d := requestDeadline(requestTimeout)
+	if d <= 0 {
+		return ctx, noopCancel
+	}
+	return context.WithTimeoutCause(ctx, d, ErrRequestTimeout)
+}
+
+// withUnsupportedParamMode carries the configured compatibility mode to the
+// shared request builder via ctx. It only decorates ctx when a non-default
+// mode is configured, so the warn (default) hot path keeps its
+// zero-allocation baseline.
+func withUnsupportedParamMode(ctx context.Context, compatMode string) context.Context {
+	if mode, _ := core.ParseUnsupportedParamMode(compatMode); mode != core.UnsupportedParamWarn {
+		return core.WithUnsupportedParamMode(ctx, mode)
+	}
+	return ctx
+}
+
 // Route routes a request to the appropriate provider based on the configuration.
 func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.Response, error) {
 	ctx, task := trace.NewTask(ctx, "gateway.route")
@@ -61,6 +130,8 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	// zero-allocation call when tracing is disabled.
 	g.mu.RLock()
 	strategyMode := string(g.config.Strategy.Mode)
+	compatMode := g.config.Compatibility.OnUnsupportedParam
+	requestTimeout := g.config.RequestTimeout
 	obs := g.obs
 	obsEventsActive := g.obsEventsActive
 	mcpRegistrySnapshot := g.mcpRegistry
@@ -69,6 +140,17 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	releasePlugins := acquirePluginManager(plugins)
 	g.mu.RUnlock()
 	defer releasePlugins()
+
+	// Bound the whole non-streaming request — plugin stages, provider call, and
+	// every retry/fallback attempt — when a request timeout is configured. The
+	// deadline rides ctx, so the retry loop and provider clients already honor it.
+	// RouteStream is deliberately exempt: a stream legitimately outlives any fixed
+	// deadline. Its MCP path is not — it delegates here, and an agentic loop that
+	// returns one complete chunk is a non-streaming request in all but name.
+	ctx, cancelDeadline := withRequestDeadline(ctx, requestTimeout)
+	defer cancelDeadline()
+
+	ctx = withUnsupportedParamMode(ctx, compatMode)
 	ctx, span := obs.StartRequestSpan(ctx, observability.RequestAttrs{
 		Operation:       "chat",
 		RequestModel:    req.Model,
@@ -110,7 +192,7 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 			early, err = g.runBeforePlugins(ctx, plugins, pctx, &req)
 		})
 		if err != nil {
-			metrics.ForRequest("", g.metricModel(req.Model)).Rejected.Inc()
+			recordPluginAbort(metrics.ForRequest("", g.metricModel(req.Model)), err)
 			return nil, err
 		}
 		if early != nil {
@@ -214,7 +296,7 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 			err = plugins.RunAfter(ctx, pctx)
 		})
 		if err != nil {
-			metrics.ForRequest(resp.Provider, resp.Model).Rejected.Inc()
+			recordPluginAbort(metrics.ForRequest(resp.Provider, resp.Model), err)
 			pctx.Error = err
 			plugins.RunOnError(ctx, pctx)
 			return nil, err

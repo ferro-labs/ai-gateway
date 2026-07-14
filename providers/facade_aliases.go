@@ -122,5 +122,14 @@ const (
 
 // ----------------------------------------------------------------- Functions -
 
+// UnsupportedParamError re-exports core.UnsupportedParamError.
+type UnsupportedParamError = core.UnsupportedParamError
+
+// ErrProviderSaturated re-exports core.ErrProviderSaturated.
+var ErrProviderSaturated = core.ErrProviderSaturated
+
 // ParseStatusCode re-exports core.ParseStatusCode.
 var ParseStatusCode = core.ParseStatusCode
+
+// RetryAfterFrom re-exports core.RetryAfterFrom.
+var RetryAfterFrom = core.RetryAfterFrom

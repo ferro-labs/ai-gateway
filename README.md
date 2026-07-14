@@ -236,6 +236,13 @@ Full methodology, raw results, and flamegraph analysis:
 - **Budget controls** — per-API-key USD spend tracking with configurable token pricing
 - **Request logging** — structured logs with optional SQLite/PostgreSQL persistence
 
+### 🎯 Provider Capabilities
+
+- **Capability matrix** — one declarative record of which OpenAI parameters each provider forwards, translates, or cannot express
+- **`GET /v1/capabilities`** — compare providers programmatically before you route to them
+- **Strict mode** — `compatibility.on_unsupported_param: warn | drop | reject`; a parameter the provider cannot honor is no longer silently discarded
+- **Conformance-tested** — every provider is built through the same seam the gateway uses and asserted against its real upstream payload shape
+
 ### ⚡ Performance
 
 - Per-provider HTTP connection pools with optimized settings
@@ -289,13 +296,32 @@ strategy:
   # cost-optimized only: fallback (default) | skip | allow
   # unpriced_strategy: fallback
 
+# What to do when a request carries a parameter the target provider cannot express.
+# warn (default) logs and forwards; drop strips it; reject fails with a 400.
+# See GET /v1/capabilities for what each provider supports.
+compatibility:
+  on_unsupported_param: warn  # warn | drop | reject
+
+# Bounds a single non-streaming request end to end: plugin stages, the provider
+# call, and every retry and fallback attempt combined. Omit for no gateway-imposed
+# deadline (the provider clients' own timeouts still apply).
+# request_timeout: 60s
+
 # Provider targets (tried in order for fallback mode)
 targets:
   - virtual_key: openai
     retry:
       attempts: 3
+      # Defaults to 408, 429, and 5xx. A 400 or 401 fails the same way on
+      # every attempt, so it is not retried.
       on_status_codes: [429, 502, 503]
       initial_backoff_ms: 100
+    # Bound in-flight requests to this provider. Requests beyond max_concurrency
+    # wait in a bounded queue; when that fills, the target sheds with 429
+    # provider_saturated instead of piling up. Omit to leave the target unlimited.
+    concurrency:
+      max_concurrency: 32
+      queue_size: 1000
   - virtual_key: anthropic
     retry:
       attempts: 2
@@ -353,6 +379,12 @@ mcp_servers:
     max_call_depth: 5
     timeout_seconds: 30
 ```
+
+`${VAR}` references in MCP headers, plugin config, and observability exporter config are substituted **when that component is constructed**, not when the config file is read. The config itself keeps the `${VAR}` reference for its whole life, so a secret is never written to the config-history store, never returned by `GET /admin/config`, and never restored into the database on a rollback — while the plugin, exporter, or MCP client still receives the real value.
+
+Because substitution happens at construction rather than at file load, a `${VAR}` pushed through the admin/GitOps config API is resolved exactly the same way.
+
+Only the braced form is a reference. A bare `$` is data and is preserved verbatim, so a blocked word like `$100`, a price like `costs $5`, or a password like `pa$$w0rd` survives unchanged. A `${VAR}` whose variable is undefined is an error rather than a silently blank secret or an empty guardrail rule.
 
 See [config.example.yaml](config.example.yaml) and [config.example.json](config.example.json) for the full template with all options.
 
@@ -442,7 +474,7 @@ observability:
 
 Standard `OTEL_*` environment variables (e.g. `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_TRACES_SAMPLER`) always take precedence over the config file — this matches the OTel SDK convention and is required for predictable container deployments.
 
-`observability.tracing.headers` lets you send OTLP traces to authenticated managed backends (Datadog, New Relic, Honeycomb, Grafana Cloud) by setting vendor-specific headers such as API keys. Values support `${ENV_VAR}` interpolation so secrets are never stored literally in the config file. The standard `OTEL_EXPORTER_OTLP_HEADERS` environment variable also applies per OTel convention.
+`observability.tracing.headers` lets you send OTLP traces to authenticated managed backends (Datadog, New Relic, Honeycomb, Grafana Cloud) by setting vendor-specific headers such as API keys. Values support `${ENV_VAR}` interpolation so secrets are never stored literally in the config file. The standard `OTEL_EXPORTER_OTLP_HEADERS` environment variable also applies per OTel convention. Observability exporter `config` blocks loaded from YAML/JSON also support `${VAR}` interpolation.
 
 The **endpoint scheme selects transport security**: an `https://` endpoint uses TLS, while an `http://` endpoint or a bare `host:port` (e.g. `localhost:4317`) connects in plaintext. Managed backends require the `https://` form.
 

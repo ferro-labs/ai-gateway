@@ -157,6 +157,36 @@ func TestValidateConfig_CostOptimizedUnpricedStrategy(t *testing.T) {
 	}
 }
 
+func TestValidateConfig_CompatibilityOnUnsupportedParam(t *testing.T) {
+	tests := []struct {
+		name              string
+		mode              string
+		wantValidationErr bool
+	}{
+		{name: "default empty"},
+		{name: "warn", mode: "warn"},
+		{name: "drop", mode: "drop"},
+		{name: "reject", mode: "reject"},
+		{name: "invalid", mode: "explode", wantValidationErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Config{
+				Strategy:      StrategyConfig{Mode: ModeSingle},
+				Targets:       []Target{{VirtualKey: "key1"}},
+				Compatibility: CompatibilityConfig{OnUnsupportedParam: tt.mode},
+			}
+			err := ValidateConfig(cfg)
+			if tt.wantValidationErr && err == nil {
+				t.Fatal("expected validation error")
+			}
+			if !tt.wantValidationErr && err != nil {
+				t.Fatalf("unexpected validation error: %v", err)
+			}
+		})
+	}
+}
+
 func TestValidateConfig_InvalidWeights(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -185,6 +215,37 @@ func TestValidateConfig_InvalidWeights(t *testing.T) {
 			}
 			if err := ValidateConfig(cfg); err == nil {
 				t.Fatal("expected error for invalid weights")
+			}
+		})
+	}
+}
+
+func TestValidateConfig_ConcurrencyBounds(t *testing.T) {
+	tests := []struct {
+		name        string
+		concurrency *ConcurrencyConfig
+		wantErr     bool
+	}{
+		{name: "nil concurrency is unlimited", concurrency: nil, wantErr: false},
+		{name: "positive max_concurrency", concurrency: &ConcurrencyConfig{MaxConcurrency: 10}, wantErr: false},
+		{name: "zero max_concurrency rejected", concurrency: &ConcurrencyConfig{MaxConcurrency: 0}, wantErr: true},
+		{name: "negative max_concurrency rejected", concurrency: &ConcurrencyConfig{MaxConcurrency: -1}, wantErr: true},
+		{name: "absurd max_concurrency rejected", concurrency: &ConcurrencyConfig{MaxConcurrency: 100_000_000}, wantErr: true},
+		{name: "negative queue_size rejected", concurrency: &ConcurrencyConfig{MaxConcurrency: 10, QueueSize: -1}, wantErr: true},
+		{name: "absurd queue_size rejected", concurrency: &ConcurrencyConfig{MaxConcurrency: 10, QueueSize: 100_000_000}, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Config{
+				Strategy: StrategyConfig{Mode: ModeSingle},
+				Targets:  []Target{{VirtualKey: "key1", Concurrency: tt.concurrency}},
+			}
+			err := ValidateConfig(cfg)
+			if tt.wantErr && err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
 			}
 		})
 	}
@@ -491,6 +552,37 @@ func TestLoadConfig_ExampleFilesParse(t *testing.T) {
 			}
 			if err := ValidateConfig(*cfg); err != nil {
 				t.Fatalf("ValidateConfig(%q) failed: %v", name, err)
+			}
+		})
+	}
+}
+
+func TestValidateConfig_RequestTimeout(t *testing.T) {
+	tests := []struct {
+		name    string
+		timeout string
+		wantErr bool
+	}{
+		{"omitted is valid", "", false},
+		{"valid duration", "30s", false},
+		{"sub-second duration", "500ms", false},
+		{"missing unit is rejected", "30", true},
+		{"unparseable value is rejected", "soon", true},
+		{"zero is rejected", "0s", true},
+		{"negative is rejected", "-5s", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Config{
+				Targets:        []Target{{VirtualKey: "openai"}},
+				RequestTimeout: tt.timeout,
+			}
+			err := ValidateConfig(cfg)
+			if tt.wantErr && err == nil {
+				t.Errorf("request_timeout %q: expected an error, got nil", tt.timeout)
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("request_timeout %q: unexpected error: %v", tt.timeout, err)
 			}
 		})
 	}

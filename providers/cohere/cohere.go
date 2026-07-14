@@ -115,14 +115,6 @@ type cohereRequest struct {
 	Stream           bool                   `json:"stream,omitempty"`
 }
 
-// cohereSupportedParams lists the OpenAI parameters mappable onto the Cohere v2
-// chat API (including native tool calling). Anything else the caller sets is
-// warn-and-dropped (#140).
-var cohereSupportedParams = []string{
-	"temperature", "top_p", "max_tokens", "stop",
-	"seed", "presence_penalty", "frequency_penalty", "tools", "tool_choice",
-}
-
 type cohereRequestMessage struct {
 	Role       string          `json:"role"`
 	Content    any             `json:"content,omitempty"`
@@ -253,22 +245,26 @@ func cohereContentParts(parts []core.ContentPart) []any {
 // so core.APIError cannot decode it. prefix is the full message prefix (e.g.
 // "cohere API error"), unlike core.APIError's bare provider-name label. The
 // returned *core.HTTPStatusError lets core.ParseStatusCode recover the status
-// via errors.As, same as core.APIError.
-func cohereAPIError(prefix string, status int, body []byte) error {
+// via errors.As, same as core.APIError, and carries resp's Retry-After hint so
+// the fallback strategy can honor it instead of guessing a backoff.
+func cohereAPIError(prefix string, resp *http.Response, body []byte) error {
 	msg := string(body)
 	var errResp cohereErrorResponse
 	if json.Unmarshal(body, &errResp) == nil && errResp.Message != "" {
 		msg = errResp.Message
 	}
 	return &core.HTTPStatusError{
-		StatusCode: status,
-		Message:    fmt.Sprintf("%s (%d): %s", prefix, status, msg),
+		StatusCode: resp.StatusCode,
+		Message:    fmt.Sprintf("%s (%d): %s", prefix, resp.StatusCode, msg),
+		RetryAfter: core.ParseRetryAfter(resp.Header.Get("Retry-After")),
 	}
 }
 
 // Complete sends a chat completion request to Cohere.
 func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
-	core.WarnUnsupportedParams(ctx, p.Name(), req.Model, req, cohereSupportedParams...)
+	if err := core.EnforceUnsupportedParams(ctx, p.Name(), req.Model, req); err != nil {
+		return nil, err
+	}
 
 	cohReq := cohereRequest{
 		Model:            req.Model,
@@ -309,7 +305,7 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 	}
 
 	if httpResp.StatusCode != http.StatusOK {
-		return nil, cohereAPIError("cohere API error", httpResp.StatusCode, respBody)
+		return nil, cohereAPIError("cohere API error", httpResp, respBody)
 	}
 
 	var cohResp cohereResponse
@@ -326,8 +322,9 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 
 	tokens := cohResp.Usage.Tokens
 	return &core.Response{
-		ID:    cohResp.ID,
-		Model: req.Model,
+		ID:       cohResp.ID,
+		Model:    req.Model,
+		Provider: p.name,
 		Choices: []core.Choice{
 			{
 				Index: 0,
@@ -421,7 +418,9 @@ func cohereStreamToolCallDelta(raw json.RawMessage, index int) (core.ToolCall, b
 
 // CompleteStream sends a streaming chat completion request to Cohere.
 func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan core.StreamChunk, error) {
-	core.WarnUnsupportedParams(ctx, p.Name(), req.Model, req, cohereSupportedParams...)
+	if err := core.EnforceUnsupportedParams(ctx, p.Name(), req.Model, req); err != nil {
+		return nil, err
+	}
 
 	cohReq := cohereRequest{
 		Model:            req.Model,
@@ -462,7 +461,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 		if err != nil {
 			return nil, fmt.Errorf("failed to read response: %w", err)
 		}
-		return nil, cohereAPIError("cohere API error", httpResp.StatusCode, respBody)
+		return nil, cohereAPIError("cohere API error", httpResp, respBody)
 	}
 
 	ch := make(chan core.StreamChunk)
@@ -685,7 +684,7 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 	}
 
 	if httpResp.StatusCode != http.StatusOK {
-		return nil, cohereAPIError("cohere embed API error", httpResp.StatusCode, respBody)
+		return nil, cohereAPIError("cohere embed API error", httpResp, respBody)
 	}
 
 	var cohResp cohereEmbedResponse

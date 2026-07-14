@@ -75,7 +75,7 @@ func weightedStartIndex(targets []Target) int {
 // cost-ordered strategies to decide which targets participate in ranking;
 // non-candidates are still appended as trailing fallbacks.
 //
-// ponytail: this resolves through the same lookup Execute uses. A provider
+// This resolves through the same lookup Execute uses. A provider
 // wrapped in a circuit breaker always reports streaming-capable here even if
 // its underlying provider is not; the gateway's resolution step re-checks the
 // raw provider and skips it, so the finally resolved provider is unaffected.

@@ -10,8 +10,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/ferro-labs/ai-gateway/internal/tracingpolicy"
+	"github.com/ferro-labs/ai-gateway/providers/core"
 	"gopkg.in/yaml.v3"
 )
 
@@ -92,6 +94,22 @@ func ValidateConfig(cfg Config) error {
 		return fmt.Errorf("at least one target is required")
 	}
 
+	for _, t := range cfg.Targets {
+		if err := validateTargetConcurrency(t); err != nil {
+			return err
+		}
+	}
+
+	if cfg.RequestTimeout != "" {
+		d, err := time.ParseDuration(cfg.RequestTimeout)
+		if err != nil {
+			return fmt.Errorf("invalid request_timeout %q: %w", cfg.RequestTimeout, err)
+		}
+		if d <= 0 {
+			return fmt.Errorf("request_timeout must be positive, got %q", cfg.RequestTimeout)
+		}
+	}
+
 	if cfg.Strategy.Mode == ModeConditional && len(cfg.Strategy.Conditions) == 0 {
 		return fmt.Errorf("conditional strategy requires at least one condition")
 	}
@@ -131,6 +149,11 @@ func ValidateConfig(cfg Config) error {
 		return fmt.Errorf("observability.tracing: %w", err)
 	}
 
+	// Validate compatibility.on_unsupported_param: "" (⇒ warn), warn, drop, reject.
+	if _, ok := core.ParseUnsupportedParamMode(cfg.Compatibility.OnUnsupportedParam); !ok {
+		return fmt.Errorf("compatibility.on_unsupported_param must be one of warn, drop, reject")
+	}
+
 	// Validate aliases: no alias may point to another alias (no cycles/chains).
 	for name, target := range cfg.Aliases {
 		if name == "" {
@@ -147,5 +170,28 @@ func ValidateConfig(cfg Config) error {
 		}
 	}
 
+	return nil
+}
+
+// validateTargetConcurrency bounds a target's concurrency block. The ceiling is
+// what keeps a mistyped max_concurrency from silently turning the limiter into a
+// no-op: the value becomes the in-flight slot count, so an absurd one admits
+// every request and the cap the operator asked for never applies.
+func validateTargetConcurrency(t Target) error {
+	if t.Concurrency == nil {
+		return nil
+	}
+	if t.Concurrency.MaxConcurrency <= 0 {
+		return fmt.Errorf("target %q: concurrency.max_concurrency must be positive (omit the concurrency block to leave the target unlimited)", t.VirtualKey)
+	}
+	if t.Concurrency.MaxConcurrency > MaxTargetConcurrency {
+		return fmt.Errorf("target %q: concurrency.max_concurrency exceeds the limit of %d", t.VirtualKey, MaxTargetConcurrency)
+	}
+	if t.Concurrency.QueueSize < 0 {
+		return fmt.Errorf("target %q: concurrency.queue_size cannot be negative", t.VirtualKey)
+	}
+	if t.Concurrency.QueueSize > MaxTargetConcurrency {
+		return fmt.Errorf("target %q: concurrency.queue_size exceeds the limit of %d", t.VirtualKey, MaxTargetConcurrency)
+	}
 	return nil
 }

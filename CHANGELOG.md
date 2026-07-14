@@ -5,6 +5,37 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] — 2026-07-14
+
+The capability release. The gateway now has a single, declarative record of what each provider can actually express, and enforces it — so a parameter a provider cannot honor is no longer silently dropped on the wire. Alongside it: per-request deadlines, per-target concurrency limits, split liveness/readiness probes, and a cross-provider conformance suite.
+
+This release contains behavior changes for plugin authors, for retry configuration, and for `${VAR}` substitution. Read **Changed** before upgrading.
+
+### Added
+
+- **Provider capability matrix and `GET /v1/capabilities`.** `providers/capabilities` declares, from one source, which OpenAI chat parameters each provider forwards, translates, or cannot express. It is served over the API and consumed by enforcement, so what the gateway advertises and what it does are the same thing (#207, #275).
+- **`compatibility.on_unsupported_param`.** Choose what happens when a request carries a parameter the target provider cannot express: `warn` (default — log and forward), `drop` (strip it), or `reject` (fail with 400 `unsupported_parameter`). Previously such a parameter was quietly discarded by the adapter with no signal at all.
+- **`request_timeout`.** Bounds a single non-streaming request end to end — plugin stages, the provider call, and every retry and fallback attempt combined. Omitted means no gateway-imposed deadline; the provider clients' own timeouts still apply. Streaming is exempt, except the MCP agentic path, which returns one complete response and is bounded like any other non-streaming request (#277).
+- **Per-target concurrency limits.** `targets[].concurrency` bounds in-flight requests to a provider (`max_concurrency`) with a bounded wait queue (`queue_size`). A saturated target sheds with 429 `provider_saturated` rather than piling up. A streaming request holds its slot until the stream ends (#248).
+- **`/livez` and `/readyz`.** Liveness and readiness are now separate signals for orchestrator rollout gating: `/livez` reports process liveness only, `/readyz` reports whether the gateway can actually serve traffic. `/health` is retained (#279).
+- **Cross-provider conformance suite.** `test/conformance/` builds every provider through its `ProviderEntry` — the same seam the gateway uses — points it at a stub returning that provider's *native* payload, and asserts the translated OpenAI-shaped response. It needs no network, Docker, or credentials, and runs with `make test`. A new provider must add a fixture or declare why it cannot have one (#276).
+
+### Changed
+
+- **Plugins deny by verdict, not by error (breaking for plugin authors).** A plugin that *denies* a request and a plugin that *breaks* were reported the same way. They are now distinct: set `Context.Reject` to deny (unchanged status codes), and return an error only when the plugin itself failed — which now yields 500 `plugin_error`. The sharpest case this fixes: a rate-limit plugin whose backend was down returned **429 rate_limit_exceeded**, which every OpenAI SDK reads as "back off and retry", turning an outage into a retry storm against a gateway that was not busy, just broken. Plugin failures are also counted as errors rather than rejections, so a plugin outage no longer looks like a wave of blocked prompts (#288).
+- **`Context.Reject` is honored for every plugin type.** It was silently discarded for logging, metrics, and transform plugins, contradicting its documented contract.
+- **Transform plugins fail closed.** They were grouped with logging and metrics as fail-open, so a transform that could not sanitize a payload let it through. Only plugins that observe the request rather than gate it — logging and metrics — fail open.
+- **Retries are limited to retryable statuses by default.** The default retryable set is now 408, 429, and 5xx. A 400 or 401 is a client error that will fail identically on every attempt; retrying it only multiplied the latency. Retry delays use exponential backoff with full jitter, honor a provider's `Retry-After` (capped at 30s), and stop at the request deadline (#278).
+- **`${VAR}` substitution is stricter and happens later.** Only the braced `${VAR}` form is a reference; every other dollar sign is data. The previous shell-style expansion consumed bare dollars, so a word-filter blocked word `$100` became `00` — silently weakening a guardrail — and a password like `pa$$w0rd` was mangled. An undefined variable is now an error rather than a silently empty secret. Substitution also moved from config load to component construction, so the config never carries a materialized secret into the config-history store or a rollback, and references pushed through the admin/GitOps config API — which never passed through the file loader — are now resolved too (#283).
+- **`observability.tracing.enabled` is a tri-state (source-breaking for Go API users).** `TracingConfig.Enabled` changed from `bool` to `*bool`, so an explicit `enabled: false` is a hard kill switch even when an endpoint is configured. Omitted infers activation from a configured endpoint or exporter, as before (#284).
+
+### Fixed
+
+- **A hung provider now trips its circuit breaker.** The gateway's own request deadline was indistinguishable from a caller cancelling, so it was excused: a provider that stopped responding never tripped its breaker, stayed in rotation indefinitely, and `/readyz` — whose only provider signal is circuit state — kept reporting the pod ready. The deadline now carries an explicit cause, so a slow provider is attributed to the provider. Errors the gateway raises itself, such as shedding under its own concurrency limit, never blame the provider.
+- **AI21 no longer has parameters stripped from Jamba requests.** AI21 is dual-path: its advertised Jamba models speak the OpenAI-compatible API, while only the deprecated Jurassic endpoint is parameter-limited. Support is now declared where the Jurassic request is built, so `drop` mode no longer strips tools and `response_format` from every Jamba request (#207).
+- **The concurrency limiter no longer misrepresents a provider's capabilities.** Wrapping a provider had forced the wrapper to re-declare every optional interface, which made a chat-only provider look like it supported embeddings, images, and discovery. The limiter now decorates at the call site and exposes only the base interface, so capability detection always sees the real provider.
+- **The capability drift guard can now fail.** It asserted a property that held by construction for any input, including a provider ID the matrix had never heard of — precisely the drift it existed to catch.
+
 ## [1.1.22] — 2026-07-11
 
 The closeout of the v1.1.x hardening release line — streaming lifecycle, configuration validation, persistence consolidation, and provider fixes. One behavior change to note: configuration files are now rejected when they contain unrecognized keys (see **Changed**). The public Go API is otherwise unchanged.

@@ -72,7 +72,7 @@ func DiscoverModelsWithHeaders(ctx context.Context, client *http.Client, url str
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("discovery request returned %d: %s", resp.StatusCode, string(body))
+		return nil, core.APIErrorFromResponse(providerName, resp, body)
 	}
 
 	items, err := parseModelItems(body)
