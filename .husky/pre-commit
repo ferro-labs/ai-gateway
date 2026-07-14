@@ -1,6 +1,7 @@
 #!/bin/sh
 # Pre-commit: fmt + vet + lint (fast — no tests)
 # Works on Linux, macOS, and Windows (Git Bash).
+set -e
 
 echo "── fmt ──────────────────────────────────────"
 go fmt ./...

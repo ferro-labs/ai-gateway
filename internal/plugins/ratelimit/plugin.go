@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/ferro-labs/ai-gateway/internal/plugins/plugincfg"
 	internalrl "github.com/ferro-labs/ai-gateway/internal/ratelimit"
 	"github.com/ferro-labs/ai-gateway/plugin"
 )
@@ -53,19 +54,19 @@ func (p *Plugin) Name() string { return "rate-limit" }
 func (p *Plugin) Type() plugin.PluginType { return plugin.TypeRateLimit }
 
 // Init reads the plugin configuration and initialises limiters.
-func (p *Plugin) Init(config map[string]interface{}) error {
+func (p *Plugin) Init(config map[string]any) error {
 	rps := 100.0
 	burst := 0.0
 
 	if v, ok := config["requests_per_second"]; ok {
-		f, err := toFloat64(v)
+		f, err := plugincfg.ToFloat64(v)
 		if err != nil {
 			return fmt.Errorf("rate-limit: requests_per_second: %w", err)
 		}
 		rps = f
 	}
 	if v, ok := config["burst"]; ok {
-		f, err := toFloat64(v)
+		f, err := plugincfg.ToFloat64(v)
 		if err != nil {
 			return fmt.Errorf("rate-limit: burst: %w", err)
 		}
@@ -74,7 +75,7 @@ func (p *Plugin) Init(config map[string]interface{}) error {
 	p.limiter = internalrl.New(rps, burst)
 
 	if v, ok := config["key_rpm"]; ok {
-		rpm, err := toFloat64(v)
+		rpm, err := plugincfg.ToFloat64(v)
 		if err != nil {
 			return fmt.Errorf("rate-limit: key_rpm: %w", err)
 		}
@@ -87,7 +88,7 @@ func (p *Plugin) Init(config map[string]interface{}) error {
 	}
 
 	if v, ok := config["user_rpm"]; ok {
-		rpm, err := toFloat64(v)
+		rpm, err := plugincfg.ToFloat64(v)
 		if err != nil {
 			return fmt.Errorf("rate-limit: user_rpm: %w", err)
 		}
@@ -108,7 +109,7 @@ func (p *Plugin) Execute(_ context.Context, pctx *plugin.Context) error {
 	if !p.limiter.Allow() {
 		pctx.Reject = true
 		pctx.Reason = "rate limit exceeded"
-		return fmt.Errorf("rate limit exceeded")
+		return nil
 	}
 
 	if p.keyStore != nil {
@@ -116,7 +117,7 @@ func (p *Plugin) Execute(_ context.Context, pctx *plugin.Context) error {
 			if !p.keyStore.Allow(key) {
 				pctx.Reject = true
 				pctx.Reason = "per-key rate limit exceeded"
-				return fmt.Errorf("per-key rate limit exceeded")
+				return nil
 			}
 		}
 	}
@@ -126,7 +127,7 @@ func (p *Plugin) Execute(_ context.Context, pctx *plugin.Context) error {
 			if !p.userStore.Allow(userID) {
 				pctx.Reject = true
 				pctx.Reason = "per-user rate limit exceeded"
-				return fmt.Errorf("per-user rate limit exceeded")
+				return nil
 			}
 		}
 	}
@@ -134,14 +135,5 @@ func (p *Plugin) Execute(_ context.Context, pctx *plugin.Context) error {
 	return nil
 }
 
-// toFloat64 converts an interface{} value to float64, accepting float64 or int.
-func toFloat64(v interface{}) (float64, error) {
-	switch val := v.(type) {
-	case float64:
-		return val, nil
-	case int:
-		return float64(val), nil
-	default:
-		return 0, fmt.Errorf("must be a number, got %T", v)
-	}
-}
+// Close releases plugin resources.
+func (p *Plugin) Close() error { return nil }

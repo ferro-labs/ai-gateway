@@ -2,14 +2,22 @@ package nvidianim
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
 const testBearerAPIKey = "Bearer test-key"
+
+const (
+	testEmbeddingModel = "nvidia/nv-embedqa-e5-v5"
+	testChatModel      = "nvidia/Llama-3.1-Nemotron-70B-Instruct"
+)
 
 func TestNewNVIDIANIM(t *testing.T) {
 	p, err := New("test-key", "")
@@ -78,7 +86,30 @@ func TestNVIDIANIMProvider_CompleteStream_MockSSE(t *testing.T) {
 		"data: {\"id\":\"cmpl-1\",\"model\":\"nvidia/Llama-3.1-Nemotron-70B-Instruct\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
 		"data: [DONE]\n\n"
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %s, want POST", r.Method)
+		}
+		if !strings.HasSuffix(r.URL.Path, "/chat/completions") {
+			t.Errorf("path = %q, want suffix /chat/completions", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != testBearerAPIKey {
+			t.Errorf("Authorization = %q, want %s", got, testBearerAPIKey)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if body["model"] != testChatModel {
+			t.Errorf("model = %v, want %s", body["model"], testChatModel)
+		}
+		msgs, ok := body["messages"].([]any)
+		if !ok || len(msgs) != 1 {
+			t.Fatalf("messages = %v, want one message forwarded", body["messages"])
+		}
+		if m0, _ := msgs[0].(map[string]any); m0["role"] != "user" || m0["content"] != "Hi" {
+			t.Errorf("message[0] = %v, want {role:user, content:Hi}", msgs[0])
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(sseData))
@@ -87,7 +118,7 @@ func TestNVIDIANIMProvider_CompleteStream_MockSSE(t *testing.T) {
 
 	p, _ := New("test-key", srv.URL)
 	ch, err := p.CompleteStream(context.Background(), core.Request{
-		Model:    "nvidia/Llama-3.1-Nemotron-70B-Instruct",
+		Model:    testChatModel,
 		Messages: []core.Message{{Role: "user", Content: "Hi"}},
 	})
 	if err != nil {
@@ -113,7 +144,30 @@ func TestNVIDIANIMProvider_CompleteStream_MockSSE(t *testing.T) {
 func TestNVIDIANIMProvider_Complete_MockHTTP(t *testing.T) {
 	respBody := `{"id":"cmpl-1","model":"nvidia/Llama-3.1-Nemotron-70B-Instruct","choices":[{"index":0,"message":{"role":"assistant","content":"Hello!"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}`
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %s, want POST", r.Method)
+		}
+		if !strings.HasSuffix(r.URL.Path, "/chat/completions") {
+			t.Errorf("path = %q, want suffix /chat/completions", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != testBearerAPIKey {
+			t.Errorf("Authorization = %q, want %s", got, testBearerAPIKey)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if body["model"] != testChatModel {
+			t.Errorf("model = %v, want %s", body["model"], testChatModel)
+		}
+		msgs, ok := body["messages"].([]any)
+		if !ok || len(msgs) != 1 {
+			t.Fatalf("messages = %v, want one message forwarded", body["messages"])
+		}
+		if m0, _ := msgs[0].(map[string]any); m0["role"] != "user" || m0["content"] != "Hi" {
+			t.Errorf("message[0] = %v, want {role:user, content:Hi}", msgs[0])
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(respBody))
@@ -122,7 +176,7 @@ func TestNVIDIANIMProvider_Complete_MockHTTP(t *testing.T) {
 
 	p, _ := New("test-key", srv.URL)
 	resp, err := p.Complete(context.Background(), core.Request{
-		Model:    "nvidia/Llama-3.1-Nemotron-70B-Instruct",
+		Model:    testChatModel,
 		Messages: []core.Message{{Role: "user", Content: "Hi"}},
 	})
 	if err != nil {
@@ -133,5 +187,199 @@ func TestNVIDIANIMProvider_Complete_MockHTTP(t *testing.T) {
 	}
 	if len(resp.Choices) == 0 {
 		t.Error("expected at least one choice")
+	}
+}
+
+func TestNVIDIANIMProvider_Embed_Interface(_ *testing.T) {
+	p, _ := New("test-key", "")
+	var _ core.EmbeddingProvider = p
+}
+
+func TestNVIDIANIMProvider_Embed_MockHTTP(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %s, want POST", r.Method)
+		}
+		if r.URL.Path != "/embeddings" {
+			t.Errorf("path = %q, want /embeddings", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != testBearerAPIKey {
+			t.Errorf("Authorization = %q, want %s", got, testBearerAPIKey)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if body["model"] != testEmbeddingModel {
+			t.Errorf("model = %v, want %s", body["model"], testEmbeddingModel)
+		}
+		if body["input_type"] != "query" {
+			t.Errorf("input_type = %v, want query", body["input_type"])
+		}
+		if _, present := body["truncate"]; present {
+			t.Errorf("truncate present = %v, want field removed from request", body["truncate"])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"object":"embedding","embedding":[0.5,0.6],"index":0}],"model":"` + testEmbeddingModel + `","usage":{"prompt_tokens":2,"total_tokens":2}}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	resp, err := p.Embed(context.Background(), core.EmbeddingRequest{
+		Model:     testEmbeddingModel,
+		Input:     "hello world",
+		InputType: "query",
+	})
+	if err != nil {
+		t.Fatalf("Embed() error: %v", err)
+	}
+	if resp.Object != "list" || resp.Model != testEmbeddingModel {
+		t.Errorf("resp = %+v, want list/%s", resp, testEmbeddingModel)
+	}
+	if len(resp.Data) != 1 || !reflect.DeepEqual(resp.Data[0].Embedding, []float64{0.5, 0.6}) {
+		t.Errorf("Data = %+v, want one embedding", resp.Data)
+	}
+	if resp.Usage.PromptTokens != 2 || resp.Usage.TotalTokens != 2 {
+		t.Errorf("Usage = %+v, want prompt=2 total=2", resp.Usage)
+	}
+}
+
+func TestNVIDIANIMProvider_Embed_NoInputTypeDefaultInjection(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if _, present := body["input_type"]; present {
+			t.Errorf("input_type present = %v, want omitted when req.InputType is empty", body["input_type"])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"object":"embedding","embedding":[0.1],"index":0}],"model":"` + testEmbeddingModel + `","usage":{"prompt_tokens":1,"total_tokens":1}}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	if _, err := p.Embed(context.Background(), core.EmbeddingRequest{Model: testEmbeddingModel, Input: "hi"}); err != nil {
+		t.Fatalf("Embed() error: %v", err)
+	}
+}
+
+// TestNewNVIDIANIM_RejectsInvalidBaseURL verifies the constructor fails fast when
+// the base URL is not a valid absolute http(s) URL with a host.
+func TestNewNVIDIANIM_RejectsInvalidBaseURL(t *testing.T) {
+	if _, err := New("test-key", "://nope"); err == nil {
+		t.Fatal("New() accepted an invalid base URL, want error")
+	}
+}
+
+func TestNVIDIANIMProvider_Complete_UpstreamError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"rate limited"}}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	_, err := p.Complete(context.Background(), core.Request{
+		Model:    testChatModel,
+		Messages: []core.Message{{Role: "user", Content: "Hi"}},
+	})
+	if err == nil {
+		t.Fatal("Complete() error = nil, want upstream error")
+	}
+	if got := core.ParseStatusCode(err); got != http.StatusTooManyRequests {
+		t.Errorf("ParseStatusCode(err) = %d, want %d", got, http.StatusTooManyRequests)
+	}
+	if !strings.Contains(err.Error(), "rate limited") {
+		t.Errorf("error = %v, want it to contain %q", err, "rate limited")
+	}
+}
+
+func TestNVIDIANIMProvider_CompleteStream_UpstreamError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":{"message":"internal boom"}}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	_, err := p.CompleteStream(context.Background(), core.Request{
+		Model:    testChatModel,
+		Messages: []core.Message{{Role: "user", Content: "Hi"}},
+	})
+	if err == nil {
+		t.Fatal("CompleteStream() error = nil, want upstream error")
+	}
+	if got := core.ParseStatusCode(err); got != http.StatusInternalServerError {
+		t.Errorf("ParseStatusCode(err) = %d, want %d", got, http.StatusInternalServerError)
+	}
+	if !strings.Contains(err.Error(), "internal boom") {
+		t.Errorf("error = %v, want it to contain %q", err, "internal boom")
+	}
+}
+
+func TestNVIDIANIMProvider_Embed_UpstreamError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/embeddings" {
+			t.Errorf("path = %q, want /embeddings", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"input_type required"}}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	_, err := p.Embed(context.Background(), core.EmbeddingRequest{
+		Model: testEmbeddingModel,
+		Input: "hello",
+	})
+	if err == nil {
+		t.Fatal("Embed() error = nil, want upstream error")
+	}
+	if got := core.ParseStatusCode(err); got != http.StatusBadRequest {
+		t.Errorf("ParseStatusCode(err) = %d, want %d", got, http.StatusBadRequest)
+	}
+	if !strings.Contains(err.Error(), "input_type required") {
+		t.Errorf("error = %v, want it to contain %q", err, "input_type required")
+	}
+}
+
+// TestNVIDIANIMProvider_DiscoverModels verifies live discovery issues a GET to
+// /models with bearer auth and parses the returned model metadata.
+func TestNVIDIANIMProvider_DiscoverModels(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("method = %q, want GET", r.Method)
+		}
+		if r.URL.Path != "/models" {
+			t.Errorf("path = %q, want /models", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != testBearerAPIKey {
+			t.Errorf("Authorization = %q, want %s", got, testBearerAPIKey)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"` + testChatModel + `","object":"model","created":1700000000,"owned_by":"nvidia-nim"}]}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	models, err := p.DiscoverModels(context.Background())
+	if err != nil {
+		t.Fatalf("DiscoverModels() error: %v", err)
+	}
+	if len(models) != 1 {
+		t.Fatalf("expected 1 model, got %d", len(models))
+	}
+	if models[0].ID != testChatModel {
+		t.Errorf("model[0].ID = %q, want %s", models[0].ID, testChatModel)
+	}
+	if models[0].OwnedBy != "nvidia-nim" {
+		t.Errorf("model[0].OwnedBy = %q, want nvidia-nim", models[0].OwnedBy)
 	}
 }

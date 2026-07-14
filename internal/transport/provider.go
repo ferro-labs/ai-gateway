@@ -67,6 +67,11 @@ func KnownProviderPresets() map[string]ProviderPreset {
 			ResponseHeaderTimeout: 120 * time.Second,
 			DialTimeout:           15 * time.Second,
 		},
+		"databricks": {
+			MaxIdleConnsPerHost:   100,
+			ResponseHeaderTimeout: 120 * time.Second,
+			DialTimeout:           15 * time.Second,
+		},
 		"groq": {
 			MaxIdleConnsPerHost:   100,
 			ResponseHeaderTimeout: 15 * time.Second,
@@ -75,6 +80,31 @@ func KnownProviderPresets() map[string]ProviderPreset {
 			MaxIdleConnsPerHost:   20,
 			ResponseHeaderTimeout: 120 * time.Second,
 			DialTimeout:           5 * time.Second,
+		},
+		"replicate": {
+			// Replicate's async prediction API holds the connection open for
+			// "Prefer: wait" submissions (~60s); the default 30s header timeout
+			// would abort these before the prediction resolves.
+			MaxIdleConnsPerHost:   100,
+			ResponseHeaderTimeout: 65 * time.Second,
+		},
+		"azure-foundry": {
+			// Another Azure OpenAI-wire endpoint; mirror azure-openai.
+			MaxIdleConnsPerHost:   200,
+			ResponseHeaderTimeout: 30 * time.Second,
+		},
+		"ollama-cloud": {
+			// Serves large 120b/480b/671b models; the default 30s header
+			// timeout can abort a slow first response, as for local ollama.
+			MaxIdleConnsPerHost:   100,
+			ResponseHeaderTimeout: 120 * time.Second,
+			DialTimeout:           10 * time.Second,
+		},
+		"perplexity": {
+			// sonar-deep-research can run many web searches before emitting the
+			// first response header; raise the timeout to avoid a 30s abort.
+			MaxIdleConnsPerHost:   100,
+			ResponseHeaderTimeout: 65 * time.Second,
 		},
 	}
 }

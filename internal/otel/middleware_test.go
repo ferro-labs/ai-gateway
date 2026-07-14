@@ -27,7 +27,7 @@ func TestMiddlewareExtractsTraceparent(t *testing.T) {
 	}))
 
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/health", nil)
 	req.Header.Set("traceparent", traceparent)
 	h.ServeHTTP(rr, req)
 
@@ -48,7 +48,7 @@ func TestMiddlewareNoTraceparentLeavesContextEmpty(t *testing.T) {
 	}))
 
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/health", nil)
 	h.ServeHTTP(rr, req)
 
 	if seen != "" {

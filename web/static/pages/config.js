@@ -1,5 +1,12 @@
 'use strict';
 
+registerActions({
+  'switch-tab': function(el) { switchTab(el.getAttribute('data-tab')); },
+  'start-edit': startEdit,
+  'cancel-edit': cancelEdit,
+  'save-config': saveConfig
+});
+
 function switchTab(tab) {
   var panelCurrent = document.getElementById('panel-current');
   var panelHistory = document.getElementById('panel-history');

@@ -1,7 +1,6 @@
 package httpclient
 
 import (
-	"errors"
 	"testing"
 	"time"
 )
@@ -71,20 +70,5 @@ func TestCloseIdleConnections_NoPanic(_ *testing.T) {
 func TestManager_NotNil(t *testing.T) {
 	if Manager() == nil {
 		t.Fatal("Manager() must not be nil")
-	}
-}
-
-func TestTracingTransport_RoundTripNilRequest(t *testing.T) {
-	resp, err := newTracingTransport(SharedTransport()).RoundTrip(nil)
-	if resp != nil && resp.Body != nil {
-		defer func() {
-			_ = resp.Body.Close()
-		}()
-	}
-	if !errors.Is(err, errNilRequest) {
-		t.Fatalf("RoundTrip(nil) error = %v, want %v", err, errNilRequest)
-	}
-	if resp != nil {
-		t.Fatalf("RoundTrip(nil) response = %#v, want nil", resp)
 	}
 }

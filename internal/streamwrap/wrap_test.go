@@ -11,6 +11,7 @@ import (
 	"github.com/ferro-labs/ai-gateway/internal/events"
 	"github.com/ferro-labs/ai-gateway/internal/metrics"
 	"github.com/ferro-labs/ai-gateway/models"
+	"github.com/ferro-labs/ai-gateway/plugin"
 	"github.com/ferro-labs/ai-gateway/providers"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
@@ -43,9 +44,10 @@ func TestMeter_ForwardsAllChunks(t *testing.T) {
 	}
 	src := feed(chunks...)
 	out := Meter(context.Background(), src, time.Now(), MeterMeta{
-		Provider: "openai",
-		Model:    "gpt-4o",
-		Catalog:  models.Catalog{},
+		Provider:    "openai",
+		Model:       "gpt-4o",
+		MetricModel: "gpt-4o",
+		Catalog:     models.Catalog{},
 	})
 
 	var got []providers.StreamChunk
@@ -60,7 +62,7 @@ func TestMeter_ForwardsAllChunks(t *testing.T) {
 
 func TestMeter_CallsPublishFn_OnSuccess(t *testing.T) {
 	var mu sync.Mutex
-	var published []map[string]interface{}
+	var published []map[string]any
 
 	publishFn := func(_ context.Context, event events.HookEvent) {
 		mu.Lock()
@@ -77,16 +79,17 @@ func TestMeter_CallsPublishFn_OnSuccess(t *testing.T) {
 	)
 
 	out := Meter(context.Background(), src, time.Now(), MeterMeta{
-		Provider:  "openai",
-		Model:     "gpt-4o",
-		Catalog:   models.Catalog{},
-		PublishFn: publishFn,
-		TraceID:   "trace-123",
+		Provider:    "openai",
+		Model:       "gpt-4o",
+		MetricModel: "gpt-4o",
+		Catalog:     models.Catalog{},
+		PublishFn:   publishFn,
+		TraceID:     "trace-123",
 	})
 
 	// Drain. PublishFn is called synchronously inside the Meter goroutine
 	// before close(out), so once the range completes the callback has already run.
-	for range out { //nolint:revive
+	for range out { //nolint:revive // empty-block: intentionally draining the stream to completion
 	}
 
 	mu.Lock()
@@ -126,13 +129,14 @@ func TestMeter_CallsPublishFn_OnError(t *testing.T) {
 	)
 
 	out := Meter(context.Background(), src, time.Now(), MeterMeta{
-		Provider:  "groq",
-		Model:     "llama-3",
-		Catalog:   models.Catalog{},
-		PublishFn: publishFn,
+		Provider:    "groq",
+		Model:       "llama-3",
+		MetricModel: "llama-3",
+		Catalog:     models.Catalog{},
+		PublishFn:   publishFn,
 	})
 	// PublishFn is called synchronously before close(out); no sleep needed.
-	for range out { //nolint:revive
+	for range out { //nolint:revive // empty-block: intentionally draining the stream to completion
 	}
 
 	mu.Lock()
@@ -156,11 +160,12 @@ func TestMeter_IncrementsProviderErrors_OnError(t *testing.T) {
 	beforeProvErr := counterValue(t, metrics.ProviderErrors.WithLabelValues("groq", "provider_error"))
 
 	out := Meter(context.Background(), src, time.Now(), MeterMeta{
-		Provider: "groq",
-		Model:    "llama-3",
-		Catalog:  models.Catalog{},
+		Provider:    "groq",
+		Model:       "llama-3",
+		MetricModel: "llama-3",
+		Catalog:     models.Catalog{},
 	})
-	for range out { //nolint:revive
+	for range out { //nolint:revive // empty-block: intentionally draining the stream to completion
 	}
 
 	afterReq := counterValue(t, metrics.RequestsTotal.WithLabelValues("groq", "llama-3", "error"))
@@ -183,11 +188,12 @@ func TestMeter_IncrementsProviderErrors_CircuitOpen(t *testing.T) {
 	beforeProvErr := counterValue(t, metrics.ProviderErrors.WithLabelValues("groq", "circuit_open"))
 
 	out := Meter(context.Background(), src, time.Now(), MeterMeta{
-		Provider: "groq",
-		Model:    "llama-3",
-		Catalog:  models.Catalog{},
+		Provider:    "groq",
+		Model:       "llama-3",
+		MetricModel: "llama-3",
+		Catalog:     models.Catalog{},
 	})
-	for range out { //nolint:revive
+	for range out { //nolint:revive // empty-block: intentionally draining the stream to completion
 	}
 
 	afterReq := counterValue(t, metrics.RequestsTotal.WithLabelValues("groq", "llama-3", "error"))
@@ -204,15 +210,227 @@ type streamError struct{ msg string }
 
 func (e *streamError) Error() string { return e.msg }
 
+func TestMeter_CircuitBreakerOutcome_PreservesProviderErrorOnClientCancel(t *testing.T) {
+	providerErr := errors.New("provider blew up")
+	src := make(chan providers.StreamChunk)
+
+	sendErr := make(chan struct{})
+	go func() {
+		src <- providers.StreamChunk{ID: "1"}
+		<-sendErr
+		src <- providers.StreamChunk{Error: providerErr}
+		close(src)
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	var mu sync.Mutex
+	var outcomes []error
+	outcomeFn := func(err error) {
+		mu.Lock()
+		outcomes = append(outcomes, err)
+		mu.Unlock()
+	}
+
+	out := Meter(ctx, src, time.Now(), MeterMeta{
+		Provider:              "openai",
+		Model:                 "gpt-4o",
+		MetricModel:           "gpt-4o",
+		Catalog:               models.Catalog{},
+		CircuitBreakerOutcome: outcomeFn,
+	})
+
+	if _, ok := <-out; !ok {
+		t.Fatal("expected first chunk")
+	}
+	cancel()
+	close(sendErr)
+
+	for range out { //nolint:revive // empty-block: intentionally draining the stream to completion
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(outcomes) != 1 {
+		t.Fatalf("outcomes len = %d, want 1", len(outcomes))
+	}
+	if !errors.Is(outcomes[0], providerErr) {
+		t.Fatalf("outcome = %v, want provider error", outcomes[0])
+	}
+}
+
+func TestMeter_CallsCircuitBreakerOutcome_OnSuccessAndError(t *testing.T) {
+	var mu sync.Mutex
+	var outcomes []error
+
+	outcomeFn := func(err error) {
+		mu.Lock()
+		outcomes = append(outcomes, err)
+		mu.Unlock()
+	}
+
+	t.Run("success", func(t *testing.T) {
+		mu.Lock()
+		outcomes = nil
+		mu.Unlock()
+
+		src := feed(providers.StreamChunk{ID: "1"})
+		out := Meter(context.Background(), src, time.Now(), MeterMeta{
+			Provider:              "openai",
+			Model:                 "gpt-4o",
+			MetricModel:           "gpt-4o",
+			Catalog:               models.Catalog{},
+			CircuitBreakerOutcome: outcomeFn,
+		})
+		for range out { //nolint:revive // empty-block: intentionally draining the stream to completion
+		}
+
+		mu.Lock()
+		defer mu.Unlock()
+		if len(outcomes) != 1 || outcomes[0] != nil {
+			t.Fatalf("outcomes = %v, want single nil", outcomes)
+		}
+	})
+
+	t.Run("provider error", func(t *testing.T) {
+		mu.Lock()
+		outcomes = nil
+		mu.Unlock()
+
+		providerErr := errors.New("provider blew up")
+		src := feed(
+			providers.StreamChunk{ID: "1"},
+			providers.StreamChunk{Error: providerErr},
+		)
+		out := Meter(context.Background(), src, time.Now(), MeterMeta{
+			Provider:              "openai",
+			Model:                 "gpt-4o",
+			MetricModel:           "gpt-4o",
+			Catalog:               models.Catalog{},
+			CircuitBreakerOutcome: outcomeFn,
+		})
+		for range out { //nolint:revive // empty-block: intentionally draining the stream to completion
+		}
+
+		mu.Lock()
+		defer mu.Unlock()
+		if len(outcomes) != 1 {
+			t.Fatalf("outcomes len = %d, want 1", len(outcomes))
+		}
+		if !errors.Is(outcomes[0], providerErr) {
+			t.Fatalf("outcome = %v, want provider error", outcomes[0])
+		}
+	})
+}
+
+func TestMeter_CallsCircuitBreakerOutcome_OnAfterPluginError(t *testing.T) {
+	var outcomeErr error
+	pluginErr := &plugin.RejectionError{Plugin: "after", PluginType: plugin.TypeLogging, Stage: plugin.StageAfterRequest, Reason: "rejected"}
+	src := feed(
+		providers.StreamChunk{ID: "1", Choices: []providers.StreamChoice{{
+			Delta: providers.MessageDelta{Content: "ok"},
+		}}},
+	)
+
+	out := Meter(context.Background(), src, time.Now(), MeterMeta{
+		Provider:    "openai",
+		Model:       "gpt-4o",
+		MetricModel: "gpt-4o",
+		Catalog:     models.Catalog{},
+		CompletionFn: func(context.Context, *providers.Response) error {
+			return pluginErr
+		},
+		CircuitBreakerOutcome: func(err error) {
+			outcomeErr = err
+		},
+	})
+	for range out { //nolint:revive // empty-block: intentionally draining the stream to completion
+	}
+
+	if outcomeErr != nil {
+		t.Fatalf("circuit breaker outcome error = %v, want nil after successful provider stream", outcomeErr)
+	}
+}
+
 func TestMeter_NilPublishFn_NoPanic(t *testing.T) {
 	t.Helper()
 	src := feed(providers.StreamChunk{ID: "1"})
 	out := Meter(context.Background(), src, time.Now(), MeterMeta{
-		Provider:  "openai",
-		Model:     "gpt-4o",
-		Catalog:   models.Catalog{},
-		PublishFn: nil,
+		Provider:    "openai",
+		Model:       "gpt-4o",
+		MetricModel: "gpt-4o",
+		Catalog:     models.Catalog{},
+		PublishFn:   nil,
 	})
-	for range out { //nolint:revive
+	for range out { //nolint:revive // empty-block: intentionally draining the stream to completion
+	}
+}
+
+// A caller that forgets MetricModel must not silently reintroduce unbounded
+// cardinality: the label fails closed to "unknown" instead of echoing the raw,
+// client-supplied model. Model itself stays raw for cost lookup and events.
+func TestMeterMeta_MetricLabelModelFailsClosed(t *testing.T) {
+	tests := []struct {
+		name string
+		meta MeterMeta
+		want string
+	}{
+		{
+			name: "bucketed label is used",
+			meta: MeterMeta{Model: "raw-client-model", MetricModel: metrics.UnknownModelLabel},
+			want: metrics.UnknownModelLabel,
+		},
+		{
+			name: "known model passes through",
+			meta: MeterMeta{Model: "gpt-4o", MetricModel: "gpt-4o"},
+			want: "gpt-4o",
+		},
+		{
+			name: "unset MetricModel never leaks the raw model",
+			meta: MeterMeta{Model: "raw-client-model"},
+			want: metrics.UnknownModelLabel,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.meta.metricLabelModel(); got != tt.want {
+				t.Fatalf("metricLabelModel() = %q, want %q", got, tt.want)
+			}
+			if tt.meta.Model == "" {
+				t.Fatal("Model must remain available for cost lookup")
+			}
+		})
+	}
+}
+
+// The unset case must not merely default — it must also keep the raw model out
+// of the emitted series.
+func TestMeter_UnsetMetricModelDoesNotEmitRawModelLabel(t *testing.T) {
+	const rawModel = "streamwrap-raw-model-must-not-appear"
+
+	src := feed(providers.StreamChunk{Usage: &providers.Usage{PromptTokens: 1, CompletionTokens: 1}})
+	out := Meter(context.Background(), src, time.Now(), MeterMeta{
+		Provider: "openai",
+		Model:    rawModel, // MetricModel deliberately unset
+		Catalog:  models.Catalog{},
+	})
+	for range out { //nolint:revive // drain
+	}
+
+	mfs, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatalf("gather metrics: %v", err)
+	}
+	for _, mf := range mfs {
+		if mf.GetName() != "gateway_requests_total" {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			for _, label := range m.GetLabel() {
+				if label.GetName() == "model" && label.GetValue() == rawModel {
+					t.Fatalf("raw model %q leaked into a metric series", rawModel)
+				}
+			}
+		}
 	}
 }

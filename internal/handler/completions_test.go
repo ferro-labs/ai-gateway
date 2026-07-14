@@ -1,13 +1,18 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/ferro-labs/ai-gateway/internal/logging"
+	"github.com/ferro-labs/ai-gateway/internal/streamio"
 	"github.com/ferro-labs/ai-gateway/providers"
 	openaipkg "github.com/ferro-labs/ai-gateway/providers/openai"
 )
@@ -96,7 +101,7 @@ func TestCompletionsHandler_ProxyPath_DoesNotDuplicateV1(t *testing.T) {
 	reg.Register(op)
 
 	h := Completions(reg)
-	req := httptest.NewRequest(http.MethodPost, "/v1/completions", strings.NewReader(`{"model":"gpt-4o","prompt":"hi"}`))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/completions", strings.NewReader(`{"model":"gpt-4o","prompt":"hi"}`))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
@@ -117,7 +122,7 @@ func TestCompletionsHandler_ShimsStreamRequest_ReturnsExplicitError(t *testing.T
 	reg.Register(np)
 
 	h := Completions(reg)
-	req := httptest.NewRequest(http.MethodPost, "/v1/completions", strings.NewReader(`{"model":"non-proxy-model","prompt":"hi","stream":true}`))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/completions", strings.NewReader(`{"model":"non-proxy-model","prompt":"hi","stream":true}`))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
@@ -141,4 +146,114 @@ func TestCompletionsHandler_ShimsStreamRequest_ReturnsExplicitError(t *testing.T
 	if np.calls != 0 {
 		t.Fatalf("provider should not be called for unsupported stream shim, got %d calls", np.calls)
 	}
+}
+
+func TestCompletionsHandler_ProxyStreamPathUsesWriteDeadlines(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: {\"id\":\"chunk-1\"}\n\n"))
+	}))
+	defer upstream.Close()
+
+	reg := providers.NewRegistry()
+	op, err := openaipkg.New("sk-test", upstream.URL)
+	if err != nil {
+		t.Fatalf("failed to build openai provider: %v", err)
+	}
+	reg.Register(op)
+
+	h := Completions(reg)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/completions", strings.NewReader(`{"model":"gpt-4o","prompt":"hi","stream":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := newCompletionDeadlineRecorder()
+
+	h(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "data:") {
+		t.Fatalf("expected streamed body, got %q", w.Body.String())
+	}
+	if len(w.deadlines) < 2 {
+		t.Fatalf("expected write deadline set and clear, got %d entries", len(w.deadlines))
+	}
+	if w.deadlines[0].IsZero() {
+		t.Fatal("first deadline should set a timeout")
+	}
+	if !w.deadlines[len(w.deadlines)-1].IsZero() {
+		t.Fatalf("last deadline should clear timeout, got %v", w.deadlines[len(w.deadlines)-1])
+	}
+	if w.flushes == 0 {
+		t.Fatal("expected streaming response flush")
+	}
+}
+
+// Cutting a stalled upstream must not be silent: the copy error is the only
+// evidence the idle bound fired, and a client that hung up is not an error.
+func TestCompletionsHandler_StalledUpstreamCutIsLogged(t *testing.T) {
+	defer streamio.SetIdleTimeoutForTest(50 * time.Millisecond)()
+
+	var logs bytes.Buffer
+	prevLogger := logging.Logger
+	logging.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+	defer func() { logging.Logger = prevLogger }()
+
+	upstreamDone := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: {\"id\":\"chunk-1\"}\n\n"))
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		<-r.Context().Done() // stall until the gateway gives up
+		close(upstreamDone)
+	}))
+	defer upstream.Close()
+
+	reg := providers.NewRegistry()
+	op, err := openaipkg.New("sk-test", upstream.URL)
+	if err != nil {
+		t.Fatalf("failed to build openai provider: %v", err)
+	}
+	reg.Register(op)
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/completions",
+		strings.NewReader(`{"model":"gpt-4o","prompt":"hi","stream":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := newCompletionDeadlineRecorder()
+
+	Completions(reg)(w, req)
+
+	select {
+	case <-upstreamDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("upstream request was never cancelled by the idle bound")
+	}
+
+	if got := logs.String(); !strings.Contains(got, "completions response copy failed") {
+		t.Fatalf("idle-timeout cut was not logged: %s", got)
+	}
+}
+
+type completionDeadlineRecorder struct {
+	*httptest.ResponseRecorder
+	deadlines []time.Time
+	flushes   int
+}
+
+func newCompletionDeadlineRecorder() *completionDeadlineRecorder {
+	return &completionDeadlineRecorder{ResponseRecorder: httptest.NewRecorder()}
+}
+
+func (r *completionDeadlineRecorder) Flush() {
+	r.flushes++
+	r.ResponseRecorder.Flush()
+}
+
+func (r *completionDeadlineRecorder) SetWriteDeadline(deadline time.Time) error {
+	r.deadlines = append(r.deadlines, deadline)
+	return nil
 }

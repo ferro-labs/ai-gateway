@@ -2,16 +2,14 @@
 package cloudflare
 
 import (
-	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 
 	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
 	"github.com/ferro-labs/ai-gateway/providers/core"
+	"github.com/ferro-labs/ai-gateway/providers/internal/openaicompat"
 )
 
 const (
@@ -25,7 +23,6 @@ const (
 type Provider struct {
 	name       string
 	apiKey     string
-	accountID  string
 	baseURL    string
 	httpClient *http.Client
 }
@@ -43,14 +40,17 @@ func New(apiKey, accountID, baseURL string) (*Provider, error) {
 	if strings.TrimSpace(accountID) == "" && strings.TrimSpace(baseURL) == "" {
 		return nil, fmt.Errorf("cloudflare: accountID or baseURL is required")
 	}
+	baseURL = strings.TrimSpace(baseURL)
 	if baseURL == "" {
 		baseURL = fmt.Sprintf(defaultBaseURL, strings.TrimSpace(accountID))
 	}
 	baseURL = strings.TrimRight(baseURL, "/")
+	if err := core.ValidateBaseURL(Name, baseURL); err != nil {
+		return nil, err
+	}
 	return &Provider{
 		name:       Name,
 		apiKey:     apiKey,
-		accountID:  accountID,
 		baseURL:    baseURL,
 		httpClient: providerhttp.ForProvider(Name),
 	}, nil
@@ -86,221 +86,40 @@ func (p *Provider) Models() []core.ModelInfo {
 	return core.ModelsFromList(p.name, p.SupportedModels())
 }
 
-type request struct {
-	Model       string         `json:"model"`
-	Messages    []core.Message `json:"messages"`
-	Temperature *float64       `json:"temperature,omitempty"`
-	MaxTokens   *int           `json:"max_tokens,omitempty"`
-	Stream      bool           `json:"stream,omitempty"`
+// headers returns the auth + content-type headers for direct API calls.
+func (p *Provider) headers() map[string]string {
+	h := p.AuthHeaders()
+	h["Content-Type"] = "application/json"
+	return h
 }
 
-type response struct {
-	ID      string        `json:"id"`
-	Model   string        `json:"model"`
-	Choices []core.Choice `json:"choices"`
-	Usage   core.Usage    `json:"usage"`
-}
-
-type errorDetail struct {
-	Message string `json:"message"`
-	Type    string `json:"type"`
-}
-
-type errorResponse struct {
-	Error errorDetail `json:"error"`
-}
-
-type streamResponse struct {
-	ID      string `json:"id"`
-	Model   string `json:"model"`
-	Choices []struct {
-		Index int `json:"index"`
-		Delta struct {
-			Role    string `json:"role,omitempty"`
-			Content string `json:"content,omitempty"`
-		} `json:"delta"`
-		FinishReason string `json:"finish_reason,omitempty"`
-	} `json:"choices"`
+// chatParams builds the shared OpenAI-compatible chat endpoint configuration.
+func (p *Provider) chatParams() openaicompat.ChatParams {
+	return openaicompat.ChatParams{
+		HTTPClient: p.httpClient,
+		URL:        p.baseURL + "/chat/completions",
+		Provider:   p.name,
+		Label:      "cloudflare",
+		Headers:    p.headers(),
+	}
 }
 
 // Complete sends a chat completion request to Cloudflare Workers AI.
 func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
-	pReq := request{
-		Model:       req.Model,
-		Messages:    req.Messages,
-		Temperature: req.Temperature,
-		MaxTokens:   req.MaxTokens,
-	}
-
-	bodyReader, _, release, err := core.JSONBodyReader(pReq)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
-	}
-	defer release()
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/chat/completions", bodyReader)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	httpResp, err := p.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
-	}
-	defer func() { _ = httpResp.Body.Close() }()
-
-	respBody, err := io.ReadAll(httpResp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if httpResp.StatusCode != http.StatusOK {
-		var errResp errorResponse
-		if json.Unmarshal(respBody, &errResp) == nil && errResp.Error.Message != "" {
-			return nil, fmt.Errorf("cloudflare API error (%d): %s", httpResp.StatusCode, errResp.Error.Message)
-		}
-		return nil, fmt.Errorf("cloudflare API error (%d): %s", httpResp.StatusCode, string(respBody))
-	}
-
-	var pResp response
-	if err := json.Unmarshal(respBody, &pResp); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
-	}
-
-	return &core.Response{
-		ID:       pResp.ID,
-		Model:    pResp.Model,
-		Provider: p.name,
-		Choices:  pResp.Choices,
-		Usage:    pResp.Usage,
-	}, nil
+	return openaicompat.PostChat(ctx, p.chatParams(), req)
 }
 
 // CompleteStream sends a streaming chat completion request to Cloudflare Workers AI.
 func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan core.StreamChunk, error) {
-	pReq := request{
-		Model:       req.Model,
-		Messages:    req.Messages,
-		Temperature: req.Temperature,
-		MaxTokens:   req.MaxTokens,
-		Stream:      true,
-	}
-
-	bodyReader, _, release, err := core.JSONBodyReader(pReq)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
-	}
-	defer release()
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/chat/completions", bodyReader)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	httpResp, err := p.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
-	}
-
-	if httpResp.StatusCode != http.StatusOK {
-		defer func() { _ = httpResp.Body.Close() }()
-		respBody, _ := io.ReadAll(httpResp.Body)
-		var errResp errorResponse
-		if json.Unmarshal(respBody, &errResp) == nil && errResp.Error.Message != "" {
-			return nil, fmt.Errorf("cloudflare API error (%d): %s", httpResp.StatusCode, errResp.Error.Message)
-		}
-		return nil, fmt.Errorf("cloudflare API error (%d): %s", httpResp.StatusCode, string(respBody))
-	}
-
-	ch := make(chan core.StreamChunk)
-	go func() {
-		defer close(ch)
-		defer func() { _ = httpResp.Body.Close() }()
-
-		scanner := bufio.NewScanner(httpResp.Body)
-		for scanner.Scan() {
-			line := scanner.Text()
-			if !strings.HasPrefix(line, "data: ") {
-				continue
-			}
-			data := strings.TrimPrefix(line, "data: ")
-			if data == core.SSEDone {
-				return
-			}
-
-			var sr streamResponse
-			if err := json.Unmarshal([]byte(data), &sr); err != nil {
-				ch <- core.StreamChunk{Error: fmt.Errorf("failed to unmarshal stream chunk: %w", err)}
-				return
-			}
-
-			choices := make([]core.StreamChoice, len(sr.Choices))
-			for i, c := range sr.Choices {
-				choices[i] = core.StreamChoice{
-					Index:        c.Index,
-					FinishReason: c.FinishReason,
-					Delta: core.MessageDelta{
-						Role:    c.Delta.Role,
-						Content: c.Delta.Content,
-					},
-				}
-			}
-
-			ch <- core.StreamChunk{
-				ID:      sr.ID,
-				Model:   sr.Model,
-				Choices: choices,
-			}
-		}
-		if err := scanner.Err(); err != nil {
-			ch <- core.StreamChunk{Error: fmt.Errorf("stream read error: %w", err)}
-		}
-	}()
-
-	return ch, nil
+	return openaicompat.PostStream(ctx, p.chatParams(), req)
 }
 
-// Embed sends an embedding request to Cloudflare Workers AI.
+// Embed sends an OpenAI-compatible embedding request to Cloudflare Workers AI.
 func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.EmbeddingResponse, error) {
-	bodyReader, _, release, err := core.JSONBodyReader(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal embedding request: %w", err)
-	}
-	defer release()
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/embeddings", bodyReader)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	httpResp, err := p.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
-	}
-	defer func() { _ = httpResp.Body.Close() }()
-
-	respBody, err := io.ReadAll(httpResp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if httpResp.StatusCode != http.StatusOK {
-		var errResp errorResponse
-		if json.Unmarshal(respBody, &errResp) == nil && errResp.Error.Message != "" {
-			return nil, fmt.Errorf("cloudflare API error (%d): %s", httpResp.StatusCode, errResp.Error.Message)
-		}
-		return nil, fmt.Errorf("cloudflare API error (%d): %s", httpResp.StatusCode, string(respBody))
-	}
-
-	var resp core.EmbeddingResponse
-	if err := json.Unmarshal(respBody, &resp); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
-	}
-	return &resp, nil
+	return openaicompat.PostEmbeddings(ctx, openaicompat.EmbeddingParams{
+		HTTPClient: p.httpClient,
+		URL:        p.baseURL + "/embeddings",
+		Headers:    p.headers(),
+		Label:      "cloudflare",
+	}, req)
 }

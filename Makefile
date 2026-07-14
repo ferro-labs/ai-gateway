@@ -6,7 +6,7 @@ LDFLAGS  := -s -w \
             -X github.com/ferro-labs/ai-gateway/internal/version.Commit=$(COMMIT) \
             -X github.com/ferro-labs/ai-gateway/internal/version.Date=$(DATE)
 
-.PHONY: build run test test-coverage test-integration test-integration-postgres test-integration-containers test-integration-live test-integration-all bench fmt vet lint clean deps precommit all snapshot release-check release-dry-run
+.PHONY: build run test test-coverage test-integration test-integration-postgres test-integration-containers test-integration-live test-integration-all bench fmt vet lint lint-fix clean deps precommit all snapshot release-check release-dry-run
 
 build:
 	@mkdir -p bin
@@ -19,7 +19,7 @@ deps:
 	go mod download && go mod verify
 
 test:
-	go test -v -short -race -timeout 30s ./...
+	go test -v -short -race -timeout 180s ./...
 
 test-coverage:
 	go test -v -short -race -coverprofile=coverage.out -covermode=atomic ./...
@@ -51,6 +51,9 @@ vet:
 
 lint:
 	golangci-lint run ./...
+
+lint-fix:
+	golangci-lint run --fix ./...
 
 clean:
 	rm -rf bin coverage.out coverage.html

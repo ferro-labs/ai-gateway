@@ -1,0 +1,104 @@
+package openaicompat
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+
+	"github.com/ferro-labs/ai-gateway/providers/core"
+)
+
+// EmbeddingParams configures a request to an OpenAI-compatible embeddings endpoint.
+type EmbeddingParams struct {
+	HTTPClient *http.Client
+	URL        string            // full embeddings endpoint URL
+	Headers    map[string]string // auth + content-type
+	Label      string            // human-facing name for error messages
+
+	// BodyTransform, when set, reshapes the outgoing embeddings body (e.g. to
+	// rename a wire field like Mistral's dimensions→output_dimension) while
+	// keeping the shared response decoding. It receives the request and the
+	// normalized input.
+	BodyTransform func(req core.EmbeddingRequest, input any) any
+}
+
+// embeddingBody is the OpenAI-shaped embeddings request body.
+type embeddingBody struct {
+	Model          string `json:"model"`
+	Input          any    `json:"input"`
+	EncodingFormat string `json:"encoding_format,omitempty"`
+	Dimensions     *int   `json:"dimensions,omitempty"`
+	InputType      string `json:"input_type,omitempty"`
+	User           string `json:"user,omitempty"`
+}
+
+// embeddingResponse mirrors the OpenAI /v1/embeddings response body.
+type embeddingResponse struct {
+	Object string              `json:"object"`
+	Data   []core.Embedding    `json:"data"`
+	Model  string              `json:"model"`
+	Usage  core.EmbeddingUsage `json:"usage"`
+}
+
+// PostEmbeddings sends an OpenAI-compatible embeddings request and decodes the
+// canonical response. req.Input is normalised to preserve its wire form: a bare
+// string stays a string and a []string stays an array; empty arrays, nil, and
+// non-string values are rejected. Providers that forward extra request fields or
+// decode extended usage should build the request themselves instead.
+func PostEmbeddings(ctx context.Context, p EmbeddingParams, req core.EmbeddingRequest) (*core.EmbeddingResponse, error) {
+	input, err := core.NormalizeEmbeddingInput(req.Input)
+	if err != nil {
+		return nil, err
+	}
+
+	var payload any = embeddingBody{
+		Model:          req.Model,
+		Input:          input,
+		EncodingFormat: req.EncodingFormat,
+		Dimensions:     req.Dimensions,
+		InputType:      req.InputType,
+		User:           req.User,
+	}
+	if p.BodyTransform != nil {
+		payload = p.BodyTransform(req, input)
+	}
+	bodyReader, _, release, err := core.JSONBodyReader(payload)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal embedding request: %w", err)
+	}
+	defer release()
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.URL, bodyReader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	for k, v := range p.Headers {
+		httpReq.Header.Set(k, v)
+	}
+
+	httpResp, err := p.HTTPClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer func() { _ = httpResp.Body.Close() }()
+
+	respBody, err := core.ReadResponseBody(httpResp.Body, core.MaxProviderResponseBytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+	if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
+		return nil, APIErrorFromResponse(p.Label, httpResp, respBody)
+	}
+
+	var pResp embeddingResponse
+	if err := json.Unmarshal(respBody, &pResp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal embedding response: %w", err)
+	}
+	return &core.EmbeddingResponse{
+		Object: pResp.Object,
+		Data:   pResp.Data,
+		Model:  pResp.Model,
+		Usage:  pResp.Usage,
+	}, nil
+}

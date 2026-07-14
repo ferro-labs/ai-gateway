@@ -3,20 +3,22 @@ package fireworks
 import (
 	"context"
 	"encoding/json"
-	"github.com/ferro-labs/ai-gateway/providers/core"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
 const (
-	testAPIKey              = "test-key"
-	testBearerAPIKey        = "Bearer test-key"
-	testChatCompletionsPath = "/chat/completions"
-	testEmbeddingModel      = "accounts/fireworks/models/qwen3-embedding-0p6b"
+	testAPIKey         = "test-key"
+	testBearerAPIKey   = "Bearer test-key"
+	testChatPath       = "/v1/chat/completions"
+	testChatModel      = "accounts/fireworks/models/llama-v3p1-8b-instruct"
+	testEmbeddingModel = "accounts/fireworks/models/qwen3-embedding-0p6b"
 )
 
 func TestNewFireworks(t *testing.T) {
@@ -86,7 +88,8 @@ func TestFireworksProvider_CompleteStream_MockSSE(t *testing.T) {
 		"data: {\"id\":\"cmpl-1\",\"model\":\"accounts/fireworks/models/llama-v3p1-8b-instruct\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
 		"data: [DONE]\n\n"
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertFireworksChatRequest(t, r)
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(sseData))
@@ -95,7 +98,7 @@ func TestFireworksProvider_CompleteStream_MockSSE(t *testing.T) {
 
 	p, _ := New("test-key", srv.URL)
 	ch, err := p.CompleteStream(context.Background(), core.Request{
-		Model:    "accounts/fireworks/models/llama-v3p1-8b-instruct",
+		Model:    testChatModel,
 		Messages: []core.Message{{Role: "user", Content: "Hi"}},
 	})
 	if err != nil {
@@ -121,7 +124,8 @@ func TestFireworksProvider_CompleteStream_MockSSE(t *testing.T) {
 func TestFireworksProvider_Complete_MockHTTP(t *testing.T) {
 	respBody := `{"id":"cmpl-1","model":"accounts/fireworks/models/llama-v3p1-8b-instruct","choices":[{"index":0,"message":{"role":"assistant","content":"Hello!"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}`
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertFireworksChatRequest(t, r)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(respBody))
@@ -130,7 +134,7 @@ func TestFireworksProvider_Complete_MockHTTP(t *testing.T) {
 
 	p, _ := New("test-key", srv.URL)
 	resp, err := p.Complete(context.Background(), core.Request{
-		Model:    "accounts/fireworks/models/llama-v3p1-8b-instruct",
+		Model:    testChatModel,
 		Messages: []core.Message{{Role: "user", Content: "Hi"}},
 	})
 	if err != nil {
@@ -141,6 +145,29 @@ func TestFireworksProvider_Complete_MockHTTP(t *testing.T) {
 	}
 	if len(resp.Choices) == 0 {
 		t.Error("expected at least one choice")
+	}
+}
+
+// assertFireworksChatRequest verifies the outbound chat request shape: a POST to
+// /v1/chat/completions carrying bearer auth and the forwarded model field.
+func assertFireworksChatRequest(t *testing.T, r *http.Request) {
+	t.Helper()
+	if r.Method != http.MethodPost {
+		t.Errorf("method = %s, want POST", r.Method)
+	}
+	if r.URL.Path != testChatPath {
+		t.Errorf("path = %q, want %s", r.URL.Path, testChatPath)
+	}
+	if got := r.Header.Get("Authorization"); got != testBearerAPIKey {
+		t.Errorf("Authorization = %q, want %s", got, testBearerAPIKey)
+	}
+	var body map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		t.Errorf("failed to decode request body: %v", err)
+		return
+	}
+	if got := body["model"]; got != testChatModel {
+		t.Errorf("model = %v, want %s", got, testChatModel)
 	}
 }
 
@@ -186,13 +213,13 @@ func TestFireworksProvider_Embed_InvalidInput(t *testing.T) {
 	p, _ := New("test-key", srv.URL)
 	badInputs := []struct {
 		name  string
-		input interface{}
+		input any
 	}{
 		{"nil", nil},
 		{"integer", 42},
 		{"empty-string-slice", []string{}},
-		{"empty-interface-slice", []interface{}{}},
-		{"non-string-array-member", []interface{}{"ok", 42}},
+		{"empty-interface-slice", []any{}},
+		{"non-string-array-member", []any{"ok", 42}},
 	}
 	for _, tc := range badInputs {
 		t.Run(tc.name, func(t *testing.T) {
@@ -234,7 +261,7 @@ func TestFireworksProvider_Embed_UpstreamError(t *testing.T) {
 	}
 }
 
-func testFireworksEmbedSuccess(t *testing.T, input interface{}) {
+func testFireworksEmbedSuccess(t *testing.T, input any) {
 	t.Helper()
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -251,7 +278,7 @@ func testFireworksEmbedSuccess(t *testing.T, input interface{}) {
 			t.Errorf("Content-Type = %q, want application/json", got)
 		}
 
-		var body map[string]interface{}
+		var body map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatalf("failed to decode request body: %v", err)
 		}
@@ -294,7 +321,7 @@ func testFireworksEmbedSuccess(t *testing.T, input interface{}) {
 	}
 }
 
-func assertFireworksEmbeddingInput(t *testing.T, got interface{}, want interface{}) {
+func assertFireworksEmbeddingInput(t *testing.T, got any, want any) {
 	t.Helper()
 
 	switch w := want.(type) {
@@ -303,7 +330,7 @@ func assertFireworksEmbeddingInput(t *testing.T, got interface{}, want interface
 			t.Fatalf("input = %#v, want %q", got, w)
 		}
 	case []string:
-		arr, ok := got.([]interface{})
+		arr, ok := got.([]any)
 		if !ok {
 			t.Fatalf("input type = %T, want JSON array", got)
 		}
@@ -317,5 +344,89 @@ func assertFireworksEmbeddingInput(t *testing.T, got interface{}, want interface
 		}
 	default:
 		t.Fatalf("unsupported test input type %T", want)
+	}
+}
+
+// TestNew_RejectsInvalidBaseURL verifies the constructor fails fast when the base
+// URL is not a valid absolute http(s) URL with a host.
+func TestNew_RejectsInvalidBaseURL(t *testing.T) {
+	if _, err := New(testAPIKey, "://nope"); err == nil {
+		t.Fatal("New() accepted an invalid base URL, want error")
+	}
+}
+
+// TestFireworksProvider_Complete_UpstreamError verifies a non-2xx chat response
+// surfaces an error carrying both the HTTP status and the upstream message.
+func TestFireworksProvider_Complete_UpstreamError(t *testing.T) {
+	tests := []struct {
+		name    string
+		status  int
+		message string
+	}{
+		{"rate-limited", http.StatusTooManyRequests, "slow down"},
+		{"server-error", http.StatusInternalServerError, "internal boom"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != testChatPath {
+					t.Errorf("path = %q, want %s", r.URL.Path, testChatPath)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(`{"error":{"message":"` + tc.message + `"}}`))
+			}))
+			defer srv.Close()
+
+			p, _ := New(testAPIKey, srv.URL)
+			_, err := p.Complete(context.Background(), core.Request{
+				Model:    testChatModel,
+				Messages: []core.Message{{Role: "user", Content: "Hi"}},
+			})
+			if err == nil {
+				t.Fatal("Complete() error = nil, want upstream error")
+			}
+			if got := core.ParseStatusCode(err); got != tc.status {
+				t.Errorf("ParseStatusCode(err) = %d, want %d", got, tc.status)
+			}
+			if !strings.Contains(err.Error(), tc.message) {
+				t.Errorf("error = %v, want it to contain %q", err, tc.message)
+			}
+		})
+	}
+}
+
+// TestFireworksProvider_DiscoverModels verifies live discovery issues a GET to
+// /v1/models with bearer auth and parses the returned model metadata.
+func TestFireworksProvider_DiscoverModels(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("method = %q, want GET", r.Method)
+		}
+		if r.URL.Path != "/v1/models" {
+			t.Errorf("path = %q, want /v1/models", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != testBearerAPIKey {
+			t.Errorf("Authorization = %q, want %s", got, testBearerAPIKey)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"` + testChatModel + `","object":"model","created":1700000000,"owned_by":"fireworks"}]}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New(testAPIKey, srv.URL)
+	models, err := p.DiscoverModels(context.Background())
+	if err != nil {
+		t.Fatalf("DiscoverModels() error: %v", err)
+	}
+	if len(models) != 1 {
+		t.Fatalf("expected 1 model, got %d", len(models))
+	}
+	if models[0].ID != testChatModel {
+		t.Errorf("model[0].ID = %q, want %s", models[0].ID, testChatModel)
+	}
+	if models[0].OwnedBy != "fireworks" {
+		t.Errorf("model[0].OwnedBy = %q, want fireworks", models[0].OwnedBy)
 	}
 }

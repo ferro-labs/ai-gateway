@@ -14,16 +14,14 @@ var PluginsCmd = &cobra.Command{
 }
 
 func runPlugins(cmd *cobra.Command, _ []string) error {
-	flagURL, _ := cmd.Root().PersistentFlags().GetString("gateway-url")
-	flagKey, _ := cmd.Root().PersistentFlags().GetString("api-key")
-	c := NewAdminClient(flagURL, flagKey)
+	c := adminClientFromCmd(cmd)
 
 	var plugins []struct {
 		Name    string `json:"name" yaml:"name"`
 		Type    string `json:"type" yaml:"type"`
 		Enabled bool   `json:"enabled" yaml:"enabled"`
 	}
-	if err := c.Get("/admin/plugins", &plugins); err != nil {
+	if err := c.Get(cmd.Context(), "/admin/plugins", &plugins); err != nil {
 		return err
 	}
 

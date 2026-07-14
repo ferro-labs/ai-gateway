@@ -14,6 +14,7 @@ import (
 	"time"
 
 	aigateway "github.com/ferro-labs/ai-gateway"
+	"github.com/ferro-labs/ai-gateway/internal/admin"
 	"github.com/ferro-labs/ai-gateway/plugin"
 	"github.com/ferro-labs/ai-gateway/providers/core"
 
@@ -94,7 +95,7 @@ func newWordFilterGateway(t *testing.T, blockedWords []string, completeFunc func
 				Type:    "guardrail",
 				Stage:   "before_request",
 				Enabled: true,
-				Config:  map[string]interface{}{"blocked_words": wordsToInterface(blockedWords)},
+				Config:  map[string]any{"blocked_words": wordsToInterface(blockedWords)},
 			},
 		},
 	}
@@ -109,8 +110,8 @@ func newWordFilterGateway(t *testing.T, blockedWords []string, completeFunc func
 	return gw
 }
 
-func wordsToInterface(words []string) []interface{} {
-	out := make([]interface{}, len(words))
+func wordsToInterface(words []string) []any {
+	out := make([]any, len(words))
 	for i, w := range words {
 		out[i] = w
 	}
@@ -199,7 +200,7 @@ func TestPluginChain_ResponseCache_Hit(t *testing.T) {
 		t.Fatal("response-cache factory not found — missing blank import?")
 	}
 	cachePlugin := factory()
-	if initErr := cachePlugin.Init(map[string]interface{}{"max_age": 60, "max_entries": 10}); initErr != nil {
+	if initErr := cachePlugin.Init(map[string]any{"max_age": 60, "max_entries": 10}); initErr != nil {
 		t.Fatalf("cache Init: %v", initErr)
 	}
 	if regErr := gw.RegisterPlugin(plugin.StageBeforeRequest, cachePlugin); regErr != nil {
@@ -231,6 +232,102 @@ func TestPluginChain_ResponseCache_Hit(t *testing.T) {
 	}
 }
 
+// TestPluginChain_PerKeyRateLimit verifies that per-key rate limits apply
+// correctly when an API key identifier is propagated through the gateway's
+// plugin context.
+//
+// RED: Before the Metadata["api_key"] propagation fix, the per-key bucket was
+// never populated so all requests passed regardless of key_rpm. This test
+// catches that regression.
+//
+// GREEN: After the fix, the second request under the same key is rejected with
+// a per-key rate limit error, while requests under a different key succeed.
+func TestPluginChain_PerKeyRateLimit(t *testing.T) {
+	prov := &stubProv{name: "rlstub", models: []string{pluginTestModel}}
+	prov.CompleteFunc = func(_ context.Context, req core.Request) (*core.Response, error) {
+		return &core.Response{
+			ID:      "rl-resp",
+			Object:  "chat.completion",
+			Model:   req.Model,
+			Created: time.Now().Unix(),
+			Choices: []core.Choice{
+				{Message: core.Message{Role: "assistant", Content: "ok"}, FinishReason: "stop"},
+			},
+		}, nil
+	}
+
+	// key_rpm=1 means the token bucket holds 1 token at most; the first request
+	// drains it. At a fill rate of 1/60 r/s the second request is immediately
+	// rejected (within the test's timescale).
+	gw, err := aigateway.New(aigateway.Config{
+		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeFallback},
+		Targets:  []aigateway.Target{{VirtualKey: "rlstub"}},
+		Plugins: []aigateway.PluginConfig{
+			{
+				Name:    "rate-limit",
+				Type:    "ratelimit",
+				Stage:   "before_request",
+				Enabled: true,
+				Config: map[string]any{
+					"requests_per_second": 1000, // global limit is generous
+					"key_rpm":             1,    // 1 rpm per key — burst of 1
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("aigateway.New: %v", err)
+	}
+	gw.RegisterProvider(prov)
+	if err := gw.LoadPlugins(); err != nil {
+		t.Fatalf("LoadPlugins: %v", err)
+	}
+
+	req := core.Request{
+		Model:    pluginTestModel,
+		Messages: []core.Message{{Role: "user", Content: "hello"}},
+	}
+
+	// ctxWithKey injects a fake authenticated API key into a context so the
+	// gateway's per-key plugin propagation path is exercised.
+	ctxWithKey := func(keyID string) context.Context {
+		return admin.ContextWithAPIKey(t.Context(), &admin.APIKey{
+			ID:     keyID,
+			Name:   keyID,
+			Active: true,
+			Scopes: []string{admin.ScopeAdmin},
+		})
+	}
+
+	// First request under keyA: should succeed (bucket has 1 token).
+	_, err = gw.Route(ctxWithKey("keyA"), req)
+	if err != nil {
+		t.Fatalf("first request under keyA: unexpected error: %v", err)
+	}
+
+	// Second request under keyA: bucket is empty — should be rate-limited.
+	_, err = gw.Route(ctxWithKey("keyA"), req)
+	if err == nil {
+		t.Fatal("second request under keyA: expected rate-limit error, got nil")
+	}
+	if !strings.Contains(err.Error(), "per-key rate limit exceeded") {
+		t.Errorf("expected per-key rate limit error, got: %v", err)
+	}
+
+	// Request under keyB: independent bucket — should succeed.
+	_, err = gw.Route(ctxWithKey("keyB"), req)
+	if err != nil {
+		t.Fatalf("request under keyB: unexpected error (different key should not be affected): %v", err)
+	}
+
+	// Request with no key: falls through to global limiter — should succeed
+	// since the global limit (1000 rps) is far from exhausted.
+	_, err = gw.Route(t.Context(), req)
+	if err != nil {
+		t.Fatalf("request with no key: unexpected error: %v", err)
+	}
+}
+
 // TestPluginChain_OnError_Fires confirms that a failing provider produces an
 // error that propagates correctly through the gateway (on_error path).
 func TestPluginChain_OnError_Fires(t *testing.T) {
@@ -240,7 +337,7 @@ func TestPluginChain_OnError_Fires(t *testing.T) {
 			Type:    "logging",
 			Stage:   "after_request",
 			Enabled: true,
-			Config:  map[string]interface{}{},
+			Config:  map[string]any{},
 		},
 	}
 	prov := &stubProv{name: "errstub", models: []string{pluginTestModel}}

@@ -10,13 +10,14 @@ import (
 	"time"
 
 	"github.com/ferro-labs/ai-gateway/internal/logging"
+	"github.com/ferro-labs/ai-gateway/internal/streamio"
 	"github.com/ferro-labs/ai-gateway/providers"
 )
 
-var (
-	writeDeadline = 15 * time.Second
-	idleTimeout   = 2 * time.Minute
-)
+// idleTimeout bounds the gap between two chunks arriving on the provider
+// channel. The proxy and legacy-completions paths bound their upstream reads
+// with streamio.IdleTimeout instead.
+var idleTimeout = 2 * time.Minute
 
 // SetIdleTimeoutForTest overrides the idle timeout for testing and returns a restore function.
 func SetIdleTimeoutForTest(d time.Duration) func() {
@@ -32,7 +33,7 @@ func Write(ctx context.Context, w http.ResponseWriter, ch <-chan providers.Strea
 	w.Header().Set("Connection", "keep-alive")
 
 	controller := http.NewResponseController(w)
-	_ = clearWriteDeadline(controller)
+	_ = streamio.ClearWriteDeadline(controller)
 
 	bw := bufio.NewWriterSize(w, 4096)
 	enc := json.NewEncoder(bw)
@@ -93,7 +94,7 @@ func Write(ctx context.Context, w http.ResponseWriter, ch <-chan providers.Strea
 			idleTimer.Reset(idleTimeout)
 
 			if err := writeAndFlush(ctx, controller, bw, func() error {
-				return writeEvent(bw, enc, chunk)
+				return writeChunk(bw, enc, &chunk)
 			}); err != nil {
 				if !errors.Is(err, context.Canceled) {
 					logging.FromContext(ctx).Debug("stream response write failed", "error", err)
@@ -105,28 +106,26 @@ func Write(ctx context.Context, w http.ResponseWriter, ch <-chan providers.Strea
 }
 
 func writeAndFlush(ctx context.Context, controller *http.ResponseController, bw *bufio.Writer, writeFn func() error) error {
-	if err := setWriteDeadline(controller, time.Now().Add(writeDeadline)); err != nil {
-		return err
-	}
-	defer func() {
-		_ = clearWriteDeadline(controller)
-	}()
-
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	default:
-	}
-
-	if err := writeFn(); err != nil {
-		return err
-	}
-	if err := bw.Flush(); err != nil {
-		return err
-	}
-	return flush(controller)
+	return streamio.WriteAndFlush(ctx, controller, bw.Flush, writeFn)
 }
 
+// writeChunk writes a single stream chunk as an SSE event using a
+// concrete-typed argument. This is the highest-frequency write in the gateway
+// (once per token delta); taking *providers.StreamChunk instead of the any
+// parameter of writeEvent avoids heap-boxing the chunk on every write.
+func writeChunk(bw *bufio.Writer, enc *json.Encoder, chunk *providers.StreamChunk) error {
+	if _, err := bw.WriteString("data: "); err != nil {
+		return err
+	}
+	if err := enc.Encode(chunk); err != nil {
+		return err
+	}
+	return bw.WriteByte('\n')
+}
+
+// writeEvent writes an arbitrary payload as an SSE event. It is used for
+// low-frequency control events (errors, timeouts) where the any boxing is
+// negligible; per-chunk writes use writeChunk instead.
 func writeEvent(bw *bufio.Writer, enc *json.Encoder, payload any) error {
 	if _, err := bw.WriteString("data: "); err != nil {
 		return err
@@ -134,26 +133,5 @@ func writeEvent(bw *bufio.Writer, enc *json.Encoder, payload any) error {
 	if err := enc.Encode(payload); err != nil {
 		return err
 	}
-	if err := bw.WriteByte('\n'); err != nil {
-		return err
-	}
-	return nil
-}
-
-func flush(controller *http.ResponseController) error {
-	if err := controller.Flush(); err != nil && !errors.Is(err, http.ErrNotSupported) {
-		return err
-	}
-	return nil
-}
-
-func setWriteDeadline(controller *http.ResponseController, deadline time.Time) error {
-	if err := controller.SetWriteDeadline(deadline); err != nil && !errors.Is(err, http.ErrNotSupported) {
-		return err
-	}
-	return nil
-}
-
-func clearWriteDeadline(controller *http.ResponseController) error {
-	return setWriteDeadline(controller, time.Time{})
+	return bw.WriteByte('\n')
 }

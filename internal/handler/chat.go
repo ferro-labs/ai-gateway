@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 
@@ -15,6 +16,11 @@ func ChatCompletions(gw *aigateway.Gateway) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		req, err := DecodeChatCompletionRequest(r.Body)
 		if err != nil {
+			var maxBytesErr *http.MaxBytesError
+			if errors.As(err, &maxBytesErr) {
+				apierror.WriteOpenAI(w, http.StatusRequestEntityTooLarge, "request body too large", "invalid_request_error", "request_too_large")
+				return
+			}
 			apierror.WriteOpenAI(w, http.StatusBadRequest, err.Error(), "invalid_request_error", "invalid_request")
 			return
 		}
@@ -68,22 +74,32 @@ func ChatCompletions(gw *aigateway.Gateway) http.HandlerFunc {
 // Health handles GET /health.
 func Health(gw *aigateway.Gateway) http.HandlerFunc {
 	type providerHealth struct {
-		Name   string `json:"name"`
-		Status string `json:"status"`
-		Models int    `json:"models"`
+		Name    string `json:"name"`
+		Status  string `json:"status"`
+		Circuit string `json:"circuit"`
+		Models  int    `json:"models"`
 	}
 
 	return func(w http.ResponseWriter, _ *http.Request) {
+		circuits := make(map[string]string)
+		for _, pr := range gw.Readiness().Providers {
+			circuits[pr.Name] = pr.Circuit
+		}
 		var providerStatuses []providerHealth
 		for _, name := range gw.ListProviders() {
 			p, ok := gw.GetProvider(name)
 			if !ok {
 				continue
 			}
+			circuit := circuits[name]
+			if circuit == "" {
+				circuit = "closed"
+			}
 			providerStatuses = append(providerStatuses, providerHealth{
-				Name:   name,
-				Status: "available",
-				Models: len(p.Models()),
+				Name:    name,
+				Status:  "available",
+				Circuit: circuit,
+				Models:  len(p.Models()),
 			})
 		}
 		if providerStatuses == nil {
@@ -94,7 +110,10 @@ func Health(gw *aigateway.Gateway) http.HandlerFunc {
 			status = "no_providers"
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		if status != "ok" {
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"status":    status,
 			"providers": providerStatuses,
 		})

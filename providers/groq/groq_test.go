@@ -2,9 +2,12 @@ package groq
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -102,6 +105,78 @@ func TestGroqProvider_CompleteStream_MockSSE(t *testing.T) {
 	}
 }
 
+func TestGroqProvider_Complete_ParamsAndAuth(t *testing.T) {
+	var gotPath, gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-1","model":"llama-3.1-8b-instant","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":1,"total_tokens":6}}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	resp, err := p.Complete(context.Background(), core.Request{
+		Model:    "llama-3.1-8b-instant",
+		Messages: []core.Message{{Role: "user", Content: "Hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Complete() error: %v", err)
+	}
+	if gotPath != "/v1/chat/completions" {
+		t.Errorf("request path = %q, want /v1/chat/completions", gotPath)
+	}
+	if gotAuth != "Bearer test-key" {
+		t.Errorf("Authorization = %q, want Bearer test-key", gotAuth)
+	}
+	if resp.ID != "chatcmpl-1" {
+		t.Errorf("Response.ID = %q, want chatcmpl-1", resp.ID)
+	}
+}
+
+func TestGroqProvider_Complete_ErrorStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"rate limited"}}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	_, err := p.Complete(context.Background(), core.Request{
+		Model:    "llama-3.1-8b-instant",
+		Messages: []core.Message{{Role: "user", Content: "Hi"}},
+	})
+	if err == nil {
+		t.Fatal("Complete() expected error on 429, got nil")
+	}
+	if !strings.Contains(err.Error(), "groq API error (429)") {
+		t.Errorf("error = %q, want it to contain %q", err.Error(), "groq API error (429)")
+	}
+}
+
+func TestGroqProvider_CompleteStream_ErrorStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":{"message":"boom"}}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	_, err := p.CompleteStream(context.Background(), core.Request{
+		Model:    "llama-3.1-8b-instant",
+		Messages: []core.Message{{Role: "user", Content: "Hi"}},
+	})
+	if err == nil {
+		t.Fatal("CompleteStream() expected error on 500, got nil")
+	}
+	if !strings.Contains(err.Error(), "groq API error (500)") {
+		t.Errorf("error = %q, want it to contain %q", err.Error(), "groq API error (500)")
+	}
+}
+
 func TestGroqProvider_Complete_Integration(t *testing.T) {
 	apiKey := os.Getenv("GROQ_API_KEY")
 	if apiKey == "" {
@@ -127,3 +202,76 @@ func TestGroqProvider_Complete_Integration(t *testing.T) {
 }
 
 func intPtr(i int) *int { return &i }
+
+func TestGroqProvider_DiscoverModels(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("method = %q, want GET", r.Method)
+		}
+		if r.URL.Path != "/v1/models" {
+			t.Errorf("path = %q, want /v1/models", r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer test-key" {
+			t.Errorf("Authorization = %q, want Bearer test-key", r.Header.Get("Authorization"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"llama-3.3-70b-versatile","object":"model","created":1700000000,"owned_by":"Groq"},{"id":"gemma2-9b-it","object":"model"}]}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	models, err := p.DiscoverModels(context.Background())
+	if err != nil {
+		t.Fatalf("DiscoverModels() error: %v", err)
+	}
+	if len(models) != 2 {
+		t.Fatalf("expected 2 models, got %d", len(models))
+	}
+	if models[0].ID != "llama-3.3-70b-versatile" || models[0].OwnedBy != "Groq" {
+		t.Errorf("unexpected model[0]: %+v", models[0])
+	}
+	if models[1].ID != "gemma2-9b-it" || models[1].OwnedBy != "groq" {
+		t.Errorf("model[1] owned_by fallback = %q, want groq", models[1].OwnedBy)
+	}
+}
+
+// TestGroqProvider_Complete_PrefersMaxCompletionTokens verifies that when the
+// gateway seam populates both token-limit fields, groq forwards only the modern
+// max_completion_tokens.
+func TestGroqProvider_Complete_PrefersMaxCompletionTokens(t *testing.T) {
+	var captured map[string]json.RawMessage
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &captured)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"x","model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{}}`)
+	}))
+	defer srv.Close()
+
+	p, err := New("test-key", srv.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := p.Complete(context.Background(), core.Request{
+		Model:               "llama-3.1-8b-instant",
+		Messages:            []core.Message{{Role: core.RoleUser, Content: "hi"}},
+		MaxTokens:           intp(64),
+		MaxCompletionTokens: intp(64),
+	}); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if _, ok := captured["max_tokens"]; ok {
+		t.Errorf("body contains max_tokens, want only max_completion_tokens")
+	}
+	if _, ok := captured["max_completion_tokens"]; !ok {
+		t.Error("body missing max_completion_tokens")
+	}
+}
+
+// TestNewGroq_RejectsInvalidBaseURL locks in the shared base-URL validation.
+func TestNewGroq_RejectsInvalidBaseURL(t *testing.T) {
+	if _, err := New("k", "://bad"); err == nil {
+		t.Fatal("New accepted an invalid base URL")
+	}
+}

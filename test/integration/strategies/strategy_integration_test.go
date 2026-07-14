@@ -235,20 +235,20 @@ func TestStrategy_LeastLatency_LocksOntoFastestSeen(t *testing.T) {
 		Messages: []core.Message{{Role: "user", Content: "req"}},
 	}
 
-	// Seed: run requests until both providers have been observed at least once.
-	// The strategy picks randomly when no provider has samples, so each cold-start
-	// request has a 50% chance of picking either provider.
-	const maxSeed = 50
-	for i := range maxSeed {
+	// Seed deterministically: the least-latency strategy always routes to an
+	// as-yet-unseen provider before committing to a best-known one, so exactly one
+	// request per target profiles every provider — randomness affects only the
+	// order the two are first sampled, never coverage. Two requests therefore
+	// guarantee both "fast" and "slow" have a latency sample.
+	const seedRequests = 2 // == number of targets
+	for i := range seedRequests {
 		if _, err := gw.Route(t.Context(), req); err != nil {
 			t.Fatalf("seed request %d failed: %v", i, err)
 		}
-		if fastTotal.Load() > 0 && slowTotal.Load() > 0 {
-			break // both providers sampled — tracker has data for both
-		}
 	}
 	if fastTotal.Load() == 0 || slowTotal.Load() == 0 {
-		t.Skip("could not seed both providers within maxSeed requests — extremely rare, re-run")
+		t.Fatalf("seeding failed to sample both providers: fast=%d slow=%d",
+			fastTotal.Load(), slowTotal.Load())
 	}
 
 	// After seeding, the tracker has accurate latency for both providers.

@@ -41,7 +41,7 @@
 - [ ] Test file at `providers/<id>/<id>_test.go`
 - [ ] `ProviderEntry` added to `providers/providers_list.go`
 - [ ] Name constant added to `providers/names.go`
-- [ ] Models added to `models/catalog.json`
+- [ ] Models added to `ferro-labs/model-catalog` when catalog coverage changes
 - [ ] `AllowedTools`, `MaxCallDepth` and streaming tested
 
 ## Plugin checklist (fill in only for new/updated plugins)

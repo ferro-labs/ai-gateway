@@ -7,6 +7,39 @@ import (
 )
 
 func float64Ptr(v float64) *float64 { return &v }
+func boolPtr(v bool) *bool          { return &v }
+
+func TestOtelConfigFromGateway_EnabledTristate(t *testing.T) {
+	tests := []struct {
+		name        string
+		enabled     *bool
+		endpoint    string // config endpoint
+		envEndpoint string // OTEL_EXPORTER_OTLP_ENDPOINT
+		want        bool
+	}{
+		{"nil infers on from config endpoint", nil, "localhost:4317", "", true},
+		{"nil infers on from env endpoint", nil, "", "localhost:4317", true},
+		{"nil infers off when nothing configured", nil, "", "", false},
+		{"false is a hard kill switch despite config endpoint", boolPtr(false), "localhost:4317", "", false},
+		{"false wins over env endpoint", boolPtr(false), "", "localhost:4317", false},
+		{"true forces on with nothing else configured", boolPtr(true), "", "", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", tt.envEndpoint)
+			obs := aigateway.ObservabilityConfig{
+				Tracing: aigateway.TracingConfig{
+					Enabled:  tt.enabled,
+					Endpoint: tt.endpoint,
+				},
+			}
+			cfg := otelConfigFromGateway(obs)
+			if cfg.Enabled != tt.want {
+				t.Errorf("Enabled = %v, want %v", cfg.Enabled, tt.want)
+			}
+		})
+	}
+}
 
 func TestOtelConfigFromGateway_EnvEndpointActivates(t *testing.T) {
 	// An OTEL_EXPORTER_OTLP_ENDPOINT alone (no config endpoint, Enabled unset)

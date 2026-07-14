@@ -10,6 +10,10 @@ function setRange(btn, hours) {
   loadAnalytics();
 }
 
+registerActions({
+  'set-range': function(el) { setRange(el, Number(el.getAttribute('data-hours'))); }
+});
+
 function loadAnalytics() {
   var since = new Date(Date.now() - _currentRangeHours * 3600 * 1000).toISOString();
   apiRequest('/admin/logs/stats?since=' + encodeURIComponent(since))

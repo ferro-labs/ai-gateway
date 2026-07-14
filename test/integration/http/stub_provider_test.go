@@ -17,6 +17,8 @@ var (
 	_ core.Provider          = (*stubProvider)(nil)
 	_ core.StreamProvider    = (*stubProvider)(nil)
 	_ core.EmbeddingProvider = (*stubProvider)(nil)
+	_ core.ImageProvider     = (*stubProvider)(nil)
+	_ core.DiscoveryProvider = (*stubProvider)(nil)
 	_ core.ProxiableProvider = (*stubProvider)(nil)
 )
 
@@ -33,6 +35,8 @@ type stubProvider struct {
 	CompleteHook       func(ctx context.Context, req core.Request) (*core.Response, error)
 	CompleteStreamHook func(ctx context.Context, req core.Request) (<-chan core.StreamChunk, error)
 	EmbedHook          func(ctx context.Context, req core.EmbeddingRequest) (*core.EmbeddingResponse, error)
+	GenerateImageHook  func(ctx context.Context, req core.ImageRequest) (*core.ImageResponse, error)
+	DiscoverModelsHook func(ctx context.Context) ([]core.ModelInfo, error)
 
 	// Latency adds an artificial delay before responding (all methods).
 	Latency time.Duration
@@ -175,6 +179,34 @@ func (s *stubProvider) Embed(ctx context.Context, req core.EmbeddingRequest) (*c
 			TotalTokens:  5,
 		},
 	}, nil
+}
+
+func (s *stubProvider) GenerateImage(ctx context.Context, req core.ImageRequest) (*core.ImageResponse, error) {
+	if s.Latency > 0 {
+		time.Sleep(s.Latency)
+	}
+	s.mu.Lock()
+	hook := s.GenerateImageHook
+	s.mu.Unlock()
+	if hook != nil {
+		return hook(ctx, req)
+	}
+	return &core.ImageResponse{
+		Created: time.Now().Unix(),
+		Data: []core.GeneratedImage{
+			{B64JSON: "c3R1Yi1pbWFnZQ==", RevisedPrompt: req.Prompt},
+		},
+	}, nil
+}
+
+func (s *stubProvider) DiscoverModels(ctx context.Context) ([]core.ModelInfo, error) {
+	s.mu.Lock()
+	hook := s.DiscoverModelsHook
+	s.mu.Unlock()
+	if hook != nil {
+		return hook(ctx)
+	}
+	return s.Models(), nil
 }
 
 // ProxiableProvider implementation — used by proxy tests.

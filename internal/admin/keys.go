@@ -1,14 +1,27 @@
 package admin
 
 import (
-	"crypto/rand"
+	"context"
+	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
 )
 
+// ErrKeyNotFound is returned by Store implementations when an operation targets
+// an API key ID that does not exist. Handlers use errors.Is to distinguish a
+// genuine not-found (HTTP 404) from an internal or transient store failure
+// (HTTP 500), so a database outage is never reported to callers as a 404.
+var ErrKeyNotFound = errors.New("key not found")
+
 // APIKey represents an API key for authenticating requests to the gateway.
+//
+// Key holds the display form (see displayKey) on every value a Store reads
+// back. The full secret appears only on the values returned by Create and
+// RotateKey, which build it in memory — it is never stored and cannot be
+// recovered afterwards.
 type APIKey struct {
 	ID         string     `json:"id"`
 	Key        string     `json:"key"`
@@ -23,181 +36,249 @@ type APIKey struct {
 	Active     bool       `json:"active"`
 }
 
+// keyRecord pairs a stored key with the hash it is looked up by. The hash is a
+// storage detail and never leaves the store.
+type keyRecord struct {
+	apiKey *APIKey
+	hash   string
+}
+
 // KeyStore is an in-memory store for API keys.
 type KeyStore struct {
-	mu    sync.RWMutex
-	byID  map[string]*APIKey
-	byKey map[string]string // key string -> ID
+	mu     sync.RWMutex
+	byID   map[string]*keyRecord
+	byHash map[string]string // sha256 hex -> ID
 }
 
 // NewKeyStore creates a new KeyStore.
 func NewKeyStore() *KeyStore {
 	return &KeyStore{
-		byID:  make(map[string]*APIKey),
-		byKey: make(map[string]string),
+		byID:   make(map[string]*keyRecord),
+		byHash: make(map[string]string),
 	}
 }
 
-// Create generates a new API key with the given name, scopes, and optional expiration.
-func (s *KeyStore) Create(name string, scopes []string, expiresAt *time.Time) (*APIKey, error) {
-	keyBytes := make([]byte, 32)
-	if _, err := rand.Read(keyBytes); err != nil {
-		return nil, fmt.Errorf("generating key: %w", err)
-	}
-	key := "fgw_" + hex.EncodeToString(keyBytes)
+const (
+	keyDisplayHead = 8
+	keyDisplayTail = 4
+)
 
-	idBytes := make([]byte, 16)
-	if _, err := rand.Read(idBytes); err != nil {
-		return nil, fmt.Errorf("generating id: %w", err)
+// hashKey derives the value stored and looked up in place of the secret.
+func hashKey(key string) string {
+	// The keys are 32 bytes of crypto/rand output (see generateAPIKeyString),
+	// not user-chosen passwords, so there is no low-entropy space to grind: a
+	// slow password KDF would add a hash to every authenticated request while
+	// defending nothing. One SHA-256 over a full-entropy value is the right
+	// primitive.
+	sum := sha256.Sum256([]byte(key))
+	return hex.EncodeToString(sum[:])
+}
+
+// displayKey renders the operator-visible form of a key, captured once at
+// creation. Keeping both ends lets an operator match a key they hold against a
+// stored record; the leading "fgw_" alone does not distinguish one key from
+// another.
+func displayKey(key string) string {
+	if len(key) < keyDisplayHead+keyDisplayTail {
+		return "..."
 	}
-	id := fmt.Sprintf("%x-%x-%x-%x-%x",
-		idBytes[0:4], idBytes[4:6], idBytes[6:8], idBytes[8:10], idBytes[10:16])
+	return key[:keyDisplayHead] + "..." + key[len(key)-keyDisplayTail:]
+}
+
+func cloneAPIKey(k *APIKey) *APIKey {
+	if k == nil {
+		return nil
+	}
+
+	cp := *k
+	cp.Scopes = append([]string(nil), k.Scopes...)
+	cp.RevokedAt = cloneTime(k.RevokedAt)
+	cp.ExpiresAt = cloneTime(k.ExpiresAt)
+	cp.RotatedAt = cloneTime(k.RotatedAt)
+	cp.LastUsedAt = cloneTime(k.LastUsedAt)
+	return &cp
+}
+
+func cloneTime(t *time.Time) *time.Time {
+	if t == nil {
+		return nil
+	}
+	cp := *t
+	return &cp
+}
+
+// Create generates a new API key with the given name, scopes, and optional
+// expiration. The returned key carries the full secret; the stored copy does
+// not.
+func (s *KeyStore) Create(_ context.Context, name string, scopes []string, expiresAt *time.Time) (*APIKey, error) {
+	key, err := generateAPIKeyString()
+	if err != nil {
+		return nil, err
+	}
+	id, err := generateID()
+	if err != nil {
+		return nil, err
+	}
 
 	if len(scopes) == 0 {
 		scopes = []string{ScopeAdmin}
 	}
 
-	apiKey := &APIKey{
+	stored := &APIKey{
 		ID:         id,
-		Key:        key,
+		Key:        displayKey(key),
 		Name:       name,
-		Scopes:     scopes,
-		CreatedAt:  time.Now(),
-		ExpiresAt:  expiresAt,
+		Scopes:     append([]string(nil), scopes...),
+		CreatedAt:  time.Now().UTC(),
+		ExpiresAt:  cloneTime(expiresAt),
 		UsageCount: 0,
 		Active:     true,
 	}
+	hash := hashKey(key)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.byID[id] = apiKey
-	s.byKey[key] = id
-	return apiKey, nil
+	s.byID[id] = &keyRecord{apiKey: stored, hash: hash}
+	s.byHash[hash] = id
+
+	created := cloneAPIKey(stored)
+	created.Key = key
+	return created, nil
 }
 
 // Get retrieves an API key by ID.
-func (s *KeyStore) Get(id string) (*APIKey, bool) {
+func (s *KeyStore) Get(_ context.Context, id string) (*APIKey, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	k, ok := s.byID[id]
-	return k, ok
+	rec, ok := s.byID[id]
+	if !ok {
+		return nil, false
+	}
+	return cloneAPIKey(rec.apiKey), true
 }
 
-// List returns all keys with the Key field masked.
-func (s *KeyStore) List() []*APIKey {
+// List returns all keys.
+func (s *KeyStore) List(_ context.Context) []*APIKey {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	keys := make([]*APIKey, 0, len(s.byID))
-	for _, k := range s.byID {
-		masked := *k
-		if len(masked.Key) > 8 {
-			masked.Key = masked.Key[:8] + "..."
-		}
-		keys = append(keys, &masked)
+	for _, rec := range s.byID {
+		keys = append(keys, cloneAPIKey(rec.apiKey))
 	}
 	return keys
 }
 
+// IsEmpty reports whether the store holds no API keys.
+func (s *KeyStore) IsEmpty(_ context.Context) (bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.byID) == 0, nil
+}
+
 // Revoke marks an API key as revoked and inactive.
-func (s *KeyStore) Revoke(id string) error {
+func (s *KeyStore) Revoke(_ context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	k, ok := s.byID[id]
+	rec, ok := s.byID[id]
 	if !ok {
-		return fmt.Errorf("key not found: %s", id)
+		return fmt.Errorf("%w: %s", ErrKeyNotFound, id)
 	}
-	now := time.Now()
-	k.RevokedAt = &now
-	k.Active = false
+	now := time.Now().UTC()
+	rec.apiKey.RevokedAt = &now
+	rec.apiKey.Active = false
 	return nil
 }
 
 // Update updates the name and scopes of an API key.
-func (s *KeyStore) Update(id string, name string, scopes []string) (*APIKey, error) {
+func (s *KeyStore) Update(_ context.Context, id string, name string, scopes []string) (*APIKey, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	k, ok := s.byID[id]
+	rec, ok := s.byID[id]
 	if !ok {
-		return nil, fmt.Errorf("key not found: %s", id)
+		return nil, fmt.Errorf("%w: %s", ErrKeyNotFound, id)
 	}
 	if name != "" {
-		k.Name = name
+		rec.apiKey.Name = name
 	}
 	if len(scopes) > 0 {
-		k.Scopes = scopes
+		rec.apiKey.Scopes = append([]string(nil), scopes...)
 	}
-	masked := *k
-	if len(masked.Key) > 8 {
-		masked.Key = masked.Key[:8] + "..."
-	}
-	return &masked, nil
+	return cloneAPIKey(rec.apiKey), nil
 }
 
 // SetExpiration updates the expiration time for an API key.
-func (s *KeyStore) SetExpiration(id string, expiresAt *time.Time) error {
+func (s *KeyStore) SetExpiration(_ context.Context, id string, expiresAt *time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	k, ok := s.byID[id]
+	rec, ok := s.byID[id]
 	if !ok {
-		return fmt.Errorf("key not found: %s", id)
+		return fmt.Errorf("%w: %s", ErrKeyNotFound, id)
 	}
 	if expiresAt == nil {
-		k.ExpiresAt = nil
+		rec.apiKey.ExpiresAt = nil
 		return nil
 	}
 
 	normalized := expiresAt.UTC()
 	t := normalized
-	k.ExpiresAt = &t
+	rec.apiKey.ExpiresAt = &t
 	return nil
 }
 
 // Delete removes an API key from the store.
-func (s *KeyStore) Delete(id string) error {
+func (s *KeyStore) Delete(_ context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	k, ok := s.byID[id]
+	rec, ok := s.byID[id]
 	if !ok {
-		return fmt.Errorf("key not found: %s", id)
+		return fmt.Errorf("%w: %s", ErrKeyNotFound, id)
 	}
-	delete(s.byKey, k.Key)
+	delete(s.byHash, rec.hash)
 	delete(s.byID, id)
 	return nil
 }
 
-// RotateKey generates a new key string for an existing API key.
-func (s *KeyStore) RotateKey(id string) (*APIKey, error) {
+// RotateKey generates a new key string for an existing API key. The returned
+// key carries the new secret; the stored copy does not.
+func (s *KeyStore) RotateKey(_ context.Context, id string) (*APIKey, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	k, ok := s.byID[id]
+	rec, ok := s.byID[id]
 	if !ok {
-		return nil, fmt.Errorf("key not found: %s", id)
+		return nil, fmt.Errorf("%w: %s", ErrKeyNotFound, id)
 	}
 
-	keyBytes := make([]byte, 32)
-	if _, err := rand.Read(keyBytes); err != nil {
-		return nil, fmt.Errorf("generating key: %w", err)
+	newKey, err := generateAPIKeyString()
+	if err != nil {
+		return nil, err
 	}
-	newKey := "fgw_" + hex.EncodeToString(keyBytes)
 
-	delete(s.byKey, k.Key)
-	k.Key = newKey
-	s.byKey[newKey] = id
-	now := time.Now()
-	k.RotatedAt = &now
+	delete(s.byHash, rec.hash)
+	rec.hash = hashKey(newKey)
+	s.byHash[rec.hash] = id
+	rec.apiKey.Key = displayKey(newKey)
+	now := time.Now().UTC()
+	rec.apiKey.RotatedAt = &now
 
-	return k, nil
+	rotated := cloneAPIKey(rec.apiKey)
+	rotated.Key = newKey
+	return rotated, nil
 }
 
-// ValidateKey looks up a key by its full string and returns it if active.
-func (s *KeyStore) ValidateKey(key string) (*APIKey, bool) {
+// ValidateKey looks up a key by its full string and returns it if active. The
+// empty string is never a valid key: an "Authorization: Bearer " header with no
+// value must not match a stored record, however that record came to exist.
+func (s *KeyStore) ValidateKey(_ context.Context, key string) (*APIKey, bool) {
+	if key == "" {
+		return nil, false
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	id, ok := s.byKey[key]
+	id, ok := s.byHash[hashKey(key)]
 	if !ok {
 		return nil, false
 	}
-	k := s.byID[id]
+	k := s.byID[id].apiKey
 	if !k.Active || k.RevokedAt != nil {
 		return nil, false
 	}
@@ -208,5 +289,11 @@ func (s *KeyStore) ValidateKey(key string) (*APIKey, bool) {
 	lastUsedAt := now
 	k.LastUsedAt = &lastUsedAt
 	k.UsageCount++
-	return k, true
+	return cloneAPIKey(k), true
+}
+
+// Ping reports whether the store is reachable. The in-memory KeyStore is always
+// reachable, so it returns nil.
+func (s *KeyStore) Ping(_ context.Context) error {
+	return nil
 }

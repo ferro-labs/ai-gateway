@@ -61,9 +61,9 @@ func CompletedRequest(traceID, provider, model string, latency time.Duration, st
 }
 
 // Map materializes the event into the public hook payload shape.
-func (e HookEvent) Map() map[string]interface{} {
+func (e HookEvent) Map() map[string]any {
 	if e.Error != "" {
-		return map[string]interface{}{
+		return map[string]any{
 			"trace_id":   e.TraceID,
 			"provider":   e.Provider,
 			"model":      e.Model,
@@ -79,7 +79,7 @@ func (e HookEvent) Map() map[string]interface{} {
 	if e.IncludeExtendedCostKeys {
 		size += 3
 	}
-	data := make(map[string]interface{}, size)
+	data := make(map[string]any, size)
 	data["trace_id"] = e.TraceID
 	data["provider"] = e.Provider
 	data["model"] = e.Model

@@ -8,8 +8,10 @@ import (
 	"testing"
 )
 
-func TestMiddlewareCORS_Preflight_Wildcard(t *testing.T) {
-	// No CORS_ORIGINS set → wildcard '*'.
+func TestMiddlewareCORS_Preflight_NoOriginsConfigured_Blocked(t *testing.T) {
+	// No CORS_ORIGINS set → deny-by-default: CORS middleware emits no headers
+	// and does not intercept preflight OPTIONS. The request falls through to auth
+	// middleware, which returns 401. No Access-Control-Allow-Origin is set.
 	env := newTestServer(t)
 
 	req, _ := http.NewRequest("OPTIONS", env.Server.URL+"/v1/chat/completions", nil)
@@ -22,23 +24,12 @@ func TestMiddlewareCORS_Preflight_Wildcard(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusNoContent {
-		t.Fatalf("expected 204 for preflight, got %d", resp.StatusCode)
+	// Preflight is not intercepted — auth middleware rejects unauthenticated requests.
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for unconfigured origin preflight (deny-by-default), got %d", resp.StatusCode)
 	}
-
-	origin := resp.Header.Get("Access-Control-Allow-Origin")
-	if origin != "*" {
-		t.Fatalf("expected ACAO=*, got %q", origin)
-	}
-
-	methods := resp.Header.Get("Access-Control-Allow-Methods")
-	if methods == "" {
-		t.Error("expected Access-Control-Allow-Methods to be set")
-	}
-
-	headers := resp.Header.Get("Access-Control-Allow-Headers")
-	if headers == "" {
-		t.Error("expected Access-Control-Allow-Headers to be set")
+	if origin := resp.Header.Get("Access-Control-Allow-Origin"); origin != "" {
+		t.Fatalf("expected no ACAO header when no origins configured, got %q", origin)
 	}
 }
 

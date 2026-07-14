@@ -14,6 +14,7 @@ import (
 
 	aigateway "github.com/ferro-labs/ai-gateway"
 	"github.com/ferro-labs/ai-gateway/internal/requestlog"
+	"github.com/ferro-labs/ai-gateway/mcp"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -30,6 +31,11 @@ const fallbackConfigBody = `{"strategy":{"mode":"fallback"},"targets":[{"virtual
 
 type fakeLogReader struct {
 	entries []requestlog.Entry
+	stats   requestlog.StatsResult
+}
+
+func (f *fakeLogReader) Stats(_ context.Context, _ requestlog.Query) (requestlog.StatsResult, error) {
+	return f.stats, nil
 }
 
 func (f *fakeLogReader) List(_ context.Context, query requestlog.Query) (requestlog.ListResult, error) {
@@ -75,6 +81,14 @@ func (f *fakeLogStore) List(_ context.Context, query requestlog.Query) (requestl
 	return reader.List(context.Background(), query)
 }
 
+func (f *fakeLogStore) Stats(_ context.Context, _ requestlog.Query) (requestlog.StatsResult, error) {
+	return requestlog.StatsResult{
+		ByStage:    map[string]int{},
+		ByProvider: map[string]int{},
+		ByModel:    map[string]int{},
+	}, nil
+}
+
 func (f *fakeLogStore) Delete(_ context.Context, query requestlog.MaintenanceQuery) (int, error) {
 	if query.Before == nil {
 		return 0, nil
@@ -110,7 +124,7 @@ func (m *testConfigManager) GetConfig() aigateway.Config {
 	return m.cfg
 }
 
-func (m *testConfigManager) ReloadConfig(cfg aigateway.Config) error {
+func (m *testConfigManager) ReloadConfig(_ context.Context, cfg aigateway.Config) error {
 	if err := aigateway.ValidateConfig(cfg); err != nil {
 		return err
 	}
@@ -118,8 +132,12 @@ func (m *testConfigManager) ReloadConfig(cfg aigateway.Config) error {
 	return nil
 }
 
-func (m *testConfigManager) ResetConfig() error {
+func (m *testConfigManager) ResetConfig(_ context.Context) error {
 	m.cfg = m.initial
+	return nil
+}
+
+func (m *testConfigManager) Ping(_ context.Context) error {
 	return nil
 }
 
@@ -127,8 +145,12 @@ func (m *persistenceFailingConfigManager) GetConfig() aigateway.Config {
 	return m.cfg
 }
 
-func (m *persistenceFailingConfigManager) ReloadConfig(_ aigateway.Config) error {
+func (m *persistenceFailingConfigManager) ReloadConfig(_ context.Context, _ aigateway.Config) error {
 	return fmt.Errorf("%w: write failed", errConfigPersistence)
+}
+
+func (m *persistenceFailingConfigManager) Ping(_ context.Context) error {
+	return nil
 }
 
 func setupTestRouterWithConfigManager(cm ConfigManager) (*Handlers, chi.Router) {
@@ -187,7 +209,7 @@ func setupTestRouterWithLogs(reader requestlog.Reader) (*Handlers, chi.Router) {
 
 func createAdminKey(t *testing.T, h *Handlers) *APIKey {
 	t.Helper()
-	key, err := h.Keys.Create("admin-key", []string{ScopeAdmin}, nil)
+	key, err := h.Keys.Create(context.Background(), "admin-key", []string{ScopeAdmin}, nil)
 	if err != nil {
 		t.Fatalf("failed to create admin key: %v", err)
 	}
@@ -196,19 +218,22 @@ func createAdminKey(t *testing.T, h *Handlers) *APIKey {
 
 func createReadOnlyKey(t *testing.T, h *Handlers) *APIKey {
 	t.Helper()
-	key, err := h.Keys.Create("readonly-key", []string{ScopeReadOnly}, nil)
+	key, err := h.Keys.Create(context.Background(), "readonly-key", []string{ScopeReadOnly}, nil)
 	if err != nil {
 		t.Fatalf("failed to create readonly key: %v", err)
 	}
 	return key
 }
 
+// No *testing.T is available in this standalone builder (74 call sites across
+// this file; threading t through all of them buys nothing since these tests
+// exercise handler auth/routing, not context cancellation).
 func authedRequest(method, url string, body string, apiKey *APIKey) *http.Request {
 	var req *http.Request
 	if body != "" {
-		req = httptest.NewRequest(method, url, bytes.NewBufferString(body))
+		req = httptest.NewRequestWithContext(context.Background(), method, url, bytes.NewBufferString(body))
 	} else {
-		req = httptest.NewRequest(method, url, nil)
+		req = httptest.NewRequestWithContext(context.Background(), method, url, nil)
 	}
 	req.Header.Set("Authorization", "Bearer "+apiKey.Key)
 	return req
@@ -274,8 +299,8 @@ func TestCreateKeyMissingName(t *testing.T) {
 func TestListKeys(t *testing.T) {
 	h, r := setupTestRouter()
 	key := createAdminKey(t, h)
-	_, _ = h.Keys.Create("key-1", nil, nil)
-	_, _ = h.Keys.Create("key-2", nil, nil)
+	_, _ = h.Keys.Create(context.Background(), "key-1", nil, nil)
+	_, _ = h.Keys.Create(context.Background(), "key-2", nil, nil)
 
 	req := authedRequest(http.MethodGet, "/admin/keys", "", key)
 	w := httptest.NewRecorder()
@@ -291,8 +316,8 @@ func TestListKeys(t *testing.T) {
 		t.Fatalf("expected 3 keys, got %d", len(keys))
 	}
 	for _, k := range keys {
-		if len(k.Key) > 11 {
-			t.Errorf("expected masked key, got %s", k.Key)
+		if !strings.Contains(k.Key, "...") {
+			t.Errorf("expected a display key, got %s", k.Key)
 		}
 	}
 }
@@ -300,7 +325,7 @@ func TestListKeys(t *testing.T) {
 func TestGetKeyByID(t *testing.T) {
 	h, r := setupTestRouter()
 	adminKey := createAdminKey(t, h)
-	created, _ := h.Keys.Create("key-1", nil, nil)
+	created, _ := h.Keys.Create(context.Background(), "key-1", nil, nil)
 
 	req := authedRequest(http.MethodGet, "/admin/keys/"+created.ID, "", adminKey)
 	w := httptest.NewRecorder()
@@ -317,8 +342,11 @@ func TestGetKeyByID(t *testing.T) {
 	if got.ID != created.ID {
 		t.Fatalf("expected id %s, got %s", created.ID, got.ID)
 	}
-	if got.Key == created.Key || len(got.Key) > 11 {
-		t.Fatalf("expected masked key, got %q", got.Key)
+	if got.Key == created.Key {
+		t.Fatalf("the full secret was returned by GET /admin/keys/{id}: %q", got.Key)
+	}
+	if got.Key != displayKey(created.Key) {
+		t.Fatalf("expected the display key %q, got %q", displayKey(created.Key), got.Key)
 	}
 }
 
@@ -338,7 +366,7 @@ func TestGetKeyByIDNotFound(t *testing.T) {
 func TestUpdateKey(t *testing.T) {
 	h, r := setupTestRouter()
 	adminKey := createAdminKey(t, h)
-	target, _ := h.Keys.Create("original", nil, nil)
+	target, _ := h.Keys.Create(context.Background(), "original", nil, nil)
 
 	body := `{"name":"updated","scopes":["read_only"]}`
 	req := authedRequest(http.MethodPut, "/admin/keys/"+target.ID, body, adminKey)
@@ -376,7 +404,7 @@ func TestUpdateKeyNotFound(t *testing.T) {
 func TestUpdateKeyExpiration(t *testing.T) {
 	h, r := setupTestRouter()
 	adminKey := createAdminKey(t, h)
-	target, _ := h.Keys.Create("expirable", nil, nil)
+	target, _ := h.Keys.Create(context.Background(), "expirable", nil, nil)
 
 	expiresAt := time.Now().Add(10 * time.Minute).UTC().Format(time.RFC3339)
 	body := `{"expires_at":"` + expiresAt + `"}`
@@ -388,7 +416,7 @@ func TestUpdateKeyExpiration(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
-	fresh, ok := h.Keys.Get(target.ID)
+	fresh, ok := h.Keys.Get(context.Background(), target.ID)
 	if !ok {
 		t.Fatal("expected key to exist")
 	}
@@ -401,7 +429,7 @@ func TestUpdateKeyClearExpiration(t *testing.T) {
 	h, r := setupTestRouter()
 	adminKey := createAdminKey(t, h)
 	expiry := time.Now().Add(10 * time.Minute)
-	target, _ := h.Keys.Create("expirable", nil, &expiry)
+	target, _ := h.Keys.Create(context.Background(), "expirable", nil, &expiry)
 
 	body := `{"clear_expiration":true}`
 	req := authedRequest(http.MethodPut, "/admin/keys/"+target.ID, body, adminKey)
@@ -412,7 +440,7 @@ func TestUpdateKeyClearExpiration(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
-	fresh, ok := h.Keys.Get(target.ID)
+	fresh, ok := h.Keys.Get(context.Background(), target.ID)
 	if !ok {
 		t.Fatal("expected key to exist")
 	}
@@ -424,7 +452,7 @@ func TestUpdateKeyClearExpiration(t *testing.T) {
 func TestUpdateKeyInvalidExpiration(t *testing.T) {
 	h, r := setupTestRouter()
 	adminKey := createAdminKey(t, h)
-	target, _ := h.Keys.Create("expirable", nil, nil)
+	target, _ := h.Keys.Create(context.Background(), "expirable", nil, nil)
 
 	body := `{"expires_at":"not-a-timestamp"}`
 	req := authedRequest(http.MethodPut, "/admin/keys/"+target.ID, body, adminKey)
@@ -439,7 +467,7 @@ func TestUpdateKeyInvalidExpiration(t *testing.T) {
 func TestDeleteKey(t *testing.T) {
 	h, r := setupTestRouter()
 	adminKey := createAdminKey(t, h)
-	target, _ := h.Keys.Create("to-delete", nil, nil)
+	target, _ := h.Keys.Create(context.Background(), "to-delete", nil, nil)
 
 	req := authedRequest(http.MethodDelete, "/admin/keys/"+target.ID, "", adminKey)
 	w := httptest.NewRecorder()
@@ -449,7 +477,7 @@ func TestDeleteKey(t *testing.T) {
 		t.Fatalf("expected 204, got %d: %s", w.Code, w.Body.String())
 	}
 
-	if _, ok := h.Keys.Get(target.ID); ok {
+	if _, ok := h.Keys.Get(context.Background(), target.ID); ok {
 		t.Error("expected key to be deleted")
 	}
 }
@@ -470,7 +498,7 @@ func TestDeleteKeyNotFound(t *testing.T) {
 func TestRevokeKey(t *testing.T) {
 	h, r := setupTestRouter()
 	adminKey := createAdminKey(t, h)
-	target, _ := h.Keys.Create("to-revoke", nil, nil)
+	target, _ := h.Keys.Create(context.Background(), "to-revoke", nil, nil)
 
 	req := authedRequest(http.MethodPost, "/admin/keys/"+target.ID+"/revoke", "", adminKey)
 	w := httptest.NewRecorder()
@@ -480,7 +508,7 @@ func TestRevokeKey(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
-	k, ok := h.Keys.Get(target.ID)
+	k, ok := h.Keys.Get(context.Background(), target.ID)
 	if !ok {
 		t.Fatal("expected key to exist")
 	}
@@ -497,14 +525,16 @@ func TestHealthCheck(t *testing.T) {
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
+	// 200 even while degraded: the dashboard login probe and providers page read
+	// any non-2xx here as an auth failure. The body carries the real status.
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
-	var result map[string]interface{}
+	var result map[string]any
 	_ = json.NewDecoder(w.Body).Decode(&result)
-	if _, ok := result["status"]; !ok {
-		t.Error("expected status field")
+	if result["status"] != "no_providers" {
+		t.Fatalf("expected status no_providers, got %v", result["status"])
 	}
 	if _, ok := result["providers"]; !ok {
 		t.Error("expected providers field")
@@ -515,7 +545,7 @@ func TestRBACReadOnlyCannotCreateKey(t *testing.T) {
 	h, r := setupTestRouter()
 	// Create an admin key first to bootstrap, then create a read-only key.
 	adminKey := createAdminKey(t, h)
-	roKey, _ := h.Keys.Create("ro-key", []string{ScopeReadOnly}, nil)
+	roKey, _ := h.Keys.Create(context.Background(), "ro-key", []string{ScopeReadOnly}, nil)
 
 	// Read-only key should be able to list keys.
 	req := authedRequest(http.MethodGet, "/admin/keys", "", roKey)
@@ -546,7 +576,7 @@ func TestRBACReadOnlyCannotCreateKey(t *testing.T) {
 func TestUnauthorizedRequest(t *testing.T) {
 	_, r := setupTestRouter()
 
-	req := httptest.NewRequest(http.MethodGet, "/admin/keys", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/admin/keys", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -896,14 +926,14 @@ func TestReadOnlyCannotRollbackConfig(t *testing.T) {
 func TestKeyUsageEndpoint(t *testing.T) {
 	h, r := setupTestRouter()
 	adminKey := createAdminKey(t, h)
-	keyA, _ := h.Keys.Create("key-a", []string{ScopeReadOnly}, nil)
-	keyB, _ := h.Keys.Create("key-b", []string{ScopeReadOnly}, nil)
+	keyA, _ := h.Keys.Create(context.Background(), "key-a", []string{ScopeReadOnly}, nil)
+	keyB, _ := h.Keys.Create(context.Background(), "key-b", []string{ScopeReadOnly}, nil)
 
-	_, _ = h.Keys.ValidateKey(keyA.Key)
-	_, _ = h.Keys.ValidateKey(keyA.Key)
-	_, _ = h.Keys.ValidateKey(keyA.Key)
-	_, _ = h.Keys.ValidateKey(keyB.Key)
-	_, _ = h.Keys.ValidateKey(keyB.Key)
+	_, _ = h.Keys.ValidateKey(context.Background(), keyA.Key)
+	_, _ = h.Keys.ValidateKey(context.Background(), keyA.Key)
+	_, _ = h.Keys.ValidateKey(context.Background(), keyA.Key)
+	_, _ = h.Keys.ValidateKey(context.Background(), keyB.Key)
+	_, _ = h.Keys.ValidateKey(context.Background(), keyB.Key)
 
 	req := authedRequest(http.MethodGet, "/admin/keys/usage?limit=2", "", adminKey)
 	w := httptest.NewRecorder()
@@ -956,10 +986,10 @@ func TestKeyUsageInvalidLimit(t *testing.T) {
 func TestKeyUsageFilterActive(t *testing.T) {
 	h, r := setupTestRouter()
 	adminKey := createAdminKey(t, h)
-	activeKey, _ := h.Keys.Create("active-key", []string{ScopeReadOnly}, nil)
-	inactiveKey, _ := h.Keys.Create("inactive-key", []string{ScopeReadOnly}, nil)
-	_ = h.Keys.Revoke(inactiveKey.ID)
-	_, _ = h.Keys.ValidateKey(activeKey.Key)
+	activeKey, _ := h.Keys.Create(context.Background(), "active-key", []string{ScopeReadOnly}, nil)
+	inactiveKey, _ := h.Keys.Create(context.Background(), "inactive-key", []string{ScopeReadOnly}, nil)
+	_ = h.Keys.Revoke(context.Background(), inactiveKey.ID)
+	_, _ = h.Keys.ValidateKey(context.Background(), activeKey.Key)
 
 	req := authedRequest(http.MethodGet, "/admin/keys/usage?active=true", "", adminKey)
 	w := httptest.NewRecorder()
@@ -983,9 +1013,9 @@ func TestKeyUsageFilterActive(t *testing.T) {
 func TestKeyUsageFilterSince(t *testing.T) {
 	h, r := setupTestRouter()
 	adminKey := createAdminKey(t, h)
-	usedKey, _ := h.Keys.Create("used-key", []string{ScopeReadOnly}, nil)
-	idleKey, _ := h.Keys.Create("idle-key", []string{ScopeReadOnly}, nil)
-	_, _ = h.Keys.ValidateKey(usedKey.Key)
+	usedKey, _ := h.Keys.Create(context.Background(), "used-key", []string{ScopeReadOnly}, nil)
+	idleKey, _ := h.Keys.Create(context.Background(), "idle-key", []string{ScopeReadOnly}, nil)
+	_, _ = h.Keys.ValidateKey(context.Background(), usedKey.Key)
 
 	since := time.Now().Add(-1 * time.Minute).UTC().Format(time.RFC3339)
 	req := authedRequest(http.MethodGet, "/admin/keys/usage?since="+since, "", adminKey)
@@ -1045,18 +1075,18 @@ func TestKeyUsageInvalidFilters(t *testing.T) {
 
 func TestKeyUsageOffsetAndSort(t *testing.T) {
 	h, _ := setupTestRouter()
-	keyA, _ := h.Keys.Create("key-a", []string{ScopeReadOnly}, nil)
-	keyB, _ := h.Keys.Create("key-b", []string{ScopeReadOnly}, nil)
-	keyC, _ := h.Keys.Create("key-c", []string{ScopeReadOnly}, nil)
+	keyA, _ := h.Keys.Create(context.Background(), "key-a", []string{ScopeReadOnly}, nil)
+	keyB, _ := h.Keys.Create(context.Background(), "key-b", []string{ScopeReadOnly}, nil)
+	keyC, _ := h.Keys.Create(context.Background(), "key-c", []string{ScopeReadOnly}, nil)
 
-	_, _ = h.Keys.ValidateKey(keyA.Key)
-	_, _ = h.Keys.ValidateKey(keyA.Key)
+	_, _ = h.Keys.ValidateKey(context.Background(), keyA.Key)
+	_, _ = h.Keys.ValidateKey(context.Background(), keyA.Key)
 	time.Sleep(5 * time.Millisecond)
-	_, _ = h.Keys.ValidateKey(keyB.Key)
+	_, _ = h.Keys.ValidateKey(context.Background(), keyB.Key)
 	time.Sleep(5 * time.Millisecond)
-	_, _ = h.Keys.ValidateKey(keyC.Key)
+	_, _ = h.Keys.ValidateKey(context.Background(), keyC.Key)
 
-	req := httptest.NewRequest(http.MethodGet, "/admin/keys/usage?sort=usage&limit=4", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/admin/keys/usage?sort=usage&limit=4", nil)
 	w := httptest.NewRecorder()
 	h.keyUsage(w, req)
 	if w.Code != http.StatusOK {
@@ -1077,7 +1107,7 @@ func TestKeyUsageOffsetAndSort(t *testing.T) {
 	}
 
 	secondExpected := usagePayload.Data[1].ID
-	req = httptest.NewRequest(http.MethodGet, "/admin/keys/usage?sort=usage&limit=1&offset=1", nil)
+	req = httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/admin/keys/usage?sort=usage&limit=1&offset=1", nil)
 	w = httptest.NewRecorder()
 	h.keyUsage(w, req)
 	if w.Code != http.StatusOK {
@@ -1095,7 +1125,7 @@ func TestKeyUsageOffsetAndSort(t *testing.T) {
 		t.Fatalf("offset pagination mismatch: expected id %s got %s", secondExpected, offsetPayload.Data[0].ID)
 	}
 
-	req = httptest.NewRequest(http.MethodGet, "/admin/keys/usage?sort=last_used&limit=4", nil)
+	req = httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/admin/keys/usage?sort=last_used&limit=4", nil)
 	w = httptest.NewRecorder()
 	h.keyUsage(w, req)
 	if w.Code != http.StatusOK {
@@ -1183,7 +1213,7 @@ func TestLogsEndpointUsesSnakeCaseFields(t *testing.T) {
 	}
 
 	var payload struct {
-		Data []map[string]interface{} `json:"data"`
+		Data []map[string]any `json:"data"`
 	}
 	if err := json.NewDecoder(w.Body).Decode(&payload); err != nil {
 		t.Fatalf("decode logs response: %v", err)
@@ -1226,9 +1256,9 @@ func TestDashboardEndpoint(t *testing.T) {
 	adminKey := createAdminKey(t, h)
 
 	expiredAt := now.Add(-10 * time.Minute)
-	_, _ = h.Keys.Create("expired-key", []string{ScopeReadOnly}, &expiredAt)
-	active, _ := h.Keys.Create("active-key", []string{ScopeReadOnly}, nil)
-	_, _ = h.Keys.ValidateKey(active.Key)
+	_, _ = h.Keys.Create(context.Background(), "expired-key", []string{ScopeReadOnly}, &expiredAt)
+	active, _ := h.Keys.Create(context.Background(), "active-key", []string{ScopeReadOnly}, nil)
+	_, _ = h.Keys.ValidateKey(context.Background(), active.Key)
 
 	req := authedRequest(http.MethodGet, "/admin/dashboard", "", adminKey)
 	w := httptest.NewRecorder()
@@ -1334,11 +1364,13 @@ func TestLogsEndpointInvalidSince(t *testing.T) {
 }
 
 func TestLogsStatsEndpoint(t *testing.T) {
-	now := time.Now().UTC()
-	reader := &fakeLogReader{entries: []requestlog.Entry{
-		{TraceID: "1", Stage: "after_request", Model: "gpt-4", Provider: "openai", TotalTokens: 10, CreatedAt: now.Add(-3 * time.Minute)},
-		{TraceID: "2", Stage: "on_error", Model: "gpt-4", Provider: "openai", ErrorMessage: "boom", TotalTokens: 20, CreatedAt: now.Add(-2 * time.Minute)},
-		{TraceID: "3", Stage: "after_request", Model: "claude", Provider: "anthropic", TotalTokens: 5, CreatedAt: now.Add(-1 * time.Minute)},
+	reader := &fakeLogReader{stats: requestlog.StatsResult{
+		TotalEntries: 3,
+		ErrorEntries: 1,
+		TotalTokens:  35,
+		ByStage:      map[string]int{"after_request": 2, "on_error": 1},
+		ByProvider:   map[string]int{"openai": 2, "anthropic": 1},
+		ByModel:      map[string]int{"gpt-4": 2, "claude": 1},
 	}}
 	h, r := setupTestRouterWithLogs(reader)
 	adminKey := createAdminKey(t, h)
@@ -1385,11 +1417,11 @@ func TestLogsStatsEndpoint(t *testing.T) {
 }
 
 func TestLogsStatsEndpointWithLimit(t *testing.T) {
-	now := time.Now().UTC()
-	reader := &fakeLogReader{entries: []requestlog.Entry{
-		{TraceID: "1", Stage: "after_request", Model: "gpt-4", Provider: "openai", TotalTokens: 10, CreatedAt: now.Add(-3 * time.Minute)},
-		{TraceID: "2", Stage: "on_error", Model: "gpt-4", Provider: "openai", ErrorMessage: "boom", TotalTokens: 20, CreatedAt: now.Add(-2 * time.Minute)},
-		{TraceID: "3", Stage: "after_request", Model: "claude", Provider: "anthropic", TotalTokens: 5, CreatedAt: now.Add(-1 * time.Minute)},
+	reader := &fakeLogReader{stats: requestlog.StatsResult{
+		TotalEntries: 3,
+		ByStage:      map[string]int{"after_request": 2, "on_error": 1},
+		ByProvider:   map[string]int{"openai": 2, "anthropic": 1},
+		ByModel:      map[string]int{"gpt-4": 2, "claude": 1},
 	}}
 	h, r := setupTestRouterWithLogs(reader)
 	adminKey := createAdminKey(t, h)
@@ -1429,22 +1461,17 @@ func TestLogsStatsEndpointWithLimit(t *testing.T) {
 	}
 }
 
-func TestLogsStatsEndpointTruncatesLargeDatasets(t *testing.T) {
-	now := time.Now().UTC()
-	entries := make([]requestlog.Entry, 0, logsStatsMaxScannedEntries+10)
-	for i := 0; i < logsStatsMaxScannedEntries+10; i++ {
-		entries = append(entries, requestlog.Entry{
-			TraceID:      "trace",
-			Stage:        "after_request",
-			Model:        "gpt-4",
-			Provider:     "openai",
-			TotalTokens:  1,
-			ErrorMessage: "",
-			CreatedAt:    now.Add(-time.Duration(i) * time.Second),
-		})
-	}
-
-	reader := &fakeLogReader{entries: entries}
+func TestLogsStatsEndpointReturnsExactCounts(t *testing.T) {
+	// Stats is now an exact SQL aggregation: the summary reports the true total
+	// and the scan-cap fields are gone.
+	reader := &fakeLogReader{stats: requestlog.StatsResult{
+		TotalEntries: 5010,
+		ErrorEntries: 7,
+		TotalTokens:  5010,
+		ByStage:      map[string]int{"after_request": 5010},
+		ByProvider:   map[string]int{"openai": 5010},
+		ByModel:      map[string]int{"gpt-4": 5010},
+	}}
 	h, r := setupTestRouterWithLogs(reader)
 	adminKey := createAdminKey(t, h)
 
@@ -1457,28 +1484,25 @@ func TestLogsStatsEndpointTruncatesLargeDatasets(t *testing.T) {
 	}
 
 	var payload struct {
-		Summary struct {
-			TotalEntries     int  `json:"total_entries"`
-			AvailableEntries int  `json:"available_entries"`
-			Truncated        bool `json:"truncated"`
-			ScanLimit        int  `json:"scan_limit"`
-		} `json:"summary"`
+		Summary map[string]any `json:"summary"`
 	}
 	if err := json.NewDecoder(w.Body).Decode(&payload); err != nil {
 		t.Fatalf("decode logs stats response: %v", err)
 	}
 
-	if !payload.Summary.Truncated {
-		t.Fatal("expected truncated=true for oversized dataset")
+	if got := payload.Summary["total_entries"]; got != float64(5010) {
+		t.Fatalf("expected total_entries=5010, got %v", got)
 	}
-	if payload.Summary.TotalEntries != logsStatsMaxScannedEntries {
-		t.Fatalf("expected total_entries=%d, got %d", logsStatsMaxScannedEntries, payload.Summary.TotalEntries)
+	if got := payload.Summary["error_entries"]; got != float64(7) {
+		t.Fatalf("expected error_entries=7, got %v", got)
 	}
-	if payload.Summary.AvailableEntries != logsStatsMaxScannedEntries+10 {
-		t.Fatalf("expected available_entries=%d, got %d", logsStatsMaxScannedEntries+10, payload.Summary.AvailableEntries)
+	if got := payload.Summary["total_tokens"]; got != float64(5010) {
+		t.Fatalf("expected total_tokens=5010, got %v", got)
 	}
-	if payload.Summary.ScanLimit != logsStatsMaxScannedEntries {
-		t.Fatalf("expected scan_limit=%d, got %d", logsStatsMaxScannedEntries, payload.Summary.ScanLimit)
+	for _, removed := range []string{"truncated", "available_entries", "scan_limit"} {
+		if _, ok := payload.Summary[removed]; ok {
+			t.Fatalf("expected summary key %q to be removed", removed)
+		}
 	}
 }
 
@@ -1618,7 +1642,7 @@ func TestRotateKey(t *testing.T) {
 	adminKey := createAdminKey(t, h)
 
 	// Create a key to rotate, save its original key string before rotation mutates it.
-	key, err := h.Keys.Create("rotatable-key", []string{ScopeReadOnly}, nil)
+	key, err := h.Keys.Create(context.Background(), "rotatable-key", []string{ScopeReadOnly}, nil)
 	if err != nil {
 		t.Fatalf("failed to create key: %v", err)
 	}
@@ -1668,11 +1692,332 @@ func TestListProviders_NilRegistry(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
-	var result []interface{}
+	var result []any
 	if err := json.NewDecoder(w.Body).Decode(&result); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
 	if len(result) != 0 {
 		t.Errorf("expected empty providers list, got %d", len(result))
+	}
+}
+
+func TestGetConfigRedactsSecrets(t *testing.T) {
+	store := NewKeyStore()
+
+	cfg := aigateway.Config{
+		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeSingle},
+		Targets:  []aigateway.Target{{VirtualKey: "openai"}},
+		MCPServers: []mcp.ServerConfig{
+			{
+				Name: "tools",
+				URL:  "https://mcp.example.com/mcp",
+				Headers: map[string]string{
+					"Authorization": "literal-mcp-secret",
+					"X-Env":         "${MCP_TOKEN}",
+				},
+			},
+		},
+		Observability: aigateway.ObservabilityConfig{
+			Tracing: aigateway.TracingConfig{
+				Headers: map[string]string{
+					"Authorization": "literal-secret-value",
+					"X-Api-Key":     "${MY_API_KEY}",
+				},
+			},
+			Exporters: []aigateway.ExporterConfig{
+				{
+					Name:    "langsmith",
+					Enabled: true,
+					Config: map[string]any{
+						"api_key": "literal-ls-key",
+						"debug":   true,
+					},
+				},
+			},
+		},
+		Plugins: []aigateway.PluginConfig{
+			{
+				Name:    "word-filter",
+				Type:    "guardrail",
+				Stage:   "before_request",
+				Enabled: true,
+				Config: map[string]any{
+					"secret":        "literal-plugin-secret",
+					"blocked_words": []any{"password"},
+				},
+			},
+		},
+	}
+
+	cm := &testConfigManager{cfg: cfg, initial: cfg}
+	h := &Handlers{Keys: store, Configs: cm}
+	r := chi.NewRouter()
+	r.Use(AuthMiddleware(store, ""))
+	r.Mount("/admin", h.Routes())
+
+	adminKey, err := store.Create(context.Background(), "admin-key", []string{ScopeAdmin}, nil)
+	if err != nil {
+		t.Fatalf("create admin key: %v", err)
+	}
+
+	req := authedRequest(http.MethodGet, "/admin/config", "", adminKey)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var respCfg aigateway.Config
+	if err := json.NewDecoder(w.Body).Decode(&respCfg); err != nil {
+		t.Fatalf("decode config response: %v", err)
+	}
+
+	// Literal header value must be redacted.
+	if got := respCfg.Observability.Tracing.Headers["Authorization"]; got != "[REDACTED]" {
+		t.Errorf("Authorization header: got %q, want [REDACTED]", got)
+	}
+	// Env reference must be preserved.
+	if got := respCfg.Observability.Tracing.Headers["X-Api-Key"]; got != "${MY_API_KEY}" {
+		t.Errorf("X-Api-Key header: got %q, want ${MY_API_KEY}", got)
+	}
+
+	// MCP literal header value must be redacted; env references must be preserved.
+	if len(respCfg.MCPServers) == 0 {
+		t.Fatal("expected MCP servers in response")
+	}
+	if got := respCfg.MCPServers[0].Headers["Authorization"]; got != "[REDACTED]" {
+		t.Errorf("MCP Authorization header: got %q, want [REDACTED]", got)
+	}
+	if got := respCfg.MCPServers[0].Headers["X-Env"]; got != "${MCP_TOKEN}" {
+		t.Errorf("MCP X-Env header: got %q, want ${MCP_TOKEN}", got)
+	}
+
+	// Exporter string config must be redacted.
+	if len(respCfg.Observability.Exporters) == 0 {
+		t.Fatal("expected exporters in response")
+	}
+	if apiKey, _ := respCfg.Observability.Exporters[0].Config["api_key"].(string); apiKey != "[REDACTED]" {
+		t.Errorf("exporter api_key: got %q, want [REDACTED]", apiKey)
+	}
+	// Non-string exporter config value must be preserved.
+	if debug, _ := respCfg.Observability.Exporters[0].Config["debug"].(bool); !debug {
+		t.Errorf("exporter debug: expected true to be preserved, got false/missing")
+	}
+
+	// Plugin string config must be redacted.
+	if len(respCfg.Plugins) == 0 {
+		t.Fatal("expected plugins in response")
+	}
+	if secret, _ := respCfg.Plugins[0].Config["secret"].(string); secret != "[REDACTED]" {
+		t.Errorf("plugin secret: got %q, want [REDACTED]", secret)
+	}
+
+	// Live config must NOT be mutated.
+	liveCfg := cm.GetConfig()
+	if got := liveCfg.Observability.Tracing.Headers["Authorization"]; got != "literal-secret-value" {
+		t.Errorf("live config Authorization mutated: got %q, want literal-secret-value", got)
+	}
+	if got := liveCfg.MCPServers[0].Headers["Authorization"]; got != "literal-mcp-secret" {
+		t.Errorf("live config MCP Authorization mutated: got %q, want literal-mcp-secret", got)
+	}
+	if got := liveCfg.Observability.Exporters[0].Config["api_key"].(string); got != "literal-ls-key" {
+		t.Errorf("live config api_key mutated: got %q, want literal-ls-key", got)
+	}
+	if got := liveCfg.Plugins[0].Config["secret"].(string); got != "literal-plugin-secret" {
+		t.Errorf("live config plugin secret mutated: got %q, want literal-plugin-secret", got)
+	}
+}
+
+func TestGetConfigPreservesEnvRefsAndNonStringValues(t *testing.T) {
+	store := NewKeyStore()
+
+	// Build the env-ref string at runtime to avoid credential-scanner false positives
+	// on the "${…}" literal form that gosec treats as a potential hardcoded credential.
+	envRef := "${" + "PLUGIN_TOKEN" + "}"
+
+	cfg := aigateway.Config{
+		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeSingle},
+		Targets:  []aigateway.Target{{VirtualKey: "openai"}},
+		Observability: aigateway.ObservabilityConfig{
+			Exporters: []aigateway.ExporterConfig{
+				{
+					Name:    "myplugin",
+					Enabled: true,
+					Config: map[string]any{
+						"token":   envRef,
+						"timeout": 30.0,
+						"active":  true,
+					},
+				},
+			},
+		},
+	}
+
+	cm := &testConfigManager{cfg: cfg, initial: cfg}
+	h := &Handlers{Keys: store, Configs: cm}
+	r := chi.NewRouter()
+	r.Use(AuthMiddleware(store, ""))
+	r.Mount("/admin", h.Routes())
+
+	adminKey, err := store.Create(context.Background(), "admin-key", []string{ScopeAdmin}, nil)
+	if err != nil {
+		t.Fatalf("create admin key: %v", err)
+	}
+
+	req := authedRequest(http.MethodGet, "/admin/config", "", adminKey)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var respCfg aigateway.Config
+	if err := json.NewDecoder(w.Body).Decode(&respCfg); err != nil {
+		t.Fatalf("decode config response: %v", err)
+	}
+
+	if len(respCfg.Observability.Exporters) == 0 {
+		t.Fatal("expected exporters in response")
+	}
+	expCfg := respCfg.Observability.Exporters[0].Config
+
+	// Env ref must be preserved as-is.
+	if token, _ := expCfg["token"].(string); token != envRef {
+		t.Errorf("token: got %q, want %q", token, envRef)
+	}
+	// Numeric value must survive the round-trip unchanged.
+	if timeout, _ := expCfg["timeout"].(float64); timeout != 30.0 {
+		t.Errorf("timeout: got %v, want 30.0", timeout)
+	}
+	// Boolean value must survive unchanged.
+	if active, _ := expCfg["active"].(bool); !active {
+		t.Errorf("active: expected true, got false/missing")
+	}
+}
+
+// TestScrubAnyMap_NestedMap verifies that scrubAnyMap recursively redacts
+// string values inside nested map[string]any values and does not alias
+// (mutate) the live config's inner maps.
+func TestScrubAnyMap_NestedMap(t *testing.T) {
+	// Use a runtime-built value that won't trigger credential-scanner rules.
+	rawValue := strings.Repeat("x", 8) + "-literal-config-value"
+
+	original := map[string]any{
+		"top_level": rawValue,
+		"nested": map[string]any{
+			"api_key": rawValue,
+			"count":   42,
+		},
+		"number": 99,
+	}
+
+	// Capture the inner map reference before scrubbing.
+	originalInner := original["nested"].(map[string]any)
+
+	result := scrubAnyMap(original)
+
+	// Top-level string is redacted.
+	if result["top_level"] != redactedPlaceholder {
+		t.Errorf("top_level: want %q, got %v", redactedPlaceholder, result["top_level"])
+	}
+
+	// Non-string scalar is preserved.
+	if result["number"] != 99 {
+		t.Errorf("number: want 99, got %v", result["number"])
+	}
+
+	// Nested map is present and is a new allocation (not the same pointer).
+	nested, ok := result["nested"].(map[string]any)
+	if !ok {
+		t.Fatalf("nested value: expected map[string]any, got %T", result["nested"])
+	}
+
+	// The nested value is redacted in the output.
+	if nested["api_key"] != redactedPlaceholder {
+		t.Errorf("nested.api_key: want %q, got %v", redactedPlaceholder, nested["api_key"])
+	}
+
+	// Non-string nested value is preserved.
+	if nested["count"] != 42 {
+		t.Errorf("nested.count: want 42, got %v", nested["count"])
+	}
+
+	// The live config's inner map is unchanged.
+	if originalInner["api_key"] != rawValue {
+		t.Errorf("live config was mutated: originalInner[api_key] = %v", originalInner["api_key"])
+	}
+}
+
+// TestScrubAnyValue_NestedTypedComposite verifies that typed maps/slices not
+// enumerated by the concrete fast-path cases (here map[string][]string) are
+// still recursively redacted via the reflection fallback, into new containers
+// that do not alias the live config.
+func TestScrubAnyValue_NestedTypedComposite(t *testing.T) {
+	rawValue := strings.Repeat("x", 8) + "-literal-config-value"
+
+	original := map[string][]string{
+		"auth": {rawValue, "${KEEP_ENV}"},
+	}
+
+	result, ok := scrubAnyValue(original).(map[string][]string)
+	if !ok {
+		t.Fatalf("expected map[string][]string, got %T", scrubAnyValue(original))
+	}
+
+	if result["auth"][0] != redactedPlaceholder {
+		t.Errorf("literal: want %q, got %q", redactedPlaceholder, result["auth"][0])
+	}
+	if result["auth"][1] != "${KEEP_ENV}" {
+		t.Errorf("env ref: want %q, got %q", "${KEEP_ENV}", result["auth"][1])
+	}
+	if original["auth"][0] != rawValue {
+		t.Errorf("live config mutated: original[auth][0] = %q", original["auth"][0])
+	}
+}
+
+// TestCreateKey_CacheControlNoStore verifies that the key-create response carries
+// Cache-Control: no-store so proxies and browsers cannot cache the plaintext key.
+func TestCreateKey_CacheControlNoStore(t *testing.T) {
+	h, r := setupTestRouter()
+	key := createAdminKey(t, h)
+
+	body := `{"name":"cache-no-store-test"}`
+	req := authedRequest(http.MethodPost, "/admin/keys", body, key)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	cc := w.Header().Get("Cache-Control")
+	if cc != "no-store" {
+		t.Errorf("Cache-Control = %q, want %q", cc, "no-store")
+	}
+}
+
+// TestRotateKey_CacheControlNoStore verifies that the key-rotate response carries
+// Cache-Control: no-store so proxies and browsers cannot cache the new plaintext key.
+func TestRotateKey_CacheControlNoStore(t *testing.T) {
+	h, r := setupTestRouter()
+	adminKey := createAdminKey(t, h)
+
+	// Create a second key to rotate.
+	target, err := h.Keys.Create(context.Background(), "rotate-target", []string{ScopeAdmin}, nil)
+	if err != nil {
+		t.Fatalf("create rotate-target key: %v", err)
+	}
+
+	req := authedRequest(http.MethodPost, "/admin/keys/"+target.ID+"/rotate", "", adminKey)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	cc := w.Header().Get("Cache-Control")
+	if cc != "no-store" {
+		t.Errorf("Cache-Control = %q, want %q", cc, "no-store")
 	}
 }

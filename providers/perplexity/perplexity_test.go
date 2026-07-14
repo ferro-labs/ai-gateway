@@ -2,10 +2,13 @@ package perplexity
 
 import (
 	"context"
-	"github.com/ferro-labs/ai-gateway/providers/core"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
 const (
@@ -81,7 +84,30 @@ func TestPerplexityProvider_CompleteStream_MockSSE(t *testing.T) {
 		"data: {\"id\":\"chatcmpl-1\",\"model\":\"sonar\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
 		"data: [DONE]\n\n"
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %s, want POST", r.Method)
+		}
+		if !strings.HasSuffix(r.URL.Path, testChatCompletionsPath) {
+			t.Errorf("path = %q, want suffix %s", r.URL.Path, testChatCompletionsPath)
+		}
+		if got := r.Header.Get("Authorization"); got != testBearerAPIKey {
+			t.Errorf("Authorization = %q, want %s", got, testBearerAPIKey)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if body["model"] != "sonar" {
+			t.Errorf("model = %v, want sonar", body["model"])
+		}
+		msgs, ok := body["messages"].([]any)
+		if !ok || len(msgs) != 1 {
+			t.Fatalf("messages = %v, want one message forwarded", body["messages"])
+		}
+		if m0, _ := msgs[0].(map[string]any); m0["role"] != "user" || m0["content"] != "Hi" {
+			t.Errorf("message[0] = %v, want {role:user, content:Hi}", msgs[0])
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(sseData))
@@ -116,7 +142,30 @@ func TestPerplexityProvider_CompleteStream_MockSSE(t *testing.T) {
 func TestPerplexityProvider_Complete_MockHTTP(t *testing.T) {
 	respBody := `{"id":"chatcmpl-1","model":"sonar","choices":[{"index":0,"message":{"role":"assistant","content":"Hello!"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}`
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %s, want POST", r.Method)
+		}
+		if !strings.HasSuffix(r.URL.Path, testChatCompletionsPath) {
+			t.Errorf("path = %q, want suffix %s", r.URL.Path, testChatCompletionsPath)
+		}
+		if got := r.Header.Get("Authorization"); got != testBearerAPIKey {
+			t.Errorf("Authorization = %q, want %s", got, testBearerAPIKey)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if body["model"] != "sonar" {
+			t.Errorf("model = %v, want sonar", body["model"])
+		}
+		msgs, ok := body["messages"].([]any)
+		if !ok || len(msgs) != 1 {
+			t.Fatalf("messages = %v, want one message forwarded", body["messages"])
+		}
+		if m0, _ := msgs[0].(map[string]any); m0["role"] != "user" || m0["content"] != "Hi" {
+			t.Errorf("message[0] = %v, want {role:user, content:Hi}", msgs[0])
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(respBody))
@@ -136,5 +185,69 @@ func TestPerplexityProvider_Complete_MockHTTP(t *testing.T) {
 	}
 	if len(resp.Choices) == 0 {
 		t.Error("expected at least one choice")
+	}
+}
+
+// TestPerplexityProvider_Complete_CapturesCitations verifies the Sonar-specific
+// top-level "citations" field is surfaced into core.Response.Metadata via the
+// shared ExtraResponseFields seam.
+func TestPerplexityProvider_Complete_CapturesCitations(t *testing.T) {
+	respBody := `{"id":"chatcmpl-1","model":"sonar","choices":[{"index":0,"message":{"role":"assistant","content":"Hello!"},"finish_reason":"stop"}],"citations":["https://example.com/a","https://example.com/b"],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(respBody))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	resp, err := p.Complete(context.Background(), core.Request{
+		Model:    "sonar",
+		Messages: []core.Message{{Role: "user", Content: "Hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Complete() error: %v", err)
+	}
+	if resp.Metadata == nil {
+		t.Fatal("expected Metadata to be populated with citations")
+	}
+	citations, ok := resp.Metadata["citations"].([]any)
+	if !ok {
+		t.Fatalf("Metadata[\"citations\"] = %T, want []any", resp.Metadata["citations"])
+	}
+	if len(citations) != 2 {
+		t.Errorf("len(citations) = %d, want 2", len(citations))
+	}
+}
+
+// TestPerplexityProvider_Complete_ErrorStatus verifies a non-2xx chat response is
+// surfaced as a provider error rather than a decoded response.
+func TestPerplexityProvider_Complete_ErrorStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"message":"invalid api key"}}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	resp, err := p.Complete(context.Background(), core.Request{
+		Model:    "sonar",
+		Messages: []core.Message{{Role: "user", Content: "Hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected error for non-2xx response, got nil")
+	}
+	if resp != nil {
+		t.Errorf("expected nil response on error, got %+v", resp)
+	}
+}
+
+// TestNewPerplexity_InvalidBaseURL verifies a malformed base URL is rejected at
+// construction time.
+func TestNewPerplexity_InvalidBaseURL(t *testing.T) {
+	if _, err := New(testAPIKey, "not-a-url"); err == nil {
+		t.Error("expected error for invalid base URL, got nil")
 	}
 }

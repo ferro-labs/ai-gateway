@@ -1,43 +1,23 @@
 {
+  "max_request_bytes": 10485760,
   "strategy": {
-    "mode": "fallback",
-    "_comment": "mode: single | fallback | loadbalance | conditional | content-based | ab-test | least-latency | cost-optimized"
-  },
-  "_conditional_example": {
-    "strategy": {
-      "mode": "conditional",
-      "conditions": [
-        { "key": "model", "value": "gpt-4o",                      "target_key": "openai" },
-        { "key": "model", "value": "claude-3-5-sonnet-20241022",  "target_key": "anthropic" }
-      ]
-    }
-  },
-  "_content_based_example": {
-    "strategy": {
-      "mode": "content-based",
-      "content_conditions": [
-        { "type": "prompt_regex",       "value": "(?i)\\b(code|function|class|implement)\\b", "target_key": "deepseek" },
-        { "type": "prompt_contains",    "value": "translate",   "target_key": "gemini" },
-        { "type": "prompt_not_contains","value": "confidential","target_key": "openai" }
-      ]
-    }
-  },
-  "_ab_test_example": {
-    "strategy": {
-      "mode": "ab-test",
-      "ab_variants": [
-        { "target_key": "openai",    "weight": 70, "label": "control" },
-        { "target_key": "anthropic", "weight": 30, "label": "challenger" }
-      ]
-    }
+    "mode": "fallback"
   },
   "targets": [
     {
       "virtual_key": "openai",
       "retry": {
         "attempts": 3,
-        "on_status_codes": [429, 502, 503],
+        "on_status_codes": [
+          429,
+          502,
+          503
+        ],
         "initial_backoff_ms": 100
+      },
+      "concurrency": {
+        "max_concurrency": 32,
+        "queue_size": 500
       }
     },
     {
@@ -135,8 +115,8 @@
   ],
   "aliases": {
     "fast": "gpt-4o-mini",
-    "smart": "claude-3-5-sonnet-20241022",
-    "cheap": "gemini-1.5-flash",
+    "smart": "claude-sonnet-4-6",
+    "cheap": "gemini-2.5-flash",
     "code": "deepseek-coder"
   },
   "plugins": [
@@ -146,7 +126,10 @@
       "stage": "before_request",
       "enabled": true,
       "config": {
-        "blocked_words": ["password", "secret"],
+        "blocked_words": [
+          "password",
+          "secret"
+        ],
         "case_sensitive": false
       }
     },
@@ -178,79 +161,7 @@
       "enabled": true,
       "config": {
         "level": "info",
-        "persist": false,
-        "backend": "sqlite",
-        "dsn": "ferrogw-requests.db"
-      }
-    },
-    {
-      "name": "pii-redact",
-      "type": "guardrail",
-      "stage": "before_request",
-      "enabled": false,
-      "config": {
-        "action": "redact",
-        "redact_mode": "replace_type",
-        "apply_to": "input",
-        "entities": []
-      }
-    },
-    {
-      "name": "secret-scan",
-      "type": "guardrail",
-      "stage": "before_request",
-      "enabled": false,
-      "config": {
-        "action": "block",
-        "entropy_check": true
-      }
-    },
-    {
-      "name": "prompt-shield",
-      "type": "guardrail",
-      "stage": "before_request",
-      "enabled": false,
-      "config": {
-        "action": "block",
-        "threshold": 0.9,
-        "apply_to": "user_messages"
-      }
-    },
-    {
-      "name": "schema-guard",
-      "type": "guardrail",
-      "stage": "after_request",
-      "enabled": false,
-      "config": {
-        "apply_to": "output",
-        "action": "block",
-        "extract_json": true,
-        "schema": {
-          "type": "object",
-          "required": [
-            "name",
-            "confidence"
-          ],
-          "properties": {
-            "name": {
-              "type": "string"
-            },
-            "confidence": {
-              "type": "number",
-              "minimum": 0,
-              "maximum": 1
-            }
-          }
-        }
-      }
-    },
-    {
-      "name": "regex-guard",
-      "type": "guardrail",
-      "stage": "before_request",
-      "enabled": false,
-      "config": {
-        "rules": []
+        "persist": false
       }
     },
     {
@@ -292,14 +203,20 @@
       "headers": {
         "Authorization": "Bearer ${MCP_DB_TOKEN}"
       },
-      "allowed_tools": ["query_readonly", "list_tables"],
+      "allowed_tools": [
+        "query_readonly",
+        "list_tables"
+      ],
       "timeout_seconds": 15,
       "max_call_depth": 5
     },
     {
       "name": "web-search",
       "url": "https://mcp-search.example.com/mcp",
-      "allowed_tools": ["web_search", "web_read"],
+      "allowed_tools": [
+        "web_search",
+        "web_read"
+      ],
       "timeout_seconds": 20
     }
   ],
@@ -315,5 +232,8 @@
       "headers": {}
     },
     "exporters": []
+  },
+  "compatibility": {
+    "on_unsupported_param": "warn"
   }
 }

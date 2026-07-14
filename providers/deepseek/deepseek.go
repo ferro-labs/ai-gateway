@@ -2,17 +2,16 @@
 package deepseek
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
-	"net/url"
 	"strings"
 
+	"github.com/ferro-labs/ai-gateway/internal/discovery"
 	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
 	"github.com/ferro-labs/ai-gateway/providers/core"
+	"github.com/ferro-labs/ai-gateway/providers/internal/openaicompat"
 )
 
 const (
@@ -34,18 +33,22 @@ type Provider struct {
 var (
 	_ core.Provider          = (*Provider)(nil)
 	_ core.StreamProvider    = (*Provider)(nil)
+	_ core.DiscoveryProvider = (*Provider)(nil)
 	_ core.ProxiableProvider = (*Provider)(nil)
 )
 
 // New creates a new DeepSeek provider.
 func New(apiKey, baseURL string) (*Provider, error) {
+	baseURL = strings.TrimSpace(baseURL)
 	if baseURL == "" {
 		baseURL = defaultBaseURL
 	}
 	baseURL = strings.TrimRight(baseURL, "/")
-	u, err := url.Parse(baseURL)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return nil, fmt.Errorf("deepseek: invalid base URL %q: must be http or https with a host", baseURL)
+	// DeepSeek's chat and models paths already carry the /v1 prefix, so trim a
+	// trailing /v1 to avoid doubling it when callers pass ".../v1" as the base.
+	baseURL = strings.TrimSuffix(baseURL, "/v1")
+	if err := core.ValidateBaseURL(Name, baseURL); err != nil {
+		return nil, err
 	}
 	return &Provider{
 		name:       Name,
@@ -71,6 +74,8 @@ func (p *Provider) SupportedModels() []string {
 	return []string{
 		"deepseek-chat",
 		"deepseek-reasoner",
+		"deepseek-v4-flash",
+		"deepseek-v4-pro",
 	}
 }
 
@@ -84,55 +89,49 @@ func (p *Provider) Models() []core.ModelInfo {
 	return core.ModelsFromList(p.name, p.SupportedModels())
 }
 
-// ------------------------------------------------------------------ types ---
-
-type request struct {
-	Model       string         `json:"model"`
-	Messages    []core.Message `json:"messages"`
-	Temperature *float64       `json:"temperature,omitempty"`
-	MaxTokens   *int           `json:"max_tokens,omitempty"`
-	Stream      bool           `json:"stream,omitempty"`
+// DiscoverModels fetches the live model list from the DeepSeek /v1/models endpoint.
+func (p *Provider) DiscoverModels(ctx context.Context) ([]core.ModelInfo, error) {
+	return discovery.DiscoverOpenAICompatibleModels(ctx, p.httpClient, p.baseURL+"/v1/models", p.apiKey, p.name)
 }
+
+// ------------------------------------------------------------------ types ---
 
 type response struct {
 	ID      string        `json:"id"`
 	Model   string        `json:"model"`
 	Choices []core.Choice `json:"choices"`
-	Usage   core.Usage    `json:"usage"`
+	Usage   usage         `json:"usage"`
 }
 
-type errorDetail struct {
-	Message string `json:"message"`
-	Type    string `json:"type"`
+// usage extends the OpenAI usage shape with DeepSeek's cache-accounting and
+// reasoning fields, which the gateway's canonical usage would otherwise drop.
+type usage struct {
+	PromptTokens            int `json:"prompt_tokens"`
+	CompletionTokens        int `json:"completion_tokens"`
+	TotalTokens             int `json:"total_tokens"`
+	PromptCacheHitTokens    int `json:"prompt_cache_hit_tokens"`
+	PromptCacheMissTokens   int `json:"prompt_cache_miss_tokens"`
+	CompletionTokensDetails struct {
+		ReasoningTokens int `json:"reasoning_tokens"`
+	} `json:"completion_tokens_details"`
 }
 
-type errorResponse struct {
-	Error errorDetail `json:"error"`
-}
-
-type streamResponse struct {
-	ID      string `json:"id"`
-	Model   string `json:"model"`
-	Choices []struct {
-		Index int `json:"index"`
-		Delta struct {
-			Role    string `json:"role,omitempty"`
-			Content string `json:"content,omitempty"`
-		} `json:"delta"`
-		FinishReason string `json:"finish_reason,omitempty"`
-	} `json:"choices"`
+// toCore maps DeepSeek usage onto the canonical usage. The cache-hit count is
+// the tokens served from DeepSeek's context cache (read); the miss count is
+// derivable as prompt_tokens − hit and is left off the canonical shape.
+func (u usage) toCore() core.Usage {
+	return core.Usage{
+		PromptTokens:     u.PromptTokens,
+		CompletionTokens: u.CompletionTokens,
+		TotalTokens:      u.TotalTokens,
+		ReasoningTokens:  u.CompletionTokensDetails.ReasoningTokens,
+		CacheReadTokens:  u.PromptCacheHitTokens,
+	}
 }
 
 // Complete sends a chat completion request to DeepSeek.
 func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
-	pReq := request{
-		Model:       req.Model,
-		Messages:    req.Messages,
-		Temperature: req.Temperature,
-		MaxTokens:   req.MaxTokens,
-	}
-
-	bodyReader, _, release, err := core.JSONBodyReader(pReq)
+	bodyReader, _, release, err := openaicompat.BuildBody(req, false)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
@@ -151,22 +150,24 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 	}
 	defer func() { _ = httpResp.Body.Close() }()
 
-	respBody, err := io.ReadAll(httpResp.Body)
+	respBody, err := core.ReadResponseBody(httpResp.Body, core.MaxProviderResponseBytes)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 
 	if httpResp.StatusCode != http.StatusOK {
-		var errResp errorResponse
-		if json.Unmarshal(respBody, &errResp) == nil && errResp.Error.Message != "" {
-			return nil, fmt.Errorf("deepseek API error (%d): %s", httpResp.StatusCode, errResp.Error.Message)
-		}
-		return nil, fmt.Errorf("deepseek API error (%d): %s", httpResp.StatusCode, string(respBody))
+		return nil, core.APIErrorFromResponse("deepseek", httpResp, respBody)
 	}
 
 	var pResp response
 	if err := json.Unmarshal(respBody, &pResp); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	// Normalize finish reasons to the canonical OpenAI vocabulary, matching the
+	// shared streaming path (the hand-rolled decode here is kept only to capture
+	// DeepSeek's extended cache/reasoning usage).
+	for i := range pResp.Choices {
+		pResp.Choices[i].FinishReason = core.NormalizeFinishReason(pResp.Choices[i].FinishReason)
 	}
 
 	return &core.Response{
@@ -174,86 +175,20 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 		Model:    pResp.Model,
 		Provider: p.name,
 		Choices:  pResp.Choices,
-		Usage:    pResp.Usage,
+		Usage:    pResp.Usage.toCore(),
 	}, nil
 }
 
 // CompleteStream sends a streaming chat completion request to DeepSeek.
 func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan core.StreamChunk, error) {
-	pReq := request{
-		Model:       req.Model,
-		Messages:    req.Messages,
-		Temperature: req.Temperature,
-		MaxTokens:   req.MaxTokens,
-		Stream:      true,
-	}
-
-	bodyReader, _, release, err := core.JSONBodyReader(pReq)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
-	}
-	defer release()
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/v1/chat/completions", bodyReader) //nolint:gosec // baseURL validated in New()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	httpResp, err := p.httpClient.Do(httpReq) //nolint:gosec // baseURL validated in New()
-	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
-	}
-
-	if httpResp.StatusCode != http.StatusOK {
-		defer func() { _ = httpResp.Body.Close() }()
-		respBody, _ := io.ReadAll(httpResp.Body)
-		var errResp errorResponse
-		if json.Unmarshal(respBody, &errResp) == nil && errResp.Error.Message != "" {
-			return nil, fmt.Errorf("deepseek API error (%d): %s", httpResp.StatusCode, errResp.Error.Message)
-		}
-		return nil, fmt.Errorf("deepseek API error (%d): %s", httpResp.StatusCode, string(respBody))
-	}
-
-	ch := make(chan core.StreamChunk)
-	go func() {
-		defer close(ch)
-		defer func() { _ = httpResp.Body.Close() }()
-
-		scanner := bufio.NewScanner(httpResp.Body)
-		for scanner.Scan() {
-			line := scanner.Text()
-			if !strings.HasPrefix(line, "data: ") {
-				continue
-			}
-			data := strings.TrimPrefix(line, "data: ")
-			if data == core.SSEDone {
-				return
-			}
-
-			var chunk streamResponse
-			if json.Unmarshal([]byte(data), &chunk) != nil {
-				continue
-			}
-
-			sc := core.StreamChunk{ID: chunk.ID, Model: chunk.Model}
-			for _, c := range chunk.Choices {
-				sc.Choices = append(sc.Choices, core.StreamChoice{
-					Index: c.Index,
-					Delta: core.MessageDelta{
-						Role:    c.Delta.Role,
-						Content: c.Delta.Content,
-					},
-					FinishReason: c.FinishReason,
-				})
-			}
-			ch <- sc
-		}
-		if err := scanner.Err(); err != nil {
-			ch <- core.StreamChunk{Error: err}
-		}
-	}()
-
-	return ch, nil
+	return openaicompat.PostStream(ctx, openaicompat.ChatParams{
+		HTTPClient: p.httpClient,
+		URL:        p.baseURL + "/v1/chat/completions",
+		Provider:   p.name,
+		Label:      "deepseek",
+		Headers: map[string]string{
+			"Authorization": "Bearer " + p.apiKey,
+			"Content-Type":  "application/json",
+		},
+	}, req)
 }

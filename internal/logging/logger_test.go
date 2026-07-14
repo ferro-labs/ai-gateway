@@ -82,7 +82,7 @@ func TestMiddleware_PropagatesProvidedHeader(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 	req.Header.Set("X-Request-ID", traceID)
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
@@ -107,7 +107,7 @@ func TestMiddleware_ReusesContextTraceID(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 	// Both header and context populated; context MUST win.
 	req.Header.Set("X-Request-ID", "header-only-id")
 	req = req.WithContext(WithTraceID(req.Context(), ctxTraceID))
@@ -127,7 +127,7 @@ func TestMiddleware_GeneratesHeaderWhenMissing(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 

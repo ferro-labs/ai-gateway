@@ -3,8 +3,6 @@ package strategies
 import (
 	"context"
 	"fmt"
-	"math/rand"
-	"sync"
 
 	"github.com/ferro-labs/ai-gateway/internal/logging"
 	"github.com/ferro-labs/ai-gateway/providers"
@@ -43,8 +41,8 @@ type ABTestVariant struct {
 // All traffic still goes to a real provider — this is not a shadow-traffic mode.
 type ABTest struct {
 	variants []ABTestVariant
+	targets  []Target
 	lookup   ProviderLookup
-	mu       sync.Mutex
 }
 
 // NewABTest creates an ABTest strategy.
@@ -61,6 +59,28 @@ func NewABTest(variants []ABTestVariant, lookup ProviderLookup) (*ABTest, error)
 		}
 	}
 	return &ABTest{variants: variants, lookup: lookup}, nil
+}
+
+// WithRoutingTargets records the full ordered target list. SelectTargets appends
+// these as fallbacks after the selected variant's target. Returns the receiver
+// so callers can chain it after the constructor.
+func (ab *ABTest) WithRoutingTargets(targets []Target) *ABTest {
+	ab.targets = targets
+	return ab
+}
+
+// SelectTargets picks a variant by weighted random sampling (matching Execute)
+// and returns its target followed by every configured target as a fallback.
+func (ab *ABTest) SelectTargets(_ providers.Request) ([]string, error) {
+	v, ok := weightedPick(ab.variants, func(v ABTestVariant) float64 {
+		return effectiveWeight(v.Weight)
+	})
+	if !ok {
+		return targetKeys(ab.targets), nil
+	}
+	keys := make([]string, 0, len(ab.targets)+1)
+	keys = appendUniqueKey(keys, v.Target.VirtualKey)
+	return appendRemainingTargetKeys(keys, ab.targets), nil
 }
 
 // Execute selects a variant by weighted random sampling, routes the request to
@@ -93,29 +113,16 @@ func (ab *ABTest) Execute(ctx context.Context, req providers.Request) (*provider
 
 // selectVariant picks a variant using weighted random sampling.
 // Variants with zero weight are treated as weight 1 (equal distribution).
+// weightedPick draws from the top-level math/rand source, which is safe for
+// concurrent use, so no additional locking is required here.
 func (ab *ABTest) selectVariant() (ABTestVariant, error) {
-	ab.mu.Lock()
-	defer ab.mu.Unlock()
-
-	total := 0.0
-	for _, v := range ab.variants {
-		w := effectiveWeight(v.Weight)
-		total += w
-	}
-	if total == 0 {
+	v, ok := weightedPick(ab.variants, func(v ABTestVariant) float64 {
+		return effectiveWeight(v.Weight)
+	})
+	if !ok {
 		return ABTestVariant{}, fmt.Errorf("ab-test: no eligible variants")
 	}
-
-	r := rand.Float64() * total //nolint:gosec
-	cumulative := 0.0
-	for _, v := range ab.variants {
-		cumulative += effectiveWeight(v.Weight)
-		if r < cumulative {
-			return v, nil
-		}
-	}
-	// Floating-point rounding safety net — return last variant.
-	return ab.variants[len(ab.variants)-1], nil
+	return v, nil
 }
 
 // effectiveWeight returns the weight to use for a variant:

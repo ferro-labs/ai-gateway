@@ -1,8 +1,10 @@
-// Package openai provides a client for the OpenAI API using the official Go SDK.
+// Package openai provides a client for the OpenAI API. Chat completions use a
+// direct HTTP + JSON path so every core.Request field is forwarded verbatim on
+// both the streaming and non-streaming paths (they cannot diverge); embeddings
+// and image generation use the official Go SDK.
 package openai
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -114,7 +116,7 @@ func (p *Provider) SupportedModels() []string {
 
 // SupportsModel returns true if the model matches known OpenAI prefixes.
 func (p *Provider) SupportsModel(model string) bool {
-	for _, prefix := range []string{"gpt-", "chatgpt-", "dall-e-", "whisper-", "tts-", "text-embedding-", "ft:", "babbage-", "davinci-"} {
+	for _, prefix := range []string{"gpt-", "chatgpt-", "codex-", "sora-", "dall-e-", "whisper-", "tts-", "text-embedding-", "ft:", "babbage-", "davinci-"} {
 		if strings.HasPrefix(model, prefix) {
 			return true
 		}
@@ -145,31 +147,15 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 		Model: req.Model,
 	}
 
-	switch v := req.Input.(type) {
+	normalized, err := core.NormalizeEmbeddingInput(req.Input)
+	if err != nil {
+		return nil, err
+	}
+	switch v := normalized.(type) {
 	case string:
 		params.Input = oai.EmbeddingNewParamsInputUnion{OfString: oai.String(v)}
 	case []string:
-		if len(v) == 0 {
-			return nil, fmt.Errorf("embed: Input must not be an empty array")
-		}
 		params.Input = oai.EmbeddingNewParamsInputUnion{OfArrayOfStrings: v}
-	case []interface{}:
-		if len(v) == 0 {
-			return nil, fmt.Errorf("embed: Input must not be an empty array")
-		}
-		strs := make([]string, 0, len(v))
-		for i, item := range v {
-			s, ok := item.(string)
-			if !ok {
-				return nil, fmt.Errorf("embed: Input[%d] is %T, want string", i, item)
-			}
-			strs = append(strs, s)
-		}
-		params.Input = oai.EmbeddingNewParamsInputUnion{OfArrayOfStrings: strs}
-	case nil:
-		return nil, fmt.Errorf("embed: Input must not be nil")
-	default:
-		return nil, fmt.Errorf("embed: unsupported Input type %T; want string or []string", req.Input)
 	}
 
 	switch req.EncodingFormat {
@@ -205,7 +191,7 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 	return &core.EmbeddingResponse{
 		Object: string(result.Object),
 		Data:   embeddings,
-		Model:  string(result.Model),
+		Model:  result.Model,
 		Usage: core.EmbeddingUsage{
 			PromptTokens: int(result.Usage.PromptTokens),
 			TotalTokens:  int(result.Usage.TotalTokens),
@@ -217,7 +203,7 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*core.ImageResponse, error) {
 	params := oai.ImageGenerateParams{
 		Prompt: req.Prompt,
-		Model:  oai.ImageModel(req.Model),
+		Model:  req.Model,
 	}
 	if req.N != nil {
 		params.N = oai.Int(int64(*req.N))
@@ -231,10 +217,15 @@ func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*c
 	if req.Style != "" {
 		params.Style = oai.ImageGenerateParamsStyle(req.Style)
 	}
-	if req.ResponseFormat == "b64_json" {
-		params.ResponseFormat = oai.ImageGenerateParamsResponseFormatB64JSON
-	} else {
-		params.ResponseFormat = oai.ImageGenerateParamsResponseFormatURL
+	// response_format is only valid for the DALL·E models. gpt-image-* rejects it
+	// and always returns base64, so omit it entirely for that family and read the
+	// result from B64JSON.
+	if isDallEModel(req.Model) {
+		if req.ResponseFormat == "b64_json" {
+			params.ResponseFormat = oai.ImageGenerateParamsResponseFormatB64JSON
+		} else {
+			params.ResponseFormat = oai.ImageGenerateParamsResponseFormatURL
+		}
 	}
 	if req.User != "" {
 		params.User = oai.String(req.User)
@@ -263,13 +254,17 @@ func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*c
 // Complete sends a chat completion request to OpenAI.
 func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
 	req.Stream = false
+	// o-series reasoning models reject max_tokens; the gateway seam leaves both
+	// token fields populated, so forward only the modern max_completion_tokens.
+	req.PreferCompletionTokens()
 
-	body, err := json.Marshal(req)
+	bodyReader, _, release, err := core.JSONBodyReader(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
+	defer release()
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.chatCompletionsEndpoint(), bytes.NewReader(body)) //nolint:gosec // baseURL validated in New()
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.chatCompletionsEndpoint(), bodyReader) //nolint:gosec // baseURL validated in New()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -283,21 +278,22 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 	defer func() { _ = httpResp.Body.Close() }()
 
 	if httpResp.StatusCode != http.StatusOK {
-		respBody, err := io.ReadAll(httpResp.Body)
+		respBody, err := core.ReadResponseBody(httpResp.Body, core.MaxProviderResponseBytes)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read response: %w", err)
 		}
-
-		var errResp openAIErrorResponse
-		if json.Unmarshal(respBody, &errResp) == nil && errResp.Error.Message != "" {
-			return nil, fmt.Errorf("openai API error (%d): %s", httpResp.StatusCode, errResp.Error.Message)
-		}
-		return nil, fmt.Errorf("openai API error (%d): %s", httpResp.StatusCode, string(respBody))
+		return nil, core.APIErrorFromResponse(p.name, httpResp, respBody)
 	}
 
+	// Bound decode + drain together so an oversized upstream response can't
+	// exhaust memory via the decoder's internal buffering or the drain copy.
+	limited := io.LimitReader(httpResp.Body, core.MaxProviderResponseBytes)
 	var completion openAIChatCompletionResponse
-	if err := json.NewDecoder(httpResp.Body).Decode(&completion); err != nil {
+	if err := json.NewDecoder(limited).Decode(&completion); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+	if _, err := io.Copy(io.Discard, limited); err != nil {
+		return nil, fmt.Errorf("failed to drain response: %w", err)
 	}
 
 	return &core.Response{
@@ -317,69 +313,108 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 	}, nil
 }
 
-// CompleteStream sends a streaming chat completion request to OpenAI.
-// stream_options.include_usage=true is set so that the final SSE chunk
-// carries token-usage statistics for cost and metrics tracking.
-func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan core.StreamChunk, error) {
-	params := oai.ChatCompletionNewParams{
-		Messages: buildMessages(req.Messages),
-		Model:    req.Model,
-		StreamOptions: oai.ChatCompletionStreamOptionsParam{
-			IncludeUsage: oai.Bool(true),
-		},
-	}
-	applyParams(&params, req)
+// streamOptions carries the OpenAI stream_options object. The gateway always
+// requests usage so cost and metrics tracking work regardless of what the client
+// sent.
+type streamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
+}
 
-	stream := p.client.Chat.Completions.NewStreaming(ctx, params)
+// streamingRequest is a core.Request forwarded verbatim (so no field can be
+// dropped, unlike a rebuilt param struct) plus the stream_options the streaming
+// path always sets.
+type streamingRequest struct {
+	core.Request
+	StreamOptions streamOptions `json:"stream_options"`
+}
+
+// CompleteStream sends a streaming chat completion request to OpenAI. It
+// forwards the same raw core.Request body as Complete (adding stream:true and
+// stream_options.include_usage), so streaming and non-streaming cannot diverge
+// on forwarded fields such as logit_bias and multimodal image content. Usage is
+// always requested so the final SSE chunk carries token statistics for cost and
+// metrics tracking.
+func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan core.StreamChunk, error) {
+	// o-series reasoning models reject max_tokens; keep only the modern field.
+	req.PreferCompletionTokens()
+	sreq := streamingRequest{Request: req, StreamOptions: streamOptions{IncludeUsage: true}}
+	sreq.Stream = true
+
+	bodyReader, _, release, err := core.JSONBodyReader(sreq)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+	defer release()
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.chatCompletionsEndpoint(), bodyReader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	httpResp, err := p.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+
+	if httpResp.StatusCode != http.StatusOK {
+		defer func() { _ = httpResp.Body.Close() }()
+		respBody, err := core.ReadResponseBody(httpResp.Body, core.MaxProviderResponseBytes)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read response: %w", err)
+		}
+		return nil, core.APIErrorFromResponse(p.name, httpResp, respBody)
+	}
 
 	ch := make(chan core.StreamChunk)
+	// Sends are guarded by core.SendChunk: on ctx cancellation the pending send
+	// is abandoned and the deferred close(ch)/Body.Close() run, so a direct
+	// consumer that stops reading cannot leak this goroutine or the upstream
+	// connection. Gateway-routed traffic drains through streamwrap.Meter as well.
 	go func() {
 		defer close(ch)
-		for stream.Next() {
-			chunk := stream.Current()
-			sc := core.StreamChunk{
-				ID:    chunk.ID,
-				Model: chunk.Model,
+		defer func() { _ = httpResp.Body.Close() }()
+
+		scanner := core.NewSSEScanner(httpResp.Body)
+		for scanner.Scan() {
+			data, ok := strings.CutPrefix(scanner.Text(), "data: ")
+			if !ok {
+				continue
 			}
-			for _, c := range chunk.Choices {
-				sc.Choices = append(sc.Choices, core.StreamChoice{
-					Index: int(c.Index),
-					Delta: core.MessageDelta{
-						Role:    c.Delta.Role,
-						Content: c.Delta.Content,
-					},
-					FinishReason: c.FinishReason,
-				})
+			if data == core.SSEDone {
+				return
 			}
-			if chunk.Usage.TotalTokens > 0 {
-				usage := &core.Usage{
-					PromptTokens:     int(chunk.Usage.PromptTokens),
-					CompletionTokens: int(chunk.Usage.CompletionTokens),
-					TotalTokens:      int(chunk.Usage.TotalTokens),
-				}
-				if chunk.Usage.CompletionTokensDetails.ReasoningTokens > 0 {
-					usage.ReasoningTokens = int(chunk.Usage.CompletionTokensDetails.ReasoningTokens)
-				}
-				if chunk.Usage.PromptTokensDetails.CachedTokens > 0 {
-					usage.CacheReadTokens = int(chunk.Usage.PromptTokensDetails.CachedTokens)
-				}
-				sc.Usage = usage
+			var chunk openAIStreamChunk
+			if json.Unmarshal([]byte(data), &chunk) != nil {
+				continue
 			}
-			ch <- sc
+			if !core.SendChunk(ctx, ch, chunk.toStreamChunk()) {
+				return
+			}
 		}
-		if err := stream.Err(); err != nil {
-			ch <- core.StreamChunk{Error: err}
+		if err := scanner.Err(); err != nil {
+			core.SendChunk(ctx, ch, core.StreamChunk{Error: err})
 		}
 	}()
 
 	return ch, nil
 }
 
-type openAIErrorResponse struct {
-	Error struct {
-		Message string `json:"message"`
-		Type    string `json:"type"`
-	} `json:"error"`
+// openAIUsage is the OpenAI usage object with the nested reasoning/cached token
+// detail. It is shared by the streaming and non-streaming response decoders so
+// the token-accounting fields stay aligned; the canonical core.Usage decoder
+// does not capture the nested detail.
+type openAIUsage struct {
+	PromptTokens        int `json:"prompt_tokens"`
+	CompletionTokens    int `json:"completion_tokens"`
+	TotalTokens         int `json:"total_tokens"`
+	PromptTokensDetails struct {
+		CachedTokens int `json:"cached_tokens"`
+	} `json:"prompt_tokens_details"`
+	CompletionTokensDetails struct {
+		ReasoningTokens int `json:"reasoning_tokens"`
+	} `json:"completion_tokens_details"`
 }
 
 type openAIChatCompletionResponse struct {
@@ -388,17 +423,7 @@ type openAIChatCompletionResponse struct {
 	Created int64         `json:"created"`
 	Model   string        `json:"model"`
 	Choices []core.Choice `json:"choices"`
-	Usage   struct {
-		PromptTokens        int `json:"prompt_tokens"`
-		CompletionTokens    int `json:"completion_tokens"`
-		TotalTokens         int `json:"total_tokens"`
-		PromptTokensDetails struct {
-			CachedTokens int `json:"cached_tokens"`
-		} `json:"prompt_tokens_details"`
-		CompletionTokensDetails struct {
-			ReasoningTokens int `json:"reasoning_tokens"`
-		} `json:"completion_tokens_details"`
-	} `json:"usage"`
+	Usage   openAIUsage   `json:"usage"`
 }
 
 func (p *Provider) chatCompletionsEndpoint() string {
@@ -408,98 +433,92 @@ func (p *Provider) chatCompletionsEndpoint() string {
 	return p.baseURL + "/v1/chat/completions"
 }
 
-// buildMessages converts gateway Messages to the openai-go SDK union type.
-func buildMessages(msgs []core.Message) []oai.ChatCompletionMessageParamUnion {
-	out := make([]oai.ChatCompletionMessageParamUnion, 0, len(msgs))
-	for _, msg := range msgs {
-		switch msg.Role {
-		case core.RoleUser:
-			out = append(out, oai.UserMessage(msg.Content))
-		case core.RoleAssistant:
-			out = append(out, oai.AssistantMessage(msg.Content))
-		case core.RoleSystem:
-			out = append(out, oai.SystemMessage(msg.Content))
-		case core.RoleTool:
-			out = append(out, oai.ToolMessage(msg.Content, msg.ToolCallID))
-		default:
-			out = append(out, oai.UserMessage(msg.Content))
-		}
-	}
-	return out
+// isDallEModel reports whether the image model is a DALL·E model — the only
+// family whose image API accepts the response_format parameter.
+func isDallEModel(model string) bool {
+	return strings.HasPrefix(model, "dall-e")
 }
 
-// applyParams applies all optional Request fields to the SDK params struct.
-func applyParams(params *oai.ChatCompletionNewParams, req core.Request) {
-	if req.Temperature != nil {
-		params.Temperature = oai.Float(*req.Temperature)
+// openAIStreamChunk is one OpenAI chat.completion.chunk SSE frame. It carries the
+// nested usage-detail fields (reasoning / cached tokens) that the canonical
+// core.Usage decoder does not, so streaming preserves the same accounting as the
+// non-streaming path.
+type openAIStreamChunk struct {
+	ID      string `json:"id"`
+	Model   string `json:"model"`
+	Choices []struct {
+		Index int `json:"index"`
+		Delta struct {
+			Role      string                 `json:"role"`
+			Content   string                 `json:"content"`
+			ToolCalls []openAIStreamToolCall `json:"tool_calls"`
+		} `json:"delta"`
+		FinishReason string `json:"finish_reason"`
+	} `json:"choices"`
+	Usage *openAIUsage `json:"usage"`
+}
+
+type openAIStreamToolCall struct {
+	Index    int    `json:"index"`
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
+}
+
+// toStreamChunk converts a decoded OpenAI SSE frame to the gateway's canonical
+// stream chunk, carrying usage (including reasoning/cache detail) on the frame
+// that reports it. OpenAI finish reasons are already canonical.
+func (c openAIStreamChunk) toStreamChunk() core.StreamChunk {
+	sc := core.StreamChunk{ID: c.ID, Model: c.Model}
+	for _, choice := range c.Choices {
+		sc.Choices = append(sc.Choices, core.StreamChoice{
+			Index: choice.Index,
+			Delta: core.MessageDelta{
+				Role:      choice.Delta.Role,
+				Content:   choice.Delta.Content,
+				ToolCalls: mapStreamToolCalls(choice.Delta.ToolCalls),
+			},
+			FinishReason: choice.FinishReason,
+		})
 	}
-	if req.TopP != nil {
-		params.TopP = oai.Float(*req.TopP)
-	}
-	if req.N != nil {
-		params.N = oai.Int(int64(*req.N))
-	}
-	if req.Seed != nil {
-		params.Seed = oai.Int(*req.Seed)
-	}
-	if req.MaxTokens != nil {
-		params.MaxTokens = oai.Int(int64(*req.MaxTokens))
-	}
-	if req.PresencePenalty != nil {
-		params.PresencePenalty = oai.Float(*req.PresencePenalty)
-	}
-	if req.FrequencyPenalty != nil {
-		params.FrequencyPenalty = oai.Float(*req.FrequencyPenalty)
-	}
-	if req.User != "" {
-		params.User = oai.String(req.User)
-	}
-	if req.LogProbs {
-		params.Logprobs = oai.Bool(true)
-	}
-	if req.TopLogProbs != nil {
-		params.TopLogprobs = oai.Int(int64(*req.TopLogProbs))
-	}
-	if len(req.Stop) > 0 {
-		params.Stop = oai.ChatCompletionNewParamsStopUnion{
-			OfStringArray: req.Stop,
+	if c.Usage != nil && c.Usage.TotalTokens > 0 {
+		usage := &core.Usage{
+			PromptTokens:     c.Usage.PromptTokens,
+			CompletionTokens: c.Usage.CompletionTokens,
+			TotalTokens:      c.Usage.TotalTokens,
 		}
-	}
-	if req.ResponseFormat != nil {
-		switch req.ResponseFormat.Type {
-		case "json_object":
-			params.ResponseFormat = oai.ChatCompletionNewParamsResponseFormatUnion{
-				OfJSONObject: &oai.ResponseFormatJSONObjectParam{},
-			}
-		case "json_schema":
-			if len(req.ResponseFormat.JSONSchema) > 0 {
-				var schema oai.ResponseFormatJSONSchemaJSONSchemaParam
-				if err := json.Unmarshal(req.ResponseFormat.JSONSchema, &schema); err == nil {
-					params.ResponseFormat = oai.ChatCompletionNewParamsResponseFormatUnion{
-						OfJSONSchema: &oai.ResponseFormatJSONSchemaParam{
-							JSONSchema: schema,
-						},
-					}
-				}
-			}
+		if c.Usage.CompletionTokensDetails.ReasoningTokens > 0 {
+			usage.ReasoningTokens = c.Usage.CompletionTokensDetails.ReasoningTokens
 		}
-	}
-	if len(req.Tools) > 0 {
-		tools := make([]oai.ChatCompletionToolParam, 0, len(req.Tools))
-		for _, t := range req.Tools {
-			var paramSchema oai.FunctionParameters
-			if len(t.Function.Parameters) > 0 {
-				json.Unmarshal(t.Function.Parameters, &paramSchema) //nolint:errcheck,gosec
-			}
-			tools = append(tools, oai.ChatCompletionToolParam{
-				Function: oai.FunctionDefinitionParam{
-					Name:        t.Function.Name,
-					Description: oai.String(t.Function.Description),
-					Parameters:  paramSchema,
-					Strict:      oai.Bool(t.Function.Strict),
-				},
-			})
+		if c.Usage.PromptTokensDetails.CachedTokens > 0 {
+			usage.CacheReadTokens = c.Usage.PromptTokensDetails.CachedTokens
 		}
-		params.Tools = tools
+		sc.Usage = usage
 	}
+	return sc
+}
+
+// mapStreamToolCalls maps SSE tool-call deltas to canonical tool calls,
+// preserving the streaming index each fragment belongs to.
+func mapStreamToolCalls(in []openAIStreamToolCall) []core.ToolCall {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]core.ToolCall, 0, len(in))
+	for _, tc := range in {
+		index := tc.Index
+		out = append(out, core.ToolCall{
+			Index: &index,
+			ID:    tc.ID,
+			Type:  tc.Type,
+			Function: core.FunctionCall{
+				Name:      tc.Function.Name,
+				Arguments: tc.Function.Arguments,
+			},
+		})
+	}
+	return out
 }

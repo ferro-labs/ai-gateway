@@ -15,6 +15,18 @@ import (
 	"github.com/ferro-labs/ai-gateway/internal/version"
 )
 
+const (
+	// maxErrorBodyBytes caps how many bytes of a non-2xx MCP response body are
+	// read into an error message.
+	maxErrorBodyBytes = 4096
+	// maxResponseBodyBytes caps the size of a successful MCP JSON-RPC response
+	// body. An MCP server is an untrusted-content boundary; without a limit a
+	// buggy, compromised, or MITM'd server could return an unbounded body and
+	// drive gateway memory exhaustion. The per-request HTTP timeout bounds time,
+	// not memory.
+	maxResponseBodyBytes = 10 << 20 // 10 MiB
+)
+
 // Client communicates with a single MCP server over Streamable HTTP transport.
 // All exported methods are safe for concurrent use.
 type Client struct {
@@ -49,9 +61,9 @@ func NewClient(endpoint string, headers map[string]string, timeout time.Duration
 // notifications/initialized) and stores the Mcp-Session-Id for subsequent
 // requests. Safe to call again — it will re-initialize the session.
 func (c *Client) Initialize(ctx context.Context) (*ServerInfo, error) {
-	params := map[string]interface{}{
+	params := map[string]any{
 		"protocolVersion": "2025-11-25",
-		"capabilities":    map[string]interface{}{},
+		"capabilities":    map[string]any{},
 		"clientInfo": map[string]string{
 			"name":    "ferro-ai-gateway",
 			"version": version.Short(),
@@ -94,7 +106,7 @@ func (c *Client) ListTools(ctx context.Context) ([]Tool, error) {
 // CallTool invokes a named tool on the MCP server with the given JSON-encoded
 // arguments. Safe for concurrent use from multiple goroutines.
 func (c *Client) CallTool(ctx context.Context, name string, arguments json.RawMessage) (*ToolCallResult, error) {
-	params := map[string]interface{}{
+	params := map[string]any{
 		"name":      name,
 		"arguments": arguments,
 	}
@@ -113,7 +125,7 @@ func (c *Client) CallTool(ctx context.Context, name string, arguments json.RawMe
 
 // call sends a JSON-RPC 2.0 request and returns the decoded response.
 // It sets all required headers including the session ID once established.
-func (c *Client) call(ctx context.Context, method string, params interface{}) (*JSONRPCResponse, error) {
+func (c *Client) call(ctx context.Context, method string, params any) (*JSONRPCResponse, error) {
 	id := c.nextID.Add(1)
 
 	var rawParams json.RawMessage
@@ -159,13 +171,18 @@ func (c *Client) call(ctx context.Context, method string, params interface{}) (*
 	c.setSessionID(httpResp.Header.Get("Mcp-Session-Id"))
 
 	if httpResp.StatusCode != http.StatusOK {
-		errBody, _ := io.ReadAll(io.LimitReader(httpResp.Body, 4096))
+		errBody, _ := io.ReadAll(io.LimitReader(httpResp.Body, maxErrorBodyBytes))
 		return nil, fmt.Errorf("mcp server %s returned HTTP %d: %s", method, httpResp.StatusCode, errBody)
 	}
 
-	respBody, err := io.ReadAll(httpResp.Body)
+	// Bound the success-path read: read one byte past the cap so an
+	// over-limit body is detected rather than silently truncated.
+	respBody, err := io.ReadAll(io.LimitReader(httpResp.Body, maxResponseBodyBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("mcp read body: %w", err)
+	}
+	if len(respBody) > maxResponseBodyBytes {
+		return nil, fmt.Errorf("mcp response from %s exceeds %d byte limit", method, maxResponseBodyBytes)
 	}
 
 	var rpcResp JSONRPCResponse
@@ -179,7 +196,7 @@ func (c *Client) call(ctx context.Context, method string, params interface{}) (*
 }
 
 // notify sends a JSON-RPC 2.0 notification (no ID, no response expected).
-func (c *Client) notify(ctx context.Context, method string, params interface{}) error {
+func (c *Client) notify(ctx context.Context, method string, params any) error {
 	var rawParams json.RawMessage
 	if params != nil {
 		b, err := json.Marshal(params)

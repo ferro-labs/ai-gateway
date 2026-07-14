@@ -2,8 +2,8 @@
 package anthropic
 
 import (
-	"bufio"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,22 +11,23 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/ferro-labs/ai-gateway/internal/discovery"
 	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
 	"github.com/ferro-labs/ai-gateway/providers/core"
+	"github.com/ferro-labs/ai-gateway/providers/internal/anthropicwire"
 )
-
-func validateBaseURL(name, rawURL string) error {
-	u, err := url.Parse(rawURL)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return fmt.Errorf("%s: invalid base URL %q: must be http or https with a host", name, rawURL)
-	}
-	return nil
-}
 
 // Name is the canonical provider identifier.
 const Name = "anthropic"
 
 const defaultBaseURL = "https://api.anthropic.com"
+
+// anthropicVersion is the API version sent on every request via the
+// anthropic-version header.
+const anthropicVersion = "2023-06-01"
+
+// defaultMaxTokens is the max_tokens value used when the caller does not set one.
+const defaultMaxTokens = 1024
 
 // Provider implements the Anthropic API client.
 type Provider struct {
@@ -38,9 +39,11 @@ type Provider struct {
 
 // Compile-time interface assertions.
 var (
-	_ core.Provider          = (*Provider)(nil)
-	_ core.StreamProvider    = (*Provider)(nil)
-	_ core.ProxiableProvider = (*Provider)(nil)
+	_ core.Provider              = (*Provider)(nil)
+	_ core.StreamProvider        = (*Provider)(nil)
+	_ core.ProxiableProvider     = (*Provider)(nil)
+	_ core.NonOpenAIWireProvider = (*Provider)(nil)
+	_ core.DiscoveryProvider     = (*Provider)(nil)
 )
 
 // New creates a new Anthropic provider.
@@ -49,7 +52,7 @@ func New(apiKey, baseURL string) (*Provider, error) {
 		baseURL = defaultBaseURL
 	}
 	baseURL = strings.TrimRight(baseURL, "/")
-	if err := validateBaseURL(Name, baseURL); err != nil {
+	if err := core.ValidateBaseURL(Name, baseURL); err != nil {
 		return nil, err
 	}
 	return &Provider{
@@ -66,21 +69,33 @@ func (p *Provider) Name() string { return p.name }
 // BaseURL implements core.ProxiableProvider.
 func (p *Provider) BaseURL() string { return p.baseURL }
 
+// NonOpenAIWire marks Anthropic as ineligible for transparent OpenAI-wire proxy
+// pass-through: its upstream is the Anthropic Messages API, not OpenAI-shaped.
+// It remains fully usable via its native translated endpoints. See
+// core.NonOpenAIWireProvider.
+func (*Provider) NonOpenAIWire() {}
+
 // AuthHeaders implements core.ProxiableProvider.
 func (p *Provider) AuthHeaders() map[string]string {
 	return map[string]string{
 		"x-api-key":         p.apiKey,
-		"anthropic-version": "2023-06-01",
+		"anthropic-version": anthropicVersion,
 	}
+}
+
+// DiscoverModels fetches the live model list from the Anthropic /v1/models
+// endpoint, which uses x-api-key + anthropic-version headers rather than Bearer.
+func (p *Provider) DiscoverModels(ctx context.Context) ([]core.ModelInfo, error) {
+	return discovery.DiscoverModelsWithHeaders(ctx, p.httpClient, p.baseURL+"/v1/models", p.AuthHeaders(), p.name)
 }
 
 // SupportedModels returns the list of models supported by this provider.
 func (p *Provider) SupportedModels() []string {
 	return []string{
-		"claude-sonnet-4-20250514",
-		"claude-3-5-sonnet-20241022",
-		"claude-3-haiku-20240307",
-		"claude-3-opus-20240229",
+		"claude-opus-4-7",
+		"claude-opus-4-6",
+		"claude-sonnet-4-6",
+		"claude-haiku-4-5-20251001",
 	}
 }
 
@@ -94,142 +109,226 @@ func (p *Provider) Models() []core.ModelInfo {
 	return core.ModelsFromList(p.name, p.SupportedModels())
 }
 
-type anthropicMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-
 type anthropicRequest struct {
-	Model       string             `json:"model"`
-	MaxTokens   int                `json:"max_tokens"`
-	System      string             `json:"system,omitempty"`
-	Messages    []anthropicMessage `json:"messages"`
-	Temperature *float64           `json:"temperature,omitempty"`
-	Stream      bool               `json:"stream,omitempty"`
+	Model         string                  `json:"model"`
+	MaxTokens     int                     `json:"max_tokens"`
+	System        string                  `json:"system,omitempty"`
+	Messages      []anthropicwire.Message `json:"messages"`
+	Tools         []anthropicwire.Tool    `json:"tools,omitempty"`
+	ToolChoice    any                     `json:"tool_choice,omitempty"`
+	Temperature   *float64                `json:"temperature,omitempty"`
+	TopP          *float64                `json:"top_p,omitempty"`
+	StopSequences []string                `json:"stop_sequences,omitempty"`
+	Metadata      *anthropicMetadata      `json:"metadata,omitempty"`
+	Stream        bool                    `json:"stream,omitempty"`
 }
 
-type anthropicContentBlock struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
+// anthropicMetadata carries the optional request metadata; user_id maps the
+// OpenAI "user" field, which Anthropic uses for abuse monitoring.
+type anthropicMetadata struct {
+	UserID string `json:"user_id,omitempty"`
 }
 
-type anthropicUsage struct {
-	InputTokens              int `json:"input_tokens"`
-	OutputTokens             int `json:"output_tokens"`
-	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
-	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
-}
+// buildContent renders a non-system message's content for the Anthropic API.
+// Plain text turns stay a JSON string (the common path); multimodal turns and
+// assistant tool calls become an array of content blocks. It is passed to
+// anthropicwire.BuildMessages as the per-message content callback, so it MUST
+// return []anthropicwire.Block (not another slice type) when it emits blocks.
+func buildContent(msg core.Message) any {
+	var blocks []anthropicwire.Block
 
-type anthropicResponse struct {
-	ID      string                  `json:"id"`
-	Type    string                  `json:"type"`
-	Role    string                  `json:"role"`
-	Content []anthropicContentBlock `json:"content"`
-	Model   string                  `json:"model"`
-	Usage   anthropicUsage          `json:"usage"`
-}
-
-type anthropicError struct {
-	Type    string `json:"type"`
-	Message string `json:"message"`
-}
-
-type anthropicErrorResponse struct {
-	Type  string         `json:"type"`
-	Error anthropicError `json:"error"`
-}
-
-func buildMessages(req core.Request) ([]anthropicMessage, string) {
-	var systemParts []string
-	var messages []anthropicMessage
-	for _, msg := range req.Messages {
-		if msg.Role == "system" {
-			systemParts = append(systemParts, msg.Content)
-		} else {
-			messages = append(messages, anthropicMessage{
-				Role:    msg.Role,
-				Content: msg.Content,
-			})
+	if len(msg.ContentParts) > 0 {
+		for _, part := range msg.ContentParts {
+			switch part.Type {
+			case core.ContentTypeText:
+				blocks = append(blocks, anthropicwire.Block{Type: "text", Text: part.Text})
+			case "image_url":
+				if part.ImageURL != nil {
+					blocks = append(blocks, imageBlock(part.ImageURL.URL))
+				}
+			}
 		}
+	} else if msg.Content != "" {
+		blocks = append(blocks, anthropicwire.Block{Type: "text", Text: msg.Content})
 	}
-	return messages, strings.Join(systemParts, "\n")
+
+	for _, tc := range msg.ToolCalls {
+		input := json.RawMessage(tc.Function.Arguments)
+		if len(input) == 0 {
+			input = json.RawMessage("{}")
+		}
+		blocks = append(blocks, anthropicwire.Block{
+			Type:  anthropicwire.BlockTypeToolUse,
+			ID:    tc.ID,
+			Name:  tc.Function.Name,
+			Input: input,
+		})
+	}
+
+	// Plain single-text turn: keep the lightweight string form so the common
+	// path is byte-for-byte unchanged.
+	if len(msg.ContentParts) == 0 && len(msg.ToolCalls) == 0 {
+		return msg.Content
+	}
+	return blocks
 }
 
-// Complete sends a chat completion request to Anthropic.
-func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
-	messages, system := buildMessages(req)
+// imageBlock maps an OpenAI image_url to an Anthropic image content block: a
+// base64 source for a data URI (re-encoding a non-base64 data URI's payload), or
+// a url source for a genuine remote URL. A data: URI is never emitted as a url
+// source, which Anthropic would reject.
+func imageBlock(imageURL string) anthropicwire.Block {
+	if mediaType, data, ok := anthropicwire.ParseDataURI(imageURL); ok {
+		return base64ImageBlock(mediaType, data)
+	}
+	// Any other data: URI (non-base64 or malformed) is re-encoded to a base64
+	// source; a data: URI is never emitted as a url source, which Anthropic
+	// would reject.
+	if strings.HasPrefix(imageURL, "data:") {
+		mediaType, encoded := reencodeDataURI(imageURL)
+		return base64ImageBlock(mediaType, encoded)
+	}
+	return anthropicwire.Block{
+		Type:   "image",
+		Source: &anthropicwire.ImageSource{Type: "url", URL: imageURL},
+	}
+}
 
-	maxTokens := 1024
+func base64ImageBlock(mediaType, data string) anthropicwire.Block {
+	return anthropicwire.Block{
+		Type: "image",
+		Source: &anthropicwire.ImageSource{
+			Type:      "base64",
+			MediaType: mediaType,
+			Data:      data,
+		},
+	}
+}
+
+// reencodeDataURI converts a non-base64 data URI ("data:<mediatype>[;param],<payload>",
+// payload percent-encoded per RFC 2397) into a media type and base64 payload. It
+// is best-effort: a payload that is not valid percent-encoding is base64-encoded
+// as-is, so a data: URI is never left as an (invalid) url source.
+func reencodeDataURI(uri string) (mediaType, base64Data string) {
+	meta, payload, _ := strings.Cut(strings.TrimPrefix(uri, "data:"), ",")
+	mediaType, _, _ = strings.Cut(meta, ";")
+	// PathUnescape (not QueryUnescape) so a "+" in the RFC 2397 payload is kept
+	// literal rather than decoded to a space.
+	decoded, err := url.PathUnescape(payload)
+	if err != nil {
+		decoded = payload
+	}
+	return mediaType, base64.StdEncoding.EncodeToString([]byte(decoded))
+}
+
+// buildAnthropicRequest maps a core.Request to an Anthropic Messages API request
+// body. stream toggles server-sent event streaming. ctx carries the logger used
+// to record any temperature clamp applied for Anthropic's narrower range.
+func buildAnthropicRequest(ctx context.Context, req core.Request, stream bool) anthropicRequest {
+	messages, system := anthropicwire.BuildMessages(req, buildContent)
+
+	maxTokens := defaultMaxTokens
 	if req.MaxTokens != nil {
 		maxTokens = *req.MaxTokens
 	}
 
-	aReq := anthropicRequest{
-		Model:       req.Model,
-		MaxTokens:   maxTokens,
-		Messages:    messages,
-		Temperature: req.Temperature,
-		System:      system,
+	var metadata *anthropicMetadata
+	if req.User != "" {
+		metadata = &anthropicMetadata{UserID: req.User}
 	}
 
+	return anthropicRequest{
+		Model:         req.Model,
+		MaxTokens:     maxTokens,
+		Messages:      messages,
+		Temperature:   anthropicwire.ClampTemperature(ctx, Name, req.Model, req.Temperature),
+		TopP:          req.TopP,
+		StopSequences: req.Stop,
+		System:        system,
+		Tools:         anthropicwire.MapTools(req.Tools),
+		ToolChoice:    anthropicwire.MapToolChoice(req.ToolChoice, req.Tools),
+		Metadata:      metadata,
+		Stream:        stream,
+	}
+}
+
+// newMessagesRequest sends a POST to the Anthropic /v1/messages endpoint with the
+// standard authentication and version headers. The returned release frees the
+// pooled request body and must be called by the caller.
+func (p *Provider) newMessagesRequest(ctx context.Context, aReq anthropicRequest) (*http.Response, func(), error) {
 	bodyReader, _, release, err := core.JSONBodyReader(aReq)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
+		return nil, nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
-	defer release()
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/v1/messages", bodyReader) //nolint:gosec // baseURL validated in New()
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+		release()
+		return nil, nil, fmt.Errorf("failed to create request: %w", err)
 	}
 	httpReq.Header.Set("x-api-key", p.apiKey)
-	httpReq.Header.Set("anthropic-version", "2023-06-01")
+	httpReq.Header.Set("anthropic-version", anthropicVersion)
 	httpReq.Header.Set("content-type", "application/json")
 
 	httpResp, err := p.httpClient.Do(httpReq) //nolint:gosec // baseURL validated in New()
 	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
+		release()
+		return nil, nil, fmt.Errorf("request failed: %w", err)
 	}
+	return httpResp, release, nil
+}
+
+// Complete sends a chat completion request to Anthropic.
+func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
+	if err := core.EnforceUnsupportedParams(ctx, p.Name(), req.Model, req); err != nil {
+		return nil, err
+	}
+
+	aReq := buildAnthropicRequest(ctx, req, false)
+
+	httpResp, release, err := p.newMessagesRequest(ctx, aReq)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	defer func() { _ = httpResp.Body.Close() }()
 
-	respBody, err := io.ReadAll(httpResp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
-
 	if httpResp.StatusCode != http.StatusOK {
-		var errResp anthropicErrorResponse
-		if json.Unmarshal(respBody, &errResp) == nil && errResp.Error.Message != "" {
-			return nil, fmt.Errorf("anthropic API error (%d): %s", httpResp.StatusCode, errResp.Error.Message)
+		// Error branch reads the full (capped) body via core.ReadResponseBody:
+		// the raw body is needed verbatim for the fallback error message when
+		// it is not valid Anthropic error JSON.
+		respBody, err := core.ReadResponseBody(httpResp.Body, core.MaxProviderResponseBytes)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read response: %w", err)
 		}
-		return nil, fmt.Errorf("anthropic API error (%d): %s", httpResp.StatusCode, string(respBody))
+		return nil, core.APIErrorFromResponse("anthropic", httpResp, respBody)
 	}
 
-	var aResp anthropicResponse
-	if err := json.Unmarshal(respBody, &aResp); err != nil {
+	// Success path streams the decode straight off the response body, avoiding
+	// the extra full-body copy that io.ReadAll + Unmarshal incurs per request.
+	// The body is still capped so an oversized upstream response can't exhaust
+	// memory via the decoder's internal buffering.
+	var aResp anthropicwire.Response
+	if err := json.NewDecoder(io.LimitReader(httpResp.Body, core.MaxProviderResponseBytes)).Decode(&aResp); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 
-	var content strings.Builder
-	for _, block := range aResp.Content {
-		if block.Type == "text" {
-			content.WriteString(block.Text)
-		}
-	}
-
+	content, toolCalls := anthropicwire.DecodeContent(aResp.Content)
 	totalTokens := aResp.Usage.InputTokens + aResp.Usage.OutputTokens
 
 	return &core.Response{
-		ID:    aResp.ID,
-		Model: aResp.Model,
+		ID:       aResp.ID,
+		Model:    aResp.Model,
+		Provider: p.name,
 		Choices: []core.Choice{
 			{
 				Index: 0,
 				Message: core.Message{
-					Role:    aResp.Role,
-					Content: content.String(),
+					Role:      aResp.Role,
+					Content:   content,
+					ToolCalls: toolCalls,
 				},
-				FinishReason: "stop",
+				FinishReason: core.NormalizeFinishReason(aResp.StopReason),
 			},
 		},
 		Usage: core.Usage{
@@ -240,133 +339,4 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 			CacheWriteTokens: aResp.Usage.CacheCreationInputTokens,
 		},
 	}, nil
-}
-
-type anthropicStreamMessageStart struct {
-	Type    string `json:"type"`
-	Message struct {
-		ID    string `json:"id"`
-		Model string `json:"model"`
-		Role  string `json:"role"`
-	} `json:"message"`
-}
-
-type anthropicStreamContentDelta struct {
-	Type  string `json:"type"`
-	Index int    `json:"index"`
-	Delta struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	} `json:"delta"`
-}
-
-// CompleteStream sends a streaming chat completion request to Anthropic.
-func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan core.StreamChunk, error) {
-	messages, system := buildMessages(req)
-
-	maxTokens := 1024
-	if req.MaxTokens != nil {
-		maxTokens = *req.MaxTokens
-	}
-
-	aReq := anthropicRequest{
-		Model:       req.Model,
-		MaxTokens:   maxTokens,
-		Messages:    messages,
-		Temperature: req.Temperature,
-		System:      system,
-		Stream:      true,
-	}
-
-	bodyReader, _, release, err := core.JSONBodyReader(aReq)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
-	}
-	defer release()
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/v1/messages", bodyReader) //nolint:gosec // baseURL validated in New()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	httpReq.Header.Set("x-api-key", p.apiKey)
-	httpReq.Header.Set("anthropic-version", "2023-06-01")
-	httpReq.Header.Set("content-type", "application/json")
-
-	httpResp, err := p.httpClient.Do(httpReq) //nolint:gosec // baseURL validated in New()
-	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
-	}
-
-	if httpResp.StatusCode != http.StatusOK {
-		defer func() { _ = httpResp.Body.Close() }()
-		respBody, _ := io.ReadAll(httpResp.Body)
-		var errResp anthropicErrorResponse
-		if json.Unmarshal(respBody, &errResp) == nil && errResp.Error.Message != "" {
-			return nil, fmt.Errorf("anthropic API error (%d): %s", httpResp.StatusCode, errResp.Error.Message)
-		}
-		return nil, fmt.Errorf("anthropic API error (%d): %s", httpResp.StatusCode, string(respBody))
-	}
-
-	ch := make(chan core.StreamChunk)
-	go func() {
-		defer close(ch)
-		defer func() { _ = httpResp.Body.Close() }()
-
-		var msgID, model string
-		scanner := bufio.NewScanner(httpResp.Body)
-		for scanner.Scan() {
-			line := scanner.Text()
-			if !strings.HasPrefix(line, "data: ") {
-				continue
-			}
-			data := strings.TrimPrefix(line, "data: ")
-
-			var raw map[string]interface{}
-			if json.Unmarshal([]byte(data), &raw) != nil {
-				continue
-			}
-
-			eventType, _ := raw["type"].(string)
-			switch eventType {
-			case "message_start":
-				var evt anthropicStreamMessageStart
-				if json.Unmarshal([]byte(data), &evt) == nil {
-					msgID = evt.Message.ID
-					model = evt.Message.Model
-				}
-			case "content_block_delta":
-				var evt anthropicStreamContentDelta
-				if json.Unmarshal([]byte(data), &evt) == nil {
-					ch <- core.StreamChunk{
-						ID:    msgID,
-						Model: model,
-						Choices: []core.StreamChoice{
-							{
-								Index: evt.Index,
-								Delta: core.MessageDelta{
-									Content: evt.Delta.Text,
-								},
-							},
-						},
-					}
-				}
-			case "message_delta":
-				ch <- core.StreamChunk{
-					ID:    msgID,
-					Model: model,
-					Choices: []core.StreamChoice{
-						{
-							Index:        0,
-							FinishReason: "stop",
-						},
-					},
-				}
-			}
-		}
-		if err := scanner.Err(); err != nil {
-			ch <- core.StreamChunk{Error: err}
-		}
-	}()
-
-	return ch, nil
 }

@@ -23,7 +23,7 @@ const (
 // JSONRPCRequest is a JSON-RPC 2.0 request envelope.
 type JSONRPCRequest struct {
 	JSONRPC string          `json:"jsonrpc"`
-	ID      interface{}     `json:"id"`
+	ID      any             `json:"id"`
 	Method  string          `json:"method"`
 	Params  json.RawMessage `json:"params,omitempty"`
 }
@@ -31,7 +31,7 @@ type JSONRPCRequest struct {
 // JSONRPCResponse is a JSON-RPC 2.0 response envelope.
 type JSONRPCResponse struct {
 	JSONRPC string          `json:"jsonrpc"`
-	ID      interface{}     `json:"id"`
+	ID      any             `json:"id"`
 	Result  json.RawMessage `json:"result,omitempty"`
 	Error   *JSONRPCError   `json:"error,omitempty"`
 }

@@ -97,7 +97,7 @@ func Models(gw *aigateway.Gateway) http.HandlerFunc {
 			enriched = append(enriched, enrichFromCatalog(catalog, m.OwnedBy, m.ID))
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"object": "list",
 			"data":   enriched,
 		})

@@ -2,10 +2,15 @@ package ollama
 
 import (
 	"context"
-	"github.com/ferro-labs/ai-gateway/providers/core"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
 func TestNewOllama(t *testing.T) {
@@ -62,6 +67,87 @@ func TestOllamaProvider_CompleteStream_Interface(_ *testing.T) {
 	var _ core.StreamProvider = p
 }
 
+func TestOllamaProvider_Complete_MockHTTP(t *testing.T) {
+	respBody := `{"id":"chatcmpl-1","model":"llama3.2","choices":[{"index":0,"message":{"role":"assistant","content":"Hello!"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %s, want POST", r.Method)
+		}
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Errorf("path = %q, want /v1/chat/completions", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Errorf("Authorization = %q, want empty (self-hosted Ollama is unauthenticated)", got)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("failed to decode request body: %v", err)
+			return
+		}
+		if got := body["model"]; got != "llama3.2" {
+			t.Errorf("model = %v, want llama3.2", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(respBody))
+	}))
+	defer srv.Close()
+
+	p, _ := New(srv.URL, []string{"llama3.2"})
+	resp, err := p.Complete(context.Background(), core.Request{
+		Model:    "llama3.2",
+		Messages: []core.Message{{Role: "user", Content: "Hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Complete() error: %v", err)
+	}
+	if resp.ID != "chatcmpl-1" {
+		t.Errorf("Response.ID = %q, want chatcmpl-1", resp.ID)
+	}
+	if resp.Model != "llama3.2" {
+		t.Errorf("Response.Model = %q, want llama3.2", resp.Model)
+	}
+	if resp.Provider != Name {
+		t.Errorf("Response.Provider = %q, want %s", resp.Provider, Name)
+	}
+	if len(resp.Choices) != 1 {
+		t.Fatalf("Choices length = %d, want 1", len(resp.Choices))
+	}
+	if resp.Choices[0].Message.Content != "Hello!" {
+		t.Errorf("Choices[0].Message.Content = %q, want Hello!", resp.Choices[0].Message.Content)
+	}
+	if resp.Choices[0].FinishReason != "stop" {
+		t.Errorf("Choices[0].FinishReason = %q, want stop", resp.Choices[0].FinishReason)
+	}
+}
+
+func TestOllamaProvider_Complete_Non200Error(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":{"message":"model not found"}}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New(srv.URL, nil)
+	_, err := p.Complete(context.Background(), core.Request{
+		Model:    "llama3.2",
+		Messages: []core.Message{{Role: "user", Content: "Hi"}},
+	})
+	if err == nil {
+		t.Fatal("Complete() error = nil, want error on non-200")
+	}
+	if got := core.ParseStatusCode(err); got != http.StatusInternalServerError {
+		t.Errorf("ParseStatusCode(err) = %d, want %d", got, http.StatusInternalServerError)
+	}
+	if !strings.Contains(err.Error(), "model not found") {
+		t.Errorf("error %q does not surface upstream message", err.Error())
+	}
+	if !strings.Contains(err.Error(), "ollama") {
+		t.Errorf("error %q does not carry provider label", err.Error())
+	}
+}
+
 func TestOllamaProvider_CompleteStream_MockSSE(t *testing.T) {
 	sseData := "data: {\"id\":\"chatcmpl-1\",\"model\":\"llama3.2\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":\"\"}]}\n\n" +
 		"data: {\"id\":\"chatcmpl-1\",\"model\":\"llama3.2\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello\"},\"finish_reason\":\"\"}]}\n\n" +
@@ -98,5 +184,269 @@ func TestOllamaProvider_CompleteStream_MockSSE(t *testing.T) {
 	}
 	if chunks[2].Choices[0].Delta.Content != " there" {
 		t.Errorf("delta content = %q, want ' there'", chunks[2].Choices[0].Delta.Content)
+	}
+}
+
+func TestOllamaProvider_Embed_Interface(_ *testing.T) {
+	p, _ := New("", nil)
+	var _ core.EmbeddingProvider = p
+}
+
+func TestOllamaProvider_Embed_MockHTTP(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %s, want POST", r.Method)
+		}
+		if r.URL.Path != "/api/embed" {
+			t.Errorf("path = %q, want /api/embed", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Errorf("Authorization = %q, want empty (no auth)", got)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if body["model"] != "nomic-embed-text" {
+			t.Errorf("model = %v, want nomic-embed-text", body["model"])
+		}
+		arr, ok := body["input"].([]any)
+		if !ok || len(arr) != 2 || arr[0] != "hello" || arr[1] != "world" {
+			t.Errorf("input = %v, want [hello world]", body["input"])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"model":"nomic-embed-text","embeddings":[[0.1,0.2],[0.3,0.4]],"prompt_eval_count":6}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New(srv.URL, []string{"nomic-embed-text"})
+	resp, err := p.Embed(context.Background(), core.EmbeddingRequest{
+		Model: "nomic-embed-text",
+		Input: []string{"hello", "world"},
+	})
+	if err != nil {
+		t.Fatalf("Embed() error: %v", err)
+	}
+	if resp.Object != "list" {
+		t.Errorf("Object = %q, want list", resp.Object)
+	}
+	if resp.Model != "nomic-embed-text" {
+		t.Errorf("Model = %q, want nomic-embed-text", resp.Model)
+	}
+	if len(resp.Data) != 2 {
+		t.Fatalf("Data length = %d, want 2", len(resp.Data))
+	}
+	if resp.Data[0].Object != "embedding" || resp.Data[0].Index != 0 || !reflect.DeepEqual(resp.Data[0].Embedding, []float64{0.1, 0.2}) {
+		t.Errorf("Data[0] = %+v, want embedding at index 0", resp.Data[0])
+	}
+	if resp.Data[1].Index != 1 || !reflect.DeepEqual(resp.Data[1].Embedding, []float64{0.3, 0.4}) {
+		t.Errorf("Data[1] = %+v, want embedding at index 1", resp.Data[1])
+	}
+	if resp.Usage.PromptTokens != 6 || resp.Usage.TotalTokens != 6 {
+		t.Errorf("Usage = %+v, want prompt=6 total=6", resp.Usage)
+	}
+}
+
+// TestOllamaProvider_Embed_Non200Error verifies the native /api/embed error
+// path decodes Ollama's actual documented error shape — a flat
+// {"error":"..."} string — not the OpenAI-nested shape core.APIError expects.
+func TestOllamaProvider_Embed_Non200Error(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"model not found"}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New(srv.URL, nil)
+	_, err := p.Embed(context.Background(), core.EmbeddingRequest{
+		Model: "nomic-embed-text",
+		Input: "hello",
+	})
+	if err == nil {
+		t.Fatal("Embed() error = nil, want error on non-200")
+	}
+	if !strings.Contains(err.Error(), "model not found") || strings.Contains(err.Error(), `{"error"`) {
+		t.Errorf("error = %q, want the cleanly extracted message \"model not found\", not the raw JSON blob", err.Error())
+	}
+	if got := core.ParseStatusCode(err); got != http.StatusBadRequest {
+		t.Errorf("ParseStatusCode(err) = %d, want %d", got, http.StatusBadRequest)
+	}
+}
+
+func TestOllamaProvider_Embed_ForwardsDimensions(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if got, ok := body["dimensions"]; !ok || got != float64(256) {
+			t.Errorf("dimensions = %v (present=%v), want 256", got, ok)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"model":"nomic-embed-text","embeddings":[[0.1,0.2]],"prompt_eval_count":3}`))
+	}))
+	defer srv.Close()
+
+	dims := 256
+	p, _ := New(srv.URL, []string{"nomic-embed-text"})
+	if _, err := p.Embed(context.Background(), core.EmbeddingRequest{
+		Model:      "nomic-embed-text",
+		Input:      "hello",
+		Dimensions: &dims,
+	}); err != nil {
+		t.Fatalf("Embed() error: %v", err)
+	}
+}
+
+func TestOllamaProvider_Embed_OmitsDimensionsWhenNil(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if _, ok := body["dimensions"]; ok {
+			t.Errorf("dimensions present in body, want omitted when nil")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"model":"nomic-embed-text","embeddings":[[0.1,0.2]],"prompt_eval_count":3}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New(srv.URL, []string{"nomic-embed-text"})
+	if _, err := p.Embed(context.Background(), core.EmbeddingRequest{
+		Model: "nomic-embed-text",
+		Input: "hello",
+	}); err != nil {
+		t.Fatalf("Embed() error: %v", err)
+	}
+}
+
+func TestOllamaProvider_DiscoverModels_Interface(_ *testing.T) {
+	p, _ := New("", nil)
+	var _ core.DiscoveryProvider = p
+}
+
+func TestOllamaProvider_DiscoverModels_ParsesTagsNoAuth(t *testing.T) {
+	firstModified := "2025-02-03T04:05:06Z"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("method = %s, want GET", r.Method)
+		}
+		if r.URL.Path != "/api/tags" {
+			t.Errorf("path = %q, want /api/tags", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Errorf("Authorization = %q, want empty (self-hosted Ollama is unauthenticated)", got)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{
+			"models": [
+				{"name":"llama3.2","modified_at":"` + firstModified + `"},
+				{"model":"mistral","modified_at":"2025-02-04T04:05:06.123Z"},
+				{"name":"llama3.2","modified_at":"2025-02-05T04:05:06Z"}
+			]
+		}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New(srv.URL, []string{"configured-model"})
+	models, err := p.DiscoverModels(context.Background())
+	if err != nil {
+		t.Fatalf("DiscoverModels() error: %v", err)
+	}
+	if len(models) != 2 {
+		t.Fatalf("models length = %d, want 2 (duplicate dropped)", len(models))
+	}
+	if models[0].ID != "llama3.2" || models[0].Object != "model" || models[0].OwnedBy != Name {
+		t.Errorf("first model = %#v, want llama3.2 model owned by %s", models[0], Name)
+	}
+	if models[0].Created != mustUnix(t, firstModified) {
+		t.Errorf("first created = %d, want %d", models[0].Created, mustUnix(t, firstModified))
+	}
+	if models[1].ID != "mistral" {
+		t.Errorf("second model ID = %q, want mistral", models[1].ID)
+	}
+}
+
+// TestOllamaProvider_DiscoverModels_Non200Error verifies the native /api/tags
+// error path decodes Ollama's actual documented error shape — a flat
+// {"error":"..."} string (see https://docs.ollama.com/api/errors), not the
+// OpenAI-nested {"error":{"message":...}} shape core.APIError expects. The
+// OpenAI-compat surface (Complete/CompleteStream, /v1/chat/completions) is a
+// different endpoint that genuinely does return OpenAI-shaped errors and is
+// covered separately; this test is specific to Ollama's native endpoints.
+func TestOllamaProvider_DiscoverModels_Non200Error(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"boom"}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New(srv.URL, nil)
+	_, err := p.DiscoverModels(context.Background())
+	if err == nil {
+		t.Fatal("DiscoverModels() error = nil, want error on non-200")
+	}
+	// "boom" alone is a substring of the raw JSON blob too, so also assert the
+	// message is NOT the undecoded blob, ruling out the raw-body fallback path.
+	if !strings.Contains(err.Error(), "boom") || strings.Contains(err.Error(), `{"error"`) {
+		t.Errorf("error = %q, want the cleanly extracted message \"boom\", not the raw JSON blob", err.Error())
+	}
+}
+
+// TestOllamaProvider_DiscoverModels_PreservesRetryAfter verifies a 429
+// response's Retry-After header survives ollamaAPIError so the fallback
+// strategy can honor the provider's own backoff hint instead of guessing.
+func TestOllamaProvider_DiscoverModels_PreservesRetryAfter(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "5")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":"rate limited"}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New(srv.URL, nil)
+	_, err := p.DiscoverModels(context.Background())
+	if err == nil {
+		t.Fatal("DiscoverModels() error = nil, want error on 429")
+	}
+	if got := core.ParseStatusCode(err); got != http.StatusTooManyRequests {
+		t.Errorf("ParseStatusCode(err) = %d, want 429", got)
+	}
+	if got := core.RetryAfterFrom(err); got != 5*time.Second {
+		t.Errorf("RetryAfterFrom(err) = %v, want 5s", got)
+	}
+}
+
+func mustUnix(t *testing.T, value string) int64 {
+	t.Helper()
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		t.Fatalf("failed to parse time %q: %v", value, err)
+	}
+	return parsed.Unix()
+}
+
+func TestOllamaProvider_Embed_RejectsNonFloatEncoding(t *testing.T) {
+	p, _ := New("http://127.0.0.1:0", []string{"nomic-embed-text"})
+	_, err := p.Embed(context.Background(), core.EmbeddingRequest{
+		Model:          "nomic-embed-text",
+		Input:          "hi",
+		EncodingFormat: "base64",
+	})
+	if err == nil {
+		t.Fatal("Embed() error = nil, want unsupported encoding_format error")
+	}
+}
+
+// TestNewOllama_RejectsInvalidBaseURL locks in base-URL validation.
+func TestNewOllama_RejectsInvalidBaseURL(t *testing.T) {
+	if _, err := New("://nope", nil); err == nil {
+		t.Fatal("New accepted an invalid base URL")
 	}
 }

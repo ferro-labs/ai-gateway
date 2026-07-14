@@ -2,16 +2,14 @@
 package deepinfra
 
 import (
-	"bufio"
 	"context"
-	"encoding/json"
-	"fmt"
-	"io"
 	"net/http"
 	"strings"
 
+	"github.com/ferro-labs/ai-gateway/internal/discovery"
 	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
 	"github.com/ferro-labs/ai-gateway/providers/core"
+	"github.com/ferro-labs/ai-gateway/providers/internal/openaicompat"
 )
 
 const (
@@ -33,14 +31,20 @@ var (
 	_ core.Provider          = (*Provider)(nil)
 	_ core.StreamProvider    = (*Provider)(nil)
 	_ core.ProxiableProvider = (*Provider)(nil)
+	_ core.EmbeddingProvider = (*Provider)(nil)
+	_ core.DiscoveryProvider = (*Provider)(nil)
 )
 
 // New creates a new DeepInfra provider.
 func New(apiKey, baseURL string) (*Provider, error) {
+	baseURL = strings.TrimSpace(baseURL)
 	if baseURL == "" {
 		baseURL = defaultBaseURL
 	}
 	baseURL = strings.TrimRight(baseURL, "/")
+	if err := core.ValidateBaseURL(Name, baseURL); err != nil {
+		return nil, err
+	}
 	return &Provider{
 		name:       Name,
 		apiKey:     apiKey,
@@ -79,181 +83,29 @@ func (p *Provider) Models() []core.ModelInfo {
 	return core.ModelsFromList(p.name, p.SupportedModels())
 }
 
-type request struct {
-	Model       string         `json:"model"`
-	Messages    []core.Message `json:"messages"`
-	Temperature *float64       `json:"temperature,omitempty"`
-	MaxTokens   *int           `json:"max_tokens,omitempty"`
-	Stream      bool           `json:"stream,omitempty"`
-}
-
-type response struct {
-	ID      string        `json:"id"`
-	Model   string        `json:"model"`
-	Choices []core.Choice `json:"choices"`
-	Usage   core.Usage    `json:"usage"`
-}
-
-type errorDetail struct {
-	Message string `json:"message"`
-	Type    string `json:"type"`
-}
-
-type errorResponse struct {
-	Error errorDetail `json:"error"`
-}
-
-type streamResponse struct {
-	ID      string `json:"id"`
-	Model   string `json:"model"`
-	Choices []struct {
-		Index int `json:"index"`
-		Delta struct {
-			Role    string `json:"role,omitempty"`
-			Content string `json:"content,omitempty"`
-		} `json:"delta"`
-		FinishReason string `json:"finish_reason,omitempty"`
-	} `json:"choices"`
+// DiscoverModels fetches the live model list from the DeepInfra /models endpoint.
+func (p *Provider) DiscoverModels(ctx context.Context) ([]core.ModelInfo, error) {
+	return discovery.DiscoverOpenAICompatibleModels(ctx, p.httpClient, p.baseURL+"/models", p.apiKey, p.name)
 }
 
 // Complete sends a chat completion request to DeepInfra.
 func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
-	pReq := request{
-		Model:       req.Model,
-		Messages:    req.Messages,
-		Temperature: req.Temperature,
-		MaxTokens:   req.MaxTokens,
-	}
-
-	bodyReader, _, release, err := core.JSONBodyReader(pReq)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
-	}
-	defer release()
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/chat/completions", bodyReader)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	httpResp, err := p.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
-	}
-	defer func() { _ = httpResp.Body.Close() }()
-
-	respBody, err := io.ReadAll(httpResp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if httpResp.StatusCode != http.StatusOK {
-		var errResp errorResponse
-		if json.Unmarshal(respBody, &errResp) == nil && errResp.Error.Message != "" {
-			return nil, fmt.Errorf("deepinfra API error (%d): %s", httpResp.StatusCode, errResp.Error.Message)
-		}
-		return nil, fmt.Errorf("deepinfra API error (%d): %s", httpResp.StatusCode, string(respBody))
-	}
-
-	var pResp response
-	if err := json.Unmarshal(respBody, &pResp); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
-	}
-
-	return &core.Response{
-		ID:       pResp.ID,
-		Model:    pResp.Model,
-		Provider: p.name,
-		Choices:  pResp.Choices,
-		Usage:    pResp.Usage,
-	}, nil
+	return openaicompat.PostChat(ctx, openaicompat.ChatParams{
+		HTTPClient: p.httpClient,
+		URL:        p.baseURL + "/chat/completions",
+		Provider:   p.name,
+		Label:      "deepinfra",
+		Headers:    map[string]string{"Authorization": "Bearer " + p.apiKey, "Content-Type": "application/json"},
+	}, req)
 }
 
 // CompleteStream sends a streaming chat completion request to DeepInfra.
 func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan core.StreamChunk, error) {
-	pReq := request{
-		Model:       req.Model,
-		Messages:    req.Messages,
-		Temperature: req.Temperature,
-		MaxTokens:   req.MaxTokens,
-		Stream:      true,
-	}
-
-	bodyReader, _, release, err := core.JSONBodyReader(pReq)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
-	}
-	defer release()
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/chat/completions", bodyReader)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	httpResp, err := p.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
-	}
-
-	if httpResp.StatusCode != http.StatusOK {
-		defer func() { _ = httpResp.Body.Close() }()
-		respBody, _ := io.ReadAll(httpResp.Body)
-		var errResp errorResponse
-		if json.Unmarshal(respBody, &errResp) == nil && errResp.Error.Message != "" {
-			return nil, fmt.Errorf("deepinfra API error (%d): %s", httpResp.StatusCode, errResp.Error.Message)
-		}
-		return nil, fmt.Errorf("deepinfra API error (%d): %s", httpResp.StatusCode, string(respBody))
-	}
-
-	ch := make(chan core.StreamChunk)
-	go func() {
-		defer close(ch)
-		defer func() { _ = httpResp.Body.Close() }()
-
-		scanner := bufio.NewScanner(httpResp.Body)
-		scanner.Buffer(make([]byte, 64*1024), 1024*1024) // allow up to 1 MB per SSE line
-		for scanner.Scan() {
-			line := scanner.Text()
-			if !strings.HasPrefix(line, "data: ") {
-				continue
-			}
-			data := strings.TrimPrefix(line, "data: ")
-			if data == core.SSEDone {
-				return
-			}
-
-			var sr streamResponse
-			if err := json.Unmarshal([]byte(data), &sr); err != nil {
-				ch <- core.StreamChunk{Error: fmt.Errorf("failed to unmarshal stream chunk: %w", err)}
-				return
-			}
-
-			choices := make([]core.StreamChoice, len(sr.Choices))
-			for i, c := range sr.Choices {
-				choices[i] = core.StreamChoice{
-					Index:        c.Index,
-					FinishReason: c.FinishReason,
-					Delta: core.MessageDelta{
-						Role:    c.Delta.Role,
-						Content: c.Delta.Content,
-					},
-				}
-			}
-
-			ch <- core.StreamChunk{
-				ID:      sr.ID,
-				Model:   sr.Model,
-				Choices: choices,
-			}
-		}
-		if err := scanner.Err(); err != nil {
-			ch <- core.StreamChunk{Error: fmt.Errorf("stream read error: %w", err)}
-		}
-	}()
-
-	return ch, nil
+	return openaicompat.PostStream(ctx, openaicompat.ChatParams{
+		HTTPClient: p.httpClient,
+		URL:        p.baseURL + "/chat/completions",
+		Provider:   p.name,
+		Label:      "deepinfra",
+		Headers:    map[string]string{"Authorization": "Bearer " + p.apiKey, "Content-Type": "application/json"},
+	}, req)
 }

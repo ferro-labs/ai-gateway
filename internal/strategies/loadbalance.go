@@ -3,8 +3,6 @@ package strategies
 import (
 	"context"
 	"fmt"
-	"math/rand"
-	"sync"
 
 	"github.com/ferro-labs/ai-gateway/providers"
 )
@@ -13,7 +11,6 @@ import (
 type LoadBalance struct {
 	targets []Target
 	lookup  ProviderLookup
-	mu      sync.Mutex
 }
 
 // NewLoadBalance creates a new load balance strategy.
@@ -31,14 +28,7 @@ func (lb *LoadBalance) Execute(ctx context.Context, req providers.Request) (*pro
 		return nil, fmt.Errorf("no targets configured for loadbalance")
 	}
 
-	// Filter to targets that support the requested model.
-	var compatible []Target
-	for _, t := range lb.targets {
-		p, ok := lb.lookup(t.VirtualKey)
-		if ok && p.SupportsModel(req.Model) {
-			compatible = append(compatible, t)
-		}
-	}
+	compatible := lb.compatibleTargets(req.Model)
 	if len(compatible) == 0 {
 		return nil, fmt.Errorf("no provider supports model %s", req.Model)
 	}
@@ -48,46 +38,51 @@ func (lb *LoadBalance) Execute(ctx context.Context, req providers.Request) (*pro
 		return nil, err
 	}
 
-	p, _ := lb.lookup(target.VirtualKey)
-	resp, err := p.Complete(ctx, req)
-	if err != nil {
-		return nil, err
-	}
-	return responseWithProvider(resp, target.VirtualKey), nil
+	return dispatch(ctx, lb.lookup, target, req, "load balancing based routing: provider not found")
 }
 
-// selectFromTargets picks a target from the given slice using weighted random selection.
-func (lb *LoadBalance) selectFromTargets(targets []Target) (Target, error) {
-	lb.mu.Lock()
-	defer lb.mu.Unlock()
-
-	// Calculate total weight; treat 0 as 1 (equal distribution).
-	totalWeight := 0.0
-	for _, t := range targets {
-		w := t.Weight
-		if w <= 0 {
-			w = 1
+// compatibleTargets returns the subset of lb.targets whose provider is
+// registered and supports model, preserving declared order. Both Execute and
+// SelectTargets weight over this same set so streaming and non-streaming
+// selection draw from identical candidates.
+func (lb *LoadBalance) compatibleTargets(model string) []Target {
+	var compatible []Target
+	for _, t := range lb.targets {
+		p, ok := lb.lookup(t.VirtualKey)
+		if ok && p.SupportsModel(model) {
+			compatible = append(compatible, t)
 		}
-		totalWeight += w
 	}
+	return compatible
+}
 
-	if totalWeight == 0 {
+// selectFromTargets picks a target from the given slice using weighted random
+// selection. weightedPick draws from the top-level math/rand source, which is
+// safe for concurrent use, so no additional locking is required here.
+func (lb *LoadBalance) selectFromTargets(targets []Target) (Target, error) {
+	t, ok := weightedPick(targets, func(t Target) float64 {
+		return effectiveWeight(t.Weight)
+	})
+	if !ok {
 		return Target{}, fmt.Errorf("no targets available")
 	}
+	return t, nil
+}
 
-	r := rand.Float64() * totalWeight //nolint:gosec
-	cumulative := 0.0
-	for _, t := range targets {
-		w := t.Weight
-		if w <= 0 {
-			w = 1
-		}
-		cumulative += w
-		if r < cumulative {
-			return t, nil
-		}
+// SelectTargets returns the model-compatible targets rotated from a
+// weight-biased start index, so the first attempted target is chosen by weight
+// while the remainder stay available as fallbacks. Targets whose provider is
+// missing or does not support the model are excluded, matching Execute's
+// candidate set so streaming and non-streaming selection agree.
+func (lb *LoadBalance) SelectTargets(req providers.Request) ([]string, error) {
+	compatible := lb.compatibleTargets(req.Model)
+	if len(compatible) == 0 {
+		return nil, nil
 	}
-
-	// Should not happen, but return last target as safety net.
-	return targets[len(targets)-1], nil
+	startIdx := weightedStartIndex(compatible)
+	keys := make([]string, 0, len(compatible))
+	for i := 0; i < len(compatible); i++ {
+		keys = append(keys, compatible[(startIdx+i)%len(compatible)].VirtualKey)
+	}
+	return keys, nil
 }

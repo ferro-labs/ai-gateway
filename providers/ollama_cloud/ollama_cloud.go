@@ -2,20 +2,18 @@
 package ollamacloud
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"sync"
-	"time"
 
+	discov "github.com/ferro-labs/ai-gateway/internal/discovery"
 	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
 	"github.com/ferro-labs/ai-gateway/providers/core"
+	"github.com/ferro-labs/ai-gateway/providers/internal/openaicompat"
 )
 
 const (
@@ -47,6 +45,7 @@ type Provider struct {
 var (
 	_ core.Provider          = (*Provider)(nil)
 	_ core.StreamProvider    = (*Provider)(nil)
+	_ core.EmbeddingProvider = (*Provider)(nil)
 	_ core.DiscoveryProvider = (*Provider)(nil)
 )
 
@@ -62,9 +61,8 @@ func New(apiKey, baseURL string, models []string) (*Provider, error) {
 		baseURL = defaultBaseURL
 	}
 	baseURL = strings.TrimRight(baseURL, "/")
-	u, err := url.Parse(baseURL)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return nil, fmt.Errorf("ollama-cloud: invalid base URL %q: must be http or https with a host", baseURL)
+	if err := core.ValidateBaseURL(Name, baseURL); err != nil {
+		return nil, err
 	}
 
 	models = normalizeModels(models)
@@ -114,153 +112,50 @@ func (p *Provider) Models() []core.ModelInfo {
 	return core.ModelsFromList(p.name, p.SupportedModels())
 }
 
-// Complete sends a non-streaming chat request to Ollama Cloud.
-func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
-	apiReq := buildChatRequest(req, false)
-	bodyReader, _, release, err := core.JSONBodyReader(apiReq)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
-	}
-	defer release()
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/api/chat", bodyReader)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	p.setHeaders(httpReq)
-
-	httpResp, err := p.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
-	}
-	defer func() { _ = httpResp.Body.Close() }()
-
-	respBody, err := io.ReadAll(httpResp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
-	if httpResp.StatusCode != http.StatusOK {
-		return nil, apiError(httpResp.StatusCode, respBody)
-	}
-
-	var apiResp chatResponse
-	if err := json.Unmarshal(respBody, &apiResp); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
-	}
-	if apiResp.Error != "" {
-		return nil, fmt.Errorf("ollama-cloud API error: %s", apiResp.Error)
-	}
-
-	return &core.Response{
-		Object:   "chat.completion",
-		Created:  parseCreatedAt(apiResp.CreatedAt),
-		Model:    apiResp.Model,
-		Provider: p.name,
-		Choices: []core.Choice{
-			{
-				Index:        0,
-				Message:      apiResp.Message.toCore(),
-				FinishReason: apiResp.DoneReason,
-			},
+// chatParams builds the shared OpenAI-compatible chat endpoint configuration.
+// Ollama Cloud exposes an OpenAI-compatible surface at https://ollama.com/v1,
+// so chat and streaming route through the shared openaicompat helpers (which
+// forward request params directly and normalize the OpenAI response shape).
+// Embeddings stay on the native /api/embed path — see embedding.go.
+func (p *Provider) chatParams() openaicompat.ChatParams {
+	return openaicompat.ChatParams{
+		HTTPClient: p.httpClient,
+		URL:        p.baseURL + "/v1/chat/completions",
+		Provider:   p.name,
+		Label:      "ollama cloud",
+		Headers: map[string]string{
+			"Authorization": "Bearer " + p.apiKey,
+			"Content-Type":  "application/json",
 		},
-		Usage: usageFromCounts(apiResp.PromptEvalCount, apiResp.EvalCount),
-	}, nil
+	}
 }
 
-// CompleteStream sends a streaming chat request to Ollama Cloud.
+// Complete sends a non-streaming chat request to Ollama Cloud's
+// OpenAI-compatible /v1/chat/completions endpoint.
+func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
+	return openaicompat.PostChat(ctx, p.chatParams(), req)
+}
+
+// CompleteStream sends a streaming chat request to Ollama Cloud's
+// OpenAI-compatible /v1/chat/completions endpoint.
 func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan core.StreamChunk, error) {
-	apiReq := buildChatRequest(req, true)
-	bodyReader, _, release, err := core.JSONBodyReader(apiReq)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
-	}
-	defer release()
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/api/chat", bodyReader)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	p.setHeaders(httpReq)
-
-	httpResp, err := p.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
-	}
-
-	if httpResp.StatusCode != http.StatusOK {
-		defer func() { _ = httpResp.Body.Close() }()
-		respBody, _ := io.ReadAll(httpResp.Body)
-		return nil, apiError(httpResp.StatusCode, respBody)
-	}
-
-	ch := make(chan core.StreamChunk)
-	go func() {
-		defer close(ch)
-		defer func() { _ = httpResp.Body.Close() }()
-
-		scanner := bufio.NewScanner(httpResp.Body)
-		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-		for scanner.Scan() {
-			line := strings.TrimSpace(scanner.Text())
-			if line == "" {
-				continue
-			}
-
-			var apiResp chatResponse
-			if err := json.Unmarshal([]byte(line), &apiResp); err != nil {
-				ch <- core.StreamChunk{Error: fmt.Errorf("failed to unmarshal stream chunk: %w", err)}
-				return
-			}
-			if apiResp.Error != "" {
-				ch <- core.StreamChunk{Error: fmt.Errorf("ollama-cloud API error: %s", apiResp.Error)}
-				return
-			}
-
-			ch <- streamChunkFromResponse(apiResp)
-		}
-		if err := scanner.Err(); err != nil {
-			ch <- core.StreamChunk{Error: err}
-		}
-	}()
-
-	return ch, nil
+	return openaicompat.PostStream(ctx, p.chatParams(), req)
 }
 
-// DiscoverModels fetches the live Ollama Cloud model list.
+// DiscoverModels fetches the live Ollama Cloud model list from the
+// OpenAI-compatible /v1/models endpoint and caches the discovered IDs so
+// SupportsModel recognizes them.
 func (p *Provider) DiscoverModels(ctx context.Context) ([]core.ModelInfo, error) {
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, p.baseURL+"/api/tags", nil)
+	models, err := discov.DiscoverOpenAICompatibleModels(ctx, p.httpClient, p.baseURL+"/v1/models", p.apiKey, p.name)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
-
-	httpResp, err := p.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
-	}
-	defer func() { _ = httpResp.Body.Close() }()
-
-	respBody, err := io.ReadAll(httpResp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
-	if httpResp.StatusCode != http.StatusOK {
-		return nil, apiError(httpResp.StatusCode, respBody)
+		return nil, err
 	}
 
-	var tags tagsResponse
-	if err := json.Unmarshal(respBody, &tags); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal models response: %w", err)
-	}
-
-	seen := make(map[string]struct{}, len(tags.Models))
-	modelIDs := make([]string, 0, len(tags.Models))
-	models := make([]core.ModelInfo, 0, len(tags.Models))
-	for _, m := range tags.Models {
-		id := strings.TrimSpace(m.Name)
-		if id == "" {
-			id = strings.TrimSpace(m.Model)
-		}
+	seen := make(map[string]struct{}, len(models))
+	modelIDs := make([]string, 0, len(models))
+	deduped := make([]core.ModelInfo, 0, len(models))
+	for _, m := range models {
+		id := strings.TrimSpace(m.ID)
 		if id == "" {
 			continue
 		}
@@ -269,195 +164,28 @@ func (p *Provider) DiscoverModels(ctx context.Context) ([]core.ModelInfo, error)
 		}
 		seen[id] = struct{}{}
 		modelIDs = append(modelIDs, id)
-		models = append(models, core.ModelInfo{
-			ID:      id,
-			Object:  "model",
-			Created: parseCreatedAt(m.ModifiedAt),
-			OwnedBy: p.name,
-		})
+		deduped = append(deduped, m)
 	}
 
 	p.mu.Lock()
 	p.discovered = modelIDs
 	p.mu.Unlock()
 
-	return models, nil
+	return deduped, nil
 }
 
+// setHeaders applies the shared auth and content-type headers. Retained for the
+// native /api/embed embedding path — see embedding.go.
 func (p *Provider) setHeaders(req *http.Request) {
 	req.Header.Set("Authorization", "Bearer "+p.apiKey)
 	req.Header.Set("Content-Type", "application/json")
 }
 
-type chatRequest struct {
-	Model    string         `json:"model"`
-	Messages []core.Message `json:"messages"`
-	Stream   bool           `json:"stream"`
-	Options  *chatOptions   `json:"options,omitempty"`
-	Tools    []core.Tool    `json:"tools,omitempty"`
-}
-
-type chatOptions struct {
-	Temperature *float64 `json:"temperature,omitempty"`
-	TopP        *float64 `json:"top_p,omitempty"`
-	NumPredict  *int     `json:"num_predict,omitempty"`
-}
-
-type chatResponse struct {
-	Model           string        `json:"model"`
-	CreatedAt       string        `json:"created_at"`
-	Message         nativeMessage `json:"message"`
-	Done            bool          `json:"done"`
-	DoneReason      string        `json:"done_reason"`
-	PromptEvalCount *int          `json:"prompt_eval_count"`
-	EvalCount       *int          `json:"eval_count"`
-	Error           string        `json:"error"`
-}
-
-type nativeMessage struct {
-	Role      string           `json:"role,omitempty"`
-	Content   string           `json:"content,omitempty"`
-	ToolCalls []nativeToolCall `json:"tool_calls,omitempty"`
-}
-
-type nativeToolCall struct {
-	ID       string             `json:"id,omitempty"`
-	Type     string             `json:"type,omitempty"`
-	Function nativeFunctionCall `json:"function"`
-}
-
-type nativeFunctionCall struct {
-	Name      string          `json:"name"`
-	Arguments json.RawMessage `json:"arguments,omitempty"`
-}
-
-type tagsResponse struct {
-	Models []struct {
-		Name       string `json:"name"`
-		Model      string `json:"model"`
-		ModifiedAt string `json:"modified_at"`
-	} `json:"models"`
-}
-
-func buildChatRequest(req core.Request, stream bool) chatRequest {
-	var maxTokens *int
-	if req.MaxCompletionTokens != nil {
-		maxTokens = req.MaxCompletionTokens
-	} else {
-		maxTokens = req.MaxTokens
-	}
-
-	var options *chatOptions
-	if req.Temperature != nil || req.TopP != nil || maxTokens != nil {
-		options = &chatOptions{
-			Temperature: req.Temperature,
-			TopP:        req.TopP,
-			NumPredict:  maxTokens,
-		}
-	}
-
-	return chatRequest{
-		Model:    req.Model,
-		Messages: req.Messages,
-		Stream:   stream,
-		Options:  options,
-		Tools:    req.Tools,
-	}
-}
-
-func streamChunkFromResponse(apiResp chatResponse) core.StreamChunk {
-	chunk := core.StreamChunk{
-		Object:  "chat.completion.chunk",
-		Created: parseCreatedAt(apiResp.CreatedAt),
-		Model:   apiResp.Model,
-	}
-	choice := core.StreamChoice{
-		Index: 0,
-		Delta: core.MessageDelta{
-			Role:      apiResp.Message.Role,
-			Content:   apiResp.Message.Content,
-			ToolCalls: apiResp.Message.toCore().ToolCalls,
-		},
-		FinishReason: apiResp.DoneReason,
-	}
-	if apiResp.Message.Role != "" || apiResp.Message.Content != "" || len(apiResp.Message.ToolCalls) > 0 || apiResp.Done || apiResp.DoneReason != "" {
-		chunk.Choices = append(chunk.Choices, choice)
-	}
-	if apiResp.PromptEvalCount != nil || apiResp.EvalCount != nil {
-		usage := usageFromCounts(apiResp.PromptEvalCount, apiResp.EvalCount)
-		chunk.Usage = &usage
-	}
-	return chunk
-}
-
-func (m nativeMessage) toCore() core.Message {
-	msg := core.Message{
-		Role:    m.Role,
-		Content: m.Content,
-	}
-	if len(m.ToolCalls) == 0 {
-		return msg
-	}
-
-	msg.ToolCalls = make([]core.ToolCall, 0, len(m.ToolCalls))
-	for _, tc := range m.ToolCalls {
-		callType := tc.Type
-		if callType == "" {
-			callType = "function"
-		}
-		msg.ToolCalls = append(msg.ToolCalls, core.ToolCall{
-			ID:   tc.ID,
-			Type: callType,
-			Function: core.FunctionCall{
-				Name:      tc.Function.Name,
-				Arguments: rawArgumentsString(tc.Function.Arguments),
-			},
-		})
-	}
-	return msg
-}
-
-func usageFromCounts(promptEvalCount, evalCount *int) core.Usage {
-	usage := core.Usage{}
-	if promptEvalCount != nil {
-		usage.PromptTokens = *promptEvalCount
-	}
-	if evalCount != nil {
-		usage.CompletionTokens = *evalCount
-	}
-	usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
-	return usage
-}
-
-func parseCreatedAt(value string) int64 {
-	if value == "" {
-		return 0
-	}
-	t, err := time.Parse(time.RFC3339Nano, value)
-	if err != nil {
-		return 0
-	}
-	return t.Unix()
-}
-
-func rawArgumentsString(raw json.RawMessage) string {
-	if len(raw) == 0 || string(raw) == "null" {
-		return ""
-	}
-
-	var s string
-	if err := json.Unmarshal(raw, &s); err == nil {
-		return s
-	}
-
-	var compacted bytes.Buffer
-	if err := json.Compact(&compacted, raw); err == nil {
-		return compacted.String()
-	}
-	return string(raw)
-}
-
-func apiError(statusCode int, body []byte) error {
+// apiError builds a provider error from a non-2xx response, preserving resp's
+// Retry-After hint so the fallback strategy can honor it instead of guessing
+// a backoff.
+func apiError(resp *http.Response, body []byte) error {
+	statusCode := resp.StatusCode
 	msg := parseErrorMessage(body)
 	if msg == "" {
 		msg = http.StatusText(statusCode)
@@ -465,7 +193,11 @@ func apiError(statusCode int, body []byte) error {
 	if msg == "" {
 		msg = "unexpected response"
 	}
-	return fmt.Errorf("ollama-cloud API error (%d): %s", statusCode, msg)
+	return &core.HTTPStatusError{
+		StatusCode: statusCode,
+		Message:    fmt.Sprintf("ollama-cloud API error (%d): %s", statusCode, msg),
+		RetryAfter: core.ParseRetryAfter(resp.Header.Get("Retry-After")),
+	}
 }
 
 func parseErrorMessage(body []byte) string {

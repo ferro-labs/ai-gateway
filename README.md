@@ -4,9 +4,12 @@
   <a href="README.md">English</a> | <a href="README.zh-CN.md">中文</a>
 </p>
 
-<h1 align="center">
-  <img src="docs/logo.png" alt="Ferro Labs AI Gateway" height="60" align="absmiddle" /> Ferro Labs AI Gateway
-</h1>
+<table border="0" cellspacing="0" cellpadding="0"><tr>
+  <td rowspan="2"><img src="docs/logo.png" alt="Ferro Labs AI Gateway" width="64" /></td>
+  <td align="center"><h1>Ferro Labs AI Gateway</h1></td>
+</tr><tr>
+  <td align="center"><strong>Open-Source, OpenAI-Compatible LLM Gateway</strong></td>
+</tr></table>
 
 **High-performance AI gateway in Go. Route LLM requests across 30 providers via a single OpenAI-compatible API.**
 
@@ -25,11 +28,14 @@
 [![Code Scanning](https://github.com/ferro-labs/ai-gateway/actions/workflows/code-scanning.yml/badge.svg)](https://github.com/ferro-labs/ai-gateway/actions/workflows/code-scanning.yml)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg?url=https%3A%2F%2Fdeepwiki.com%2Fferro-labs%2Fai-gateway)](https://deepwiki.com/ferro-labs/ai-gateway)
 [![Artifact Hub](https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/ferro-labs)](https://artifacthub.io/packages/search?org=ferro-labs)
+[![Docs](https://img.shields.io/badge/docs-ferrolabs.ai-2ea44f)](https://docs.ferrolabs.ai)
 [![Discord](https://img.shields.io/badge/Discord-Join%20Us-5865F2?logo=discord&logoColor=white)](https://discord.gg/yCAeYvJeDV)
+
+📖 **Documentation:** [docs.ferrolabs.ai](https://docs.ferrolabs.ai)
 
 🔀 **30 providers, 2,500+ models — one API**<br/>
 ⚡ **13,925 RPS at 1,000 concurrent users**<br/>
-📦 **Single binary, zero dependencies, 32 MB base memory**
+📦 **Single static binary, no external services required, 32 MB base memory**
 
 <img src="docs/architecture.svg" alt="Ferro Labs AI Gateway Architecture" width="100%" />
 
@@ -44,7 +50,8 @@ Get from zero to first request in under 2 minutes.
 ### Option A — Binary (fastest)
 
 ```bash
-curl -fsSL https://github.com/ferro-labs/ai-gateway/releases/download/v1.0.6/ferrogw_1.0.6_linux_amd64.tar.gz | tar xz
+VER=$(curl -fsSL https://api.github.com/repos/ferro-labs/ai-gateway/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
+curl -fsSL "https://github.com/ferro-labs/ai-gateway/releases/download/${VER}/ferrogw_${VER#v}_linux_amd64.tar.gz" | tar xz
 chmod +x ferrogw
 ./ferrogw init          # generates config.yaml + MASTER_KEY
 ./ferrogw               # starts the server
@@ -129,7 +136,7 @@ curl http://localhost:8080/v1/chat/completions \
 
 ---
 
-## Why Ferro Labs
+## Why Ferro Labs AI Gateway
 
 Most AI gateways are Python proxies that crack under load or JavaScript services that eat memory. Ferro Labs AI Gateway is written in Go from the ground up for real-world throughput — a single binary that routes LLM requests with predictable latency and minimal resource usage.
 
@@ -201,6 +208,7 @@ Full methodology, raw results, and flamegraph analysis:
 
 - **8 routing strategies:** single, fallback, load balance, least latency, cost-optimized, content-based, A/B test, conditional
 - Provider failover with configurable retry policies and status code filters
+- Cost-optimized routing can explicitly fallback, skip, or allow providers with unknown catalog prices
 - Per-request model aliases (`fast → gpt-4o-mini`, `smart → claude-3-5-sonnet`)
 
 ### 🔌 Providers (30)
@@ -227,6 +235,13 @@ Full methodology, raw results, and flamegraph analysis:
 - **Rate limiting** — global RPS plus per-API-key and per-user RPM limits
 - **Budget controls** — per-API-key USD spend tracking with configurable token pricing
 - **Request logging** — structured logs with optional SQLite/PostgreSQL persistence
+
+### 🎯 Provider Capabilities
+
+- **Capability matrix** — one declarative record of which OpenAI parameters each provider forwards, translates, or cannot express
+- **`GET /v1/capabilities`** — compare providers programmatically before you route to them
+- **Strict mode** — `compatibility.on_unsupported_param: warn | drop | reject`; a parameter the provider cannot honor is no longer silently discarded
+- **Conformance-tested** — every provider is built through the same seam the gateway uses and asserted against its real upstream payload shape
 
 ### ⚡ Performance
 
@@ -278,14 +293,35 @@ Full annotated example — copy to `config.yaml` and customize:
 strategy:
   mode: fallback  # single | fallback | loadbalance | conditional
                   # least-latency | cost-optimized | content-based | ab-test
+  # cost-optimized only: fallback (default) | skip | allow
+  # unpriced_strategy: fallback
+
+# What to do when a request carries a parameter the target provider cannot express.
+# warn (default) logs and forwards; drop strips it; reject fails with a 400.
+# See GET /v1/capabilities for what each provider supports.
+compatibility:
+  on_unsupported_param: warn  # warn | drop | reject
+
+# Bounds a single non-streaming request end to end: plugin stages, the provider
+# call, and every retry and fallback attempt combined. Omit for no gateway-imposed
+# deadline (the provider clients' own timeouts still apply).
+# request_timeout: 60s
 
 # Provider targets (tried in order for fallback mode)
 targets:
   - virtual_key: openai
     retry:
       attempts: 3
+      # Defaults to 408, 429, and 5xx. A 400 or 401 fails the same way on
+      # every attempt, so it is not retried.
       on_status_codes: [429, 502, 503]
       initial_backoff_ms: 100
+    # Bound in-flight requests to this provider. Requests beyond max_concurrency
+    # wait in a bounded queue; when that fills, the target sheds with 429
+    # provider_saturated instead of piling up. Omit to leave the target unlimited.
+    concurrency:
+      max_concurrency: 32
+      queue_size: 1000
   - virtual_key: anthropic
     retry:
       attempts: 2
@@ -344,7 +380,59 @@ mcp_servers:
     timeout_seconds: 30
 ```
 
+`${VAR}` references in MCP headers, plugin config, and observability exporter config are substituted **when that component is constructed**, not when the config file is read. The config itself keeps the `${VAR}` reference for its whole life, so a secret is never written to the config-history store, never returned by `GET /admin/config`, and never restored into the database on a rollback — while the plugin, exporter, or MCP client still receives the real value.
+
+Because substitution happens at construction rather than at file load, a `${VAR}` pushed through the admin/GitOps config API is resolved exactly the same way.
+
+Only the braced form is a reference. A bare `$` is data and is preserved verbatim, so a blocked word like `$100`, a price like `costs $5`, or a password like `pa$$w0rd` survives unchanged. A `${VAR}` whose variable is undefined is an error rather than a silently blank secret or an empty guardrail rule.
+
 See [config.example.yaml](config.example.yaml) and [config.example.json](config.example.json) for the full template with all options.
+
+### Key environment variables
+
+| Variable | Purpose |
+|----------|---------|
+| `MASTER_KEY` | Single admin credential for all auth (generated by `ferrogw init`) |
+| `GATEWAY_CONFIG` | Path to config YAML/JSON |
+| `GATEWAY_ENV` | Set to `production` to enable production-mode safety guards |
+| `PORT` | Server port (default: `8080`) |
+| `ALLOW_UNAUTHENTICATED_PROXY` | Set to `true` to disable proxy-route auth (dev only; blocked when `GATEWAY_ENV=production`) |
+| `CORS_ORIGINS` | Comma-separated allowed CORS origins; cross-origin is denied when unset |
+| `TRUSTED_PROXIES` | Comma-separated CIDRs of trusted reverse proxies; `X-Forwarded-For`/`X-Real-IP` is honored only from these (default: loopback) |
+
+See [AGENTS.md](AGENTS.md) for the full environment variable reference including provider API keys and OTel settings.
+
+### Trusted proxy configuration
+
+By default the gateway only trusts `X-Forwarded-For` / `X-Real-IP` headers from loopback addresses (`127.0.0.0/8`, `::1/128`). This means per-IP rate limiting and request logs always see the real client IP — not the load balancer's IP — without being spoofable by an external caller.
+
+Set `TRUSTED_PROXIES` to the CIDR range(s) of your reverse proxy or load balancer:
+
+```bash
+# Single upstream proxy
+TRUSTED_PROXIES=10.0.0.1/32
+
+# Internal network range (e.g. AWS VPC, GCP VPC, k8s node CIDR)
+TRUSTED_PROXIES=10.0.0.0/8
+
+# Multiple ranges (comma-separated)
+TRUSTED_PROXIES=10.0.0.0/8,172.16.0.0/12
+```
+
+**Common deployment patterns:**
+
+| Deployment | Recommended value |
+|---|---|
+| Local dev (no proxy) | _(leave unset — loopback default)_ |
+| Docker Compose with nginx | `172.16.0.0/12` or the bridge subnet |
+| AWS ALB / NLB | Your VPC CIDR (e.g. `10.0.0.0/8`) |
+| GCP Load Balancer | `10.0.0.0/8` |
+| Kubernetes cluster-internal | Your pod/node CIDR |
+| Cloudflare Tunnel | Cloudflare's published IP ranges |
+
+> **Important:** Configure your proxy to **replace** `X-Forwarded-For` (not append to it). If the proxy appends, the leftmost entry — which the gateway trusts — can still be forged by a client.
+
+When a request arrives from an IP outside the trusted CIDR list, the gateway ignores all forwarded headers and uses the raw TCP peer IP. This prevents clients from injecting a fake source IP to bypass per-IP rate limits.
 
 ---
 
@@ -372,7 +460,7 @@ observability:
     service_name: ferrogw
     sample_ratio: 1.0
     privacy_level: metadata    # none | metadata | full  (see below)
-    shutdown_grace: 10s        # max time to drain OTel exports on shutdown
+    shutdown_grace: 10s        # per OTel shutdown stage; total can take up to 2x this value
     # headers:                        # OTLP export headers for authenticated backends
     #   dd-api-key: "${DATADOG_API_KEY}"  # values support ${ENV_VAR} interpolation
 
@@ -386,7 +474,7 @@ observability:
 
 Standard `OTEL_*` environment variables (e.g. `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_TRACES_SAMPLER`) always take precedence over the config file — this matches the OTel SDK convention and is required for predictable container deployments.
 
-`observability.tracing.headers` lets you send OTLP traces to authenticated managed backends (Datadog, New Relic, Honeycomb, Grafana Cloud) by setting vendor-specific headers such as API keys. Values support `${ENV_VAR}` interpolation so secrets are never stored literally in the config file. The standard `OTEL_EXPORTER_OTLP_HEADERS` environment variable also applies per OTel convention.
+`observability.tracing.headers` lets you send OTLP traces to authenticated managed backends (Datadog, New Relic, Honeycomb, Grafana Cloud) by setting vendor-specific headers such as API keys. Values support `${ENV_VAR}` interpolation so secrets are never stored literally in the config file. The standard `OTEL_EXPORTER_OTLP_HEADERS` environment variable also applies per OTel convention. Observability exporter `config` blocks loaded from YAML/JSON also support `${VAR}` interpolation.
 
 The **endpoint scheme selects transport security**: an `https://` endpoint uses TLS, while an `http://` endpoint or a bare `host:port` (e.g. `localhost:4317`) connects in plaintext. Managed backends require the `https://` form.
 
@@ -507,7 +595,8 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up
 **Prod** (pin to a release tag — never use `latest` in production):
 
 ```bash
-IMAGE_TAG=v1.0.6 CORS_ORIGINS=https://your-domain.com \
+# Replace IMAGE_TAG with the latest release tag before running.
+IMAGE_TAG=v1.1.7 CORS_ORIGINS=https://your-domain.com \
   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 ```
 

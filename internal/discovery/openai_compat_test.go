@@ -5,6 +5,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
+
+	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
 func TestDiscoverOpenAICompatibleModels_Success(t *testing.T) {
@@ -82,5 +85,112 @@ func TestDiscoverOpenAICompatibleModels_BadURL(t *testing.T) {
 	_, err := DiscoverOpenAICompatibleModels(context.Background(), http.DefaultClient, "://bad-url", "", "p")
 	if err == nil {
 		t.Fatal("expected error for bad URL, got nil")
+	}
+}
+
+func TestDiscoverModelsWithHeaders_WrappedBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"m-1","owned_by":"acme"},{"id":"m-2"}]}`))
+	}))
+	defer srv.Close()
+
+	models, err := DiscoverModelsWithHeaders(context.Background(), srv.Client(), srv.URL, nil, "fallback")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(models) != 2 {
+		t.Fatalf("expected 2 models, got %d", len(models))
+	}
+	if models[0].ID != "m-1" || models[0].OwnedBy != "acme" {
+		t.Errorf("unexpected model[0]: %+v", models[0])
+	}
+	if models[1].OwnedBy != "fallback" {
+		t.Errorf("model[1] owned_by = %q, want fallback", models[1].OwnedBy)
+	}
+}
+
+func TestDiscoverModelsWithHeaders_BareArrayBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`[{"id":"bare-1"},{"id":"bare-2","owned_by":"x"}]`))
+	}))
+	defer srv.Close()
+
+	models, err := DiscoverModelsWithHeaders(context.Background(), srv.Client(), srv.URL, nil, "fallback")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(models) != 2 {
+		t.Fatalf("expected 2 models, got %d", len(models))
+	}
+	if models[0].ID != "bare-1" || models[0].OwnedBy != "fallback" {
+		t.Errorf("unexpected model[0]: %+v", models[0])
+	}
+	if models[1].ID != "bare-2" || models[1].OwnedBy != "x" {
+		t.Errorf("unexpected model[1]: %+v", models[1])
+	}
+}
+
+func TestDiscoverModelsWithHeaders_SendsCustomHeaders(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("x-api-key") != "secret" {
+			t.Errorf("expected x-api-key 'secret', got %q", r.Header.Get("x-api-key"))
+		}
+		if r.Header.Get("anthropic-version") != "2023-06-01" {
+			t.Errorf("expected anthropic-version '2023-06-01', got %q", r.Header.Get("anthropic-version"))
+		}
+		if r.Header.Get("Authorization") != "" {
+			t.Errorf("expected no Authorization header, got %q", r.Header.Get("Authorization"))
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"data":[{"id":"m-1"}]}`))
+	}))
+	defer srv.Close()
+
+	headers := map[string]string{"x-api-key": "secret", "anthropic-version": "2023-06-01"}
+	models, err := DiscoverModelsWithHeaders(context.Background(), srv.Client(), srv.URL, headers, "p")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(models) != 1 || models[0].ID != "m-1" {
+		t.Errorf("unexpected models: %+v", models)
+	}
+}
+
+func TestDiscoverModelsWithHeaders_Non200Status(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte("forbidden"))
+	}))
+	defer srv.Close()
+
+	_, err := DiscoverModelsWithHeaders(context.Background(), srv.Client(), srv.URL, nil, "p")
+	if err == nil {
+		t.Fatal("expected error for non-200 status, got nil")
+	}
+}
+
+// TestDiscoverOpenAICompatibleModels_PreservesRetryAfter verifies a 429
+// response's Retry-After header survives discovery errors as a typed
+// core.HTTPStatusError so the fallback strategy can honor the provider's own
+// backoff hint instead of guessing.
+func TestDiscoverOpenAICompatibleModels_PreservesRetryAfter(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "5")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"rate limited"}}`))
+	}))
+	defer srv.Close()
+
+	_, err := DiscoverOpenAICompatibleModels(context.Background(), srv.Client(), srv.URL, "test-key", "test-provider")
+	if err == nil {
+		t.Fatal("expected error for 429 status, got nil")
+	}
+	if got := core.ParseStatusCode(err); got != http.StatusTooManyRequests {
+		t.Errorf("core.ParseStatusCode(err) = %d, want 429", got)
+	}
+	if got := core.RetryAfterFrom(err); got != 5*time.Second {
+		t.Errorf("core.RetryAfterFrom(err) = %v, want 5s", got)
 	}
 }

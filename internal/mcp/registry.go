@@ -234,7 +234,7 @@ func (r *Registry) AllTools() []Tool {
 	defer r.mu.RUnlock()
 
 	seen := make(map[string]bool, len(r.toolMap))
-	var tools []Tool
+	tools := make([]Tool, 0, len(r.toolMap))
 	for _, name := range r.regOrder {
 		entry, ok := r.servers[name]
 		if !ok || !entry.ready {

@@ -3,6 +3,7 @@ package databricks
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -184,7 +185,7 @@ func TestDatabricksProvider_Embed_StringSliceInput_MockHTTP(t *testing.T) {
 }
 
 func TestDatabricksProvider_Embed_InterfaceSliceInput_MockHTTP(t *testing.T) {
-	testDatabricksEmbedSuccess(t, []interface{}{"hello", "world"})
+	testDatabricksEmbedSuccess(t, []any{"hello", "world"})
 }
 
 func TestDatabricksProvider_Embed_InvalidInput(t *testing.T) {
@@ -198,19 +199,19 @@ func TestDatabricksProvider_Embed_InvalidInput(t *testing.T) {
 	p, _ := New("test-key", srv.URL)
 	badInputs := []struct {
 		name  string
-		input interface{}
+		input any
 	}{
 		{"nil", nil},
 		{"integer", 42},
 		{"empty-string", ""},
 		{"blank-string", "  "},
 		{"empty-string-slice", []string{}},
-		{"empty-interface-slice", []interface{}{}},
+		{"empty-interface-slice", []any{}},
 		{"empty-string-slice-member", []string{"ok", ""}},
 		{"blank-string-slice-member", []string{"ok", "  "}},
-		{"empty-interface-slice-member", []interface{}{"ok", ""}},
-		{"blank-interface-slice-member", []interface{}{"ok", "  "}},
-		{"non-string-array-member", []interface{}{"ok", 42}},
+		{"empty-interface-slice-member", []any{"ok", ""}},
+		{"blank-interface-slice-member", []any{"ok", "  "}},
+		{"non-string-array-member", []any{"ok", 42}},
 	}
 	for _, tc := range badInputs {
 		t.Run(tc.name, func(t *testing.T) {
@@ -252,7 +253,7 @@ func TestDatabricksProvider_Embed_UpstreamError(t *testing.T) {
 	}
 }
 
-func testDatabricksEmbedSuccess(t *testing.T, input interface{}) {
+func testDatabricksEmbedSuccess(t *testing.T, input any) {
 	t.Helper()
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -269,7 +270,7 @@ func testDatabricksEmbedSuccess(t *testing.T, input interface{}) {
 			t.Errorf("Content-Type = %q, want application/json", got)
 		}
 
-		var body map[string]interface{}
+		var body map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatalf("failed to decode request body: %v", err)
 		}
@@ -312,7 +313,7 @@ func testDatabricksEmbedSuccess(t *testing.T, input interface{}) {
 	}
 }
 
-func assertDatabricksEmbeddingInput(t *testing.T, got interface{}, want interface{}) {
+func assertDatabricksEmbeddingInput(t *testing.T, got any, want any) {
 	t.Helper()
 
 	switch w := want.(type) {
@@ -321,7 +322,7 @@ func assertDatabricksEmbeddingInput(t *testing.T, got interface{}, want interfac
 			t.Errorf("input = %#v, want %q", got, w)
 		}
 	case []string:
-		gotSlice, ok := got.([]interface{})
+		gotSlice, ok := got.([]any)
 		if !ok {
 			t.Fatalf("input = %T, want JSON array", got)
 		}
@@ -333,8 +334,8 @@ func assertDatabricksEmbeddingInput(t *testing.T, got interface{}, want interfac
 				t.Errorf("input[%d] = %#v, want %q", i, gotSlice[i], w[i])
 			}
 		}
-	case []interface{}:
-		gotSlice, ok := got.([]interface{})
+	case []any:
+		gotSlice, ok := got.([]any)
 		if !ok {
 			t.Fatalf("input = %T, want JSON array", got)
 		}
@@ -343,5 +344,95 @@ func assertDatabricksEmbeddingInput(t *testing.T, got interface{}, want interfac
 		}
 	default:
 		t.Fatalf("unsupported expected input type %T", want)
+	}
+}
+
+func TestDatabricks_CompleteErrorPath(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"error":{"message":"endpoint overloaded"}}`)
+	}))
+	defer srv.Close()
+
+	p, err := New("test-key", srv.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_, err = p.Complete(context.Background(), core.Request{
+		Model:    "databricks-claude-sonnet-4-5",
+		Messages: []core.Message{{Role: core.RoleUser, Content: "hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected error for 429")
+	}
+	if !strings.Contains(err.Error(), "endpoint overloaded") || !strings.Contains(err.Error(), "429") {
+		t.Fatalf("error = %v, want status + message", err)
+	}
+}
+
+func TestDatabricks_CompleteStreamErrorPath(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = io.WriteString(w, `{"error":{"message":"boom"}}`)
+	}))
+	defer srv.Close()
+
+	p, err := New("test-key", srv.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_, err = p.CompleteStream(context.Background(), core.Request{
+		Model:    "databricks-claude-sonnet-4-5",
+		Messages: []core.Message{{Role: core.RoleUser, Content: "hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected error for 500")
+	}
+	if !strings.Contains(err.Error(), "boom") || !strings.Contains(err.Error(), "500") {
+		t.Fatalf("error = %v, want status + message", err)
+	}
+}
+
+func TestDatabricks_NewRejectsInvalidBaseURL(t *testing.T) {
+	if _, err := New("k", "://bad"); err == nil {
+		t.Fatal("New accepted an invalid base URL")
+	}
+}
+
+// TestDatabricks_EmbedErrorPath verifies a valid Embed request whose upstream
+// returns a non-200 surfaces the shared core.APIError behavior through
+// openaicompat.PostEmbeddings (input-validation errors are covered separately).
+func TestDatabricks_EmbedErrorPath(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"error":{"message":"embed overloaded"}}`)
+	}))
+	defer srv.Close()
+
+	p, err := New("test-key", srv.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_, err = p.Embed(context.Background(), core.EmbeddingRequest{
+		Model: "databricks-bge-large-en",
+		Input: "hello",
+	})
+	if err == nil {
+		t.Fatal("expected error for 429")
+	}
+	if !strings.Contains(err.Error(), "embed overloaded") || !strings.Contains(err.Error(), "429") {
+		t.Fatalf("error = %v, want status + upstream message", err)
+	}
+}
+
+// TestDatabricks_NewTrimsWhitespaceBeforeValidating verifies a whitespace-padded
+// base URL (common from env/secrets) is trimmed before validation, not rejected.
+func TestDatabricks_NewTrimsWhitespaceBeforeValidating(t *testing.T) {
+	p, err := New("k", "  https://demo.databricks.com  ")
+	if err != nil {
+		t.Fatalf("New rejected a whitespace-padded valid URL: %v", err)
+	}
+	if !strings.HasPrefix(p.BaseURL(), "https://demo.databricks.com") {
+		t.Errorf("BaseURL = %q, want trimmed", p.BaseURL())
 	}
 }

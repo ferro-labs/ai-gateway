@@ -9,9 +9,18 @@
 // configuration when the plugin is registered at both request lifecycle stages:
 //
 //   - before_request: checks whether the API key has remaining budget;
-//     rejects the request with HTTP 429 if the limit is exceeded.
-//   - after_request:  records the cost of the completed request so that
-//     future before_request checks see up-to-date spend.
+//     rejects the request with HTTP 429 if the committed spend is at or over
+//     the limit. This is a read-only SOFT-cap check (no reservation).
+//   - after_request:  records the cost of the completed request via an atomic
+//     increment so that future before_request checks see up-to-date spend.
+//
+// # Soft cap
+//
+// The limit is a SOFT cap: a bounded number of concurrently in-flight requests
+// for the same key may all pass the check and collectively exceed the limit by
+// their actual (post-hoc) costs. A hard cap via pre-authorization/reservation
+// is intentionally out of scope — see checkBudget for the rationale (no
+// reservation means no leak and no false concurrent rejection).
 //
 // # Configuration
 //
@@ -49,7 +58,9 @@ import (
 	"math"
 	"sync"
 
+	"github.com/ferro-labs/ai-gateway/internal/plugins/plugincfg"
 	"github.com/ferro-labs/ai-gateway/plugin"
+	"github.com/ferro-labs/ai-gateway/providers"
 )
 
 func init() {
@@ -64,22 +75,19 @@ const defaultMaxKeys = 10_000
 // globalStores is the process-level registry of spend stores, keyed by store_id.
 var globalStores sync.Map // map[string]*spendStore
 
-// spendStore accumulates per-key USD spend with an optional key count cap.
+// spendStore accumulates per-key committed USD spend with an optional key
+// count cap. All access is serialized through mu so that the read in
+// checkBudget and the read-modify-write in add never interleave.
 type spendStore struct {
 	mu      sync.Mutex
-	spend   map[string]float64 // api_key -> accumulated USD
+	spend   map[string]float64 // api_key -> committed USD
 	maxKeys int                // 0 = unlimited
 }
 
-// add records usd worth of spend for key.
-// When a new key would exceed maxKeys, the key with the minimum accumulated
-// spend is evicted first to stay within the cap.
-func (s *spendStore) add(key string, usd float64) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	_, exists := s.spend[key]
-	if !exists && s.maxKeys > 0 && len(s.spend) >= s.maxKeys {
-		// Evict the key with the lowest accumulated spend.
+// evictMinLocked removes the key with the lowest committed spend to make
+// room for a new key.  Must be called with s.mu held.
+func (s *spendStore) evictMinLocked(newKey string) {
+	if _, exists := s.spend[newKey]; !exists && s.maxKeys > 0 && len(s.spend) >= s.maxKeys {
 		minKey, minVal := "", math.MaxFloat64
 		for k, v := range s.spend {
 			if v < minVal {
@@ -90,6 +98,15 @@ func (s *spendStore) add(key string, usd float64) {
 			delete(s.spend, minKey)
 		}
 	}
+}
+
+// add records usd worth of committed spend for key as a single atomic
+// read-modify-write under the store mutex. Concurrent completions for the
+// same key therefore never lose an increment (no lost-update race).
+func (s *spendStore) add(key string, usd float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.evictMinLocked(key)
 	s.spend[key] += usd
 }
 
@@ -99,14 +116,14 @@ func (s *spendStore) get(key string) float64 {
 	return s.spend[key]
 }
 
-// reset removes the spend record for a single key.
+// reset removes the committed spend record for a single key.
 func (s *spendStore) reset(key string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.spend, key)
 }
 
-// resetAll clears all spend records in the store.
+// resetAll clears all committed spend records in the store.
 func (s *spendStore) resetAll() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -114,8 +131,11 @@ func (s *spendStore) resetAll() {
 }
 
 func getStore(id string, maxKeys int) *spendStore {
-	v, _ := globalStores.LoadOrStore(id, &spendStore{spend: make(map[string]float64), maxKeys: maxKeys})
-	return v.(*spendStore) //nolint:forcetypeassert
+	v, _ := globalStores.LoadOrStore(id, &spendStore{
+		spend:   make(map[string]float64),
+		maxKeys: maxKeys,
+	})
+	return v.(*spendStore) //nolint:forcetypeassert // globalStores only ever holds *spendStore values
 }
 
 // ResetStoreKey removes the accumulated spend for apiKey from the named store.
@@ -125,7 +145,7 @@ func ResetStoreKey(storeID, apiKey string) {
 	if !ok {
 		return
 	}
-	v.(*spendStore).reset(apiKey) //nolint:forcetypeassert
+	v.(*spendStore).reset(apiKey) //nolint:forcetypeassert // globalStores only ever holds *spendStore values
 }
 
 // ResetStore clears all accumulated spend for every key in the named store.
@@ -134,7 +154,7 @@ func ResetStore(storeID string) {
 	if !ok {
 		return
 	}
-	v.(*spendStore).resetAll() //nolint:forcetypeassert
+	v.(*spendStore).resetAll() //nolint:forcetypeassert // globalStores only ever holds *spendStore values
 }
 
 // Plugin enforces per-API-key USD spend limits.
@@ -158,14 +178,14 @@ func (p *Plugin) Name() string { return "budget" }
 func (p *Plugin) Type() plugin.PluginType { return plugin.TypeRateLimit }
 
 // Init reads the plugin configuration.
-func (p *Plugin) Init(config map[string]interface{}) error {
+func (p *Plugin) Init(config map[string]any) error {
 	p.storeID = "default"
 	if v, ok := config["store_id"].(string); ok && v != "" {
 		p.storeID = v
 	}
 
 	if v, ok := config["spend_limit_usd"]; ok {
-		f, err := toFloat64(v)
+		f, err := plugincfg.ToFloat64(v)
 		if err != nil {
 			return fmt.Errorf("budget: spend_limit_usd: %w", err)
 		}
@@ -176,7 +196,7 @@ func (p *Plugin) Init(config map[string]interface{}) error {
 	}
 
 	if v, ok := config["input_per_m_tokens"]; ok {
-		f, err := toFloat64(v)
+		f, err := plugincfg.ToFloat64(v)
 		if err != nil {
 			return fmt.Errorf("budget: input_per_m_tokens: %w", err)
 		}
@@ -184,7 +204,7 @@ func (p *Plugin) Init(config map[string]interface{}) error {
 	}
 
 	if v, ok := config["output_per_m_tokens"]; ok {
-		f, err := toFloat64(v)
+		f, err := plugincfg.ToFloat64(v)
 		if err != nil {
 			return fmt.Errorf("budget: output_per_m_tokens: %w", err)
 		}
@@ -193,7 +213,7 @@ func (p *Plugin) Init(config map[string]interface{}) error {
 
 	maxKeys := defaultMaxKeys
 	if v, ok := config["max_keys"]; ok {
-		n, err := toFloat64(v)
+		n, err := plugincfg.ToFloat64(v)
 		if err != nil {
 			return fmt.Errorf("budget: max_keys: %w", err)
 		}
@@ -225,16 +245,64 @@ func (p *Plugin) Execute(_ context.Context, pctx *plugin.Context) error {
 		return nil
 	}
 
-	if pctx.Response == nil {
+	if !requestCompleted(pctx) {
 		// before_request stage: check accumulated spend.
 		return p.checkBudget(pctx, key)
 	}
 
-	// after_request stage: record cost.
+	// after_request stage: record cost from the completed request's usage.
 	p.recordCost(pctx, key)
 	return nil
 }
 
+// requestCompleted reports whether Execute is running in the after_request
+// stage. Chat sets the typed Response; non-chat surfaces (embeddings, images)
+// set Metadata["completed"]. The explicit marker is required because image
+// responses carry no token usage, so completion cannot be inferred from usage
+// presence — doing so would re-run the budget gate on a completed image and
+// could reject an already-billed response under concurrent spend.
+func requestCompleted(pctx *plugin.Context) bool {
+	if pctx.Response != nil {
+		return true
+	}
+	completed, _ := pctx.Metadata["completed"].(bool)
+	return completed
+}
+
+// usageFromContext returns the completed request's token usage — from the chat
+// Response or, for non-chat surfaces, Metadata["usage"] (the sanctioned additive
+// channel for the frozen plugin seam). Image generation reports no usage, so ok
+// is false and the request is gated but not costed.
+func usageFromContext(pctx *plugin.Context) (providers.Usage, bool) {
+	if pctx.Response != nil {
+		return pctx.Response.Usage, true
+	}
+	if u, ok := pctx.Metadata["usage"].(providers.Usage); ok {
+		return u, true
+	}
+	return providers.Usage{}, false
+}
+
+// Close releases plugin resources.
+func (p *Plugin) Close() error { return nil }
+
+// checkBudget is a read-only soft-cap check.
+//
+// # Soft cap semantics
+//
+// This plugin enforces a SOFT spend cap. The before_request check only reads
+// the already-committed spend for the key; it places no reservation. A bounded
+// number of requests for the same key may be in flight simultaneously, all
+// observing a committed spend below the limit, and may collectively push the
+// committed total past the limit by their actual (post-hoc) costs once each
+// completes. The overshoot is bounded by the number of concurrently in-flight
+// requests times their per-request cost — it is not unbounded.
+//
+// A HARD cap (pre-authorizing/reserving the maximum possible cost before the
+// upstream call) is intentionally out of scope for this patch: reservations
+// leak whenever a request errors, is cancelled, trips the circuit breaker, or
+// is rejected, which permanently pins a key at its cap. With no reservation
+// there is no leak and no false rejection of concurrent same-key requests.
 func (p *Plugin) checkBudget(pctx *plugin.Context, key string) error {
 	if p.spendLimitUSD <= 0 {
 		return nil // unlimited
@@ -243,31 +311,22 @@ func (p *Plugin) checkBudget(pctx *plugin.Context, key string) error {
 	if current >= p.spendLimitUSD {
 		pctx.Reject = true
 		pctx.Reason = fmt.Sprintf("budget exceeded: spent $%.4f of $%.2f limit", current, p.spendLimitUSD)
-		return fmt.Errorf("budget exceeded for api key")
+		return nil
 	}
 	return nil
 }
 
+// recordCost calculates the actual USD cost from token usage and adds it to
+// the store via a single atomic read-modify-write, so concurrent completions
+// for the same key never lose an increment.
 func (p *Plugin) recordCost(pctx *plugin.Context, key string) {
-	if pctx.Response == nil {
+	usage, ok := usageFromContext(pctx)
+	if !ok {
 		return
 	}
-	usage := pctx.Response.Usage
-	cost := (float64(usage.PromptTokens)/1_000_000.0)*p.inputPerMTokens +
+	actual := (float64(usage.PromptTokens)/1_000_000.0)*p.inputPerMTokens +
 		(float64(usage.CompletionTokens)/1_000_000.0)*p.outputPerMTokens
-	if cost > 0 {
-		p.store.add(key, cost)
-	}
-}
-
-// toFloat64 converts an interface{} value (float64 or int) to float64.
-func toFloat64(v interface{}) (float64, error) {
-	switch val := v.(type) {
-	case float64:
-		return val, nil
-	case int:
-		return float64(val), nil
-	default:
-		return 0, fmt.Errorf("must be a number, got %T", v)
+	if actual > 0 {
+		p.store.add(key, actual)
 	}
 }

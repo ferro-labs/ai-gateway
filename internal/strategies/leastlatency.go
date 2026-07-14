@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"sort"
 	"time"
 
 	"github.com/ferro-labs/ai-gateway/internal/latency"
@@ -43,10 +44,11 @@ func (l *LeastLatency) Execute(ctx context.Context, req providers.Request) (*pro
 		if !ok || !p.SupportsModel(req.Model) {
 			continue
 		}
+		p50, hasSeen := l.tracker.Stats(t.VirtualKey)
 		candidates = append(candidates, candidate{
 			target:  t,
-			p50:     l.tracker.P50(t.VirtualKey),
-			hasSeen: l.tracker.HasSamples(t.VirtualKey),
+			p50:     p50,
+			hasSeen: hasSeen,
 		})
 	}
 
@@ -66,13 +68,8 @@ func (l *LeastLatency) Execute(ctx context.Context, req providers.Request) (*pro
 	if len(unseen) > 0 {
 		// Round-robin through unseen providers to gather latency samples for each
 		// before settling on the best-known option.
-		pick := unseen[rand.Intn(len(unseen))] //nolint:gosec
-		p, _ := l.lookup(pick.target.VirtualKey)
-		resp, err := p.Complete(ctx, req)
-		if err != nil {
-			return nil, err
-		}
-		return responseWithProvider(resp, pick.target.VirtualKey), nil
+		pick := unseen[rand.Intn(len(unseen))] //nolint:gosec // G404: math/rand is fine for cold-start provider sampling, not security-sensitive
+		return dispatch(ctx, l.lookup, pick.target, req, "least latency based routing: provider not found")
 	}
 
 	// All providers have been sampled — pick the one with the lowest p50.
@@ -84,10 +81,55 @@ func (l *LeastLatency) Execute(ctx context.Context, req providers.Request) (*pro
 		}
 	}
 
-	p, _ := l.lookup(best.target.VirtualKey)
-	resp, err := p.Complete(ctx, req)
-	if err != nil {
-		return nil, err
+	return dispatch(ctx, l.lookup, best.target, req, "least latency based routing: provider not found")
+}
+
+// latencyOrderCandidate holds a streaming-capable target with its observed p50.
+type latencyOrderCandidate struct {
+	key        string
+	p50        time.Duration
+	hasSamples bool
+}
+
+// SelectTargets orders streaming-capable targets by observed p50 latency:
+// unseen providers (no samples yet) are shuffled to the front so cold-start
+// traffic profiles each of them, followed by sampled providers ascending by
+// p50. Remaining targets are appended as fallbacks. When no target is a
+// streaming candidate the declared target order is returned unchanged.
+func (l *LeastLatency) SelectTargets(req providers.Request) ([]string, error) {
+	var unseen, sampled []latencyOrderCandidate
+	for _, t := range l.targets {
+		if !streamCandidate(l.lookup, t.VirtualKey, req.Model) {
+			continue
+		}
+		p50, hasSamples := l.tracker.Stats(t.VirtualKey)
+		candidate := latencyOrderCandidate{key: t.VirtualKey, p50: p50, hasSamples: hasSamples}
+		if hasSamples {
+			sampled = append(sampled, candidate)
+		} else {
+			unseen = append(unseen, candidate)
+		}
 	}
-	return responseWithProvider(resp, best.target.VirtualKey), nil
+
+	if len(unseen) == 0 && len(sampled) == 0 {
+		return targetKeys(l.targets), nil
+	}
+
+	if len(unseen) > 1 {
+		rand.Shuffle(len(unseen), func(i, j int) {
+			unseen[i], unseen[j] = unseen[j], unseen[i]
+		})
+	}
+	sort.SliceStable(sampled, func(i, j int) bool {
+		return sampled[i].p50 < sampled[j].p50
+	})
+
+	keys := make([]string, 0, len(l.targets))
+	for _, candidate := range unseen {
+		keys = appendUniqueKey(keys, candidate.key)
+	}
+	for _, candidate := range sampled {
+		keys = appendUniqueKey(keys, candidate.key)
+	}
+	return appendRemainingTargetKeys(keys, l.targets), nil
 }

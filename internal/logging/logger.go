@@ -81,6 +81,11 @@ func Enabled(ctx context.Context, level slog.Level) bool {
 	return Logger.Enabled(ctx, level)
 }
 
+// RequestIDHeader carries the request's trace ID on the way in and back out.
+// Middleware sets it on the response; middleware.RecoverJSON reads it back off
+// because it runs above the layer that puts the trace ID on the context.
+const RequestIDHeader = "X-Request-ID"
+
 // Middleware injects a trace ID into every request context and echoes it in
 // the X-Request-ID response header. Resolution precedence:
 //  1. A trace ID already present on the request context (e.g. seeded by
@@ -95,13 +100,13 @@ func Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		traceID := TraceIDFromContext(r.Context())
 		if traceID == "" {
-			traceID = r.Header.Get("X-Request-ID")
+			traceID = r.Header.Get(RequestIDHeader)
 		}
 		if traceID == "" {
 			traceID = NewTraceID()
 		}
 		ctx := WithTraceID(r.Context(), traceID)
-		w.Header().Set("X-Request-ID", traceID)
+		w.Header().Set(RequestIDHeader, traceID)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

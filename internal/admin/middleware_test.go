@@ -1,6 +1,8 @@
 package admin
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -8,13 +10,13 @@ import (
 
 func TestAuthMiddleware_ValidKey(t *testing.T) {
 	store := NewKeyStore()
-	created, _ := store.Create("valid", nil, nil)
+	created, _ := store.Create(context.Background(), "valid", nil, nil)
 
 	handler := AuthMiddleware(store, "")(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 	req.Header.Set("Authorization", "Bearer "+created.Key)
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
@@ -31,7 +33,7 @@ func TestAuthMiddleware_NoAuthHeader(t *testing.T) {
 		t.Error("handler should not be called")
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 
@@ -47,7 +49,7 @@ func TestAuthMiddleware_InvalidKey(t *testing.T) {
 		t.Error("handler should not be called")
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 	req.Header.Set("Authorization", "Bearer gw-invalid-key")
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
@@ -59,14 +61,14 @@ func TestAuthMiddleware_InvalidKey(t *testing.T) {
 
 func TestAuthMiddleware_RevokedKey(t *testing.T) {
 	store := NewKeyStore()
-	created, _ := store.Create("will-revoke", nil, nil)
-	_ = store.Revoke(created.ID)
+	created, _ := store.Create(context.Background(), "will-revoke", nil, nil)
+	_ = store.Revoke(context.Background(), created.ID)
 
 	handler := AuthMiddleware(store, "")(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		t.Error("handler should not be called")
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 	req.Header.Set("Authorization", "Bearer "+created.Key)
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
@@ -91,7 +93,7 @@ func TestAuthMiddleware_BootstrapKey(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 	req.Header.Set("Authorization", "Bearer bootstrap-secret")
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
@@ -109,7 +111,7 @@ func TestAuthMiddleware_BootstrapKeyMismatch(t *testing.T) {
 		t.Error("handler should not be called")
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 	req.Header.Set("Authorization", "Bearer wrong-secret")
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
@@ -134,7 +136,7 @@ func TestAuthMiddleware_BootstrapReadOnlyKey(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 	req.Header.Set("Authorization", "Bearer readonly-secret")
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
@@ -152,7 +154,7 @@ func TestAuthMiddleware_BootstrapReadOnlyRequiresScope(t *testing.T) {
 		t.Error("handler should not be called")
 	})))
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 	req.Header.Set("Authorization", "Bearer readonly-secret")
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
@@ -171,7 +173,7 @@ func TestAuthMiddleware_BootstrapDisabled(t *testing.T) {
 		t.Error("handler should not be called")
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 	req.Header.Set("Authorization", "Bearer bootstrap-secret")
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
@@ -184,13 +186,13 @@ func TestAuthMiddleware_BootstrapDisabled(t *testing.T) {
 func TestAuthMiddleware_BootstrapOnlyWhenStoreEmpty(t *testing.T) {
 	t.Setenv("ADMIN_BOOTSTRAP_KEY", "bootstrap-secret")
 	store := NewKeyStore()
-	_, _ = store.Create("existing-key", []string{ScopeAdmin}, nil)
+	_, _ = store.Create(context.Background(), "existing-key", []string{ScopeAdmin}, nil)
 
 	handler := AuthMiddleware(store, "")(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		t.Error("handler should not be called")
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 	req.Header.Set("Authorization", "Bearer bootstrap-secret")
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
@@ -213,7 +215,7 @@ func TestAuthMiddleware_MasterKey(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/admin/keys", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/admin/keys", nil)
 	req.Header.Set("Authorization", "Bearer test-master-key")
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
@@ -229,7 +231,7 @@ func TestAuthMiddleware_MasterKey_WrongKey(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/admin/keys", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/admin/keys", nil)
 	req.Header.Set("Authorization", "Bearer wrong-key")
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
@@ -246,7 +248,7 @@ func TestAuthMiddleware_MasterKey_Empty(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/admin/keys", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/admin/keys", nil)
 	req.Header.Set("Authorization", "Bearer some-key")
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
@@ -254,5 +256,35 @@ func TestAuthMiddleware_MasterKey_Empty(t *testing.T) {
 	// No master key, no stored keys → 401.
 	if rr.Code != http.StatusUnauthorized {
 		t.Errorf("expected 401 with no master key and no stored keys, got %d", rr.Code)
+	}
+}
+
+// unavailableStore stands in for a key store whose backing database cannot be
+// reached.
+type unavailableStore struct {
+	*KeyStore
+}
+
+func (unavailableStore) IsEmpty(context.Context) (bool, error) {
+	return false, errors.New("database unavailable")
+}
+
+// Bootstrap credentials are only valid against a genuinely empty store. When
+// the store cannot answer, the middleware must treat it as populated: an outage
+// must not re-open a credential that exists to seed a fresh deployment.
+func TestAuthMiddleware_BootstrapRejectedWhenStoreCannotAnswer(t *testing.T) {
+	t.Setenv("ADMIN_BOOTSTRAP_KEY", "bootstrap-secret")
+
+	handler := AuthMiddleware(unavailableStore{NewKeyStore()}, "")(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		t.Error("handler should not be called")
+	}))
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer bootstrap-secret")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("got status %d, want %d", rr.Code, http.StatusUnauthorized)
 	}
 }

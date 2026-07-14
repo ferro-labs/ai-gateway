@@ -1,20 +1,25 @@
 // Package models provides the model catalog — a structured map of every
 // supported model's pricing, capabilities, and lifecycle metadata.
 //
-// The catalog is loaded once at gateway startup from a remote URL with an
-// embedded backup as fallback. Cost calculation via [Calculate] is performed
-// synchronously after the upstream provider responds, before the gateway
-// publishes its completion event.
+// The catalog is loaded from a remote URL with an embedded backup as fallback.
+// Cost calculation via [Calculate] is performed synchronously after the upstream
+// provider responds, before the gateway publishes its completion event.
 package models
 
 import (
+	"context"
 	_ "embed"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
+	"sort"
+	"strings"
+	"sync"
 	"time"
 )
 
@@ -25,7 +30,79 @@ var bundledCatalog []byte
 // Useful for air-gapped deployments or enterprise custom pricing.
 const CatalogURLEnv = "FERRO_MODEL_CATALOG_URL"
 
-const defaultCatalogURL = "https://raw.githubusercontent.com/ferro-labs/ai-gateway/main/models/catalog.json"
+const defaultCatalogURL = "https://github.com/ferro-labs/model-catalog/releases/latest/download/catalog.json"
+
+// LoadSource identifies where a catalog load came from.
+type LoadSource string
+
+const (
+	// LoadSourceRemote means the catalog was loaded from the configured URL.
+	LoadSourceRemote LoadSource = "remote"
+	// LoadSourceFallback means the embedded backup catalog was used.
+	LoadSourceFallback LoadSource = "fallback"
+)
+
+// LoadResult describes a completed catalog load.
+type LoadResult struct {
+	Catalog Catalog
+	Source  LoadSource
+	URL     string
+}
+
+// modelIDIndex is a reverse lookup from bare model ID to catalog key. It is
+// rebuilt by parse() on every catalog load so loaded catalogs can resolve bare
+// model IDs in O(1) instead of scanning all ~2,500 entries.
+//
+// Catalog is intentionally still a map type for API compatibility, so Get()
+// validates indexed hits against the receiver and falls back to scanning when
+// callers pass an arbitrary or stale Catalog value.
+var (
+	modelIDIndexMu sync.RWMutex
+	modelIDIndex   map[string]string
+)
+
+// Catalog lookup policy (issue #132)
+//
+// Gateway provider IDs (azure-openai, azure-foundry, vertex-ai) differ from
+// model-catalog key prefixes (azure_openai, azure_foundry, azure, vertex_ai).
+//
+// Two entry points:
+//   - Get — metadata (/v1/models enrichment). Returns the first matching row
+//     for the provider-specific prefix chain, including rows without input pricing.
+//   - GetForPricing / Calculate — cost. Walks the same prefix chain but skips
+//     unpriced chat rows when a later prefix may have rates; also falls back from
+//     an unpriced exact catalog-native key (e.g. azure_foundry/phi-4 → azure/Phi-4).
+//
+// Tradeoffs:
+//   - Dedicated catalog prefixes (azure_foundry/, azure_openai/) are preferred
+//     over azure/ so capabilities and cache billing match that surface (Foundry
+//     gpt-4o has no prompt-cache price; OpenAI gpt-4o-mini has distinct rates).
+//   - azure/ fallback is used only when the preferred prefix has no priced chat
+//     row (phi-4 casing/pricing lives under azure/Phi-4).
+//   - Metadata and pricing can therefore differ for the same gateway request key;
+//     that is intentional, not an oversight.
+//
+// catalogProviderAliases maps gateway provider IDs to catalog prefix chains.
+var catalogProviderAliases = map[string][]string{
+	"azure-openai":  {"azure_openai", "azure"},
+	"azure-foundry": {"azure_foundry", "azure"},
+	"vertex-ai":     {"vertex_ai"},
+}
+
+// BuildIndex constructs the reverse modelID → key index for a catalog that
+// was not loaded through [Load] or [parse] (e.g. in tests). Calling this
+// is unnecessary when the catalog comes from [Load].
+func BuildIndex(c Catalog) {
+	idx := make(map[string]string, len(c))
+	for key, m := range c {
+		if _, exists := idx[m.ModelID]; !exists {
+			idx[m.ModelID] = key
+		}
+	}
+	modelIDIndexMu.Lock()
+	defer modelIDIndexMu.Unlock()
+	modelIDIndex = idx
+}
 
 // Catalog is a flat map of "provider/model-id" → Model.
 type Catalog map[string]Model
@@ -101,30 +178,106 @@ type Lifecycle struct {
 // Load fetches the model catalog from a remote URL (1s timeout).
 // On any failure it falls back to the embedded catalog_backup.json.
 // The gateway never fails to start due to catalog unavailability.
+// Equivalent to LoadContext(context.Background()).
 func Load() (Catalog, error) {
-	url := os.Getenv(CatalogURLEnv)
-	if url == "" {
-		url = defaultCatalogURL
-	}
-
-	if data, err := fetchRemote(url); err == nil {
-		if c, err := parse(data); err == nil {
-			return c, nil
-		}
-		// Remote fetch succeeded but JSON unmarshal failed (truncated download,
-		// invalid payload, schema mismatch) — fall through to embedded backup.
-	}
-	// Silent fallback — use the embedded copy shipped with the binary.
-	return parse(bundledCatalog)
+	return LoadContext(context.Background())
 }
 
-func fetchRemote(rawURL string) ([]byte, error) {
+// LoadContext is Load with a caller-supplied context bounding the remote
+// fetch, so it can be canceled early (e.g. on gateway shutdown) instead of
+// always running to its own internal timeout.
+func LoadContext(ctx context.Context) (Catalog, error) {
+	result, err := LoadWithInfoContext(ctx)
+	return result.Catalog, err
+}
+
+// LoadWithInfo fetches the model catalog and returns metadata about whether
+// the remote source or embedded fallback was used.
+// Equivalent to LoadWithInfoContext(context.Background()).
+func LoadWithInfo() (LoadResult, error) {
+	return LoadWithInfoContext(context.Background())
+}
+
+// LoadWithInfoContext is LoadWithInfo with a caller-supplied context bounding
+// the remote fetch.
+func LoadWithInfoContext(ctx context.Context) (LoadResult, error) {
+	catalogURL := os.Getenv(CatalogURLEnv)
+	if catalogURL == "" {
+		catalogURL = defaultCatalogURL
+	}
+
+	if data, err := fetchRemote(ctx, catalogURL); err == nil {
+		c, parseErr := parse(data)
+		if parseErr == nil {
+			return LoadResult{Catalog: c, Source: LoadSourceRemote, URL: catalogURL}, nil
+		}
+		slog.Warn("model catalog remote response could not be parsed; using embedded fallback", "url", CatalogURLForLog(catalogURL), "error", catalogLoadErrorForLog(parseErr, catalogURL)) //nolint:gosec // values are CR/LF-sanitized before logging.
+	} else {
+		slog.Warn("model catalog remote fetch failed; using embedded fallback", "url", CatalogURLForLog(catalogURL), "error", catalogLoadErrorForLog(err, catalogURL)) //nolint:gosec // values are CR/LF-sanitized before logging.
+	}
+
+	c, err := parse(bundledCatalog)
+	if err != nil {
+		return LoadResult{Source: LoadSourceFallback, URL: catalogURL}, err
+	}
+	return LoadResult{Catalog: c, Source: LoadSourceFallback, URL: catalogURL}, nil
+}
+
+func safeLogValue(value string) string {
+	return strings.NewReplacer("\r", "\\r", "\n", "\\n").Replace(value)
+}
+
+var httpURLInLogMessage = regexp.MustCompile(`https?://[^\s"']+`)
+
+// CatalogURLForLog returns a catalog URL safe for structured logs: userinfo and
+// query parameters are stripped so tokens in FERRO_MODEL_CATALOG_URL are not leaked.
+func CatalogURLForLog(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return "<catalog-url>"
+	}
+	u.User = nil
+	u.RawQuery = ""
+	u.Fragment = ""
+	out := u.Scheme + "://" + u.Host + u.EscapedPath()
+	return safeLogValue(out)
+}
+
+// URLForLog returns the configured catalog URL in a log-safe form.
+func (r LoadResult) URLForLog() string {
+	return CatalogURLForLog(r.URL)
+}
+
+func catalogLoadErrorForLog(err error, catalogURL string) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	if catalogURL != "" {
+		msg = strings.ReplaceAll(msg, catalogURL, CatalogURLForLog(catalogURL))
+	}
+	return safeLogValue(httpURLInLogMessage.ReplaceAllStringFunc(msg, CatalogURLForLog))
+}
+
+// maxCatalogResponseBytes guards against hostile or accidentally huge catalog
+// responses from exhausting gateway memory. 8 MiB is orders of magnitude
+// larger than any realistic catalog file.
+const maxCatalogResponseBytes = 8 * 1024 * 1024
+
+func fetchRemote(ctx context.Context, rawURL string) ([]byte, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return nil, fmt.Errorf("invalid catalog URL %q: must be http or https with a host", rawURL)
 	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil) //nolint:gosec // URL scheme and host validated above
+	if err != nil {
+		return nil, err
+	}
 	client := &http.Client{Timeout: time.Second}
-	resp, err := client.Get(rawURL) //nolint:gosec // URL scheme and host validated above
+	resp, err := client.Do(req) //nolint:gosec // URL scheme and host validated above
 	if err != nil {
 		return nil, err
 	}
@@ -132,7 +285,15 @@ func fetchRemote(rawURL string) ([]byte, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("catalog fetch: HTTP %d", resp.StatusCode)
 	}
-	return io.ReadAll(resp.Body)
+	limited := &io.LimitedReader{R: resp.Body, N: maxCatalogResponseBytes + 1}
+	body, err := io.ReadAll(limited)
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(body)) > maxCatalogResponseBytes {
+		return nil, fmt.Errorf("catalog fetch: response exceeds %d bytes", maxCatalogResponseBytes)
+	}
+	return body, nil
 }
 
 func parse(data []byte) (Catalog, error) {
@@ -140,22 +301,186 @@ func parse(data []byte) (Catalog, error) {
 	if err := json.Unmarshal(data, &c); err != nil {
 		return nil, fmt.Errorf("catalog parse: %w", err)
 	}
+	// Build the reverse modelID → key index so that Get() can resolve
+	// bare model IDs without scanning all entries.
+	BuildIndex(c)
 	return c, nil
 }
 
-// Get looks up a model by "provider/model-id".
-// If not found, scans for a bare model ID match as fallback.
-func (c Catalog) Get(key string) (Model, bool) {
+func (c Catalog) lookupUnderPrefix(prefix, modelID string) (Model, bool) {
+	key := prefix + "/" + modelID
 	if m, ok := c[key]; ok {
 		return m, true
 	}
-	// Bare model ID: return the first matching entry.
+	return c.getUnderPrefixCaseInsensitive(prefix, modelID)
+}
+
+func (c Catalog) getWithCatalogPrefixes(prefixes []string, modelID string, forPricing bool) (Model, bool) {
+	for i, prefix := range prefixes {
+		m, ok := c.lookupUnderPrefix(prefix, modelID)
+		if !ok {
+			continue
+		}
+		if !forPricing || catalogEntryUsableForPricing(m, i+1 < len(prefixes)) {
+			return m, true
+		}
+	}
+	return Model{}, false
+}
+
+func catalogEntryUsableForPricing(m Model, morePrefixes bool) bool {
+	if !morePrefixes {
+		return true
+	}
+	if m.Mode != ModeChat {
+		return true
+	}
+	return m.Pricing.InputPerMTokens != nil
+}
+
+func pricingEntryHasInputRate(m Model) bool {
+	if m.Mode != ModeChat {
+		return true
+	}
+	return m.Pricing.InputPerMTokens != nil
+}
+
+// catalogPricingFallbackPrefixes returns later prefixes from any alias chain
+// that starts with prefix (e.g. azure_foundry → azure).
+func catalogPricingFallbackPrefixes(prefix string) []string {
+	var out []string
+	for _, chain := range catalogProviderAliases {
+		for i, p := range chain {
+			if p == prefix {
+				out = append(out, chain[i+1:]...)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// getUnderPrefixCaseInsensitive finds a catalog entry whose key is
+// prefix+"/"+modelID, comparing the model segment with strings.EqualFold.
+// Used after an aliased exact-key miss (e.g. azure/phi-4 → azure/Phi-4).
+func (c Catalog) getUnderPrefixCaseInsensitive(prefix, modelID string) (Model, bool) {
+	prefixKey := prefix + "/"
+	for k, m := range c {
+		if !strings.HasPrefix(k, prefixKey) {
+			continue
+		}
+		if strings.EqualFold(strings.TrimPrefix(k, prefixKey), modelID) {
+			return m, true
+		}
+	}
+	return Model{}, false
+}
+
+func (c Catalog) resolveAliased(key string, forPricing bool) (Model, bool) {
+	provider, modelID, ok := strings.Cut(key, "/")
+	if !ok || provider == "" || modelID == "" {
+		return Model{}, false
+	}
+	prefixes, ok := catalogProviderAliases[provider]
+	if !ok {
+		return Model{}, false
+	}
+	return c.getWithCatalogPrefixes(prefixes, modelID, forPricing)
+}
+
+// Get looks up a model by "provider/model-id" for metadata enrichment.
+func (c Catalog) Get(key string) (Model, bool) {
+	return c.resolve(key, false)
+}
+
+// GetForPricing looks up a model for cost calculation.
+func (c Catalog) GetForPricing(key string) (Model, bool) {
+	return c.resolve(key, true)
+}
+
+func (c Catalog) resolve(key string, forPricing bool) (Model, bool) {
+	provider, modelID, qualified := strings.Cut(key, "/")
+
+	if m, ok := c[key]; ok {
+		if !forPricing {
+			return m, true
+		}
+		if pricingEntryHasInputRate(m) {
+			return m, true
+		}
+		if qualified && provider != "" && modelID != "" {
+			if fallbacks := catalogPricingFallbackPrefixes(provider); len(fallbacks) > 0 {
+				if priced, ok := c.getWithCatalogPrefixes(fallbacks, modelID, true); ok {
+					return priced, true
+				}
+			}
+		}
+		return m, true
+	}
+
+	if m, ok := c.resolveAliased(key, forPricing); ok {
+		return m, true
+	}
+	// Bare model ID: use the reverse index for constant-time lookup.
+	modelIDIndexMu.RLock()
+	if idxKey, ok := modelIDIndex[key]; ok {
+		modelIDIndexMu.RUnlock()
+		if m, ok := c[idxKey]; ok && m.ModelID == key {
+			return m, true
+		}
+	} else {
+		modelIDIndexMu.RUnlock()
+	}
+	// Arbitrary Catalog values may not have an index, or another catalog load
+	// may have replaced the package index. Preserve the pre-index behavior.
 	for _, v := range c {
 		if v.ModelID == key {
 			return v, true
 		}
 	}
 	return Model{}, false
+}
+
+// CatalogPrefixesFor returns the catalog key-prefix chain for a gateway provider
+// ID. Gateway provider IDs (azure-openai, azure-foundry, vertex-ai) differ from
+// model-catalog key prefixes (azure_openai, azure, …); aliased IDs return their
+// full chain while every other ID maps to itself. The returned slice is always a
+// fresh copy, so callers may mutate it without corrupting catalogProviderAliases.
+func CatalogPrefixesFor(providerID string) []string {
+	if chain, ok := catalogProviderAliases[providerID]; ok {
+		out := make([]string, len(chain))
+		copy(out, chain)
+		return out
+	}
+	return []string{providerID}
+}
+
+// ModelsForProvider returns the sorted, de-duplicated bare model IDs of every
+// catalog entry whose Provider matches any prefix in the gateway provider's
+// catalog prefix chain (see [CatalogPrefixesFor]). All lifecycle states are
+// included — deprecation is surfaced separately by the /v1/models response.
+// An unknown provider with no entries yields an empty slice.
+func (c Catalog) ModelsForProvider(providerID string) []string {
+	prefixes := CatalogPrefixesFor(providerID)
+	wanted := make(map[string]struct{}, len(prefixes))
+	for _, p := range prefixes {
+		wanted[p] = struct{}{}
+	}
+
+	seen := make(map[string]struct{})
+	ids := make([]string, 0)
+	for _, m := range c {
+		if _, ok := wanted[m.Provider]; !ok {
+			continue
+		}
+		if _, dup := seen[m.ModelID]; dup {
+			continue
+		}
+		seen[m.ModelID] = struct{}{}
+		ids = append(ids, m.ModelID)
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 // IsDeprecated returns true when the model's lifecycle status is deprecated or legacy.

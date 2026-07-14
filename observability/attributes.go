@@ -5,6 +5,11 @@ package observability
 // Group A — OpenTelemetry GenAI semantic conventions.
 // Keep in sync with https://opentelemetry.io/docs/specs/semconv/gen-ai/.
 //
+// Planned: the following constants are part of the published schema surface
+// but are not yet wired into emitted spans — AttrGenAIRequestMaxTokens,
+// AttrGenAIRequestTemperature, AttrGenAIRequestTopP, and
+// AttrGenAIResponseFinishReasons.
+//
 //nolint:gosec // G101 false positives: these are attribute name constants, not credentials.
 const (
 	AttrGenAISystem                = "gen_ai.system"
@@ -22,6 +27,14 @@ const (
 )
 
 // Group B — Ferro extension attributes. ferro.* namespace.
+//
+// Planned: the following constants are part of the published schema surface
+// but are not yet wired into emitted spans — AttrFerroGatewayVersion,
+// AttrFerroRoutingAttempt, AttrFerroRoutingABVariantLabel, AttrFerroCacheHit,
+// AttrFerroCacheKind, AttrFerroMCPDepth, AttrFerroCircuitBreakerState,
+// AttrFerroCircuitBreakerOpened, AttrFerroRequestAPIKeyID,
+// AttrFerroRequestTenantID, AttrFerroErrorUpstreamStatus,
+// AttrFerroErrorRetryCount, and AttrFerroForwardedParams.
 const (
 	AttrFerroSchemaVersion            = "ferro.schema.version"
 	AttrFerroGatewayTraceID           = "ferro.gateway.trace_id"
@@ -56,6 +69,11 @@ const (
 	AttrFerroRequestTenantID          = "ferro.request.tenant_id"
 	AttrFerroErrorUpstreamStatus      = "ferro.error.upstream_status"
 	AttrFerroErrorRetryCount          = "ferro.error.retry_count"
+	// AttrFerroForwardedParams carries the sanitized NAMES (never values) of the
+	// request parameters forwarded to the provider, for debug visibility of the
+	// capability matrix. Planned: emission is deferred — the shared request
+	// builder has no span in scope (see providers/internal/openaicompat).
+	AttrFerroForwardedParams = "ferro.forwarded_params"
 )
 
 // SchemaVersion is the ferro.observability.v1 schema version this

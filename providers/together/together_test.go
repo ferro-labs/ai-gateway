@@ -5,17 +5,50 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
 const testEmbeddingModel = "BAAI/bge-base-en-v1.5"
+
+func TestTogetherProvider_DiscoverModels(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("method = %q, want GET", r.Method)
+		}
+		if r.URL.Path != "/v1/models" {
+			t.Errorf("path = %q, want /v1/models", r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer test-key" {
+			t.Errorf("Authorization = %q, want Bearer test-key", r.Header.Get("Authorization"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		// Together AI returns a BARE JSON ARRAY whose items omit owned_by.
+		// This is a regression guard for the dual-shape parser + fallback.
+		_, _ = w.Write([]byte(`[{"id":"meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo","object":"model","created":1700000000},{"id":"Qwen/Qwen2.5-72B-Instruct-Turbo","object":"model"}]`))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	models, err := p.DiscoverModels(context.Background())
+	if err != nil {
+		t.Fatalf("DiscoverModels() error: %v", err)
+	}
+	if len(models) != 2 {
+		t.Fatalf("expected 2 models, got %d", len(models))
+	}
+	if models[0].ID != "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo" || models[0].OwnedBy != "together" {
+		t.Errorf("unexpected model[0] (bare-array fallback): %+v", models[0])
+	}
+	if models[1].ID != "Qwen/Qwen2.5-72B-Instruct-Turbo" || models[1].OwnedBy != "together" {
+		t.Errorf("unexpected model[1] (bare-array fallback): %+v", models[1])
+	}
+}
 
 func TestNewTogether(t *testing.T) {
 	p, err := New("test-key", "")
@@ -41,6 +74,17 @@ func TestTogetherProvider_SupportedModels(t *testing.T) {
 	}
 	if !found {
 		t.Error("meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo not found")
+	}
+}
+
+func TestTogetherProvider_SupportedModels_NoDuplicates(t *testing.T) {
+	p, _ := New("test-key", "")
+	seen := make(map[string]struct{})
+	for _, m := range p.SupportedModels() {
+		if _, dup := seen[m]; dup {
+			t.Errorf("duplicate model ID in SupportedModels(): %q", m)
+		}
+		seen[m] = struct{}{}
 	}
 }
 
@@ -108,28 +152,93 @@ func TestTogetherProvider_CompleteStream_MockSSE(t *testing.T) {
 	}
 }
 
-func TestTogetherProvider_Complete_Integration(t *testing.T) {
-	apiKey := os.Getenv("TOGETHER_API_KEY")
-	if apiKey == "" {
-		t.Skip("Skipping: TOGETHER_API_KEY not set")
-	}
+func TestTogetherProvider_Complete_MockHTTP(t *testing.T) {
+	const model = "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %s, want POST", r.Method)
+		}
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Errorf("path = %q, want /v1/chat/completions", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
+			t.Errorf("Authorization = %q, want Bearer test-key", got)
+		}
+		if got := r.Header.Get("Content-Type"); got != "application/json" {
+			t.Errorf("Content-Type = %q, want application/json", got)
+		}
 
-	p, _ := New(apiKey, "")
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("failed to decode request body: %v", err)
+		}
+		if got := body["model"]; got != model {
+			t.Errorf("model = %v, want %s", got, model)
+		}
 
-	resp, err := p.Complete(ctx, core.Request{
-		Model:     "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo",
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"cmpl-42","object":"chat.completion","model":"` + model + `","choices":[{"index":0,"message":{"role":"assistant","content":"test ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	resp, err := p.Complete(context.Background(), core.Request{
+		Model:     model,
 		Messages:  []core.Message{{Role: "user", Content: "Say 'test ok' and nothing else."}},
 		MaxTokens: intPtr(10),
 	})
 	if err != nil {
 		t.Fatalf("Complete() error: %v", err)
 	}
-	if resp.ID == "" {
-		t.Error("Response ID is empty")
+	if resp.ID != "cmpl-42" {
+		t.Errorf("ID = %q, want cmpl-42", resp.ID)
 	}
-	t.Logf("Response: %+v", resp)
+	if resp.Model != model {
+		t.Errorf("Model = %q, want %s", resp.Model, model)
+	}
+	if len(resp.Choices) != 1 {
+		t.Fatalf("Choices length = %d, want 1", len(resp.Choices))
+	}
+	if resp.Choices[0].Message.Content != "test ok" {
+		t.Errorf("content = %q, want test ok", resp.Choices[0].Message.Content)
+	}
+	if resp.Choices[0].FinishReason != "stop" {
+		t.Errorf("finish_reason = %q, want stop", resp.Choices[0].FinishReason)
+	}
+	if resp.Usage.TotalTokens != 7 {
+		t.Errorf("Usage.TotalTokens = %d, want 7", resp.Usage.TotalTokens)
+	}
+}
+
+func TestTogetherProvider_Complete_UpstreamError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Errorf("path = %q, want /v1/chat/completions", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"rate limited","type":"rate_limit"}}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	_, err := p.Complete(context.Background(), core.Request{
+		Model:    "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo",
+		Messages: []core.Message{{Role: "user", Content: "Hi"}},
+	})
+	if err == nil {
+		t.Fatal("Complete() error = nil, want upstream error")
+	}
+	if !strings.Contains(err.Error(), "together API error (429)") {
+		t.Errorf("error = %q, want it to contain %q", err.Error(), "together API error (429)")
+	}
+	if !strings.Contains(err.Error(), "rate limited") {
+		t.Errorf("error = %q, want upstream message %q", err.Error(), "rate limited")
+	}
+	if got := core.ParseStatusCode(err); got != 429 {
+		t.Errorf("ParseStatusCode = %d, want 429", got)
+	}
 }
 
 func intPtr(i int) *int { return &i }
@@ -176,13 +285,13 @@ func TestTogetherProvider_Embed_InvalidInput(t *testing.T) {
 	p, _ := New("test-key", srv.URL)
 	badInputs := []struct {
 		name  string
-		input interface{}
+		input any
 	}{
 		{"nil", nil},
 		{"integer", 42},
 		{"empty-string-slice", []string{}},
-		{"empty-interface-slice", []interface{}{}},
-		{"non-string-array-member", []interface{}{"ok", 42}},
+		{"empty-interface-slice", []any{}},
+		{"non-string-array-member", []any{"ok", 42}},
 	}
 	for _, tc := range badInputs {
 		t.Run(tc.name, func(t *testing.T) {
@@ -224,7 +333,7 @@ func TestTogetherProvider_Embed_UpstreamError(t *testing.T) {
 	}
 }
 
-func testTogetherEmbedSuccess(t *testing.T, input interface{}) {
+func testTogetherEmbedSuccess(t *testing.T, input any) {
 	t.Helper()
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -241,7 +350,7 @@ func testTogetherEmbedSuccess(t *testing.T, input interface{}) {
 			t.Errorf("Content-Type = %q, want application/json", got)
 		}
 
-		var body map[string]interface{}
+		var body map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatalf("failed to decode request body: %v", err)
 		}
@@ -284,7 +393,7 @@ func testTogetherEmbedSuccess(t *testing.T, input interface{}) {
 	}
 }
 
-func assertTogetherEmbeddingInput(t *testing.T, got interface{}, want interface{}) {
+func assertTogetherEmbeddingInput(t *testing.T, got any, want any) {
 	t.Helper()
 
 	switch w := want.(type) {
@@ -293,7 +402,7 @@ func assertTogetherEmbeddingInput(t *testing.T, got interface{}, want interface{
 			t.Fatalf("input = %#v, want %q", got, w)
 		}
 	case []string:
-		arr, ok := got.([]interface{})
+		arr, ok := got.([]any)
 		if !ok {
 			t.Fatalf("input type = %T, want JSON array", got)
 		}
@@ -307,5 +416,24 @@ func assertTogetherEmbeddingInput(t *testing.T, got interface{}, want interface{
 		}
 	default:
 		t.Fatalf("unsupported test input type %T", want)
+	}
+}
+
+// TestNewTogether_DefaultDomain verifies the zero-value base URL resolves to the
+// current api.together.ai host (migrated from the legacy .xyz domain).
+func TestNewTogether_DefaultDomain(t *testing.T) {
+	p, err := New("test-key", "")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if got := p.BaseURL(); got != "https://api.together.ai" {
+		t.Errorf("default BaseURL() = %q, want https://api.together.ai", got)
+	}
+}
+
+// TestNewTogether_RejectsInvalidBaseURL locks in the shared base-URL validation.
+func TestNewTogether_RejectsInvalidBaseURL(t *testing.T) {
+	if _, err := New("k", "://bad"); err == nil {
+		t.Fatal("New accepted an invalid base URL")
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,6 +19,22 @@ func TestNewDeepSeek(t *testing.T) {
 	}
 	if p.Name() != "deepseek" {
 		t.Errorf("Name() = %q, want deepseek", p.Name())
+	}
+}
+
+func TestNewDeepSeek_InvalidBaseURL(t *testing.T) {
+	if _, err := New("test-key", "://bad"); err == nil {
+		t.Error("New() with invalid base URL should return an error")
+	}
+}
+
+func TestNewDeepSeek_TrimsTrailingV1(t *testing.T) {
+	p, err := New("test-key", "https://api.deepseek.com/v1")
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	if p.BaseURL() != "https://api.deepseek.com" {
+		t.Errorf("BaseURL() = %q, want https://api.deepseek.com", p.BaseURL())
 	}
 }
 
@@ -105,6 +122,46 @@ func TestDeepSeekProvider_CompleteStream_MockSSE(t *testing.T) {
 	}
 }
 
+// TestDeepSeekProvider_CompleteStream_SurfacesCacheReadTokens verifies the
+// streaming path (which decodes straight into core.StreamChunk via the shared
+// openaicompat decoder, unlike Complete's hand-rolled usage struct) still
+// surfaces DeepSeek's flat prompt_cache_hit_tokens as CacheReadTokens on the
+// terminal usage chunk.
+func TestDeepSeekProvider_CompleteStream_SurfacesCacheReadTokens(t *testing.T) {
+	sseData := "data: {\"id\":\"chatcmpl-1\",\"model\":\"deepseek-chat\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hi\"},\"finish_reason\":\"stop\"}]}\n\n" +
+		"data: {\"id\":\"chatcmpl-1\",\"model\":\"deepseek-chat\",\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2,\"total_tokens\":12,\"prompt_cache_hit_tokens\":6,\"prompt_cache_miss_tokens\":4}}\n\n" +
+		"data: [DONE]\n\n"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(sseData))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	ch, err := p.CompleteStream(context.Background(), core.Request{
+		Model:    "deepseek-chat",
+		Messages: []core.Message{{Role: "user", Content: "Hi"}},
+	})
+	if err != nil {
+		t.Fatalf("CompleteStream() error: %v", err)
+	}
+
+	var usageChunk *core.StreamChunk
+	for c := range ch {
+		if c.Usage != nil {
+			usageChunk = &c
+		}
+	}
+	if usageChunk == nil {
+		t.Fatal("expected a chunk carrying usage")
+	}
+	if usageChunk.Usage.CacheReadTokens != 6 {
+		t.Errorf("CacheReadTokens = %d, want 6 (from prompt_cache_hit_tokens)", usageChunk.Usage.CacheReadTokens)
+	}
+}
+
 func TestDeepSeekProvider_Complete_Integration(t *testing.T) {
 	apiKey := os.Getenv("DEEPSEEK_API_KEY")
 	if apiKey == "" {
@@ -129,4 +186,87 @@ func TestDeepSeekProvider_Complete_Integration(t *testing.T) {
 	t.Logf("Response: %+v", resp)
 }
 
+func TestDeepSeekProvider_Complete_ErrorStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"message":"Invalid API key","type":"authentication_error"}}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New("bad-key", srv.URL)
+	_, err := p.Complete(context.Background(), core.Request{
+		Model:    "deepseek-chat",
+		Messages: []core.Message{{Role: core.RoleUser, Content: "hi"}},
+	})
+	if err == nil {
+		t.Fatal("Complete() expected an error for 401 response")
+	}
+	if code := core.ParseStatusCode(err); code != http.StatusUnauthorized {
+		t.Errorf("ParseStatusCode() = %d, want 401", code)
+	}
+	if !strings.Contains(err.Error(), "Invalid API key") {
+		t.Errorf("error = %q, want it to contain the upstream message", err.Error())
+	}
+}
+
+func TestDeepSeekProvider_DiscoverModels(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("method = %q, want GET", r.Method)
+		}
+		if r.URL.Path != "/v1/models" {
+			t.Errorf("path = %q, want /v1/models", r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer test-key" {
+			t.Errorf("Authorization = %q, want Bearer test-key", r.Header.Get("Authorization"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"deepseek-chat","object":"model","owned_by":"deepseek"},{"id":"deepseek-reasoner","object":"model"}]}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	models, err := p.DiscoverModels(context.Background())
+	if err != nil {
+		t.Fatalf("DiscoverModels() error: %v", err)
+	}
+	if len(models) != 2 {
+		t.Fatalf("expected 2 models, got %d", len(models))
+	}
+	if models[0].ID != "deepseek-chat" || models[0].OwnedBy != "deepseek" {
+		t.Errorf("unexpected model[0]: %+v", models[0])
+	}
+	if models[1].OwnedBy != "deepseek" {
+		t.Errorf("model[1] owned_by fallback = %q, want deepseek", models[1].OwnedBy)
+	}
+}
+
 func intPtr(i int) *int { return &i }
+
+// TestDeepSeekProvider_Complete_NormalizesFinishReason verifies the hand-rolled
+// non-streaming decode normalizes finish reasons to the canonical OpenAI
+// vocabulary, matching the shared streaming path.
+func TestDeepSeekProvider_Complete_NormalizesFinishReason(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"x","model":"deepseek-chat","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"model_length"}],"usage":{"total_tokens":1}}`))
+	}))
+	defer srv.Close()
+
+	p, err := New("test-key", srv.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	resp, err := p.Complete(context.Background(), core.Request{
+		Model:    "deepseek-chat",
+		Messages: []core.Message{{Role: core.RoleUser, Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if resp.Choices[0].FinishReason != core.FinishReasonLength {
+		t.Errorf("finish_reason = %q, want length (normalized from model_length)", resp.Choices[0].FinishReason)
+	}
+}

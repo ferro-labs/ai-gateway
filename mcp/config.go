@@ -17,14 +17,14 @@ type ServerConfig struct {
 	// URL is the Streamable HTTP endpoint (e.g. "https://mcp.example.com/mcp").
 	URL string `json:"url" yaml:"url"`
 	// Headers are additional HTTP headers sent with every MCP request
-	// (e.g. authorization tokens). Values may reference environment variables
-	// via shell-style ${VAR} substitution performed by the caller.
+	// (e.g. authorization tokens). When loaded via aigateway.LoadConfig,
+	// values may reference environment variables using $VAR or ${VAR}.
 	Headers map[string]string `json:"headers,omitempty" yaml:"headers,omitempty"`
 	// AllowedTools restricts which tools from this server are exposed to the LLM.
 	// An empty slice means all discovered tools are allowed.
 	AllowedTools []string `json:"allowed_tools,omitempty" yaml:"allowed_tools,omitempty"`
 	// MaxCallDepth limits the agentic tool-calling depth for this server.
-	// The minimum positive value across all configured servers is used;
+	// The minimum positive value across all registered servers is used;
 	// servers with MaxCallDepth ≤ 0 are excluded from the minimum.
 	// Defaults to 5 when all servers leave MaxCallDepth unset or zero.
 	MaxCallDepth int `json:"max_call_depth,omitempty" yaml:"max_call_depth,omitempty"`

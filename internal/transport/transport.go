@@ -64,7 +64,6 @@ type Manager struct {
 	streamClient       *http.Client
 	defaultTransport   *http.Transport // raw transport for DefaultTransport()
 	streamTransport    *http.Transport // raw streaming transport
-	metrics            *Metrics
 }
 
 // New creates a Manager with the given config.
@@ -73,7 +72,6 @@ func New(cfg Config) *Manager {
 		cfg:                cfg,
 		providers:          make(map[string]*http.Client),
 		providerTransports: make(map[string]*http.Transport),
-		metrics:            newMetrics(),
 	}
 	m.defaultClient, m.defaultTransport = m.buildClient(cfg, false)
 	m.streamClient, m.streamTransport = m.buildClient(cfg, true)
@@ -125,11 +123,6 @@ func (m *Manager) providerRawTransport(provider string) *http.Transport {
 		return t
 	}
 	return m.defaultTransport
-}
-
-// Metrics returns the transport metrics for Prometheus registration.
-func (m *Manager) Metrics() *Metrics {
-	return m.metrics
 }
 
 // DefaultClient returns the shared default client.

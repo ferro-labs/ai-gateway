@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/ferro-labs/ai-gateway/providers"
 )
@@ -13,15 +15,22 @@ type mockPlugin struct {
 	name    string
 	typ     PluginType
 	execFn  func(ctx context.Context, pctx *Context) error
+	closeFn func() error
 	initErr error
 }
 
-func (m *mockPlugin) Name() string                        { return m.name }
-func (m *mockPlugin) Type() PluginType                    { return m.typ }
-func (m *mockPlugin) Init(_ map[string]interface{}) error { return m.initErr }
+func (m *mockPlugin) Name() string                { return m.name }
+func (m *mockPlugin) Type() PluginType            { return m.typ }
+func (m *mockPlugin) Init(_ map[string]any) error { return m.initErr }
 func (m *mockPlugin) Execute(ctx context.Context, pctx *Context) error {
 	if m.execFn != nil {
 		return m.execFn(ctx, pctx)
+	}
+	return nil
+}
+func (m *mockPlugin) Close() error {
+	if m.closeFn != nil {
+		return m.closeFn()
 	}
 	return nil
 }
@@ -154,6 +163,56 @@ func TestManager_RunBefore_RejectWithError_FallsBackToErrorMessage(t *testing.T)
 	}
 }
 
+func TestManager_RunBefore_FailOpenPluginFailureDoesNotAbort(t *testing.T) {
+	tests := []struct {
+		name   string
+		typ    PluginType
+		execFn func(context.Context, *Context) error
+	}{
+		{
+			name: "logging error",
+			typ:  TypeLogging,
+			execFn: func(context.Context, *Context) error {
+				return fmt.Errorf("log sink down")
+			},
+		},
+		{
+			name: "metrics panic",
+			typ:  TypeMetrics,
+			execFn: func(context.Context, *Context) error {
+				panic("metrics sink down")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := NewManager()
+			_ = m.Register(StageBeforeRequest, &mockPlugin{name: "fail-open", typ: tt.typ, execFn: tt.execFn})
+			nextCalled := false
+			_ = m.Register(StageBeforeRequest, &mockPlugin{
+				name: "next",
+				typ:  TypeGuardrail,
+				execFn: func(context.Context, *Context) error {
+					nextCalled = true
+					return nil
+				},
+			})
+
+			pctx := NewContext(&providers.Request{Model: "gpt-4o"})
+			if err := m.RunBefore(context.Background(), pctx); err != nil {
+				t.Fatalf("RunBefore() error = %v, want nil", err)
+			}
+			if !nextCalled {
+				t.Fatal("fail-open plugin failure should not skip later plugins")
+			}
+			if pctx.Reject || pctx.Reason != "" {
+				t.Fatalf("fail-open rejection leaked: reject=%v reason=%q", pctx.Reject, pctx.Reason)
+			}
+		})
+	}
+}
+
 func TestManager_RunAfter(t *testing.T) {
 	m := NewManager()
 	called := false
@@ -228,6 +287,181 @@ func TestManager_RunAfter_RejectWithErrorAndEmptyReason_UsesErrorMessage(t *test
 	}
 }
 
+func TestManager_RunAfter_FailOpenPluginFailureDoesNotAbort(t *testing.T) {
+	tests := []struct {
+		name   string
+		typ    PluginType
+		execFn func(context.Context, *Context) error
+	}{
+		{
+			name: "logging error",
+			typ:  TypeLogging,
+			execFn: func(context.Context, *Context) error {
+				return fmt.Errorf("log sink down")
+			},
+		},
+		{
+			name: "metrics panic",
+			typ:  TypeMetrics,
+			execFn: func(context.Context, *Context) error {
+				panic("metrics sink down")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := NewManager()
+			_ = m.Register(StageAfterRequest, &mockPlugin{name: "fail-open", typ: tt.typ, execFn: tt.execFn})
+			nextCalled := false
+			_ = m.Register(StageAfterRequest, &mockPlugin{
+				name: "next",
+				typ:  TypeGuardrail,
+				execFn: func(context.Context, *Context) error {
+					nextCalled = true
+					return nil
+				},
+			})
+
+			pctx := NewContext(&providers.Request{})
+			pctx.Response = &providers.Response{ID: "r1"}
+			if err := m.RunAfter(context.Background(), pctx); err != nil {
+				t.Fatalf("RunAfter() error = %v, want nil", err)
+			}
+			if !nextCalled {
+				t.Fatal("fail-open plugin failure should not skip later plugins")
+			}
+			if pctx.Reject || pctx.Reason != "" {
+				t.Fatalf("fail-open rejection leaked: reject=%v reason=%q", pctx.Reject, pctx.Reason)
+			}
+		})
+	}
+}
+
+func TestManager_RunOnError_PanicDoesNotPropagate(t *testing.T) {
+	m := NewManager()
+	called := false
+	_ = m.Register(StageOnError, &mockPlugin{
+		name: "panic-reporter",
+		typ:  TypeLogging,
+		execFn: func(context.Context, *Context) error {
+			called = true
+			panic("reporter failed")
+		},
+	})
+
+	m.RunOnError(context.Background(), NewContext(&providers.Request{Model: "gpt-4o"}))
+	if !called {
+		t.Fatal("expected on-error plugin to run")
+	}
+}
+
+func TestManager_CloseClosesRegisteredPlugins(t *testing.T) {
+	m := NewManager()
+	var closed int
+	_ = m.Register(StageBeforeRequest, &mockPlugin{
+		name: "closer",
+		typ:  TypeLogging,
+		closeFn: func() error {
+			closed++
+			return nil
+		},
+	})
+
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close() error: %v", err)
+	}
+	if closed != 1 {
+		t.Fatalf("closed = %d, want 1", closed)
+	}
+}
+
+func TestManager_CloseCallsCloseOncePerInstance(t *testing.T) {
+	m := NewManager()
+	var closed int
+	p := &mockPlugin{
+		name: "multi-stage",
+		typ:  TypeLogging,
+		closeFn: func() error {
+			closed++
+			return nil
+		},
+	}
+	_ = m.Register(StageBeforeRequest, p)
+	_ = m.Register(StageAfterRequest, p)
+
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close() error: %v", err)
+	}
+	if closed != 1 {
+		t.Fatalf("closed = %d, want 1 because Close is deduplicated per plugin instance", closed)
+	}
+}
+
+func TestManager_CloseClosesDistinctInstances(t *testing.T) {
+	m := NewManager()
+	var closed int
+	for _, name := range []string{"first", "second"} {
+		_ = m.Register(StageBeforeRequest, &mockPlugin{
+			name: name,
+			typ:  TypeLogging,
+			closeFn: func() error {
+				closed++
+				return nil
+			},
+		})
+	}
+
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close() error: %v", err)
+	}
+	if closed != 2 {
+		t.Fatalf("closed = %d, want 2 distinct instances closed", closed)
+	}
+}
+
+func TestManager_CloseReturnsWhileActiveAndClosesAfterRelease(t *testing.T) {
+	m := NewManager()
+	closed := make(chan struct{})
+	var closeOnce sync.Once
+	_ = m.Register(StageAfterRequest, &mockPlugin{
+		name: "deferred-close",
+		typ:  TypeLogging,
+		closeFn: func() error {
+			closeOnce.Do(func() { close(closed) })
+			return nil
+		},
+	})
+	release := m.Acquire()
+
+	closeReturned := make(chan error, 1)
+	go func() {
+		closeReturned <- m.Close()
+	}()
+
+	select {
+	case err := <-closeReturned:
+		if err != nil {
+			t.Fatalf("Close() error: %v", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("Close blocked while manager was active")
+	}
+	select {
+	case <-closed:
+		t.Fatal("plugin closed before active manager user released")
+	default:
+	}
+
+	release()
+
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for deferred plugin close")
+	}
+}
+
 func TestManager_NoPlugins(t *testing.T) {
 	m := NewManager()
 	if m.HasPlugins() {
@@ -236,5 +470,82 @@ func TestManager_NoPlugins(t *testing.T) {
 	pctx := NewContext(&providers.Request{})
 	if err := m.RunBefore(context.Background(), pctx); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestManager_Register_AllStages verifies that HasPlugins reports true once a
+// plugin is registered at any stage and that each stage is independent.
+func TestManager_Register_AllStages(t *testing.T) {
+	for _, stage := range []Stage{StageBeforeRequest, StageAfterRequest, StageOnError} {
+		m := NewManager()
+		if m.HasPlugins() {
+			t.Fatalf("stage %s: expected HasPlugins=false before register", stage)
+		}
+		if err := m.Register(stage, &mockPlugin{name: "p", typ: TypeGuardrail}); err != nil {
+			t.Fatalf("stage %s: Register() error: %v", stage, err)
+		}
+		if !m.HasPlugins() {
+			t.Errorf("stage %s: expected HasPlugins=true after register", stage)
+		}
+	}
+}
+
+// TestManager_RunBefore_SnapshotIsolation verifies that a plugin registered
+// after RunBefore takes its slice snapshot is not included in that run.
+// This checks the snapshot semantics introduced by the RLock fix.
+func TestManager_RunBefore_SnapshotIsolation(t *testing.T) {
+	m := NewManager()
+
+	// firstStarted is closed by the first plugin's Execute, proving that
+	// RunBefore has already taken the slice snapshot and entered the loop.
+	firstStarted := make(chan struct{})
+	gate := make(chan struct{})
+	secondCalled := false
+
+	var firstOnce sync.Once
+	_ = m.Register(StageBeforeRequest, &mockPlugin{
+		name: "first",
+		typ:  TypeGuardrail,
+		execFn: func(_ context.Context, _ *Context) error {
+			// Only coordinate on the first call; subsequent runs just pass through.
+			firstOnce.Do(func() {
+				close(firstStarted) // snapshot was taken; we are inside the loop
+				<-gate              // block until the test has registered the second plugin
+			})
+			return nil
+		},
+	})
+
+	done := make(chan error, 1)
+	go func() {
+		done <- m.RunBefore(context.Background(), NewContext(&providers.Request{Model: "gpt-4o"}))
+	}()
+
+	// Wait until the first plugin is executing — the snapshot is now fixed.
+	<-firstStarted
+
+	// Register a second plugin. Because the snapshot was already taken, this
+	// registration must not affect the current RunBefore call.
+	_ = m.Register(StageBeforeRequest, &mockPlugin{
+		name: "second",
+		typ:  TypeGuardrail,
+		execFn: func(_ context.Context, _ *Context) error {
+			secondCalled = true
+			return nil
+		},
+	})
+
+	close(gate) // let the first plugin finish
+	if err := <-done; err != nil {
+		t.Fatalf("RunBefore() error: %v", err)
+	}
+	if secondCalled {
+		t.Error("second plugin (registered after snapshot) must not be called in this run")
+	}
+
+	// A subsequent RunBefore takes a fresh snapshot that includes "second".
+	_ = m.RunBefore(context.Background(), NewContext(&providers.Request{Model: "gpt-4o"}))
+	if !secondCalled {
+		t.Error("subsequent RunBefore must execute the newly registered second plugin")
 	}
 }

@@ -74,15 +74,15 @@ func testKeyStore() *admin.KeyStore {
 
 func TestHealth(t *testing.T) {
 	ks := testKeyStore()
-	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "")
-	req := httptest.NewRequest("GET", "/health", nil)
+	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "", nil)
+	req := httptest.NewRequestWithContext(t.Context(), "GET", "/health", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200", w.Code)
 	}
-	var body map[string]interface{}
+	var body map[string]any
 	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
 		t.Fatalf("failed to decode health response: %v", err)
 	}
@@ -97,8 +97,8 @@ func TestHealth(t *testing.T) {
 func TestModels(t *testing.T) {
 	t.Setenv("ALLOW_UNAUTHENTICATED_PROXY", "true")
 	ks := testKeyStore()
-	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "")
-	req := httptest.NewRequest("GET", "/v1/models", nil)
+	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "", nil)
+	req := httptest.NewRequestWithContext(t.Context(), "GET", "/v1/models", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -106,7 +106,7 @@ func TestModels(t *testing.T) {
 		t.Errorf("status = %d, want 200", w.Code)
 	}
 
-	var body map[string]interface{}
+	var body map[string]any
 	_ = json.NewDecoder(w.Body).Decode(&body)
 	if body["object"] != "list" {
 		t.Errorf("object = %v", body["object"])
@@ -115,8 +115,8 @@ func TestModels(t *testing.T) {
 
 func TestPprofDisabledByDefault(t *testing.T) {
 	ks := testKeyStore()
-	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "")
-	req := httptest.NewRequest("GET", "/debug/pprof/", nil)
+	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "", nil)
+	req := httptest.NewRequestWithContext(t.Context(), "GET", "/debug/pprof/", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -129,8 +129,8 @@ func TestPprofEnabledRequiresAuthEvenWhenUnauthenticatedProxyEnabled(t *testing.
 	t.Setenv("ENABLE_PPROF", "true")
 	t.Setenv("ALLOW_UNAUTHENTICATED_PROXY", "true")
 	ks := testKeyStore()
-	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "")
-	req := httptest.NewRequest("GET", "/debug/pprof/", nil)
+	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "", nil)
+	req := httptest.NewRequestWithContext(t.Context(), "GET", "/debug/pprof/", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -143,8 +143,8 @@ func TestPprofEnabledWithAuth(t *testing.T) {
 	t.Setenv("ENABLE_PPROF", "true")
 	t.Setenv("ALLOW_UNAUTHENTICATED_PROXY", "true")
 	ks := testKeyStore()
-	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "test-master-key")
-	req := httptest.NewRequest("GET", "/debug/pprof/", nil)
+	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "test-master-key", nil)
+	req := httptest.NewRequestWithContext(t.Context(), "GET", "/debug/pprof/", nil)
 	req.Header.Set("Authorization", "Bearer test-master-key")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -160,8 +160,8 @@ func TestPprofEnabledWithAuth(t *testing.T) {
 func TestDebugVarsRequireAuthEvenWhenUnauthenticatedProxyEnabled(t *testing.T) {
 	t.Setenv("ALLOW_UNAUTHENTICATED_PROXY", "true")
 	ks := testKeyStore()
-	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "")
-	req := httptest.NewRequest("GET", "/debug/vars", nil)
+	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "", nil)
+	req := httptest.NewRequestWithContext(t.Context(), "GET", "/debug/vars", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -173,8 +173,8 @@ func TestDebugVarsRequireAuthEvenWhenUnauthenticatedProxyEnabled(t *testing.T) {
 func TestMetricsRequireAuthEvenWhenUnauthenticatedProxyEnabled(t *testing.T) {
 	t.Setenv("ALLOW_UNAUTHENTICATED_PROXY", "true")
 	ks := testKeyStore()
-	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "")
-	req := httptest.NewRequest("GET", "/metrics", nil)
+	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "", nil)
+	req := httptest.NewRequestWithContext(t.Context(), "GET", "/metrics", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -186,8 +186,8 @@ func TestMetricsRequireAuthEvenWhenUnauthenticatedProxyEnabled(t *testing.T) {
 func TestDebugVarsEnabledWithAuth(t *testing.T) {
 	t.Setenv("ALLOW_UNAUTHENTICATED_PROXY", "true")
 	ks := testKeyStore()
-	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "test-master-key")
-	req := httptest.NewRequest("GET", "/debug/vars", nil)
+	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "test-master-key", nil)
+	req := httptest.NewRequestWithContext(t.Context(), "GET", "/debug/vars", nil)
 	req.Header.Set("Authorization", "Bearer test-master-key")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -202,7 +202,7 @@ func TestDebugVarsEnabledWithAuth(t *testing.T) {
 
 func TestDashboardUIPage(t *testing.T) {
 	ks := testKeyStore()
-	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "")
+	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "", nil)
 	tests := []struct {
 		path  string
 		title string
@@ -218,7 +218,7 @@ func TestDashboardUIPage(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.path, func(t *testing.T) {
-			req := httptest.NewRequest("GET", tt.path, nil)
+			req := httptest.NewRequestWithContext(t.Context(), "GET", tt.path, nil)
 			w := httptest.NewRecorder()
 			r.ServeHTTP(w, req)
 			if w.Code != http.StatusOK {
@@ -236,8 +236,8 @@ func TestDashboardUIPage(t *testing.T) {
 
 func TestDashboardRedirect(t *testing.T) {
 	ks := testKeyStore()
-	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "")
-	req := httptest.NewRequest("GET", "/dashboard", nil)
+	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "", nil)
+	req := httptest.NewRequestWithContext(t.Context(), "GET", "/dashboard", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusFound {
@@ -250,7 +250,7 @@ func TestDashboardRedirect(t *testing.T) {
 
 func TestDashboardStaticAssets(t *testing.T) {
 	ks := testKeyStore()
-	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "")
+	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "", nil)
 
 	assets := []string{
 		"/dashboard/static/style.css",
@@ -260,7 +260,7 @@ func TestDashboardStaticAssets(t *testing.T) {
 	}
 	for _, path := range assets {
 		t.Run(path, func(t *testing.T) {
-			req := httptest.NewRequest("GET", path, nil)
+			req := httptest.NewRequestWithContext(t.Context(), "GET", path, nil)
 			w := httptest.NewRecorder()
 			r.ServeHTTP(w, req)
 			if w.Code != http.StatusOK {
@@ -273,9 +273,9 @@ func TestDashboardStaticAssets(t *testing.T) {
 func TestChatCompletions(t *testing.T) {
 	t.Setenv("ALLOW_UNAUTHENTICATED_PROXY", "true")
 	ks := testKeyStore()
-	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "")
+	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "", nil)
 	payload := `{"model":"test-model","messages":[{"role":"user","content":"hi"}]}`
-	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(payload))
+	req := httptest.NewRequestWithContext(t.Context(), "POST", "/v1/chat/completions", strings.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -336,9 +336,9 @@ func TestDecodeChatCompletionRequest_ToolChoiceString(t *testing.T) {
 func TestChatCompletions_ValidationError(t *testing.T) {
 	t.Setenv("ALLOW_UNAUTHENTICATED_PROXY", "true")
 	ks := testKeyStore()
-	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "")
+	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "", nil)
 	payload := `{"model":"","messages":[]}`
-	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(payload))
+	req := httptest.NewRequestWithContext(t.Context(), "POST", "/v1/chat/completions", strings.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -351,9 +351,9 @@ func TestChatCompletions_ValidationError(t *testing.T) {
 func TestChatCompletions_UnsupportedModel(t *testing.T) {
 	t.Setenv("ALLOW_UNAUTHENTICATED_PROXY", "true")
 	ks := testKeyStore()
-	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "")
+	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "", nil)
 	payload := `{"model":"unknown","messages":[{"role":"user","content":"hi"}]}`
-	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(payload))
+	req := httptest.NewRequestWithContext(t.Context(), "POST", "/v1/chat/completions", strings.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -399,9 +399,9 @@ func testStreamRegistry() *providers.Registry {
 func TestChatCompletions_Stream(t *testing.T) {
 	t.Setenv("ALLOW_UNAUTHENTICATED_PROXY", "true")
 	ks := testKeyStore()
-	r := httpserver.NewRouter(testStreamRegistry(), ks, nil, nil, nil, nil, nil, nil, "")
+	r := httpserver.NewRouter(testStreamRegistry(), ks, nil, nil, nil, nil, nil, nil, "", nil)
 	payload := `{"model":"test-stream-model","messages":[{"role":"user","content":"hi"}],"stream":true}`
-	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(payload))
+	req := httptest.NewRequestWithContext(t.Context(), "POST", "/v1/chat/completions", strings.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -442,9 +442,9 @@ func TestWriteSSE_StreamError(t *testing.T) {
 func TestChatCompletions_StreamUnsupported(t *testing.T) {
 	t.Setenv("ALLOW_UNAUTHENTICATED_PROXY", "true")
 	ks := testKeyStore()
-	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "")
+	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "", nil)
 	payload := `{"model":"test-model","messages":[{"role":"user","content":"hi"}],"stream":true}`
-	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(payload))
+	req := httptest.NewRequestWithContext(t.Context(), "POST", "/v1/chat/completions", strings.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -458,7 +458,7 @@ func TestCreateKeyStoreFromEnv_DefaultMemory(t *testing.T) {
 	t.Setenv("API_KEY_STORE_BACKEND", "")
 	t.Setenv("API_KEY_STORE_DSN", "")
 
-	store, backend, err := bootstrap.CreateKeyStoreFromEnv()
+	store, backend, err := bootstrap.CreateKeyStoreFromEnv(t.Context())
 	if err != nil {
 		t.Fatalf("bootstrap.CreateKeyStoreFromEnv returned error: %v", err)
 	}
@@ -578,7 +578,7 @@ func TestCreateKeyStoreFromEnv_SQLite(t *testing.T) {
 	t.Setenv("API_KEY_STORE_BACKEND", "sqlite")
 	t.Setenv("API_KEY_STORE_DSN", dsn)
 
-	store, backend, err := bootstrap.CreateKeyStoreFromEnv()
+	store, backend, err := bootstrap.CreateKeyStoreFromEnv(t.Context())
 	if err != nil {
 		t.Fatalf("bootstrap.CreateKeyStoreFromEnv returned error: %v", err)
 	}
@@ -586,11 +586,11 @@ func TestCreateKeyStoreFromEnv_SQLite(t *testing.T) {
 		t.Fatalf("backend = %s, want sqlite", backend)
 	}
 
-	created, err := store.Create("test", nil, nil)
+	created, err := store.Create(context.Background(), "test", nil, nil)
 	if err != nil {
 		t.Fatalf("create key on sqlite store: %v", err)
 	}
-	if _, ok := store.ValidateKey(created.Key); !ok {
+	if _, ok := store.ValidateKey(context.Background(), created.Key); !ok {
 		t.Fatalf("expected created sqlite key to validate")
 	}
 }
@@ -599,7 +599,7 @@ func TestCreateKeyStoreFromEnv_UnknownBackend(t *testing.T) {
 	t.Setenv("API_KEY_STORE_BACKEND", "unknown")
 	t.Setenv("API_KEY_STORE_DSN", "")
 
-	if _, _, err := bootstrap.CreateKeyStoreFromEnv(); err == nil {
+	if _, _, err := bootstrap.CreateKeyStoreFromEnv(t.Context()); err == nil {
 		t.Fatalf("expected error for unsupported backend")
 	}
 }
@@ -608,7 +608,7 @@ func TestCreateKeyStoreFromEnv_PostgresMissingDSN(t *testing.T) {
 	t.Setenv("API_KEY_STORE_BACKEND", "postgres")
 	t.Setenv("API_KEY_STORE_DSN", "")
 
-	if _, _, err := bootstrap.CreateKeyStoreFromEnv(); err == nil {
+	if _, _, err := bootstrap.CreateKeyStoreFromEnv(t.Context()); err == nil {
 		t.Fatalf("expected error for missing postgres dsn")
 	}
 }
@@ -622,7 +622,7 @@ func TestCreateConfigManagerFromEnv_DefaultMemory(t *testing.T) {
 		Targets:  []aigateway.Target{{VirtualKey: "openai"}},
 	})
 
-	mgr, backend, err := bootstrap.CreateConfigManagerFromEnv(gw)
+	mgr, backend, err := bootstrap.CreateConfigManagerFromEnv(t.Context(), gw)
 	if err != nil {
 		t.Fatalf("bootstrap.CreateConfigManagerFromEnv returned error: %v", err)
 	}
@@ -652,19 +652,19 @@ func TestCreateConfigManagerFromEnv_SQLitePersistence(t *testing.T) {
 	}
 
 	gw1 := newTestGateway(t, initialCfg)
-	mgr1, backend, err := bootstrap.CreateConfigManagerFromEnv(gw1)
+	mgr1, backend, err := bootstrap.CreateConfigManagerFromEnv(t.Context(), gw1)
 	if err != nil {
 		t.Fatalf("bootstrap.CreateConfigManagerFromEnv returned error: %v", err)
 	}
 	if backend != "sqlite" {
 		t.Fatalf("backend = %s, want sqlite", backend)
 	}
-	if err := mgr1.ReloadConfig(updatedCfg); err != nil {
+	if err := mgr1.ReloadConfig(context.Background(), updatedCfg); err != nil {
 		t.Fatalf("reload config via manager: %v", err)
 	}
 
 	gw2 := newTestGateway(t, initialCfg)
-	mgr2, _, err := bootstrap.CreateConfigManagerFromEnv(gw2)
+	mgr2, _, err := bootstrap.CreateConfigManagerFromEnv(t.Context(), gw2)
 	if err != nil {
 		t.Fatalf("bootstrap.CreateConfigManagerFromEnv (second) returned error: %v", err)
 	}
@@ -686,7 +686,7 @@ func TestCreateConfigManagerFromEnv_UnknownBackend(t *testing.T) {
 		Targets:  []aigateway.Target{{VirtualKey: "openai"}},
 	})
 
-	if _, _, err := bootstrap.CreateConfigManagerFromEnv(gw); err == nil {
+	if _, _, err := bootstrap.CreateConfigManagerFromEnv(t.Context(), gw); err == nil {
 		t.Fatalf("expected error for unsupported backend")
 	}
 }
@@ -700,7 +700,7 @@ func TestCreateConfigManagerFromEnv_PostgresMissingDSN(t *testing.T) {
 		Targets:  []aigateway.Target{{VirtualKey: "openai"}},
 	})
 
-	if _, _, err := bootstrap.CreateConfigManagerFromEnv(gw); err == nil {
+	if _, _, err := bootstrap.CreateConfigManagerFromEnv(t.Context(), gw); err == nil {
 		t.Fatalf("expected error for missing postgres dsn")
 	}
 }

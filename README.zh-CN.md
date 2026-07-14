@@ -4,9 +4,12 @@
   <a href="README.md">English</a> | <a href="README.zh-CN.md">中文</a>
 </p>
 
-<h1 align="center">
-  <img src="docs/logo.png" alt="Ferro Labs AI 网关" height="60" align="absmiddle" /> Ferro Labs AI 网关
-</h1>
+<table border="0" cellspacing="0" cellpadding="0"><tr>
+  <td rowspan="2"><img src="docs/logo.png" alt="Ferro Labs AI 网关" width="64" /></td>
+  <td align="center"><h1>Ferro Labs AI 网关</h1></td>
+</tr><tr>
+  <td align="center"><strong>开源、OpenAI 兼容的 LLM 网关</strong></td>
+</tr></table>
 
 **高性能 Go 语言 AI 网关。通过单一 OpenAI 兼容 API 路由 30+ 个提供商的 LLM 请求。**
 
@@ -29,7 +32,7 @@
 
 🔀 **30 个提供商，2,500+ 个模型 — 统一 API**<br/>
 ⚡ **1,000 并发用户下达 13,925 RPS**<br/>
-📦 **单一二进制文件，零依赖，32 MB 基础内存**
+📦 **单一静态二进制文件，无需外部服务，32 MB 基础内存**
 
 <img src="docs/architecture.svg" alt="Ferro Labs AI 网关架构" width="100%" />
 
@@ -44,7 +47,8 @@
 ### 方式 A — 二进制文件（最快）
 
 ```bash
-curl -fsSL https://github.com/ferro-labs/ai-gateway/releases/download/v1.0.6/ferrogw_1.0.6_linux_amd64.tar.gz | tar xz
+VER=$(curl -fsSL https://api.github.com/repos/ferro-labs/ai-gateway/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
+curl -fsSL "https://github.com/ferro-labs/ai-gateway/releases/download/${VER}/ferrogw_${VER#v}_linux_amd64.tar.gz" | tar xz
 chmod +x ferrogw
 ./ferrogw init          # 生成 config.yaml + MASTER_KEY
 ./ferrogw               # 启动服务器
@@ -129,7 +133,7 @@ curl http://localhost:8080/v1/chat/completions \
 
 ---
 
-## 为什么选择 Ferro Labs
+## 为什么选择 Ferro Labs AI 网关
 
 大多数 AI 网关是在高负载下崩溃的 Python 代理，或是占用大量内存的 JavaScript 服务。Ferro Labs AI 网关从头开始用 Go 编写，专为真实世界的吞吐量设计——单一二进制文件，以可预测的延迟和极低的资源消耗路由 LLM 请求。
 
@@ -339,6 +343,20 @@ mcp_servers:
 
 完整模板及所有选项，请参阅 [config.example.yaml](config.example.yaml) 和 [config.example.json](config.example.json)。
 
+### 关键环境变量
+
+| 变量 | 用途 |
+|------|------|
+| `MASTER_KEY` | 所有认证的单一管理凭证（由 `ferrogw init` 生成） |
+| `GATEWAY_CONFIG` | 配置文件路径（YAML/JSON） |
+| `GATEWAY_ENV` | 设置为 `production` 以启用生产模式安全守卫 |
+| `PORT` | 服务端口（默认：`8080`） |
+| `ALLOW_UNAUTHENTICATED_PROXY` | 设置为 `true` 以禁用代理路由认证（仅开发环境；当 `GATEWAY_ENV=production` 时被阻止） |
+| `CORS_ORIGINS` | 逗号分隔的允许 CORS 来源；未设置时拒绝跨域访问 |
+| `TRUSTED_PROXIES` | 逗号分隔的可信反向代理 CIDR；仅来自这些地址的 `X-Forwarded-For`/`X-Real-IP` 会被信任（默认：回环地址） |
+
+完整环境变量参考（含提供商 API 密钥和 OTel 配置），请参阅 [AGENTS.md](AGENTS.md)。
+
 ---
 
 ## 可观测性
@@ -365,7 +383,7 @@ observability:
     service_name: ferrogw
     sample_ratio: 1.0
     privacy_level: metadata    # none | metadata | full（见下文）
-    shutdown_grace: 10s        # 关闭时排空 OTel 导出的最长等待时间
+    shutdown_grace: 10s        # 每个 OTel 关闭阶段的等待时间；总耗时最多可达该值的 2 倍
     # headers:                          # 认证后端所需的 OTLP 导出请求头
     #   dd-api-key: "${DATADOG_API_KEY}"  # 值支持 ${ENV_VAR} 环境变量插值
 
@@ -499,7 +517,8 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up
 **生产**（固定发布标签——生产环境切勿使用 `latest`）：
 
 ```bash
-IMAGE_TAG=v1.0.6 CORS_ORIGINS=https://your-domain.com \
+# 替换为最新发布标签
+IMAGE_TAG=v1.1.7 CORS_ORIGINS=https://your-domain.com \
   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 ```
 

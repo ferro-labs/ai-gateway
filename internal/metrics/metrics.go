@@ -10,6 +10,9 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
+// UnknownModelLabel is the bounded label used for rejected requests whose model is unknown.
+const UnknownModelLabel = "unknown"
+
 // Request-level counters and histograms.
 var (
 	// RequestsTotal counts completed requests labelled by provider, model, and
@@ -60,6 +63,18 @@ var (
 		[]string{"provider", "error_type"},
 	)
 
+	// ProviderInitFailures counts providers whose factory failed at startup. A
+	// failure is warned-and-skipped so one bad credential cannot stop the
+	// gateway, which makes this counter the only machine-readable signal that a
+	// configured provider is missing. Alert on any non-zero value.
+	ProviderInitFailures = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "gateway_provider_init_failures_total",
+			Help: "Total providers skipped because their factory failed at startup.",
+		},
+		[]string{"provider"},
+	)
+
 	// CircuitBreakerState tracks per-provider circuit breaker state as a gauge:
 	// 0 = closed, 1 = open, 2 = half_open.
 	CircuitBreakerState = promauto.NewGaugeVec(
@@ -91,6 +106,8 @@ var (
 		[]string{"provider", "model"},
 	)
 
+	// ServerConnectionsCurrent gauges current inbound HTTP connections, labelled
+	// by connection state ("active", "idle").
 	ServerConnectionsCurrent = promauto.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "gateway_server_connections_current",
@@ -99,6 +116,10 @@ var (
 		[]string{"state"},
 	)
 
+	// ServerConnectionTransitionsTotal counts inbound HTTP connection state
+	// transitions, labelled by the same state values emitted by
+	// internal/httpserver's connStateLabel (e.g. "new", "active", "idle",
+	// "hijacked", "closed", "unknown").
 	ServerConnectionTransitionsTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "gateway_server_connection_transitions_total",
@@ -107,12 +128,24 @@ var (
 		[]string{"state"},
 	)
 
+	// HookEventsDroppedTotal counts hook dispatches dropped because the hook
+	// worker queue was full, labelled by hook subject.
 	HookEventsDroppedTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "gateway_hook_events_dropped_total",
 			Help: "Total hook dispatches dropped because the hook worker queue was full.",
 		},
 		[]string{"subject"},
+	)
+
+	// CatalogLoadsTotal counts model catalog load attempts, labelled by source
+	// ("remote", "fallback") and result ("success", "error").
+	CatalogLoadsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "gateway_catalog_loads_total",
+			Help: "Total model catalog load attempts by source and result.",
+		},
+		[]string{"source", "result"},
 	)
 )
 

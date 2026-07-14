@@ -18,6 +18,12 @@ type StreamProvider = core.StreamProvider
 // ProxiableProvider is an alias for core.ProxiableProvider.
 type ProxiableProvider = core.ProxiableProvider
 
+// NonOpenAIWireProvider is an alias for core.NonOpenAIWireProvider.
+type NonOpenAIWireProvider = core.NonOpenAIWireProvider
+
+// RequestSigner is an alias for core.RequestSigner.
+type RequestSigner = core.RequestSigner
+
 // EmbeddingProvider is an alias for core.EmbeddingProvider.
 type EmbeddingProvider = core.EmbeddingProvider
 
@@ -116,5 +122,14 @@ const (
 
 // ----------------------------------------------------------------- Functions -
 
+// UnsupportedParamError re-exports core.UnsupportedParamError.
+type UnsupportedParamError = core.UnsupportedParamError
+
+// ErrProviderSaturated re-exports core.ErrProviderSaturated.
+var ErrProviderSaturated = core.ErrProviderSaturated
+
 // ParseStatusCode re-exports core.ParseStatusCode.
 var ParseStatusCode = core.ParseStatusCode
+
+// RetryAfterFrom re-exports core.RetryAfterFrom.
+var RetryAfterFrom = core.RetryAfterFrom

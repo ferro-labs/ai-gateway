@@ -1,5 +1,10 @@
 'use strict';
 
+registerActions({
+  'toggle-system-prompt': toggleSystemPrompt,
+  'send-message': sendMessage
+});
+
 function toggleSystemPrompt() {
   var textarea = document.getElementById('pg-system');
   var btn = document.getElementById('pg-system-toggle');

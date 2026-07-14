@@ -1,0 +1,89 @@
+package core
+
+import (
+	"errors"
+	"fmt"
+)
+
+// errEmptyEmbeddingInput is returned when an embeddings "input" array is empty.
+var errEmptyEmbeddingInput = errors.New("embed: Input must not be an empty array")
+
+// CoerceEmbeddingInput flattens an OpenAI embeddings "input" value into a plain
+// []string for providers whose native API accepts only a list of texts. A bare
+// string becomes a one-element slice; a []string is returned as-is; a []any is
+// coerced element-by-element. An empty array, a nil input, or a non-string
+// element is rejected.
+func CoerceEmbeddingInput(input any) ([]string, error) {
+	switch v := input.(type) {
+	case string:
+		return []string{v}, nil
+	case []string:
+		if len(v) == 0 {
+			return nil, errEmptyEmbeddingInput
+		}
+		return v, nil
+	case []any:
+		if len(v) == 0 {
+			return nil, errEmptyEmbeddingInput
+		}
+		return coerceAnyStrings(v)
+	case nil:
+		return nil, fmt.Errorf("embed: Input must not be nil")
+	default:
+		return nil, fmt.Errorf("embed: unsupported Input type %T; want string or []string", input)
+	}
+}
+
+// NormalizeEmbeddingInput validates an OpenAI embeddings "input" value while
+// preserving the bare-string vs array distinction that native/SDK request
+// unions need (unlike CoerceEmbeddingInput, which always flattens to []string).
+// A bare string is returned unchanged; a []string is returned as-is; a []any is
+// coerced element-by-element to []string. An empty array, a nil input, or a
+// non-string element is rejected. It does NOT reject empty or whitespace-only
+// strings; providers that require that (azure_openai, databricks) keep their own
+// stricter validator.
+func NormalizeEmbeddingInput(input any) (any, error) {
+	switch v := input.(type) {
+	case string:
+		return v, nil
+	case []string:
+		if len(v) == 0 {
+			return nil, errEmptyEmbeddingInput
+		}
+		return v, nil
+	case []any:
+		if len(v) == 0 {
+			return nil, errEmptyEmbeddingInput
+		}
+		return coerceAnyStrings(v)
+	case nil:
+		return nil, fmt.Errorf("embed: Input must not be nil")
+	default:
+		return nil, fmt.Errorf("embed: unsupported Input type %T; want string or []string", input)
+	}
+}
+
+// ValidateEmbeddingEncodingFormat rejects an embeddings encoding_format that a
+// float-only provider cannot honor. Empty (unset) and "float" are accepted; any
+// other value returns an error. Providers that also support "base64" (openai,
+// azure_openai) validate their own wider set and do not use this helper.
+func ValidateEmbeddingEncodingFormat(format string) error {
+	if format != "" && format != "float" {
+		return fmt.Errorf("embed: unsupported encoding_format %q; valid value is \"float\"", format)
+	}
+	return nil
+}
+
+// coerceAnyStrings converts a []any of strings to []string, rejecting any
+// non-string element with a positional error.
+func coerceAnyStrings(v []any) ([]string, error) {
+	strs := make([]string, 0, len(v))
+	for i, item := range v {
+		s, ok := item.(string)
+		if !ok {
+			return nil, fmt.Errorf("embed: Input[%d] is %T, want string", i, item)
+		}
+		strs = append(strs, s)
+	}
+	return strs, nil
+}

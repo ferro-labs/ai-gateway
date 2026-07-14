@@ -3,6 +3,7 @@ package cohere
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
@@ -107,12 +109,231 @@ func TestCohereProvider_CompleteStream_MockSSE(t *testing.T) {
 	if chunks[0].Choices[0].Delta.Content != "Hello" {
 		t.Errorf("delta content = %q, want Hello", chunks[0].Choices[0].Delta.Content)
 	}
-	//nolint:goconst // " there" appears in multiple test strings; fine in tests
 	if chunks[1].Choices[0].Delta.Content != " there" {
 		t.Errorf("delta content = %q, want ' there'", chunks[1].Choices[0].Delta.Content)
 	}
-	if chunks[2].Choices[0].FinishReason != "COMPLETE" {
-		t.Errorf("finish_reason = %q, want COMPLETE", chunks[2].Choices[0].FinishReason)
+	// COMPLETE is normalized to the OpenAI-canonical "stop" (#142).
+	if chunks[2].Choices[0].FinishReason != "stop" {
+		t.Errorf("finish_reason = %q, want stop", chunks[2].Choices[0].FinishReason)
+	}
+}
+
+func TestCohereProvider_CompleteStream_ForwardsToolCallDeltas(t *testing.T) {
+	sseData := `data: {"type":"message-start","id":"chat-1","delta":{"message":{"role":"assistant"}}}
+
+data: {"type":"tool-call-start","index":0,"delta":{"message":{"tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":""}}]}}}
+
+data: {"type":"tool-call-delta","index":0,"delta":{"message":{"tool_calls":{"function":{"arguments":"{\"city\""}}}}}
+
+data: {"type":"tool-call-delta","index":0,"delta":{"message":{"tool_calls":{"function":{"arguments":":\"SF\"}"}}}}}
+
+data: {"type":"tool-call-end","index":0}
+
+data: {"type":"tool-call-start","index":1,"delta":{"message":{"tool_calls":[{"id":"call_2","type":"function","function":{"name":"lookup_time","arguments":""}}]}}}
+
+data: {"type":"tool-call-delta","index":1,"delta":{"message":{"tool_calls":{"function":{"arguments":"{\"city\""}}}}}
+
+data: {"type":"tool-call-end","index":1}
+
+data: {"type":"message-end","delta":{"finish_reason":"TOOL_CALL","usage":{"tokens":{"input_tokens":5,"output_tokens":2}}}}
+
+`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(sseData))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	ch, err := p.CompleteStream(context.Background(), core.Request{
+		Model:    "command-r-plus",
+		Messages: []core.Message{{Role: core.RoleUser, Content: "weather?"}},
+		Tools: []core.Tool{{
+			Type: "function",
+			Function: core.Function{
+				Name:       "lookup",
+				Parameters: json.RawMessage(`{"type":"object","properties":{"city":{"type":"string"}}}`),
+			},
+		}},
+		ToolChoice: "required",
+	})
+	if err != nil {
+		t.Fatalf("CompleteStream() error: %v", err)
+	}
+
+	var chunks []core.StreamChunk
+	for c := range ch {
+		chunks = append(chunks, c)
+	}
+
+	if len(chunks) != 6 {
+		t.Fatalf("chunks len = %d, want 6: %#v", len(chunks), chunks)
+	}
+	start := chunks[0].Choices[0].Delta.ToolCalls[0]
+	if chunks[0].Choices[0].Index != 0 {
+		t.Fatalf("choice index = %d, want sole completion index 0", chunks[0].Choices[0].Index)
+	}
+	if start.Index == nil || *start.Index != 0 || start.ID != "call_1" || start.Function.Name != "lookup" {
+		t.Fatalf("start tool call = %#v, want lookup call at index 0", start)
+	}
+	if chunks[1].Choices[0].Index != 0 {
+		t.Fatalf("args choice index = %d, want sole completion index 0", chunks[1].Choices[0].Index)
+	}
+	if chunks[1].Choices[0].Delta.ToolCalls[0].Function.Arguments != `{"city"` {
+		t.Fatalf("first args delta = %#v", chunks[1].Choices[0].Delta.ToolCalls)
+	}
+	if chunks[2].Choices[0].Index != 0 {
+		t.Fatalf("second args choice index = %d, want sole completion index 0", chunks[2].Choices[0].Index)
+	}
+	if chunks[2].Choices[0].Delta.ToolCalls[0].Function.Arguments != `:"SF"}` {
+		t.Fatalf("second args delta = %#v", chunks[2].Choices[0].Delta.ToolCalls)
+	}
+	secondStart := chunks[3].Choices[0].Delta.ToolCalls[0]
+	if chunks[3].Choices[0].Index != 0 {
+		t.Fatalf("second tool choice index = %d, want sole completion index 0", chunks[3].Choices[0].Index)
+	}
+	if secondStart.Index == nil || *secondStart.Index != 1 || secondStart.ID != "call_2" || secondStart.Function.Name != "lookup_time" {
+		t.Fatalf("second start tool call = %#v, want lookup_time call at index 1", secondStart)
+	}
+	secondArgs := chunks[4].Choices[0].Delta.ToolCalls[0]
+	if chunks[4].Choices[0].Index != 0 {
+		t.Fatalf("second tool args choice index = %d, want sole completion index 0", chunks[4].Choices[0].Index)
+	}
+	if secondArgs.Index == nil || *secondArgs.Index != 1 || secondArgs.Function.Arguments != `{"city"` {
+		t.Fatalf("second tool args delta = %#v, want index 1 city fragment", secondArgs)
+	}
+	if chunks[5].Choices[0].FinishReason != core.FinishReasonToolCalls {
+		t.Fatalf("finish_reason = %q, want %q", chunks[5].Choices[0].FinishReason, core.FinishReasonToolCalls)
+	}
+}
+
+func TestCohereProvider_Complete_ForwardsToolsAndDecodesToolCalls(t *testing.T) {
+	var captured cohereRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{
+			"id":"chat-1",
+			"finish_reason":"TOOL_CALL",
+			"message":{
+				"role":"assistant",
+				"content":[],
+				"tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{\"city\":\"SF\"}"}}]
+			},
+			"usage":{"tokens":{"input_tokens":1,"output_tokens":1}}
+		}`)
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	resp, err := p.Complete(context.Background(), core.Request{
+		Model:    "command-r-plus",
+		Messages: []core.Message{{Role: core.RoleUser, Content: "weather?"}},
+		Tools: []core.Tool{{
+			Type: "function",
+			Function: core.Function{
+				Name:        "lookup",
+				Description: "Lookup weather",
+				Parameters:  json.RawMessage(`{"type":"object","properties":{"city":{"type":"string"}}}`),
+			},
+		}},
+		ToolChoice: "required",
+	})
+	if err != nil {
+		t.Fatalf("Complete() error: %v", err)
+	}
+	if len(captured.Tools) != 1 || captured.Tools[0].Function.Name != "lookup" {
+		t.Fatalf("tools = %#v, want lookup", captured.Tools)
+	}
+	if captured.ToolChoice != "REQUIRED" {
+		t.Fatalf("tool_choice = %q, want REQUIRED", captured.ToolChoice)
+	}
+	if len(resp.Choices) != 1 || len(resp.Choices[0].Message.ToolCalls) != 1 {
+		t.Fatalf("tool calls = %#v, want one", resp.Choices)
+	}
+	tc := resp.Choices[0].Message.ToolCalls[0]
+	if tc.ID != "call_1" || tc.Function.Name != "lookup" || tc.Function.Arguments != `{"city":"SF"}` {
+		t.Fatalf("tool call = %#v, want lookup", tc)
+	}
+	if resp.Choices[0].FinishReason != core.FinishReasonToolCalls {
+		t.Fatalf("finish reason = %q, want tool_calls", resp.Choices[0].FinishReason)
+	}
+}
+
+func TestCohereProvider_Complete_ForwardsToolResultAndDecodesFinalAnswer(t *testing.T) {
+	var captured struct {
+		Messages []struct {
+			Role       string          `json:"role"`
+			ToolCallID string          `json:"tool_call_id,omitempty"`
+			Content    json.RawMessage `json:"content,omitempty"`
+			ToolCalls  []core.ToolCall `json:"tool_calls,omitempty"`
+		} `json:"messages"`
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{
+			"id":"chat-2",
+			"finish_reason":"COMPLETE",
+			"message":{
+				"role":"assistant",
+				"content":[{"type":"text","text":"It is 72F in SF."}]
+			},
+			"usage":{"tokens":{"input_tokens":2,"output_tokens":3}}
+		}`)
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	resp, err := p.Complete(context.Background(), core.Request{
+		Model: "command-r-plus",
+		Messages: []core.Message{
+			{Role: core.RoleUser, Content: "weather?"},
+			{Role: core.RoleAssistant, ToolCalls: []core.ToolCall{{
+				ID:       "call_1",
+				Type:     "function",
+				Function: core.FunctionCall{Name: "lookup", Arguments: `{"city":"SF"}`},
+			}}},
+			{Role: core.RoleTool, ToolCallID: "call_1", Content: `{"temp":"72F"}`},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete() error: %v", err)
+	}
+
+	if len(captured.Messages) != 3 {
+		t.Fatalf("messages len = %d, want 3", len(captured.Messages))
+	}
+	if len(captured.Messages[1].ToolCalls) != 1 || captured.Messages[1].ToolCalls[0].ID != "call_1" {
+		t.Fatalf("assistant tool calls = %#v, want call_1", captured.Messages[1].ToolCalls)
+	}
+	if captured.Messages[2].Role != core.RoleTool || captured.Messages[2].ToolCallID != "call_1" {
+		t.Fatalf("tool result message = %#v, want role tool with call_1", captured.Messages[2])
+	}
+	var toolContent []struct {
+		Type     string `json:"type"`
+		Document struct {
+			Data string `json:"data"`
+		} `json:"document"`
+	}
+	if err := json.Unmarshal(captured.Messages[2].Content, &toolContent); err != nil {
+		t.Fatalf("decode tool content: %v", err)
+	}
+	if len(toolContent) != 1 ||
+		toolContent[0].Type != "document" ||
+		toolContent[0].Document.Data != `{"temp":"72F"}` {
+		t.Fatalf("tool result content = %#v, want document block", toolContent)
+	}
+	if got := resp.Choices[0].Message.Content; got != "It is 72F in SF." {
+		t.Fatalf("final answer = %q, want weather answer", got)
+	}
+	if len(resp.Choices[0].Message.ToolCalls) != 0 {
+		t.Fatalf("final answer tool calls = %#v, want none", resp.Choices[0].Message.ToolCalls)
 	}
 }
 
@@ -237,7 +458,7 @@ func TestCohereProvider_Embed_InvalidInputType(t *testing.T) {
 	p, _ := New("test-key", "")
 	badInputs := []struct {
 		name  string
-		input interface{}
+		input any
 	}{
 		{"nil", nil},
 		{"integer", 42},
@@ -266,7 +487,7 @@ func TestCohereProvider_Embed_SliceWithNonStringElement(t *testing.T) {
 	p, _ := New("test-key", "")
 	_, err := p.Embed(context.Background(), core.EmbeddingRequest{
 		Model: "embed-english-v3.0",
-		Input: []interface{}{"valid", 99, "also-valid"},
+		Input: []any{"valid", 99, "also-valid"},
 	})
 	if err == nil {
 		t.Fatal("expected error for []interface{} with non-string element, got nil")
@@ -280,10 +501,10 @@ func TestCohereProvider_Embed_EmptyInput(t *testing.T) {
 	p, _ := New("test-key", "")
 	inputs := []struct {
 		name  string
-		input interface{}
+		input any
 	}{
 		{"empty string slice", []string{}},
-		{"empty interface slice", []interface{}{}},
+		{"empty interface slice", []any{}},
 	}
 
 	for _, tc := range inputs {
@@ -380,5 +601,241 @@ func TestCohereProvider_Embed_UpstreamNon2xxError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "cohere embed API error (429): rate limited") {
 		t.Errorf("error = %q, want cohere embed API error (429): rate limited", err.Error())
+	}
+}
+
+// TestCohereProvider_Complete_UpstreamNon2xxError exercises the hand-rolled
+// Complete non-200 branch: Cohere's flat {"message":…} error envelope is
+// surfaced as a "cohere API error (<status>): <message>" error.
+func TestCohereProvider_Complete_UpstreamNon2xxError(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+	}{
+		{"rate limited", http.StatusTooManyRequests},
+		{"server error", http.StatusInternalServerError},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, `{"message":"upstream boom"}`)
+			}))
+			defer srv.Close()
+
+			p, _ := New("test-key", srv.URL)
+			_, err := p.Complete(context.Background(), core.Request{
+				Model:    "command-r-plus",
+				Messages: []core.Message{{Role: core.RoleUser, Content: "Hi"}},
+			})
+			if err == nil {
+				t.Fatal("expected upstream error, got nil")
+			}
+			want := fmt.Sprintf("cohere API error (%d): upstream boom", tc.status)
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error = %q, want it to contain %q", err.Error(), want)
+			}
+		})
+	}
+}
+
+// TestCohereProvider_CompleteStream_UpstreamNon2xxError exercises the streaming
+// non-200 branch that reads the body and returns an error BEFORE spawning the
+// producer goroutine, so the caller gets (nil, err) rather than an error chunk.
+func TestCohereProvider_CompleteStream_UpstreamNon2xxError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"message":"stream rate limited"}`)
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	ch, err := p.CompleteStream(context.Background(), core.Request{
+		Model:    "command-r-plus",
+		Messages: []core.Message{{Role: core.RoleUser, Content: "Hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected pre-goroutine error, got nil")
+	}
+	if ch != nil {
+		t.Errorf("expected nil channel on pre-goroutine error, got %#v", ch)
+	}
+	if !strings.Contains(err.Error(), "cohere API error (429): stream rate limited") {
+		t.Errorf("error = %q, want cohere API error (429): stream rate limited", err.Error())
+	}
+}
+
+// TestCohereProvider_CompleteStream_UpstreamErrorBodyExceedsCap verifies that
+// when a non-200 stream response body itself exceeds the read cap, the
+// resulting read error is surfaced to the caller instead of being silently
+// discarded (which would otherwise produce a misleading empty-message error).
+func TestCohereProvider_CompleteStream_UpstreamErrorBodyExceedsCap(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write(make([]byte, core.MaxProviderResponseBytes+1))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	ch, err := p.CompleteStream(context.Background(), core.Request{
+		Model:    "command-r-plus",
+		Messages: []core.Message{{Role: core.RoleUser, Content: "Hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected an error for an oversized non-200 stream response body")
+	}
+	if ch != nil {
+		t.Errorf("expected nil channel on pre-goroutine error, got %#v", ch)
+	}
+	if !strings.Contains(err.Error(), "byte limit") {
+		t.Errorf("error = %q, want it to mention the byte limit (read error must not be discarded)", err.Error())
+	}
+}
+
+// TestCohereProvider_CompleteStream_TruncatedStream verifies that a stream cut
+// short mid-body (declared Content-Length longer than the bytes written) surfaces
+// the scanner read error as a StreamChunk.Error, exercising the mid-stream
+// scanErr() branch.
+func TestCohereProvider_CompleteStream_TruncatedStream(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		// Declare more bytes than are written so the client's read of the body
+		// terminates with an unexpected-EOF error rather than a clean close.
+		w.Header().Set("Content-Length", "4096")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "data: {\"type\":\"content-delta\",\"delta\":{\"message\":{\"content\":{\"text\":\"Hello\"}}}}\n\n")
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	ch, err := p.CompleteStream(context.Background(), core.Request{
+		Model:    "command-r-plus",
+		Messages: []core.Message{{Role: core.RoleUser, Content: "Hi"}},
+	})
+	if err != nil {
+		t.Fatalf("CompleteStream() error: %v", err)
+	}
+
+	var chunks []core.StreamChunk
+	for c := range ch {
+		chunks = append(chunks, c)
+	}
+
+	if len(chunks) == 0 {
+		t.Fatal("expected at least one chunk before the truncation error")
+	}
+	last := chunks[len(chunks)-1]
+	if last.Error == nil {
+		t.Fatalf("final chunk = %#v, want a mid-stream scan error", last)
+	}
+}
+
+// TestComplete_ForwardsVisionContent verifies multimodal image parts are mapped
+// to Cohere content blocks instead of being dropped.
+func TestComplete_ForwardsVisionContent(t *testing.T) {
+	var body map[string]json.RawMessage
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"x","message":{"role":"assistant","content":[{"type":"text","text":"ok"}]},"finish_reason":"COMPLETE","usage":{"tokens":{"input_tokens":1,"output_tokens":1}}}`)
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	if _, err := p.Complete(context.Background(), core.Request{
+		Model: "command-r-plus",
+		Messages: []core.Message{{
+			Role: core.RoleUser,
+			ContentParts: []core.ContentPart{
+				{Type: "text", Text: "what is this"},
+				{Type: "image_url", ImageURL: &core.ImageURLPart{URL: "https://example.com/cat.png"}},
+			},
+		}},
+	}); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	var msgs []struct {
+		Content json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal(body["messages"], &msgs); err != nil {
+		t.Fatalf("decode messages: %v", err)
+	}
+	if len(msgs) == 0 || !strings.Contains(string(msgs[0].Content), "image_url") ||
+		!strings.Contains(string(msgs[0].Content), "example.com/cat.png") {
+		t.Errorf("vision image not forwarded; content=%s", msgs[0].Content)
+	}
+}
+
+// TestCompleteStream_SurfacesUsage verifies the message-end token usage is
+// surfaced on a StreamChunk (previously parsed and discarded).
+func TestCompleteStream_SurfacesUsage(t *testing.T) {
+	sse := "data: {\"type\":\"content-delta\",\"delta\":{\"message\":{\"content\":{\"text\":\"hi\"}}}}\n\n" +
+		"data: {\"type\":\"message-end\",\"delta\":{\"finish_reason\":\"COMPLETE\",\"usage\":{\"tokens\":{\"input_tokens\":7,\"output_tokens\":3}}}}\n\n"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, sse)
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	ch, err := p.CompleteStream(context.Background(), core.Request{
+		Model:    "command-r-plus",
+		Messages: []core.Message{{Role: core.RoleUser, Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("CompleteStream: %v", err)
+	}
+	var usage *core.Usage
+	for c := range ch {
+		if c.Error != nil {
+			t.Fatalf("stream error: %v", c.Error)
+		}
+		if c.Usage != nil {
+			usage = c.Usage
+		}
+	}
+	if usage == nil {
+		t.Fatal("no usage surfaced on cohere stream")
+	}
+	if usage.PromptTokens != 7 || usage.CompletionTokens != 3 || usage.TotalTokens != 10 {
+		t.Fatalf("usage = %+v, want 7/3/10", usage)
+	}
+}
+
+func TestNew_RejectsInvalidBaseURL(t *testing.T) {
+	if _, err := New("k", "://bad"); err == nil {
+		t.Fatal("New accepted an invalid base URL")
+	}
+}
+
+// TestCohereProvider_Complete_PreservesRetryAfter verifies a 429 response's
+// Retry-After header survives cohereAPIError so the fallback strategy can
+// honor the provider's own backoff hint instead of guessing.
+func TestCohereProvider_Complete_PreservesRetryAfter(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "5")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"message":"rate limited"}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	_, err := p.Complete(context.Background(), core.Request{
+		Model:    "command-r-plus",
+		Messages: []core.Message{{Role: "user", Content: "Hi"}},
+	})
+	if err == nil {
+		t.Fatal("Complete() error = nil, want error on 429")
+	}
+	if got := core.ParseStatusCode(err); got != http.StatusTooManyRequests {
+		t.Errorf("ParseStatusCode(err) = %d, want 429", got)
+	}
+	if got := core.RetryAfterFrom(err); got != 5*time.Second {
+		t.Errorf("RetryAfterFrom(err) = %v, want 5s", got)
 	}
 }

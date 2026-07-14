@@ -4,6 +4,7 @@ import (
 	"expvar"
 	"html/template"
 	"io/fs"
+	"net"
 	"net/http"
 
 	aigateway "github.com/ferro-labs/ai-gateway"
@@ -21,13 +22,16 @@ import (
 	"github.com/ferro-labs/ai-gateway/providers"
 	webassets "github.com/ferro-labs/ai-gateway/web"
 	"github.com/go-chi/chi/v5"
-	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 var loginTemplate = template.Must(template.ParseFS(webassets.Assets, "templates/login.html"))
 
 // NewRouter builds the HTTP router for the gateway.
+//
+// trustedProxies lists the CIDR ranges whose X-Forwarded-For / X-Real-IP
+// headers are honored for client-IP resolution. Pass nil or an empty slice to
+// use only the loopback default (127.0.0.0/8, ::1/128).
 func NewRouter(
 	registry *providers.Registry,
 	keyStore admin.Store,
@@ -38,12 +42,31 @@ func NewRouter(
 	logReader requestlog.Reader,
 	logMaintainer requestlog.Maintainer,
 	masterKey string,
+	trustedProxies []*net.IPNet,
 ) http.Handler {
 	gw = ensureGateway(gw, registry)
 
 	r := chi.NewRouter()
 
-	// Core middleware stack.
+	// Resolve the trusted-proxy CIDR list. When the caller passes nil (e.g.
+	// tests), default to the loopback-only set so local reverse proxies are
+	// trusted but arbitrary callers cannot forge their source IP.
+	resolvedProxies := trustedProxies
+	if len(resolvedProxies) == 0 {
+		var err error
+		resolvedProxies, err = ParseTrustedProxyCIDRs("")
+		if err != nil {
+			// ParseTrustedProxyCIDRs("") uses hard-coded defaults and never
+			// returns an error; panic here would indicate a programmer bug.
+			panic("realip: failed to parse default trusted proxy CIDRs: " + err.Error())
+		}
+	}
+
+	// Root middleware stack: safe for every request, including unauthenticated
+	// orchestrator probes, so it runs ahead of any per-client rate limiting.
+	// RecoverJSON is outermost so panics anywhere below this point still return
+	// the gateway's JSON error envelope while inner middleware defers can run.
+	r.Use(middleware.RecoverJSON)
 	// OTel middleware MUST come before logging.Middleware so any inbound
 	// W3C traceparent is extracted into the request context, then the
 	// logging layer reuses that trace ID for X-Request-ID. When no OTel
@@ -51,19 +74,47 @@ func NewRouter(
 	// global propagator is the default no-op propagator).
 	r.Use(gwotel.Middleware)
 	r.Use(logging.Middleware) // inject trace ID + X-Request-ID header
-	r.Use(chimw.Recoverer)
-	r.Use(chimw.RealIP)
-	r.Use(middleware.CORS(corsOrigins...))
+	// SecurityHeaders applies baseline browser-hardening headers (X-Content-Type-Options,
+	// X-Frame-Options, Referrer-Policy, and HSTS on TLS connections) to every response.
+	// It must come before CORS so that security headers are present on all responses,
+	// including preflight rejections and error responses.
+	r.Use(middleware.SecurityHeaders)
 
+	// Orchestrator probes are mounted directly on the root router, ahead of
+	// RealIPMiddleware/CORS/the per-client rate limiter (installed below on a
+	// separate child router). Otherwise a traffic burst against /v1/* that
+	// exhausts one source IP's rate-limit bucket would also 429 that same
+	// IP's liveness probe (e.g. behind a shared load balancer), turning a
+	// load spike into an orchestrator restart loop. See mountProbeRoutes for
+	// why /readyz is not fully exempted the way /health and /livez are.
+	mountProbeRoutes(r, gw, keyStore, cfgManager)
+
+	// Everything else sits behind RealIPMiddleware, CORS, and the per-client
+	// rate limiter, mounted on a genuine child router rather than a
+	// chi.Group: a chi Mux bakes its Use() stack into every route already
+	// registered on it (and panics if Use() is called after a route is
+	// added), and Group can only layer extra middleware onto a subset of
+	// routes -- it can never exempt a route from middleware already
+	// installed on the parent. Mounting a separate router is the only way to
+	// keep /health, /livez, and /readyz's own limiter out of this chain.
+	app := chi.NewRouter()
+	// RealIPMiddleware resolves the client IP from X-Forwarded-For / X-Real-IP
+	// only when the direct TCP peer is within a trusted-proxy CIDR, writing the
+	// resolved host (no port) back into r.RemoteAddr. This replaces the
+	// deprecated chi middleware.RealIP, which honored those headers
+	// unconditionally and could be exploited by a caller that controlled them.
+	app.Use(RealIPMiddleware(resolvedProxies))
+	app.Use(middleware.CORS(corsOrigins...))
 	// Optional per-IP rate limiting middleware.
 	if rlStore != nil {
-		r.Use(middleware.RateLimit(rlStore))
+		app.Use(middleware.RateLimit(rlStore))
 	}
 
-	mountOperationalRoutes(r, gw, keyStore, masterKey)
-	mountDashboardRoutes(r)
-	mountAdminRoutes(r, gw, keyStore, cfgManager, logReader, logMaintainer, masterKey)
-	mountOpenAIRoutes(r, gw, registry, keyStore, masterKey)
+	mountObservabilityRoutes(app, keyStore, masterKey)
+	mountDashboardRoutes(app)
+	mountAdminRoutes(app, gw, keyStore, cfgManager, logReader, logMaintainer, masterKey)
+	mountOpenAIRoutes(app, gw, registry, keyStore, masterKey)
+	r.Mount("/", app)
 
 	return r
 }
@@ -85,6 +136,7 @@ func ensureGateway(gw *aigateway.Gateway, registry *providers.Registry) *aigatew
 	}
 	created, err := aigateway.New(cfg)
 	if err != nil {
+		logging.Logger.Error("failed to build fallback gateway", "error", err)
 		return nil
 	}
 	for _, name := range registry.List() {
@@ -95,8 +147,45 @@ func ensureGateway(gw *aigateway.Gateway, registry *providers.Registry) *aigatew
 	return created
 }
 
-func mountOperationalRoutes(r chi.Router, gw *aigateway.Gateway, store admin.Store, masterKey string) {
+// readyzRatePerSecond and readyzBurst bound /readyz with its own dedicated
+// limit, separate from the per-client rate limiter. /readyz is unauthenticated
+// and fans out to Ping() calls against the key store and config manager
+// (internal/handler/health.go) on every request, so it cannot be exempted
+// from rate limiting the way /health and /livez are without exposing those
+// backing stores to unbounded pings. The bucket is process-global (see
+// mountProbeRoutes): these values cap the aggregate probe rate this process
+// will serve, sized to absorb many orchestrator replicas probing on a normal
+// cadence while still bounding the worst case.
+const (
+	readyzRatePerSecond = 10
+	readyzBurst         = 20
+)
+
+// mountProbeRoutes mounts the orchestrator health probes on r, ahead of the
+// per-client middleware installed on the child router in NewRouter. /health
+// and /livez are pure in-memory reads with no dependency I/O, so they are
+// fully exempt from rate limiting. /readyz gets its own dedicated limiter
+// instead of a blanket exemption or the shared client bucket.
+func mountProbeRoutes(r chi.Router, gw *aigateway.Gateway, store admin.Store, cfgManager admin.ConfigManager) {
 	r.Get("/health", handler.Health(gw))
+	// Split liveness/readiness probes for orchestrator rollout gating: /livez is
+	// process-only, /readyz gates on config, store reachability, and providers.
+	r.Get("/livez", handler.Livez())
+	// One process-global bucket, NOT a per-IP one. What has to be bounded here is
+	// the total Ping() fan-out this process aims at the key store and config
+	// manager, and that ceiling is a property of the stores, not of any one
+	// caller. A per-IP bucket cannot express it: /readyz is unauthenticated, so a
+	// caller presenting many source addresses would receive a fresh allowance for
+	// each one and the per-key map would grow with every address it presented.
+	// A single bucket caps the aggregate rate and holds no per-caller state.
+	readyzLimiter := ratelimit.New(readyzRatePerSecond, readyzBurst)
+	r.With(middleware.RateLimitGlobal(readyzLimiter, "readyz")).
+		Get("/readyz", handler.Readyz(gw, store, cfgManager))
+}
+
+// mountObservabilityRoutes mounts the auth-gated /metrics, /debug/vars, and
+// pprof routes.
+func mountObservabilityRoutes(r chi.Router, store admin.Store, masterKey string) {
 	obsAuth := admin.AuthMiddleware(store, masterKey)
 	r.Group(func(r chi.Router) {
 		r.Use(obsAuth)
@@ -178,8 +267,18 @@ func mountAdminRoutes(
 		Logs:      logReader,
 		LogAdmin:  logMaintainer,
 	}
+
+	// Apply the same body-size cap to admin write routes.
+	maxBytes := aigateway.DefaultMaxRequestBytes
+	if gw != nil {
+		if cfg := gw.GetConfig(); cfg.MaxRequestBytes > 0 {
+			maxBytes = cfg.MaxRequestBytes
+		}
+	}
+
 	r.Route("/admin", func(r chi.Router) {
 		r.Use(admin.AuthMiddleware(keyStore, masterKey))
+		r.Use(middleware.MaxRequestBody(maxBytes))
 		r.Mount("/", adminHandlers.Routes())
 	})
 }
@@ -187,9 +286,19 @@ func mountAdminRoutes(
 func mountOpenAIRoutes(r chi.Router, gw *aigateway.Gateway, registry *providers.Registry, store admin.Store, masterKey string) {
 	auth := middleware.ProxyAuth(store, masterKey)
 
+	// Determine the body-size cap: use the operator's config or the safe default.
+	maxBytes := aigateway.DefaultMaxRequestBytes
+	if gw != nil {
+		if cfg := gw.GetConfig(); cfg.MaxRequestBytes > 0 {
+			maxBytes = cfg.MaxRequestBytes
+		}
+	}
+
 	r.Group(func(r chi.Router) {
 		r.Use(auth)
+		r.Use(middleware.MaxRequestBody(maxBytes))
 		r.Get("/v1/models", handler.Models(gw))
+		r.Get("/v1/capabilities", handler.Capabilities(registry))
 		r.Post("/v1/chat/completions", handler.ChatCompletions(gw))
 
 		// Legacy text completions.

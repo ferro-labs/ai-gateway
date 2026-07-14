@@ -2,8 +2,10 @@ package azurefoundry
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/ferro-labs/ai-gateway/providers/core"
@@ -12,7 +14,7 @@ import (
 const (
 	testAPIKey                    = "test-key"
 	testBearerAPIKey              = "Bearer test-key"
-	testChatCompletionsPath       = "/chat/completions"
+	testChatCompletionsPath       = "/openai/v1/chat/completions"
 	azureFoundryDefaultAPIVersion = "2024-05-01-preview"
 )
 
@@ -56,8 +58,8 @@ func TestAzureFoundryProvider_Complete_MockHTTP(t *testing.T) {
 		if r.URL.Path != testChatCompletionsPath {
 			t.Errorf("request path = %q, want %s", r.URL.Path, testChatCompletionsPath)
 		}
-		if r.URL.Query().Get("api-version") != azureFoundryDefaultAPIVersion {
-			t.Errorf("api-version = %q, want %s", r.URL.Query().Get("api-version"), azureFoundryDefaultAPIVersion)
+		if v := r.URL.Query().Get("api-version"); v != "" {
+			t.Errorf("api-version = %q, want none (GA v1 route takes no api-version)", v)
 		}
 		if got := r.Header.Get("api-key"); got != testAPIKey {
 			t.Errorf("api-key = %q, want %s", got, testAPIKey)
@@ -116,5 +118,67 @@ func TestAzureFoundryProvider_CompleteStream_MockSSE(t *testing.T) {
 	}
 	if chunks[1].Choices[0].Delta.Content != "Hello" {
 		t.Errorf("delta content = %q, want Hello", chunks[1].Choices[0].Delta.Content)
+	}
+}
+
+// TestComplete_SetsExtraParametersAndDecodes verifies the request carries the
+// "extra-parameters: drop" header and the response is decoded (content + usage).
+func TestComplete_SetsExtraParametersAndDecodes(t *testing.T) {
+	var extraParams string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		extraParams = r.Header.Get("extra-parameters")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"chatcmpl-1","model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}`)
+	}))
+	defer srv.Close()
+
+	p, err := New(testAPIKey, srv.URL, "")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	resp, err := p.Complete(context.Background(), core.Request{
+		Model:    "gpt-4o",
+		Messages: []core.Message{{Role: core.RoleUser, Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if extraParams != "drop" {
+		t.Errorf("extra-parameters header = %q, want drop", extraParams)
+	}
+	if len(resp.Choices) != 1 || resp.Choices[0].Message.Content != "hello" {
+		t.Errorf("decoded choices = %+v", resp.Choices)
+	}
+	if resp.Usage.TotalTokens != 7 {
+		t.Errorf("usage = %+v, want total 7", resp.Usage)
+	}
+}
+
+func TestComplete_ErrorPathReturnsAPIError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"error":{"message":"bad model"}}`)
+	}))
+	defer srv.Close()
+
+	p, err := New(testAPIKey, srv.URL, "")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_, err = p.Complete(context.Background(), core.Request{
+		Model:    "gpt-4o",
+		Messages: []core.Message{{Role: core.RoleUser, Content: "hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected error for 400")
+	}
+	if !strings.Contains(err.Error(), "bad model") || !strings.Contains(err.Error(), "400") {
+		t.Fatalf("error = %v, want status + message", err)
+	}
+}
+
+func TestNew_RejectsInvalidBaseURL(t *testing.T) {
+	if _, err := New(testAPIKey, "://bad", ""); err == nil {
+		t.Fatal("New accepted an invalid base URL")
 	}
 }

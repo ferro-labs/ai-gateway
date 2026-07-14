@@ -2,16 +2,16 @@
 package ollama
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
 	"github.com/ferro-labs/ai-gateway/providers/core"
+	"github.com/ferro-labs/ai-gateway/providers/internal/openaicompat"
 )
 
 // Name is the canonical provider identifier.
@@ -32,14 +32,20 @@ var (
 	_ core.Provider          = (*Provider)(nil)
 	_ core.StreamProvider    = (*Provider)(nil)
 	_ core.ProxiableProvider = (*Provider)(nil)
+	_ core.EmbeddingProvider = (*Provider)(nil)
+	_ core.DiscoveryProvider = (*Provider)(nil)
 )
 
 // New creates a new Ollama provider.
 func New(baseURL string, models []string) (*Provider, error) {
+	baseURL = strings.TrimSpace(baseURL)
 	if baseURL == "" {
 		baseURL = defaultBaseURL
 	}
 	baseURL = strings.TrimRight(baseURL, "/")
+	if err := core.ValidateBaseURL(Name, baseURL); err != nil {
+		return nil, err
+	}
 
 	if len(models) == 0 {
 		models = []string{"llama3.2"}
@@ -74,50 +80,76 @@ func (p *Provider) Models() []core.ModelInfo {
 	return core.ModelsFromList(p.name, p.SupportedModels())
 }
 
-type ollamaRequest struct {
-	Model       string         `json:"model"`
-	Messages    []core.Message `json:"messages"`
-	Temperature *float64       `json:"temperature,omitempty"`
-	MaxTokens   *int           `json:"max_tokens,omitempty"`
-	Stream      bool           `json:"stream,omitempty"`
-}
-
-type ollamaResponse struct {
-	ID      string        `json:"id"`
-	Model   string        `json:"model"`
-	Choices []core.Choice `json:"choices"`
-	Usage   core.Usage    `json:"usage"`
-}
-
-type ollamaErrorDetail struct {
-	Message string `json:"message"`
-	Type    string `json:"type"`
-}
-
-type ollamaErrorResponse struct {
-	Error ollamaErrorDetail `json:"error"`
-}
-
-// Complete sends a chat completion request and returns the full response.
+// Complete sends a chat completion request and returns the full response. It
+// speaks Ollama's OpenAI-compatible /v1/chat/completions endpoint via the shared
+// helper, which sets core.Response.Provider and normalizes finish reasons.
 func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
-	ollamaReq := ollamaRequest{
-		Model:       req.Model,
-		Messages:    req.Messages,
-		Temperature: req.Temperature,
-		MaxTokens:   req.MaxTokens,
-	}
+	return openaicompat.PostChat(ctx, openaicompat.ChatParams{
+		HTTPClient: p.httpClient,
+		URL:        p.baseURL + "/v1/chat/completions",
+		Provider:   p.name,
+		Label:      "ollama",
+		Headers:    map[string]string{"Content-Type": "application/json"},
+	}, req)
+}
 
-	bodyReader, _, release, err := core.JSONBodyReader(ollamaReq)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
-	}
-	defer release()
+// CompleteStream sends a streaming chat completion request to Ollama.
+func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan core.StreamChunk, error) {
+	return openaicompat.PostStream(ctx, openaicompat.ChatParams{
+		HTTPClient: p.httpClient,
+		URL:        p.baseURL + "/v1/chat/completions",
+		Provider:   p.name,
+		Label:      "ollama",
+		Headers:    map[string]string{"Content-Type": "application/json"},
+	}, req)
+}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/v1/chat/completions", bodyReader)
+type tagsResponse struct {
+	Models []struct {
+		Name       string `json:"name"`
+		Model      string `json:"model"`
+		ModifiedAt string `json:"modified_at"`
+	} `json:"models"`
+}
+
+// ollamaAPIError builds a provider error from a non-2xx response on one of
+// Ollama's native endpoints (/api/tags, /api/embed). Ollama documents its
+// error body as a flat {"error":"..."} string (see
+// https://docs.ollama.com/api/errors), not the OpenAI-nested
+// {"error":{"message":...}} shape core.APIError expects, so core.APIError
+// cannot decode it. The OpenAI-compat surface (/v1/chat/completions, used by
+// Complete/CompleteStream) is a different endpoint that genuinely does return
+// OpenAI-shaped errors and keeps using core.APIError via openaicompat. resp's
+// Retry-After hint is preserved so the fallback strategy can honor it instead
+// of guessing a backoff.
+func ollamaAPIError(resp *http.Response, body []byte) error {
+	msg := string(body)
+	var envelope struct {
+		Error string `json:"error"`
+	}
+	if json.Unmarshal(body, &envelope) == nil && envelope.Error != "" {
+		msg = envelope.Error
+	}
+	return &core.HTTPStatusError{
+		StatusCode: resp.StatusCode,
+		Message:    fmt.Sprintf("ollama API error (%d): %s", resp.StatusCode, msg),
+		RetryAfter: core.ParseRetryAfter(resp.Header.Get("Retry-After")),
+	}
+}
+
+// DiscoverModels fetches the live model list from the self-hosted Ollama
+// server's /api/tags endpoint. Ollama is unauthenticated, so no Authorization
+// header is sent.
+//
+// Unlike ollama_cloud, this deliberately does NOT cache the discovered names
+// for use by SupportsModel: for self-hosted Ollama, SupportsModel always
+// returns true because the server validates model names itself, so there is
+// nothing to track. Do not "fix" this to mirror ollama_cloud.
+func (p *Provider) DiscoverModels(ctx context.Context) ([]core.ModelInfo, error) {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, p.baseURL+"/api/tags", nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
 
 	httpResp, err := p.httpClient.Do(httpReq)
 	if err != nil {
@@ -125,123 +157,52 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 	}
 	defer func() { _ = httpResp.Body.Close() }()
 
-	respBody, err := io.ReadAll(httpResp.Body)
+	respBody, err := core.ReadResponseBody(httpResp.Body, core.MaxProviderResponseBytes)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 
 	if httpResp.StatusCode != http.StatusOK {
-		var errResp ollamaErrorResponse
-		if json.Unmarshal(respBody, &errResp) == nil && errResp.Error.Message != "" {
-			return nil, fmt.Errorf("ollama API error (%d): %s", httpResp.StatusCode, errResp.Error.Message)
+		return nil, ollamaAPIError(httpResp, respBody)
+	}
+
+	var tags tagsResponse
+	if err := json.Unmarshal(respBody, &tags); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal models response: %w", err)
+	}
+
+	seen := make(map[string]struct{}, len(tags.Models))
+	models := make([]core.ModelInfo, 0, len(tags.Models))
+	for _, m := range tags.Models {
+		id := strings.TrimSpace(m.Name)
+		if id == "" {
+			id = strings.TrimSpace(m.Model)
 		}
-		return nil, fmt.Errorf("ollama API error (%d): %s", httpResp.StatusCode, string(respBody))
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		models = append(models, core.ModelInfo{
+			ID:      id,
+			Object:  "model",
+			Created: parseCreatedAt(m.ModifiedAt),
+			OwnedBy: p.name,
+		})
 	}
 
-	var ollamaResp ollamaResponse
-	if err := json.Unmarshal(respBody, &ollamaResp); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
-	}
-
-	return &core.Response{
-		ID:      ollamaResp.ID,
-		Model:   ollamaResp.Model,
-		Choices: ollamaResp.Choices,
-		Usage:   ollamaResp.Usage,
-	}, nil
+	return models, nil
 }
 
-type ollamaStreamResponse struct {
-	ID      string `json:"id"`
-	Model   string `json:"model"`
-	Choices []struct {
-		Index int `json:"index"`
-		Delta struct {
-			Role    string `json:"role,omitempty"`
-			Content string `json:"content,omitempty"`
-		} `json:"delta"`
-		FinishReason string `json:"finish_reason,omitempty"`
-	} `json:"choices"`
-}
-
-// CompleteStream sends a streaming chat completion request to Ollama.
-func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan core.StreamChunk, error) {
-	ollamaReq := ollamaRequest{
-		Model:       req.Model,
-		Messages:    req.Messages,
-		Temperature: req.Temperature,
-		MaxTokens:   req.MaxTokens,
-		Stream:      true,
+func parseCreatedAt(value string) int64 {
+	if value == "" {
+		return 0
 	}
-
-	bodyReader, _, release, err := core.JSONBodyReader(ollamaReq)
+	t, err := time.Parse(time.RFC3339Nano, value)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
+		return 0
 	}
-	defer release()
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/v1/chat/completions", bodyReader)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	httpResp, err := p.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
-	}
-
-	if httpResp.StatusCode != http.StatusOK {
-		defer func() { _ = httpResp.Body.Close() }()
-		respBody, _ := io.ReadAll(httpResp.Body)
-		var errResp ollamaErrorResponse
-		if json.Unmarshal(respBody, &errResp) == nil && errResp.Error.Message != "" {
-			return nil, fmt.Errorf("ollama API error (%d): %s", httpResp.StatusCode, errResp.Error.Message)
-		}
-		return nil, fmt.Errorf("ollama API error (%d): %s", httpResp.StatusCode, string(respBody))
-	}
-
-	ch := make(chan core.StreamChunk)
-	go func() {
-		defer close(ch)
-		defer func() { _ = httpResp.Body.Close() }()
-
-		scanner := bufio.NewScanner(httpResp.Body)
-		for scanner.Scan() {
-			line := scanner.Text()
-			if !strings.HasPrefix(line, "data: ") {
-				continue
-			}
-			data := strings.TrimPrefix(line, "data: ")
-			if data == core.SSEDone {
-				return
-			}
-
-			var chunk ollamaStreamResponse
-			if json.Unmarshal([]byte(data), &chunk) != nil {
-				continue
-			}
-
-			sc := core.StreamChunk{
-				ID:    chunk.ID,
-				Model: chunk.Model,
-			}
-			for _, c := range chunk.Choices {
-				sc.Choices = append(sc.Choices, core.StreamChoice{
-					Index: c.Index,
-					Delta: core.MessageDelta{
-						Role:    c.Delta.Role,
-						Content: c.Delta.Content,
-					},
-					FinishReason: c.FinishReason,
-				})
-			}
-			ch <- sc
-		}
-		if err := scanner.Err(); err != nil {
-			ch <- core.StreamChunk{Error: err}
-		}
-	}()
-
-	return ch, nil
+	return t.Unix()
 }

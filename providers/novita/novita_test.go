@@ -16,6 +16,8 @@ import (
 const (
 	testBearerAPIKey   = "Bearer test-key"
 	testEmbeddingModel = "baai/bge-m3"
+	testChatModel      = "deepseek/deepseek-v3.2"
+	testChatPath       = "/chat/completions"
 )
 
 func TestNewNovita(t *testing.T) {
@@ -85,7 +87,8 @@ func TestNovitaProvider_CompleteStream_MockSSE(t *testing.T) {
 		"data: {\"id\":\"cmpl-1\",\"model\":\"deepseek/deepseek-v3.2\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
 		"data: [DONE]\n\n"
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertNovitaChatRequest(t, r)
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(sseData))
@@ -120,7 +123,8 @@ func TestNovitaProvider_CompleteStream_MockSSE(t *testing.T) {
 func TestNovitaProvider_Complete_MockHTTP(t *testing.T) {
 	respBody := `{"id":"cmpl-1","model":"deepseek/deepseek-v3.2","choices":[{"index":0,"message":{"role":"assistant","content":"Hello!"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}`
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertNovitaChatRequest(t, r)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(respBody))
@@ -129,7 +133,7 @@ func TestNovitaProvider_Complete_MockHTTP(t *testing.T) {
 
 	p, _ := New("test-key", srv.URL)
 	resp, err := p.Complete(context.Background(), core.Request{
-		Model:    "deepseek/deepseek-v3.2",
+		Model:    testChatModel,
 		Messages: []core.Message{{Role: "user", Content: "Hi"}},
 	})
 	if err != nil {
@@ -140,6 +144,33 @@ func TestNovitaProvider_Complete_MockHTTP(t *testing.T) {
 	}
 	if len(resp.Choices) == 0 {
 		t.Error("expected at least one choice")
+	}
+}
+
+// assertNovitaChatRequest verifies the outbound chat request shape: a POST to
+// /chat/completions carrying bearer auth and the forwarded model and messages.
+func assertNovitaChatRequest(t *testing.T, r *http.Request) {
+	t.Helper()
+	if r.Method != http.MethodPost {
+		t.Errorf("method = %s, want POST", r.Method)
+	}
+	if r.URL.Path != testChatPath {
+		t.Errorf("path = %q, want %s", r.URL.Path, testChatPath)
+	}
+	if got := r.Header.Get("Authorization"); got != testBearerAPIKey {
+		t.Errorf("Authorization = %q, want %s", got, testBearerAPIKey)
+	}
+	var body map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		t.Errorf("failed to decode request body: %v", err)
+		return
+	}
+	if got := body["model"]; got != testChatModel {
+		t.Errorf("model = %v, want %s", got, testChatModel)
+	}
+	msgs, ok := body["messages"].([]any)
+	if !ok || len(msgs) == 0 {
+		t.Errorf("messages = %#v, want non-empty array", body["messages"])
 	}
 }
 
@@ -185,13 +216,13 @@ func TestNovitaProvider_Embed_InvalidInput(t *testing.T) {
 	p, _ := New("test-key", srv.URL)
 	badInputs := []struct {
 		name  string
-		input interface{}
+		input any
 	}{
 		{"nil", nil},
 		{"integer", 42},
 		{"empty-string-slice", []string{}},
-		{"empty-interface-slice", []interface{}{}},
-		{"non-string-array-member", []interface{}{"ok", 42}},
+		{"empty-interface-slice", []any{}},
+		{"non-string-array-member", []any{"ok", 42}},
 	}
 	for _, tc := range badInputs {
 		t.Run(tc.name, func(t *testing.T) {
@@ -233,7 +264,7 @@ func TestNovitaProvider_Embed_UpstreamError(t *testing.T) {
 	}
 }
 
-func testNovitaEmbedSuccess(t *testing.T, input interface{}) {
+func testNovitaEmbedSuccess(t *testing.T, input any) {
 	t.Helper()
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -250,7 +281,7 @@ func testNovitaEmbedSuccess(t *testing.T, input interface{}) {
 			t.Errorf("Content-Type = %q, want application/json", got)
 		}
 
-		var body map[string]interface{}
+		var body map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatalf("failed to decode request body: %v", err)
 		}
@@ -293,7 +324,7 @@ func testNovitaEmbedSuccess(t *testing.T, input interface{}) {
 	}
 }
 
-func assertNovitaEmbeddingInput(t *testing.T, got interface{}, want interface{}) {
+func assertNovitaEmbeddingInput(t *testing.T, got any, want any) {
 	t.Helper()
 
 	switch w := want.(type) {
@@ -302,7 +333,7 @@ func assertNovitaEmbeddingInput(t *testing.T, got interface{}, want interface{})
 			t.Fatalf("input = %#v, want %q", got, w)
 		}
 	case []string:
-		arr, ok := got.([]interface{})
+		arr, ok := got.([]any)
 		if !ok {
 			t.Fatalf("input type = %T, want JSON array", got)
 		}
@@ -316,5 +347,127 @@ func assertNovitaEmbeddingInput(t *testing.T, got interface{}, want interface{})
 		}
 	default:
 		t.Fatalf("unsupported test input type %T", want)
+	}
+}
+
+// TestNew_RejectsInvalidBaseURL verifies the constructor fails fast when the base
+// URL is not a valid absolute http(s) URL with a host.
+func TestNew_RejectsInvalidBaseURL(t *testing.T) {
+	if _, err := New("test-key", "://nope"); err == nil {
+		t.Fatal("New() accepted an invalid base URL, want error")
+	}
+}
+
+// TestNovitaProvider_Complete_UpstreamError verifies a non-2xx chat response
+// surfaces an error carrying both the HTTP status and the upstream message.
+func TestNovitaProvider_Complete_UpstreamError(t *testing.T) {
+	tests := []struct {
+		name    string
+		status  int
+		message string
+	}{
+		{"rate-limited", http.StatusTooManyRequests, "slow down"},
+		{"server-error", http.StatusInternalServerError, "internal boom"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != testChatPath {
+					t.Errorf("path = %q, want %s", r.URL.Path, testChatPath)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(`{"error":{"message":"` + tc.message + `"}}`))
+			}))
+			defer srv.Close()
+
+			p, _ := New("test-key", srv.URL)
+			_, err := p.Complete(context.Background(), core.Request{
+				Model:    testChatModel,
+				Messages: []core.Message{{Role: "user", Content: "Hi"}},
+			})
+			if err == nil {
+				t.Fatal("Complete() error = nil, want upstream error")
+			}
+			if got := core.ParseStatusCode(err); got != tc.status {
+				t.Errorf("ParseStatusCode(err) = %d, want %d", got, tc.status)
+			}
+			if !strings.Contains(err.Error(), "novita API error") {
+				t.Errorf("error = %v, want it to contain %q", err, "novita API error")
+			}
+			if !strings.Contains(err.Error(), tc.message) {
+				t.Errorf("error = %v, want it to contain %q", err, tc.message)
+			}
+		})
+	}
+}
+
+// TestNovitaProvider_CompleteStream_UpstreamError verifies a non-2xx streaming
+// response is drained and surfaced as an error before any chunk is produced.
+func TestNovitaProvider_CompleteStream_UpstreamError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != testChatPath {
+			t.Errorf("path = %q, want %s", r.URL.Path, testChatPath)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":{"message":"upstream unavailable"}}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	ch, err := p.CompleteStream(context.Background(), core.Request{
+		Model:    testChatModel,
+		Messages: []core.Message{{Role: "user", Content: "Hi"}},
+	})
+	if err == nil {
+		t.Fatal("CompleteStream() error = nil, want upstream error")
+	}
+	if ch != nil {
+		t.Error("CompleteStream() channel = non-nil, want nil on error")
+	}
+	if got := core.ParseStatusCode(err); got != http.StatusServiceUnavailable {
+		t.Errorf("ParseStatusCode(err) = %d, want %d", got, http.StatusServiceUnavailable)
+	}
+	if !strings.Contains(err.Error(), "novita API error") {
+		t.Errorf("error = %v, want it to contain %q", err, "novita API error")
+	}
+	if !strings.Contains(err.Error(), "upstream unavailable") {
+		t.Errorf("error = %v, want it to contain %q", err, "upstream unavailable")
+	}
+}
+
+// TestNovitaProvider_DiscoverModels verifies live discovery issues a GET to
+// /models with bearer auth and parses the returned model metadata.
+func TestNovitaProvider_DiscoverModels(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("method = %q, want GET", r.Method)
+		}
+		if r.URL.Path != "/models" {
+			t.Errorf("path = %q, want /models", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != testBearerAPIKey {
+			t.Errorf("Authorization = %q, want %s", got, testBearerAPIKey)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"` + testChatModel + `","object":"model","created":1700000000,"owned_by":"novita"}]}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	models, err := p.DiscoverModels(context.Background())
+	if err != nil {
+		t.Fatalf("DiscoverModels() error: %v", err)
+	}
+	if len(models) != 1 {
+		t.Fatalf("expected 1 model, got %d", len(models))
+	}
+	if models[0].ID != testChatModel {
+		t.Errorf("model[0].ID = %q, want %s", models[0].ID, testChatModel)
+	}
+	if models[0].OwnedBy != "novita" {
+		t.Errorf("model[0].OwnedBy = %q, want novita", models[0].OwnedBy)
 	}
 }

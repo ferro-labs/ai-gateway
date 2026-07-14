@@ -33,7 +33,7 @@ func TestHealth_OK(t *testing.T) {
 		t.Fatalf("read body: %v", err)
 	}
 
-	var result map[string]interface{}
+	var result map[string]any
 	if err := json.Unmarshal(body, &result); err != nil {
 		t.Fatalf("decode json: %v", err)
 	}
@@ -43,7 +43,7 @@ func TestHealth_OK(t *testing.T) {
 		t.Fatalf("expected status=ok, got %v", result["status"])
 	}
 
-	providers, ok := result["providers"].([]interface{})
+	providers, ok := result["providers"].([]any)
 	if !ok {
 		t.Fatalf("expected providers array, got %T", result["providers"])
 	}
@@ -52,7 +52,7 @@ func TestHealth_OK(t *testing.T) {
 	}
 
 	// Verify the stub provider is listed.
-	p0, ok := providers[0].(map[string]interface{})
+	p0, ok := providers[0].(map[string]any)
 	if !ok {
 		t.Fatalf("expected provider object, got %T", providers[0])
 	}

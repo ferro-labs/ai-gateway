@@ -15,8 +15,7 @@ import (
 func Images(gw *aigateway.Gateway) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req providers.ImageRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			apierror.WriteOpenAI(w, http.StatusBadRequest, "invalid request body: "+err.Error(), "invalid_request_error", "invalid_request")
+		if !decodeJSONBody(w, r, &req) {
 			return
 		}
 		if req.Model == "" {
@@ -30,7 +29,8 @@ func Images(gw *aigateway.Gateway) http.HandlerFunc {
 
 		resp, err := gw.GenerateImage(r.Context(), req)
 		if err != nil {
-			apierror.WriteOpenAI(w, http.StatusInternalServerError, err.Error(), "server_error", "routing_error")
+			status, errType, code := apierror.RouteErrorDetails(err)
+			apierror.WriteOpenAI(w, status, err.Error(), errType, code)
 			return
 		}
 

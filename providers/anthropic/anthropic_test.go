@@ -2,13 +2,59 @@ package anthropic
 
 import (
 	"context"
-	"github.com/ferro-labs/ai-gateway/providers/core"
+	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/ferro-labs/ai-gateway/providers/core"
 )
+
+// TestAnthropicProvider_DiscoverModels verifies live model discovery uses the
+// x-api-key + anthropic-version headers (not Bearer) and maps the response.
+func TestAnthropicProvider_DiscoverModels(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("method = %q, want GET", r.Method)
+		}
+		if r.URL.Path != "/v1/models" {
+			t.Errorf("path = %q, want /v1/models", r.URL.Path)
+		}
+		if r.Header.Get("x-api-key") != "sk-test-key" {
+			t.Errorf("x-api-key = %q, want sk-test-key", r.Header.Get("x-api-key"))
+		}
+		if r.Header.Get("anthropic-version") != "2023-06-01" {
+			t.Errorf("anthropic-version = %q, want 2023-06-01", r.Header.Get("anthropic-version"))
+		}
+		if r.Header.Get("Authorization") != "" {
+			t.Errorf("Authorization = %q, want empty (anthropic uses x-api-key)", r.Header.Get("Authorization"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"claude-sonnet-4-20250514","object":"model","created":1700000000,"owned_by":"anthropic"},{"id":"claude-3-haiku-20240307","object":"model"}]}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New("sk-test-key", srv.URL)
+	models, err := p.DiscoverModels(context.Background())
+	if err != nil {
+		t.Fatalf("DiscoverModels() error: %v", err)
+	}
+	if len(models) != 2 {
+		t.Fatalf("expected 2 models, got %d", len(models))
+	}
+	if models[0].ID != "claude-sonnet-4-20250514" || models[0].OwnedBy != "anthropic" {
+		t.Errorf("unexpected model[0]: %+v", models[0])
+	}
+	if models[1].ID != "claude-3-haiku-20240307" || models[1].OwnedBy != "anthropic" {
+		t.Errorf("model[1] owned_by fallback = %q, want anthropic", models[1].OwnedBy)
+	}
+}
 
 // TestNewAnthropic tests the Anthropic provider constructor.
 func TestNewAnthropic(t *testing.T) {
@@ -34,10 +80,10 @@ func TestAnthropicProvider_SupportedModels(t *testing.T) {
 	}
 
 	expected := []string{
-		"claude-sonnet-4-20250514",
-		"claude-3-5-sonnet-20241022",
-		"claude-3-haiku-20240307",
-		"claude-3-opus-20240229",
+		"claude-opus-4-7",
+		"claude-opus-4-6",
+		"claude-sonnet-4-6",
+		"claude-haiku-4-5-20251001",
 	}
 
 	if len(models) != len(expected) {
@@ -142,12 +188,148 @@ data: {"type":"message_stop"}
 	if chunks[0].ID != "msg_123" {
 		t.Errorf("chunk ID = %q, want msg_123", chunks[0].ID)
 	}
-	//nolint:goconst // "Hello" appears in multiple test strings; fine in tests
 	if chunks[0].Choices[0].Delta.Content != "Hello" {
 		t.Errorf("first delta content = %q, want Hello", chunks[0].Choices[0].Delta.Content)
 	}
 	if chunks[1].Choices[0].Delta.Content != " world" {
 		t.Errorf("second delta content = %q, want ' world'", chunks[1].Choices[0].Delta.Content)
+	}
+}
+
+func TestAnthropicProvider_CompleteStream_ForwardsToolUseDeltas(t *testing.T) {
+	sseData := `event: message_start
+data: {"type":"message_start","message":{"id":"msg_123","model":"claude-3-haiku-20240307","role":"assistant"}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"lookup","input":{}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"city\""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":":\"SF\"}"}}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}
+
+`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(sseData))
+	}))
+	defer srv.Close()
+
+	p, _ := New("sk-test-key", srv.URL)
+	ch, err := p.CompleteStream(context.Background(), core.Request{
+		Model:    "claude-3-haiku-20240307",
+		Messages: []core.Message{{Role: core.RoleUser, Content: "weather?"}},
+		Tools: []core.Tool{{
+			Type: "function",
+			Function: core.Function{
+				Name: "lookup",
+			},
+		}},
+		ToolChoice: "required",
+	})
+	if err != nil {
+		t.Fatalf("CompleteStream() error: %v", err)
+	}
+
+	var chunks []core.StreamChunk
+	for c := range ch {
+		chunks = append(chunks, c)
+	}
+
+	if len(chunks) != 4 {
+		t.Fatalf("chunks len = %d, want 4: %#v", len(chunks), chunks)
+	}
+	start := chunks[0].Choices[0].Delta.ToolCalls[0]
+	if start.Index == nil || *start.Index != 0 || start.ID != "toolu_1" || start.Function.Name != "lookup" {
+		t.Fatalf("start tool call = %#v, want lookup at index 0", start)
+	}
+	if chunks[1].Choices[0].Delta.ToolCalls[0].Function.Arguments != `{"city"` {
+		t.Fatalf("first args delta = %#v", chunks[1].Choices[0].Delta.ToolCalls)
+	}
+	if chunks[2].Choices[0].Delta.ToolCalls[0].Function.Arguments != `:"SF"}` {
+		t.Fatalf("second args delta = %#v", chunks[2].Choices[0].Delta.ToolCalls)
+	}
+	if chunks[3].Choices[0].FinishReason != core.FinishReasonToolCalls {
+		t.Fatalf("finish_reason = %q, want %q", chunks[3].Choices[0].FinishReason, core.FinishReasonToolCalls)
+	}
+}
+
+func TestAnthropicProvider_CompleteStream_MapsContentBlockIndexToToolCallIndex(t *testing.T) {
+	sseData := `event: message_start
+data: {"type":"message_start","message":{"id":"msg_123","model":"claude-3-haiku-20240307","role":"assistant"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Let me check."}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_1","name":"lookup","input":{}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"city\""}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"toolu_2","name":"lookup_time","input":{}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"city\""}}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}
+
+`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(sseData))
+	}))
+	defer srv.Close()
+
+	p, _ := New("sk-test-key", srv.URL)
+	ch, err := p.CompleteStream(context.Background(), core.Request{
+		Model:    "claude-3-haiku-20240307",
+		Messages: []core.Message{{Role: core.RoleUser, Content: "weather?"}},
+	})
+	if err != nil {
+		t.Fatalf("CompleteStream() error: %v", err)
+	}
+
+	var chunks []core.StreamChunk
+	for c := range ch {
+		chunks = append(chunks, c)
+	}
+
+	if len(chunks) != 6 {
+		t.Fatalf("chunks len = %d, want 6: %#v", len(chunks), chunks)
+	}
+	start := chunks[1].Choices[0].Delta.ToolCalls[0]
+	if chunks[1].Choices[0].Index != 0 {
+		t.Fatalf("choice index = %d, want sole completion index 0", chunks[1].Choices[0].Index)
+	}
+	if start.Index == nil || *start.Index != 0 {
+		t.Fatalf("tool call index = %#v, want OpenAI tool index 0", start.Index)
+	}
+	args := chunks[2].Choices[0].Delta.ToolCalls[0]
+	if args.Index == nil || *args.Index != 0 || args.Function.Arguments != `{"city"` {
+		t.Fatalf("args delta = %#v, want tool index 0 with city fragment", args)
+	}
+	secondStart := chunks[3].Choices[0].Delta.ToolCalls[0]
+	if chunks[3].Choices[0].Index != 0 {
+		t.Fatalf("second choice index = %d, want sole completion index 0", chunks[3].Choices[0].Index)
+	}
+	if secondStart.Index == nil || *secondStart.Index != 1 {
+		t.Fatalf("second tool call index = %#v, want OpenAI tool index 1", secondStart.Index)
+	}
+	secondArgs := chunks[4].Choices[0].Delta.ToolCalls[0]
+	if chunks[4].Choices[0].Index != 0 {
+		t.Fatalf("second args choice index = %d, want sole completion index 0", chunks[4].Choices[0].Index)
+	}
+	if secondArgs.Index == nil || *secondArgs.Index != 1 || secondArgs.Function.Arguments != `{"city"` {
+		t.Fatalf("second args delta = %#v, want tool index 1 with city fragment", secondArgs)
 	}
 }
 
@@ -200,3 +382,216 @@ func TestAnthropicProvider_Complete_Integration(t *testing.T) {
 
 func floatPtr(f float64) *float64 { return &f }
 func intPtr(i int) *int           { return &i }
+
+// TestComplete_MapsUserToMetadata verifies the OpenAI "user" field is forwarded
+// as Anthropic's metadata.user_id rather than dropped.
+func TestComplete_MapsUserToMetadata(t *testing.T) {
+	body := captureBody(t, core.Request{
+		Model:    "claude-sonnet-5",
+		Messages: []core.Message{{Role: core.RoleUser, Content: "hi"}},
+		User:     "user_123",
+	})
+
+	raw, ok := body["metadata"]
+	if !ok {
+		t.Fatal("metadata not forwarded")
+	}
+	var md struct {
+		UserID string `json:"user_id"`
+	}
+	if err := json.Unmarshal(raw, &md); err != nil {
+		t.Fatalf("decode metadata: %v", err)
+	}
+	if md.UserID != "user_123" {
+		t.Errorf("metadata.user_id = %q, want user_123", md.UserID)
+	}
+}
+
+type wireImageBlock struct {
+	Type   string `json:"type"`
+	Source struct {
+		Type      string `json:"type"`
+		MediaType string `json:"media_type"`
+		Data      string `json:"data"`
+		URL       string `json:"url"`
+	} `json:"source"`
+}
+
+// TestComplete_ReencodesNonBase64DataURI verifies a non-base64 data URI is
+// re-encoded to a base64 image source instead of being emitted as an invalid
+// url source.
+func TestComplete_ReencodesNonBase64DataURI(t *testing.T) {
+	body := captureBody(t, core.Request{
+		Model: "claude-sonnet-5",
+		Messages: []core.Message{{
+			Role: core.RoleUser,
+			ContentParts: []core.ContentPart{
+				{Type: "image_url", ImageURL: &core.ImageURLPart{URL: "data:image/png,hello%20world"}},
+			},
+		}},
+	})
+
+	msgs := decodeMessages(t, body)
+	var blocks []wireImageBlock
+	if err := json.Unmarshal(msgs[0]["content"], &blocks); err != nil {
+		t.Fatalf("decode content blocks: %v", err)
+	}
+	if len(blocks) != 1 {
+		t.Fatalf("content blocks = %d, want 1: %+v", len(blocks), blocks)
+	}
+	src := blocks[0].Source
+	if src.Type != "base64" {
+		t.Fatalf("source type = %q, want base64 (non-base64 data URI must be re-encoded)", src.Type)
+	}
+	if src.MediaType != "image/png" {
+		t.Errorf("media_type = %q, want image/png", src.MediaType)
+	}
+	// base64("hello world") == "aGVsbG8gd29ybGQ="
+	if src.Data != "aGVsbG8gd29ybGQ=" {
+		t.Errorf("data = %q, want base64 of the decoded payload", src.Data)
+	}
+}
+
+// TestComplete_MalformedDataURINeverBecomesURLSource verifies a data: URI with an
+// invalid percent-encoding is still emitted as a base64 source (best-effort),
+// never as a url source Anthropic would reject.
+func TestComplete_MalformedDataURINeverBecomesURLSource(t *testing.T) {
+	body := captureBody(t, core.Request{
+		Model: "claude-sonnet-4-6",
+		Messages: []core.Message{{
+			Role: core.RoleUser,
+			ContentParts: []core.ContentPart{
+				{Type: "image_url", ImageURL: &core.ImageURLPart{URL: "data:image/png,%zz"}},
+			},
+		}},
+	})
+
+	msgs := decodeMessages(t, body)
+	var blocks []wireImageBlock
+	if err := json.Unmarshal(msgs[0]["content"], &blocks); err != nil {
+		t.Fatalf("decode content blocks: %v", err)
+	}
+	if len(blocks) != 1 || blocks[0].Source.Type != "base64" {
+		t.Fatalf("source = %+v, want a base64 source for a malformed data URI", blocks[0].Source)
+	}
+	if blocks[0].Source.URL != "" {
+		t.Errorf("url source leaked for a data: URI: %q", blocks[0].Source.URL)
+	}
+}
+
+// TestComplete_PreservesPlusInNonBase64DataURI verifies a "+" in a non-base64
+// data URI payload is kept literal (PathUnescape, not QueryUnescape) before
+// re-encoding.
+func TestComplete_PreservesPlusInNonBase64DataURI(t *testing.T) {
+	body := captureBody(t, core.Request{
+		Model: "claude-sonnet-4-6",
+		Messages: []core.Message{{
+			Role: core.RoleUser,
+			ContentParts: []core.ContentPart{
+				{Type: "image_url", ImageURL: &core.ImageURLPart{URL: "data:text/plain,a+b"}},
+			},
+		}},
+	})
+
+	msgs := decodeMessages(t, body)
+	var blocks []wireImageBlock
+	if err := json.Unmarshal(msgs[0]["content"], &blocks); err != nil {
+		t.Fatalf("decode content blocks: %v", err)
+	}
+	// base64("a+b") == "YSti"; QueryUnescape would corrupt it to base64("a b").
+	if blocks[0].Source.Data != "YSti" {
+		t.Errorf("data = %q, want base64 of \"a+b\" (\"YSti\")", blocks[0].Source.Data)
+	}
+}
+
+// TestComplete_ErrorPathReturnsAPIError verifies a non-2xx chat response surfaces
+// the upstream status and message via core.APIError.
+func TestComplete_ErrorPathReturnsAPIError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"type":"error","error":{"type":"rate_limit_error","message":"overloaded"}}`))
+	}))
+	defer srv.Close()
+
+	p, err := New("sk-test-key", srv.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_, err = p.Complete(context.Background(), core.Request{
+		Model:    "claude-sonnet-5",
+		Messages: []core.Message{{Role: core.RoleUser, Content: "hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected error for 429")
+	}
+	if !strings.Contains(err.Error(), "overloaded") || !strings.Contains(err.Error(), "429") {
+		t.Fatalf("error = %v, want status + upstream message", err)
+	}
+}
+
+// TestComplete_OversizedResponseTruncatedNotBuffered verifies the native
+// (non-openaicompat) chat path's streaming decode is capped via
+// io.LimitReader: a well-formed JSON body whose content exceeds the cap gets
+// truncated mid-value rather than fully buffered and decoded, proving the
+// decoder never reads past core.MaxProviderResponseBytes. Unlike the
+// openaicompat path (which reads the full body up front via
+// core.ReadResponseBody and can report an explicit "byte limit" error), this
+// path fails with a JSON truncation error — the important property is that it
+// fails fast instead of buffering an unbounded body.
+func TestComplete_OversizedResponseTruncatedNotBuffered(t *testing.T) {
+	padding := strings.Repeat("a", core.MaxProviderResponseBytes)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"x","model":"m","content":[{"type":"text","text":"`+padding+`"}]}`)
+	}))
+	defer srv.Close()
+
+	p, err := New("sk-test-key", srv.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_, err = p.Complete(context.Background(), core.Request{
+		Model:    "claude-sonnet-5",
+		Messages: []core.Message{{Role: core.RoleUser, Content: "hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected a decode error: the well-formed body exceeds the cap and must be truncated, not fully buffered")
+	}
+	if !strings.Contains(err.Error(), "failed to unmarshal response") {
+		t.Errorf("error = %q, want the JSON-decode failure wrapper, proving this failed at Decode() and not somewhere earlier", err.Error())
+	}
+	var statusErr *core.HTTPStatusError
+	if errors.As(err, &statusErr) {
+		t.Errorf("error unexpectedly carries a typed HTTPStatusError (%+v); this is a 200 response truncated mid-decode, not an upstream error status", statusErr)
+	}
+}
+
+// TestCompleteStream_UpstreamErrorBodyExceedsCap verifies that when a non-200
+// stream response body itself exceeds the read cap, the resulting read error
+// is surfaced to the caller instead of being silently discarded (which would
+// otherwise produce a misleading empty-message error).
+func TestCompleteStream_UpstreamErrorBodyExceedsCap(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write(make([]byte, core.MaxProviderResponseBytes+1))
+	}))
+	defer srv.Close()
+
+	p, err := New("sk-test-key", srv.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ch, err := p.CompleteStream(context.Background(), core.Request{
+		Model:    "claude-sonnet-5",
+		Messages: []core.Message{{Role: core.RoleUser, Content: "hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected an error for an oversized non-200 stream response body")
+	}
+	if ch != nil {
+		t.Errorf("expected nil channel on error, got %#v", ch)
+	}
+	if !strings.Contains(err.Error(), "byte limit") {
+		t.Errorf("error = %q, want it to mention the byte limit (read error must not be discarded)", err.Error())
+	}
+}

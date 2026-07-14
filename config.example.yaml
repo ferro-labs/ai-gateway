@@ -1,8 +1,26 @@
 # Ferro Labs AI Gateway Configuration Example
 # Copy to config.yaml and customize.
 
+# Maximum request body size in bytes for data-plane (/v1/*) and admin write
+# endpoints. Requests exceeding this limit receive HTTP 413.
+# Default: 10485760 (10 MiB). Set to a lower value to harden against large
+# POST attacks; set higher only if you need to send very large prompts.
+# max_request_bytes: 10485760
+
+# Bounds a single non-streaming request end to end — plugin stages, the provider
+# call, and every retry and fallback attempt combined. Omitted means no
+# gateway-imposed deadline (the provider HTTP clients' own timeouts still apply).
+# Streaming requests are exempt: a stream legitimately outlives a fixed deadline.
+# (With MCP tool servers configured, a "stream" runs the agentic loop to completion
+# and arrives as one chunk — that is not really a stream, and the deadline applies.)
+# request_timeout: 60s
+
 strategy:
   mode: fallback  # single | fallback | loadbalance | conditional | content-based | ab-test | least-latency | cost-optimized
+  # For cost-optimized mode only: fallback (default) | skip | allow.
+  # fallback prefers priced candidates, then first compatible unpriced target.
+  # skip rejects unpriced candidates; allow treats missing prices as zero cost.
+  # unpriced_strategy: fallback
 
 # --- conditional routing example ---
 # strategy:
@@ -12,7 +30,7 @@ strategy:
 #       value: gpt-4o
 #       target_key: openai
 #     - key: model
-#       value: claude-3-5-sonnet-20241022
+#       value: claude-sonnet-4-6
 #       target_key: anthropic
 # Routes based on the value of a request field (e.g. "model").
 
@@ -47,10 +65,22 @@ targets:
   - virtual_key: openai
     retry:
       attempts: 3
-      # Only retry on these HTTP status codes (omit to retry on any error).
+      # Only retry on these HTTP status codes. Omit to use the default policy:
+      # transport errors plus 408, 429 and 5xx. Other 4xx are deterministic client
+      # errors and are never retried.
       on_status_codes: [429, 502, 503]
-      # Base backoff in ms for exponential back-off: delay = initial_backoff_ms * 2^(attempt-1).
+      # Base backoff in ms for exponential back-off with full jitter: the wait is
+      # picked uniformly from [0, initial_backoff_ms * 2^(attempt-1)). An upstream
+      # Retry-After header, when present, takes precedence over the computed backoff.
       initial_backoff_ms: 100
+    # Optional per-target concurrency limit. Providers often cap simultaneous
+    # connections independently of any RPM/TPM quota; without a gate the gateway can
+    # saturate one and collect 429s that needlessly trip its circuit breaker.
+    concurrency:
+      max_concurrency: 32   # simultaneous in-flight requests to this target
+      queue_size: 500       # requests allowed to wait for a slot; beyond it => HTTP 429
+      # A streaming request holds its slot until the stream ends, not just until
+      # response headers arrive.
   - virtual_key: anthropic
     # Optional per-target circuit breaker.
     circuit_breaker:
@@ -90,11 +120,12 @@ targets:
 # Aliases are resolved before routing and plugin execution.
 aliases:
   fast: gpt-4o-mini
-  smart: claude-3-5-sonnet-20241022
-  cheap: gemini-1.5-flash
+  smart: claude-sonnet-4-6
+  cheap: gemini-2.5-flash
   code: deepseek-coder
 
 # Optional plugins
+# Plugin config string values loaded via LoadConfig support $VAR / ${VAR} interpolation.
 plugins:
   - name: word-filter
     type: guardrail
@@ -128,13 +159,11 @@ plugins:
     enabled: true
     config:
       level: info
-      # Optional persistent request log storage.
-      # When disabled, logs are emitted only to stdout.
+      # Persist each request to the shared request-log store when one is
+      # configured; otherwise logs are emitted only to stdout. The store's
+      # location is process configuration, set with the REQUEST_LOG_STORE_BACKEND
+      # and REQUEST_LOG_STORE_DSN environment variables — not here.
       persist: false
-      # backend: sqlite | postgres
-      backend: sqlite
-      # SQLite file path or Postgres DSN (required for postgres backend).
-      dsn: ferrogw-requests.db
 
   # Advanced guardrails (pii-redact, secret-scan, prompt-shield, schema-guard,
   # regex-guard) are available in FerroCloud. See https://docs.ferrolabs.ai/guardrails
@@ -184,6 +213,7 @@ mcp_servers:
   - name: database
     url: "https://mcp-db.internal/mcp"
     headers:
+      # Values loaded via LoadConfig support $VAR / ${VAR} interpolation.
       Authorization: "Bearer ${MCP_DB_TOKEN}"
     allowed_tools:
       - query_readonly
@@ -199,6 +229,14 @@ mcp_servers:
       - web_read
     timeout_seconds: 20
 
+# Compatibility controls how the gateway treats OpenAI request parameters that a
+# routed provider cannot express (see GET /v1/capabilities for the matrix).
+#   warn   — forward the parameter and log a warning (default)
+#   drop   — remove the parameter from the upstream request and log
+#   reject — fail the request with HTTP 400 naming the parameter
+# compatibility:
+#   on_unsupported_param: warn
+
 # OpenTelemetry tracing (v1.1.0+).
 # When unset (or endpoint empty) the gateway runs with a zero-alloc
 # NoOp provider — there is no cost to leaving this section out.
@@ -212,12 +250,13 @@ observability:
     service_name: ferrogw
     sample_ratio: 1.0
     privacy_level: metadata  # none | metadata | full
-    shutdown_grace: 10s      # max time to drain in-flight OTel exports on shutdown
+    shutdown_grace: 10s      # per OTel shutdown stage; total can take up to 2x this value
     # headers:                       # OTLP export headers (e.g. vendor API keys)
     #   dd-api-key: "${DATADOG_API_KEY}"   # values support ${ENV} interpolation
 
   # exporters lists plugin observability exporters that receive
   # gateway.request.completed / gateway.request.failed events.
+  # Config string values loaded via LoadConfig support $VAR / ${VAR} interpolation.
   # Each entry names a factory registered via observability.RegisterExporter
   # in a plugin's init().  Unrecognised names emit a warning and are skipped
   # (non-fatal).  No built-in exporters ship with this repo — they are

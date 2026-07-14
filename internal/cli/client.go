@@ -3,11 +3,13 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"slices"
 	"time"
 )
 
@@ -46,26 +48,30 @@ func NewAdminClient(flagURL, flagKey string) *AdminClient {
 }
 
 // Get performs a GET request to the given path.
-func (c *AdminClient) Get(path string, dest any) error {
-	return c.do(http.MethodGet, path, nil, dest)
+func (c *AdminClient) Get(ctx context.Context, path string, dest any) error {
+	return c.do(ctx, http.MethodGet, path, nil, dest)
+}
+
+// GetHealth performs a GET request against a health endpoint, decoding a 503
+// "degraded" body rather than reporting it as a failed request. A gateway that
+// answers with 503 is reachable — that distinction is the whole point of asking.
+func (c *AdminClient) GetHealth(ctx context.Context, path string, dest any) error {
+	return c.do(ctx, http.MethodGet, path, nil, dest, http.StatusServiceUnavailable)
 }
 
 // Post performs a POST request with a JSON body.
-func (c *AdminClient) Post(path string, body, dest any) error {
-	return c.do(http.MethodPost, path, body, dest)
+func (c *AdminClient) Post(ctx context.Context, path string, body, dest any) error {
+	return c.do(ctx, http.MethodPost, path, body, dest)
 }
 
 // Put performs a PUT request with a JSON body.
-func (c *AdminClient) Put(path string, body, dest any) error {
-	return c.do(http.MethodPut, path, body, dest)
+func (c *AdminClient) Put(ctx context.Context, path string, body, dest any) error {
+	return c.do(ctx, http.MethodPut, path, body, dest)
 }
 
-// Del performs a DELETE request.
-func (c *AdminClient) Del(path string, dest any) error {
-	return c.do(http.MethodDelete, path, nil, dest)
-}
-
-func (c *AdminClient) do(method, path string, body, dest any) error {
+// do issues the request and decodes dest. Status codes in tolerate are decoded
+// instead of being turned into an error.
+func (c *AdminClient) do(ctx context.Context, method, path string, body, dest any, tolerate ...int) error {
 	var bodyReader io.Reader
 	if body != nil {
 		data, err := json.Marshal(body)
@@ -75,7 +81,7 @@ func (c *AdminClient) do(method, path string, body, dest any) error {
 		bodyReader = bytes.NewReader(data)
 	}
 
-	req, err := http.NewRequest(method, c.BaseURL+path, bodyReader)
+	req, err := http.NewRequestWithContext(ctx, method, c.BaseURL+path, bodyReader)
 	if err != nil {
 		return fmt.Errorf("build request: %w", err)
 	}
@@ -95,7 +101,7 @@ func (c *AdminClient) do(method, path string, body, dest any) error {
 		return fmt.Errorf("read response: %w", err)
 	}
 
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode >= 400 && !slices.Contains(tolerate, resp.StatusCode) {
 		var apiErr struct {
 			Error struct {
 				Message string `json:"message"`

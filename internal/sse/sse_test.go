@@ -99,8 +99,27 @@ func TestWrite_TimesOutIdleStream(t *testing.T) {
 	}
 }
 
+// TestWrite_ResetsIdleTimeoutAfterChunk verifies that a delivered chunk re-arms
+// the idle timer, so a stream that stays active longer than one idle period —
+// yet never goes quiet for a full period — does not emit a timeout.
+//
+// The timing is deliberately chosen so a non-resetting implementation fails:
+//   - idle timeout D = 150ms.
+//   - chunk1 is buffered (delivered at ~T0); chunk2 arrives one gap (100ms)
+//     later; the channel closes one more gap (100ms) after that, at ~200ms.
+//
+// A NON-resetting implementation keeps its original T0+150ms deadline. That
+// deadline fires at ~150ms, while the stream is still active (close is at
+// ~200ms), so it would emit a stream_timeout and fail this test. The correct
+// resetting implementation re-arms the deadline when chunk2 arrives (to
+// ~250ms), so the ~200ms close lands first and the stream ends cleanly with
+// [DONE]. Each quiet gap (100ms) stays comfortably under D, leaving ~50ms of
+// slack for scheduler jitter under -race.
 func TestWrite_ResetsIdleTimeoutAfterChunk(t *testing.T) {
-	restore := SetIdleTimeoutForTest(25 * time.Millisecond)
+	const idle = 150 * time.Millisecond
+	const gap = 100 * time.Millisecond
+
+	restore := SetIdleTimeoutForTest(idle)
 	defer restore()
 
 	ch := make(chan providers.StreamChunk, 2)
@@ -114,7 +133,16 @@ func TestWrite_ResetsIdleTimeoutAfterChunk(t *testing.T) {
 	}
 
 	go func() {
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(gap)
+		ch <- providers.StreamChunk{
+			ID:    "stream-1",
+			Model: "test-stream-model",
+			Choices: []providers.StreamChoice{{
+				Index: 0,
+				Delta: providers.MessageDelta{Role: "assistant", Content: " world"},
+			}},
+		}
+		time.Sleep(gap)
 		close(ch)
 	}()
 

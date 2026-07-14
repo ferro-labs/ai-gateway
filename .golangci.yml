@@ -6,7 +6,10 @@ run:
 linters:
   enable:
     - bodyclose
+    - copyloopvar
+    - dupl
     - errcheck
+    - errorlint
     - goconst
     - gocritic
     - gocyclo
@@ -14,10 +17,80 @@ linters:
     - govet
     - ineffassign
     - misspell
+    - nolintlint
+    - prealloc
     - revive
+    - spancheck
     - staticcheck
+    - unconvert
+    - unparam
     - unused
+    - noctx
+    - maintidx
 
   settings:
     gocyclo:
       min-complexity: 30
+    dupl:
+      threshold: 150
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+      allow-unused: false
+
+  exclusions:
+    rules:
+      # dupl on tests is noise — table fixtures and mock setups legitimately
+      # repeat structure across cases. Enforce it on production code only.
+      - path: _test\.go
+        linters:
+          - dupl
+      # unparam on tests is noise: mock methods satisfy production interfaces
+      # (so a mandatory error return may always be nil), and helper return
+      # values exist for symmetry. Enforce it on production code only.
+      - path: _test\.go
+        linters:
+          - unparam
+      # otelSpan.StartChild is a span factory: it returns the child span
+      # (wrapped in otelSpan) for the caller to end via End, per the
+      # observability.Span contract. spancheck cannot follow the span through
+      # the wrapper, so it wrongly reports a leak on the child span here.
+      - path: internal/otel/provider\.go
+        linters:
+          - spancheck
+        text: "child.End"
+      # Test fixtures legitimately repeat literals (tool names, IDs, JSON
+      # fragments); enforce the constant rule on production code only.
+      - path: _test\.go
+        linters:
+          - goconst
+      # Tests compare error values by identity on purpose; the wrapped-error
+      # checks apply to production code only.
+      - path: _test\.go
+        linters:
+          - errorlint
+      # staticcheck's SA5011 does not reliably recognize a preceding
+      # t.Fatal/t.Fatalf-guarded nil check as terminating the branch in some
+      # table-driven/multi-guard test shapes, and flags the subsequent access
+      # as a possible nil dereference. Scoped to SA5011 only (via text) so
+      # other staticcheck findings in tests still apply.
+      - path: _test\.go
+        linters:
+          - staticcheck
+        text: "SA5011"
+      # RouteStream's remaining complexity (after extracting the MCP-loop-
+      # equivalent safe blocks — see resolveStreamOrError and
+      # runBeforePluginsStream) is the streamwrap.MeterMeta closure setup
+      # (CompletionFn/ErrorFn/SpanFinisher), which captures and mutates pctx
+      # (nil-out + sync.Once-guarded release) across three closures.
+      # Extracting it further means passing pctx as **plugin.Context or
+      # restructuring the release semantics — both add real risk of a
+      # double-release or nil-deref in the hottest streaming path. See
+      # gateway_stream.go's test coverage (RunAfterReceivesStreamResponse,
+      # RunOnErrorReceivesStreamError, AfterPluginRejectRunsOnError,
+      # Close_DuringInFlightRouteStreamDoesNotPanic) for what protects this
+      # behavior today.
+      - path: gateway_stream\.go
+        linters:
+          - maintidx
+        text: "RouteStream"

@@ -14,7 +14,7 @@ func TestBootstrap_KeyStore_Postgres(t *testing.T) {
 	t.Setenv("API_KEY_STORE_BACKEND", "postgres")
 	t.Setenv("API_KEY_STORE_DSN", testDSN)
 
-	store, backend, err := bootstrap.CreateKeyStoreFromEnv()
+	store, backend, err := bootstrap.CreateKeyStoreFromEnv(t.Context())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -30,7 +30,7 @@ func TestBootstrap_KeyStore_PostgreSQLAlias(t *testing.T) {
 	t.Setenv("API_KEY_STORE_BACKEND", "postgresql")
 	t.Setenv("API_KEY_STORE_DSN", testDSN)
 
-	store, backend, err := bootstrap.CreateKeyStoreFromEnv()
+	store, backend, err := bootstrap.CreateKeyStoreFromEnv(t.Context())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -46,7 +46,7 @@ func TestBootstrap_RequestLogReader_Postgres(t *testing.T) {
 	t.Setenv("REQUEST_LOG_STORE_BACKEND", "postgres")
 	t.Setenv("REQUEST_LOG_STORE_DSN", testDSN)
 
-	reader, maintainer, backend, err := bootstrap.CreateRequestLogReaderFromEnv()
+	reader, maintainer, backend, err := bootstrap.CreateRequestLogReaderFromEnv(t.Context())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -70,7 +70,7 @@ func TestBootstrap_ConfigManager_Postgres(t *testing.T) {
 		t.Fatalf("new gateway: %v", err)
 	}
 
-	mgr, backend, err := bootstrap.CreateConfigManagerFromEnv(gw)
+	mgr, backend, err := bootstrap.CreateConfigManagerFromEnv(t.Context(), gw)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

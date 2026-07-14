@@ -2,12 +2,96 @@ package strategies
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/ferro-labs/ai-gateway/internal/circuitbreaker"
 	"github.com/ferro-labs/ai-gateway/providers"
+	"github.com/ferro-labs/ai-gateway/providers/core"
 )
+
+// ── Retry hygiene: default retryable set, full jitter, Retry-After (#278) ──────
+
+func TestShouldRetry_DefaultPolicy(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"408 request timeout is retryable", errors.New("provider error (408): timeout"), true},
+		{"429 throttling is retryable", errors.New("provider error (429): rate limited"), true},
+		{"500 is retryable", errors.New("provider error (500): boom"), true},
+		{"503 is retryable", errors.New("provider error (503): unavailable"), true},
+		{"400 client error is not retryable", errors.New("provider error (400): bad request"), false},
+		{"401 is not retryable", errors.New("provider error (401): unauthorized"), false},
+		{"404 is not retryable", errors.New("provider error (404): not found"), false},
+		{"422 is not retryable", errors.New("provider error (422): unprocessable"), false},
+		{"transport error carrying no status is retryable", errors.New("connection reset by peer"), true},
+		{"cancellation is never retryable", context.Canceled, false},
+		{"deadline expiry is never retryable", context.DeadlineExceeded, false},
+		{"open circuit is never retryable", circuitbreaker.ErrCircuitOpen, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldRetry(tt.err, nil); got != tt.want {
+				t.Errorf("shouldRetry = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFallback_DefaultPolicy_DoesNotRetryClientError(t *testing.T) {
+	ep := &errProvider{
+		name:   "openai",
+		models: []string{"gpt-4o"},
+		errMsg: "provider error (400): bad request",
+	}
+	// nil onStatusCodes selects the default policy, which must not retry a 400.
+	fb := NewFallback([]Target{{VirtualKey: "openai"}}, newLookup(ep)).
+		WithTargetRetry("openai", 3, nil, 0)
+
+	fb.Execute(context.Background(), providers.Request{Model: "gpt-4o"}) //nolint:errcheck,gosec // test asserts on attempt count, not the returned response or error
+
+	if ep.calls != 1 {
+		t.Errorf("a deterministic 400 must not be retried under the default policy: got %d attempts, want 1", ep.calls)
+	}
+}
+
+func TestRetryDelay_HonorsUpstreamRetryAfter(t *testing.T) {
+	prev := &core.HTTPStatusError{StatusCode: 429, Message: "rate limited", RetryAfter: 2 * time.Second}
+	if got := retryDelay(1, 100, prev); got != 2*time.Second {
+		t.Errorf("retryDelay = %v, want the upstream 2s Retry-After hint", got)
+	}
+}
+
+func TestRetryDelay_RetryAfterBeyondCapAbandonsTarget(t *testing.T) {
+	prev := &core.HTTPStatusError{StatusCode: 503, Message: "unavailable", RetryAfter: maxRetryAfter + time.Second}
+	if got := retryDelay(1, 100, prev); got >= 0 {
+		t.Errorf("retryDelay = %v, want a negative value signalling the target should be abandoned", got)
+	}
+}
+
+func TestRetryDelay_FullJitterStaysWithinExponentialAndVaries(t *testing.T) {
+	const initialBackoffMs = 100
+	// attempt 3 ⇒ exponential ceiling of 100ms · 2^2 = 400ms; full jitter picks
+	// uniformly from [0, ceiling).
+	const ceiling = 400 * time.Millisecond
+
+	seen := make(map[time.Duration]struct{})
+	for range 200 {
+		d := retryDelay(3, initialBackoffMs, errors.New("transport failure"))
+		if d < 0 || d >= ceiling {
+			t.Fatalf("jittered delay %v outside [0, %v)", d, ceiling)
+		}
+		seen[d] = struct{}{}
+	}
+	if len(seen) < 2 {
+		t.Error("full jitter must vary the delay; got a constant value across 200 samples")
+	}
+}
 
 // ── Retry policy tests ────────────────────────────────────────────────────────
 
@@ -16,6 +100,7 @@ type errProvider struct {
 	name   string
 	models []string
 	errMsg string
+	err    error
 	calls  int
 }
 
@@ -32,6 +117,9 @@ func (e *errProvider) SupportsModel(m string) bool {
 }
 func (e *errProvider) Complete(_ context.Context, _ providers.Request) (*providers.Response, error) {
 	e.calls++
+	if e.err != nil {
+		return nil, e.err
+	}
 	return nil, fmt.Errorf("%s", e.errMsg)
 }
 
@@ -45,7 +133,7 @@ func TestFallback_PerTargetRetry_Attempts(t *testing.T) {
 	fb := NewFallback(targets, newLookup(ep)).
 		WithTargetRetry("openai", 3, nil, 0)
 
-	fb.Execute(context.Background(), providers.Request{Model: "gpt-4o"}) //nolint:errcheck,gosec
+	fb.Execute(context.Background(), providers.Request{Model: "gpt-4o"}) //nolint:errcheck,gosec // test asserts on attempt count, not the returned response or error
 
 	if ep.calls != 3 {
 		t.Errorf("expected 3 attempts, got %d", ep.calls)
@@ -62,7 +150,7 @@ func TestFallback_StatusCodeFilter_RetriesOnAllowedCode(t *testing.T) {
 	fb := NewFallback(targets, newLookup(ep)).
 		WithTargetRetry("openai", 3, []int{429}, 0)
 
-	fb.Execute(context.Background(), providers.Request{Model: "gpt-4o"}) //nolint:errcheck,gosec
+	fb.Execute(context.Background(), providers.Request{Model: "gpt-4o"}) //nolint:errcheck,gosec // test asserts on attempt count, not the returned response or error
 
 	if ep.calls != 3 {
 		t.Errorf("expected 3 attempts for allowed 429, got %d", ep.calls)
@@ -80,7 +168,7 @@ func TestFallback_StatusCodeFilter_StopsOnDisallowedCode(t *testing.T) {
 	fb := NewFallback(targets, newLookup(ep)).
 		WithTargetRetry("openai", 3, []int{429}, 0)
 
-	fb.Execute(context.Background(), providers.Request{Model: "gpt-4o"}) //nolint:errcheck,gosec
+	fb.Execute(context.Background(), providers.Request{Model: "gpt-4o"}) //nolint:errcheck,gosec // test asserts on attempt count, not the returned response or error
 
 	if ep.calls != 1 {
 		t.Errorf("expected 1 attempt for disallowed 400, got %d", ep.calls)
@@ -100,6 +188,34 @@ func TestFallback_FallsThrough_ToNextTarget(t *testing.T) {
 	}
 	if resp.ID != "ok" {
 		t.Errorf("got %q, want ok", resp.ID)
+	}
+}
+
+func TestFallback_CircuitOpenMovesToNextTargetWithoutRetry(t *testing.T) {
+	open := &errProvider{
+		name:   "open",
+		models: []string{"gpt-4o"},
+		err:    circuitbreaker.ErrCircuitOpen,
+	}
+	good := &mockProvider{name: "good", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "ok"}}
+
+	fb := NewFallback(
+		[]Target{{VirtualKey: "open"}, {VirtualKey: "good"}},
+		newLookup(open, good),
+	).WithTargetRetry("open", 3, nil, 0)
+
+	resp, err := fb.Execute(context.Background(), providers.Request{Model: "gpt-4o"})
+	if err != nil {
+		t.Fatalf("expected success from fallback target, got error: %v", err)
+	}
+	if resp.ID != "ok" {
+		t.Fatalf("got response ID %q, want ok", resp.ID)
+	}
+	if open.calls != 1 {
+		t.Fatalf("open circuit target calls = %d, want 1", open.calls)
+	}
+	if good.calls != 1 {
+		t.Fatalf("fallback target calls = %d, want 1", good.calls)
 	}
 }
 
@@ -154,4 +270,14 @@ func TestShouldRetry(t *testing.T) {
 			}
 		})
 	}
+	nonRetryable := []error{context.Canceled, context.DeadlineExceeded, circuitbreaker.ErrCircuitOpen}
+	for _, err := range nonRetryable {
+		if shouldRetry(err, nil) {
+			t.Fatalf("shouldRetry(%v, nil) = true, want false", err)
+		}
+		if shouldRetry(err, []int{429}) {
+			t.Fatalf("shouldRetry(%v, [429]) = true, want false", err)
+		}
+	}
+
 }

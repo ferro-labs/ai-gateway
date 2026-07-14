@@ -3,10 +3,10 @@ package mcp
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	rtrace "runtime/trace"
 	"time"
 
+	gwotel "github.com/ferro-labs/ai-gateway/internal/otel"
 	"github.com/ferro-labs/ai-gateway/observability"
 	"github.com/ferro-labs/ai-gateway/providers/core"
 	"github.com/prometheus/client_golang/prometheus"
@@ -91,7 +91,7 @@ func (e *Executor) callAuditFn(ctx context.Context, serverName, toolName, status
 		defer func() {
 			// Swallow any panic from the user-supplied callback — audit logging
 			// must never crash tool execution.
-			recover() //nolint:errcheck
+			recover() //nolint:errcheck // recover returns the panic value, intentionally discarded here
 		}()
 		fn(ctx, serverName, toolName, status, latencyMs, errMsg)
 	}()
@@ -139,89 +139,98 @@ func (e *Executor) ResolvePendingToolCalls(ctx context.Context, resp *core.Respo
 		}
 		extra = append(extra, assistantMsg)
 
-		// Execute each tool call and collect results.
+		// Execute each tool call and collect its result message.
 		for _, tc := range ch.Message.ToolCalls {
-			toolName := tc.Function.Name
-			serverName := e.registry.serverNameForTool(toolName)
-
-			client, ok := e.registry.FindToolServer(toolName)
-			if !ok {
-				metricUnknownToolCallsTotal.WithLabelValues(toolName).Inc()
-				// Return a friendly error result so the LLM can report it.
-				notFoundPayload, _ := json.Marshal(map[string]string{
-					"error": "tool " + toolName + " not found in any registered MCP server",
-				})
-				extra = append(extra, core.Message{
-					Role:       core.RoleTool,
-					ToolCallID: tc.ID,
-					Content:    string(notFoundPayload),
-				})
-				continue
-			}
-
-			// The LLM provides arguments as a JSON string; pass directly as RawMessage.
-			args := json.RawMessage("{}")
-			if tc.Function.Arguments != "" {
-				args = json.RawMessage(tc.Function.Arguments)
-			}
-
-			// OTel child span around the MCP tool call. When the
-			// gateway has not initialised an OTel provider this is a
-			// no-op span at zero cost.
-			toolCtx, span := mcpTracer().Start(ctx, "mcp.call_tool",
-				trace.WithSpanKind(trace.SpanKindClient),
-				trace.WithAttributes(
-					attribute.String(observability.AttrFerroMCPServer, serverName),
-					attribute.String(observability.AttrFerroMCPTool, toolName),
-				),
-			)
-
-			callStart := time.Now()
-			var result *ToolCallResult
-			var err error
-			rtrace.WithRegion(toolCtx, "mcp.call_tool", func() {
-				result, err = client.CallTool(toolCtx, toolName, args)
-			})
-			elapsed := time.Since(callStart)
-			metricToolCallDuration.WithLabelValues(serverName, toolName).Observe(elapsed.Seconds())
-			latencyMs := int(elapsed.Milliseconds())
-			span.SetAttributes(attribute.Int64(observability.AttrFerroMCPLatencyMs, int64(latencyMs)))
-
-			if err != nil {
-				metricToolCallsTotal.WithLabelValues(serverName, toolName, "error").Inc()
-				e.callAuditFn(ctx, serverName, toolName, "error", latencyMs, err.Error())
-				span.RecordError(err)
-				span.SetStatus(codes.Error, err.Error())
-				span.End()
-				extra = append(extra, core.Message{
-					Role:       core.RoleTool,
-					ToolCallID: tc.ID,
-					Content:    fmt.Sprintf(`{"error":%q}`, err.Error()),
-				})
-				continue
-			}
-
-			metricToolCallsTotal.WithLabelValues(serverName, toolName, "ok").Inc()
-			e.callAuditFn(ctx, serverName, toolName, "ok", latencyMs, "")
-			span.SetStatus(codes.Ok, "")
-			span.End()
-
-			// Convert MCP content blocks to a plain string for the LLM.
-			content, err := contentBlocksToString(result.Content)
-			if err != nil {
-				errPayload, _ := json.Marshal(map[string]string{"error": "could not marshal tool result: " + err.Error()})
-				content = string(errPayload)
-			}
-
-			extra = append(extra, core.Message{
-				Role:       core.RoleTool,
-				ToolCallID: tc.ID,
-				Content:    content,
-			})
+			extra = append(extra, e.executeToolCall(ctx, tc))
 		}
 	}
 
 	return extra, nil
+}
+
+// executeToolCall runs a single MCP tool call and returns the tool-role
+// message to append to the conversation. It resolves the owning server,
+// forwards the model-supplied arguments, records timing, metrics and an
+// OTel child span, and invokes the audit hook. Unknown tools, call
+// errors, and result-marshalling failures are folded into a JSON error
+// payload on the returned message so the LLM can observe and report them.
+func (e *Executor) executeToolCall(ctx context.Context, tc core.ToolCall) core.Message {
+	toolName := tc.Function.Name
+	serverName := e.registry.serverNameForTool(toolName)
+
+	client, ok := e.registry.FindToolServer(toolName)
+	if !ok {
+		metricUnknownToolCallsTotal.WithLabelValues(toolName).Inc()
+		// Return a friendly error result so the LLM can report it.
+		notFoundPayload, _ := json.Marshal(map[string]string{
+			"error": "tool " + toolName + " not found in any registered MCP server",
+		})
+		return core.Message{
+			Role:       core.RoleTool,
+			ToolCallID: tc.ID,
+			Content:    string(notFoundPayload),
+		}
+	}
+
+	// The LLM provides arguments as a JSON string; pass directly as RawMessage.
+	args := json.RawMessage("{}")
+	if tc.Function.Arguments != "" {
+		args = json.RawMessage(tc.Function.Arguments)
+	}
+
+	// OTel child span around the MCP tool call. When the gateway has not
+	// initialised an OTel provider this is a no-op span at zero cost.
+	toolCtx, span := mcpTracer().Start(ctx, "mcp.call_tool",
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(
+			attribute.String(observability.AttrFerroMCPServer, serverName),
+			attribute.String(observability.AttrFerroMCPTool, toolName),
+		),
+	)
+
+	callStart := time.Now()
+	var result *ToolCallResult
+	var err error
+	rtrace.WithRegion(toolCtx, "mcp.call_tool", func() {
+		result, err = client.CallTool(toolCtx, toolName, args)
+	})
+	elapsed := time.Since(callStart)
+	metricToolCallDuration.WithLabelValues(serverName, toolName).Observe(elapsed.Seconds())
+	latencyMs := int(elapsed.Milliseconds())
+	span.SetAttributes(attribute.Int64(observability.AttrFerroMCPLatencyMs, int64(latencyMs)))
+
+	if err != nil {
+		metricToolCallsTotal.WithLabelValues(serverName, toolName, "error").Inc()
+		// Relies on the non-blocking AuditFn contract: the per-call goroutine returns promptly.
+		e.callAuditFn(ctx, serverName, toolName, "error", latencyMs, err.Error())
+		gwotel.RecordSpanError(span, err)
+		span.End()
+		errPayload, _ := json.Marshal(map[string]string{"error": err.Error()})
+		return core.Message{
+			Role:       core.RoleTool,
+			ToolCallID: tc.ID,
+			Content:    string(errPayload),
+		}
+	}
+
+	metricToolCallsTotal.WithLabelValues(serverName, toolName, "ok").Inc()
+	// Relies on the non-blocking AuditFn contract: the per-call goroutine returns promptly.
+	e.callAuditFn(ctx, serverName, toolName, "ok", latencyMs, "")
+	span.SetStatus(codes.Ok, "")
+	span.End()
+
+	// Convert MCP content blocks to a plain string for the LLM.
+	content, err := contentBlocksToString(result.Content)
+	if err != nil {
+		errPayload, _ := json.Marshal(map[string]string{"error": "could not marshal tool result: " + err.Error()})
+		content = string(errPayload)
+	}
+
+	return core.Message{
+		Role:       core.RoleTool,
+		ToolCallID: tc.ID,
+		Content:    content,
+	}
 }
 
 // contentBlocksToString serialises MCP content blocks into a string suitable

@@ -1,19 +1,34 @@
 package aigateway
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/ferro-labs/ai-gateway/internal/tracingpolicy"
+	"github.com/ferro-labs/ai-gateway/providers/core"
 	"gopkg.in/yaml.v3"
 )
 
 // LoadConfig reads and parses a config file from the given path.
 // Supported formats: JSON (.json), YAML (.yaml, .yml).
+//
+// Decoding is strict: an unknown or misspelled key against the typed schema is
+// rejected rather than silently ignored, so a typo cannot quietly disable the
+// setting it was meant to change. Free-form config blocks (plugin and exporter
+// "config" maps) accept arbitrary keys and are preserved verbatim. Exactly one
+// document is permitted: trailing JSON data or a second YAML document (after
+// "---") is rejected rather than silently dropped. The returned Config is
+// Normalize-d so it carries its effective defaults.
 func LoadConfig(path string) (*Config, error) {
-	data, err := os.ReadFile(path) //nolint:gosec
+	data, err := os.ReadFile(path) //nolint:gosec // G304: config path is an operator-supplied startup argument, not request input
 	if err != nil {
 		return nil, fmt.Errorf("reading config file: %w", err)
 	}
@@ -22,15 +37,39 @@ func LoadConfig(path string) (*Config, error) {
 	ext := strings.ToLower(filepath.Ext(path))
 	switch ext {
 	case ".yaml", ".yml":
-		if err := yaml.Unmarshal(data, &cfg); err != nil {
-			return nil, fmt.Errorf("parsing YAML config: %w", err)
+		dec := yaml.NewDecoder(bytes.NewReader(data))
+		dec.KnownFields(true)
+		// An empty document decodes to io.EOF; treat it as an empty config so
+		// validation (not decoding) reports the missing required fields.
+		if err := dec.Decode(&cfg); err != nil {
+			if !errors.Is(err, io.EOF) {
+				return nil, fmt.Errorf("parsing YAML config: %w", err)
+			}
+		} else if err := dec.Decode(new(yaml.Node)); !errors.Is(err, io.EOF) {
+			// A valid first document must be the only one. Reject a trailing
+			// second document rather than silently ignoring it, mirroring the
+			// JSON path's trailing-data rejection.
+			return nil, fmt.Errorf("parsing YAML config: unexpected additional document; only one is allowed")
 		}
 	case ".json":
-		if err := json.Unmarshal(data, &cfg); err != nil {
+		dec := json.NewDecoder(bytes.NewReader(data))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&cfg); err != nil {
 			return nil, fmt.Errorf("parsing JSON config: %w", err)
+		}
+		// Reject trailing data after the top-level object, matching the
+		// strictness of a whole-document json.Unmarshal.
+		if err := dec.Decode(new(json.RawMessage)); !errors.Is(err, io.EOF) {
+			return nil, fmt.Errorf("parsing JSON config: unexpected data after top-level object")
 		}
 	default:
 		return nil, fmt.Errorf("unsupported config file extension %q: use .json, .yaml, or .yml", ext)
+	}
+
+	cfg.Normalize()
+	if cfg.APIVersion != CurrentAPIVersion {
+		slog.Warn("config: unrecognized apiVersion; proceeding for forward compatibility",
+			"apiVersion", cfg.APIVersion, "expected", CurrentAPIVersion)
 	}
 
 	return &cfg, nil
@@ -38,13 +77,13 @@ func LoadConfig(path string) (*Config, error) {
 
 // ValidateConfig validates a Config for correctness.
 func ValidateConfig(cfg Config) error {
-	// Default to single strategy when mode is omitted to match runtime behavior.
-	mode := cfg.Strategy.Mode
-	if mode == "" {
-		mode = ModeSingle
-	}
+	// Validate against normalized defaults (e.g. an omitted strategy mode means
+	// single). cfg is passed by value, so normalizing this copy leaves the
+	// caller's Config untouched while keeping validation consistent with the
+	// Config LoadConfig returns.
+	cfg.Normalize()
 
-	switch mode {
+	switch cfg.Strategy.Mode {
 	case ModeSingle, ModeFallback, ModeLoadBalance, ModeConditional, ModeLatency, ModeCostOptimized,
 		ModeContentBased, ModeABTest:
 	default:
@@ -55,19 +94,43 @@ func ValidateConfig(cfg Config) error {
 		return fmt.Errorf("at least one target is required")
 	}
 
-	if mode == ModeConditional && len(cfg.Strategy.Conditions) == 0 {
+	for _, t := range cfg.Targets {
+		if err := validateTargetConcurrency(t); err != nil {
+			return err
+		}
+	}
+
+	if cfg.RequestTimeout != "" {
+		d, err := time.ParseDuration(cfg.RequestTimeout)
+		if err != nil {
+			return fmt.Errorf("invalid request_timeout %q: %w", cfg.RequestTimeout, err)
+		}
+		if d <= 0 {
+			return fmt.Errorf("request_timeout must be positive, got %q", cfg.RequestTimeout)
+		}
+	}
+
+	if cfg.Strategy.Mode == ModeConditional && len(cfg.Strategy.Conditions) == 0 {
 		return fmt.Errorf("conditional strategy requires at least one condition")
 	}
 
-	if mode == ModeContentBased && len(cfg.Strategy.ContentConditions) == 0 {
+	if cfg.Strategy.Mode == ModeContentBased && len(cfg.Strategy.ContentConditions) == 0 {
 		return fmt.Errorf("content-based strategy requires at least one content_condition")
 	}
 
-	if mode == ModeABTest && len(cfg.Strategy.ABVariants) == 0 {
+	if cfg.Strategy.Mode == ModeABTest && len(cfg.Strategy.ABVariants) == 0 {
 		return fmt.Errorf("ab-test strategy requires at least one ab_variant")
 	}
 
-	if mode == ModeLoadBalance {
+	if cfg.Strategy.Mode == ModeCostOptimized {
+		switch cfg.Strategy.UnpricedStrategy {
+		case "", unpricedStrategyFallback, unpricedStrategySkip, unpricedStrategyAllow:
+		default:
+			return fmt.Errorf("cost-optimized unpriced_strategy must be one of fallback, skip, allow")
+		}
+	}
+
+	if cfg.Strategy.Mode == ModeLoadBalance {
 		var sum float64
 		for _, t := range cfg.Targets {
 			if t.Weight < 0 {
@@ -80,17 +143,15 @@ func ValidateConfig(cfg Config) error {
 		}
 	}
 
-	// Validate observability.tracing.privacy_level when explicitly set.
-	// Allowed values: "", "none", "metadata", "full".
-	// (Constants mirrored from internal/otel to avoid a root→internal import.)
-	switch cfg.Observability.Tracing.PrivacyLevel {
-	case "", "none", "metadata", "full":
-		// valid
-	default:
-		return fmt.Errorf(
-			"invalid observability.tracing.privacy_level %q: must be one of none, metadata, full",
-			cfg.Observability.Tracing.PrivacyLevel,
-		)
+	// Validate observability.tracing.privacy_level against the single source of
+	// truth in the internal tracingpolicy package (shared with internal/otel).
+	if err := tracingpolicy.ValidatePrivacyLevel(cfg.Observability.Tracing.PrivacyLevel); err != nil {
+		return fmt.Errorf("observability.tracing: %w", err)
+	}
+
+	// Validate compatibility.on_unsupported_param: "" (⇒ warn), warn, drop, reject.
+	if _, ok := core.ParseUnsupportedParamMode(cfg.Compatibility.OnUnsupportedParam); !ok {
+		return fmt.Errorf("compatibility.on_unsupported_param must be one of warn, drop, reject")
 	}
 
 	// Validate aliases: no alias may point to another alias (no cycles/chains).
@@ -109,5 +170,28 @@ func ValidateConfig(cfg Config) error {
 		}
 	}
 
+	return nil
+}
+
+// validateTargetConcurrency bounds a target's concurrency block. The ceiling is
+// what keeps a mistyped max_concurrency from silently turning the limiter into a
+// no-op: the value becomes the in-flight slot count, so an absurd one admits
+// every request and the cap the operator asked for never applies.
+func validateTargetConcurrency(t Target) error {
+	if t.Concurrency == nil {
+		return nil
+	}
+	if t.Concurrency.MaxConcurrency <= 0 {
+		return fmt.Errorf("target %q: concurrency.max_concurrency must be positive (omit the concurrency block to leave the target unlimited)", t.VirtualKey)
+	}
+	if t.Concurrency.MaxConcurrency > MaxTargetConcurrency {
+		return fmt.Errorf("target %q: concurrency.max_concurrency exceeds the limit of %d", t.VirtualKey, MaxTargetConcurrency)
+	}
+	if t.Concurrency.QueueSize < 0 {
+		return fmt.Errorf("target %q: concurrency.queue_size cannot be negative", t.VirtualKey)
+	}
+	if t.Concurrency.QueueSize > MaxTargetConcurrency {
+		return fmt.Errorf("target %q: concurrency.queue_size exceeds the limit of %d", t.VirtualKey, MaxTargetConcurrency)
+	}
 	return nil
 }

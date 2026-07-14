@@ -2,6 +2,7 @@
 package bootstrap
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -20,7 +21,7 @@ const (
 )
 
 // CreateKeyStoreFromEnv builds an admin key store from API_KEY_STORE_BACKEND / API_KEY_STORE_DSN env vars.
-func CreateKeyStoreFromEnv() (admin.Store, string, error) {
+func CreateKeyStoreFromEnv(ctx context.Context) (admin.Store, string, error) {
 	backend := strings.ToLower(strings.TrimSpace(os.Getenv("API_KEY_STORE_BACKEND")))
 	if backend == "" {
 		backend = BackendMemory
@@ -32,13 +33,13 @@ func CreateKeyStoreFromEnv() (admin.Store, string, error) {
 	case BackendMemory, "in-memory", "inmemory":
 		return admin.NewKeyStore(), BackendMemory, nil
 	case BackendSQLite:
-		store, err := admin.NewSQLiteStore(storeDSN)
+		store, err := admin.NewSQLiteStore(ctx, storeDSN)
 		if err != nil {
 			return nil, "", err
 		}
 		return store, BackendSQLite, nil
 	case BackendPostgres, backendPostgresSQL:
-		store, err := admin.NewPostgresStore(storeDSN)
+		store, err := admin.NewPostgresStore(ctx, storeDSN)
 		if err != nil {
 			return nil, "", err
 		}
@@ -49,7 +50,7 @@ func CreateKeyStoreFromEnv() (admin.Store, string, error) {
 }
 
 // CreateRequestLogReaderFromEnv builds a request log reader from REQUEST_LOG_STORE_BACKEND / REQUEST_LOG_STORE_DSN env vars.
-func CreateRequestLogReaderFromEnv() (requestlog.Reader, requestlog.Maintainer, string, error) {
+func CreateRequestLogReaderFromEnv(ctx context.Context) (requestlog.Reader, requestlog.Maintainer, string, error) {
 	backend := strings.ToLower(strings.TrimSpace(os.Getenv("REQUEST_LOG_STORE_BACKEND")))
 	if backend == "" {
 		return nil, nil, "disabled", nil
@@ -59,13 +60,13 @@ func CreateRequestLogReaderFromEnv() (requestlog.Reader, requestlog.Maintainer, 
 
 	switch backend {
 	case BackendSQLite:
-		reader, err := requestlog.NewSQLiteWriter(dsn)
+		reader, err := requestlog.NewSQLiteWriter(ctx, dsn)
 		if err != nil {
 			return nil, nil, "", err
 		}
 		return reader, reader, BackendSQLite, nil
 	case BackendPostgres, backendPostgresSQL:
-		reader, err := requestlog.NewPostgresWriter(dsn)
+		reader, err := requestlog.NewPostgresWriter(ctx, dsn)
 		if err != nil {
 			return nil, nil, "", err
 		}
@@ -76,7 +77,7 @@ func CreateRequestLogReaderFromEnv() (requestlog.Reader, requestlog.Maintainer, 
 }
 
 // CreateConfigManagerFromEnv builds a config manager from CONFIG_STORE_BACKEND / CONFIG_STORE_DSN env vars.
-func CreateConfigManagerFromEnv(gw *aigateway.Gateway) (admin.ConfigManager, string, error) {
+func CreateConfigManagerFromEnv(ctx context.Context, gw *aigateway.Gateway) (admin.ConfigManager, string, error) {
 	backend := strings.ToLower(strings.TrimSpace(os.Getenv("CONFIG_STORE_BACKEND")))
 	if backend == "" {
 		backend = BackendMemory
@@ -92,7 +93,7 @@ func CreateConfigManagerFromEnv(gw *aigateway.Gateway) (admin.ConfigManager, str
 		}
 		return manager, BackendMemory, nil
 	case BackendSQLite:
-		store, err := admin.NewSQLiteConfigStore(dsn)
+		store, err := admin.NewSQLiteConfigStore(ctx, dsn)
 		if err != nil {
 			return nil, "", err
 		}
@@ -103,7 +104,7 @@ func CreateConfigManagerFromEnv(gw *aigateway.Gateway) (admin.ConfigManager, str
 		}
 		return manager, BackendSQLite, nil
 	case BackendPostgres, backendPostgresSQL:
-		store, err := admin.NewPostgresConfigStore(dsn)
+		store, err := admin.NewPostgresConfigStore(ctx, dsn)
 		if err != nil {
 			return nil, "", err
 		}

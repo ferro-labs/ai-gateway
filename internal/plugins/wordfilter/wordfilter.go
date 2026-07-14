@@ -8,6 +8,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/ferro-labs/ai-gateway/internal/logging"
 	"github.com/ferro-labs/ai-gateway/plugin"
 )
 
@@ -21,6 +22,7 @@ func init() {
 // configurable blocked words or phrases.
 type WordFilter struct {
 	blockedWords  []string
+	loweredWords  []string
 	caseSensitive bool
 }
 
@@ -31,10 +33,10 @@ func (w *WordFilter) Name() string { return "word-filter" }
 func (w *WordFilter) Type() plugin.PluginType { return plugin.TypeGuardrail }
 
 // Init configures the plugin from the provided options map.
-func (w *WordFilter) Init(config map[string]interface{}) error {
+func (w *WordFilter) Init(config map[string]any) error {
 	if words, ok := config["blocked_words"]; ok {
 		switch list := words.(type) {
-		case []interface{}:
+		case []any:
 			for _, word := range list {
 				if s, ok := word.(string); ok {
 					w.blockedWords = append(w.blockedWords, s)
@@ -47,11 +49,20 @@ func (w *WordFilter) Init(config map[string]interface{}) error {
 	if cs, ok := config["case_sensitive"].(bool); ok {
 		w.caseSensitive = cs
 	}
+	// Pre-lowercase the blocked words once so case-insensitive Execute calls
+	// compare against the cached list instead of calling strings.ToLower per
+	// blocked-word × message × request.
+	if !w.caseSensitive {
+		w.loweredWords = make([]string, len(w.blockedWords))
+		for i, word := range w.blockedWords {
+			w.loweredWords[i] = strings.ToLower(word)
+		}
+	}
 	return nil
 }
 
 // Execute runs the plugin logic for the current request context.
-func (w *WordFilter) Execute(_ context.Context, pctx *plugin.Context) error {
+func (w *WordFilter) Execute(ctx context.Context, pctx *plugin.Context) error {
 	if pctx.Request == nil || len(w.blockedWords) == 0 {
 		return nil
 	}
@@ -61,17 +72,27 @@ func (w *WordFilter) Execute(_ context.Context, pctx *plugin.Context) error {
 		if !w.caseSensitive {
 			content = strings.ToLower(content)
 		}
-		for _, word := range w.blockedWords {
-			check := word
-			if !w.caseSensitive {
-				check = strings.ToLower(check)
+		for i, word := range w.blockedWords {
+			var check string
+			if w.caseSensitive {
+				check = word
+			} else {
+				check = w.loweredWords[i]
 			}
 			if strings.Contains(content, check) {
+				// Log the matched word server-side only; never surface it in
+				// the client-facing rejection reason to avoid leaking the
+				// operator's blocklist.
+				logging.FromContext(ctx).Info("word-filter: blocked request",
+					"matched_word", word)
 				pctx.Reject = true
-				pctx.Reason = "blocked word detected: " + word
+				pctx.Reason = "request blocked by content policy"
 				return nil
 			}
 		}
 	}
 	return nil
 }
+
+// Close releases plugin resources.
+func (w *WordFilter) Close() error { return nil }

@@ -8,6 +8,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/ferro-labs/ai-gateway/internal/authctx"
 )
 
 type contextKey string
@@ -21,9 +23,36 @@ const (
 )
 
 // APIKeyFromContext retrieves the authenticated API key from the request context.
+// It reports ok=false when no key is present or a typed-nil *APIKey was stored,
+// so callers can safely dereference the returned key whenever ok is true.
 func APIKeyFromContext(ctx context.Context) (*APIKey, bool) {
 	key, ok := ctx.Value(apiKeyContextKey).(*APIKey)
-	return key, ok
+	if !ok || key == nil {
+		return nil, false
+	}
+	return key, true
+}
+
+// KeyIDFromContext returns the opaque identifier of the authenticated API key
+// stored in ctx, or ("", false) when no key is present. The returned ID is
+// derived from APIKey.ID — it never contains the raw bearer secret and is safe
+// to use as a rate-limit or budget bucket key.
+func KeyIDFromContext(ctx context.Context) (string, bool) {
+	key, ok := APIKeyFromContext(ctx)
+	if !ok || key == nil || key.ID == "" {
+		return "", false
+	}
+	return key.ID, true
+}
+
+// ContextWithAPIKey returns a new context that carries key so that
+// APIKeyFromContext and KeyIDFromContext can retrieve it, and also populates the
+// authctx key-ID slot so that gateway.go can read the opaque identifier without
+// importing this package. This is provided for use in tests and integration
+// harnesses that need to simulate an authenticated request without going through
+// the HTTP auth middleware.
+func ContextWithAPIKey(ctx context.Context, key *APIKey) context.Context {
+	return storeKeyInContext(ctx, key)
 }
 
 // AuthMiddleware returns a chi-compatible middleware that validates API keys
@@ -70,37 +99,45 @@ func AuthMiddleware(store Store, masterKey string) func(http.Handler) http.Handl
 
 			// 1. Master key check (always active if set).
 			if masterKey != "" && subtle.ConstantTimeCompare([]byte(key), []byte(masterKey)) == 1 {
-				ctx := context.WithValue(r.Context(), apiKeyContextKey, masterAPIKey)
-				next.ServeHTTP(w, r.WithContext(ctx))
+				next.ServeHTTP(w, r.WithContext(storeKeyInContext(r.Context(), masterAPIKey)))
 				return
 			}
 
 			// 2. Bootstrap key check (only when store is empty and no master key is configured).
-			if masterKey == "" && bootstrapEnabled && len(store.List()) == 0 {
+			if masterKey == "" && bootstrapEnabled && storeIsEmpty(r.Context(), store) {
 				if bootstrapAdminKey != "" && subtle.ConstantTimeCompare([]byte(key), []byte(bootstrapAdminKey)) == 1 {
-					ctx := context.WithValue(r.Context(), apiKeyContextKey, bootstrapAdminAPIKey)
-					next.ServeHTTP(w, r.WithContext(ctx))
+					next.ServeHTTP(w, r.WithContext(storeKeyInContext(r.Context(), bootstrapAdminAPIKey)))
 					return
 				}
 
 				if bootstrapReadOnlyKey != "" && subtle.ConstantTimeCompare([]byte(key), []byte(bootstrapReadOnlyKey)) == 1 {
-					ctx := context.WithValue(r.Context(), apiKeyContextKey, bootstrapReadOnlyAPIKey)
-					next.ServeHTTP(w, r.WithContext(ctx))
+					next.ServeHTTP(w, r.WithContext(storeKeyInContext(r.Context(), bootstrapReadOnlyAPIKey)))
 					return
 				}
 			}
 
 			// 3. Key store lookup.
-			apiKey, ok := store.ValidateKey(key)
+			apiKey, ok := store.ValidateKey(r.Context(), key)
 			if !ok {
 				writeError(w, http.StatusUnauthorized, "invalid or revoked API key", "authentication_error", "invalid_api_key")
 				return
 			}
 
-			ctx := context.WithValue(r.Context(), apiKeyContextKey, apiKey)
-			next.ServeHTTP(w, r.WithContext(ctx))
+			next.ServeHTTP(w, r.WithContext(storeKeyInContext(r.Context(), apiKey)))
 		})
 	}
+}
+
+// storeIsEmpty reports whether the key store holds no keys, failing closed when
+// the store cannot answer. Bootstrap credentials exist to seed a fresh
+// deployment and are only valid against a genuinely empty store, so a store
+// outage must not re-open them.
+func storeIsEmpty(ctx context.Context, store Store) bool {
+	empty, err := store.IsEmpty(ctx)
+	if err != nil {
+		return false
+	}
+	return empty
 }
 
 // RequireScope returns a middleware that checks whether the authenticated key
@@ -142,13 +179,28 @@ func writeError(w http.ResponseWriter, status int, message, errType, code string
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+	_ = json.NewEncoder(w).Encode(map[string]any{
 		"error": map[string]string{
 			"message": message,
 			"type":    errType,
 			"code":    code,
 		},
 	})
+}
+
+// storeKeyInContext stores key in ctx under both the admin-package context key
+// (for APIKeyFromContext) and the authctx key (for gateway-level per-key
+// plugins). Using a private helper ensures both slots are always written
+// together and avoids drift between the two stores.
+func storeKeyInContext(ctx context.Context, key *APIKey) context.Context {
+	if key == nil {
+		return ctx
+	}
+	ctx = context.WithValue(ctx, apiKeyContextKey, key)
+	if key.ID != "" {
+		ctx = authctx.WithKeyID(ctx, key.ID)
+	}
+	return ctx
 }
 
 func defaultErrType(status int) string {

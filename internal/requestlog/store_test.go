@@ -2,16 +2,119 @@ package requestlog
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 )
 
+func sqliteObjectExists(t *testing.T, db *sql.DB, name string) bool {
+	t.Helper()
+	var got string
+	err := db.QueryRowContext(context.Background(),
+		"SELECT name FROM sqlite_master WHERE name = ?", name).Scan(&got)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false
+	}
+	if err != nil {
+		t.Fatalf("probe sqlite object %q: %v", name, err)
+	}
+	return true
+}
+
+// TestSQLiteWriter_MigrationSchema confirms the request log store runs on the
+// migration runner: its own ledger table is present alongside the created_at
+// index after construction.
+func TestSQLiteWriter_MigrationSchema(t *testing.T) {
+	w, err := NewSQLiteWriter(t.Context(), filepath.Join(t.TempDir(), "requests.db"))
+	if err != nil {
+		t.Fatalf("new sqlite writer: %v", err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+
+	for _, name := range []string{requestLogLedger, "request_logs", createdAtIndex} {
+		if !sqliteObjectExists(t, w.db, name) {
+			t.Errorf("expected %q to exist after construction", name)
+		}
+	}
+}
+
+// TestSQLiteWriter_AdoptsPreRunnerDatabase confirms a request_logs database
+// created before the runner existed is adopted at the baseline (not re-created)
+// and gains the created_at index, with its existing rows still listable.
+func TestSQLiteWriter_AdoptsPreRunnerDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy-requests.db")
+
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open raw sqlite: %v", err)
+	}
+	if _, err := raw.ExecContext(context.Background(), `
+CREATE TABLE request_logs (
+	id INTEGER PRIMARY KEY,
+	trace_id TEXT,
+	stage TEXT NOT NULL,
+	model TEXT,
+	provider TEXT,
+	prompt_tokens INTEGER NOT NULL,
+	completion_tokens INTEGER NOT NULL,
+	total_tokens INTEGER NOT NULL,
+	error_message TEXT,
+	created_at TIMESTAMP NOT NULL
+)`); err != nil {
+		t.Fatalf("create legacy table: %v", err)
+	}
+	if _, err := raw.ExecContext(context.Background(),
+		`INSERT INTO request_logs(trace_id, stage, model, provider, prompt_tokens, completion_tokens, total_tokens, error_message, created_at)
+		VALUES('legacy-trace', 'after_request', 'gpt-4', 'openai', 1, 2, 3, '', ?)`, time.Now().UTC()); err != nil {
+		t.Fatalf("seed legacy row: %v", err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatalf("close raw sqlite: %v", err)
+	}
+
+	w, err := NewSQLiteWriter(t.Context(), path)
+	if err != nil {
+		t.Fatalf("open writer on legacy db: %v", err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+
+	result, err := w.List(context.Background(), Query{Limit: 10})
+	if err != nil {
+		t.Fatalf("list legacy logs: %v", err)
+	}
+	if result.Total != 1 || len(result.Data) != 1 || result.Data[0].TraceID != "legacy-trace" {
+		t.Fatalf("expected the pre-existing legacy row, got total=%d data=%+v", result.Total, result.Data)
+	}
+	if !sqliteObjectExists(t, w.db, createdAtIndex) {
+		t.Error("created_at index was not built for an adopted legacy database")
+	}
+}
+
+func TestNewSQLiteWriter_FilePermissions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "requests.db")
+	w, err := NewSQLiteWriter(t.Context(), path)
+	if err != nil {
+		t.Fatalf("new sqlite writer: %v", err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat sqlite file: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("expected request log file mode 0600, got %o", perm)
+	}
+}
+
 func TestSQLiteWriter_WriteListDelete(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "requests.db")
-	w, err := NewSQLiteWriter(path)
+	w, err := NewSQLiteWriter(t.Context(), path)
 	if err != nil {
 		t.Fatalf("new sqlite writer: %v", err)
 	}
@@ -105,16 +208,18 @@ func TestPostgresWriterContract(t *testing.T) {
 		t.Skip("set FERROGW_TEST_POSTGRES_DSN to run Postgres requestlog integration tests")
 	}
 
-	w, err := NewPostgresWriter(dsn)
+	w, err := NewPostgresWriter(t.Context(), dsn)
 	if err != nil {
 		t.Fatalf("new postgres writer: %v", err)
 	}
 	t.Cleanup(func() {
-		_, _ = w.db.Exec("DELETE FROM request_logs")
+		// t.Context() is already canceled by the time Cleanup runs; use a
+		// fresh context for this cleanup query.
+		_, _ = w.db.ExecContext(context.Background(), "DELETE FROM request_logs")
 		_ = w.Close()
 	})
 
-	_, _ = w.db.Exec("DELETE FROM request_logs")
+	_, _ = w.db.ExecContext(t.Context(), "DELETE FROM request_logs")
 
 	entry := Entry{
 		TraceID:          "pg-trace",
@@ -153,7 +258,7 @@ func TestSQLiteWriter_DefaultDSNAndZeroCreatedAt(t *testing.T) {
 		_ = os.Chdir(wd)
 	})
 
-	w, err := NewSQLiteWriter("   ")
+	w, err := NewSQLiteWriter(t.Context(), "   ")
 	if err != nil {
 		t.Fatalf("new sqlite writer with default dsn: %v", err)
 	}
@@ -186,7 +291,7 @@ func TestSQLiteWriter_DefaultDSNAndZeroCreatedAt(t *testing.T) {
 
 func TestSQLiteWriter_ListDefaultsAndSinceFilter(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "requests.db")
-	w, err := NewSQLiteWriter(path)
+	w, err := NewSQLiteWriter(t.Context(), path)
 	if err != nil {
 		t.Fatalf("new sqlite writer: %v", err)
 	}
@@ -239,7 +344,7 @@ func TestSQLiteWriter_ListDefaultsAndSinceFilter(t *testing.T) {
 
 func TestDeleteRequiresBefore(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "requests.db")
-	w, err := NewSQLiteWriter(path)
+	w, err := NewSQLiteWriter(t.Context(), path)
 	if err != nil {
 		t.Fatalf("new sqlite writer: %v", err)
 	}
@@ -254,21 +359,15 @@ func TestDeleteRequiresBefore(t *testing.T) {
 }
 
 func TestNewPostgresWriterRequiresDSN(t *testing.T) {
-	_, err := NewPostgresWriter("   ")
+	_, err := NewPostgresWriter(t.Context(), "   ")
 	if err == nil || !strings.Contains(err.Error(), "postgres dsn is required") {
 		t.Fatalf("expected postgres dsn required error, got %v", err)
 	}
 }
 
-func TestNoopWriterBindPostgresAndClose(t *testing.T) {
+func TestNoopWriterAndNilClose(t *testing.T) {
 	if err := (NoopWriter{}).Write(context.Background(), Entry{}); err != nil {
 		t.Fatalf("noop writer returned error: %v", err)
-	}
-
-	got := bindPostgres("SELECT * FROM request_logs WHERE stage = ? AND model = ? LIMIT ? OFFSET ?")
-	want := "SELECT * FROM request_logs WHERE stage = $1 AND model = $2 LIMIT $3 OFFSET $4"
-	if got != want {
-		t.Fatalf("unexpected postgres bind query:\nwant: %s\ngot:  %s", want, got)
 	}
 
 	var w *SQLWriter
@@ -279,4 +378,161 @@ func TestNoopWriterBindPostgresAndClose(t *testing.T) {
 
 func ptrTime(t time.Time) *time.Time {
 	return &t
+}
+
+// insertRawLog inserts a row with nullable model/provider/errMsg (pass nil for
+// SQL NULL, a string for a value) so Stats can be tested against real NULLs that
+// Write cannot produce.
+func insertRawLog(t *testing.T, w *SQLWriter, stage string, model, provider, errMsg any, tokens int, createdAt time.Time) {
+	t.Helper()
+	_, err := w.db.ExecContext(context.Background(),
+		`INSERT INTO request_logs(trace_id, stage, model, provider, prompt_tokens, completion_tokens, total_tokens, error_message, created_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"trace", stage, model, provider, 0, 0, tokens, errMsg, createdAt)
+	if err != nil {
+		t.Fatalf("insert raw log: %v", err)
+	}
+}
+
+func newStatsFixture(t *testing.T) (*SQLWriter, time.Time) {
+	t.Helper()
+	w, err := NewSQLiteWriter(t.Context(), filepath.Join(t.TempDir(), "stats.db"))
+	if err != nil {
+		t.Fatalf("new sqlite writer: %v", err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+
+	base := time.Now().UTC().Truncate(time.Second)
+	// (stage, model, provider, errMsg, tokens, createdAt)
+	insertRawLog(t, w, "after_request", "gpt-4", "openai", nil, 10, base.Add(1*time.Minute))
+	insertRawLog(t, w, "after_request", "gpt-4", "openai", "", 20, base.Add(2*time.Minute)) // empty err: not an error
+	insertRawLog(t, w, "on_error", "gpt-4", "openai", nil, 5, base.Add(3*time.Minute))      // on_error + NULL err: error
+	insertRawLog(t, w, "after_request", "claude", "anthropic", "boom", 7, base.Add(4*time.Minute))
+	insertRawLog(t, w, "after_request", nil, nil, nil, 3, base.Add(5*time.Minute)) // NULL model+provider -> unknown
+	insertRawLog(t, w, "after_request", "", "", nil, 4, base.Add(6*time.Minute))   // '' model+provider -> unknown (merges with NULL)
+	return w, base
+}
+
+func TestSQLiteWriter_Stats(t *testing.T) {
+	w, base := newStatsFixture(t)
+
+	// Unfiltered aggregate. TotalEntries/ErrorEntries/TotalTokens match the
+	// output of the previous in-Go aggregation over the same fixture: 6 rows,
+	// 2 errors (the on_error+NULL row and the non-empty-error row), 49 tokens.
+	got, err := w.Stats(context.Background(), Query{})
+	if err != nil {
+		t.Fatalf("stats: %v", err)
+	}
+	want := StatsResult{
+		TotalEntries: 6,
+		ErrorEntries: 2,
+		TotalTokens:  49,
+		ByStage:      map[string]int{"after_request": 5, "on_error": 1},
+		ByProvider:   map[string]int{"openai": 3, "anthropic": 1, "unknown": 2},
+		ByModel:      map[string]int{"gpt-4": 3, "claude": 1, "unknown": 2},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unfiltered stats mismatch:\n got: %+v\nwant: %+v", got, want)
+	}
+
+	cases := []struct {
+		name  string
+		query Query
+		want  StatsResult
+	}{
+		{
+			name:  "provider filter",
+			query: Query{Provider: "openai"},
+			want: StatsResult{
+				TotalEntries: 3, ErrorEntries: 1, TotalTokens: 35,
+				ByStage:    map[string]int{"after_request": 2, "on_error": 1},
+				ByProvider: map[string]int{"openai": 3},
+				ByModel:    map[string]int{"gpt-4": 3},
+			},
+		},
+		{
+			name:  "stage filter",
+			query: Query{Stage: "on_error"},
+			want: StatsResult{
+				TotalEntries: 1, ErrorEntries: 1, TotalTokens: 5,
+				ByStage:    map[string]int{"on_error": 1},
+				ByProvider: map[string]int{"openai": 1},
+				ByModel:    map[string]int{"gpt-4": 1},
+			},
+		},
+		{
+			name:  "model filter",
+			query: Query{Model: "gpt-4"},
+			want: StatsResult{
+				TotalEntries: 3, ErrorEntries: 1, TotalTokens: 35,
+				ByStage:    map[string]int{"after_request": 2, "on_error": 1},
+				ByProvider: map[string]int{"openai": 3},
+				ByModel:    map[string]int{"gpt-4": 3},
+			},
+		},
+		{
+			name:  "since filter",
+			query: Query{Since: ptrTime(base.Add(3*time.Minute + 30*time.Second))}, // rows 4,5,6
+			want: StatsResult{
+				TotalEntries: 3, ErrorEntries: 1, TotalTokens: 14,
+				ByStage:    map[string]int{"after_request": 3},
+				ByProvider: map[string]int{"anthropic": 1, "unknown": 2},
+				ByModel:    map[string]int{"claude": 1, "unknown": 2},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := w.Stats(context.Background(), tc.query)
+			if err != nil {
+				t.Fatalf("stats: %v", err)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("stats mismatch:\n got: %+v\nwant: %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSQLiteWriter_Stats_EmptyTable(t *testing.T) {
+	w, err := NewSQLiteWriter(t.Context(), filepath.Join(t.TempDir(), "empty.db"))
+	if err != nil {
+		t.Fatalf("new sqlite writer: %v", err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+
+	got, err := w.Stats(context.Background(), Query{})
+	if err != nil {
+		t.Fatalf("stats: %v", err)
+	}
+	want := StatsResult{
+		ByStage:    map[string]int{},
+		ByProvider: map[string]int{},
+		ByModel:    map[string]int{},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("empty stats mismatch:\n got: %+v\nwant: %+v", got, want)
+	}
+	// Maps must be non-nil so the handler JSON-encodes {} rather than null.
+	if got.ByStage == nil || got.ByProvider == nil || got.ByModel == nil {
+		t.Fatal("expected non-nil maps in empty StatsResult")
+	}
+}
+
+func TestSQLiteWriter_CreatedAtIndexExists(t *testing.T) {
+	w, err := NewSQLiteWriter(t.Context(), filepath.Join(t.TempDir(), "idx.db"))
+	if err != nil {
+		t.Fatalf("new sqlite writer: %v", err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+
+	var name string
+	err = w.db.QueryRowContext(context.Background(),
+		"SELECT name FROM sqlite_master WHERE type='index' AND name='idx_request_logs_created_at'").Scan(&name)
+	if err != nil {
+		t.Fatalf("expected created_at index to exist: %v", err)
+	}
+	if name != "idx_request_logs_created_at" {
+		t.Fatalf("unexpected index name: %s", name)
+	}
 }

@@ -10,7 +10,10 @@
 // to compile without changes.
 package core
 
-import "context"
+import (
+	"context"
+	"net/http"
+)
 
 // Provider defines the interface that all LLM providers must implement.
 type Provider interface {
@@ -37,6 +40,39 @@ type ProxiableProvider interface {
 	// AuthHeaders returns the HTTP headers required to authenticate with the
 	// provider (e.g. {"Authorization": "Bearer sk-..."}).
 	AuthHeaders() map[string]string
+}
+
+// NonOpenAIWireProvider is an optional marker for a ProxiableProvider whose
+// upstream cannot serve a transparently-forwarded OpenAI-shaped request at its
+// base URL — either because its request/response shape is not OpenAI-compatible
+// (Anthropic Messages, Google Gemini, AWS Bedrock, Cohere) or because it needs
+// non-standard path/auth rewriting (Azure OpenAI/Foundry deployment paths,
+// Vertex AI publisher-prefixed models).
+//
+// The transparent /v1/* pass-through proxy refuses these providers with 501
+// rather than forwarding a request their upstream cannot parse; they remain
+// fully usable through their native translated chat/embeddings/images
+// endpoints. A provider graduates to pass-through additively: via a separate
+// OpenAI-compatible provider entry, by implementing RequestSigner, or via a
+// future request-rewriter seam.
+type NonOpenAIWireProvider interface {
+	Provider
+	// NonOpenAIWire is a compile-time marker with no behavior.
+	NonOpenAIWire()
+}
+
+// RequestSigner is an optional interface for a ProxiableProvider whose upstream
+// requires per-request signing that cannot be expressed as static AuthHeaders
+// (e.g. AWS SigV4). When a provider implements it, the pass-through proxy signs
+// each outbound request before sending it upstream; a signing failure is
+// surfaced as an upstream error rather than forwarding an unsigned request.
+type RequestSigner interface {
+	// SignProxyRequest signs the fully-formed outbound proxy request in place.
+	// An implementation that reads req.Body to compute the signature (e.g. AWS
+	// SigV4 body hashing) must restore it before returning — replace req.Body
+	// with a fresh io.NopCloser over the buffered bytes — so the base transport
+	// forwards the request with an intact body.
+	SignProxyRequest(req *http.Request) error
 }
 
 // EmbeddingProvider is an optional interface for providers that support

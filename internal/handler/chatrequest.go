@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 
 	"github.com/ferro-labs/ai-gateway/providers"
@@ -30,6 +31,7 @@ type routeChatCompletionRequest struct {
 	Stream              bool                      `json:"stream,omitempty"`
 	User                string                    `json:"user,omitempty"`
 	LogitBias           map[string]float64        `json:"logit_bias,omitempty"`
+	ParallelToolCalls   *bool                     `json:"parallel_tool_calls,omitempty"`
 }
 
 type routeChatMessage struct {
@@ -44,7 +46,7 @@ type routeChatMessage struct {
 // pressure. Every chat completion request through the gateway allocates one
 // of these — pooling eliminates that allocation from the hot path entirely.
 var chatRequestPool = sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		return &routeChatCompletionRequest{}
 	},
 }
@@ -58,7 +60,7 @@ func putRouteChatCompletionRequest(r *routeChatCompletionRequest) {
 	chatRequestPool.Put(r)
 }
 
-// reset clears all 19 fields before returning to the pool.
+// reset clears all 20 fields before returning to the pool.
 // SECURITY: every field must be listed explicitly. Missing a field
 // leaks one tenant's data to another in the multi-tenant gateway.
 func (r *routeChatCompletionRequest) reset() {
@@ -81,6 +83,7 @@ func (r *routeChatCompletionRequest) reset() {
 	r.Stream = false            // field 17: bool
 	r.User = ""                 // field 18: string
 	r.LogitBias = nil           // field 19: map[string]float64
+	r.ParallelToolCalls = nil   // field 20: *bool
 }
 
 // DecodeChatCompletionRequest decodes the JSON body into a providers.Request.
@@ -100,7 +103,7 @@ func DecodeChatCompletionRequest(r io.Reader) (providers.Request, error) {
 		messages[i] = decoded
 	}
 
-	var toolChoice interface{}
+	var toolChoice any
 	if len(wire.ToolChoice) > 0 && !rawJSONNull(wire.ToolChoice) {
 		if err := json.Unmarshal(wire.ToolChoice, &toolChoice); err != nil {
 			return providers.Request{}, fmt.Errorf("tool_choice: %w", err)
@@ -127,6 +130,7 @@ func DecodeChatCompletionRequest(r io.Reader) (providers.Request, error) {
 		Stream:              wire.Stream,
 		User:                wire.User,
 		LogitBias:           wire.LogitBias,
+		ParallelToolCalls:   wire.ParallelToolCalls,
 	}, nil
 }
 
@@ -153,11 +157,13 @@ func (m routeChatMessage) toProviderMessage() (providers.Message, error) {
 		return providers.Message{}, err
 	}
 	msg.ContentParts = parts
+	var text strings.Builder
 	for _, part := range parts {
 		if part.Type == providers.ContentTypeText {
-			msg.Content += part.Text
+			text.WriteString(part.Text)
 		}
 	}
+	msg.Content = text.String()
 	return msg, nil
 }
 

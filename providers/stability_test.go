@@ -1,6 +1,9 @@
 package providers
 
 import (
+	"slices"
+	"testing"
+
 	ai21pkg "github.com/ferro-labs/ai-gateway/providers/ai21"
 	anthropicpkg "github.com/ferro-labs/ai-gateway/providers/anthropic"
 	azurefoundrypkg "github.com/ferro-labs/ai-gateway/providers/azure_foundry"
@@ -31,8 +34,6 @@ import (
 	togetherpkg "github.com/ferro-labs/ai-gateway/providers/together"
 	vertexaipkg "github.com/ferro-labs/ai-gateway/providers/vertex_ai"
 	xaipkg "github.com/ferro-labs/ai-gateway/providers/xai"
-	"slices"
-	"testing"
 )
 
 // TestProviderNameStability verifies that every provider's Name() method returns
@@ -491,6 +492,93 @@ func TestProviderEmbedCapabilityMatchesInterface(t *testing.T) {
 	}
 }
 
+// TestProviderStreamCapabilityMatchesInterface keeps factory metadata aligned
+// with the optional StreamProvider interface used by streaming chat routing.
+func TestProviderStreamCapabilityMatchesInterface(t *testing.T) {
+	for _, tc := range providerNameStabilityCases() {
+		t.Run(tc.wantName, func(t *testing.T) {
+			p := tc.build(t)
+			_, implements := p.(StreamProvider)
+			declares := ProviderHasCapability(tc.wantName, CapabilityStream)
+			if implements != declares {
+				t.Errorf("provider %q stream capability mismatch: implements StreamProvider=%v, declares %q=%v", tc.wantName, implements, CapabilityStream, declares)
+			}
+		})
+	}
+}
+
+// TestProviderImageCapabilityMatchesInterface keeps factory metadata aligned
+// with the optional ImageProvider interface used by /v1/images/generations routing.
+func TestProviderImageCapabilityMatchesInterface(t *testing.T) {
+	for _, tc := range providerNameStabilityCases() {
+		t.Run(tc.wantName, func(t *testing.T) {
+			p := tc.build(t)
+			_, implements := p.(ImageProvider)
+			declares := ProviderHasCapability(tc.wantName, CapabilityImage)
+			if implements != declares {
+				t.Errorf("provider %q image capability mismatch: implements ImageProvider=%v, declares %q=%v", tc.wantName, implements, CapabilityImage, declares)
+			}
+		})
+	}
+}
+
+// TestProviderDiscoveryCapabilityMatchesInterface keeps factory metadata aligned
+// with the optional DiscoveryProvider interface used by auto-discovery refresh.
+func TestProviderDiscoveryCapabilityMatchesInterface(t *testing.T) {
+	for _, tc := range providerNameStabilityCases() {
+		t.Run(tc.wantName, func(t *testing.T) {
+			p := tc.build(t)
+			_, implements := p.(DiscoveryProvider)
+			declares := ProviderHasCapability(tc.wantName, CapabilityDiscovery)
+			if implements != declares {
+				t.Errorf("provider %q discovery capability mismatch: implements DiscoveryProvider=%v, declares %q=%v", tc.wantName, implements, CapabilityDiscovery, declares)
+			}
+		})
+	}
+}
+
+// TestProviderProxyCapabilityMatchesInterface keeps factory metadata aligned
+// with the optional ProxiableProvider interface used by /proxy passthrough.
+func TestProviderProxyCapabilityMatchesInterface(t *testing.T) {
+	for _, tc := range providerNameStabilityCases() {
+		t.Run(tc.wantName, func(t *testing.T) {
+			p := tc.build(t)
+			_, implements := p.(ProxiableProvider)
+			declares := ProviderHasCapability(tc.wantName, CapabilityProxy)
+			if implements != declares {
+				t.Errorf("provider %q proxy capability mismatch: implements ProxiableProvider=%v, declares %q=%v", tc.wantName, implements, CapabilityProxy, declares)
+			}
+		})
+	}
+}
+
+// TestProviderNonOpenAIWireSet pins the exact set of providers gated from
+// transparent OpenAI-wire proxy pass-through via core.NonOpenAIWireProvider.
+// OpenAI-wire is the ecosystem default, so a new OpenAI-compatible provider must
+// NOT be added here; only a genuinely native / non-directly-forwardable provider
+// both implements the marker AND appears in this set. If this test fails,
+// reconcile the provider's marker with this list — do not blindly edit one side.
+func TestProviderNonOpenAIWireSet(t *testing.T) {
+	nativeOnly := map[string]bool{
+		NameAnthropic:    true,
+		NameGemini:       true,
+		NameBedrock:      true,
+		NameCohere:       true,
+		NameVertexAI:     true,
+		NameAzureOpenAI:  true,
+		NameAzureFoundry: true,
+	}
+	for _, tc := range providerNameStabilityCases() {
+		t.Run(tc.wantName, func(t *testing.T) {
+			p := tc.build(t)
+			_, marked := p.(NonOpenAIWireProvider)
+			if marked != nativeOnly[tc.wantName] {
+				t.Errorf("provider %q implements NonOpenAIWireProvider = %v, want %v (reconcile the provider marker with the gated set)", tc.wantName, marked, nativeOnly[tc.wantName])
+			}
+		})
+	}
+}
+
 // TestProviderEnvMappingsHaveRequiredKey verifies that each provider entry has
 // a configured? gate: either at least one EnvMapping with Required=true, or a
 // ConfiguredFn (used for providers whose gate is an OR across multiple env vars,
@@ -511,5 +599,69 @@ func TestProviderEnvMappingsHaveRequiredKey(t *testing.T) {
 		if !hasRequired {
 			t.Errorf("provider %q has no configured? gate: add a Required EnvMapping or a ConfiguredFn", e.ID)
 		}
+	}
+}
+
+func TestBedrockProviderConfigFromEnv_BearerTokenOnly(t *testing.T) {
+	t.Setenv("AWS_REGION", "")
+	t.Setenv("AWS_ACCESS_KEY_ID", "")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "")
+	t.Setenv("AWS_SESSION_TOKEN", "")
+	t.Setenv("AWS_BEARER_TOKEN_BEDROCK", "test-bearer-token")
+
+	entry, ok := GetProviderEntry(NameBedrock)
+	if !ok {
+		t.Fatal("Bedrock provider entry missing")
+	}
+
+	cfg := ProviderConfigFromEnv(entry)
+	if cfg == nil {
+		t.Fatal("ProviderConfigFromEnv() = nil, want bearer-only Bedrock config")
+	}
+	if got := cfg[CfgKeyAPIKey]; got != "test-bearer-token" {
+		t.Errorf("api_key = %q, want test-bearer-token", got)
+	}
+}
+
+func TestBedrockProviderConfiguredFnAcceptsBearerRegionOrAccessKey(t *testing.T) {
+	entry, ok := GetProviderEntry(NameBedrock)
+	if !ok {
+		t.Fatal("Bedrock provider entry missing")
+	}
+	if entry.ConfiguredFn == nil {
+		t.Fatal("Bedrock ConfiguredFn = nil")
+	}
+
+	for _, tc := range []struct {
+		name string
+		cfg  ProviderConfig
+		want bool
+	}{
+		{
+			name: "bearer token",
+			cfg:  ProviderConfig{CfgKeyAPIKey: "test-bearer-token"},
+			want: true,
+		},
+		{
+			name: "region",
+			cfg:  ProviderConfig{CfgKeyRegion: "us-west-2"},
+			want: true,
+		},
+		{
+			name: "access key",
+			cfg:  ProviderConfig{CfgKeyAccessKeyID: "test-access-key"},
+			want: true,
+		},
+		{
+			name: "empty",
+			cfg:  ProviderConfig{},
+			want: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := entry.ConfiguredFn(tc.cfg); got != tc.want {
+				t.Errorf("ConfiguredFn(%#v) = %v, want %v", tc.cfg, got, tc.want)
+			}
+		})
 	}
 }
