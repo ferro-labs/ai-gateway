@@ -1503,7 +1503,7 @@ func TestRecordStreamCircuitBreakerOutcome_ReleasesHalfOpenProbeForClientCancel(
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	recordStreamCircuitBreakerOutcome(ctx, cb, mockProviderName, context.Canceled)
+	recordCircuitBreakerOutcome(ctx, cb, mockProviderName, context.Canceled)
 
 	if cb.State() != circuitbreaker.StateHalfOpen {
 		t.Fatalf("expected ignored client cancel to keep half-open state, got %s", cb.State())

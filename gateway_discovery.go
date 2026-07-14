@@ -101,10 +101,12 @@ func (g *Gateway) Embed(ctx context.Context, req providers.EmbeddingRequest) (*p
 	var resp *providers.EmbeddingResponse
 	err := g.runSurfaceGovernance(ctx, "embeddings", func(ctx context.Context) (*providers.Usage, error) {
 		var r *providers.EmbeddingResponse
-		callErr := g.withTargetSlot(ctx, name, func(ctx context.Context) error {
-			var err error
-			r, err = ep.Embed(ctx, req)
-			return err
+		callErr := g.withTargetBreaker(ctx, name, func(ctx context.Context) error {
+			return g.withTargetSlot(ctx, name, func(ctx context.Context) error {
+				var err error
+				r, err = ep.Embed(ctx, req)
+				return err
+			})
 		})
 		if callErr != nil {
 			return nil, callErr
@@ -141,13 +143,15 @@ func (g *Gateway) GenerateImage(ctx context.Context, req providers.ImageRequest)
 
 	var resp *providers.ImageResponse
 	err := g.runSurfaceGovernance(ctx, "images", func(ctx context.Context) (*providers.Usage, error) {
-		callErr := g.withTargetSlot(ctx, name, func(ctx context.Context) error {
-			r, err := ip.GenerateImage(ctx, req)
-			if err != nil {
-				return err
-			}
-			resp = r
-			return nil
+		callErr := g.withTargetBreaker(ctx, name, func(ctx context.Context) error {
+			return g.withTargetSlot(ctx, name, func(ctx context.Context) error {
+				r, err := ip.GenerateImage(ctx, req)
+				if err != nil {
+					return err
+				}
+				resp = r
+				return nil
+			})
 		})
 		if callErr != nil {
 			return nil, callErr

@@ -106,10 +106,13 @@ func shouldRecordCircuitBreakerFailure(ctx context.Context, err error) bool {
 	return !isRateLimitError(err)
 }
 
-// recordStreamCircuitBreakerOutcome updates breaker state when a stream
-// finishes. Startup failures are recorded in cbProvider.CompleteStream;
-// this handles stream completion only.
-func recordStreamCircuitBreakerOutcome(ctx context.Context, cb *circuitbreaker.CircuitBreaker, name string, err error) {
+// recordCircuitBreakerOutcome updates breaker state from the result of one
+// upstream call: a blameworthy failure trips the breaker, a failure that is not
+// the provider's fault releases the half-open probe instead, and a success
+// closes it. Used by the stream path once a stream finishes (its startup
+// failures are recorded in cbProvider.CompleteStream) and by withTargetBreaker
+// for the surfaces that cannot be wrapped.
+func recordCircuitBreakerOutcome(ctx context.Context, cb *circuitbreaker.CircuitBreaker, name string, err error) {
 	if err != nil {
 		if !shouldRecordCircuitBreakerFailure(ctx, err) {
 			cb.ReleaseProbe()
@@ -121,6 +124,33 @@ func recordStreamCircuitBreakerOutcome(ctx context.Context, cb *circuitbreaker.C
 	}
 	cb.RecordSuccess()
 	metrics.CircuitBreakerState.WithLabelValues(name).Set(float64(cb.State()))
+}
+
+// withTargetBreaker runs fn under the target's circuit breaker, for the surfaces
+// cbProvider cannot wrap. Embedding and image providers are reached through
+// optional interfaces (EmbeddingProvider / ImageProvider), and a wrapper
+// embedding providers.Provider would fail those type assertions and break the
+// surface outright — the same constraint that puts the concurrency limiter at
+// the call site. A target with no breaker configured runs fn unchanged.
+//
+// Composition mirrors decorateProvider: the breaker is OUTERMOST and the
+// limiter INNERMOST, so an open circuit fails fast without ever taking an
+// in-flight slot or a queue position.
+func (g *Gateway) withTargetBreaker(ctx context.Context, target string, fn func(context.Context) error) error {
+	g.mu.RLock()
+	cb := g.circuitBreakers[target]
+	g.mu.RUnlock()
+
+	if cb == nil {
+		return fn(ctx)
+	}
+	if !cb.Allow() {
+		metrics.CircuitBreakerState.WithLabelValues(target).Set(1) // open
+		return circuitbreaker.ErrCircuitOpen
+	}
+	err := fn(ctx)
+	recordCircuitBreakerOutcome(ctx, cb, target, err)
+	return err
 }
 
 // ensureCircuitBreakersLocked creates circuit breakers for configured targets.

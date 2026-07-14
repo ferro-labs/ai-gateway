@@ -135,8 +135,13 @@ func TestBedrockProvider_CompleteStream_TranslatesStatus(t *testing.T) {
 // TestBedrockProvider_Complete_NonHTTPErrorPassesThrough verifies a
 // transport/credential failure with no HTTP response (never reached the
 // service) is left as-is: it genuinely has no status to report.
+// errFakeTransport stands in for a transport/credential failure that never
+// reached the service. It is a sentinel so the test can prove the original
+// error survives the wrap chain, rather than merely that some error came back.
+var errFakeTransport = errors.New("dial tcp: connection refused")
+
 func TestBedrockProvider_Complete_NonHTTPErrorPassesThrough(t *testing.T) {
-	fake := &fakeBedrockRuntimeClient{err: errors.New("dial tcp: connection refused")}
+	fake := &fakeBedrockRuntimeClient{err: errFakeTransport}
 	p := &Provider{name: Name, client: fake}
 
 	_, err := p.Complete(context.Background(), core.Request{
@@ -149,7 +154,9 @@ func TestBedrockProvider_Complete_NonHTTPErrorPassesThrough(t *testing.T) {
 	if got := core.ParseStatusCode(err); got != 0 {
 		t.Errorf("ParseStatusCode(err) = %d, want 0 for a non-HTTP transport error", got)
 	}
-	if !errors.Is(err, err) {
-		t.Fatal("sanity: err must equal itself")
+	// The cause must remain reachable: a transport failure carries no status, so
+	// callers can only classify it by unwrapping to the underlying error.
+	if !errors.Is(err, errFakeTransport) {
+		t.Errorf("errors.Is(err, errFakeTransport) = false; the transport error was not preserved through the wrap chain: %v", err)
 	}
 }

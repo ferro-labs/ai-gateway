@@ -655,31 +655,56 @@ func TestProviderStreamConformance(t *testing.T) {
 			var content strings.Builder
 			var finishReason string
 			var usage *core.Usage
-			for _, c := range chunks {
+			finishIdx, usageIdx, lastChoiceIdx := -1, -1, -1
+			for i, c := range chunks {
 				for _, choice := range c.Choices {
+					lastChoiceIdx = i
 					content.WriteString(choice.Delta.Content)
 					if choice.FinishReason != "" {
 						finishReason = choice.FinishReason
+						finishIdx = i
 					}
 				}
 				if c.Usage != nil {
 					usage = c.Usage
+					usageIdx = i
 				}
 			}
 			if got := content.String(); got != wantContent {
 				t.Errorf("concatenated content = %q, want %q", got, wantContent)
 			}
 
-			// 2. finish_reason is canonical OpenAI on the terminal chunk, not a raw
-			// provider token (Anthropic's end_turn, Gemini's STOP, Cohere's COMPLETE).
+			// 2. finish_reason is canonical OpenAI (not a raw provider token —
+			// Anthropic's end_turn, Gemini's STOP, Cohere's COMPLETE) and terminal: it
+			// lands on the last chunk that carries a choice, and no chunk after it
+			// carries a content delta. An OpenAI-compatible client stops reading the
+			// stream once finish_reason arrives, so content the translator emits after
+			// it would never reach the client.
 			if !slices.Contains(canonicalFinishReasons, finishReason) {
 				t.Errorf("terminal FinishReason = %q, want one of %v (a native token leaked through translation)",
 					finishReason, canonicalFinishReasons)
 			}
+			if finishIdx != -1 {
+				if finishIdx != lastChoiceIdx {
+					t.Errorf("finish_reason set on chunk %d, but chunk %d is the last one carrying a choice; finish_reason must be terminal",
+						finishIdx, lastChoiceIdx)
+				}
+				for i := finishIdx + 1; i < len(chunks); i++ {
+					for _, choice := range chunks[i].Choices {
+						if choice.Delta.Content != "" {
+							t.Errorf("chunk %d carries content %q after the finish_reason chunk %d; the stream ended early",
+								i, choice.Delta.Content, finishIdx)
+						}
+					}
+				}
+			}
 
-			// 3. Usage lands on the final chunk for every provider whose streaming
-			// path reports it at all; Replicate's noUsage documents the one that
-			// genuinely never does rather than asserting around the gap.
+			// 3. Usage never precedes the finish: the chunk that carries it is at or
+			// after the chunk carrying finish_reason, matching every real wire shape
+			// (OpenAI-compatible: a trailing usage-only chunk after the finish chunk;
+			// Anthropic/Gemini/Cohere: finish_reason and usage share one chunk).
+			// Replicate's noUsage documents the one streaming path that genuinely never
+			// assembles usage at all, rather than asserting around the gap.
 			switch {
 			case fx.noUsage:
 				if usage != nil {
@@ -688,6 +713,9 @@ func TestProviderStreamConformance(t *testing.T) {
 			case usage == nil:
 				t.Errorf("no chunk carried usage; want prompt=%d completion=%d", wantPromptTokens, wantCompletionTokens)
 			default:
+				if usageIdx < finishIdx {
+					t.Errorf("usage landed on chunk %d, before the finish_reason chunk %d", usageIdx, finishIdx)
+				}
 				if usage.PromptTokens != wantPromptTokens {
 					t.Errorf("Usage.PromptTokens = %d, want %d", usage.PromptTokens, wantPromptTokens)
 				}

@@ -181,7 +181,7 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 		cb := wrapped.cb
 		cbName := wrapped.name
 		meta.CircuitBreakerOutcome = func(err error) {
-			recordStreamCircuitBreakerOutcome(ctx, cb, cbName, err)
+			recordCircuitBreakerOutcome(ctx, cb, cbName, err)
 		}
 	}
 	if pctx != nil {
