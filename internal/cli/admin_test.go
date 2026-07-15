@@ -200,8 +200,8 @@ func TestAdminLogsList(t *testing.T) {
 }
 
 func TestAdminConfigSet(t *testing.T) {
-	// Ordered subtests: the missing-flag case must run before any case that
-	// sets --file, because the flag lives on the package-global command.
+	// execAdmin resets the command flags before each run, so these subtests are
+	// independent of ordering.
 	t.Run("requires the file flag", func(t *testing.T) {
 		_, err := execAdmin(t, "http://127.0.0.1:1", "admin", "config", "set")
 		if err == nil || !strings.Contains(err.Error(), "--file is required") {

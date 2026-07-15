@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 )
 
 // newHandlerCmd builds a child command mounted under a root carrying the
@@ -44,13 +45,17 @@ func newHandlerCmd(t *testing.T, gatewayURL, format string) (*cobra.Command, *by
 
 // execAdmin runs the real AdminCmd tree through cobra's Execute with output
 // captured to a buffer, so the admin sub-command RunE closures are exercised
-// end to end. AdminCmd is a package global, so these tests must stay serial.
+// end to end. AdminCmd is a package global whose flag values would otherwise
+// persist between runs; its flags are reset first so tests do not depend on
+// ordering. The tests stay serial because the global tree is re-parented here.
 func execAdmin(t *testing.T, gatewayURL string, args ...string) (string, error) {
 	t.Helper()
 	t.Setenv("NO_COLOR", "1")
 	t.Setenv("FERROGW_URL", "")
 	t.Setenv("FERROGW_API_KEY", "")
 	t.Setenv("MASTER_KEY", "")
+
+	resetCommandFlags(AdminCmd)
 
 	root := &cobra.Command{Use: "ferrogw", SilenceUsage: true, SilenceErrors: true}
 	root.PersistentFlags().String("gateway-url", gatewayURL, "")
@@ -77,6 +82,20 @@ func stubGateway(t *testing.T, routes map[string]http.HandlerFunc) *httptest.Ser
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv
+}
+
+// resetCommandFlags restores every flag in a command tree to its default value
+// and clears its "changed" state, so a flag set by one execution does not leak
+// into the next. Needed because the admin commands are package globals reused
+// across execAdmin calls.
+func resetCommandFlags(cmd *cobra.Command) {
+	cmd.Flags().VisitAll(func(f *pflag.Flag) {
+		_ = f.Value.Set(f.DefValue)
+		f.Changed = false
+	})
+	for _, sub := range cmd.Commands() {
+		resetCommandFlags(sub)
+	}
 }
 
 // jsonHandler responds with a fixed status and JSON body.
