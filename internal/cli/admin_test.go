@@ -114,96 +114,122 @@ func TestJSONSlice_Rendering(t *testing.T) {
 	}
 }
 
-// ── Admin sub-command handlers (through cobra Execute) ──────────────────────────
+// ── Admin sub-command handlers (called directly on a fresh command) ─────────────
 
-func TestAdminKeysList(t *testing.T) {
+func TestRunKeysList(t *testing.T) {
 	srv := stubGateway(t, map[string]http.HandlerFunc{
 		"/admin/keys": jsonHandler(http.StatusOK, `[{"id":"k1","name":"prod","scope":"admin","revoked":false}]`),
 	})
+	cmd, out := newHandlerCmd(t, srv.URL, "table")
 
-	out, err := execAdmin(t, srv.URL, "admin", "keys", "list")
-	if err != nil {
-		t.Fatalf("execute: %v", err)
+	if err := runKeysList(cmd, nil); err != nil {
+		t.Fatalf("runKeysList: %v", err)
 	}
 	for _, want := range []string{"ID", "k1", "prod", "admin"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("output missing %q:\n%s", want, out)
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("output missing %q:\n%s", want, out.String())
 		}
 	}
 }
 
-func TestAdminKeysGet(t *testing.T) {
+func TestRunKeysGet(t *testing.T) {
 	srv := stubGateway(t, map[string]http.HandlerFunc{
 		"/admin/keys/k1": jsonHandler(http.StatusOK, `{"id":"k1","name":"prod"}`),
 	})
+	cmd, out := newHandlerCmd(t, srv.URL, "table")
 
-	out, err := execAdmin(t, srv.URL, "admin", "keys", "get", "k1")
-	if err != nil {
-		t.Fatalf("execute: %v", err)
+	if err := runKeysGet(cmd, []string{"k1"}); err != nil {
+		t.Fatalf("runKeysGet: %v", err)
 	}
-	if !strings.Contains(out, "k1") {
-		t.Errorf("want key detail, got:\n%s", out)
+	if !strings.Contains(out.String(), "k1") {
+		t.Errorf("want key detail, got:\n%s", out.String())
 	}
 }
 
-func TestAdminKeysCreate(t *testing.T) {
+func TestRunKeysCreate(t *testing.T) {
 	srv := stubGateway(t, map[string]http.HandlerFunc{
 		"/admin/keys": jsonHandler(http.StatusOK, `{"id":"new","key":"fgw_secret"}`),
 	})
 
 	t.Run("with a valid expiry", func(t *testing.T) {
-		out, err := execAdmin(t, srv.URL, "admin", "keys", "create", "--name", "ci", "--expires-in", "1h")
-		if err != nil {
-			t.Fatalf("execute: %v", err)
+		cmd, out := newHandlerCmd(t, srv.URL, "table")
+		cmd.Flags().String("name", "ci", "")
+		cmd.Flags().String("scope", "read_only", "")
+		cmd.Flags().String("expires-in", "1h", "")
+
+		if err := runKeysCreate(cmd, nil); err != nil {
+			t.Fatalf("runKeysCreate: %v", err)
 		}
-		if !strings.Contains(out, "new") {
-			t.Errorf("want created key in output, got:\n%s", out)
+		if !strings.Contains(out.String(), "new") {
+			t.Errorf("want created key in output, got:\n%s", out.String())
 		}
 	})
 
 	t.Run("rejects an invalid expiry duration", func(t *testing.T) {
-		_, err := execAdmin(t, srv.URL, "admin", "keys", "create", "--expires-in", "bogus")
+		cmd, _ := newHandlerCmd(t, srv.URL, "table")
+		cmd.Flags().String("name", "", "")
+		cmd.Flags().String("scope", "read_only", "")
+		cmd.Flags().String("expires-in", "bogus", "")
+
+		err := runKeysCreate(cmd, nil)
 		if err == nil || !strings.Contains(err.Error(), "invalid --expires-in") {
 			t.Fatalf("want expiry parse error, got %v", err)
 		}
 	})
 }
 
-func TestAdminKeysRevoke(t *testing.T) {
+func TestRunKeysRevoke(t *testing.T) {
 	srv := stubGateway(t, map[string]http.HandlerFunc{
 		"/admin/keys/k1/revoke": jsonHandler(http.StatusOK, `{}`),
 	})
+	cmd, out := newHandlerCmd(t, srv.URL, "table")
 
-	out, err := execAdmin(t, srv.URL, "admin", "keys", "revoke", "k1")
-	if err != nil {
-		t.Fatalf("execute: %v", err)
+	if err := runKeysRevoke(cmd, []string{"k1"}); err != nil {
+		t.Fatalf("runKeysRevoke: %v", err)
 	}
-	if !strings.Contains(out, "Key revoked.") {
-		t.Errorf("want success message, got:\n%s", out)
+	if !strings.Contains(out.String(), "Key revoked.") {
+		t.Errorf("want success message, got:\n%s", out.String())
 	}
 }
 
-func TestAdminLogsList(t *testing.T) {
+func TestRunConfigHistory(t *testing.T) {
 	srv := stubGateway(t, map[string]http.HandlerFunc{
-		"/admin/logs": jsonHandler(http.StatusOK, `[{"trace_id":"t1","provider":"openai","model":"gpt-4","status":200,"latency_ms":42}]`),
+		"/admin/config/history": jsonHandler(http.StatusOK, `[{"version":3,"updated_at":"2026-07-15T09:30:00Z","rolled_back_from":1}]`),
 	})
+	cmd, out := newHandlerCmd(t, srv.URL, "table")
 
-	out, err := execAdmin(t, srv.URL, "admin", "logs", "list")
-	if err != nil {
-		t.Fatalf("execute: %v", err)
+	if err := runConfigHistory(cmd, nil); err != nil {
+		t.Fatalf("runConfigHistory: %v", err)
 	}
-	for _, want := range []string{"TRACE_ID", "t1", "openai", "gpt-4"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("output missing %q:\n%s", want, out)
+	for _, want := range []string{"VERSION", "3", "1"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("output missing %q:\n%s", want, out.String())
 		}
 	}
 }
 
-func TestAdminConfigSet(t *testing.T) {
-	// execAdmin resets the command flags before each run, so these subtests are
-	// independent of ordering.
+func TestRunConfigRollback(t *testing.T) {
+	srv := stubGateway(t, map[string]http.HandlerFunc{
+		"/admin/config/rollback/2": jsonHandler(http.StatusOK, `{}`),
+	})
+	cmd, out := newHandlerCmd(t, srv.URL, "table")
+
+	if err := runConfigRollback(cmd, []string{"2"}); err != nil {
+		t.Fatalf("runConfigRollback: %v", err)
+	}
+	if !strings.Contains(out.String(), "Rolled back to version 2.") {
+		t.Errorf("want rollback message, got:\n%s", out.String())
+	}
+}
+
+func TestRunConfigSet(t *testing.T) {
+	// Each subtest builds its own command, so there is no shared flag state and
+	// no dependence on execution order.
 	t.Run("requires the file flag", func(t *testing.T) {
-		_, err := execAdmin(t, "http://127.0.0.1:1", "admin", "config", "set")
+		cmd, _ := newHandlerCmd(t, "http://127.0.0.1:1", "table")
+		cmd.Flags().String("file", "", "")
+
+		err := runConfigSet(cmd, nil)
 		if err == nil || !strings.Contains(err.Error(), "--file is required") {
 			t.Fatalf("want --file required error, got %v", err)
 		}
@@ -217,13 +243,47 @@ func TestAdminConfigSet(t *testing.T) {
 		if err := os.WriteFile(path, []byte(`{"strategy":{"mode":"fallback"},"targets":[{"virtual_key":"openai"}]}`), 0600); err != nil {
 			t.Fatalf("write config: %v", err)
 		}
+		cmd, out := newHandlerCmd(t, srv.URL, "table")
+		cmd.Flags().String("file", path, "")
 
-		out, err := execAdmin(t, srv.URL, "admin", "config", "set", "--file", path)
-		if err != nil {
-			t.Fatalf("execute: %v", err)
+		if err := runConfigSet(cmd, nil); err != nil {
+			t.Fatalf("runConfigSet: %v", err)
 		}
-		if !strings.Contains(out, "Configuration updated.") {
-			t.Errorf("want success message, got:\n%s", out)
+		if !strings.Contains(out.String(), "Configuration updated.") {
+			t.Errorf("want success message, got:\n%s", out.String())
 		}
 	})
+}
+
+func TestRunLogsList(t *testing.T) {
+	srv := stubGateway(t, map[string]http.HandlerFunc{
+		"/admin/logs": jsonHandler(http.StatusOK, `[{"trace_id":"t1","provider":"openai","model":"gpt-4","status":200,"latency_ms":42}]`),
+	})
+	cmd, out := newHandlerCmd(t, srv.URL, "table")
+	cmd.Flags().Int("limit", 50, "")
+
+	if err := runLogsList(cmd, nil); err != nil {
+		t.Fatalf("runLogsList: %v", err)
+	}
+	for _, want := range []string{"TRACE_ID", "t1", "openai", "gpt-4"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("output missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
+func TestRunProvidersList(t *testing.T) {
+	srv := stubGateway(t, map[string]http.HandlerFunc{
+		"/admin/providers": jsonHandler(http.StatusOK, `[{"name":"openai","model_count":12}]`),
+	})
+	cmd, out := newHandlerCmd(t, srv.URL, "table")
+
+	if err := runProvidersList(cmd, nil); err != nil {
+		t.Fatalf("runProvidersList: %v", err)
+	}
+	for _, want := range []string{"PROVIDER", "openai", "12"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("output missing %q:\n%s", want, out.String())
+		}
+	}
 }

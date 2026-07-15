@@ -30,94 +30,104 @@ var keysCmd = &cobra.Command{
 var keysListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List all API keys",
-	RunE: func(cmd *cobra.Command, _ []string) error {
-		c := adminClientFromCmd(cmd)
-		var result any
-		if err := c.Get(cmd.Context(), "/admin/keys", &result); err != nil {
-			return err
-		}
-		return printResult(cmd, &jsonSlice{
-			headers: []string{"ID", "NAME", "SCOPE", "EXPIRES", "REVOKED"},
-			data:    toSlice(result),
-			rowFn: func(m map[string]any) []string {
-				return []string{
-					str(m, "id"), str(m, "name"), str(m, "scope"),
-					fmtTime(m, "expires_at"), strBool(m, "revoked"),
-				}
-			},
-		})
-	},
+	RunE:  runKeysList,
+}
+
+func runKeysList(cmd *cobra.Command, _ []string) error {
+	c := adminClientFromCmd(cmd)
+	var result any
+	if err := c.Get(cmd.Context(), "/admin/keys", &result); err != nil {
+		return err
+	}
+	return printResult(cmd, &jsonSlice{
+		headers: []string{"ID", "NAME", "SCOPE", "EXPIRES", "REVOKED"},
+		data:    toSlice(result),
+		rowFn: func(m map[string]any) []string {
+			return []string{
+				str(m, "id"), str(m, "name"), str(m, "scope"),
+				fmtTime(m, "expires_at"), strBool(m, "revoked"),
+			}
+		},
+	})
 }
 
 var keysGetCmd = &cobra.Command{
 	Use:   "get <id>",
 	Short: "Get details of an API key",
 	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c := adminClientFromCmd(cmd)
-		var result any
-		if err := c.Get(cmd.Context(), "/admin/keys/"+args[0], &result); err != nil {
-			return err
-		}
-		return printResult(cmd, result)
-	},
+	RunE:  runKeysGet,
+}
+
+func runKeysGet(cmd *cobra.Command, args []string) error {
+	c := adminClientFromCmd(cmd)
+	var result any
+	if err := c.Get(cmd.Context(), "/admin/keys/"+args[0], &result); err != nil {
+		return err
+	}
+	return printResult(cmd, result)
 }
 
 var keysCreateCmd = &cobra.Command{
 	Use:   "create",
 	Short: "Create a new API key",
-	RunE: func(cmd *cobra.Command, _ []string) error {
-		name, _ := cmd.Flags().GetString("name")
-		scope, _ := cmd.Flags().GetString("scope")
-		expiresIn, _ := cmd.Flags().GetString("expires-in")
+	RunE:  runKeysCreate,
+}
 
-		body := map[string]any{
-			"name":  name,
-			"scope": scope,
-		}
-		if expiresIn != "" {
-			d, err := time.ParseDuration(expiresIn)
-			if err != nil {
-				return fmt.Errorf("invalid --expires-in duration: %w", err)
-			}
-			body["expires_at"] = time.Now().UTC().Add(d).Format(time.RFC3339)
-		}
+func runKeysCreate(cmd *cobra.Command, _ []string) error {
+	name, _ := cmd.Flags().GetString("name")
+	scope, _ := cmd.Flags().GetString("scope")
+	expiresIn, _ := cmd.Flags().GetString("expires-in")
 
-		c := adminClientFromCmd(cmd)
-		var result any
-		if err := c.Post(cmd.Context(), "/admin/keys", body, &result); err != nil {
-			return err
+	body := map[string]any{
+		"name":  name,
+		"scope": scope,
+	}
+	if expiresIn != "" {
+		d, err := time.ParseDuration(expiresIn)
+		if err != nil {
+			return fmt.Errorf("invalid --expires-in duration: %w", err)
 		}
-		return printResult(cmd, result)
-	},
+		body["expires_at"] = time.Now().UTC().Add(d).Format(time.RFC3339)
+	}
+
+	c := adminClientFromCmd(cmd)
+	var result any
+	if err := c.Post(cmd.Context(), "/admin/keys", body, &result); err != nil {
+		return err
+	}
+	return printResult(cmd, result)
 }
 
 var keysRevokeCmd = &cobra.Command{
 	Use:   "revoke <id>",
 	Short: "Revoke an API key",
 	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c := adminClientFromCmd(cmd)
-		if err := c.Post(cmd.Context(), "/admin/keys/"+args[0]+"/revoke", nil, nil); err != nil {
-			return err
-		}
-		PrintSuccess(cmd.OutOrStdout(), "Key revoked.")
-		return nil
-	},
+	RunE:  runKeysRevoke,
+}
+
+func runKeysRevoke(cmd *cobra.Command, args []string) error {
+	c := adminClientFromCmd(cmd)
+	if err := c.Post(cmd.Context(), "/admin/keys/"+args[0]+"/revoke", nil, nil); err != nil {
+		return err
+	}
+	PrintSuccess(cmd.OutOrStdout(), "Key revoked.")
+	return nil
 }
 
 var keysRotateCmd = &cobra.Command{
 	Use:   "rotate <id>",
 	Short: "Rotate an API key (generates a new key value)",
 	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c := adminClientFromCmd(cmd)
-		var result any
-		if err := c.Post(cmd.Context(), "/admin/keys/"+args[0]+"/rotate", nil, &result); err != nil {
-			return err
-		}
-		return printResult(cmd, result)
-	},
+	RunE:  runKeysRotate,
+}
+
+func runKeysRotate(cmd *cobra.Command, args []string) error {
+	c := adminClientFromCmd(cmd)
+	var result any
+	if err := c.Post(cmd.Context(), "/admin/keys/"+args[0]+"/rotate", nil, &result); err != nil {
+		return err
+	}
+	return printResult(cmd, result)
 }
 
 // ── Config ───────────────────────────────────────────────────────────────────
@@ -130,79 +140,87 @@ var configCmd = &cobra.Command{
 var configGetCmd = &cobra.Command{
 	Use:   "get",
 	Short: "Print the current runtime configuration",
-	RunE: func(cmd *cobra.Command, _ []string) error {
-		c := adminClientFromCmd(cmd)
-		var result any
-		if err := c.Get(cmd.Context(), "/admin/config", &result); err != nil {
-			return err
-		}
-		return printResult(cmd, result)
-	},
+	RunE:  runConfigGet,
+}
+
+func runConfigGet(cmd *cobra.Command, _ []string) error {
+	c := adminClientFromCmd(cmd)
+	var result any
+	if err := c.Get(cmd.Context(), "/admin/config", &result); err != nil {
+		return err
+	}
+	return printResult(cmd, result)
 }
 
 var configHistoryCmd = &cobra.Command{
 	Use:   "history",
 	Short: "Show configuration change history",
-	RunE: func(cmd *cobra.Command, _ []string) error {
-		c := adminClientFromCmd(cmd)
-		var result any
-		if err := c.Get(cmd.Context(), "/admin/config/history", &result); err != nil {
-			return err
-		}
-		return printResult(cmd, &jsonSlice{
-			headers: []string{"VERSION", "UPDATED_AT", "ROLLED_BACK_FROM"},
-			data:    toSlice(result),
-			rowFn: func(m map[string]any) []string {
-				rolledBack := ""
-				if v, ok := m["rolled_back_from"]; ok && v != nil {
-					rolledBack = fmt.Sprintf("%v", v)
-				}
-				return []string{fmt.Sprintf("%.0f", numVal(m, "version")), fmtTime(m, "updated_at"), rolledBack}
-			},
-		})
-	},
+	RunE:  runConfigHistory,
+}
+
+func runConfigHistory(cmd *cobra.Command, _ []string) error {
+	c := adminClientFromCmd(cmd)
+	var result any
+	if err := c.Get(cmd.Context(), "/admin/config/history", &result); err != nil {
+		return err
+	}
+	return printResult(cmd, &jsonSlice{
+		headers: []string{"VERSION", "UPDATED_AT", "ROLLED_BACK_FROM"},
+		data:    toSlice(result),
+		rowFn: func(m map[string]any) []string {
+			rolledBack := ""
+			if v, ok := m["rolled_back_from"]; ok && v != nil {
+				rolledBack = fmt.Sprintf("%v", v)
+			}
+			return []string{fmt.Sprintf("%.0f", numVal(m, "version")), fmtTime(m, "updated_at"), rolledBack}
+		},
+	})
 }
 
 var configSetCmd = &cobra.Command{
 	Use:   "set",
 	Short: "Apply a new configuration (JSON file)",
-	RunE: func(cmd *cobra.Command, _ []string) error {
-		filePath, _ := cmd.Flags().GetString("file")
-		if filePath == "" {
-			return fmt.Errorf("--file is required")
-		}
-		raw, err := os.ReadFile(filePath) //nolint:gosec // G304: file path comes from the operator's --file CLI flag, not request input
-		if err != nil {
-			return fmt.Errorf("read file: %w", err)
-		}
-		// Decode locally so we send JSON regardless of input format.
-		var body any
-		if err := json.Unmarshal(raw, &body); err != nil {
-			return fmt.Errorf("parse config file: %w (only JSON is accepted by this command; convert YAML first)", err)
-		}
-		c := adminClientFromCmd(cmd)
-		var result any
-		if err := c.Put(cmd.Context(), "/admin/config", body, &result); err != nil {
-			return err
-		}
-		PrintSuccess(cmd.OutOrStdout(), "Configuration updated.")
-		return nil
-	},
+	RunE:  runConfigSet,
+}
+
+func runConfigSet(cmd *cobra.Command, _ []string) error {
+	filePath, _ := cmd.Flags().GetString("file")
+	if filePath == "" {
+		return fmt.Errorf("--file is required")
+	}
+	raw, err := os.ReadFile(filePath) //nolint:gosec // G304: file path comes from the operator's --file CLI flag, not request input
+	if err != nil {
+		return fmt.Errorf("read file: %w", err)
+	}
+	// Decode locally so we send JSON regardless of input format.
+	var body any
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return fmt.Errorf("parse config file: %w (only JSON is accepted by this command; convert YAML first)", err)
+	}
+	c := adminClientFromCmd(cmd)
+	var result any
+	if err := c.Put(cmd.Context(), "/admin/config", body, &result); err != nil {
+		return err
+	}
+	PrintSuccess(cmd.OutOrStdout(), "Configuration updated.")
+	return nil
 }
 
 var configRollbackCmd = &cobra.Command{
 	Use:   "rollback <version>",
 	Short: "Roll back to a previous configuration version",
 	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c := adminClientFromCmd(cmd)
-		var result any
-		if err := c.Post(cmd.Context(), "/admin/config/rollback/"+args[0], nil, &result); err != nil {
-			return err
-		}
-		PrintSuccess(cmd.OutOrStdout(), "Rolled back to version "+args[0]+".")
-		return nil
-	},
+	RunE:  runConfigRollback,
+}
+
+func runConfigRollback(cmd *cobra.Command, args []string) error {
+	c := adminClientFromCmd(cmd)
+	var result any
+	if err := c.Post(cmd.Context(), "/admin/config/rollback/"+args[0], nil, &result); err != nil {
+		return err
+	}
+	PrintSuccess(cmd.OutOrStdout(), "Rolled back to version "+args[0]+".")
+	return nil
 }
 
 // ── Logs ─────────────────────────────────────────────────────────────────────
@@ -215,40 +233,44 @@ var logsCmd = &cobra.Command{
 var logsListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List persisted request logs",
-	RunE: func(cmd *cobra.Command, _ []string) error {
-		c := adminClientFromCmd(cmd)
-		limit, _ := cmd.Flags().GetInt("limit")
-		path := fmt.Sprintf("/admin/logs?limit=%d", limit)
-		var result any
-		if err := c.Get(cmd.Context(), path, &result); err != nil {
-			return err
-		}
-		return printResult(cmd, &jsonSlice{
-			headers: []string{"TRACE_ID", "PROVIDER", "MODEL", "STATUS", "LATENCY_MS", "TIMESTAMP"},
-			data:    toSlice(result),
-			rowFn: func(m map[string]any) []string {
-				return []string{
-					str(m, "trace_id"), str(m, "provider"), str(m, "model"),
-					fmt.Sprintf("%.0f", numVal(m, "status")),
-					fmt.Sprintf("%.0f", numVal(m, "latency_ms")),
-					str(m, "timestamp"),
-				}
-			},
-		})
-	},
+	RunE:  runLogsList,
+}
+
+func runLogsList(cmd *cobra.Command, _ []string) error {
+	c := adminClientFromCmd(cmd)
+	limit, _ := cmd.Flags().GetInt("limit")
+	path := fmt.Sprintf("/admin/logs?limit=%d", limit)
+	var result any
+	if err := c.Get(cmd.Context(), path, &result); err != nil {
+		return err
+	}
+	return printResult(cmd, &jsonSlice{
+		headers: []string{"TRACE_ID", "PROVIDER", "MODEL", "STATUS", "LATENCY_MS", "TIMESTAMP"},
+		data:    toSlice(result),
+		rowFn: func(m map[string]any) []string {
+			return []string{
+				str(m, "trace_id"), str(m, "provider"), str(m, "model"),
+				fmt.Sprintf("%.0f", numVal(m, "status")),
+				fmt.Sprintf("%.0f", numVal(m, "latency_ms")),
+				str(m, "timestamp"),
+			}
+		},
+	})
 }
 
 var logsStatsCmd = &cobra.Command{
 	Use:   "stats",
 	Short: "Show aggregated log statistics",
-	RunE: func(cmd *cobra.Command, _ []string) error {
-		c := adminClientFromCmd(cmd)
-		var result any
-		if err := c.Get(cmd.Context(), "/admin/logs/stats", &result); err != nil {
-			return err
-		}
-		return printResult(cmd, result)
-	},
+	RunE:  runLogsStats,
+}
+
+func runLogsStats(cmd *cobra.Command, _ []string) error {
+	c := adminClientFromCmd(cmd)
+	var result any
+	if err := c.Get(cmd.Context(), "/admin/logs/stats", &result); err != nil {
+		return err
+	}
+	return printResult(cmd, result)
 }
 
 // ── Providers ────────────────────────────────────────────────────────────────
@@ -261,33 +283,37 @@ var providersCmd = &cobra.Command{
 var providersListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List all registered providers and their model counts",
-	RunE: func(cmd *cobra.Command, _ []string) error {
-		c := adminClientFromCmd(cmd)
-		var result any
-		if err := c.Get(cmd.Context(), "/admin/providers", &result); err != nil {
-			return err
-		}
-		return printResult(cmd, &jsonSlice{
-			headers: []string{"PROVIDER", "MODELS"},
-			data:    toSlice(result),
-			rowFn: func(m map[string]any) []string {
-				return []string{str(m, "name"), fmt.Sprintf("%.0f", numVal(m, "model_count"))}
-			},
-		})
-	},
+	RunE:  runProvidersList,
+}
+
+func runProvidersList(cmd *cobra.Command, _ []string) error {
+	c := adminClientFromCmd(cmd)
+	var result any
+	if err := c.Get(cmd.Context(), "/admin/providers", &result); err != nil {
+		return err
+	}
+	return printResult(cmd, &jsonSlice{
+		headers: []string{"PROVIDER", "MODELS"},
+		data:    toSlice(result),
+		rowFn: func(m map[string]any) []string {
+			return []string{str(m, "name"), fmt.Sprintf("%.0f", numVal(m, "model_count"))}
+		},
+	})
 }
 
 var providersHealthCmd = &cobra.Command{
 	Use:   "health",
 	Short: "Show per-provider health status",
-	RunE: func(cmd *cobra.Command, _ []string) error {
-		c := adminClientFromCmd(cmd)
-		var result any
-		if err := c.Get(cmd.Context(), "/admin/health", &result); err != nil {
-			return err
-		}
-		return printResult(cmd, result)
-	},
+	RunE:  runProvidersHealth,
+}
+
+func runProvidersHealth(cmd *cobra.Command, _ []string) error {
+	c := adminClientFromCmd(cmd)
+	var result any
+	if err := c.Get(cmd.Context(), "/admin/health", &result); err != nil {
+		return err
+	}
+	return printResult(cmd, result)
 }
 
 // ── Wire-up ───────────────────────────────────────────────────────────────────
