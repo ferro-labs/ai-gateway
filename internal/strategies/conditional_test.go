@@ -139,5 +139,3 @@ func TestConditional_NoRulesUsesFallback(t *testing.T) {
 		t.Errorf("expected fallback, got %s", resp.ID)
 	}
 }
-
-// assertKeys fails unless got equals want exactly, in order.

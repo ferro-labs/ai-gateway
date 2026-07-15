@@ -10,6 +10,12 @@ import (
 	"github.com/ferro-labs/ai-gateway/providers"
 )
 
+// TestGateway_Route_RequestTimeoutTripsCircuitBreaker guards the attribution of a
+// gateway-imposed deadline. A provider that hangs past request_timeout is a
+// PROVIDER failure and must trip its breaker. If it is misread as caller
+// cancellation the breaker never opens, the hung provider stays in rotation
+// forever, and /readyz — whose only provider signal is circuit state — keeps
+// reporting the pod ready while every request fails.
 func TestGateway_Route_RequestTimeoutTripsCircuitBreaker(t *testing.T) {
 	gw, err := newTestGateway(t, Config{
 		Strategy:       StrategyConfig{Mode: ModeSingle},

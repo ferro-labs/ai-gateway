@@ -9,6 +9,8 @@ import (
 	"github.com/ferro-labs/ai-gateway/providers"
 )
 
+// freshProvider returns a new *providers.Response on every Complete call so
+// concurrent goroutines never share a response pointer. Used by race tests.
 type freshProvider struct {
 	name   string
 	models []string
@@ -93,7 +95,3 @@ func TestGateway_RouteProviderLookupNoDataRace(t *testing.T) {
 
 	wg.Wait()
 }
-
-// TestNew_ValidatesConfig verifies that New() runs the same fail-fast validation
-// that ReloadConfig already applies, so callers get a clear error at construction
-// time rather than a confusing failure at request time.

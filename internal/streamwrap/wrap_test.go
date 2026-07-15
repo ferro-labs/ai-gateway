@@ -352,8 +352,7 @@ func TestMeter_CallsCircuitBreakerOutcome_OnAfterPluginError(t *testing.T) {
 	}
 }
 
-func TestMeter_NilPublishFn_NoPanic(t *testing.T) {
-	t.Helper()
+func TestMeter_NilPublishFn_ForwardsStream(t *testing.T) {
 	src := feed(providers.StreamChunk{ID: "1"})
 	out := Meter(context.Background(), src, time.Now(), MeterMeta{
 		Provider:    "openai",
@@ -362,7 +361,15 @@ func TestMeter_NilPublishFn_NoPanic(t *testing.T) {
 		Catalog:     models.Catalog{},
 		PublishFn:   nil,
 	})
-	for range out { //nolint:revive // empty-block: intentionally draining the stream to completion
+
+	var got []providers.StreamChunk
+	for c := range out {
+		got = append(got, c)
+	}
+
+	// A nil PublishFn must not drop the stream: the chunk still forwards intact.
+	if len(got) != 1 || got[0].ID != "1" {
+		t.Fatalf("forwarded %+v, want a single chunk with ID %q", got, "1")
 	}
 }
 

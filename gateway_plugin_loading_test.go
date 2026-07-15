@@ -304,5 +304,3 @@ func TestGateway_ReloadConfig_DefersOldPluginCloseUntilInFlightRouteFinishes(t *
 		t.Fatal("timed out waiting for old plugin close")
 	}
 }
-
-// ── mockEmbeddingProvider ─────────────────────────────────────────────────────

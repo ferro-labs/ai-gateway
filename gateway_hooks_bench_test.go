@@ -50,6 +50,3 @@ func BenchmarkGateway_PublishEvent(b *testing.B) {
 	}
 	b.ReportMetric(float64(calls.Load())/float64(b.N), "hooks/op")
 }
-
-// freshProvider returns a new *providers.Response on every Complete call so
-// concurrent goroutines never share a response pointer. Used by race tests.

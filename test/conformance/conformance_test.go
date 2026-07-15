@@ -61,8 +61,10 @@ var canonicalFinishReasons = []string{
 	core.FinishReasonContentFilter,
 }
 
-// fixture is one provider's conformance case: the native upstream success
-// payload its adapter must translate, plus the inputs needed to build it.
+// newNativeStub starts a stub upstream that answers every path with the
+// provider's native success payload. Path routing is the adapter's business and
+// is already asserted by each provider's own tests; the conformance suite is
+// only interested in the translation of the response.
 func newNativeStub(body string) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

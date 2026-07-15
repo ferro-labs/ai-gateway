@@ -82,20 +82,3 @@ func TestToolRoundTrip(t *testing.T) {
 		t.Errorf("name mismatch: %q", got.Name)
 	}
 }
-
-func TestToolCallResultIsError(t *testing.T) {
-	ok := ToolCallResult{IsError: false}
-	if ok.IsError {
-		t.Error("expected IsError false")
-	}
-	errResult := ToolCallResult{
-		IsError: true,
-		Content: []ContentBlock{{Type: "text", Text: "something failed"}},
-	}
-	if !errResult.IsError {
-		t.Error("expected IsError true")
-	}
-	if errResult.Content[0].Text != "something failed" {
-		t.Errorf("unexpected content: %q", errResult.Content[0].Text)
-	}
-}

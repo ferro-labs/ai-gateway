@@ -10,6 +10,7 @@ import (
 	"github.com/ferro-labs/ai-gateway/providers"
 )
 
+// newMetricLabelGateway returns a gateway serving exactly "known-model".
 func newMetricLabelGateway(t *testing.T) *Gateway {
 	t.Helper()
 	gw, err := newTestGateway(t, Config{

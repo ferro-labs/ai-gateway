@@ -288,6 +288,3 @@ func TestScrubAnyValue_NestedTypedComposite(t *testing.T) {
 		t.Errorf("live config mutated: original[auth][0] = %q", original["auth"][0])
 	}
 }
-
-// TestCreateKey_CacheControlNoStore verifies that the key-create response carries
-// Cache-Control: no-store so proxies and browsers cannot cache the plaintext key.

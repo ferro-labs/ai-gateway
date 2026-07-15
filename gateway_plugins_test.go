@@ -8,6 +8,7 @@ import (
 	"github.com/ferro-labs/ai-gateway/providers"
 )
 
+// testPlugin is a mock plugin for gateway tests.
 type testPlugin struct {
 	name    string
 	typ     plugin.PluginType
@@ -95,5 +96,3 @@ func TestGateway_Route_PluginRejectsRequest(t *testing.T) {
 		t.Fatal("expected rejection error")
 	}
 }
-
-// newMetricLabelGateway returns a gateway serving exactly "known-model".

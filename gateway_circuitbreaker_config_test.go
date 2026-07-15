@@ -11,6 +11,9 @@ import (
 	"github.com/ferro-labs/ai-gateway/providers"
 )
 
+// blockAfterFirstMock fails on its first Complete call (to trip the circuit
+// breaker) and blocks on the second call until release is closed — used to
+// hold a half-open probe slot while a concurrent request tests the cap.
 type blockAfterFirstMock struct {
 	mockProvider
 	callN   atomic.Int32

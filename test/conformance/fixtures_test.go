@@ -13,6 +13,8 @@ import (
 	"github.com/ferro-labs/ai-gateway/providers"
 )
 
+// fixture is one provider's conformance case: the native upstream success
+// payload its adapter must translate, plus the inputs needed to build it.
 type fixture struct {
 	// model is the request model. It must be advertised by SupportedModels().
 	model string
@@ -614,8 +616,3 @@ func uncoveredStreamProviders() map[string]string {
 			"its ProviderEntry exposes no base-URL key, so it cannot be pointed at an httptest stub",
 	}
 }
-
-// newNativeStub starts a stub upstream that answers every path with the
-// provider's native success payload. Path routing is the adapter's business and
-// is already asserted by each provider's own tests; the conformance suite is
-// only interested in the translation of the response.

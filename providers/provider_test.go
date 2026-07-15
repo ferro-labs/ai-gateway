@@ -218,18 +218,6 @@ func TestMessage_UnmarshalIgnoresUnknownFields(t *testing.T) {
 	}
 }
 
-func TestUsage(t *testing.T) {
-	usage := Usage{
-		PromptTokens:     100,
-		CompletionTokens: 50,
-		TotalTokens:      150,
-	}
-
-	if usage.TotalTokens != usage.PromptTokens+usage.CompletionTokens {
-		t.Error("Total tokens should equal prompt + completion tokens")
-	}
-}
-
 func TestModelInfo(t *testing.T) {
 	model := ModelInfo{
 		ID:      "gpt-4o",

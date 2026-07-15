@@ -166,9 +166,3 @@ func assertInTargets(t *testing.T, key string, targets []Target) {
 	}
 	t.Fatalf("resolved provider %q not in configured targets %v", key, targets)
 }
-
-// TestRouteStream_And_Route_SameTargetOrder asserts Route (Strategy.Execute) and
-// RouteStream (Strategy.SelectTargets) resolve consistently per strategy: for
-// deterministic strategies both pick the same first target and SelectTargets
-// exposes every configured target; for weighted-random strategies both pick
-// within the configured target set from the one shared selection implementation.

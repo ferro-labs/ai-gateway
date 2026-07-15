@@ -228,8 +228,3 @@ func TestGateway_StartDiscovery_ValidInterval(t *testing.T) {
 	// Cancel immediately; just verifies no panic and clean return.
 	cancel()
 }
-
-// ─── MCP integration test ──────────────────────────────────────────────────
-
-// multiCallProvider is a test provider that returns pre-configured responses
-// in sequence, recording every request it receives for later inspection.

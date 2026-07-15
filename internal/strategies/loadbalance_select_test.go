@@ -6,6 +6,11 @@ import (
 	"github.com/ferro-labs/ai-gateway/providers"
 )
 
+// TestLoadBalance_SelectTargets_MatchesExecuteCandidates asserts SelectTargets
+// (the streaming path) draws from the same candidate set as Execute: only
+// model-compatible, registered targets. A high-weight target that is
+// incompatible or unregistered must never appear, otherwise streaming selection
+// would skew toward a provider Route never picks.
 func TestLoadBalance_SelectTargets_MatchesExecuteCandidates(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -76,7 +81,3 @@ func TestLoadBalance_SelectTargets_MatchesExecuteCandidates(t *testing.T) {
 		})
 	}
 }
-
-// TestConditional_SelectTargets_FallbackWithoutRoutingTargets asserts that a
-// Conditional built without WithRoutingTargets still surfaces the fallback that
-// Execute routes to, rather than an empty streaming list.

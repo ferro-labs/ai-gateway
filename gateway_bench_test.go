@@ -12,6 +12,8 @@ import (
 	"github.com/ferro-labs/ai-gateway/providers"
 )
 
+// mockBenchStreamProvider is a streaming provider that immediately returns a
+// closed, empty channel — used only by benchmarks to avoid blocking drains.
 type mockBenchStreamProvider struct {
 	mockProvider
 }
@@ -260,7 +262,3 @@ func BenchmarkGateway_FindByModel(b *testing.B) {
 		}
 	}
 }
-
-// blockAfterFirstMock fails on its first Complete call (to trip the circuit
-// breaker) and blocks on the second call until release is closed — used to
-// hold a half-open probe slot while a concurrent request tests the cap.

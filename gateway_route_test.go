@@ -10,6 +10,11 @@ import (
 	"github.com/ferro-labs/ai-gateway/providers"
 )
 
+// TestGateway_RouteStreamMatchesRouteTargetOrder asserts Route (Strategy.Execute) and
+// RouteStream (Strategy.SelectTargets) resolve consistently per strategy: for
+// deterministic strategies both pick the same first target and SelectTargets
+// exposes every configured target; for weighted-random strategies both pick
+// within the configured target set from the one shared selection implementation.
 func TestGateway_RouteStreamMatchesRouteTargetOrder(t *testing.T) {
 	req := providers.Request{
 		Model:    "gpt-4o",

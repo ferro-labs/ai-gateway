@@ -2,6 +2,7 @@ package strategies
 
 import "testing"
 
+// assertKeys fails unless got equals want exactly, in order.
 func assertKeys(t *testing.T, got []string, want ...string) {
 	t.Helper()
 	if len(got) != len(want) {
@@ -13,9 +14,3 @@ func assertKeys(t *testing.T, got []string, want ...string) {
 		}
 	}
 }
-
-// TestLoadBalance_SelectTargets_MatchesExecuteCandidates asserts SelectTargets
-// (the streaming path) draws from the same candidate set as Execute: only
-// model-compatible, registered targets. A high-weight target that is
-// incompatible or unregistered must never appear, otherwise streaming selection
-// would skew toward a provider Route never picks.

@@ -7,6 +7,8 @@ import (
 	"testing"
 )
 
+// TestCreateKey_CacheControlNoStore verifies that the key-create response carries
+// Cache-Control: no-store so proxies and browsers cannot cache the plaintext key.
 func TestCreateKey_CacheControlNoStore(t *testing.T) {
 	h, r := setupTestRouter()
 	key := createAdminKey(t, h)

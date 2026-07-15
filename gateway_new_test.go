@@ -2,6 +2,9 @@ package aigateway
 
 import "testing"
 
+// TestNew_ValidatesConfig verifies that New() runs the same fail-fast validation
+// that ReloadConfig already applies, so callers get a clear error at construction
+// time rather than a confusing failure at request time.
 func TestNew_ValidatesConfig(t *testing.T) {
 	t.Run("empty config (no targets) returns error", func(t *testing.T) {
 		_, err := newTestGateway(t, Config{})

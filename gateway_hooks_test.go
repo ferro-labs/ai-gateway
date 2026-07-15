@@ -197,5 +197,3 @@ func TestGateway_PublishEvent_IncrementsDropMetricWhenQueueFull(t *testing.T) {
 		t.Fatalf("dropped hook metric delta = %v, want 1", delta)
 	}
 }
-
-// testPlugin is a mock plugin for gateway tests.

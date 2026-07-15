@@ -14,6 +14,8 @@ import (
 	"github.com/ferro-labs/ai-gateway/providers"
 )
 
+// multiCallProvider is a test provider that returns pre-configured responses
+// in sequence, recording every request it receives for later inspection.
 type multiCallProvider struct {
 	name      string
 	models    []string
@@ -332,6 +334,3 @@ func TestGateway_RouteStream_MCPRedirect(t *testing.T) {
 		t.Errorf("expected 2 provider calls (agentic loop), got %d", mp.callCount())
 	}
 }
-
-// mockBenchStreamProvider is a streaming provider that immediately returns a
-// closed, empty channel — used only by benchmarks to avoid blocking drains.

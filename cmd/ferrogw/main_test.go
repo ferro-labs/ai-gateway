@@ -582,6 +582,11 @@ func TestCreateKeyStoreFromEnv_SQLite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bootstrap.CreateKeyStoreFromEnv returned error: %v", err)
 	}
+	t.Cleanup(func() {
+		if c, ok := store.(io.Closer); ok {
+			_ = c.Close()
+		}
+	})
 	if backend != "sqlite" {
 		t.Fatalf("backend = %s, want sqlite", backend)
 	}

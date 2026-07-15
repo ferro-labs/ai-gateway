@@ -138,7 +138,10 @@ func TestChatStream_MidStreamError(t *testing.T) {
 		}
 	}
 
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scanning stream body: %v", err)
+	}
 	if !sawError {
-		t.Log("mid-stream error was handled — connection closed cleanly")
+		t.Fatal("expected a stream_error event in the mid-stream failure body, got none")
 	}
 }
