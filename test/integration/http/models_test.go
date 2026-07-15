@@ -13,14 +13,14 @@ import (
 func TestModels_ListStubModels(t *testing.T) {
 	env := newTestServer(t)
 
-	req, _ := http.NewRequest("GET", env.Server.URL+"/v1/models", nil)
+	req := newTestRequest(t, "GET", env.Server.URL+"/v1/models", nil)
 	req.Header.Set("Authorization", "Bearer "+testMasterKey)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("GET /v1/models: %v", err)
 	}
-	defer resp.Body.Close()
+	defer closeTestBody(t, resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -69,7 +69,7 @@ func TestModels_RequiresAuth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /v1/models: %v", err)
 	}
-	defer resp.Body.Close()
+	defer closeTestBody(t, resp.Body)
 
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d", resp.StatusCode)

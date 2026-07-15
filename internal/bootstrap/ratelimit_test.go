@@ -86,16 +86,18 @@ func TestNewRateLimitStore_CapsKeyMap(t *testing.T) {
 		t.Fatal("expected a non-nil store")
 	}
 
+	now := time.Unix(0, 0)
+	store.SetNowForTest(func() time.Time { return now })
 	store.Allow("ip-1")
 	store.Allow("ip-1")
 	if store.Allow("ip-1") {
 		t.Fatal("expected ip-1's burst to be exhausted")
 	}
-	time.Sleep(time.Millisecond) // ensure distinct lastSeen timestamps
+	now = now.Add(time.Second)
 
 	store.Allow("ip-2")
 	store.Allow("ip-2")
-	time.Sleep(time.Millisecond)
+	now = now.Add(time.Second)
 
 	// A 3rd distinct key at cap=2 must evict the least-recently-seen entry
 	// (ip-1, last touched before ip-2).

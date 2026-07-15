@@ -62,10 +62,11 @@ func TestBootstrap_ConfigManager_Postgres(t *testing.T) {
 	t.Setenv("CONFIG_STORE_BACKEND", "postgres")
 	t.Setenv("CONFIG_STORE_DSN", testDSN)
 
-	gw, err := aigateway.New(aigateway.Config{
+	gw, err := newTestGateway(t, aigateway.Config{
 		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeFallback},
 		Targets:  []aigateway.Target{{VirtualKey: "test"}},
 	})
+
 	if err != nil {
 		t.Fatalf("new gateway: %v", err)
 	}

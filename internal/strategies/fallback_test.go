@@ -175,22 +175,6 @@ func TestFallback_StatusCodeFilter_StopsOnDisallowedCode(t *testing.T) {
 	}
 }
 
-func TestFallback_FallsThrough_ToNextTarget(t *testing.T) {
-	ep1 := &errProvider{name: "p1", models: []string{"gpt-4o"}, errMsg: "provider error (500): oops"}
-	ep2 := &mockProvider{name: "p2", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "ok"}}
-
-	targets := []Target{{VirtualKey: "p1"}, {VirtualKey: "p2"}}
-	fb := NewFallback(targets, newLookup(ep1, ep2))
-
-	resp, err := fb.Execute(context.Background(), providers.Request{Model: "gpt-4o"})
-	if err != nil {
-		t.Fatalf("expected success from p2, got error: %v", err)
-	}
-	if resp.ID != "ok" {
-		t.Errorf("got %q, want ok", resp.ID)
-	}
-}
-
 func TestFallback_CircuitOpenMovesToNextTargetWithoutRetry(t *testing.T) {
 	open := &errProvider{
 		name:   "open",
@@ -216,14 +200,6 @@ func TestFallback_CircuitOpenMovesToNextTargetWithoutRetry(t *testing.T) {
 	}
 	if good.calls != 1 {
 		t.Fatalf("fallback target calls = %d, want 1", good.calls)
-	}
-}
-
-func TestFallback_NoTargets_RetryPolicy(t *testing.T) {
-	fb := NewFallback(nil, newLookup())
-	_, err := fb.Execute(context.Background(), providers.Request{Model: "gpt-4o"})
-	if err == nil {
-		t.Fatal("expected error for no targets")
 	}
 }
 

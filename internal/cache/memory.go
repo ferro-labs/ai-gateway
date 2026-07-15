@@ -21,6 +21,7 @@ type Memory struct {
 	TTL       time.Duration
 	items     map[string]*list.Element
 	evictList *list.List
+	now       func() time.Time
 }
 
 // NewMemory creates a new in-memory LRU cache.
@@ -30,7 +31,19 @@ func NewMemory(capacity int, ttl time.Duration) *Memory {
 		TTL:       ttl,
 		items:     make(map[string]*list.Element),
 		evictList: list.New(),
+		now:       time.Now,
 	}
+}
+
+// SetNowForTest overrides the clock used for TTL calculations. Passing nil
+// restores time.Now.
+func (m *Memory) SetNowForTest(fn func() time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if fn == nil {
+		fn = time.Now
+	}
+	m.now = fn
 }
 
 // Get returns the cached response for key, or false if missing or expired.
@@ -44,7 +57,7 @@ func (m *Memory) Get(key string) (*providers.Response, bool) {
 	}
 
 	entry := elem.Value.(*memoryEntry)
-	if time.Now().After(entry.expiresAt) {
+	if m.now().After(entry.expiresAt) {
 		m.removeElement(elem)
 		return nil, false
 	}
@@ -58,11 +71,12 @@ func (m *Memory) Set(key string, resp *providers.Response) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	now := m.now()
 	if elem, ok := m.items[key]; ok {
 		m.evictList.MoveToFront(elem)
 		entry := elem.Value.(*memoryEntry)
 		entry.response = resp
-		entry.expiresAt = time.Now().Add(m.TTL)
+		entry.expiresAt = now.Add(m.TTL)
 		return
 	}
 
@@ -73,7 +87,7 @@ func (m *Memory) Set(key string, resp *providers.Response) {
 	entry := &memoryEntry{
 		key:       key,
 		response:  resp,
-		expiresAt: time.Now().Add(m.TTL),
+		expiresAt: now.Add(m.TTL),
 	}
 	elem := m.evictList.PushFront(entry)
 	m.items[key] = elem

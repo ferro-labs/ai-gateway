@@ -41,7 +41,9 @@ func initCache(t *testing.T, config map[string]any) *ResponseCache {
 	return c
 }
 
-func TestCachePlugin_Init(t *testing.T) {
+func TestResponseCache_Init(t *testing.T) {
+	t.Parallel()
+
 	t.Run("default config", func(t *testing.T) {
 		c := initCache(t, map[string]any{})
 		if c.TTL != 300*time.Second {
@@ -67,7 +69,9 @@ func TestCachePlugin_Init(t *testing.T) {
 	})
 }
 
-func TestCachePlugin_CacheMiss(t *testing.T) {
+func TestResponseCache_CacheMiss(t *testing.T) {
+	t.Parallel()
+
 	c := initCache(t, map[string]any{})
 	pctx := plugin.NewContext(testRequest("gpt-4", "hello"))
 
@@ -82,7 +86,9 @@ func TestCachePlugin_CacheMiss(t *testing.T) {
 	}
 }
 
-func TestCachePlugin_CacheHitAfterStore(t *testing.T) {
+func TestResponseCache_CacheHitAfterStore(t *testing.T) {
+	t.Parallel()
+
 	c := initCache(t, map[string]any{})
 	req := testRequest("gpt-4", "hello")
 	resp := testResponse()
@@ -113,12 +119,14 @@ func TestCachePlugin_CacheHitAfterStore(t *testing.T) {
 	}
 }
 
-// TestCachePlugin_ConcurrentCacheHits_NoDataRace reproduces the scenario where
+// TestResponseCache_ConcurrentCacheHits_NoDataRace reproduces the scenario where
 // Route/RouteStream stamp Object/Created/OverheadMs on a cache-hit response
 // (see gateway_route.go and gateway_stream.go). Before the fix, every hit
 // returned the same cached *providers.Response pointer, so concurrent callers
 // raced on these writes. Run with -race.
-func TestCachePlugin_ConcurrentCacheHits_NoDataRace(t *testing.T) {
+func TestResponseCache_ConcurrentCacheHits_NoDataRace(t *testing.T) {
+	t.Parallel()
+
 	c := initCache(t, map[string]any{})
 	req := testRequest("gpt-4", "hello")
 
@@ -155,14 +163,16 @@ func TestCachePlugin_ConcurrentCacheHits_NoDataRace(t *testing.T) {
 	wg.Wait()
 }
 
-// TestCachePlugin_ConcurrentStoreAndHit_NoDataRace reproduces a second,
+// TestResponseCache_ConcurrentStoreAndHit_NoDataRace reproduces a second,
 // distinct race: Route/RouteStream mutate their own resp.OverheadMs *after*
 // RunAfter (and therefore after the cache plugin's Set) returns (see
 // gateway_route.go's `resp.OverheadMs = ...` following the after-plugins
 // call, and gateway_stream.go's analogous self-assignment). If Set stores the
 // caller's live pointer, that post-store mutation races with any concurrent
 // Get on the same key. Run with -race.
-func TestCachePlugin_ConcurrentStoreAndHit_NoDataRace(t *testing.T) {
+func TestResponseCache_ConcurrentStoreAndHit_NoDataRace(t *testing.T) {
+	t.Parallel()
+
 	c := initCache(t, map[string]any{})
 	req := testRequest("gpt-4", "hello")
 
@@ -198,7 +208,9 @@ func TestCachePlugin_ConcurrentStoreAndHit_NoDataRace(t *testing.T) {
 	wg.Wait()
 }
 
-func TestCachePlugin_DifferentKeys(t *testing.T) {
+func TestResponseCache_DifferentKeys(t *testing.T) {
+	t.Parallel()
+
 	c := initCache(t, map[string]any{})
 	resp := testResponse()
 
@@ -228,7 +240,9 @@ func TestCachePlugin_DifferentKeys(t *testing.T) {
 	}
 }
 
-func TestCachePlugin_MessageOrderAffectsCacheKey(t *testing.T) {
+func TestResponseCache_MessageOrderAffectsCacheKey(t *testing.T) {
+	t.Parallel()
+
 	c := initCache(t, map[string]any{})
 	resp := testResponse()
 
@@ -262,7 +276,9 @@ func TestCachePlugin_MessageOrderAffectsCacheKey(t *testing.T) {
 	}
 }
 
-func TestCachePlugin_DelimiterCharactersDoNotCollide(t *testing.T) {
+func TestResponseCache_DelimiterCharactersDoNotCollide(t *testing.T) {
+	t.Parallel()
+
 	c := initCache(t, map[string]any{})
 	resp := testResponse()
 
@@ -298,12 +314,12 @@ func TestCachePlugin_DelimiterCharactersDoNotCollide(t *testing.T) {
 	}
 }
 
-func TestCachePlugin_Expiration(t *testing.T) {
-	// Use a 10ms TTL so we can let it expire without a long sleep.
-	c := initCache(t, map[string]any{"max_age": float64(0)})
-	// Override TTL directly since Init clamps 0 to 0s (immediate expiry isn't
-	// easily configurable via the int config; set a short but nonzero duration).
-	c.TTL = 10 * time.Millisecond
+func TestResponseCache_ExecuteExpiresEntry(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(0, 0)
+	c := initCache(t, map[string]any{"max_age": 10})
+	c.SetNowForTest(func() time.Time { return now })
 
 	req := testRequest("gpt-4", "hello")
 	resp := testResponse()
@@ -314,7 +330,7 @@ func TestCachePlugin_Expiration(t *testing.T) {
 		t.Fatalf("Execute (store) error: %v", err)
 	}
 
-	time.Sleep(20 * time.Millisecond)
+	now = now.Add(11 * time.Second)
 
 	lookupPctx := plugin.NewContext(req)
 	if err := c.Execute(context.Background(), lookupPctx); err != nil {
@@ -325,9 +341,11 @@ func TestCachePlugin_Expiration(t *testing.T) {
 	}
 }
 
-// TestCachePlugin_LRUEviction verifies that adding a new entry beyond capacity
+// TestResponseCache_LRUEviction verifies that adding a new entry beyond capacity
 // evicts the least-recently-used entry, not the earliest-expiring one.
-func TestCachePlugin_LRUEviction(t *testing.T) {
+func TestResponseCache_LRUEviction(t *testing.T) {
+	t.Parallel()
+
 	c := initCache(t, map[string]any{"max_entries": 2})
 	resp := testResponse()
 
@@ -368,7 +386,9 @@ func TestCachePlugin_LRUEviction(t *testing.T) {
 	}
 }
 
-func TestCachePlugin_MaxEntriesUpdateDoesNotEvict(t *testing.T) {
+func TestResponseCache_MaxEntriesUpdateDoesNotEvict(t *testing.T) {
+	t.Parallel()
+
 	c := initCache(t, map[string]any{"max_entries": 2})
 
 	store := func(content, id string) {
@@ -405,7 +425,9 @@ func TestCachePlugin_MaxEntriesUpdateDoesNotEvict(t *testing.T) {
 	}
 }
 
-func TestCachePlugin_MaxEntriesZeroDisablesStore(t *testing.T) {
+func TestResponseCache_MaxEntriesZeroDisablesStore(t *testing.T) {
+	t.Parallel()
+
 	c := initCache(t, map[string]any{"max_entries": 0})
 	pctx := plugin.NewContext(testRequest("gpt-4", "hello"))
 	pctx.Response = testResponse()
@@ -425,7 +447,9 @@ func TestCachePlugin_MaxEntriesZeroDisablesStore(t *testing.T) {
 	}
 }
 
-func TestCachePlugin_CacheHitMetadata(t *testing.T) {
+func TestResponseCache_CacheHitMetadata(t *testing.T) {
+	t.Parallel()
+
 	c := initCache(t, map[string]any{})
 	req := testRequest("gpt-4", "hello")
 	resp := testResponse()
@@ -570,10 +594,12 @@ func TestCacheKey_LogProbsNilTopLogProbsDoesNotPanic(_ *testing.T) {
 	_ = cacheKey(req)
 }
 
-// TestCachePlugin_LogProbsCacheMissWithoutLogprobs verifies that a cached
+// TestResponseCache_LogProbsCacheMissWithoutLogprobs verifies that a cached
 // response from a logprobs=true request is not served to a logprobs=false
 // request for the same model/messages.
-func TestCachePlugin_LogProbsCacheMissWithoutLogprobs(t *testing.T) {
+func TestResponseCache_LogProbsCacheMissWithoutLogprobs(t *testing.T) {
+	t.Parallel()
+
 	c := initCache(t, map[string]any{})
 	top := 5
 
@@ -606,9 +632,11 @@ func TestCachePlugin_LogProbsCacheMissWithoutLogprobs(t *testing.T) {
 	}
 }
 
-// TestCachePlugin_LogProbsCacheHit verifies that a cached response from a
+// TestResponseCache_LogProbsCacheHit verifies that a cached response from a
 // logprobs=true request is served to an identical logprobs=true request.
-func TestCachePlugin_LogProbsCacheHit(t *testing.T) {
+func TestResponseCache_LogProbsCacheHit(t *testing.T) {
+	t.Parallel()
+
 	c := initCache(t, map[string]any{})
 	top := 5
 
@@ -636,7 +664,9 @@ func TestCachePlugin_LogProbsCacheHit(t *testing.T) {
 	}
 }
 
-func TestCachePlugin_MaxEntriesMany(t *testing.T) {
+func TestResponseCache_MaxEntriesMany(t *testing.T) {
+	t.Parallel()
+
 	const maxEntries = 5
 	c := initCache(t, map[string]any{"max_entries": maxEntries})
 	resp := testResponse()

@@ -582,6 +582,11 @@ func TestCreateKeyStoreFromEnv_SQLite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bootstrap.CreateKeyStoreFromEnv returned error: %v", err)
 	}
+	t.Cleanup(func() {
+		if c, ok := store.(io.Closer); ok {
+			_ = c.Close()
+		}
+	})
 	if backend != "sqlite" {
 		t.Fatalf("backend = %s, want sqlite", backend)
 	}
@@ -816,6 +821,11 @@ func newTestGateway(t *testing.T, cfg aigateway.Config) *aigateway.Gateway {
 	if err != nil {
 		t.Fatalf("new gateway: %v", err)
 	}
+	t.Cleanup(func() {
+		if err := gw.Close(); err != nil {
+			t.Errorf("close gateway: %v", err)
+		}
+	})
 	return gw
 }
 

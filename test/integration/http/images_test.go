@@ -19,7 +19,7 @@ import (
 // the master-key bearer and returns the response.
 func postImages(t *testing.T, url, body string) *http.Response {
 	t.Helper()
-	req, _ := http.NewRequest("POST", url+"/v1/images/generations", bytes.NewBufferString(body))
+	req := newTestRequest(t, "POST", url+"/v1/images/generations", bytes.NewBufferString(body))
 	req.Header.Set("Authorization", "Bearer "+testMasterKey)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
@@ -33,7 +33,7 @@ func TestImages_Success(t *testing.T) {
 	env := newTestServer(t)
 
 	resp := postImages(t, env.Server.URL, `{"model":"`+stubImageModel+`","prompt":"a red bicycle"}`)
-	defer resp.Body.Close()
+	defer closeTestBody(t, resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
@@ -59,7 +59,7 @@ func TestImages_CapabilityMiss_Returns404(t *testing.T) {
 	env := newTestServer(t)
 
 	resp := postImages(t, env.Server.URL, `{"model":"no-such-image-model","prompt":"a cat"}`)
-	defer resp.Body.Close()
+	defer closeTestBody(t, resp.Body)
 
 	if resp.StatusCode != http.StatusNotFound {
 		b, _ := io.ReadAll(resp.Body)
@@ -72,7 +72,7 @@ func TestImages_MissingModel_Returns400(t *testing.T) {
 	env := newTestServer(t)
 
 	resp := postImages(t, env.Server.URL, `{"prompt":"a cat"}`)
-	defer resp.Body.Close()
+	defer closeTestBody(t, resp.Body)
 
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", resp.StatusCode)
@@ -83,7 +83,7 @@ func TestImages_MissingPrompt_Returns400(t *testing.T) {
 	env := newTestServer(t)
 
 	resp := postImages(t, env.Server.URL, `{"model":"`+stubImageModel+`"}`)
-	defer resp.Body.Close()
+	defer closeTestBody(t, resp.Body)
 
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", resp.StatusCode)
@@ -93,14 +93,14 @@ func TestImages_MissingPrompt_Returns400(t *testing.T) {
 func TestImages_RequiresAuth(t *testing.T) {
 	env := newTestServer(t)
 
-	req, _ := http.NewRequest("POST", env.Server.URL+"/v1/images/generations",
+	req := newTestRequest(t, "POST", env.Server.URL+"/v1/images/generations",
 		bytes.NewBufferString(`{"model":"`+stubImageModel+`","prompt":"x"}`))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("POST /v1/images/generations: %v", err)
 	}
-	defer resp.Body.Close()
+	defer closeTestBody(t, resp.Body)
 
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d", resp.StatusCode)
@@ -116,7 +116,7 @@ func TestImages_UpstreamError_Returns500(t *testing.T) {
 	}
 
 	resp := postImages(t, env.Server.URL, `{"model":"`+stubImageModel+`","prompt":"a cat"}`)
-	defer resp.Body.Close()
+	defer closeTestBody(t, resp.Body)
 
 	if resp.StatusCode != http.StatusInternalServerError {
 		b, _ := io.ReadAll(resp.Body)

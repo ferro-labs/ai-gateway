@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"testing"
@@ -20,6 +21,7 @@ import (
 	"github.com/ferro-labs/ai-gateway/internal/httpserver"
 	"github.com/ferro-labs/ai-gateway/internal/ratelimit"
 	"github.com/ferro-labs/ai-gateway/internal/requestlog"
+	"github.com/ferro-labs/ai-gateway/internal/testutil"
 	"github.com/ferro-labs/ai-gateway/providers"
 )
 
@@ -42,7 +44,7 @@ type testEnv struct {
 
 // newTestServer creates an httptest.Server wired exactly like production via
 // httpserver.NewRouter. It registers a single stub provider.
-// Callers should defer env.Server.Close() in their tests.
+// The server and gateway are closed through t.Cleanup.
 func newTestServer(t *testing.T, opts ...testOption) *testEnv {
 	t.Helper()
 
@@ -70,7 +72,11 @@ func newTestServer(t *testing.T, opts ...testOption) *testEnv {
 	if err != nil {
 		t.Fatalf("newTestServer: create gateway: %v", err)
 	}
-	t.Cleanup(func() { _ = gw.Close() })
+	t.Cleanup(func() {
+		if closeErr := gw.Close(); closeErr != nil {
+			t.Errorf("close gateway: %v", closeErr)
+		}
+	})
 	gw.RegisterProvider(stub)
 
 	keyStore := admin.NewKeyStore()
@@ -138,6 +144,22 @@ func assertOpenAIError(t *testing.T, body io.Reader, wantType, wantCode string) 
 	}
 }
 
+func closeTestBody(t testing.TB, body io.Closer) {
+	t.Helper()
+	if err := body.Close(); err != nil {
+		t.Errorf("close response body: %v", err)
+	}
+}
+
+func newTestRequest(t *testing.T, method, url string, body io.Reader) *http.Request {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), method, url, body)
+	if err != nil {
+		t.Fatalf("create HTTP request: %v", err)
+	}
+	return req
+}
+
 // noopReader satisfies requestlog.Reader without a database.
 type noopReader struct{}
 
@@ -157,5 +179,5 @@ func (noopMaintainer) Delete(_ context.Context, _ requestlog.MaintenanceQuery) (
 }
 
 func TestMain(m *testing.M) {
-	os.Exit(m.Run())
+	os.Exit(testutil.RunWithEmbeddedCatalog(m.Run))
 }

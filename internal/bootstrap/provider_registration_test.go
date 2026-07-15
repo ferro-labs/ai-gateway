@@ -12,6 +12,8 @@ import (
 func TestRegisterProviderEntriesSkipsBrokenProviderAndKeepsGoodProvider(t *testing.T) {
 	t.Setenv("BROKEN_PROVIDER_KEY", "set")
 	t.Setenv("GOOD_PROVIDER_KEY", "set")
+	brokenBefore := initFailureCount(t, "broken-provider")
+	goodBefore := initFailureCount(t, "good-provider")
 
 	registry := providers.NewRegistry()
 	registerProviderEntries(registry, []providers.ProviderEntry{
@@ -48,11 +50,11 @@ func TestRegisterProviderEntriesSkipsBrokenProviderAndKeepsGoodProvider(t *testi
 
 	// Skipping must not be silent: /health still answers 200 because it only
 	// counts registered providers, so this counter is the operator's only signal.
-	if got := initFailureCount(t, "broken-provider"); got != 1 {
-		t.Fatalf("provider init failure counter = %v, want 1", got)
+	if delta := initFailureCount(t, "broken-provider") - brokenBefore; delta != 1 {
+		t.Fatalf("provider init failure counter delta = %v, want 1", delta)
 	}
-	if got := initFailureCount(t, "good-provider"); got != 0 {
-		t.Fatalf("good provider recorded %v init failures, want 0", got)
+	if delta := initFailureCount(t, "good-provider") - goodBefore; delta != 0 {
+		t.Fatalf("good provider init failure counter delta = %v, want 0", delta)
 	}
 }
 

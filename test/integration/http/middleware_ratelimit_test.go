@@ -30,7 +30,7 @@ func TestMiddlewareRateLimit_ExceedLimit_Returns429(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			req, _ := http.NewRequest("GET", env.Server.URL+"/v1/models", nil)
+			req := newTestRequest(t, "GET", env.Server.URL+"/v1/models", nil)
 			// Authenticate: rate limiting runs ahead of auth, so without this the
 			// allowed requests would come back 401 and the OK counter below could
 			// never distinguish "admitted" from "rejected by auth".
@@ -64,7 +64,7 @@ func TestMiddlewareRateLimit_NotEnabled_NoRejection(t *testing.T) {
 	env := newTestServer(t)
 
 	for i := 0; i < 10; i++ {
-		req, _ := http.NewRequest("GET", env.Server.URL+"/v1/models", nil)
+		req := newTestRequest(t, "GET", env.Server.URL+"/v1/models", nil)
 		req.Header.Set("Authorization", "Bearer "+testMasterKey)
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {

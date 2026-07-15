@@ -26,10 +26,11 @@ func TestHealthStatusCodes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gw, err := aigateway.New(aigateway.Config{
+			gw, err := newTestGateway(t, aigateway.Config{
 				Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeSingle},
 				Targets:  []aigateway.Target{{VirtualKey: "health-provider"}},
 			})
+
 			if err != nil {
 				t.Fatalf("New gateway: %v", err)
 			}
@@ -123,14 +124,14 @@ func TestReadyz(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gw, err := aigateway.New(aigateway.Config{
+			gw, err := newTestGateway(t, aigateway.Config{
 				Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeSingle},
 				Targets:  []aigateway.Target{{VirtualKey: "health-provider"}},
 			})
+
 			if err != nil {
 				t.Fatalf("New gateway: %v", err)
 			}
-			t.Cleanup(func() { _ = gw.Close() })
 			if tt.register {
 				gw.RegisterProvider(healthProvider{})
 			}
@@ -170,14 +171,14 @@ func TestReadyzNilGateway(t *testing.T) {
 }
 
 func TestReadyzDoesNotLeakStoreErrorDetail(t *testing.T) {
-	gw, err := aigateway.New(aigateway.Config{
+	gw, err := newTestGateway(t, aigateway.Config{
 		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeSingle},
 		Targets:  []aigateway.Target{{VirtualKey: "health-provider"}},
 	})
+
 	if err != nil {
 		t.Fatalf("New gateway: %v", err)
 	}
-	t.Cleanup(func() { _ = gw.Close() })
 	gw.RegisterProvider(healthProvider{})
 
 	//nolint:gosec // G101: a fake DSN; the point of the test is that /readyz never echoes it
