@@ -4613,3 +4613,89 @@ func TestNew_ValidatesConfig(t *testing.T) {
 		}
 	})
 }
+
+// TestGateway_RegisterProviderAs verifies that two providers reporting the
+// same Name() can be registered independently under distinct routing
+// aliases without either clobbering the other, and that RegisterProviderAs
+// records the canonical provider type for later resolution.
+func TestGateway_RegisterProviderAs(t *testing.T) {
+	gw, err := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: "ollama-cloud-a"}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = gw.Close() }()
+
+	if err := gw.RegisterProviderAs("ollama-cloud-a", "ollama-cloud", &mockProvider{
+		name:   "ollama-cloud",
+		models: []string{"model-a"},
+		resp:   &providers.Response{ID: "resp-a", Model: "model-a"},
+	}); err != nil {
+		t.Fatalf("RegisterProviderAs(ollama-cloud-a): %v", err)
+	}
+	if err := gw.RegisterProviderAs("ollama-cloud-b", "ollama-cloud", &mockProvider{
+		name:   "ollama-cloud",
+		models: []string{"model-b"},
+		resp:   &providers.Response{ID: "resp-b", Model: "model-b"},
+	}); err != nil {
+		t.Fatalf("RegisterProviderAs(ollama-cloud-b): %v", err)
+	}
+
+	pa, ok := gw.GetProvider("ollama-cloud-a")
+	if !ok {
+		t.Fatal("expected ollama-cloud-a to be registered")
+	}
+	pb, ok := gw.GetProvider("ollama-cloud-b")
+	if !ok {
+		t.Fatal("expected ollama-cloud-b to be registered")
+	}
+	if !pa.SupportsModel("model-a") || pa.SupportsModel("model-b") {
+		t.Error("ollama-cloud-a instance clobbered or missing its own models")
+	}
+	if !pb.SupportsModel("model-b") || pb.SupportsModel("model-a") {
+		t.Error("ollama-cloud-b instance clobbered or missing its own models")
+	}
+
+	names := gw.ListProviders()
+	if len(names) != 2 {
+		t.Fatalf("got %d registered provider names, want 2 (both aliases retained): %v", len(names), names)
+	}
+
+	if got := gw.canonicalProviderType("ollama-cloud-a"); got != "ollama-cloud" {
+		t.Errorf("canonicalProviderType(ollama-cloud-a) = %q, want %q", got, "ollama-cloud")
+	}
+	if got := gw.canonicalProviderType("ollama-cloud-b"); got != "ollama-cloud" {
+		t.Errorf("canonicalProviderType(ollama-cloud-b) = %q, want %q", got, "ollama-cloud")
+	}
+
+	// Fallback: a name that was never aliased returns itself unchanged.
+	if got := gw.canonicalProviderType("never-aliased"); got != "never-aliased" {
+		t.Errorf("canonicalProviderType(never-aliased) = %q, want input returned unchanged", got)
+	}
+
+	if err := gw.RegisterProviderAs("", "ollama-cloud", &mockProvider{name: "ollama-cloud"}); err == nil {
+		t.Error("expected RegisterProviderAs with empty alias to return an error")
+	}
+}
+
+// TestGateway_RegisterProvider_IsCanonicalByDefault verifies RegisterProvider
+// is a pure refactor over RegisterProviderAs: a provider registered the plain
+// way is its own canonical type.
+func TestGateway_RegisterProvider_IsCanonicalByDefault(t *testing.T) {
+	gw, err := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: mockProviderName}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = gw.Close() }()
+
+	gw.RegisterProvider(&mockProvider{name: mockProviderName, models: []string{"gpt-4o"}})
+
+	if got := gw.canonicalProviderType(mockProviderName); got != mockProviderName {
+		t.Errorf("canonicalProviderType(%q) = %q, want unchanged", mockProviderName, got)
+	}
+}
