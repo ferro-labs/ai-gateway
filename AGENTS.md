@@ -222,6 +222,32 @@ observability:
       config: {}
 ```
 
+### Provider Instances
+
+`provider_instances` declares additional, independently-credentialed instances of an existing canonical provider type (a `providers.ProviderEntry.ID`, e.g. `ollama-cloud`). Each instance gets its own routing alias, addressed in `targets[].virtual_key` exactly like a built-in provider name, so it can carry its own retry/circuit-breaker/concurrency settings. This is how an operator runs two separate accounts of the same provider type — e.g. two Ollama Cloud accounts, each capped independently — as distinct targets.
+
+`credentials` uses the same key names as `providers.CfgKey*` (`api_key`, `base_url`, etc.). Values may reference environment variables via `${VAR}`, but resolution happens at provider-construction time, not at config load — `Config` never carries a materialized secret into config-history storage or an admin API response, per the `internal/envref` convention above.
+
+```yaml
+provider_instances:
+  - alias: ollama-cloud-a
+    type: ollama-cloud
+    credentials:
+      api_key: "${OLLAMA_CLOUD_API_KEY_A}"
+  - alias: ollama-cloud-b
+    type: ollama-cloud
+    credentials:
+      api_key: "${OLLAMA_CLOUD_API_KEY_B}"
+
+targets:
+  - virtual_key: ollama-cloud-a
+    concurrency:
+      max_concurrency: 3
+  - virtual_key: ollama-cloud-b
+    concurrency:
+      max_concurrency: 3
+```
+
 ### Key Environment Variables
 
 | Variable | Purpose |
