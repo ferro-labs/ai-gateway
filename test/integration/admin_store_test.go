@@ -4,7 +4,6 @@
 package integration
 
 import (
-	"context"
 	"strings"
 	"testing"
 	"time"
@@ -17,9 +16,9 @@ func TestPostgresStore_CRUD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new postgres store: %v", err)
 	}
-	t.Cleanup(func() { truncateTable(t, "api_keys"); _ = store.Close() })
+	resetTablesAndClose(t, store, "api_keys")
 
-	created, err := store.Create(context.Background(), "integration-key", []string{admin.ScopeAdmin}, nil)
+	created, err := store.Create(t.Context(), "integration-key", []string{admin.ScopeAdmin}, nil)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -27,7 +26,7 @@ func TestPostgresStore_CRUD(t *testing.T) {
 		t.Fatal("expected non-empty id and key")
 	}
 
-	fetched, ok := store.Get(context.Background(), created.ID)
+	fetched, ok := store.Get(t.Context(), created.ID)
 	if !ok {
 		t.Fatal("expected to fetch created key")
 	}
@@ -35,7 +34,7 @@ func TestPostgresStore_CRUD(t *testing.T) {
 		t.Fatalf("get: got %s want %s", fetched.ID, created.ID)
 	}
 
-	updated, err := store.Update(context.Background(), created.ID, "updated-name", []string{admin.ScopeReadOnly})
+	updated, err := store.Update(t.Context(), created.ID, "updated-name", []string{admin.ScopeReadOnly})
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
@@ -43,10 +42,10 @@ func TestPostgresStore_CRUD(t *testing.T) {
 		t.Fatalf("expected updated name, got %s", updated.Name)
 	}
 
-	if err := store.Delete(context.Background(), created.ID); err != nil {
+	if err := store.Delete(t.Context(), created.ID); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	if _, ok := store.Get(context.Background(), created.ID); ok {
+	if _, ok := store.Get(t.Context(), created.ID); ok {
 		t.Fatal("expected key to be deleted")
 	}
 }
@@ -56,14 +55,14 @@ func TestPostgresStore_ValidateAndUsage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new postgres store: %v", err)
 	}
-	t.Cleanup(func() { truncateTable(t, "api_keys"); _ = store.Close() })
+	resetTablesAndClose(t, store, "api_keys")
 
-	created, err := store.Create(context.Background(), "validate-key", []string{admin.ScopeAdmin}, nil)
+	created, err := store.Create(t.Context(), "validate-key", []string{admin.ScopeAdmin}, nil)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 
-	validated, valid := store.ValidateKey(context.Background(), created.Key)
+	validated, valid := store.ValidateKey(t.Context(), created.Key)
 	if !valid {
 		t.Fatal("expected key to validate")
 	}
@@ -80,21 +79,21 @@ func TestPostgresStore_Expiration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new postgres store: %v", err)
 	}
-	t.Cleanup(func() { truncateTable(t, "api_keys"); _ = store.Close() })
+	resetTablesAndClose(t, store, "api_keys")
 
 	expired := time.Now().Add(-2 * time.Minute)
-	created, err := store.Create(context.Background(), "expired-key", []string{admin.ScopeAdmin}, &expired)
+	created, err := store.Create(t.Context(), "expired-key", []string{admin.ScopeAdmin}, &expired)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if _, valid := store.ValidateKey(context.Background(), created.Key); valid {
+	if _, valid := store.ValidateKey(t.Context(), created.Key); valid {
 		t.Fatal("expected expired key to be invalid")
 	}
 
-	if err := store.SetExpiration(context.Background(), created.ID, nil); err != nil {
+	if err := store.SetExpiration(t.Context(), created.ID, nil); err != nil {
 		t.Fatalf("clear expiration: %v", err)
 	}
-	if _, valid := store.ValidateKey(context.Background(), created.Key); !valid {
+	if _, valid := store.ValidateKey(t.Context(), created.Key); !valid {
 		t.Fatal("expected key to validate after clearing expiration")
 	}
 }
@@ -104,31 +103,31 @@ func TestPostgresStore_RevokeAndRotate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new postgres store: %v", err)
 	}
-	t.Cleanup(func() { truncateTable(t, "api_keys"); _ = store.Close() })
+	resetTablesAndClose(t, store, "api_keys")
 
-	created, err := store.Create(context.Background(), "rotate-key", []string{admin.ScopeAdmin}, nil)
+	created, err := store.Create(t.Context(), "rotate-key", []string{admin.ScopeAdmin}, nil)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 
-	rotated, err := store.RotateKey(context.Background(), created.ID)
+	rotated, err := store.RotateKey(t.Context(), created.ID)
 	if err != nil {
 		t.Fatalf("rotate: %v", err)
 	}
 	if rotated.Key == created.Key {
 		t.Fatal("expected rotated key to differ")
 	}
-	if _, valid := store.ValidateKey(context.Background(), created.Key); valid {
+	if _, valid := store.ValidateKey(t.Context(), created.Key); valid {
 		t.Fatal("expected old key invalid after rotation")
 	}
-	if _, valid := store.ValidateKey(context.Background(), rotated.Key); !valid {
+	if _, valid := store.ValidateKey(t.Context(), rotated.Key); !valid {
 		t.Fatal("expected rotated key to validate")
 	}
 
-	if err := store.Revoke(context.Background(), created.ID); err != nil {
+	if err := store.Revoke(t.Context(), created.ID); err != nil {
 		t.Fatalf("revoke: %v", err)
 	}
-	if _, valid := store.ValidateKey(context.Background(), rotated.Key); valid {
+	if _, valid := store.ValidateKey(t.Context(), rotated.Key); valid {
 		t.Fatal("expected revoked key to be invalid")
 	}
 }
@@ -138,16 +137,16 @@ func TestPostgresStore_ListMasked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new postgres store: %v", err)
 	}
-	t.Cleanup(func() { truncateTable(t, "api_keys"); _ = store.Close() })
+	resetTablesAndClose(t, store, "api_keys")
 
 	for i := range 3 {
 		name := "list-key-" + string(rune('a'+i))
-		if _, err := store.Create(context.Background(), name, []string{admin.ScopeAdmin}, nil); err != nil {
+		if _, err := store.Create(t.Context(), name, []string{admin.ScopeAdmin}, nil); err != nil {
 			t.Fatalf("create %s: %v", name, err)
 		}
 	}
 
-	listed := store.List(context.Background())
+	listed := store.List(t.Context())
 	if len(listed) != 3 {
 		t.Fatalf("expected 3 keys, got %d", len(listed))
 	}

@@ -20,7 +20,7 @@ type eventCapturingProvider struct {
 	fakeProvider
 	mu              sync.Mutex
 	events          []observability.Event
-	eventCtxs       []context.Context
+	recorded        chan context.Context
 	recordingActive bool
 }
 
@@ -28,16 +28,12 @@ func (p *eventCapturingProvider) RecordEvent(ctx context.Context, evt observabil
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.events = append(p.events, evt)
-	p.eventCtxs = append(p.eventCtxs, ctx)
-}
-
-func (p *eventCapturingProvider) lastEventCtx() context.Context {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if len(p.eventCtxs) == 0 {
-		return nil
+	if p.recorded != nil {
+		select {
+		case p.recorded <- ctx:
+		default:
+		}
 	}
-	return p.eventCtxs[len(p.eventCtxs)-1]
 }
 
 func (p *eventCapturingProvider) RecordingEnabled() bool {
@@ -151,10 +147,11 @@ func (s *fakeSpan) End() {
 }
 
 func TestGateway_Route_StartsRootSpan(t *testing.T) {
-	gw, _ := New(Config{
+	gw, _ := newTestGateway(t, Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
 		Targets:  []Target{{VirtualKey: "mock"}},
 	})
+
 	fp := &fakeProvider{}
 	gw.SetObservability(fp)
 
@@ -201,10 +198,11 @@ func TestGateway_Route_StartsRootSpan(t *testing.T) {
 }
 
 func TestGateway_Route_StampsRoutingAttrs(t *testing.T) {
-	gw, _ := New(Config{
+	gw, _ := newTestGateway(t, Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
 		Targets:  []Target{{VirtualKey: "mock"}},
 	})
+
 	fp := &fakeProvider{}
 	gw.SetObservability(fp)
 
@@ -248,10 +246,11 @@ func TestGateway_Route_StampsRoutingAttrs(t *testing.T) {
 }
 
 func TestGateway_RouteStream_StampsRoutingAttrs(t *testing.T) {
-	gw, _ := New(Config{
+	gw, _ := newTestGateway(t, Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
 		Targets:  []Target{{VirtualKey: "mock"}},
 	})
+
 	fp := &fakeProvider{}
 	gw.SetObservability(fp)
 
@@ -301,11 +300,15 @@ func TestGateway_RouteStream_StampsRoutingAttrs(t *testing.T) {
 // returns) while still carrying the request's trace context / values via
 // context.WithoutCancel.
 func TestGateway_RouteStream_EventContextDetachedButTraced(t *testing.T) {
-	gw, _ := New(Config{
+	gw, _ := newTestGateway(t, Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
 		Targets:  []Target{{VirtualKey: "mock"}},
 	})
-	ep := &eventCapturingProvider{recordingActive: true}
+
+	ep := &eventCapturingProvider{
+		recorded:        make(chan context.Context, 1),
+		recordingActive: true,
+	}
 	gw.SetObservability(ep)
 
 	gw.RegisterProvider(&mockStreamProvider{
@@ -332,13 +335,9 @@ func TestGateway_RouteStream_EventContextDetachedButTraced(t *testing.T) {
 	}
 
 	var evtCtx context.Context
-	for range 200 {
-		if evtCtx = ep.lastEventCtx(); evtCtx != nil {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	if evtCtx == nil {
+	select {
+	case evtCtx = <-ep.recorded:
+	case <-time.After(time.Second):
 		t.Fatal("no observability event was recorded")
 	}
 	if err := evtCtx.Err(); err != nil {
@@ -350,10 +349,11 @@ func TestGateway_RouteStream_EventContextDetachedButTraced(t *testing.T) {
 }
 
 func TestGateway_Route_StampsErrorOnSpan(t *testing.T) {
-	gw, _ := New(Config{
+	gw, _ := newTestGateway(t, Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
 		Targets:  []Target{{VirtualKey: "mock"}},
 	})
+
 	fp := &fakeProvider{}
 	gw.SetObservability(fp)
 
@@ -390,10 +390,11 @@ func TestGateway_Route_StampsErrorOnSpan(t *testing.T) {
 // delivers a "gateway.request.completed" Event to the provider's RecordEvent
 // when the provider implements EventRecordingProvider with RecordingEnabled()==true.
 func TestGateway_Route_EmitsCompletedEvent(t *testing.T) {
-	gw, _ := New(Config{
+	gw, _ := newTestGateway(t, Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
 		Targets:  []Target{{VirtualKey: "mock"}},
 	})
+
 	ep := &eventCapturingProvider{recordingActive: true}
 	gw.SetObservability(ep)
 
@@ -444,10 +445,11 @@ func TestGateway_Route_EmitsCompletedEvent(t *testing.T) {
 // TestGateway_Route_EmitsFailedEvent asserts that a failed Route call
 // delivers a "gateway.request.failed" Event to RecordEvent.
 func TestGateway_Route_EmitsFailedEvent(t *testing.T) {
-	gw, _ := New(Config{
+	gw, _ := newTestGateway(t, Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
 		Targets:  []Target{{VirtualKey: "mock"}},
 	})
+
 	ep := &eventCapturingProvider{recordingActive: true}
 	gw.SetObservability(ep)
 
@@ -485,10 +487,11 @@ func TestGateway_Route_EmitsFailedEvent(t *testing.T) {
 // TestGateway_Route_NoEventWhenNoOp asserts that with a NoOp provider
 // (obsEventsActive=false) Route does NOT call RecordEvent.
 func TestGateway_Route_NoEventWhenNoOp(t *testing.T) {
-	gw, _ := New(Config{
+	gw, _ := newTestGateway(t, Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
 		Targets:  []Target{{VirtualKey: "mock"}},
 	})
+
 	// Install NoOp — obsEventsActive should stay false.
 	gw.SetObservability(observability.NoOp())
 
@@ -523,7 +526,7 @@ func TestGateway_Route_NoEventWhenNoOp(t *testing.T) {
 // TestGateway_SetObservability_SetsObsEventsActive verifies that
 // SetObservability correctly caches the RecordingEnabled state.
 func TestGateway_SetObservability_SetsObsEventsActive(t *testing.T) {
-	gw, _ := New(Config{
+	gw, _ := newTestGateway(t, Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
 		Targets:  []Target{{VirtualKey: "mock"}},
 	})

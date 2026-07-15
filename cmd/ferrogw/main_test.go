@@ -816,6 +816,11 @@ func newTestGateway(t *testing.T, cfg aigateway.Config) *aigateway.Gateway {
 	if err != nil {
 		t.Fatalf("new gateway: %v", err)
 	}
+	t.Cleanup(func() {
+		if err := gw.Close(); err != nil {
+			t.Errorf("close gateway: %v", err)
+		}
+	})
 	return gw
 }
 

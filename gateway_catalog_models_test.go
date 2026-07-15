@@ -47,14 +47,14 @@ func equalStrings(a, b []string) bool {
 // with catalog entries reflects the catalog, not the (stale) hardcoded slice.
 // Regression guard for issue #146.
 func TestAllModels_DerivesFromCatalog(t *testing.T) {
-	gw, err := New(Config{
+	gw, err := newTestGateway(t, Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
 		Targets:  []Target{{VirtualKey: "unused"}},
 	})
+
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	t.Cleanup(func() { _ = gw.Close() })
 	// Intentionally stale hardcoded list — must NOT drive /v1/models.
 	gw.RegisterProvider(&mockProvider{name: "anthropic", models: []string{"claude-stale-only"}})
 
@@ -78,14 +78,14 @@ func TestAllModels_DerivesFromCatalog(t *testing.T) {
 // every provider that has catalog entries, the exposed model set must equal the
 // catalog set exactly, regardless of the hardcoded SupportedModels() slice.
 func TestAllModels_MatchesCatalogForRegisteredProviders(t *testing.T) {
-	gw, err := New(Config{
+	gw, err := newTestGateway(t, Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
 		Targets:  []Target{{VirtualKey: "unused"}},
 	})
+
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	t.Cleanup(func() { _ = gw.Close() })
 	for _, name := range []string{"anthropic", "xai", "gemini", "groq"} {
 		gw.RegisterProvider(&mockProvider{name: name, models: []string{name + "-stale"}})
 	}
@@ -103,14 +103,14 @@ func TestAllModels_MatchesCatalogForRegisteredProviders(t *testing.T) {
 // TestAllModels_FallsBackToHardcodedWhenCatalogEmpty asserts a provider with no
 // catalog entries still exposes its hardcoded Models() (e.g. self-hosted Ollama).
 func TestAllModels_FallsBackToHardcodedWhenCatalogEmpty(t *testing.T) {
-	gw, err := New(Config{
+	gw, err := newTestGateway(t, Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
 		Targets:  []Target{{VirtualKey: "unused"}},
 	})
+
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	t.Cleanup(func() { _ = gw.Close() })
 	const name = "no-such-catalog-provider-xyz"
 	if len(gw.Catalog().ModelsForProvider(name)) != 0 {
 		t.Fatalf("precondition: %q unexpectedly present in catalog", name)
@@ -127,14 +127,14 @@ func TestAllModels_FallsBackToHardcodedWhenCatalogEmpty(t *testing.T) {
 // TestRouting_AcceptsCatalogModelNotInHardcodedSlice proves the routing index
 // now accepts valid catalog models an exact-match provider's slice omits.
 func TestRouting_AcceptsCatalogModelNotInHardcodedSlice(t *testing.T) {
-	gw, err := New(Config{
+	gw, err := newTestGateway(t, Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
 		Targets:  []Target{{VirtualKey: "unused"}},
 	})
+
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	t.Cleanup(func() { _ = gw.Close() })
 	gw.RegisterProvider(&mockProvider{name: "anthropic", models: []string{"claude-hardcoded-only"}})
 
 	catModels := gw.Catalog().ModelsForProvider("anthropic")
@@ -165,14 +165,14 @@ func TestRouting_AcceptsCatalogModelNotInHardcodedSlice(t *testing.T) {
 // TestRouting_RejectsUnknownModel ensures the catalog fallback does not make
 // routing accept genuinely unknown models.
 func TestRouting_RejectsUnknownModel(t *testing.T) {
-	gw, err := New(Config{
+	gw, err := newTestGateway(t, Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
 		Targets:  []Target{{VirtualKey: "unused"}},
 	})
+
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	t.Cleanup(func() { _ = gw.Close() })
 	gw.RegisterProvider(&mockProvider{name: "anthropic", models: []string{"claude-hardcoded-only"}})
 
 	if _, ok := gw.FindByModel("definitely-not-a-real-model-zzz"); ok {

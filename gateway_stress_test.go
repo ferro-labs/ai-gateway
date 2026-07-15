@@ -2,6 +2,7 @@ package aigateway
 
 import (
 	"context"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -9,11 +10,10 @@ import (
 
 	"github.com/ferro-labs/ai-gateway/internal/circuitbreaker"
 	"github.com/ferro-labs/ai-gateway/providers"
-	"go.uber.org/goleak"
 )
 
 // stressStubProvider returns a fresh *providers.Response on every Complete
-// call. The shared-pointer mockProvider in gateway_test.go is unsafe under
+// call. The shared-pointer mockProvider in gateway_helpers_test.go is unsafe under
 // concurrent Route() — gateway.go:519 writes OverheadMs on the returned
 // pointer, so two parallel callers racing on the same pointer trips the race
 // detector with a fixture-level race that has nothing to do with the bugs
@@ -38,50 +38,16 @@ func (s *stressStubProvider) Complete(_ context.Context, _ providers.Request) (*
 	return &providers.Response{ID: "ok", Provider: s.name, Model: "gpt-4o"}, nil
 }
 
-// stressGoleak applies a goroutine-leak check at the end of each stress test.
-// We can't use TestMain here because gateway_test.go runs many other tests in
-// the same package that intentionally leak goroutines (e.g. hook workers from
-// gateways that the test never Closes). Per-test goleak with IgnoreCurrent
-// catches NEW leaks introduced by the test under inspection.
-func stressGoleak(t *testing.T) {
-	t.Helper()
-	opts := []goleak.Option{
-		goleak.IgnoreCurrent(),
-		// stdlib HTTP/2 connection pool keeps a readLoop goroutine alive
-		// until the transport's idle timeout. The catalog loader inside
-		// gateway.New() opens one. It is not a gateway leak; ignore it.
-		goleak.IgnoreTopFunction("net/http.(*http2ClientConn).readLoop"),
-		goleak.IgnoreTopFunction("internal/poll.runtime_pollWait"),
-	}
-	t.Cleanup(func() {
-		// Give any in-flight goroutines a brief grace window to exit. Without
-		// this, a perfectly-correct goroutine that is mid-return when the
-		// check runs can be flagged.
-		deadline := time.Now().Add(2 * time.Second)
-		var err error
-		for time.Now().Before(deadline) {
-			if err = goleak.Find(opts...); err == nil {
-				return
-			}
-			time.Sleep(20 * time.Millisecond)
-		}
-		if err != nil {
-			t.Fatalf("goroutine leak detected: %v", err)
-		}
-	})
-}
-
 // TestStress_ShutdownUnderLoad_NoPanic is the C1 regression: pre-fix, calling
 // Close() while publishEvent goroutines were in flight produced a hard panic
 // (send on closed channel). The fix replaces close(hookDispatchQ) with a
 // cancellation-context pattern. Run with -race to catch any reintroduction.
 func TestStress_ShutdownUnderLoad_NoPanic(t *testing.T) {
-	stressGoleak(t)
-
-	gw, err := New(Config{
+	gw, err := newTestGateway(t, Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
 		Targets:  []Target{{VirtualKey: "stub"}},
 	})
+
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -93,6 +59,7 @@ func TestStress_ShutdownUnderLoad_NoPanic(t *testing.T) {
 	const workers = 50
 	var wg sync.WaitGroup
 	stop := make(chan struct{})
+	started := make(chan struct{}, workers)
 
 	for range workers {
 		wg.Add(1)
@@ -102,6 +69,8 @@ func TestStress_ShutdownUnderLoad_NoPanic(t *testing.T) {
 				Model:    "gpt-4o",
 				Messages: []providers.Message{{Role: "user", Content: "hi"}},
 			}
+			_, _ = gw.Route(context.Background(), req)
+			started <- struct{}{}
 			for {
 				select {
 				case <-stop:
@@ -115,8 +84,13 @@ func TestStress_ShutdownUnderLoad_NoPanic(t *testing.T) {
 		}()
 	}
 
-	// Let load build up, then shut down hard.
-	time.Sleep(100 * time.Millisecond)
+	for range workers {
+		select {
+		case <-started:
+		case <-time.After(2 * time.Second):
+			t.Fatal("route worker did not start")
+		}
+	}
 	if err := gw.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
@@ -145,16 +119,14 @@ func TestStress_ShutdownUnderLoad_NoPanic(t *testing.T) {
 // wholesale at line ~707) and RegisterProvider (writes g.providers under
 // Lock). Must be run with -race.
 func TestStress_ReloadUnderLoad_NoRace(t *testing.T) {
-	stressGoleak(t)
-
-	gw, err := New(Config{
+	gw, err := newTestGateway(t, Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
 		Targets:  []Target{{VirtualKey: "stub"}},
 	})
+
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer func() { _ = gw.Close() }()
 
 	gw.RegisterProvider(&stressStubProvider{name: "stub", models: []string{"gpt-4o"}})
 
@@ -190,22 +162,18 @@ func TestStress_ReloadUnderLoad_NoRace(t *testing.T) {
 	var mutations atomic.Int64
 	go func() {
 		defer wg.Done()
-		for {
-			select {
-			case <-stop:
-				return
-			default:
-			}
+		for range 100 {
 			gw.mu.Lock()
 			gw.circuitBreakers["stub"] = circuitbreaker.New(5, 1, 1, time.Second)
 			gw.providers["stub"] = &stressStubProvider{name: "stub", models: []string{"gpt-4o"}}
 			gw.mu.Unlock()
 			mutations.Add(1)
-			time.Sleep(time.Microsecond)
 		}
 	}()
 
-	time.Sleep(300 * time.Millisecond)
+	for mutations.Load() < 100 {
+		runtime.Gosched()
+	}
 	close(stop)
 
 	done := make(chan struct{})

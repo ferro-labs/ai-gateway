@@ -219,7 +219,7 @@ func TestGatewayConfigManager_ReloadConfig_RollsBackWhenSaveFails(t *testing.T) 
 		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeSingle},
 		Targets:  []aigateway.Target{{VirtualKey: "openai"}},
 	}
-	gw, err := aigateway.New(initial)
+	gw, err := newTestGateway(t, initial)
 	if err != nil {
 		t.Fatalf("new gateway: %v", err)
 	}
@@ -255,7 +255,7 @@ func TestGatewayConfigManager_ReloadConfig_ClassifiesValidationErrors(t *testing
 		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeSingle},
 		Targets:  []aigateway.Target{{VirtualKey: "openai"}},
 	}
-	gw, err := aigateway.New(initial)
+	gw, err := newTestGateway(t, initial)
 	if err != nil {
 		t.Fatalf("new gateway: %v", err)
 	}
@@ -289,7 +289,7 @@ func TestGatewayConfigManager_NilStore(t *testing.T) {
 		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeSingle},
 		Targets:  []aigateway.Target{{VirtualKey: "openai"}},
 	}
-	gw, err := aigateway.New(cfg)
+	gw, err := newTestGateway(t, cfg)
 	if err != nil {
 		t.Fatalf("new gateway: %v", err)
 	}
@@ -323,7 +323,7 @@ func TestGatewayConfigManager_WithPersistedConfig(t *testing.T) {
 	}
 	store := &successConfigStore{cfg: persisted}
 
-	gw, err := aigateway.New(initial)
+	gw, err := newTestGateway(t, initial)
 	if err != nil {
 		t.Fatalf("new gateway: %v", err)
 	}
@@ -341,7 +341,7 @@ func TestGatewayConfigManager_ReloadConfig_Success(t *testing.T) {
 		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeSingle},
 		Targets:  []aigateway.Target{{VirtualKey: "openai"}},
 	}
-	gw, err := aigateway.New(initial)
+	gw, err := newTestGateway(t, initial)
 	if err != nil {
 		t.Fatalf("new gateway: %v", err)
 	}
@@ -367,7 +367,7 @@ func TestGatewayConfigManager_ResetConfig(t *testing.T) {
 		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeSingle},
 		Targets:  []aigateway.Target{{VirtualKey: "openai"}},
 	}
-	gw, err := aigateway.New(initial)
+	gw, err := newTestGateway(t, initial)
 	if err != nil {
 		t.Fatalf("new gateway: %v", err)
 	}
@@ -406,7 +406,7 @@ func TestGatewayConfigManager_Ping_DoesNotDoubleWrapStoreError(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 
-	gw, err := aigateway.New(singleConfig())
+	gw, err := newTestGateway(t, singleConfig())
 	if err != nil {
 		t.Fatalf("new gateway: %v", err)
 	}

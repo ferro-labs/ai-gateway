@@ -32,13 +32,14 @@ func (p *failingMultiModalProvider) GenerateImage(context.Context, providers.Ima
 
 func newBreakerBoundGateway(t *testing.T, p providers.Provider, failureThreshold int) *Gateway {
 	t.Helper()
-	gw, err := New(Config{
+	gw, err := newTestGateway(t, Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
 		Targets: []Target{{
 			VirtualKey:     mockProviderName,
 			CircuitBreaker: &CircuitBreakerConfig{FailureThreshold: failureThreshold},
 		}},
 	})
+
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

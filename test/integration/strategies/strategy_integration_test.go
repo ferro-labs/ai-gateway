@@ -69,13 +69,14 @@ func TestStrategy_Fallback_PrimaryFails_SecondarySucceeds(t *testing.T) {
 	}
 	secondary := &miniStub{name: "secondary", models: []string{stratModel}}
 
-	gw, err := aigateway.New(aigateway.Config{
+	gw, err := newTestGateway(t, aigateway.Config{
 		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeFallback},
 		Targets: []aigateway.Target{
 			{VirtualKey: "primary"},
 			{VirtualKey: "secondary"},
 		},
 	})
+
 	if err != nil {
 		t.Fatalf("aigateway.New: %v", err)
 	}
@@ -99,13 +100,14 @@ func TestStrategy_Fallback_PrimaryFails_SecondarySucceeds(t *testing.T) {
 
 // TestStrategy_Fallback_AllFail returns an error wrapping all provider failures.
 func TestStrategy_Fallback_AllFail(t *testing.T) {
-	gw, err := aigateway.New(aigateway.Config{
+	gw, err := newTestGateway(t, aigateway.Config{
 		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeFallback},
 		Targets: []aigateway.Target{
 			{VirtualKey: "p1"},
 			{VirtualKey: "p2"},
 		},
 	})
+
 	if err != nil {
 		t.Fatalf("aigateway.New: %v", err)
 	}
@@ -149,13 +151,14 @@ func TestStrategy_LoadBalance_DistributesRequests(t *testing.T) {
 		}
 	}
 
-	gw, err := aigateway.New(aigateway.Config{
+	gw, err := newTestGateway(t, aigateway.Config{
 		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeLoadBalance},
 		Targets: []aigateway.Target{
 			{VirtualKey: "lb1", Weight: 1.0},
 			{VirtualKey: "lb2", Weight: 1.0},
 		},
 	})
+
 	if err != nil {
 		t.Fatalf("aigateway.New: %v", err)
 	}
@@ -217,13 +220,14 @@ func TestStrategy_LeastLatency_LocksOntoFastestSeen(t *testing.T) {
 		},
 	}
 
-	gw, err := aigateway.New(aigateway.Config{
+	gw, err := newTestGateway(t, aigateway.Config{
 		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeLatency},
 		Targets: []aigateway.Target{
 			{VirtualKey: "fast"},
 			{VirtualKey: "slow"},
 		},
 	})
+
 	if err != nil {
 		t.Fatalf("aigateway.New: %v", err)
 	}

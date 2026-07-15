@@ -29,10 +29,11 @@ func buildProxyTestRouter(t *testing.T, upstreamURL string) http.Handler {
 	t.Helper()
 	t.Setenv("ALLOW_UNAUTHENTICATED_PROXY", "true")
 
-	gw, err := aigateway.New(aigateway.Config{
+	gw, err := newTestGateway(t, aigateway.Config{
 		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeSingle},
 		Targets:  []aigateway.Target{{VirtualKey: "stub"}},
 	})
+
 	if err != nil {
 		t.Fatalf("New gateway: %v", err)
 	}

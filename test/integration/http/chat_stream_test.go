@@ -25,7 +25,7 @@ func TestChatStream_HappyPath(t *testing.T) {
 		"stream": true
 	}`
 
-	req, _ := http.NewRequest("POST", env.Server.URL+"/v1/chat/completions", bytes.NewBufferString(body))
+	req := newTestRequest(t, "POST", env.Server.URL+"/v1/chat/completions", bytes.NewBufferString(body))
 	req.Header.Set("Authorization", "Bearer "+testMasterKey)
 	req.Header.Set("Content-Type", "application/json")
 
@@ -33,7 +33,7 @@ func TestChatStream_HappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST: %v", err)
 	}
-	defer resp.Body.Close()
+	defer closeTestBody(t, resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
@@ -113,7 +113,7 @@ func TestChatStream_MidStreamError(t *testing.T) {
 		"stream": true
 	}`
 
-	req, _ := http.NewRequest("POST", env.Server.URL+"/v1/chat/completions", bytes.NewBufferString(body))
+	req := newTestRequest(t, "POST", env.Server.URL+"/v1/chat/completions", bytes.NewBufferString(body))
 	req.Header.Set("Authorization", "Bearer "+testMasterKey)
 	req.Header.Set("Content-Type", "application/json")
 
@@ -121,7 +121,7 @@ func TestChatStream_MidStreamError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST: %v", err)
 	}
-	defer resp.Body.Close()
+	defer closeTestBody(t, resp.Body)
 
 	// The response should still be 200 (headers already sent), but the stream
 	// should contain an error event and terminate cleanly (no hang).

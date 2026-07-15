@@ -27,7 +27,7 @@ func TestProxy_PassThrough(t *testing.T) {
 	env := newTestServer(t)
 	env.Stub.SetBaseURL(upstream.URL)
 
-	req, _ := http.NewRequest(http.MethodGet, env.Server.URL+"/v1/files", nil)
+	req := newTestRequest(t, http.MethodGet, env.Server.URL+"/v1/files", nil)
 	req.Header.Set("X-Provider", "stub")
 	req.Header.Set("Authorization", "Bearer "+testMasterKey)
 
@@ -35,7 +35,7 @@ func TestProxy_PassThrough(t *testing.T) {
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
-	defer resp.Body.Close()
+	defer closeTestBody(t, resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -53,7 +53,7 @@ func TestProxy_PassThrough(t *testing.T) {
 func TestProxy_NoProvider(t *testing.T) {
 	env := newTestServer(t)
 
-	req, _ := http.NewRequest(http.MethodPost, env.Server.URL+"/v1/files", strings.NewReader(`{}`))
+	req := newTestRequest(t, http.MethodPost, env.Server.URL+"/v1/files", strings.NewReader(`{}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+testMasterKey)
 
@@ -61,7 +61,7 @@ func TestProxy_NoProvider(t *testing.T) {
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
-	defer resp.Body.Close()
+	defer closeTestBody(t, resp.Body)
 
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("got status %d; want 400", resp.StatusCode)
@@ -82,7 +82,7 @@ func TestProxy_AuthHeadersInjected(t *testing.T) {
 	env := newTestServer(t)
 	env.Stub.SetBaseURL(upstream.URL)
 
-	req, _ := http.NewRequest(http.MethodGet, env.Server.URL+"/v1/files", nil)
+	req := newTestRequest(t, http.MethodGet, env.Server.URL+"/v1/files", nil)
 	req.Header.Set("X-Provider", "stub")
 	req.Header.Set("Authorization", "Bearer "+testMasterKey)
 
@@ -90,7 +90,7 @@ func TestProxy_AuthHeadersInjected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
-	defer resp.Body.Close()
+	defer closeTestBody(t, resp.Body)
 
 	if gotAuth != "Bearer stub-key" {
 		t.Errorf("upstream auth header = %q; want %q", gotAuth, "Bearer stub-key")

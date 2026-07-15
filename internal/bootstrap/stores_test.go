@@ -171,5 +171,10 @@ func newTestGateway(t *testing.T) *aigateway.Gateway {
 	if err != nil {
 		t.Fatalf("failed to create test gateway: %v", err)
 	}
+	t.Cleanup(func() {
+		if err := gw.Close(); err != nil {
+			t.Errorf("close gateway: %v", err)
+		}
+	})
 	return gw
 }

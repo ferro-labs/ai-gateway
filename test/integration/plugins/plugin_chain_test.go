@@ -99,7 +99,7 @@ func newWordFilterGateway(t *testing.T, blockedWords []string, completeFunc func
 			},
 		},
 	}
-	gw, err := aigateway.New(cfg)
+	gw, err := newTestGateway(t, cfg)
 	if err != nil {
 		t.Fatalf("aigateway.New: %v", err)
 	}
@@ -185,10 +185,11 @@ func TestPluginChain_ResponseCache_Hit(t *testing.T) {
 		}, nil
 	}
 
-	gw, err := aigateway.New(aigateway.Config{
+	gw, err := newTestGateway(t, aigateway.Config{
 		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeFallback},
 		Targets:  []aigateway.Target{{VirtualKey: "cachestub"}},
 	})
+
 	if err != nil {
 		t.Fatalf("aigateway.New: %v", err)
 	}
@@ -259,7 +260,7 @@ func TestPluginChain_PerKeyRateLimit(t *testing.T) {
 	// key_rpm=1 means the token bucket holds 1 token at most; the first request
 	// drains it. At a fill rate of 1/60 r/s the second request is immediately
 	// rejected (within the test's timescale).
-	gw, err := aigateway.New(aigateway.Config{
+	gw, err := newTestGateway(t, aigateway.Config{
 		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeFallback},
 		Targets:  []aigateway.Target{{VirtualKey: "rlstub"}},
 		Plugins: []aigateway.PluginConfig{
@@ -269,12 +270,13 @@ func TestPluginChain_PerKeyRateLimit(t *testing.T) {
 				Stage:   "before_request",
 				Enabled: true,
 				Config: map[string]any{
-					"requests_per_second": 1000, // global limit is generous
-					"key_rpm":             1,    // 1 rpm per key — burst of 1
+					"requests_per_second": 1000,
+					"key_rpm":             1,
 				},
 			},
 		},
 	})
+
 	if err != nil {
 		t.Fatalf("aigateway.New: %v", err)
 	}
@@ -345,11 +347,12 @@ func TestPluginChain_OnError_Fires(t *testing.T) {
 		return nil, errors.New("upstream provider error: internal server error")
 	}
 
-	gw, err := aigateway.New(aigateway.Config{
+	gw, err := newTestGateway(t, aigateway.Config{
 		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeFallback},
 		Targets:  []aigateway.Target{{VirtualKey: "errstub"}},
 		Plugins:  plugins,
 	})
+
 	if err != nil {
 		t.Fatalf("aigateway.New: %v", err)
 	}

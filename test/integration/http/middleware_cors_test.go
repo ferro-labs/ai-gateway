@@ -14,7 +14,7 @@ func TestMiddlewareCORS_Preflight_NoOriginsConfigured_Blocked(t *testing.T) {
 	// middleware, which returns 401. No Access-Control-Allow-Origin is set.
 	env := newTestServer(t)
 
-	req, _ := http.NewRequest("OPTIONS", env.Server.URL+"/v1/chat/completions", nil)
+	req := newTestRequest(t, "OPTIONS", env.Server.URL+"/v1/chat/completions", nil)
 	req.Header.Set("Origin", "https://example.com")
 	req.Header.Set("Access-Control-Request-Method", "POST")
 
@@ -22,7 +22,7 @@ func TestMiddlewareCORS_Preflight_NoOriginsConfigured_Blocked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OPTIONS: %v", err)
 	}
-	defer resp.Body.Close()
+	defer closeTestBody(t, resp.Body)
 
 	// Preflight is not intercepted — auth middleware rejects unauthenticated requests.
 	if resp.StatusCode != http.StatusUnauthorized {
@@ -37,7 +37,7 @@ func TestMiddlewareCORS_RestrictedOrigins(t *testing.T) {
 	env := newTestServer(t, withCORSOrigins("https://allowed.example.com"))
 
 	// Allowed origin.
-	req, _ := http.NewRequest("OPTIONS", env.Server.URL+"/v1/chat/completions", nil)
+	req := newTestRequest(t, "OPTIONS", env.Server.URL+"/v1/chat/completions", nil)
 	req.Header.Set("Origin", "https://allowed.example.com")
 	req.Header.Set("Access-Control-Request-Method", "POST")
 
@@ -53,7 +53,7 @@ func TestMiddlewareCORS_RestrictedOrigins(t *testing.T) {
 	}
 
 	// Disallowed origin.
-	req2, _ := http.NewRequest("OPTIONS", env.Server.URL+"/v1/chat/completions", nil)
+	req2 := newTestRequest(t, "OPTIONS", env.Server.URL+"/v1/chat/completions", nil)
 	req2.Header.Set("Origin", "https://evil.example.com")
 	req2.Header.Set("Access-Control-Request-Method", "POST")
 

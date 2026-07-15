@@ -17,10 +17,11 @@ import (
 //
 //	go test -run=NONE -bench=BenchmarkRoute_TracingOff -benchmem
 func BenchmarkRoute_TracingOff(b *testing.B) {
-	gw, _ := New(Config{
+	gw, _ := newTestGateway(b, Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
 		Targets:  []Target{{VirtualKey: "mock"}},
 	})
+
 	gw.SetObservability(observability.NoOp())
 
 	gw.RegisterProvider(&mockProvider{
@@ -73,10 +74,11 @@ func TestRoute_TracingOff_AllocBaseline(t *testing.T) {
 	ctx := context.Background()
 
 	// gwDefault uses the internal NoOp default — SetObservability never called.
-	gwDefault, _ := New(Config{
+	gwDefault, _ := newTestGateway(t, Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
 		Targets:  []Target{{VirtualKey: "mock"}},
 	})
+
 	gwDefault.RegisterProvider(&mockProvider{
 		name:   "mock",
 		models: []string{"gpt-4o"},
@@ -84,10 +86,11 @@ func TestRoute_TracingOff_AllocBaseline(t *testing.T) {
 	})
 
 	// gwNoOp installs NoOp explicitly via SetObservability.
-	gwNoOp, _ := New(Config{
+	gwNoOp, _ := newTestGateway(t, Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
 		Targets:  []Target{{VirtualKey: "mock"}},
 	})
+
 	gwNoOp.SetObservability(observability.NoOp())
 	gwNoOp.RegisterProvider(&mockProvider{
 		name:   "mock",

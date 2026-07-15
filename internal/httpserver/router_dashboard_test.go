@@ -13,10 +13,11 @@ import (
 // with the same strict CSP as every other response. Its script must therefore be
 // an external file the policy allows, not an inline block the policy kills.
 func TestDashboardLoginPageIsServableUnderCSP(t *testing.T) {
-	gw, err := aigateway.New(aigateway.Config{
+	gw, err := newTestGateway(t, aigateway.Config{
 		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeSingle},
 		Targets:  []aigateway.Target{{VirtualKey: "stub"}},
 	})
+
 	if err != nil {
 		t.Fatalf("New gateway: %v", err)
 	}

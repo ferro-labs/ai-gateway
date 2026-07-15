@@ -165,7 +165,7 @@ func TestObservability_TraceIDUnification_InboundTraceparent(t *testing.T) {
 	resp := chatRequest(t, env, map[string]string{
 		"traceparent": "00-" + traceID + "-00f067aa0ba902b7-01",
 	}, false)
-	defer resp.Body.Close()
+	defer closeTestBody(t, resp.Body)
 	io.Copy(io.Discard, resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
@@ -196,7 +196,7 @@ func TestObservability_TraceIDUnification_SelfOriginated(t *testing.T) {
 	ce := installObservability(t, env, strings.TrimPrefix(collector.URL, "http://"))
 
 	resp := chatRequest(t, env, nil, false)
-	defer resp.Body.Close()
+	defer closeTestBody(t, resp.Body)
 	io.Copy(io.Discard, resp.Body)
 
 	reqID := resp.Header.Get("X-Request-ID")
@@ -220,7 +220,7 @@ func TestObservability_ExporterReceivesCompletedEvent(t *testing.T) {
 	ce := installObservability(t, env, "") // no endpoint — exporter-only path
 
 	resp := chatRequest(t, env, nil, false)
-	defer resp.Body.Close()
+	defer closeTestBody(t, resp.Body)
 	io.Copy(io.Discard, resp.Body)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
@@ -257,7 +257,7 @@ func TestObservability_ExporterReceivesFailedEvent(t *testing.T) {
 	ce := installObservability(t, env, "")
 
 	resp := chatRequest(t, env, nil, false)
-	defer resp.Body.Close()
+	defer closeTestBody(t, resp.Body)
 	io.Copy(io.Discard, resp.Body)
 	if resp.StatusCode < 500 {
 		t.Fatalf("expected a 5xx status for provider failure, got %d", resp.StatusCode)

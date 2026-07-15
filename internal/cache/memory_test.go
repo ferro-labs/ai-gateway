@@ -13,6 +13,8 @@ func TestMemory_ImplementsCache(_ *testing.T) {
 }
 
 func TestMemory_SetAndGet(t *testing.T) {
+	t.Parallel()
+
 	c := NewMemory(10, time.Minute)
 	resp := &providers.Response{ID: "resp-1", Model: "gpt-4o"}
 
@@ -27,6 +29,8 @@ func TestMemory_SetAndGet(t *testing.T) {
 }
 
 func TestMemory_Miss(t *testing.T) {
+	t.Parallel()
+
 	c := NewMemory(10, time.Minute)
 	_, ok := c.Get("missing")
 	if ok {
@@ -34,11 +38,15 @@ func TestMemory_Miss(t *testing.T) {
 	}
 }
 
-func TestMemory_TTLExpiration(t *testing.T) {
-	c := NewMemory(10, 10*time.Millisecond)
+func TestMemory_GetExpiresEntry(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(0, 0)
+	c := NewMemory(10, 10*time.Second)
+	c.SetNowForTest(func() time.Time { return now })
 	c.Set("key1", &providers.Response{ID: "resp-1"})
 
-	time.Sleep(20 * time.Millisecond)
+	now = now.Add(11 * time.Second)
 	_, ok := c.Get("key1")
 	if ok {
 		t.Error("expected cache miss after TTL")
@@ -46,6 +54,8 @@ func TestMemory_TTLExpiration(t *testing.T) {
 }
 
 func TestMemory_LRUEviction(t *testing.T) {
+	t.Parallel()
+
 	c := NewMemory(2, time.Minute)
 	c.Set("a", &providers.Response{ID: "a"})
 	c.Set("b", &providers.Response{ID: "b"})
@@ -63,6 +73,8 @@ func TestMemory_LRUEviction(t *testing.T) {
 }
 
 func TestMemory_LRUAccessOrder(t *testing.T) {
+	t.Parallel()
+
 	c := NewMemory(2, time.Minute)
 	c.Set("a", &providers.Response{ID: "a"})
 	c.Set("b", &providers.Response{ID: "b"})
@@ -80,6 +92,8 @@ func TestMemory_LRUAccessOrder(t *testing.T) {
 }
 
 func TestMemory_Update(t *testing.T) {
+	t.Parallel()
+
 	c := NewMemory(10, time.Minute)
 	c.Set("key1", &providers.Response{ID: "old"})
 	c.Set("key1", &providers.Response{ID: "new"})
@@ -97,6 +111,8 @@ func TestMemory_Update(t *testing.T) {
 }
 
 func TestMemory_Delete(t *testing.T) {
+	t.Parallel()
+
 	c := NewMemory(10, time.Minute)
 	c.Set("key1", &providers.Response{ID: "resp"})
 	c.Delete("key1")
@@ -110,6 +126,8 @@ func TestMemory_Delete(t *testing.T) {
 }
 
 func TestMemory_Clear(t *testing.T) {
+	t.Parallel()
+
 	c := NewMemory(10, time.Minute)
 	c.Set("a", &providers.Response{ID: "a"})
 	c.Set("b", &providers.Response{ID: "b"})

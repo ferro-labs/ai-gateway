@@ -14,14 +14,14 @@ import (
 // wrapped with http.MaxBytesReader and the payload exceeds the limit, the handler
 // returns HTTP 413 (not 400 or 500).
 func TestChatCompletions_BodyTooLarge_Returns413(t *testing.T) {
-	gw, err := aigateway.New(aigateway.Config{
+	gw, err := newTestGateway(t, aigateway.Config{
 		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeSingle},
 		Targets:  []aigateway.Target{{VirtualKey: "unused"}},
 	})
+
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	t.Cleanup(func() { _ = gw.Close() })
 
 	// Use valid JSON that starts correctly but is far larger than the tiny limit.
 	// The JSON decoder reads partial content then hits the MaxBytesReader limit.

@@ -96,7 +96,7 @@ plugins:
 func TestGateway_ResolvesPluginSecretsAtConstruction(t *testing.T) {
 	t.Setenv("FERRO_TEST_PLUGIN_SECRET", "resolved-at-use")
 
-	gw, err := New(Config{
+	gw, err := newTestGateway(t, Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
 		Targets:  []Target{{VirtualKey: "openai"}},
 		Plugins: []PluginConfig{{
@@ -107,10 +107,10 @@ func TestGateway_ResolvesPluginSecretsAtConstruction(t *testing.T) {
 			Config:  map[string]any{"token": "${FERRO_TEST_PLUGIN_SECRET}"}, //nolint:gosec // G101: an unresolved ${VAR} reference is the assertion, not a credential
 		}},
 	})
+
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer func() { _ = gw.Close() }()
 	if err := gw.LoadPlugins(); err != nil {
 		t.Fatalf("LoadPlugins: %v", err)
 	}

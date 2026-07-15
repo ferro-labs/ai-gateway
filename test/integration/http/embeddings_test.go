@@ -23,7 +23,7 @@ func TestEmbeddings_Success(t *testing.T) {
 		"input": "Hello world"
 	}`
 
-	req, _ := http.NewRequest("POST", env.Server.URL+"/v1/embeddings", bytes.NewBufferString(body))
+	req := newTestRequest(t, "POST", env.Server.URL+"/v1/embeddings", bytes.NewBufferString(body))
 	req.Header.Set("Authorization", "Bearer "+testMasterKey)
 	req.Header.Set("Content-Type", "application/json")
 
@@ -31,7 +31,7 @@ func TestEmbeddings_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /v1/embeddings: %v", err)
 	}
-	defer resp.Body.Close()
+	defer closeTestBody(t, resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
@@ -81,7 +81,7 @@ func TestEmbeddings_MissingModel_Returns400(t *testing.T) {
 
 	body := `{"input": "Hello world"}`
 
-	req, _ := http.NewRequest("POST", env.Server.URL+"/v1/embeddings", bytes.NewBufferString(body))
+	req := newTestRequest(t, "POST", env.Server.URL+"/v1/embeddings", bytes.NewBufferString(body))
 	req.Header.Set("Authorization", "Bearer "+testMasterKey)
 	req.Header.Set("Content-Type", "application/json")
 
@@ -89,7 +89,7 @@ func TestEmbeddings_MissingModel_Returns400(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST: %v", err)
 	}
-	defer resp.Body.Close()
+	defer closeTestBody(t, resp.Body)
 
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", resp.StatusCode)
@@ -103,7 +103,7 @@ func TestEmbeddings_CapabilityMiss_Returns404(t *testing.T) {
 	env := newTestServer(t)
 
 	body := `{"model":"no-such-embedding-model","input":"hello"}`
-	req, _ := http.NewRequest("POST", env.Server.URL+"/v1/embeddings", bytes.NewBufferString(body))
+	req := newTestRequest(t, "POST", env.Server.URL+"/v1/embeddings", bytes.NewBufferString(body))
 	req.Header.Set("Authorization", "Bearer "+testMasterKey)
 	req.Header.Set("Content-Type", "application/json")
 
@@ -111,7 +111,7 @@ func TestEmbeddings_CapabilityMiss_Returns404(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST: %v", err)
 	}
-	defer resp.Body.Close()
+	defer closeTestBody(t, resp.Body)
 
 	if resp.StatusCode != http.StatusNotFound {
 		b, _ := io.ReadAll(resp.Body)
@@ -129,7 +129,7 @@ func TestEmbeddings_UpstreamError_Returns500(t *testing.T) {
 	}
 
 	body := `{"model":"` + stubEmbedModel + `","input":"hello"}`
-	req, _ := http.NewRequest("POST", env.Server.URL+"/v1/embeddings", bytes.NewBufferString(body))
+	req := newTestRequest(t, "POST", env.Server.URL+"/v1/embeddings", bytes.NewBufferString(body))
 	req.Header.Set("Authorization", "Bearer "+testMasterKey)
 	req.Header.Set("Content-Type", "application/json")
 
@@ -137,7 +137,7 @@ func TestEmbeddings_UpstreamError_Returns500(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST: %v", err)
 	}
-	defer resp.Body.Close()
+	defer closeTestBody(t, resp.Body)
 
 	if resp.StatusCode != http.StatusInternalServerError {
 		b, _ := io.ReadAll(resp.Body)
@@ -149,14 +149,14 @@ func TestEmbeddings_RequiresAuth(t *testing.T) {
 	env := newTestServer(t)
 
 	body := `{"model":"` + stubEmbedModel + `","input":"hello"}`
-	req, _ := http.NewRequest("POST", env.Server.URL+"/v1/embeddings", bytes.NewBufferString(body))
+	req := newTestRequest(t, "POST", env.Server.URL+"/v1/embeddings", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("POST: %v", err)
 	}
-	defer resp.Body.Close()
+	defer closeTestBody(t, resp.Body)
 
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d", resp.StatusCode)
@@ -168,7 +168,7 @@ func TestEmbeddings_MissingInput_Returns400(t *testing.T) {
 
 	body := `{"model": "` + stubEmbedModel + `"}`
 
-	req, _ := http.NewRequest("POST", env.Server.URL+"/v1/embeddings", bytes.NewBufferString(body))
+	req := newTestRequest(t, "POST", env.Server.URL+"/v1/embeddings", bytes.NewBufferString(body))
 	req.Header.Set("Authorization", "Bearer "+testMasterKey)
 	req.Header.Set("Content-Type", "application/json")
 
@@ -176,7 +176,7 @@ func TestEmbeddings_MissingInput_Returns400(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST: %v", err)
 	}
-	defer resp.Body.Close()
+	defer closeTestBody(t, resp.Body)
 
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", resp.StatusCode)

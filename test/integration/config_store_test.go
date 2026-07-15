@@ -4,7 +4,6 @@
 package integration
 
 import (
-	"context"
 	"testing"
 
 	aigateway "github.com/ferro-labs/ai-gateway"
@@ -16,7 +15,7 @@ func TestPostgresConfigStore_SaveLoadRoundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new config store: %v", err)
 	}
-	t.Cleanup(func() { _ = store.Close() })
+	resetTablesAndClose(t, store, "config_history", "gateway_config")
 
 	cfg := aigateway.Config{
 		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeFallback},
@@ -25,11 +24,11 @@ func TestPostgresConfigStore_SaveLoadRoundtrip(t *testing.T) {
 			{VirtualKey: "anthropic"},
 		},
 	}
-	if err := store.Save(context.Background(), cfg); err != nil {
+	if err := store.Save(t.Context(), cfg); err != nil {
 		t.Fatalf("save: %v", err)
 	}
 
-	loaded, found, err := store.Load(context.Background())
+	loaded, found, err := store.Load(t.Context())
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -49,20 +48,20 @@ func TestPostgresConfigStore_Delete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new config store: %v", err)
 	}
-	t.Cleanup(func() { _ = store.Close() })
+	resetTablesAndClose(t, store, "config_history", "gateway_config")
 
 	cfg := aigateway.Config{
 		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeSingle},
 		Targets:  []aigateway.Target{{VirtualKey: "openai"}},
 	}
-	if err := store.Save(context.Background(), cfg); err != nil {
+	if err := store.Save(t.Context(), cfg); err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	if err := store.Delete(context.Background()); err != nil {
+	if err := store.Delete(t.Context()); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 
-	_, found, err := store.Load(context.Background())
+	_, found, err := store.Load(t.Context())
 	if err != nil {
 		t.Fatalf("load after delete: %v", err)
 	}
@@ -76,13 +75,13 @@ func TestPostgresConfigManager_ReloadPersists(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new config store: %v", err)
 	}
-	t.Cleanup(func() { _ = store.Close() })
+	resetTablesAndClose(t, store, "config_history", "gateway_config")
 
 	initial := aigateway.Config{
 		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeSingle},
 		Targets:  []aigateway.Target{{VirtualKey: "openai"}},
 	}
-	gw, err := aigateway.New(initial)
+	gw, err := newTestGateway(t, initial)
 	if err != nil {
 		t.Fatalf("new gateway: %v", err)
 	}
@@ -96,14 +95,14 @@ func TestPostgresConfigManager_ReloadPersists(t *testing.T) {
 		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeFallback},
 		Targets:  []aigateway.Target{{VirtualKey: "openai"}, {VirtualKey: "anthropic"}},
 	}
-	if err := mgr.ReloadConfig(context.Background(), next); err != nil {
+	if err := mgr.ReloadConfig(t.Context(), next); err != nil {
 		t.Fatalf("reload: %v", err)
 	}
 	if mgr.GetConfig().Strategy.Mode != aigateway.ModeFallback {
 		t.Fatalf("expected fallback in manager, got %q", mgr.GetConfig().Strategy.Mode)
 	}
 
-	loaded, found, err := store.Load(context.Background())
+	loaded, found, err := store.Load(t.Context())
 	if err != nil {
 		t.Fatalf("load from store: %v", err)
 	}

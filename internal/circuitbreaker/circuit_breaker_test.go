@@ -14,7 +14,9 @@ func newFakeClock() *fakeClock               { return &fakeClock{t: time.Unix(0,
 func (c *fakeClock) Now() time.Time          { return c.t }
 func (c *fakeClock) Advance(d time.Duration) { c.t = c.t.Add(d) }
 
-func TestInitialStateClosed(t *testing.T) {
+func TestCircuitBreaker_StateStartsClosed(t *testing.T) {
+	t.Parallel()
+
 	cb := New(3, 1, 1, 10*time.Second)
 	if cb.State() != StateClosed {
 		t.Fatalf("expected closed, got %s", cb.State())
@@ -24,7 +26,9 @@ func TestInitialStateClosed(t *testing.T) {
 	}
 }
 
-func TestOpensAfterThreshold(t *testing.T) {
+func TestCircuitBreaker_RecordFailureOpensAfterThreshold(t *testing.T) {
+	t.Parallel()
+
 	cb := New(3, 1, 1, 10*time.Second)
 	for i := 0; i < 3; i++ {
 		cb.RecordFailure()
@@ -37,7 +41,9 @@ func TestOpensAfterThreshold(t *testing.T) {
 	}
 }
 
-func TestTransitionsToHalfOpenAfterTimeout(t *testing.T) {
+func TestCircuitBreaker_StateTransitionsToHalfOpenAfterTimeout(t *testing.T) {
+	t.Parallel()
+
 	cb := New(1, 1, 1, 1*time.Millisecond)
 	clk := newFakeClock()
 	cb.SetNowForTest(clk.Now)
@@ -51,7 +57,9 @@ func TestTransitionsToHalfOpenAfterTimeout(t *testing.T) {
 	}
 }
 
-func TestClosesAfterSuccessInHalfOpen(t *testing.T) {
+func TestCircuitBreaker_RecordSuccessClosesHalfOpenCircuit(t *testing.T) {
+	t.Parallel()
+
 	cb := New(1, 1, 1, 1*time.Millisecond)
 	clk := newFakeClock()
 	cb.SetNowForTest(clk.Now)
@@ -65,7 +73,9 @@ func TestClosesAfterSuccessInHalfOpen(t *testing.T) {
 	}
 }
 
-func TestReopensOnFailureInHalfOpen(t *testing.T) {
+func TestCircuitBreaker_RecordFailureReopensHalfOpenCircuit(t *testing.T) {
+	t.Parallel()
+
 	cb := New(1, 1, 1, 1*time.Millisecond)
 	clk := newFakeClock()
 	cb.SetNowForTest(clk.Now)
@@ -79,7 +89,9 @@ func TestReopensOnFailureInHalfOpen(t *testing.T) {
 	}
 }
 
-func TestSuccessResetFailureCount(t *testing.T) {
+func TestCircuitBreaker_RecordSuccessResetsFailureCount(t *testing.T) {
+	t.Parallel()
+
 	cb := New(3, 1, 1, 10*time.Second)
 	cb.RecordFailure()
 	cb.RecordFailure()
@@ -91,7 +103,9 @@ func TestSuccessResetFailureCount(t *testing.T) {
 	}
 }
 
-func TestHalfOpenProbeCap(t *testing.T) {
+func TestCircuitBreaker_AllowEnforcesHalfOpenProbeCap(t *testing.T) {
+	t.Parallel()
+
 	cb := New(1, 1, 2, 1*time.Millisecond)
 	clk := newFakeClock()
 	cb.SetNowForTest(clk.Now)
@@ -118,7 +132,9 @@ func TestHalfOpenProbeCap(t *testing.T) {
 	}
 }
 
-func TestHalfOpenProbeCapReleasedOnFailure(t *testing.T) {
+func TestCircuitBreaker_RecordFailureReleasesHalfOpenProbe(t *testing.T) {
+	t.Parallel()
+
 	// cap=2: fill both slots, then one probe fails; after re-entering half-open
 	// both slots must be available again, proving RecordFailure decremented before reset.
 	cb := New(1, 1, 2, 1*time.Millisecond)
@@ -159,7 +175,9 @@ func TestHalfOpenProbeCapReleasedOnFailure(t *testing.T) {
 	}
 }
 
-func TestHalfOpenProbesResetOnReopen(t *testing.T) {
+func TestCircuitBreaker_RecordFailureResetsHalfOpenProbesOnReopen(t *testing.T) {
+	t.Parallel()
+
 	cb := New(1, 2, 1, 1*time.Millisecond)
 	clk := newFakeClock()
 	cb.SetNowForTest(clk.Now)
@@ -183,9 +201,11 @@ func TestHalfOpenProbesResetOnReopen(t *testing.T) {
 	}
 }
 
-// TestDefaultMaxHalfThreshold verifies that passing maxHalfThreshold=0 is
+// TestNew_DefaultsMaxHalfThreshold verifies that passing maxHalfThreshold=0 is
 // normalized to 1, so a second concurrent probe is rejected.
-func TestDefaultMaxHalfThreshold(t *testing.T) {
+func TestNew_DefaultsMaxHalfThreshold(t *testing.T) {
+	t.Parallel()
+
 	cb := New(1, 1, 0, 1*time.Millisecond) // 0 → normalized to 1
 	clk := newFakeClock()
 	cb.SetNowForTest(clk.Now)
@@ -201,7 +221,9 @@ func TestDefaultMaxHalfThreshold(t *testing.T) {
 	}
 }
 
-func TestReleaseProbeFreesHalfOpenSlotWithoutRecordingOutcome(t *testing.T) {
+func TestCircuitBreaker_ReleaseProbeFreesHalfOpenSlotWithoutRecordingOutcome(t *testing.T) {
+	t.Parallel()
+
 	cb := New(1, 1, 1, 1*time.Millisecond)
 	clk := newFakeClock()
 	cb.SetNowForTest(clk.Now)
@@ -226,10 +248,12 @@ func TestReleaseProbeFreesHalfOpenSlotWithoutRecordingOutcome(t *testing.T) {
 	}
 }
 
-// TestHalfOpenSuccessThresholdWithSlotRecycling verifies that when
+// TestCircuitBreaker_RecordSuccessRecyclesHalfOpenSlotsUntilThreshold verifies that when
 // successThreshold > 1, each RecordSuccess frees a probe slot so that new
 // probes can be admitted before the circuit closes.
-func TestHalfOpenSuccessThresholdWithSlotRecycling(t *testing.T) {
+func TestCircuitBreaker_RecordSuccessRecyclesHalfOpenSlotsUntilThreshold(t *testing.T) {
+	t.Parallel()
+
 	// cap=2, need 2 successes to close
 	cb := New(1, 2, 2, 1*time.Millisecond)
 	clk := newFakeClock()
@@ -269,10 +293,12 @@ func TestHalfOpenSuccessThresholdWithSlotRecycling(t *testing.T) {
 	}
 }
 
-// TestRecordSuccessAfterConcurrentReopenIsNoop verifies that a late
+// TestCircuitBreaker_RecordSuccessAfterConcurrentReopenIsNoop verifies that a late
 // RecordSuccess arriving after a concurrent probe already reopened the circuit
 // does not corrupt state.
-func TestRecordSuccessAfterConcurrentReopenIsNoop(t *testing.T) {
+func TestCircuitBreaker_RecordSuccessAfterConcurrentReopenIsNoop(t *testing.T) {
+	t.Parallel()
+
 	// cap=2: probe A and probe B both admitted; probe B fails first (reopens);
 	// probe A's RecordSuccess arrives after the reopen.
 	cb := New(1, 1, 2, 1*time.Millisecond)
@@ -308,10 +334,12 @@ func TestRecordSuccessAfterConcurrentReopenIsNoop(t *testing.T) {
 	}
 }
 
-// TestHalfOpenProbesZeroOnClosedToOpenTransition asserts that halfOpenProbes
+// TestCircuitBreaker_RecordFailureClearsHalfOpenProbesOnClosedToOpenTransition asserts that halfOpenProbes
 // is never left non-zero when transitioning Closed → Open, ensuring subsequent
 // half-open entry always starts with a clean counter.
-func TestHalfOpenProbesZeroOnClosedToOpenTransition(t *testing.T) {
+func TestCircuitBreaker_RecordFailureClearsHalfOpenProbesOnClosedToOpenTransition(t *testing.T) {
+	t.Parallel()
+
 	cb := New(1, 1, 1, 1*time.Millisecond)
 	clk := newFakeClock()
 	cb.SetNowForTest(clk.Now)

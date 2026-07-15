@@ -190,7 +190,7 @@ func TestAzureOpenAIProvider_CompleteStream_Endpoint(t *testing.T) {
 	}
 }
 
-func TestAzureOpenAIProvider_opEndpoint_PathEscapesDeployment(t *testing.T) {
+func TestAzureOpenAIProvider_OpEndpointPathEscapesDeployment(t *testing.T) {
 	p, _ := New("test-key", "https://myresource.openai.azure.com", "gpt-4o", "2024-10-21")
 
 	cases := []struct {

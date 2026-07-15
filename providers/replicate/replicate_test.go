@@ -703,27 +703,43 @@ func TestReplicateProvider_CompleteStream_DoneReason(t *testing.T) {
 func TestReplicateProvider_Poll_ContextCancel(t *testing.T) {
 	// The prediction never resolves; canceling the context mid-poll must return
 	// promptly with a context error.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	submitted := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"id":"pred-hang","status":"processing"}`))
+		if r.Method == http.MethodPost {
+			close(submitted)
+		}
 	}))
 	defer srv.Close()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	// Cancel after submit succeeds so the poll loop observes the cancellation.
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	p, _ := New("test-token", srv.URL, []string{"test/model"}, nil)
+	errCh := make(chan error, 1)
 	go func() {
-		time.Sleep(50 * time.Millisecond)
-		cancel()
+		_, err := p.Complete(ctx, core.Request{
+			Model:    "test/model",
+			Messages: []core.Message{{Role: "user", Content: "Hi"}},
+		})
+		errCh <- err
 	}()
 
-	p, _ := New("test-token", srv.URL, []string{"test/model"}, nil)
-	_, err := p.Complete(ctx, core.Request{
-		Model:    "test/model",
-		Messages: []core.Message{{Role: "user", Content: "Hi"}},
-	})
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected context.Canceled from poll loop, got: %v", err)
+	select {
+	case <-submitted:
+	case <-time.After(time.Second):
+		t.Fatal("prediction submission did not complete")
+	}
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected context.Canceled from poll loop, got: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Complete did not return after context cancellation")
 	}
 }
 
