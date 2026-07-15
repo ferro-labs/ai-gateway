@@ -67,7 +67,7 @@ venv/
 .cache/
 dist/
 build/
-.superset/config.local.json
-.superset/runtime/
-.superset/context/current-status.txt
-.superset/context/task-handoff.md
+
+# Local dev-tooling scaffold (superset-dev-watch-development daemon)
+.superset/
+CODEX.md

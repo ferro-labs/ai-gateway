@@ -29,22 +29,22 @@ func TestNeuralWattProvider_SupportedModels(t *testing.T) {
 	}
 	found := false
 	for _, m := range models {
-		if m == "meta-llama/Llama-3.3-70B-Instruct" {
+		if m == "qwen3.5-397b" {
 			found = true
 		}
 	}
 	if !found {
-		t.Error("meta-llama/Llama-3.3-70B-Instruct not found in SupportedModels")
+		t.Error("qwen3.5-397b not found in SupportedModels")
 	}
 }
 
 func TestNeuralWattProvider_SupportsModel(t *testing.T) {
 	p, _ := New("test-key", "")
-	if !p.SupportsModel("meta-llama/Llama-3.3-70B-Instruct") {
-		t.Error("expected meta-llama/Llama-3.3-70B-Instruct to be supported")
+	if !p.SupportsModel("qwen3.5-397b") {
+		t.Error("expected qwen3.5-397b to be supported")
 	}
-	if !p.SupportsModel("zai-org/GLM-5.1-FP8") {
-		t.Error("expected zai-org/GLM-5.1-FP8 to be supported")
+	if !p.SupportsModel("kimi-k2.6") {
+		t.Error("expected kimi-k2.6 to be supported")
 	}
 	if p.SupportsModel("gpt-4o") {
 		t.Error("expected gpt-4o (not a NeuralWatt model) to return false")
@@ -78,10 +78,10 @@ func TestNeuralWattProvider_AuthHeaders(t *testing.T) {
 }
 
 func TestNeuralWattProvider_CompleteStream_MockSSE(t *testing.T) {
-	sseData := "data: {\"id\":\"cmpl-1\",\"model\":\"meta-llama/Llama-3.3-70B-Instruct\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":\"\"}]}\n\n" +
-		"data: {\"id\":\"cmpl-1\",\"model\":\"meta-llama/Llama-3.3-70B-Instruct\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello\"},\"finish_reason\":\"\"}]}\n\n" +
-		"data: {\"id\":\"cmpl-1\",\"model\":\"meta-llama/Llama-3.3-70B-Instruct\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\" there\"},\"finish_reason\":\"\"}]}\n\n" +
-		"data: {\"id\":\"cmpl-1\",\"model\":\"meta-llama/Llama-3.3-70B-Instruct\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
+	sseData := "data: {\"id\":\"cmpl-1\",\"model\":\"qwen3.5-397b\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":\"\"}]}\n\n" +
+		"data: {\"id\":\"cmpl-1\",\"model\":\"qwen3.5-397b\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello\"},\"finish_reason\":\"\"}]}\n\n" +
+		"data: {\"id\":\"cmpl-1\",\"model\":\"qwen3.5-397b\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\" there\"},\"finish_reason\":\"\"}]}\n\n" +
+		"data: {\"id\":\"cmpl-1\",\"model\":\"qwen3.5-397b\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
 		"data: [DONE]\n\n"
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -96,7 +96,7 @@ func TestNeuralWattProvider_CompleteStream_MockSSE(t *testing.T) {
 
 	p, _ := New("test-key", srv.URL)
 	ch, err := p.CompleteStream(context.Background(), core.Request{
-		Model:    "meta-llama/Llama-3.3-70B-Instruct",
+		Model:    "qwen3.5-397b",
 		Messages: []core.Message{{Role: "user", Content: "Hi"}},
 	})
 	if err != nil {
@@ -120,7 +120,7 @@ func TestNeuralWattProvider_CompleteStream_MockSSE(t *testing.T) {
 }
 
 func TestNeuralWattProvider_Complete_MockHTTP(t *testing.T) {
-	respBody := `{"id":"cmpl-1","model":"meta-llama/Llama-3.3-70B-Instruct","choices":[{"index":0,"message":{"role":"assistant","content":"Hello!"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}`
+	respBody := `{"id":"cmpl-1","model":"qwen3.5-397b","choices":[{"index":0,"message":{"role":"assistant","content":"Hello!"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}`
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != testBearerAPIKey {
@@ -134,7 +134,7 @@ func TestNeuralWattProvider_Complete_MockHTTP(t *testing.T) {
 
 	p, _ := New("test-key", srv.URL)
 	resp, err := p.Complete(context.Background(), core.Request{
-		Model:    "meta-llama/Llama-3.3-70B-Instruct",
+		Model:    "qwen3.5-397b",
 		Messages: []core.Message{{Role: "user", Content: "Hi"}},
 	})
 	if err != nil {
@@ -149,7 +149,7 @@ func TestNeuralWattProvider_Complete_MockHTTP(t *testing.T) {
 }
 
 func TestNeuralWattProvider_DiscoverModels_MockHTTP(t *testing.T) {
-	modelsBody := `{"object":"list","data":[{"id":"meta-llama/Llama-3.3-70B-Instruct","object":"model","owned_by":"neuralwatt"},{"id":"zai-org/GLM-5.1-FP8","object":"model","owned_by":"neuralwatt"}]}`
+	modelsBody := `{"object":"list","data":[{"id":"qwen3.5-397b","object":"model","owned_by":"neuralwatt"},{"id":"kimi-k2.6","object":"model","owned_by":"neuralwatt"}]}`
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/models" {
@@ -171,11 +171,11 @@ func TestNeuralWattProvider_DiscoverModels_MockHTTP(t *testing.T) {
 	}
 	found := false
 	for _, m := range models {
-		if m.ID == "meta-llama/Llama-3.3-70B-Instruct" {
+		if m.ID == "qwen3.5-397b" {
 			found = true
 		}
 	}
 	if !found {
-		t.Error("meta-llama/Llama-3.3-70B-Instruct not found in discovered models")
+		t.Error("qwen3.5-397b not found in discovered models")
 	}
 }

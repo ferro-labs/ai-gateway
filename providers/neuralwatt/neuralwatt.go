@@ -61,9 +61,13 @@ func (p *Provider) AuthHeaders() map[string]string {
 }
 
 var supportedModels = []string{
-	"meta-llama/Llama-3.3-70B-Instruct",
-	"zai-org/GLM-5.1-FP8",
-	"meta-llama/Llama-3.1-8B-Instruct",
+	"qwen3.5-397b",
+	"qwen3.5-397b-fast",
+	"qwen3.6-35b",
+	"qwen3.6-35b-fast",
+	"kimi-k2.6",
+	"kimi-k2.6-fast",
+	"kimi-k2.7-code",
 }
 
 // SupportedModels returns a static list of known NeuralWatt models.
