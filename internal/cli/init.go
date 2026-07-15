@@ -95,7 +95,7 @@ func runInit(cmd *cobra.Command, _ []string) error {
 	output, _ := cmd.Flags().GetString("output")
 	nonInteractive, _ := cmd.Flags().GetBool("non-interactive")
 
-	out := os.Stderr
+	out := cmd.ErrOrStderr()
 	eprintf := func(format string, a ...any) { _, _ = fmt.Fprintf(out, format, a...) }
 
 	if !nonInteractive {

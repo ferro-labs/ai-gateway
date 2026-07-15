@@ -10,8 +10,17 @@ func adminClientFromCmd(cmd *cobra.Command) *AdminClient {
 	return NewAdminClient(flagURL, flagKey)
 }
 
+// printerFromCmd builds a Printer using the format persistent flag on the
+// command's root and bound to the command's output writer, so command output
+// is redirectable (via cmd.SetOut) and therefore testable.
+func printerFromCmd(cmd *cobra.Command) *Printer {
+	format, _ := cmd.Root().PersistentFlags().GetString("format")
+	pr := NewPrinter(format)
+	pr.Out = cmd.OutOrStdout()
+	return pr
+}
+
 // printResult renders v using the format persistent flag on the command's root.
 func printResult(cmd *cobra.Command, v any) error {
-	format, _ := cmd.Root().PersistentFlags().GetString("format")
-	return NewPrinter(format).Print(v)
+	return printerFromCmd(cmd).Print(v)
 }

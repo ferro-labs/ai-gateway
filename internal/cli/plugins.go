@@ -25,25 +25,25 @@ func runPlugins(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	format, _ := cmd.Root().PersistentFlags().GetString("format")
-	pr := NewPrinter(format)
+	pr := printerFromCmd(cmd)
 	if pr.Format != FormatTable {
 		return pr.Print(plugins)
 	}
 
+	out := cmd.OutOrStdout()
 	if len(plugins) == 0 {
-		fmt.Println("No plugins registered.")
+		_, _ = fmt.Fprintln(out, "No plugins registered.")
 		return nil
 	}
 
-	fmt.Printf("%-24s %-16s %s\n", "NAME", "TYPE", "ENABLED")
-	fmt.Printf("%-24s %-16s %s\n", "----", "----", "-------")
+	_, _ = fmt.Fprintf(out, "%-24s %-16s %s\n", "NAME", "TYPE", "ENABLED")
+	_, _ = fmt.Fprintf(out, "%-24s %-16s %s\n", "----", "----", "-------")
 	for _, p := range plugins {
-		enabled := "no"
+		enabled := boolNo
 		if p.Enabled {
-			enabled = "yes"
+			enabled = boolYes
 		}
-		fmt.Printf("%-24s %-16s %s\n", p.Name, p.Type, enabled)
+		_, _ = fmt.Fprintf(out, "%-24s %-16s %s\n", p.Name, p.Type, enabled)
 	}
 	return nil
 }
