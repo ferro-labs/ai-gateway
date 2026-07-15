@@ -329,7 +329,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameOpenRouter,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityDiscovery, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityDiscovery, CapabilityProxy, CapabilityAggregator},
 		EnvMappings: []EnvMapping{
 			{CfgKeyAPIKey, "OPENROUTER_API_KEY", true},
 			{CfgKeyBaseURL, "OPENROUTER_BASE_URL", false},
