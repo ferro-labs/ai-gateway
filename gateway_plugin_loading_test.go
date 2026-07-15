@@ -221,6 +221,7 @@ func TestGateway_ReloadConfig_ClosesOldPlugins(t *testing.T) {
 
 func TestGateway_ReloadConfig_DefersOldPluginCloseUntilInFlightRouteFinishes(t *testing.T) {
 	provider := newGateMockProvider(&providers.Response{ID: "ok", Model: "gpt-4o"}, nil)
+	t.Cleanup(provider.releaseAll)
 	gw, err := newTestGateway(t, Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
 		Targets:  []Target{{VirtualKey: provider.Name()}},

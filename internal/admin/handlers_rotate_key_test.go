@@ -19,6 +19,7 @@ func TestRotateKey(t *testing.T) {
 		t.Fatalf("failed to create key: %v", err)
 	}
 	keyID := key.ID
+	originalKey := key.Key
 
 	req := authedRequest(http.MethodPost, "/admin/keys/"+keyID+"/rotate", "", adminKey)
 	w := httptest.NewRecorder()
@@ -36,6 +37,9 @@ func TestRotateKey(t *testing.T) {
 	}
 	if !strings.HasPrefix(rotated.Key, "fgw_") {
 		t.Errorf("expected rotated key to start with fgw_, got %q", rotated.Key)
+	}
+	if rotated.Key == originalKey {
+		t.Error("expected rotation to generate a new credential")
 	}
 }
 

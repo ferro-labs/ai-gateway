@@ -145,10 +145,15 @@ func assertSameTargetSet(t *testing.T, got []string, targets []Target) {
 	if len(got) != len(want) {
 		t.Fatalf("SelectTargets = %v, want the %d configured targets", got, len(want))
 	}
+	seen := make(map[string]struct{}, len(got))
 	for _, k := range got {
 		if !want[k] {
 			t.Fatalf("SelectTargets = %v, contains unexpected key %q", got, k)
 		}
+		if _, duplicate := seen[k]; duplicate {
+			t.Fatalf("SelectTargets = %v, contains duplicate key %q", got, k)
+		}
+		seen[k] = struct{}{}
 	}
 }
 

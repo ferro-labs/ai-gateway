@@ -704,12 +704,19 @@ func TestReplicateProvider_Poll_ContextCancel(t *testing.T) {
 	// The prediction never resolves; canceling the context mid-poll must return
 	// promptly with a context error.
 	submitted := make(chan struct{})
+	pollStarted := make(chan struct{}, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"id":"pred-hang","status":"processing"}`))
-		if r.Method == http.MethodPost {
+		switch r.Method {
+		case http.MethodPost:
 			close(submitted)
+		case http.MethodGet:
+			select {
+			case pollStarted <- struct{}{}:
+			default:
+			}
 		}
 	}))
 	defer srv.Close()
@@ -730,6 +737,11 @@ func TestReplicateProvider_Poll_ContextCancel(t *testing.T) {
 	case <-submitted:
 	case <-time.After(time.Second):
 		t.Fatal("prediction submission did not complete")
+	}
+	select {
+	case <-pollStarted:
+	case <-time.After(time.Second):
+		t.Fatal("prediction polling did not start")
 	}
 	cancel()
 

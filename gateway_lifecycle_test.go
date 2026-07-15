@@ -3,6 +3,7 @@ package aigateway
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -376,13 +377,39 @@ func TestGateway_PublishEvent_AfterShutdownWithFullQueueDoesNotPanic(t *testing.
 	ctx, cancel := context.WithCancel(context.Background())
 	gw.shutdownCtx = ctx
 	gw.shutdownCancel = cancel
-	gw.AddHook(func(context.Context, string, map[string]any) {})
-	gw.AddHook(func(context.Context, string, map[string]any) {})
+	workerCount := runtime.GOMAXPROCS(0)
+	if workerCount < 1 {
+		workerCount = 1
+	}
+	if workerCount > maxHookWorkers {
+		workerCount = maxHookWorkers
+	}
+	entered := make(chan struct{}, workerCount)
+	release := make(chan struct{})
+	gw.AddHook(func(context.Context, string, map[string]any) {
+		entered <- struct{}{}
+		<-release
+	})
 	gw.hooks.start(gw.shutdownCtx)
-	t.Cleanup(cancel)
+	t.Cleanup(func() {
+		cancel()
+		close(release)
+		gw.hooks.wait()
+	})
 
-	// Fill the queue so the next publishEvent hits the default branch.
-	gw.publishEvent(context.Background(), completedHookEvent("trace-fill"))
+	for i := range workerCount {
+		gw.publishEvent(context.Background(), completedHookEvent(fmt.Sprintf("trace-block-worker-%d", i)))
+		select {
+		case <-entered:
+		case <-time.After(time.Second):
+			t.Fatalf("hook worker %d did not enter callback", i)
+		}
+	}
+
+	gw.publishEvent(context.Background(), completedHookEvent("trace-fill-queue"))
+	if got := len(gw.hooks.dispatchQ); got != 1 {
+		t.Fatalf("dispatch queue length = %d, want 1", got)
+	}
 
 	gw.shutdownCancel()
 

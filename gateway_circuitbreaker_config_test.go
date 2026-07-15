@@ -42,7 +42,7 @@ func TestGateway_Route_EnforcesCircuitBreakerMaxHalfThreshold(t *testing.T) {
 		release: make(chan struct{}),
 	}
 
-	gw, _ := newTestGateway(t, Config{
+	gw, err := newTestGateway(t, Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
 		Targets: []Target{{
 			VirtualKey: "mock-cb",
@@ -54,6 +54,9 @@ func TestGateway_Route_EnforcesCircuitBreakerMaxHalfThreshold(t *testing.T) {
 			},
 		}},
 	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
 
 	gw.RegisterProvider(mock)
 	fakeNow := time.Unix(0, 0)
@@ -91,7 +94,7 @@ func TestGateway_Route_EnforcesCircuitBreakerMaxHalfThreshold(t *testing.T) {
 	}
 
 	// Probe 2: cap=1 already consumed → must be rejected.
-	_, err := gw.Route(context.Background(), req)
+	_, err = gw.Route(context.Background(), req)
 	if !errors.Is(err, circuitbreaker.ErrCircuitOpen) {
 		t.Errorf("expected ErrCircuitOpen for second concurrent half-open probe, got %v", err)
 	}

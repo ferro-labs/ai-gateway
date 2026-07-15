@@ -197,7 +197,7 @@ func TestGateway_Route_MCPToolInjectionAndLoop(t *testing.T) {
 
 	// Provider must have been called exactly twice.
 	if got := mp.callCount(); got != 2 {
-		t.Errorf("provider called %d times, want 2", got)
+		t.Fatalf("provider called %d times, want 2", got)
 	}
 
 	mp.mu.Lock()

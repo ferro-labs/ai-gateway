@@ -12,6 +12,18 @@ import (
 	"github.com/ferro-labs/ai-gateway/providers"
 )
 
+func assertNoCallbackErrors(t *testing.T, callbackErrs <-chan error) {
+	t.Helper()
+	for {
+		select {
+		case err := <-callbackErrs:
+			t.Error(err)
+		default:
+			return
+		}
+	}
+}
+
 func TestGateway_RouteStream_BeforePluginCanSetNilRequest(t *testing.T) {
 	gw, _ := newTestGateway(t, Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
@@ -80,28 +92,32 @@ func TestGateway_RouteStream_RunAfterReceivesStreamResponse(t *testing.T) {
 	})
 
 	var afterCalls int
+	callbackErrs := make(chan error, 8)
 	_ = gw.RegisterPlugin(plugin.StageAfterRequest, &testPlugin{
 		name: "after",
 		typ:  plugin.TypeLogging,
 		execFn: func(_ context.Context, pctx *plugin.Context) error {
 			afterCalls++
 			if pctx.Request == nil {
-				t.Fatal("after plugin request is nil")
+				callbackErrs <- errors.New("after plugin request is nil")
 			}
 			if pctx.Response == nil {
-				t.Fatal("after plugin response is nil")
+				callbackErrs <- errors.New("after plugin response is nil")
+				return nil
 			}
 			if pctx.Response.Provider != mockProviderName {
-				t.Fatalf("after plugin provider = %q, want mock", pctx.Response.Provider)
+				callbackErrs <- fmt.Errorf("after plugin provider = %q, want mock", pctx.Response.Provider)
 			}
 			if pctx.Response.Model != "gpt-4o" {
-				t.Fatalf("after plugin model = %q, want gpt-4o", pctx.Response.Model)
+				callbackErrs <- fmt.Errorf("after plugin model = %q, want gpt-4o", pctx.Response.Model)
 			}
 			if pctx.Response.Usage.TotalTokens != 5 {
-				t.Fatalf("after plugin total tokens = %d, want 5", pctx.Response.Usage.TotalTokens)
+				callbackErrs <- fmt.Errorf("after plugin total tokens = %d, want 5", pctx.Response.Usage.TotalTokens)
 			}
-			if got := pctx.Response.Choices[0].Message.Content; got != "hello world" {
-				t.Fatalf("after plugin content = %q, want hello world", got)
+			if len(pctx.Response.Choices) == 0 {
+				callbackErrs <- errors.New("after plugin choices are empty")
+			} else if got := pctx.Response.Choices[0].Message.Content; got != "hello world" {
+				callbackErrs <- fmt.Errorf("after plugin content = %q, want hello world", got)
 			}
 			return nil
 		},
@@ -116,6 +132,7 @@ func TestGateway_RouteStream_RunAfterReceivesStreamResponse(t *testing.T) {
 		t.Fatalf("RouteStream: %v", err)
 	}
 	drainStream(t, ch)
+	assertNoCallbackErrors(t, callbackErrs)
 
 	if afterCalls != 1 {
 		t.Fatalf("after plugin calls = %d, want 1", afterCalls)
@@ -140,16 +157,17 @@ func TestGateway_RouteStream_RunOnErrorReceivesStreamError(t *testing.T) {
 	})
 
 	var onErrorCalls int
+	callbackErrs := make(chan error, 2)
 	_ = gw.RegisterPlugin(plugin.StageOnError, &testPlugin{
 		name: "on-error",
 		typ:  plugin.TypeLogging,
 		execFn: func(_ context.Context, pctx *plugin.Context) error {
 			onErrorCalls++
 			if !errors.Is(pctx.Error, streamErr) {
-				t.Fatalf("on-error plugin error = %v, want %v", pctx.Error, streamErr)
+				callbackErrs <- fmt.Errorf("on-error plugin error = %v, want %v", pctx.Error, streamErr)
 			}
 			if pctx.Response != nil {
-				t.Fatalf("on-error plugin response = %#v, want nil", pctx.Response)
+				callbackErrs <- fmt.Errorf("on-error plugin response = %#v, want nil", pctx.Response)
 			}
 			return nil
 		},
@@ -168,6 +186,7 @@ func TestGateway_RouteStream_RunOnErrorReceivesStreamError(t *testing.T) {
 			t.Fatalf("stream chunk error = %v, want %v", chunk.Error, streamErr)
 		}
 	}
+	assertNoCallbackErrors(t, callbackErrs)
 
 	if onErrorCalls != 1 {
 		t.Fatalf("on-error plugin calls = %d, want 1", onErrorCalls)
@@ -201,6 +220,7 @@ func TestGateway_RouteStream_AfterPluginRejectRunsOnError(t *testing.T) {
 	})
 
 	var onErrorCalls int
+	callbackErrs := make(chan error, 1)
 	_ = gw.RegisterPlugin(plugin.StageAfterRequest, &testPlugin{
 		name: "after",
 		typ:  plugin.TypeGuardrail,
@@ -217,7 +237,7 @@ func TestGateway_RouteStream_AfterPluginRejectRunsOnError(t *testing.T) {
 			onErrorCalls++
 			var rejection *plugin.RejectionError
 			if !errors.As(pctx.Error, &rejection) {
-				t.Fatalf("on-error plugin error = %T(%v), want *plugin.RejectionError", pctx.Error, pctx.Error)
+				callbackErrs <- fmt.Errorf("on-error plugin error = %T(%v), want *plugin.RejectionError", pctx.Error, pctx.Error)
 			}
 			return nil
 		},
@@ -240,6 +260,7 @@ func TestGateway_RouteStream_AfterPluginRejectRunsOnError(t *testing.T) {
 	if !sawPluginErr {
 		t.Fatal("expected stream chunk carrying after plugin rejection error")
 	}
+	assertNoCallbackErrors(t, callbackErrs)
 	if onErrorCalls != 1 {
 		t.Fatalf("on-error plugin calls = %d, want 1", onErrorCalls)
 	}

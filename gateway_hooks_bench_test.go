@@ -2,7 +2,6 @@ package aigateway
 
 import (
 	"context"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -23,11 +22,8 @@ func BenchmarkGateway_PublishEvent(b *testing.B) {
 	}
 
 	var calls atomic.Int64
-	var wg sync.WaitGroup
-	wg.Add(b.N)
 	gw.AddHook(func(context.Context, string, map[string]any) {
 		calls.Add(1)
-		wg.Done()
 	})
 
 	event := events.CompletedRequest(
@@ -49,17 +45,10 @@ func BenchmarkGateway_PublishEvent(b *testing.B) {
 	}
 	b.StopTimer()
 
-	waitDone := make(chan struct{})
-	go func() {
-		defer close(waitDone)
-		wg.Wait()
-	}()
-
-	select {
-	case <-waitDone:
-	case <-time.After(5 * time.Second):
-		b.Fatalf("timed out waiting for hook dispatch: completed=%d want=%d", calls.Load(), b.N)
+	if err := gw.Close(); err != nil {
+		b.Fatalf("Close: %v", err)
 	}
+	b.ReportMetric(float64(calls.Load())/float64(b.N), "hooks/op")
 }
 
 // freshProvider returns a new *providers.Response on every Complete call so

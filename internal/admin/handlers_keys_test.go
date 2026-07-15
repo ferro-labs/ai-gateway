@@ -177,8 +177,8 @@ func TestUpdateKeyExpiration(t *testing.T) {
 	adminKey := createAdminKey(t, h)
 	target := createTestKey(t, h, "expirable", nil, nil)
 
-	expiresAt := time.Now().Add(10 * time.Minute).UTC().Format(time.RFC3339)
-	body := `{"expires_at":"` + expiresAt + `"}`
+	expectedExpiry := time.Now().Add(10 * time.Minute).UTC().Truncate(time.Second)
+	body := `{"expires_at":"` + expectedExpiry.Format(time.RFC3339) + `"}`
 	req := authedRequest(http.MethodPut, "/admin/keys/"+target.ID, body, adminKey)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -193,6 +193,9 @@ func TestUpdateKeyExpiration(t *testing.T) {
 	}
 	if fresh.ExpiresAt == nil {
 		t.Fatal("expected expires_at to be set")
+	}
+	if !fresh.ExpiresAt.Equal(expectedExpiry) {
+		t.Fatalf("expires_at = %s, want %s", fresh.ExpiresAt.UTC(), expectedExpiry)
 	}
 }
 

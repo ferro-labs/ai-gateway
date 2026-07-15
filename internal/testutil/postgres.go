@@ -46,6 +46,12 @@ func StartPostgres(ctx context.Context) (pg *PostgresContainer, err error) {
 		postgres.BasicWaitStrategies(),
 	)
 	if err != nil {
+		if container != nil {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			cleanupErr := container.Terminate(cleanupCtx)
+			cancel()
+			return nil, errors.Join(fmt.Errorf("start postgres container: %w", err), cleanupErr)
+		}
 		return nil, fmt.Errorf("start postgres container: %w", err)
 	}
 

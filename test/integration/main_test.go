@@ -43,7 +43,9 @@ func TestMain(m *testing.M) {
 		defer cancelStop()
 		if err := pg.Terminate(stopCtx); err != nil {
 			fmt.Printf("FAIL: terminate Postgres test container: %v\n", err)
-			return 1
+			if code == 0 {
+				return 1
+			}
 		}
 		return code
 	}))
