@@ -4680,6 +4680,69 @@ func TestGateway_RegisterProviderAs(t *testing.T) {
 	}
 }
 
+// TestGateway_RecordSuccess_ResolvesAliasToCanonicalForCostLookup verifies
+// that recordSuccess's cost calculation resolves resp.Provider (the routing
+// alias, e.g. "ollama-cloud-a") to its canonical provider type before doing
+// the catalog lookup. resp.Provider itself stays the alias (used for
+// metrics/log labels so per-instance dashboards can distinguish aliases) —
+// only the catalog lookup key changes.
+func TestGateway_RecordSuccess_ResolvesAliasToCanonicalForCostLookup(t *testing.T) {
+	gw, err := New(Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: "ollama-cloud-a"}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = gw.Close() }()
+
+	if err := gw.RegisterProviderAs("ollama-cloud-a", "ollama-cloud", &mockProvider{
+		name:   "ollama-cloud",
+		models: []string{"model-a"},
+		resp: &providers.Response{
+			ID:    "resp-a",
+			Model: "model-a",
+			Usage: providers.Usage{PromptTokens: 1000, CompletionTokens: 500},
+		},
+	}); err != nil {
+		t.Fatalf("RegisterProviderAs: %v", err)
+	}
+
+	// Catalog is keyed by canonical provider type only — there is no
+	// "ollama-cloud-a/model-a" entry. If the cost lookup used the alias
+	// directly, cost would resolve to zero.
+	gw.catalog = models.Catalog{
+		"ollama-cloud/model-a": {
+			Provider: "ollama-cloud",
+			ModelID:  "model-a",
+			Mode:     models.ModeChat,
+			Pricing: models.Pricing{
+				InputPerMTokens:  ptrFloat64(1.0),
+				OutputPerMTokens: ptrFloat64(2.0),
+			},
+		},
+	}
+
+	costCounter := metrics.ForRequest("ollama-cloud-a", "model-a").CostUSD
+	before := counterValue(t, costCounter)
+
+	resp, err := gw.Route(context.Background(), providers.Request{
+		Model:    "model-a",
+		Messages: []providers.Message{{Role: "user", Content: "hello world"}},
+	})
+	if err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	if resp.Provider != "ollama-cloud-a" {
+		t.Fatalf("resp.Provider = %q, want alias %q preserved for metrics/log labels", resp.Provider, "ollama-cloud-a")
+	}
+
+	after := counterValue(t, costCounter)
+	if after <= before {
+		t.Fatalf("expected cost counter to increase via alias-resolved catalog lookup, before=%v after=%v", before, after)
+	}
+}
+
 // TestGateway_RegisterProvider_IsCanonicalByDefault verifies RegisterProvider
 // is a pure refactor over RegisterProviderAs: a provider registered the plain
 // way is its own canonical type.

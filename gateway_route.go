@@ -445,7 +445,11 @@ func (g *Gateway) recordSuccess(ctx context.Context, span observability.Span, ob
 	g.mu.RLock()
 	catalog := g.catalog
 	g.mu.RUnlock()
-	cost := models.Calculate(catalog, resp.Provider+"/"+resp.Model, models.Usage{
+	// resp.Provider is deliberately the routing alias (e.g. "ollama-cloud-a")
+	// so per-instance metrics/log labels can distinguish multi-instance
+	// targets; the catalog lookup key needs the provider's real canonical
+	// type instead, since pricing is cataloged per canonical provider type.
+	cost := models.Calculate(catalog, g.canonicalProviderType(resp.Provider)+"/"+resp.Model, models.Usage{
 		PromptTokens:     resp.Usage.PromptTokens,
 		CompletionTokens: resp.Usage.CompletionTokens,
 		ReasoningTokens:  resp.Usage.ReasoningTokens,

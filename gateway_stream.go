@@ -169,8 +169,13 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 		// Model stays raw for cost lookup and event payloads; only the metric
 		// label is bounded, mirroring the non-streaming path's use of the
 		// provider-reported model.
-		MetricModel:     g.metricModel(req.Model),
-		Catalog:         catalog,
+		MetricModel: g.metricModel(req.Model),
+		Catalog:     catalog,
+		// CatalogProvider resolves providerName to its canonical provider
+		// type for catalog/cost lookups, in case providerName is ever a
+		// routing alias rather than an already-canonical name (a no-op when
+		// it's already canonical, or unknown).
+		CatalogProvider: g.canonicalProviderType(providerName),
 		TraceID:         logging.TraceIDFromContext(ctx),
 		LatencyRecorder: g.latencyTracker.Record,
 	}

@@ -45,6 +45,12 @@ import (
 type MeterMeta struct {
 	// Provider is the name of the provider that handled the request (e.g. "openai").
 	Provider string
+	// CatalogProvider is the canonical provider type used for catalog/cost
+	// lookups when it differs from Provider (which is deliberately the
+	// routing alias for multi-instance targets, kept for metrics/log labels).
+	// Empty means "same as Provider" — every existing construction site that
+	// doesn't set this field keeps its current behavior unchanged.
+	CatalogProvider string
 	// Model is the model ID after alias resolution. It reaches this struct as the
 	// client supplied it, so it is used for cost lookup and event payloads but
 	// never as a Prometheus label — see MetricModel.
@@ -372,8 +378,14 @@ func finishStreamOnSuccess(
 		requestMetrics.TokensOut.Add(float64(usage.CompletionTokens))
 	}
 
-	// Compute and emit cost.
-	cost := models.Calculate(meta.Catalog, meta.Provider+"/"+meta.Model, models.Usage{
+	// Compute and emit cost. Use CatalogProvider (the canonical provider
+	// type) when set, since Provider may be a routing alias that doesn't
+	// exist as a catalog key.
+	catalogProvider := meta.Provider
+	if meta.CatalogProvider != "" {
+		catalogProvider = meta.CatalogProvider
+	}
+	cost := models.Calculate(meta.Catalog, catalogProvider+"/"+meta.Model, models.Usage{
 		PromptTokens:     usage.PromptTokens,
 		CompletionTokens: usage.CompletionTokens,
 		ReasoningTokens:  usage.ReasoningTokens,
