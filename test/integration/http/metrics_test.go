@@ -27,7 +27,7 @@ func TestMetrics_ExposeGatewayCounters(t *testing.T) {
 	if err != nil {
 		t.Fatalf("chat request: %v", err)
 	}
-	chatResp.Body.Close()
+	defer closeTestBody(t, chatResp.Body)
 
 	if chatResp.StatusCode != http.StatusOK {
 		t.Fatalf("chat request failed: %d", chatResp.StatusCode)

@@ -120,17 +120,22 @@ func (s *Store) Allow(key string) bool {
 	// Fast path — limiter already exists.
 	s.mu.RLock()
 	l, ok := s.limiters[key]
-	now := s.now()
+	if ok {
+		// Record the access while still holding the read lock. Eviction runs
+		// under the write lock, so it cannot interleave here; this guarantees
+		// lastSeen never gains an entry whose limiter was already evicted,
+		// which would otherwise leak the key and grow the map past maxKeys.
+		s.lastSeen.Store(key, s.now())
+	}
 	s.mu.RUnlock()
 	if ok {
-		s.lastSeen.Store(key, now)
 		return l.Allow()
 	}
 
 	// Slow path — create new limiter.
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	now = s.now()
+	now := s.now()
 	// Double-check after acquiring write lock.
 	if l, ok = s.limiters[key]; ok {
 		s.lastSeen.Store(key, now)

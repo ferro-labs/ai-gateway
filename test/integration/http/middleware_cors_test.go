@@ -45,7 +45,7 @@ func TestMiddlewareCORS_RestrictedOrigins(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OPTIONS: %v", err)
 	}
-	resp.Body.Close()
+	defer closeTestBody(t, resp.Body)
 
 	origin := resp.Header.Get("Access-Control-Allow-Origin")
 	if origin != "https://allowed.example.com" {
@@ -61,7 +61,7 @@ func TestMiddlewareCORS_RestrictedOrigins(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OPTIONS: %v", err)
 	}
-	resp2.Body.Close()
+	defer closeTestBody(t, resp2.Body)
 
 	origin2 := resp2.Header.Get("Access-Control-Allow-Origin")
 	if origin2 != "" {

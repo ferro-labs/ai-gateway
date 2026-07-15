@@ -17,6 +17,15 @@ type PostgresContainer struct {
 	container *postgres.PostgresContainer
 }
 
+// terminateWithTimeout stops container within a bounded context and returns
+// primary joined with any termination error. errors.Join drops nils, so a clean
+// shutdown returns primary unchanged.
+func terminateWithTimeout(container *postgres.PostgresContainer, primary error) error {
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return errors.Join(primary, container.Terminate(cleanupCtx))
+}
+
 // StartPostgres starts a Postgres 16 container and returns its DSN.
 // Returns an error if Docker is not available or the container fails to start.
 func StartPostgres(ctx context.Context) (pg *PostgresContainer, err error) {
@@ -32,9 +41,7 @@ func StartPostgres(ctx context.Context) (pg *PostgresContainer, err error) {
 				err = panicErr
 				return
 			}
-			cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			err = errors.Join(panicErr, container.Terminate(cleanupCtx))
+			err = terminateWithTimeout(container, panicErr)
 		}
 	}()
 
@@ -47,20 +54,14 @@ func StartPostgres(ctx context.Context) (pg *PostgresContainer, err error) {
 	)
 	if err != nil {
 		if container != nil {
-			cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			cleanupErr := container.Terminate(cleanupCtx)
-			cancel()
-			return nil, errors.Join(fmt.Errorf("start postgres container: %w", err), cleanupErr)
+			return nil, terminateWithTimeout(container, fmt.Errorf("start postgres container: %w", err))
 		}
 		return nil, fmt.Errorf("start postgres container: %w", err)
 	}
 
 	dsn, err := container.ConnectionString(ctx, "sslmode=disable")
 	if err != nil {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		cleanupErr := container.Terminate(cleanupCtx)
-		return nil, errors.Join(fmt.Errorf("get connection string: %w", err), cleanupErr)
+		return nil, terminateWithTimeout(container, fmt.Errorf("get connection string: %w", err))
 	}
 
 	return &PostgresContainer{DSN: dsn, container: container}, nil

@@ -3,6 +3,7 @@ package aigateway
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -16,9 +17,10 @@ import (
 // hold a half-open probe slot while a concurrent request tests the cap.
 type blockAfterFirstMock struct {
 	mockProvider
-	callN   atomic.Int32
-	ready   chan struct{} // closed when the second call enters Complete
-	release chan struct{} // closed to let the second call return
+	callN       atomic.Int32
+	ready       chan struct{} // closed when the second call enters Complete
+	release     chan struct{} // closed to let the second call return
+	releaseOnce sync.Once
 }
 
 func (m *blockAfterFirstMock) Complete(_ context.Context, _ providers.Request) (*providers.Response, error) {
@@ -28,6 +30,12 @@ func (m *blockAfterFirstMock) Complete(_ context.Context, _ providers.Request) (
 	close(m.ready)
 	<-m.release
 	return m.resp, nil
+}
+
+// releaseAll unblocks the held second call. It is idempotent so a test can call
+// it explicitly and still register it with t.Cleanup as a leak-safety net.
+func (m *blockAfterFirstMock) releaseAll() {
+	m.releaseOnce.Do(func() { close(m.release) })
 }
 
 // TestGateway_Route_EnforcesCircuitBreakerMaxHalfThreshold verifies that the
@@ -62,6 +70,9 @@ func TestGateway_Route_EnforcesCircuitBreakerMaxHalfThreshold(t *testing.T) {
 	}
 
 	gw.RegisterProvider(mock)
+	// Guarantee the held probe goroutine is released even if an assertion below
+	// fails before the explicit release, so it can never leak past the test.
+	t.Cleanup(mock.releaseAll)
 	fakeNow := time.Unix(0, 0)
 	gw.mu.RLock()
 	cb := gw.circuitBreakers["mock-cb"]
@@ -103,7 +114,7 @@ func TestGateway_Route_EnforcesCircuitBreakerMaxHalfThreshold(t *testing.T) {
 	}
 
 	// Release probe 1 and verify it succeeds.
-	close(mock.release)
+	mock.releaseAll()
 	select {
 	case err := <-probe1Err:
 		if err != nil {

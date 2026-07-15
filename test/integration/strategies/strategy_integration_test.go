@@ -15,6 +15,7 @@ import (
 	"time"
 
 	aigateway "github.com/ferro-labs/ai-gateway"
+	"github.com/ferro-labs/ai-gateway/internal/testutil"
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
@@ -69,7 +70,7 @@ func TestStrategy_Fallback_PrimaryFails_SecondarySucceeds(t *testing.T) {
 	}
 	secondary := &miniStub{name: "secondary", models: []string{stratModel}}
 
-	gw, err := newTestGateway(t, aigateway.Config{
+	gw, err := testutil.NewTestGateway(t, aigateway.Config{
 		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeFallback},
 		Targets: []aigateway.Target{
 			{VirtualKey: "primary"},
@@ -100,7 +101,7 @@ func TestStrategy_Fallback_PrimaryFails_SecondarySucceeds(t *testing.T) {
 
 // TestStrategy_Fallback_AllFail returns an error wrapping all provider failures.
 func TestStrategy_Fallback_AllFail(t *testing.T) {
-	gw, err := newTestGateway(t, aigateway.Config{
+	gw, err := testutil.NewTestGateway(t, aigateway.Config{
 		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeFallback},
 		Targets: []aigateway.Target{
 			{VirtualKey: "p1"},
@@ -151,7 +152,7 @@ func TestStrategy_LoadBalance_DistributesRequests(t *testing.T) {
 		}
 	}
 
-	gw, err := newTestGateway(t, aigateway.Config{
+	gw, err := testutil.NewTestGateway(t, aigateway.Config{
 		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeLoadBalance},
 		Targets: []aigateway.Target{
 			{VirtualKey: "lb1", Weight: 1.0},
@@ -220,7 +221,7 @@ func TestStrategy_LeastLatency_LocksOntoFastestSeen(t *testing.T) {
 		},
 	}
 
-	gw, err := newTestGateway(t, aigateway.Config{
+	gw, err := testutil.NewTestGateway(t, aigateway.Config{
 		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeLatency},
 		Targets: []aigateway.Target{
 			{VirtualKey: "fast"},

@@ -65,6 +65,10 @@ func TestGateway_RouteProviderLookupNoDataRace(t *testing.T) {
 	}
 
 	var wg sync.WaitGroup
+	// start gates every goroutine so readers and writers are released together
+	// and their map access actually overlaps, rather than a fast reader finishing
+	// before any writer begins (which would make the race window a no-op).
+	start := make(chan struct{})
 
 	// Goroutines calling Route concurrently — these will execute the lookup
 	// closure while the writers below mutate g.providers under lock.
@@ -72,6 +76,7 @@ func TestGateway_RouteProviderLookupNoDataRace(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			<-start
 			for j := 0; j < iters; j++ {
 				_, _ = gw.Route(ctx, req)
 			}
@@ -84,6 +89,7 @@ func TestGateway_RouteProviderLookupNoDataRace(t *testing.T) {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
+			<-start
 			for j := 0; j < iters/2; j++ {
 				gw.RegisterProvider(&freshProvider{
 					name:   fmt.Sprintf("dynamic-%d-%d", id, j),
@@ -93,5 +99,6 @@ func TestGateway_RouteProviderLookupNoDataRace(t *testing.T) {
 		}(i)
 	}
 
+	close(start)
 	wg.Wait()
 }

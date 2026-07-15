@@ -41,8 +41,9 @@ type gateMockProvider struct {
 	releaseOnce sync.Once
 }
 
-func newGateMockProvider(resp *providers.Response, err error) *gateMockProvider {
-	return &gateMockProvider{
+func newGateMockProvider(t *testing.T, resp *providers.Response, err error) *gateMockProvider {
+	t.Helper()
+	p := &gateMockProvider{
 		mockProvider: mockProvider{
 			name:   "gate",
 			models: []string{"gpt-4o"},
@@ -52,6 +53,10 @@ func newGateMockProvider(resp *providers.Response, err error) *gateMockProvider 
 		release: make(chan struct{}),
 		entered: make(chan struct{}, 64),
 	}
+	// Release blocked Complete goroutines even if the test fails before its
+	// explicit releaseAll, so a failed assertion can never leak them.
+	t.Cleanup(p.releaseAll)
+	return p
 }
 
 func (p *gateMockProvider) Complete(_ context.Context, _ providers.Request) (*providers.Response, error) {
@@ -86,13 +91,15 @@ func (p *gateMockProvider) waitActive(t *testing.T, want int32) {
 // gateStreamProvider blocks before emitting stream chunks until release closes.
 type gateStreamProvider struct {
 	mockStreamProvider
-	enterOnce sync.Once
-	enter     chan struct{}
-	release   chan struct{}
+	enterOnce   sync.Once
+	enter       chan struct{}
+	release     chan struct{}
+	releaseOnce sync.Once
 }
 
-func newGateStreamProvider() *gateStreamProvider {
-	return &gateStreamProvider{
+func newGateStreamProvider(t *testing.T) *gateStreamProvider {
+	t.Helper()
+	p := &gateStreamProvider{
 		mockStreamProvider: mockStreamProvider{
 			mockProvider: mockProvider{
 				name:   "gate-stream",
@@ -102,6 +109,14 @@ func newGateStreamProvider() *gateStreamProvider {
 		enter:   make(chan struct{}),
 		release: make(chan struct{}),
 	}
+	t.Cleanup(p.releaseAll)
+	return p
+}
+
+// releaseAll unblocks the stream goroutine. It is idempotent so a test can call
+// it explicitly and still register it with t.Cleanup as a leak-safety net.
+func (p *gateStreamProvider) releaseAll() {
+	p.releaseOnce.Do(func() { close(p.release) })
 }
 
 func (p *gateStreamProvider) CompleteStream(_ context.Context, _ providers.Request) (<-chan providers.StreamChunk, error) {
@@ -221,7 +236,7 @@ func newHookedGateway(t *testing.T, provider providers.Provider) (*Gateway, *gat
 }
 
 func TestGateway_Close_DuringInFlightRouteDoesNotPanic(t *testing.T) {
-	provider := newGateMockProvider(&providers.Response{ID: "ok", Model: "gpt-4o"}, nil)
+	provider := newGateMockProvider(t, &providers.Response{ID: "ok", Model: "gpt-4o"}, nil)
 	gw, gate := newHookedGateway(t, provider)
 
 	routeDone := make(chan error, 1)
@@ -264,18 +279,18 @@ func TestGateway_Close_DuringInFlightRouteStreamDoesNotPanic(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	streamProvider := newGateStreamProvider()
+	streamProvider := newGateStreamProvider(t)
 	gw.RegisterProvider(streamProvider)
 	gw.AddHook(func(context.Context, string, map[string]any) {})
 
 	routeDone := make(chan any, 1)
 	go func() {
+		var result any
 		defer func() {
 			if r := recover(); r != nil {
-				routeDone <- r
-				return
+				result = r
 			}
-			routeDone <- nil
+			routeDone <- result
 		}()
 		ch, err := gw.RouteStream(context.Background(), providers.Request{
 			Model:    "gpt-4o",
@@ -283,14 +298,13 @@ func TestGateway_Close_DuringInFlightRouteStreamDoesNotPanic(t *testing.T) {
 			Stream:   true,
 		})
 		if err != nil {
-			routeDone <- err
+			result = err
 			return
 		}
 		// Drain the stream.
 		//nolint:revive // intentionally draining the stream channel to completion
 		for range ch {
 		}
-		routeDone <- nil
 	}()
 
 	select {
@@ -302,7 +316,7 @@ func TestGateway_Close_DuringInFlightRouteStreamDoesNotPanic(t *testing.T) {
 	if err := gw.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	close(streamProvider.release)
+	streamProvider.releaseAll()
 
 	select {
 	case result := <-routeDone:
@@ -315,7 +329,7 @@ func TestGateway_Close_DuringInFlightRouteStreamDoesNotPanic(t *testing.T) {
 }
 
 func TestGateway_Close_DuringFailedRouteDoesNotPanic(t *testing.T) {
-	provider := newGateMockProvider(nil, fmt.Errorf("provider down"))
+	provider := newGateMockProvider(t, nil, fmt.Errorf("provider down"))
 	gw, gate := newHookedGateway(t, provider)
 
 	routeDone := make(chan error, 1)
@@ -439,6 +453,7 @@ func TestGateway_Close_ConcurrentPublishEventStress(t *testing.T) {
 	panicCh := make(chan any, publishers)
 	started := make(chan struct{}, publishers)
 	start := make(chan struct{})
+	stop := make(chan struct{})
 	var wg sync.WaitGroup
 	for range publishers {
 		wg.Add(1)
@@ -452,8 +467,16 @@ func TestGateway_Close_ConcurrentPublishEventStress(t *testing.T) {
 			<-start
 			gw.publishEvent(context.Background(), completedHookEvent("trace-stress"))
 			started <- struct{}{}
-			for range 49 {
-				gw.publishEvent(context.Background(), completedHookEvent("trace-stress"))
+			// Keep publishing until stop closes (which happens only after Close
+			// returns) so the publishes deterministically overlap shutdown rather
+			// than merely preceding it.
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					gw.publishEvent(context.Background(), completedHookEvent("trace-stress"))
+				}
 			}
 		}()
 	}
@@ -466,9 +489,11 @@ func TestGateway_Close_ConcurrentPublishEventStress(t *testing.T) {
 			t.Fatal("publisher did not start")
 		}
 	}
+	// Close while every publisher is still actively publishing.
 	if err := gw.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
+	close(stop)
 
 	wg.Wait()
 	close(panicCh)
@@ -491,7 +516,7 @@ func TestGateway_Close_DuringConcurrentRoutesDoesNotPanic(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	provider := newGateMockProvider(&providers.Response{ID: "ok", Model: "gpt-4o"}, nil)
+	provider := newGateMockProvider(t, &providers.Response{ID: "ok", Model: "gpt-4o"}, nil)
 	gw.RegisterProvider(provider)
 	gw.AddHook(func(context.Context, string, map[string]any) {})
 
@@ -533,7 +558,7 @@ func TestGateway_Close_DuringConcurrentRoutesDoesNotPanic(t *testing.T) {
 }
 
 func TestGateway_Close_MultipleHooksDuringRouteDoesNotPanic(t *testing.T) {
-	provider := newGateMockProvider(&providers.Response{ID: "ok", Model: "gpt-4o"}, nil)
+	provider := newGateMockProvider(t, &providers.Response{ID: "ok", Model: "gpt-4o"}, nil)
 	gw, err := newTestGateway(t, Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
 		Targets:  []Target{{VirtualKey: "gate"}},

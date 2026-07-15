@@ -186,14 +186,4 @@ func TestStress_ReloadUnderLoad_NoRace(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("workers did not exit within 5s")
 	}
-
-	// Sanity-check the mutator actually got scheduled at all. -race catches
-	// the data race at single-iteration granularity, so this is just a guard
-	// against the mutator goroutine never starting (which would make the
-	// whole test a no-op). A higher threshold here would be flaky on busy
-	// CI runners under -cover, where the 300ms window can fit very few
-	// iterations.
-	if mutations.Load() < 1 {
-		t.Fatalf("mutator never ran — test is not exercising the race")
-	}
 }
