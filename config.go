@@ -75,6 +75,13 @@ type Config struct {
 
 // ProviderInstanceConfig declares one additional instance of an existing
 // canonical provider type under its own routing alias.
+//
+// ValidateConfig accepts an instance whose Type is providers.NameBedrock, but
+// bootstrap registration does not wire it up in v1: Bedrock builds via a
+// dual-key ConfiguredFn path (internal/bootstrap.registerBedrockProvider)
+// rather than the entry.Build-from-credentials-map flow this feature relies
+// on. A later work-stream may add a proper error or warning once
+// multi-instance Bedrock support is decided.
 type ProviderInstanceConfig struct {
 	// Alias is the routing key this instance is addressed by in
 	// targets[].virtual_key. Must be unique across all ProviderInstances and
