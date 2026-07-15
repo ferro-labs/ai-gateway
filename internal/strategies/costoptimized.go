@@ -13,9 +13,11 @@ import (
 // only when no compatible provider has known pricing.
 //
 // Providers tagged with CapabilityAggregator are treated as unpriced regardless
-// of catalog entries, because their catalog prices do not include the
-// aggregator's own platform markup. They fall through to unpricedStrategy
-// (default: fallback — used only when no direct priced provider is available).
+// of catalog entries: an aggregator routes each request to whichever
+// underlying provider/model it chooses at call time, so a single static
+// catalog price cannot be trusted to reflect the actual per-request cost.
+// They fall through to unpricedStrategy (default: fallback — used only when
+// no direct priced provider is available).
 type CostOptimized struct {
 	targets          []Target
 	lookup           ProviderLookup
@@ -51,8 +53,9 @@ func NewCostOptimized(targets []Target, lookup ProviderLookup, catalog models.Ca
 }
 
 // WithAggregatorPredicate sets the predicate used to identify aggregator
-// providers. Aggregators are forced to unpriced treatment in cost ranking,
-// because their catalog prices do not include the aggregator's own markup.
+// providers. Aggregators are forced to unpriced treatment in cost ranking
+// because a single static catalog price cannot represent the cost of a
+// request an aggregator may route to any of several underlying providers.
 // Returns the receiver for chaining.
 func (c *CostOptimized) WithAggregatorPredicate(fn func(virtualKey string) bool) *CostOptimized {
 	c.isAggregator = fn
@@ -88,11 +91,13 @@ func (c *CostOptimized) Execute(ctx context.Context, req providers.Request) (*pr
 			hasPrice: result.Priced,
 			isModel:  result.ModelFound,
 		}
-		// Aggregator providers are never selected by cost ranking: their catalog
-		// prices do not include the aggregator's own platform markup. They are
-		// kept in the candidate pool only for positional fallback (when no direct
-		// priced provider is available) and are marked so selectCostOptimizedCandidate
-		// can skip them in the ranking loop regardless of unpricedStrategy.
+		// Aggregator providers are never selected by cost ranking: they route
+		// each request to whichever underlying provider/model they choose at
+		// call time, so their catalog entry can't be trusted to reflect the
+		// actual per-request cost. They are kept in the candidate pool only
+		// for positional fallback (when no direct priced provider is
+		// available) and are marked so selectCostOptimizedCandidate can skip
+		// them in the ranking loop regardless of unpricedStrategy.
 		if c.isAggregator != nil && c.isAggregator(t.VirtualKey) {
 			candidate.isAggregator = true
 			candidate.hasPrice = false
@@ -156,8 +161,9 @@ func selectCostOptimizedCandidate(candidates []priced, strategy unpricedStrategy
 		if !candidate.isModel {
 			continue
 		}
-		// Aggregators are excluded from cost ranking in all modes; their catalog
-		// prices omit platform markup so they must not win by appearing cheapest.
+		// Aggregators are excluded from cost ranking in all modes; a static
+		// catalog price can't represent the cost of a dynamically-routed
+		// request, so they must not win by appearing cheapest.
 		if candidate.isAggregator {
 			continue
 		}

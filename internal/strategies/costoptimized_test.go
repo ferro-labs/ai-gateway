@@ -351,8 +351,8 @@ func TestCostOptimized_NoTargets(t *testing.T) {
 // TestCostOptimized_AggregatorExcludedWhenPricedDirectProviderExists verifies
 // that a provider marked as an aggregator is not selected over a direct
 // provider with known catalog pricing, even if the aggregator's catalog price
-// appears cheaper (the apparent lower price is misleading because it excludes
-// the aggregator's own platform markup).
+// appears cheaper (a static catalog price can't represent what an aggregator
+// will actually charge once it dynamically routes the request).
 func TestCostOptimized_AggregatorExcludedWhenPricedDirectProviderExists(t *testing.T) {
 	agg := &mockProvider{name: "agg", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "agg"}}
 	direct := &mockProvider{name: "direct", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "direct"}}
@@ -363,7 +363,7 @@ func TestCostOptimized_AggregatorExcludedWhenPricedDirectProviderExists(t *testi
 			ModelID:  "gpt-4o",
 			Mode:     models.ModeChat,
 			Pricing: models.Pricing{
-				InputPerMTokens:  ptrF(0.01), // appears cheapest but excludes aggregator markup
+				InputPerMTokens:  ptrF(0.01), // appears cheapest, but is a dynamically-routed aggregator
 				OutputPerMTokens: ptrF(0.02),
 			},
 		},
@@ -426,17 +426,37 @@ func TestCostOptimized_AggregatorUsedAsFallbackWhenOnlyProvider(t *testing.T) {
 	}
 }
 
-// TestCostOptimized_NilAggregatorPredicateDoesNotPanic verifies that the zero
-// value of isAggregator (nil predicate, no WithAggregatorPredicate call) does
-// not cause a panic and that cost routing continues to work normally.
 // TestCostOptimized_AggregatorExcludedUnderAllowMode ensures that
-// unpricedStrategy=allow does not let an aggregator win by being forced to
-// costUSD=0.0 — it must be excluded from ranking regardless of mode.
+// unpricedStrategy=allow does not let a *priced* aggregator win cost ranking
+// just because its catalog entry looks cheapest. The aggregator here has a
+// real (low) catalog price, not an absent one — allow mode only changes how
+// unpriced candidates are treated, so a catalog with no agg/direct pricing
+// (as buildCatalog() has) would leave both candidates unpriced and never
+// exercise this path at all.
 func TestCostOptimized_AggregatorExcludedUnderAllowMode(t *testing.T) {
 	agg := &mockProvider{name: "agg", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "agg"}}
 	direct := &mockProvider{name: "direct", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "direct"}}
 
-	catalog := buildCatalog() // direct has pricing, agg has pricing (aggregator markup ignored)
+	catalog := models.Catalog{
+		"agg/gpt-4o": {
+			Provider: "agg",
+			ModelID:  "gpt-4o",
+			Mode:     models.ModeChat,
+			Pricing: models.Pricing{
+				InputPerMTokens:  ptrF(0.01), // priced, and cheapest on paper
+				OutputPerMTokens: ptrF(0.02),
+			},
+		},
+		"direct/gpt-4o": {
+			Provider: "direct",
+			ModelID:  "gpt-4o",
+			Mode:     models.ModeChat,
+			Pricing: models.Pricing{
+				InputPerMTokens:  ptrF(1.0),
+				OutputPerMTokens: ptrF(2.0),
+			},
+		},
+	}
 	targets := []Target{{VirtualKey: "agg"}, {VirtualKey: "direct"}}
 	s := NewCostOptimized(targets, newLookup(agg, direct), catalog, "allow").
 		WithAggregatorPredicate(func(vk string) bool { return vk == "agg" })
@@ -448,7 +468,8 @@ func TestCostOptimized_AggregatorExcludedUnderAllowMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// agg must NOT win even though allow mode would normally rank it at $0.00.
+	// agg must NOT win even though it is priced cheapest and allow mode ranks
+	// unpriced candidates too — isAggregator excludes it regardless of mode.
 	if resp.ID == "agg" {
 		t.Errorf("allow mode: aggregator won cost ranking despite isAggregator=true; expected direct provider")
 	}

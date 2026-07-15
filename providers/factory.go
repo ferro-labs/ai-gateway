@@ -79,11 +79,11 @@ const (
 
 // Capability names for capability-based registry filtering.
 const (
-	CapabilityChat      = "chat"      // Provider.Complete  — always present
-	CapabilityStream    = "stream"    // StreamProvider
-	CapabilityEmbed     = "embed"     // EmbeddingProvider
-	CapabilityImage     = "image"     // ImageProvider
-	CapabilityDiscovery = "discovery" // DiscoveryProvider
+	CapabilityChat       = "chat"       // Provider.Complete  — always present
+	CapabilityStream     = "stream"     // StreamProvider
+	CapabilityEmbed      = "embed"      // EmbeddingProvider
+	CapabilityImage      = "image"      // ImageProvider
+	CapabilityDiscovery  = "discovery"  // DiscoveryProvider
 	CapabilityProxy      = "proxy"      // ProxiableProvider
 	CapabilityAggregator = "aggregator" // Provider is a routing aggregator with opaque upstream costs; excluded from cost-optimized ranking by default.
 )

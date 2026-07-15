@@ -18,7 +18,6 @@ import (
 	huggingfacepkg "github.com/ferro-labs/ai-gateway/providers/hugging_face"
 	mistralpkg "github.com/ferro-labs/ai-gateway/providers/mistral"
 	moonshotpkg "github.com/ferro-labs/ai-gateway/providers/moonshot"
-	nanogptpkg "github.com/ferro-labs/ai-gateway/providers/nanogpt"
 	novitapkg "github.com/ferro-labs/ai-gateway/providers/novita"
 	nvidianimpkg "github.com/ferro-labs/ai-gateway/providers/nvidia_nim"
 	ollamapkg "github.com/ferro-labs/ai-gateway/providers/ollama"
@@ -125,9 +124,6 @@ const (
 	// NameMoonshot is the canonical name for the Moonshot AI provider.
 	NameMoonshot = moonshotpkg.Name
 
-	// NameNanoGPT is the canonical name for the NanoGPT provider.
-	NameNanoGPT = nanogptpkg.Name
-
 	// NameNVIDIANIM is the canonical name for the NVIDIA NIM provider.
 	NameNVIDIANIM = nvidianimpkg.Name
 
@@ -166,7 +162,6 @@ func AllProviderNames() []string {
 		NameHuggingFace,
 		NameMistral,
 		NameMoonshot,
-		NameNanoGPT,
 		NameNovita,
 		NameNVIDIANIM,
 		NameOllama,
