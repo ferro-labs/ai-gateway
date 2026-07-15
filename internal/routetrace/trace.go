@@ -26,6 +26,7 @@ import (
 // aigateway.StrategyMode / aigateway.Mode*.
 type StrategyMode string
 
+// Strategy modes the tracer understands, mirroring aigateway.Mode*.
 const (
 	ModeSingle        StrategyMode = "single"
 	ModeFallback      StrategyMode = "fallback"
@@ -262,10 +263,10 @@ func orderCandidates(mode StrategyMode, in []CandidateTarget, conditionalMatchKe
 		return in
 	}
 	switch mode {
-	case ModeSingle, ModeConditional:
+	case ModeConditional:
 		// Bring the matched candidate to the front.
 		for i, c := range in {
-			if c.Matched && (mode != ModeConditional || c.TargetKey == conditionalMatchKey) {
+			if c.Matched && c.TargetKey == conditionalMatchKey {
 				if i == 0 {
 					return in
 				}
@@ -294,9 +295,12 @@ func orderCandidates(mode StrategyMode, in []CandidateTarget, conditionalMatchKe
 				return a.P50LatencyMs < b.P50LatencyMs
 			}
 		})
-	case ModeFallback, ModeLoadBalance, "":
-		// Keep declared order; eligible candidates naturally lead in
-		// fallback/expr-lb because the gateway walks targets in order.
+	case ModeSingle, ModeFallback, ModeLoadBalance, "":
+		// Keep declared order. Single always routes to Targets[0]
+		// regardless of any later target's health, so reordering here
+		// would make the trace disagree with actual routing; fallback and
+		// load-balance naturally lead with eligible candidates because the
+		// gateway walks targets in declared order.
 	}
 	return in
 }
@@ -334,14 +338,17 @@ func catalogMatch(cat models.Catalog, model string) CatalogMatch {
 		return CatalogMatch{}
 	}
 	// Try "provider/model" first; fall back to bare model-id lookup
-	// (mirrors models.Catalog.Get).
+	// (mirrors models.Catalog.Get). Map iteration order is randomized, so
+	// pick deterministically by lowest catalog key when multiple providers
+	// share the same bare model ID.
 	m, ok := cat[model]
 	if !ok {
-		for _, v := range cat {
-			if v.ModelID == model {
+		bestKey := ""
+		for k, v := range cat {
+			if v.ModelID == model && (!ok || k < bestKey) {
 				m = v
+				bestKey = k
 				ok = true
-				break
 			}
 		}
 	}

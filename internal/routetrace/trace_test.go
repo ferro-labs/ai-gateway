@@ -253,7 +253,7 @@ func TestTrace_LeastLatencyStrategy(t *testing.T) {
 			}
 			return 50 * time.Millisecond
 		},
-		LatencyHasSamps: func(name string) bool { return true },
+		LatencyHasSamps: func(_ string) bool { return true },
 	}
 	resp := Trace(cfg, "gpt-5-pro")
 	if resp.SelectedTargetKey != "ollama-cloud" {
