@@ -839,7 +839,12 @@ func (g *Gateway) ReloadConfig(cfg Config) error {
 	g.circuitBreakers = make(map[string]*circuitbreaker.CircuitBreaker)
 	g.ensureCircuitBreakersLocked()
 
-	// Re-register MCP servers from the new config.
+	// Re-register MCP servers from the new config. The previous registry (and
+	// any live stdio subprocess clients it holds) is swapped out here and
+	// closed asynchronously below — without this, ReloadConfig would leak an
+	// orphaned subprocess per stdio server on every reload, since RegisterConfig
+	// only closes old clients when re-registering into the *same* Registry.
+	oldRegistry := g.mcpRegistry
 	if len(cfg.MCPServers) > 0 {
 		reg := mcp.NewRegistry()
 		for _, mcpCfg := range cfg.MCPServers {
@@ -873,6 +878,13 @@ func (g *Gateway) ReloadConfig(cfg Config) error {
 		g.mcpRegistry = nil
 		g.mcpExecutor = nil
 		g.mcpInitDone = nil
+	}
+	if oldRegistry != nil {
+		go func() {
+			if err := oldRegistry.Close(); err != nil {
+				slog.Error("mcp: failed to close previous registry after reload", "error", err)
+			}
+		}()
 	}
 
 	return nil

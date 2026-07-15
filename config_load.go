@@ -117,5 +117,20 @@ func ValidateConfig(cfg Config) error {
 		}
 	}
 
+	// Validate MCP server transport selection: exactly one of URL (Streamable
+	// HTTP) or Command (stdio) must be set. Leaving both empty fails later
+	// during async initialization with a confusing error; leaving both set
+	// silently prefers stdio and drops Headers, which is surprising.
+	for _, mcpCfg := range cfg.MCPServers {
+		hasURL := mcpCfg.URL != ""
+		hasCommand := mcpCfg.Command != ""
+		switch {
+		case hasURL && hasCommand:
+			return fmt.Errorf("mcp server %q: url and command are mutually exclusive; set exactly one to select transport", mcpCfg.Name)
+		case !hasURL && !hasCommand:
+			return fmt.Errorf("mcp server %q: either url (Streamable HTTP) or command (stdio) is required", mcpCfg.Name)
+		}
+	}
+
 	return nil
 }

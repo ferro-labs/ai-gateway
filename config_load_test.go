@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	pubmcp "github.com/ferro-labs/ai-gateway/mcp"
 )
 
 func TestLoadConfig_Valid(t *testing.T) {
@@ -257,6 +259,45 @@ func TestValidateConfig_PrivacyLevel(t *testing.T) {
 			t.Errorf("ValidateConfig with PrivacyLevel=%q: expected error, got nil", level)
 		}
 	}
+}
+
+func TestValidateConfig_MCPServerTransportSelection(t *testing.T) {
+	base := Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: "key1"}},
+	}
+
+	t.Run("url only is valid", func(t *testing.T) {
+		cfg := base
+		cfg.MCPServers = []pubmcp.ServerConfig{{Name: "http-server", URL: "https://mcp.example.com/mcp"}}
+		if err := ValidateConfig(cfg); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("command only is valid", func(t *testing.T) {
+		cfg := base
+		cfg.MCPServers = []pubmcp.ServerConfig{{Name: "stdio-server", Command: "npx", Args: []string{"some-mcp-server"}}}
+		if err := ValidateConfig(cfg); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("both url and command is invalid", func(t *testing.T) {
+		cfg := base
+		cfg.MCPServers = []pubmcp.ServerConfig{{Name: "ambiguous", URL: "https://mcp.example.com/mcp", Command: "npx"}}
+		if err := ValidateConfig(cfg); err == nil {
+			t.Error("expected error when both url and command are set, got nil")
+		}
+	})
+
+	t.Run("neither url nor command is invalid", func(t *testing.T) {
+		cfg := base
+		cfg.MCPServers = []pubmcp.ServerConfig{{Name: "empty"}}
+		if err := ValidateConfig(cfg); err == nil {
+			t.Error("expected error when neither url nor command is set, got nil")
+		}
+	})
 }
 
 func writeTempFile(t *testing.T, name, content string) string {
