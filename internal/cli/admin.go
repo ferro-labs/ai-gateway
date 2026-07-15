@@ -101,7 +101,7 @@ var keysRevokeCmd = &cobra.Command{
 		if err := c.Post(cmd.Context(), "/admin/keys/"+args[0]+"/revoke", nil, nil); err != nil {
 			return err
 		}
-		PrintSuccess("Key revoked.")
+		PrintSuccess(cmd.OutOrStdout(), "Key revoked.")
 		return nil
 	},
 }
@@ -185,7 +185,7 @@ var configSetCmd = &cobra.Command{
 		if err := c.Put(cmd.Context(), "/admin/config", body, &result); err != nil {
 			return err
 		}
-		PrintSuccess("Configuration updated.")
+		PrintSuccess(cmd.OutOrStdout(), "Configuration updated.")
 		return nil
 	},
 }
@@ -200,7 +200,7 @@ var configRollbackCmd = &cobra.Command{
 		if err := c.Post(cmd.Context(), "/admin/config/rollback/"+args[0], nil, &result); err != nil {
 			return err
 		}
-		PrintSuccess("Rolled back to version " + args[0] + ".")
+		PrintSuccess(cmd.OutOrStdout(), "Rolled back to version "+args[0]+".")
 		return nil
 	},
 }
@@ -370,10 +370,10 @@ func str(m map[string]any, key string) string {
 func strBool(m map[string]any, key string) string {
 	if v, ok := m[key]; ok {
 		if b, ok := v.(bool); ok && b {
-			return "yes"
+			return boolYes
 		}
 	}
-	return "no"
+	return boolNo
 }
 
 // numVal extracts a float64 from JSON number fields.

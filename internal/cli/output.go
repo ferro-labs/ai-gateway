@@ -18,6 +18,12 @@ const (
 	FormatYAML  = "yaml"
 )
 
+// Boolean cell labels for table output.
+const (
+	boolYes = "yes"
+	boolNo  = "no"
+)
+
 // TableData is implemented by types that can render as an ASCII table.
 type TableData interface {
 	Headers() []string
@@ -76,7 +82,7 @@ func (p *Printer) PrintTable(td TableData) error {
 	return w.Flush()
 }
 
-// PrintSuccess prints a success indicator with a message.
-func PrintSuccess(msg string) {
-	fmt.Println(Clr(ColorGreen, "  "+SymOK+" ") + msg)
+// PrintSuccess writes a success indicator with a message to w.
+func PrintSuccess(w io.Writer, msg string) {
+	_, _ = fmt.Fprintln(w, Clr(ColorGreen, "  "+SymOK+" ")+msg)
 }

@@ -24,16 +24,16 @@ func runVersion(cmd *cobra.Command, _ []string) error {
 		"os_arch": runtime.GOOS + "/" + runtime.GOARCH,
 	}
 
-	format, _ := cmd.Root().PersistentFlags().GetString("format")
-	pr := NewPrinter(format)
+	pr := printerFromCmd(cmd)
 	if pr.Format != FormatTable {
 		return pr.Print(info)
 	}
 
-	fmt.Printf("  %-12s %s\n", Clr(ColorBold, "Version"), Clr(ColorYellow, version.Version))
-	fmt.Printf("  %-12s %s\n", Clr(ColorBold, "Commit"), version.Commit)
-	fmt.Printf("  %-12s %s\n", Clr(ColorBold, "Built"), version.Date)
-	fmt.Printf("  %-12s %s\n", Clr(ColorBold, "Go"), runtime.Version())
-	fmt.Printf("  %-12s %s\n", Clr(ColorBold, "OS/Arch"), runtime.GOOS+"/"+runtime.GOARCH)
+	out := cmd.OutOrStdout()
+	_, _ = fmt.Fprintf(out, "  %-12s %s\n", Clr(ColorBold, "Version"), Clr(ColorYellow, version.Version))
+	_, _ = fmt.Fprintf(out, "  %-12s %s\n", Clr(ColorBold, "Commit"), version.Commit)
+	_, _ = fmt.Fprintf(out, "  %-12s %s\n", Clr(ColorBold, "Built"), version.Date)
+	_, _ = fmt.Fprintf(out, "  %-12s %s\n", Clr(ColorBold, "Go"), runtime.Version())
+	_, _ = fmt.Fprintf(out, "  %-12s %s\n", Clr(ColorBold, "OS/Arch"), runtime.GOOS+"/"+runtime.GOARCH)
 	return nil
 }

@@ -27,23 +27,22 @@ func runValidate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("validation failed: %w", err)
 	}
 
-	format, _ := cmd.Root().PersistentFlags().GetString("format")
-	pr := NewPrinter(format)
-
+	pr := printerFromCmd(cmd)
 	if pr.Format != FormatTable {
 		return pr.Print(cfg)
 	}
 
-	fmt.Printf("%s Config is valid\n", SymOK)
-	fmt.Printf("  Strategy:  %s\n", cfg.Strategy.Mode)
-	fmt.Printf("  Targets:   %d\n", len(cfg.Targets))
+	out := cmd.OutOrStdout()
+	_, _ = fmt.Fprintf(out, "%s Config is valid\n", SymOK)
+	_, _ = fmt.Fprintf(out, "  Strategy:  %s\n", cfg.Strategy.Mode)
+	_, _ = fmt.Fprintf(out, "  Targets:   %d\n", len(cfg.Targets))
 
 	var targetNames []string
 	for _, t := range cfg.Targets {
 		targetNames = append(targetNames, t.VirtualKey)
 	}
 	if len(targetNames) > 0 {
-		fmt.Printf("  Providers: %s\n", strings.Join(targetNames, ", "))
+		_, _ = fmt.Fprintf(out, "  Providers: %s\n", strings.Join(targetNames, ", "))
 	}
 
 	if len(cfg.Plugins) > 0 {
@@ -55,11 +54,11 @@ func runValidate(cmd *cobra.Command, args []string) error {
 			}
 			pluginNames = append(pluginNames, fmt.Sprintf("%s (%s)", p.Name, status))
 		}
-		fmt.Printf("  Plugins:   %s\n", strings.Join(pluginNames, ", "))
+		_, _ = fmt.Fprintf(out, "  Plugins:   %s\n", strings.Join(pluginNames, ", "))
 	}
 
 	if len(cfg.Aliases) > 0 {
-		fmt.Printf("  Aliases:   %d\n", len(cfg.Aliases))
+		_, _ = fmt.Fprintf(out, "  Aliases:   %d\n", len(cfg.Aliases))
 	}
 	return nil
 }
