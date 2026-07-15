@@ -61,6 +61,20 @@ const mcpInitTimeout = 60 * time.Second
 // held) and from ReloadConfig (with g.mu held by the caller); the field writes
 // target the same gateway and, once published, are serialized by g.mu.
 func (g *Gateway) wireMCPLocked(cfg Config, failLogMsg string) {
+	// The previous registry — and any live stdio subprocess clients it holds — is
+	// swapped out below. Close it, or a reload leaks an orphaned subprocess per
+	// stdio server: RegisterConfig only closes old clients when re-registering
+	// into the *same* Registry, and this rebuilds a fresh one. Closing runs in a
+	// goroutine because the caller holds g.mu and shutting a subprocess down can
+	// block. Nil on the construction path, where there is nothing to close.
+	if old := g.mcpRegistry; old != nil {
+		go func() {
+			if err := old.Close(); err != nil {
+				slog.Error("mcp: failed to close previous registry after reload", "error", err)
+			}
+		}()
+	}
+
 	if len(cfg.MCPServers) == 0 {
 		g.mcpRegistry = nil
 		g.mcpExecutor = nil

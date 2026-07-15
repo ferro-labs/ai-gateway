@@ -48,8 +48,8 @@ func newStdioClient(command string, args []string, envOverrides map[string]strin
 	// os.Environ(). The library passes c.env to cmdFunc, but we ignore that
 	// parameter and use our already-built slice to keep the logic self-contained.
 	isolatedEnv := env
-	cmdFunc := transport.CommandFunc(func(_ context.Context, command string, _ []string, args []string) (*exec.Cmd, error) {
-		cmd := exec.Command(command, args...) //nolint:gosec // command comes from gateway config, not user input
+	cmdFunc := transport.CommandFunc(func(ctx context.Context, command string, _ []string, args []string) (*exec.Cmd, error) {
+		cmd := exec.CommandContext(ctx, command, args...) //nolint:gosec // command comes from gateway config, not user input
 		cmd.Env = isolatedEnv
 		return cmd, nil
 	})

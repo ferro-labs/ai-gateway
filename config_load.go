@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/ferro-labs/ai-gateway/internal/tracingpolicy"
+	pubmcp "github.com/ferro-labs/ai-gateway/mcp"
 	"github.com/ferro-labs/ai-gateway/providers/core"
 	"gopkg.in/yaml.v3"
 )
@@ -170,6 +171,28 @@ func ValidateConfig(cfg Config) error {
 		}
 	}
 
+	if err := validateMCPServers(cfg.MCPServers); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// validateMCPServers checks each server's transport selection: exactly one of
+// URL (Streamable HTTP) or Command (stdio) must be set. Leaving both empty fails
+// later during async initialization with a confusing error; leaving both set
+// silently prefers stdio and drops Headers, which is surprising.
+func validateMCPServers(servers []pubmcp.ServerConfig) error {
+	for _, mcpCfg := range servers {
+		hasURL := mcpCfg.URL != ""
+		hasCommand := mcpCfg.Command != ""
+		switch {
+		case hasURL && hasCommand:
+			return fmt.Errorf("mcp server %q: url and command are mutually exclusive; set exactly one to select transport", mcpCfg.Name)
+		case !hasURL && !hasCommand:
+			return fmt.Errorf("mcp server %q: either url (Streamable HTTP) or command (stdio) is required", mcpCfg.Name)
+		}
+	}
 	return nil
 }
 
