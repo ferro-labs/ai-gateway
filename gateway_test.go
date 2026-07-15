@@ -4680,6 +4680,88 @@ func TestGateway_RegisterProviderAs(t *testing.T) {
 	}
 }
 
+// TestGateway_RouteStream_MultiInstanceStampsRoutingAlias is the streaming
+// regression test for the multi-instance provider bug: two provider
+// instances registered under distinct routing aliases (RegisterProviderAs)
+// but sharing one canonical Name() ("ollama-cloud") must each report their
+// own alias as the metered Provider — never the shared Name() both mock
+// providers happen to return — otherwise metrics/logs/traces could never
+// distinguish which instance handled a streaming request. This mirrors
+// TestGateway_RegisterProviderAs's fixture style, extended to the streaming
+// path via RouteStream + an after_request plugin that observes the metered
+// response streamwrap.Meter builds from MeterMeta.Provider.
+func TestGateway_RouteStream_MultiInstanceStampsRoutingAlias(t *testing.T) {
+	newStreamMock := func(canonicalName string, model string) *mockStreamProvider {
+		return &mockStreamProvider{
+			mockProvider: mockProvider{name: canonicalName, models: []string{model}},
+			streamFn: func(context.Context, providers.Request) (<-chan providers.StreamChunk, error) {
+				ch := make(chan providers.StreamChunk, 1)
+				ch <- providers.StreamChunk{
+					ID:      "chatcmpl-multi",
+					Object:  "chat.completion.chunk",
+					Model:   model,
+					Choices: []providers.StreamChoice{{Index: 0, Delta: providers.MessageDelta{Role: "assistant", Content: "hi"}, FinishReason: "stop"}},
+				}
+				close(ch)
+				return ch, nil
+			},
+		}
+	}
+
+	run := func(t *testing.T, alias, model string, provider *mockStreamProvider) string {
+		t.Helper()
+		gw, err := New(Config{
+			Strategy: StrategyConfig{Mode: ModeSingle},
+			Targets:  []Target{{VirtualKey: alias}},
+		})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		defer func() { _ = gw.Close() }()
+
+		if err := gw.RegisterProviderAs(alias, "ollama-cloud", provider); err != nil {
+			t.Fatalf("RegisterProviderAs(%s): %v", alias, err)
+		}
+
+		var gotProvider string
+		_ = gw.RegisterPlugin(plugin.StageAfterRequest, &testPlugin{
+			name: "capture-provider",
+			typ:  plugin.TypeLogging,
+			execFn: func(_ context.Context, pctx *plugin.Context) error {
+				if pctx.Response != nil {
+					gotProvider = pctx.Response.Provider
+				}
+				return nil
+			},
+		})
+
+		ch, err := gw.RouteStream(context.Background(), providers.Request{
+			Model:    model,
+			Messages: []providers.Message{{Role: "user", Content: "hi"}},
+			Stream:   true,
+		})
+		if err != nil {
+			t.Fatalf("RouteStream: %v", err)
+		}
+		drainStream(t, ch)
+		return gotProvider
+	}
+
+	gotA := run(t, "ollama-cloud-a", "model-a", newStreamMock("ollama-cloud", "model-a"))
+	if gotA != "ollama-cloud-a" {
+		t.Errorf("instance A: metered provider = %q, want alias %q", gotA, "ollama-cloud-a")
+	}
+
+	gotB := run(t, "ollama-cloud-b", "model-b", newStreamMock("ollama-cloud", "model-b"))
+	if gotB != "ollama-cloud-b" {
+		t.Errorf("instance B: metered provider = %q, want alias %q", gotB, "ollama-cloud-b")
+	}
+
+	if gotA == gotB {
+		t.Fatalf("both instances reported the same provider label %q; multi-instance targets must be distinguishable", gotA)
+	}
+}
+
 // TestGateway_RecordSuccess_ResolvesAliasToCanonicalForCostLookup verifies
 // that recordSuccess's cost calculation resolves resp.Provider (the routing
 // alias, e.g. "ollama-cloud-a") to its canonical provider type before doing

@@ -107,13 +107,20 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 		return responseStream(early), nil
 	}
 
-	// Resolve provider according to strategy mode.
-	sp, err := g.resolveStreamOrError(ctx, span, plugins, pctx, releasePluginManager, req)
+	// Resolve provider according to strategy mode. providerName is the
+	// routing key/alias req was dispatched to (not sp.Name()): sp may be a
+	// limitedProvider/cbProvider wrapper whose Name() delegates straight
+	// through to the underlying provider's own hardcoded canonical name, which
+	// would collapse multi-instance same-type targets (e.g. two Ollama Cloud
+	// accounts registered under distinct aliases) onto one indistinguishable
+	// label in metrics/logs/traces. sp.Name() is only ever consulted via
+	// canonicalProviderType(providerName) below, for catalog/capability
+	// lookups.
+	providerName, sp, err := g.resolveStreamOrError(ctx, span, plugins, pctx, releasePluginManager, req)
 	if err != nil {
 		return nil, err
 	}
 
-	providerName := sp.Name()
 	span.SetAttribute(observability.AttrGenAISystem, providerName)
 	// Stamp the resolved target key (virtual key = provider name in this routing layer).
 	if providerName != "" {
@@ -327,15 +334,18 @@ func (g *Gateway) runBeforePluginsStream(ctx context.Context, span observability
 // the gateway lock. On failure (resolution error, or no streaming-capable
 // provider found) it finalizes bookkeeping (span error, plugin error hook if
 // pctx is live, plugin-context release, plugin-manager release) and returns
-// a non-nil error — the caller must return (nil, err) immediately, same as
-// every other terminal error path in RouteStream.
-func (g *Gateway) resolveStreamOrError(ctx context.Context, span observability.Span, plugins *plugin.Manager, pctx *plugin.Context, releasePluginManager func(), req providers.Request) (providers.StreamProvider, error) {
+// a non-nil error — the caller must return ("", nil, err) immediately, same
+// as every other terminal error path in RouteStream. On success it returns
+// the routing key/alias the request was dispatched to alongside the resolved
+// provider — never sp.Name(), which would only ever surface the provider's
+// own hardcoded canonical name (see the comment at the RouteStream call site).
+func (g *Gateway) resolveStreamOrError(ctx context.Context, span observability.Span, plugins *plugin.Manager, pctx *plugin.Context, releasePluginManager func(), req providers.Request) (string, providers.StreamProvider, error) {
 	g.mu.Lock()
 	g.ensureCircuitBreakersLocked()
 	g.ensureProviderLimitersLocked()
 	g.mu.Unlock()
 
-	fail := func(err error) (providers.StreamProvider, error) {
+	fail := func(err error) (string, providers.StreamProvider, error) {
 		span.SetError(err)
 		if pctx != nil {
 			pctx.Error = err
@@ -343,7 +353,7 @@ func (g *Gateway) resolveStreamOrError(ctx context.Context, span observability.S
 			plugin.PutContext(pctx)
 			releasePluginManager()
 		}
-		return nil, err
+		return "", nil, err
 	}
 
 	orderedKeys, orderErr := g.streamingTargetOrder(req)
@@ -352,13 +362,13 @@ func (g *Gateway) resolveStreamOrError(ctx context.Context, span observability.S
 	}
 
 	g.mu.RLock()
-	sp := g.resolveStreamProviderFromKeysLocked(orderedKeys, req.Model)
+	key, sp := g.resolveStreamProviderFromKeysLocked(orderedKeys, req.Model)
 	g.mu.RUnlock()
 
 	if sp == nil {
 		return fail(fmt.Errorf("no streaming-capable provider found for model: %s", req.Model))
 	}
-	return sp, nil
+	return key, sp, nil
 }
 
 // streamingTargetOrder resolves the strategy — the same object Route executes —
@@ -399,12 +409,17 @@ func responseStream(resp *providers.Response) <-chan providers.StreamChunk {
 	return ch
 }
 
-// resolveStreamProviderFromKeysLocked walks orderedKeys and returns the first
-// streaming-capable, model-supporting provider whose circuit is not open. If
-// every ordered target has an open circuit it returns the last such target so
-// the caller still attempts it (and surfaces the open-circuit error). Failing
-// all ordered targets it falls back to any registered streaming-capable provider
-// for the model. Returns nil when nothing matches. Caller must hold g.mu.
+// resolveStreamProviderFromKeysLocked walks orderedKeys and returns the
+// routing key alongside the first streaming-capable, model-supporting
+// provider whose circuit is not open. If every ordered target has an open
+// circuit it returns the last such target (and its key) so the caller still
+// attempts it (and surfaces the open-circuit error). Failing all ordered
+// targets it falls back to any registered streaming-capable provider for the
+// model. Returns ("", nil) when nothing matches. Caller must hold g.mu.
+//
+// The returned key is the routing alias/target key that resolved to the
+// provider — never the provider's own Name() — so callers can stamp the
+// correct label for multi-instance same-type targets.
 //
 // The breaker is probed with State() (non-consuming) rather than Allow() here:
 // the single Allow() inside cbProvider.CompleteStream is the one probe per
@@ -412,7 +427,8 @@ func responseStream(resp *providers.Response) <-chan providers.StreamChunk {
 // performs the sole Allow(). Consuming a half-open permit at resolve time would
 // leave no permit for the actual stream, so a recovering provider could never be
 // probed by a streaming request.
-func (g *Gateway) resolveStreamProviderFromKeysLocked(orderedKeys []string, model string) providers.StreamProvider {
+func (g *Gateway) resolveStreamProviderFromKeysLocked(orderedKeys []string, model string) (string, providers.StreamProvider) {
+	var openCircuitKey string
 	var openCircuitTarget providers.StreamProvider
 	for _, key := range orderedKeys {
 		sp, ok := g.streamingProviderForTargetLocked(key, model)
@@ -420,24 +436,25 @@ func (g *Gateway) resolveStreamProviderFromKeysLocked(orderedKeys []string, mode
 			continue
 		}
 		if wrapped, isCB := sp.(*cbProvider); isCB && wrapped.cb.State() == circuitbreaker.StateOpen {
+			openCircuitKey = key
 			openCircuitTarget = sp
 			continue
 		}
-		return sp
+		return key, sp
 	}
 	if openCircuitTarget != nil {
-		return openCircuitTarget
+		return openCircuitKey, openCircuitTarget
 	}
 
 	// Fallback: any registered provider that supports this model and streaming.
 	name, fallback, ok := g.findStreamingProviderMatchByModelLocked(model)
 	if !ok {
-		return nil
+		return "", nil
 	}
 	if decorated, ok := decorateProvider(name, g.providers[name], g.circuitBreakers[name], g.limiters[name]).(providers.StreamProvider); ok {
-		return decorated
+		return name, decorated
 	}
-	return fallback
+	return name, fallback
 }
 
 func (g *Gateway) streamingProviderForTargetLocked(key, model string) (providers.StreamProvider, bool) {

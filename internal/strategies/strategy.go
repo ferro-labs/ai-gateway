@@ -34,8 +34,18 @@ type Strategy interface {
 // ProviderLookup resolves a provider name to a Provider instance.
 type ProviderLookup func(name string) (providers.Provider, bool)
 
+// responseWithProvider stamps resp.Provider with the routing key/alias the
+// request was actually dispatched to (target.VirtualKey at every call site).
+// This must win unconditionally: every real Provider.Complete() implementation
+// already sets Response.Provider to its own hardcoded canonical name before
+// the strategy layer ever sees the response, so a provider's self-reported
+// name must never be allowed to survive here. For a non-aliased target the
+// virtual key already equals the canonical provider name, so the visible
+// value is unchanged in that common case; for a multi-instance target (two
+// aliases sharing one underlying provider type) this is what lets metrics,
+// logs, and traces distinguish which instance handled the request.
 func responseWithProvider(resp *providers.Response, provider string) *providers.Response {
-	if resp == nil || resp.Provider != "" {
+	if resp == nil {
 		return resp
 	}
 	resp.Provider = provider
