@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/ferro-labs/ai-gateway/metrics"
+	"github.com/ferro-labs/ai-gateway/internal/metrics"
 	"github.com/ferro-labs/ai-gateway/models"
 	"github.com/ferro-labs/ai-gateway/plugin"
 	"github.com/ferro-labs/ai-gateway/providers"
