@@ -117,3 +117,43 @@ func TestRegisterProviderInstancesNilConfigIsNoop(t *testing.T) {
 		t.Fatalf("expected no providers registered, got %v", registry.List())
 	}
 }
+
+// TestRegisterProviderInstancesSkipsAliasCollidingWithCanonicalProvider is
+// defense-in-depth coverage: ValidateConfig already rejects an instance Alias
+// that matches a canonical providers.ProviderEntry.ID (e.g. "openai") before
+// RegisterProviderInstances ever runs, but this test bypasses that validation
+// entirely -- calling RegisterProviderInstances directly with a colliding
+// alias -- to prove the function itself also refuses to silently overwrite a
+// canonical provider's registry entry, in case that upstream guarantee is
+// ever weakened or bypassed by a future call site.
+func TestRegisterProviderInstancesSkipsAliasCollidingWithCanonicalProvider(t *testing.T) {
+	t.Setenv("OPENAI_INSTANCE_KEY", "test-key")
+	// The failure metric this path increments is labeled by inst.Type
+	// ("ollama-cloud"), not by the colliding alias ("openai").
+	before := initFailureCount(t, providers.NameOllamaCloud)
+
+	cfg := &aigateway.Config{
+		ProviderInstances: []aigateway.ProviderInstanceConfig{
+			{
+				// "openai" is a canonical provider ID (providers.NameOpenAI),
+				// so this alias must be rejected even though it names a
+				// different provider Type.
+				Alias: providers.NameOpenAI,
+				Type:  providers.NameOllamaCloud,
+				Credentials: map[string]string{
+					providers.CfgKeyAPIKey: "${OPENAI_INSTANCE_KEY}",
+				},
+			},
+		},
+	}
+
+	registry := providers.NewRegistry()
+	RegisterProviderInstances(registry, cfg)
+
+	if _, ok := registry.Get(providers.NameOpenAI); ok {
+		t.Fatal("alias colliding with a canonical provider name should not be registered")
+	}
+	if delta := initFailureCount(t, providers.NameOllamaCloud) - before; delta != 1 {
+		t.Fatalf("init failure counter delta = %v, want 1", delta)
+	}
+}

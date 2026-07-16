@@ -24,15 +24,22 @@ type EnrichedModelInfo struct {
 }
 
 // enrichFromCatalog builds an EnrichedModelInfo for provider/modelID by
-// looking up the model catalog. Returns a minimal struct if no entry is found.
-func enrichFromCatalog(catalog models.Catalog, provider, modelID string) EnrichedModelInfo {
+// looking up the model catalog. The catalog is keyed by canonical provider
+// type, not by routing alias, so canonicalProvider must be resolved by the
+// caller (e.g. via Gateway.CanonicalProviderType) — an aliased instance of a
+// provider type (e.g. two Ollama Cloud accounts) would otherwise never match
+// a catalog entry and silently lose all pricing/context-window/capability
+// enrichment. OwnedBy in the returned struct still reports the alias
+// (provider), for operator-facing distinguishability between instances.
+// Returns a minimal struct if no entry is found.
+func enrichFromCatalog(catalog models.Catalog, provider, canonicalProvider, modelID string) EnrichedModelInfo {
 	base := EnrichedModelInfo{
 		ID:      modelID,
 		Object:  "model",
 		OwnedBy: provider,
 	}
 
-	m, ok := catalog.Get(provider + "/" + modelID)
+	m, ok := catalog.Get(canonicalProvider + "/" + modelID)
 	if !ok {
 		return base
 	}
@@ -94,7 +101,8 @@ func Models(gw *aigateway.Gateway) http.HandlerFunc {
 		raw := gw.AllModels()
 		enriched := make([]EnrichedModelInfo, 0, len(raw))
 		for _, m := range raw {
-			enriched = append(enriched, enrichFromCatalog(catalog, m.OwnedBy, m.ID))
+			canonical := gw.CanonicalProviderType(m.OwnedBy)
+			enriched = append(enriched, enrichFromCatalog(catalog, m.OwnedBy, canonical, m.ID))
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{

@@ -383,6 +383,19 @@ func RegisterProviderInstances(registry *providers.Registry, cfg *aigateway.Conf
 		return
 	}
 	for _, inst := range cfg.ProviderInstances {
+		// Defense-in-depth, not the primary validation: ValidateConfig already
+		// rejects an instance Alias that collides with a canonical
+		// providers.ProviderEntry.ID before this function ever runs (today
+		// there is a single call site, always preceded by validation). This
+		// check guards against that invariant ever being weakened or bypassed
+		// by a future call site — an alias shadowing a canonical provider name
+		// would otherwise silently overwrite that provider's registry entry.
+		if _, ok := providers.GetProviderEntry(inst.Alias); ok {
+			logging.Logger.Warn("provider instance init skipped", "alias", inst.Alias, "provider", inst.Type, "error", "alias collides with a canonical provider name")
+			metrics.ProviderInitFailures.WithLabelValues(inst.Type).Inc()
+			continue
+		}
+
 		entry, ok := providers.GetProviderEntry(inst.Type)
 		if !ok {
 			// Warn-and-skip so one bad instance cannot stop the whole gateway.
