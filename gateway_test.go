@@ -4793,6 +4793,7 @@ func TestGateway_RecordSuccess_ResolvesAliasToCanonicalForCostLookup(t *testing.
 	// Catalog is keyed by canonical provider type only — there is no
 	// "ollama-cloud-a/model-a" entry. If the cost lookup used the alias
 	// directly, cost would resolve to zero.
+	gw.mu.Lock()
 	gw.catalog = models.Catalog{
 		"ollama-cloud/model-a": {
 			Provider: "ollama-cloud",
@@ -4804,6 +4805,7 @@ func TestGateway_RecordSuccess_ResolvesAliasToCanonicalForCostLookup(t *testing.
 			},
 		},
 	}
+	gw.mu.Unlock()
 
 	costCounter := metrics.ForRequest("ollama-cloud-a", "model-a").CostUSD
 	before := counterValue(t, costCounter)

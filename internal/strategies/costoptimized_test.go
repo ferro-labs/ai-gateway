@@ -430,6 +430,85 @@ func TestCostOptimized_AggregatorUsedAsLastResortWhenOnlyCandidate(t *testing.T)
 	}
 }
 
+// TestCostOptimized_FallbackPrefersNonAggregatorEvenWhenListedFirst covers the
+// positional-fallback path (no priced candidate at all): an aggregator listed
+// FIRST in targets must not win merely because of config order — a
+// non-aggregator candidate later in the list must be preferred, with the
+// aggregator used only when no non-aggregator exists at all (see
+// TestCostOptimized_AggregatorUsedAsLastResortWhenOnlyCandidate).
+func TestCostOptimized_FallbackPrefersNonAggregatorEvenWhenListedFirst(t *testing.T) {
+	aggregator := &mockProvider{name: "aggregator", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "aggregator"}}
+	normal := &mockProvider{name: "normal", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "normal"}}
+
+	// Empty catalog: neither candidate is priced, so both "fallback" and
+	// "allow" modes fall through to positional selection.
+	catalog := models.Catalog{}
+	for _, mode := range []string{"fallback", "allow"} {
+		t.Run(mode, func(t *testing.T) {
+			targets := []Target{{VirtualKey: "aggregator"}, {VirtualKey: "normal"}}
+			s := NewCostOptimized(targets, newLookup(aggregator, normal), catalog, mode).
+				WithAggregatorPredicate(aggregatorPredicate)
+
+			resp, err := s.Execute(context.Background(), providers.Request{
+				Model:    "gpt-4o",
+				Messages: []providers.Message{{Role: "user", Content: "hello world"}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resp.ID != "normal" {
+				t.Errorf("mode %s: expected non-aggregator fallback despite aggregator being listed first, got %q", mode, resp.ID)
+			}
+		})
+	}
+}
+
+// mockStreamProvider is mockProvider plus CompleteStream, for SelectTargets
+// tests (which only consider providers.StreamProvider candidates).
+type mockStreamProvider struct {
+	mockProvider
+}
+
+func (m *mockStreamProvider) CompleteStream(_ context.Context, _ providers.Request) (<-chan providers.StreamChunk, error) {
+	ch := make(chan providers.StreamChunk)
+	close(ch)
+	return ch, nil
+}
+
+// TestCostOptimized_SelectTargetsOrdersNonAggregatorsBeforeAggregators covers
+// SelectTargets' skip-mode last-resort path: with no priced candidate at all,
+// an aggregator listed FIRST in targets must not be ordered ahead of a
+// non-aggregator candidate merely because of config order.
+func TestCostOptimized_SelectTargetsOrdersNonAggregatorsBeforeAggregators(t *testing.T) {
+	aggregator := &mockStreamProvider{mockProvider{name: "aggregator", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "aggregator"}}}
+	normal := &mockStreamProvider{mockProvider{name: "normal", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "normal"}}}
+
+	// Catalog entries exist (modelFound=true) but carry no pricing
+	// (hasPrice=false), so skip mode has no priced candidate and falls
+	// through to the last-resort ordering path being tested.
+	catalog := models.Catalog{
+		"aggregator/gpt-4o": {Provider: "aggregator", ModelID: "gpt-4o", Mode: models.ModeChat, Pricing: models.Pricing{}},
+		"normal/gpt-4o":     {Provider: "normal", ModelID: "gpt-4o", Mode: models.ModeChat, Pricing: models.Pricing{}},
+	}
+	targets := []Target{{VirtualKey: "aggregator"}, {VirtualKey: "normal"}}
+	s := NewCostOptimized(targets, newLookup(aggregator, normal), catalog, "skip").
+		WithAggregatorPredicate(aggregatorPredicate)
+
+	keys, err := s.SelectTargets(providers.Request{
+		Model:    "gpt-4o",
+		Messages: []providers.Message{{Role: "user", Content: "hello world"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) < 2 {
+		t.Fatalf("expected at least 2 ordered keys, got %v", keys)
+	}
+	if keys[0] != "normal" {
+		t.Errorf("expected non-aggregator target ordered first despite aggregator being listed first in config, got order %v", keys)
+	}
+}
+
 func TestCostOptimized_NonAggregatorCandidateUnaffectedByAggregatorPredicate(t *testing.T) {
 	cheap := &mockProvider{name: "cheap", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "cheap"}}
 	expensive := &mockProvider{name: "expensive", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "expensive"}}

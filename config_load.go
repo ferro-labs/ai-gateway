@@ -202,10 +202,8 @@ func validateProviderInstances(instances []ProviderInstanceConfig) error {
 		// also covers the Alias == Type case for the same instance — no separate
 		// check is needed for that). Multi-instance v1 does not support shadowing
 		// a canonical provider name.
-		for _, entry := range providers.AllProviders() {
-			if inst.Alias == entry.ID {
-				return fmt.Errorf("provider_instances: alias %q collides with the canonical provider name %q; instance aliases must not shadow a built-in provider type", inst.Alias, entry.ID)
-			}
+		if entry, ok := providers.GetProviderEntry(inst.Alias); ok {
+			return fmt.Errorf("provider_instances: alias %q collides with the canonical provider name %q; instance aliases must not shadow a built-in provider type", inst.Alias, entry.ID)
 		}
 
 		if _, ok := providers.GetProviderEntry(inst.Type); !ok {

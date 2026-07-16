@@ -491,12 +491,22 @@ func (g *Gateway) AllModels() []providers.ModelInfo {
 			continue
 		}
 		// Precedence (issue #146): live discovery > catalog > hardcoded fallback.
+		var providerModels []providers.ModelInfo
 		if discovered, ok := g.discoveredModels[name]; ok && len(discovered) > 0 {
-			models = append(models, discovered...)
+			providerModels = discovered
 		} else if catModels := g.catalog.ModelsForProvider(g.canonicalProviderTypeLocked(name)); len(catModels) > 0 {
-			models = append(models, core.ModelsFromList(name, catModels)...)
+			providerModels = core.ModelsFromList(name, catModels)
 		} else {
-			models = append(models, p.Models()...)
+			providerModels = p.Models()
+		}
+		// Stamp OwnedBy with the routing alias, not necessarily the value the
+		// source already carries (discovery and the hardcoded-fallback tier
+		// both report the provider's own canonical name) — otherwise two
+		// aliased instances of the same provider type are indistinguishable
+		// in /v1/models for those tiers.
+		for _, m := range providerModels {
+			m.OwnedBy = name
+			models = append(models, m)
 		}
 	}
 	return models

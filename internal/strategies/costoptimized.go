@@ -189,9 +189,11 @@ func (c *CostOptimized) SelectTargets(req providers.Request) ([]string, error) {
 	if len(ranked) == 0 {
 		if c.unpricedStrategy.requiresPricedCandidate() {
 			// Allow an aggregator to serve as a last-resort ordering when no
-			// non-aggregator candidate is viable at all.
+			// non-aggregator candidate is viable at all — but still order
+			// non-aggregators first so one isn't preferred merely because of
+			// its position in the config.
 			if hasAggregatorCandidate(candidates) {
-				return appendRemainingTargetKeys(candidateKeys(candidates), c.targets), nil
+				return appendRemainingTargetKeys(nonAggregatorsFirst(candidates), c.targets), nil
 			}
 			return nil, fmt.Errorf("no priced provider supports model %s", req.Model)
 		}
@@ -272,10 +274,14 @@ func selectCostOptimizedCandidate(candidates []priced, strategy unpricedStrategy
 		return nil, fmt.Errorf("no priced provider supports model %s", model)
 	}
 	// Preserve historical fallback behavior: when no cataloged/priced candidate
-	// is selectable, fallback and allow route to the first compatible target.
-	// If the first candidate happens to be an aggregator excluded above, an
-	// aggregator is still an acceptable fallback here — it's the same
-	// last-resort case as any other unpriced candidate in these modes.
+	// is selectable, fall back to the first compatible target — but prefer a
+	// non-aggregator so an aggregator only wins here because it's genuinely
+	// the only option, not merely because it happens to be listed first.
+	for i := range candidates {
+		if !candidates[i].isAggregator {
+			return &candidates[i], nil
+		}
+	}
 	return &candidates[0], nil
 }
 
@@ -301,12 +307,21 @@ func hasAggregatorCandidate(candidates []costOrderCandidate) bool {
 	return false
 }
 
-// candidateKeys returns the target keys of the given candidates in order,
-// deduplicated.
-func candidateKeys(candidates []costOrderCandidate) []string {
+// nonAggregatorsFirst returns candidate keys ordered with non-aggregators
+// first and aggregators last (each group preserving relative order),
+// deduplicated — so an aggregator is only preferred when it's the only
+// viable option, never merely because of its position in the config.
+func nonAggregatorsFirst(candidates []costOrderCandidate) []string {
 	keys := make([]string, 0, len(candidates))
 	for _, c := range candidates {
-		keys = appendUniqueKey(keys, c.key)
+		if !c.isAggregator {
+			keys = appendUniqueKey(keys, c.key)
+		}
+	}
+	for _, c := range candidates {
+		if c.isAggregator {
+			keys = appendUniqueKey(keys, c.key)
+		}
 	}
 	return keys
 }
