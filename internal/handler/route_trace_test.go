@@ -64,7 +64,7 @@ func TestRouteTrace_FallbackSelectsFirstSupportingTarget(t *testing.T) {
 	h := RouteTrace(gw)
 
 	body := `{"model":"gpt-3.5-turbo","messages":[{"role":"user","content":"hi"}]}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/route/trace", strings.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/route/trace", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -112,7 +112,7 @@ func TestRouteTrace_UnknownModelHasNoSelection(t *testing.T) {
 	h := RouteTrace(gw)
 
 	body := `{"model":"not-a-real-model"}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/route/trace", strings.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/route/trace", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -138,7 +138,7 @@ func TestRouteTrace_MissingModelIs400(t *testing.T) {
 	gw := newTraceGateway(t)
 	h := RouteTrace(gw)
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/route/trace", strings.NewReader(`{"messages":[]}`))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/route/trace", strings.NewReader(`{"messages":[]}`))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
@@ -150,7 +150,7 @@ func TestRouteTrace_MalformedJSONIs400(t *testing.T) {
 	gw := newTraceGateway(t)
 	h := RouteTrace(gw)
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/route/trace", strings.NewReader(`{not json`))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/route/trace", strings.NewReader(`{not json`))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {

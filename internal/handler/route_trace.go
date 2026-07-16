@@ -74,7 +74,7 @@ func buildRouteTraceConfig(gw *aigateway.Gateway) routetrace.Config {
 		})
 	}
 
-	var conditions []routetrace.ConditionRule
+	conditions := make([]routetrace.ConditionRule, 0, len(gwCfg.Strategy.Conditions))
 	for _, cond := range gwCfg.Strategy.Conditions {
 		conditions = append(conditions, routetrace.ConditionRule{
 			Key:    cond.Key,
