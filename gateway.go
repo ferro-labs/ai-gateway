@@ -310,6 +310,14 @@ func (g *Gateway) canonicalProviderType(aliasOrKey string) string {
 	return g.canonicalProviderTypeLocked(aliasOrKey)
 }
 
+// CanonicalProviderType is the exported form of canonicalProviderType, for
+// callers outside this package (e.g. internal/handler) that need to resolve
+// a routing alias to its canonical provider type — for example, to build a
+// model-catalog lookup key, which is keyed by canonical type, not alias.
+func (g *Gateway) CanonicalProviderType(aliasOrKey string) string {
+	return g.canonicalProviderType(aliasOrKey)
+}
+
 // canonicalProviderTypeLocked is canonicalProviderType for callers that
 // already hold g.mu (read or write).
 func (g *Gateway) canonicalProviderTypeLocked(aliasOrKey string) string {
