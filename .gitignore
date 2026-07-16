@@ -70,7 +70,7 @@ build/
 
 # Local dev-tooling scaffold (superset-dev-watch-development daemon)
 .superset/
-CODEX.md
+/CODEX.md
 .superset/config.local.json
 .superset/runtime/
 .superset/context/current-status.txt
