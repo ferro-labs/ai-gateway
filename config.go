@@ -64,6 +64,42 @@ type Config struct {
 	// Compatibility configures how the gateway treats request parameters a
 	// target provider cannot express. Omitted (the default) means warn.
 	Compatibility CompatibilityConfig `json:"compatibility,omitempty" yaml:"compatibility,omitempty"`
+	// ProviderInstances declares additional, independently-credentialed instances
+	// of an existing canonical provider type (see providers.ProviderEntry.ID),
+	// each addressable under its own routing alias via targets[].virtual_key.
+	// Useful for e.g. running two separate accounts of the same provider type
+	// (each with its own API key) as distinct targets with independent
+	// concurrency/retry/circuit-breaker settings.
+	ProviderInstances []ProviderInstanceConfig `json:"provider_instances,omitempty" yaml:"provider_instances,omitempty"`
+}
+
+// ProviderInstanceConfig declares one additional instance of an existing
+// canonical provider type under its own routing alias.
+//
+// ValidateConfig accepts an instance whose Type is providers.NameBedrock, but
+// bootstrap registration does not wire it up in v1: Bedrock builds via a
+// dual-key ConfiguredFn path (internal/bootstrap.registerBedrockProvider)
+// rather than the entry.Build-from-credentials-map flow this feature relies
+// on. Multi-instance Bedrock support is not yet implemented; a bootstrap-time
+// error or warning for this case may be added once it is.
+type ProviderInstanceConfig struct {
+	// Alias is the routing key this instance is addressed by in
+	// targets[].virtual_key. Must be unique across all ProviderInstances and
+	// must not collide with any canonical provider type name.
+	Alias string `json:"alias" yaml:"alias"`
+	// Type is the canonical provider type this instance is built from — must
+	// match a known providers.ProviderEntry.ID (e.g. "ollama-cloud").
+	Type string `json:"type" yaml:"type"`
+	// Credentials supplies this instance's construction config, using the same
+	// key names as providers.CfgKey* (e.g. CfgKeyAPIKey = "api_key",
+	// CfgKeyBaseURL = "base_url"). Values may reference environment variables
+	// via ${VAR} — these are NOT resolved here or anywhere in
+	// LoadConfig/Normalize; resolution happens at provider-construction time,
+	// matching this codebase's existing internal/envref
+	// convention documented in AGENTS.md ("resolved at component construction,
+	// never at config load, so Config never carries a materialized secret into
+	// config-history storage or an admin API response").
+	Credentials map[string]string `json:"credentials,omitempty" yaml:"credentials,omitempty"`
 }
 
 // CompatibilityConfig controls the gateway's handling of OpenAI request

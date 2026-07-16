@@ -61,6 +61,24 @@ strategy:
 #       label: challenger
 # Weights are relative; use 0 for equal distribution across all variants.
 
+# Provider instances: additional, independently-credentialed instances of an
+# existing canonical provider type (see the "type" field), each addressable
+# under its own routing alias via targets[].virtual_key. Useful for running
+# two separate accounts of the same provider type — each with its own API
+# key — as distinct targets with independent concurrency/retry/circuit-breaker
+# settings. Credentials use the same key names as the provider's standard
+# config (e.g. api_key, base_url) and support $VAR / ${VAR} interpolation,
+# resolved at provider-construction time — never persisted in resolved form.
+provider_instances:
+  - alias: ollama-cloud-a
+    type: ollama-cloud
+    credentials:
+      api_key: "${OLLAMA_CLOUD_API_KEY_A}"
+  - alias: ollama-cloud-b
+    type: ollama-cloud
+    credentials:
+      api_key: "${OLLAMA_CLOUD_API_KEY_B}"
+
 targets:
   - virtual_key: openai
     retry:
@@ -105,6 +123,14 @@ targets:
   - virtual_key: hugging-face
   - virtual_key: ollama
   - virtual_key: ollama-cloud
+  # Targets for the two ollama-cloud provider_instances declared above. Each
+  # gets its own concurrency cap via the existing targets[].concurrency field.
+  - virtual_key: ollama-cloud-a
+    concurrency:
+      max_concurrency: 3
+  - virtual_key: ollama-cloud-b
+    concurrency:
+      max_concurrency: 3
   - virtual_key: cerebras
   - virtual_key: cloudflare
   - virtual_key: databricks

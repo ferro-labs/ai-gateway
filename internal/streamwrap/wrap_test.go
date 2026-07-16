@@ -27,6 +27,9 @@ func feed(chunks ...providers.StreamChunk) <-chan providers.StreamChunk {
 	return ch
 }
 
+// ptrF returns a *float64 from a literal — helper for building catalog fixtures.
+func ptrF(v float64) *float64 { return &v }
+
 func counterValue(t *testing.T, c prometheus.Counter) float64 {
 	t.Helper()
 	m := &dto.Metric{}
@@ -57,6 +60,94 @@ func TestMeter_ForwardsAllChunks(t *testing.T) {
 
 	if len(got) != len(chunks) {
 		t.Errorf("forwarded %d chunks, want %d", len(got), len(chunks))
+	}
+}
+
+// TestMeter_CostLookupPrefersCatalogProviderOverProvider verifies that when
+// CatalogProvider is set it is used for the catalog/cost lookup instead of
+// Provider — Provider may deliberately be a routing alias (e.g.
+// "ollama-cloud-a") kept for metrics/log labels, while CatalogProvider
+// carries the canonical provider type the catalog is actually keyed by.
+func TestMeter_CostLookupPrefersCatalogProviderOverProvider(t *testing.T) {
+	catalog := models.Catalog{
+		// Keyed by canonical type only — no entry for the alias.
+		"ollama-cloud/llama3": {
+			Provider: "ollama-cloud",
+			ModelID:  "llama3",
+			Mode:     models.ModeChat,
+			Pricing: models.Pricing{
+				InputPerMTokens:  ptrF(1.0),
+				OutputPerMTokens: ptrF(2.0),
+			},
+		},
+	}
+
+	src := feed(
+		providers.StreamChunk{ID: "1"},
+		providers.StreamChunk{
+			ID:    "2",
+			Usage: &providers.Usage{PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500},
+		},
+	)
+
+	costCounter := metrics.ForRequest("ollama-cloud-a", "llama3").CostUSD
+	before := counterValue(t, costCounter)
+
+	out := Meter(context.Background(), src, time.Now(), MeterMeta{
+		Provider:        "ollama-cloud-a", // routing alias, kept for labels
+		CatalogProvider: "ollama-cloud",   // canonical type, used for cost lookup
+		Model:           "llama3",
+		MetricModel:     "llama3",
+		Catalog:         catalog,
+	})
+	for range out { //nolint:revive // empty-block: intentionally draining the stream to completion
+	}
+
+	after := counterValue(t, costCounter)
+	if after <= before {
+		t.Fatalf("expected cost counter to increase via CatalogProvider-resolved catalog lookup, before=%v after=%v", before, after)
+	}
+}
+
+// TestMeter_CostLookupFallsBackToProviderWhenCatalogProviderUnset confirms
+// existing construction sites (which never set CatalogProvider) keep their
+// current behavior: cost lookup falls back to Provider unchanged.
+func TestMeter_CostLookupFallsBackToProviderWhenCatalogProviderUnset(t *testing.T) {
+	catalog := models.Catalog{
+		"openai/gpt-4o": {
+			Provider: "openai",
+			ModelID:  "gpt-4o",
+			Mode:     models.ModeChat,
+			Pricing: models.Pricing{
+				InputPerMTokens:  ptrF(1.0),
+				OutputPerMTokens: ptrF(2.0),
+			},
+		},
+	}
+
+	src := feed(
+		providers.StreamChunk{ID: "1"},
+		providers.StreamChunk{
+			ID:    "2",
+			Usage: &providers.Usage{PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500},
+		},
+	)
+
+	costCounter := metrics.ForRequest("openai", "gpt-4o").CostUSD
+	before := counterValue(t, costCounter)
+
+	out := Meter(context.Background(), src, time.Now(), MeterMeta{
+		Provider:    "openai", // CatalogProvider left unset
+		Model:       "gpt-4o",
+		MetricModel: "gpt-4o",
+		Catalog:     catalog,
+	})
+	for range out { //nolint:revive // empty-block: intentionally draining the stream to completion
+	}
+
+	after := counterValue(t, costCounter)
+	if after <= before {
+		t.Fatalf("expected cost counter to increase via Provider-resolved catalog lookup, before=%v after=%v", before, after)
 	}
 }
 

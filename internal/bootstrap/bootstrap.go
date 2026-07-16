@@ -15,6 +15,7 @@ import (
 
 	aigateway "github.com/ferro-labs/ai-gateway"
 	"github.com/ferro-labs/ai-gateway/internal/admin"
+	"github.com/ferro-labs/ai-gateway/internal/envref"
 	"github.com/ferro-labs/ai-gateway/internal/httpserver"
 	"github.com/ferro-labs/ai-gateway/internal/logging"
 	"github.com/ferro-labs/ai-gateway/internal/metrics"
@@ -85,6 +86,7 @@ func buildServer() (
 ) {
 	cfg := LoadConfig()
 	registry := RegisterProviders()
+	RegisterProviderInstances(registry, cfg)
 	masterKey := ResolveMasterKey()
 
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("ALLOW_UNAUTHENTICATED_PROXY")), "true") {
@@ -370,6 +372,61 @@ func registerBedrockProvider(registry *providers.Registry) {
 	}
 }
 
+// RegisterProviderInstances builds and registers a providers.Provider for
+// each configured ProviderInstances entry, under its own routing alias.
+// Unlike the env-var-driven providers registered by RegisterProviders,
+// these are built from explicit config-supplied credentials, with ${VAR}
+// references resolved here (at construction time), never earlier -- see
+// internal/envref. cfg may be nil, in which case this is a no-op.
+func RegisterProviderInstances(registry *providers.Registry, cfg *aigateway.Config) {
+	if cfg == nil {
+		return
+	}
+	for _, inst := range cfg.ProviderInstances {
+		// Defense-in-depth, not the primary validation: ValidateConfig already
+		// rejects an instance Alias that collides with a canonical
+		// providers.ProviderEntry.ID before this function ever runs (today
+		// there is a single call site, always preceded by validation). This
+		// check guards against that invariant ever being weakened or bypassed
+		// by a future call site — an alias shadowing a canonical provider name
+		// would otherwise silently overwrite that provider's registry entry.
+		if _, ok := providers.GetProviderEntry(inst.Alias); ok {
+			logging.Logger.Warn("provider instance init skipped", "alias", inst.Alias, "provider", inst.Type, "error", "alias collides with a canonical provider name")
+			metrics.ProviderInitFailures.WithLabelValues(inst.Type).Inc()
+			continue
+		}
+
+		entry, ok := providers.GetProviderEntry(inst.Type)
+		if !ok {
+			// Warn-and-skip so one bad instance cannot stop the whole gateway.
+			logging.Logger.Warn("provider instance init skipped", "alias", inst.Alias, "provider", inst.Type, "error", "unknown provider type")
+			metrics.ProviderInitFailures.WithLabelValues(inst.Type).Inc()
+			continue
+		}
+
+		resolvedCreds, err := envref.StringMap(inst.Credentials)
+		if err != nil {
+			logging.Logger.Warn("provider instance init skipped", "alias", inst.Alias, "provider", inst.Type, "error", err)
+			metrics.ProviderInitFailures.WithLabelValues(inst.Type).Inc()
+			continue
+		}
+
+		p, err := entry.Build(providers.ProviderConfig(resolvedCreds))
+		if err != nil {
+			// Defense-in-depth: ValidateConfig already validates that Type
+			// resolves to a known provider before bootstrap runs, so this
+			// should be unreachable in practice, but a bad build must not be
+			// able to take down the whole gateway.
+			logging.Logger.Warn("provider instance init skipped", "alias", inst.Alias, "provider", inst.Type, "error", err)
+			metrics.ProviderInitFailures.WithLabelValues(inst.Type).Inc()
+			continue
+		}
+
+		registry.RegisterAs(inst.Alias, inst.Type, p)
+		logging.Logger.Info("provider registered", "alias", inst.Alias, "provider", inst.Type)
+	}
+}
+
 // BuildGateway constructs the Gateway, wires providers, and loads plugins.
 // If cfg is nil a default fallback config is created from the registry.
 func BuildGateway(cfg *aigateway.Config, registry *providers.Registry, logWriter requestlog.Writer) *aigateway.Gateway {
@@ -396,10 +453,16 @@ func BuildGateway(cfg *aigateway.Config, registry *providers.Registry, logWriter
 	// Install the shared request-log store before LoadPlugins, so a logging
 	// plugin records through it instead of opening its own.
 	gw.SetRequestLogWriter(logWriter)
-	for _, name := range registry.List() {
-		if p, ok := registry.Get(name); ok {
-			gw.RegisterProvider(p)
+	for _, alias := range registry.List() {
+		p, ok := registry.Get(alias)
+		if !ok {
+			continue
 		}
+		canonical, ok := registry.CanonicalType(alias)
+		if !ok {
+			canonical = alias // not tracked (shouldn't happen post-registration-layer, but safe fallback)
+		}
+		_ = gw.RegisterProviderAs(alias, canonical, p)
 	}
 	if len(cfg.Plugins) > 0 {
 		if err := gw.LoadPlugins(); err != nil {

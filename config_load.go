@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/ferro-labs/ai-gateway/internal/tracingpolicy"
+	"github.com/ferro-labs/ai-gateway/providers"
 	"github.com/ferro-labs/ai-gateway/providers/core"
 	"gopkg.in/yaml.v3"
 )
@@ -170,6 +171,54 @@ func ValidateConfig(cfg Config) error {
 		}
 	}
 
+	if err := validateProviderInstances(cfg.ProviderInstances); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// validateProviderInstances checks cfg.ProviderInstances for structural
+// correctness. It deliberately does NOT require that every
+// targets[].virtual_key referencing an instance alias actually has a
+// matching entry here — ValidateConfig has never required target virtual
+// keys to resolve to any known/registered provider (a target may reference
+// a canonical provider that isn't configured yet and is simply skipped at
+// strategy-build time), and provider-instance targets are held to that same
+// existing looseness rather than a stricter rule invented just for them.
+func validateProviderInstances(instances []ProviderInstanceConfig) error {
+	seenAliases := make(map[string]bool, len(instances))
+	for i, inst := range instances {
+		if inst.Alias == "" {
+			return fmt.Errorf("provider_instances[%d]: alias must not be empty", i)
+		}
+		if seenAliases[inst.Alias] {
+			return fmt.Errorf("provider_instances: duplicate alias %q", inst.Alias)
+		}
+		seenAliases[inst.Alias] = true
+
+		// An alias that matches a canonical provider ID would be ambiguous with
+		// the env-var-driven default instance of that same provider type (this
+		// also covers the Alias == Type case for the same instance — no separate
+		// check is needed for that). Multi-instance v1 does not support shadowing
+		// a canonical provider name.
+		if entry, ok := providers.GetProviderEntry(inst.Alias); ok {
+			return fmt.Errorf("provider_instances: alias %q collides with the canonical provider name %q; instance aliases must not shadow a built-in provider type", inst.Alias, entry.ID)
+		}
+
+		if _, ok := providers.GetProviderEntry(inst.Type); !ok {
+			return fmt.Errorf("provider_instances: instance %q has unknown type %q", inst.Alias, inst.Type)
+		}
+
+		// Note: a Type of providers.NameBedrock is intentionally accepted here.
+		// Bedrock builds via a dual-key ConfiguredFn path (see
+		// internal/bootstrap.registerBedrockProvider) rather than the normal
+		// entry.Build-from-credentials-map flow every other provider instance
+		// relies on, so multi-instance Bedrock isn't wired by bootstrap
+		// registration in v1. Validation does not block it in the meantime;
+		// a bootstrap-time error or warning may be added once multi-instance
+		// Bedrock support is implemented.
+	}
 	return nil
 }
 

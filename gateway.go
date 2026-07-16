@@ -34,11 +34,15 @@ import (
 
 // Gateway is the main entry point for routing LLM requests.
 type Gateway struct {
-	mu                 sync.RWMutex
-	config             Config
-	catalog            models.Catalog
-	providers          map[string]providers.Provider
-	providerNames      []string
+	mu            sync.RWMutex
+	config        Config
+	catalog       models.Catalog
+	providers     map[string]providers.Provider
+	providerNames []string
+	// providerAlias maps a routing alias to the canonical provider type it was
+	// registered under (see RegisterProviderAs), guarded by mu like the
+	// providers/providerNames fields above.
+	providerAlias      map[string]string
 	strategy           strategies.Strategy
 	streamingContent   []streamingContentCondition
 	plugins            *plugin.Manager
@@ -112,6 +116,7 @@ func New(cfg Config) (*Gateway, error) {
 		config:           cfg,
 		catalog:          catalog,
 		providers:        make(map[string]providers.Provider),
+		providerAlias:    make(map[string]string),
 		streamingContent: streamingContent,
 		plugins:          plugin.NewManager(),
 		circuitBreakers:  make(map[string]*circuitbreaker.CircuitBreaker),
@@ -267,14 +272,59 @@ const (
 
 // RegisterProvider registers a provider with the gateway.
 func (g *Gateway) RegisterProvider(p providers.Provider) {
+	_ = g.RegisterProviderAs(p.Name(), p.Name(), p)
+}
+
+// RegisterProviderAs registers p under the given routing alias, recording
+// canonicalType for capability/cost-routing resolution. It performs
+// everything RegisterProvider does today (adds to the provider map/name
+// list, rebuilds model indexes, forces strategy rebuild) plus records the
+// alias→canonicalType mapping, all under the same lock. Returns an error if
+// alias is empty.
+func (g *Gateway) RegisterProviderAs(alias, canonicalType string, p providers.Provider) error {
+	if alias == "" {
+		return fmt.Errorf("alias must not be empty")
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if _, exists := g.providers[p.Name()]; !exists {
-		g.providerNames = append(g.providerNames, p.Name())
+	if _, exists := g.providers[alias]; !exists {
+		g.providerNames = append(g.providerNames, alias)
 	}
-	g.providers[p.Name()] = p
+	g.providers[alias] = p
+	if g.providerAlias == nil {
+		g.providerAlias = make(map[string]string)
+	}
+	g.providerAlias[alias] = canonicalType
 	g.rebuildModelIndexesLocked()
 	g.strategy = nil // force strategy rebuild
+	return nil
+}
+
+// canonicalProviderType returns the real provider type for a routing key
+// (alias or already-canonical name). Returns aliasOrKey unchanged if it was
+// never registered via RegisterProviderAs (i.e. it's already canonical, or
+// unknown — either way, returning it unchanged is the correct fallback).
+func (g *Gateway) canonicalProviderType(aliasOrKey string) string {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.canonicalProviderTypeLocked(aliasOrKey)
+}
+
+// CanonicalProviderType is the exported form of canonicalProviderType, for
+// callers outside this package (e.g. internal/handler) that need to resolve
+// a routing alias to its canonical provider type — for example, to build a
+// model-catalog lookup key, which is keyed by canonical type, not alias.
+func (g *Gateway) CanonicalProviderType(aliasOrKey string) string {
+	return g.canonicalProviderType(aliasOrKey)
+}
+
+// canonicalProviderTypeLocked is canonicalProviderType for callers that
+// already hold g.mu (read or write).
+func (g *Gateway) canonicalProviderTypeLocked(aliasOrKey string) string {
+	if canonicalType, ok := g.providerAlias[aliasOrKey]; ok {
+		return canonicalType
+	}
+	return aliasOrKey
 }
 
 // RegisterPlugin registers a plugin at the given lifecycle stage.
@@ -441,12 +491,22 @@ func (g *Gateway) AllModels() []providers.ModelInfo {
 			continue
 		}
 		// Precedence (issue #146): live discovery > catalog > hardcoded fallback.
+		var providerModels []providers.ModelInfo
 		if discovered, ok := g.discoveredModels[name]; ok && len(discovered) > 0 {
-			models = append(models, discovered...)
-		} else if catModels := g.catalog.ModelsForProvider(name); len(catModels) > 0 {
-			models = append(models, core.ModelsFromList(name, catModels)...)
+			providerModels = discovered
+		} else if catModels := g.catalog.ModelsForProvider(g.canonicalProviderTypeLocked(name)); len(catModels) > 0 {
+			providerModels = core.ModelsFromList(name, catModels)
 		} else {
-			models = append(models, p.Models()...)
+			providerModels = p.Models()
+		}
+		// Stamp OwnedBy with the routing alias, not necessarily the value the
+		// source already carries (discovery and the hardcoded-fallback tier
+		// both report the provider's own canonical name) — otherwise two
+		// aliased instances of the same provider type are indistinguishable
+		// in /v1/models for those tiers.
+		for _, m := range providerModels {
+			m.OwnedBy = name
+			models = append(models, m)
 		}
 	}
 	return models

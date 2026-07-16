@@ -140,9 +140,15 @@ func ensureGateway(gw *aigateway.Gateway, registry *providers.Registry) *aigatew
 		return nil
 	}
 	for _, name := range registry.List() {
-		if p, ok := registry.Get(name); ok {
-			created.RegisterProvider(p)
+		p, ok := registry.Get(name)
+		if !ok {
+			continue
 		}
+		canonical, ok := registry.CanonicalType(name)
+		if !ok {
+			canonical = name // not tracked (shouldn't happen post-registration-layer, but safe fallback)
+		}
+		_ = created.RegisterProviderAs(name, canonical, p)
 	}
 	return created
 }

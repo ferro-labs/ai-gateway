@@ -58,3 +58,20 @@ bin/
 # Superpowers brainstorm sessions and internal planning docs
 .superpowers/
 docs/superpowers/
+
+# Local dev-tooling scaffold (superset-dev-watch-development daemon)
+.superset/
+CODEX.md
+.env.*
+!.env.example
+.DS_Store
+node_modules/
+.venv/
+venv/
+.cache/
+dist/
+build/
+.superset/config.local.json
+.superset/runtime/
+.superset/context/current-status.txt
+.superset/context/task-handoff.md

@@ -251,6 +251,79 @@ func TestValidateConfig_ConcurrencyBounds(t *testing.T) {
 	}
 }
 
+func TestValidateConfig_ProviderInstances(t *testing.T) {
+	tests := []struct {
+		name      string
+		instances []ProviderInstanceConfig
+		wantErr   bool
+	}{
+		{
+			name: "valid single instance",
+			instances: []ProviderInstanceConfig{
+				{Alias: "ollama-cloud-a", Type: "ollama-cloud"},
+			},
+		},
+		{
+			name: "valid multiple instances, different aliases, same type",
+			instances: []ProviderInstanceConfig{
+				{Alias: "ollama-cloud-a", Type: "ollama-cloud"},
+				{Alias: "ollama-cloud-b", Type: "ollama-cloud"},
+			},
+		},
+		{
+			name: "empty alias rejected",
+			instances: []ProviderInstanceConfig{
+				{Alias: "", Type: "ollama-cloud"},
+			},
+			wantErr: true,
+		},
+		{
+			name: "duplicate alias rejected",
+			instances: []ProviderInstanceConfig{
+				{Alias: "ollama-cloud-a", Type: "ollama-cloud"},
+				{Alias: "ollama-cloud-a", Type: "ollama-cloud"},
+			},
+			wantErr: true,
+		},
+		{
+			name: "alias colliding with canonical provider name rejected",
+			instances: []ProviderInstanceConfig{
+				{Alias: "openai", Type: "ollama-cloud"},
+			},
+			wantErr: true,
+		},
+		{
+			name: "unknown type rejected",
+			instances: []ProviderInstanceConfig{
+				{Alias: "ollama-cloud-a", Type: "ollama-clod"},
+			},
+			wantErr: true,
+		},
+		{
+			name: "bedrock type accepted by validation",
+			instances: []ProviderInstanceConfig{
+				{Alias: "bedrock-a", Type: "bedrock"},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Config{
+				Strategy:          StrategyConfig{Mode: ModeSingle},
+				Targets:           []Target{{VirtualKey: "key1"}},
+				ProviderInstances: tt.instances,
+			}
+			err := ValidateConfig(cfg)
+			if tt.wantErr && err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
 func TestLoadConfig_YAML(t *testing.T) {
 	data := `
 strategy:
