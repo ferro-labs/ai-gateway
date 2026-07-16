@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,6 +19,13 @@ import (
 // testEndpoint is a non-routable OTLP endpoint used by Init tests; the gRPC
 // client connects lazily so no live collector is required.
 const testEndpoint = "localhost:4317"
+
+var exporterTestSequence atomic.Uint64
+
+func uniqueExporterName(t *testing.T, prefix string) string {
+	t.Helper()
+	return fmt.Sprintf("%s-%s-%d", prefix, t.Name(), exporterTestSequence.Add(1))
+}
 
 func TestDefaultConfig(t *testing.T) {
 	cfg := DefaultConfig()
@@ -339,9 +347,7 @@ func (e *fakeExporter) Shutdown(_ context.Context) error {
 func TestInitWithExporterOnly_NotNoOp(t *testing.T) {
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
 
-	// Use a test-name-scoped exporter name to avoid registration collisions
-	// when tests run in parallel or are repeated by go test -count>1.
-	exporterName := "fake-notnooop-" + t.Name()
+	exporterName := uniqueExporterName(t, "fake-notnoop")
 	fake := &fakeExporter{}
 	observability.RegisterExporter(exporterName, func() observability.Exporter { return fake })
 
@@ -419,7 +425,7 @@ func TestInitWithNoEndpointAndNoExporters_IsNoOp(t *testing.T) {
 func TestInitExporterInitError_Skipped(t *testing.T) {
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
 
-	exporterName := "fail-ex-" + t.Name()
+	exporterName := uniqueExporterName(t, "fail-ex")
 	failEx := &fakeExporter{initErr: errors.New("bad config")}
 	observability.RegisterExporter(exporterName, func() observability.Exporter { return failEx })
 
@@ -494,8 +500,7 @@ func (e *blockingExporter) Shutdown(_ context.Context) error {
 func TestRecordEvent_DoesNotBlockOnSlowExporter(t *testing.T) {
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
 
-	// Use a time-based unique suffix so the name is distinct across -count>1 runs.
-	exporterName := fmt.Sprintf("blocking-%s-%d", t.Name(), time.Now().UnixNano())
+	exporterName := uniqueExporterName(t, "blocking")
 	blk := newBlockingExporter(exporterName)
 	observability.RegisterExporter(exporterName, func() observability.Exporter { return blk })
 
@@ -538,8 +543,7 @@ func TestRecordEvent_DoesNotBlockOnSlowExporter(t *testing.T) {
 func TestShutdown_DrainsBufferedEventsBeforeReturning(t *testing.T) {
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
 
-	// Use a time-based unique suffix so the name is distinct across -count>1 runs.
-	exporterName := fmt.Sprintf("drain-%s-%d", t.Name(), time.Now().UnixNano())
+	exporterName := uniqueExporterName(t, "drain")
 	fake := &fakeExporter{}
 	observability.RegisterExporter(exporterName, func() observability.Exporter { return fake })
 
@@ -584,8 +588,7 @@ func TestShutdown_DrainsBufferedEventsBeforeReturning(t *testing.T) {
 func TestRecordEvent_DropOnFull(t *testing.T) {
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
 
-	// Use a time-based unique suffix so the name is distinct across -count>1 runs.
-	exporterName := fmt.Sprintf("dropfull-%s-%d", t.Name(), time.Now().UnixNano())
+	exporterName := uniqueExporterName(t, "dropfull")
 	// Use a blocking exporter to hold the queue full: Export blocks until
 	// we release it, allowing us to saturate the buffer.
 	blk := newBlockingExporter(exporterName)

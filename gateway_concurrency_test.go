@@ -299,13 +299,14 @@ var multiModalCalls = []struct {
 
 func newConcurrencyBoundGateway(t *testing.T, ep *blockingProvider, maxConcurrency, queueSize int) *Gateway {
 	t.Helper()
-	gw, err := New(Config{
+	gw, err := newTestGateway(t, Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
 		Targets: []Target{{
 			VirtualKey:  mockProviderName,
 			Concurrency: &ConcurrencyConfig{MaxConcurrency: maxConcurrency, QueueSize: queueSize},
 		}},
 	})
+
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

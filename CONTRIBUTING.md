@@ -164,6 +164,40 @@ chore: bump Go version to 1.25
 
 The gateway has three test suites with separate build tags and Make targets.
 
+### Writing tests
+
+Follow standard-library `testing` idioms — no assertion frameworks.
+
+- **Name tests after the code under test.** `TestParseConfig` for a function,
+  `TestRegistry_Lookup` for a method. Subtest (`t.Run`) names describe the
+  scenario — `"rejects an unknown provider"` — not `TestSuccess` or `TestCase1`.
+- **Keep tests beside the code they cover** — `foo.go` → `foo_test.go`. Split a
+  large test file along the production files it targets rather than growing one
+  package-wide file.
+- **Use table-driven tests** when several cases share the same setup; a couple of
+  direct tests are fine when they read more clearly.
+- **Assert real behaviour.** Every test must check an observable output, error,
+  or state change. Don't add tautological or assertion-free tests (setting a
+  struct field and reading it back, asserting a value equals itself, or only
+  checking that a function returns `nil`).
+- **Prefer compile-time interface guards** — `var _ core.StreamProvider =
+  (*Provider)(nil)` in the production file — over a runtime test that only
+  restates the same assertion. `providers/stability_test.go` already verifies
+  capability/interface consistency for every provider centrally.
+- **Deterministic timing only.** No arbitrary `time.Sleep` to wait for async
+  work — synchronise with channels, a `sync.WaitGroup`, an injected clock, or a
+  *bounded* poll (`for time.Now().Before(deadline) { … }`). The race detector
+  runs on every `make test`; keep it clean.
+- **Use the test lifecycle helpers** — `t.TempDir`, `t.Setenv`, `t.Context`, and
+  `t.Cleanup` for teardown; `t.Helper()` inside reusable helpers. Never ignore an
+  error returned by setup or cleanup.
+- **Add `t.Parallel()` only when the test is fully isolated** — no `t.Setenv`,
+  `os.Chdir`, package-global mutation, shared mutable fixture, or fixed port.
+- **Release every resource on all paths, including failures** — close servers,
+  listeners, DB handles, and containers via `t.Cleanup`; terminate
+  testcontainers explicitly; guard goroutine-spawning packages with `goleak` in
+  a `TestMain`.
+
 ### Unit tests (no build tag)
 
 ```bash

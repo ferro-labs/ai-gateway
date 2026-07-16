@@ -92,14 +92,14 @@ func TestGatewayReadiness(t *testing.T) {
 				// A configured target with no provider registered: the gateway
 				// requires at least one target, but readiness counts registered
 				// providers, so this reports zero.
-				gw, err := New(Config{
+				gw, err := newTestGateway(t, Config{
 					Strategy: StrategyConfig{Mode: ModeFallback},
 					Targets:  []Target{{VirtualKey: "unregistered"}},
 				})
+
 				if err != nil {
 					t.Fatalf("New gateway: %v", err)
 				}
-				t.Cleanup(func() { _ = gw.Close() })
 				return gw
 			},
 			wantReady:   false,
@@ -137,14 +137,14 @@ func TestGatewayReadiness(t *testing.T) {
 // are populated.
 func newReadinessGateway(t *testing.T, targets []Target) *Gateway {
 	t.Helper()
-	gw, err := New(Config{
+	gw, err := newTestGateway(t, Config{
 		Strategy: StrategyConfig{Mode: ModeFallback},
 		Targets:  targets,
 	})
+
 	if err != nil {
 		t.Fatalf("New gateway: %v", err)
 	}
-	t.Cleanup(func() { _ = gw.Close() })
 	for _, target := range targets {
 		gw.RegisterProvider(&mockProvider{name: target.VirtualKey})
 	}

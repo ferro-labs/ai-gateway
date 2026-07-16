@@ -36,7 +36,11 @@ func openTestDB(t *testing.T) *sql.DB {
 	if err != nil {
 		t.Fatalf("open postgres: %v", err)
 	}
-	t.Cleanup(func() { _ = db.Close() })
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close postgres connection: %v", err)
+		}
+	})
 	return db
 }
 
@@ -122,7 +126,11 @@ func TestPostgresMigration_HashesExistingKeys(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open migrated store: %v", err)
 	}
-	t.Cleanup(func() { _ = store.Close() })
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("close migrated store: %v", err)
+		}
+	})
 
 	key, ok := store.ValidateKey(context.Background(), legacyPlaintextKey)
 	if !ok {
@@ -223,7 +231,11 @@ func TestPostgresMigration_ConcurrentStartupsSerialize(t *testing.T) {
 			t.Errorf("instance %d failed to start: %v", i, err)
 			continue
 		}
-		t.Cleanup(func() { _ = stores[i].Close() })
+		t.Cleanup(func() {
+			if err := stores[i].Close(); err != nil {
+				t.Errorf("close store %d: %v", i, err)
+			}
+		})
 	}
 	if t.Failed() {
 		return
@@ -247,7 +259,11 @@ func TestPostgresMigration_FreshDatabaseMatchesMigrated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open fresh store: %v", err)
 	}
-	t.Cleanup(func() { _ = fresh.Close() })
+	t.Cleanup(func() {
+		if err := fresh.Close(); err != nil {
+			t.Errorf("close fresh store: %v", err)
+		}
+	})
 
 	for _, want := range []string{"key_hash", "key_display", "usage_count", "last_used_at"} {
 		if !columnExists(t, db, "api_keys", want) {

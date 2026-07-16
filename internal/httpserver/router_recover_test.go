@@ -31,10 +31,11 @@ func (panicProvider) Complete(context.Context, providers.Request) (*providers.Re
 // error envelope, with the trace ID that logging.Middleware assigned still on the
 // response. This pins RecoverJSON's position at the outside of the chain.
 func TestRouter_PanicReturnsJSONEnvelopeWithTraceID(t *testing.T) {
-	gw, err := aigateway.New(aigateway.Config{
+	gw, err := newTestGateway(t, aigateway.Config{
 		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeSingle},
 		Targets:  []aigateway.Target{{VirtualKey: "panic-provider"}},
 	})
+
 	if err != nil {
 		t.Fatalf("New gateway: %v", err)
 	}

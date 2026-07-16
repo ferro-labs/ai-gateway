@@ -53,11 +53,12 @@ func buildTestRouter(t *testing.T, gw *aigateway.Gateway) http.Handler {
 func TestBodySizeLimit_TooLarge_Returns413(t *testing.T) {
 	const smallLimit = 64 // bytes — well below a real chat request
 
-	gw, err := aigateway.New(aigateway.Config{
+	gw, err := newTestGateway(t, aigateway.Config{
 		MaxRequestBytes: smallLimit,
 		Strategy:        aigateway.StrategyConfig{Mode: aigateway.ModeSingle},
 		Targets:         []aigateway.Target{{VirtualKey: "stub"}},
 	})
+
 	if err != nil {
 		t.Fatalf("New gateway: %v", err)
 	}
@@ -83,11 +84,12 @@ func TestBodySizeLimit_TooLarge_Returns413(t *testing.T) {
 func TestBodySizeLimit_UnderLimit_NotRejected(t *testing.T) {
 	const largeLimit = 10 * 1024 * 1024 // 10 MiB default
 
-	gw, err := aigateway.New(aigateway.Config{
+	gw, err := newTestGateway(t, aigateway.Config{
 		MaxRequestBytes: largeLimit,
 		Strategy:        aigateway.StrategyConfig{Mode: aigateway.ModeSingle},
 		Targets:         []aigateway.Target{{VirtualKey: "stub"}},
 	})
+
 	if err != nil {
 		t.Fatalf("New gateway: %v", err)
 	}

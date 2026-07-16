@@ -23,7 +23,7 @@ func TestChat_NonStreaming_Success(t *testing.T) {
 		"messages": [{"role": "user", "content": "Hello"}]
 	}`
 
-	req, _ := http.NewRequest("POST", env.Server.URL+"/v1/chat/completions", bytes.NewBufferString(body))
+	req := newTestRequest(t, "POST", env.Server.URL+"/v1/chat/completions", bytes.NewBufferString(body))
 	req.Header.Set("Authorization", "Bearer "+testMasterKey)
 	req.Header.Set("Content-Type", "application/json")
 
@@ -31,7 +31,7 @@ func TestChat_NonStreaming_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /v1/chat/completions: %v", err)
 	}
-	defer resp.Body.Close()
+	defer closeTestBody(t, resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
@@ -93,7 +93,7 @@ func TestChat_NonStreaming_UpstreamError(t *testing.T) {
 		"messages": [{"role": "user", "content": "Hello"}]
 	}`
 
-	req, _ := http.NewRequest("POST", env.Server.URL+"/v1/chat/completions", bytes.NewBufferString(body))
+	req := newTestRequest(t, "POST", env.Server.URL+"/v1/chat/completions", bytes.NewBufferString(body))
 	req.Header.Set("Authorization", "Bearer "+testMasterKey)
 	req.Header.Set("Content-Type", "application/json")
 
@@ -101,7 +101,7 @@ func TestChat_NonStreaming_UpstreamError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST: %v", err)
 	}
-	defer resp.Body.Close()
+	defer closeTestBody(t, resp.Body)
 
 	// Should map to an OpenAI error envelope, not a bare 500.
 	if resp.StatusCode < 400 {
@@ -129,7 +129,7 @@ func TestChat_NonStreaming_UpstreamError(t *testing.T) {
 func TestChat_InvalidJSON_Returns400(t *testing.T) {
 	env := newTestServer(t)
 
-	req, _ := http.NewRequest("POST", env.Server.URL+"/v1/chat/completions", bytes.NewBufferString(`{invalid json`))
+	req := newTestRequest(t, "POST", env.Server.URL+"/v1/chat/completions", bytes.NewBufferString(`{invalid json`))
 	req.Header.Set("Authorization", "Bearer "+testMasterKey)
 	req.Header.Set("Content-Type", "application/json")
 
@@ -137,7 +137,7 @@ func TestChat_InvalidJSON_Returns400(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST: %v", err)
 	}
-	defer resp.Body.Close()
+	defer closeTestBody(t, resp.Body)
 
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", resp.StatusCode)
@@ -163,7 +163,7 @@ func TestChat_MissingModel_Returns400(t *testing.T) {
 		"messages": [{"role": "user", "content": "Hello"}]
 	}`
 
-	req, _ := http.NewRequest("POST", env.Server.URL+"/v1/chat/completions", bytes.NewBufferString(body))
+	req := newTestRequest(t, "POST", env.Server.URL+"/v1/chat/completions", bytes.NewBufferString(body))
 	req.Header.Set("Authorization", "Bearer "+testMasterKey)
 	req.Header.Set("Content-Type", "application/json")
 
@@ -171,7 +171,7 @@ func TestChat_MissingModel_Returns400(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST: %v", err)
 	}
-	defer resp.Body.Close()
+	defer closeTestBody(t, resp.Body)
 
 	if resp.StatusCode != http.StatusBadRequest {
 		body, _ := io.ReadAll(resp.Body)
@@ -187,7 +187,7 @@ func TestChat_UnknownModel_Returns400(t *testing.T) {
 		"messages": [{"role": "user", "content": "Hello"}]
 	}`
 
-	req, _ := http.NewRequest("POST", env.Server.URL+"/v1/chat/completions", bytes.NewBufferString(body))
+	req := newTestRequest(t, "POST", env.Server.URL+"/v1/chat/completions", bytes.NewBufferString(body))
 	req.Header.Set("Authorization", "Bearer "+testMasterKey)
 	req.Header.Set("Content-Type", "application/json")
 
@@ -195,7 +195,7 @@ func TestChat_UnknownModel_Returns400(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST: %v", err)
 	}
-	defer resp.Body.Close()
+	defer closeTestBody(t, resp.Body)
 
 	if resp.StatusCode != http.StatusBadRequest {
 		body, _ := io.ReadAll(resp.Body)

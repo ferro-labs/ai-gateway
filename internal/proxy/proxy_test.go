@@ -24,15 +24,19 @@ import (
 const providerOpenAI = "openai"
 
 // buildTestRegistry creates a registry with an OpenAI provider pointing to upstream.
-func buildTestRegistry(upstreamURL string) *providers.Registry {
+func buildTestRegistry(tb testing.TB, upstreamURL string) *providers.Registry {
+	tb.Helper()
 	reg := providers.NewRegistry()
-	p, _ := openaipkg.New("sk-test-key", upstreamURL)
+	p, err := openaipkg.New("sk-test-key", upstreamURL)
+	if err != nil {
+		tb.Fatalf("openai.New: %v", err)
+	}
 	reg.Register(p)
 	return reg
 }
 
 func TestResolveProvider_XProviderHeader(t *testing.T) {
-	reg := buildTestRegistry("http://localhost")
+	reg := buildTestRegistry(t, "http://localhost")
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/files", nil)
 	req.Header.Set("X-Provider", providerOpenAI)
@@ -47,7 +51,7 @@ func TestResolveProvider_XProviderHeader(t *testing.T) {
 }
 
 func TestResolveProvider_ModelInBody(t *testing.T) {
-	reg := buildTestRegistry("http://localhost")
+	reg := buildTestRegistry(t, "http://localhost")
 
 	body := `{"model":"gpt-4o","messages":[]}`
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
@@ -64,7 +68,7 @@ func TestResolveProvider_ModelInBody(t *testing.T) {
 }
 
 func TestResolveProvider_UnknownProvider(t *testing.T) {
-	reg := buildTestRegistry("http://localhost")
+	reg := buildTestRegistry(t, "http://localhost")
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/files", nil)
 	req.Header.Set("X-Provider", "nonexistent")
@@ -76,7 +80,7 @@ func TestResolveProvider_UnknownProvider(t *testing.T) {
 }
 
 func TestResolveProvider_NoProviderInfo(t *testing.T) {
-	reg := buildTestRegistry("http://localhost")
+	reg := buildTestRegistry(t, "http://localhost")
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/files", nil)
 
@@ -87,7 +91,7 @@ func TestResolveProvider_NoProviderInfo(t *testing.T) {
 }
 
 func TestResolveProvider_BodyRestoredAfterRead(t *testing.T) {
-	reg := buildTestRegistry("http://localhost")
+	reg := buildTestRegistry(t, "http://localhost")
 
 	body := `{"model":"gpt-4o"}`
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/test", strings.NewReader(body))
@@ -106,7 +110,7 @@ func TestResolveProvider_BodyRestoredAfterRead(t *testing.T) {
 }
 
 func TestResolveProvider_ModelAfterLargeNestedField(t *testing.T) {
-	reg := buildTestRegistry("http://localhost")
+	reg := buildTestRegistry(t, "http://localhost")
 
 	body := `{"messages":[{"role":"user","content":"hello"},{"role":"assistant","content":"world"}],"metadata":{"nested":{"a":[1,2,3],"b":{"c":"d"}}},"model":"gpt-4o","stream":true}`
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
@@ -131,7 +135,7 @@ func TestResolveProvider_ModelAfterLargeNestedField(t *testing.T) {
 }
 
 func TestResolveProvider_IgnoresNestedModelField(t *testing.T) {
-	reg := buildTestRegistry("http://localhost")
+	reg := buildTestRegistry(t, "http://localhost")
 
 	body := `{"input":{"model":"gpt-4o"},"messages":[]}`
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
@@ -161,7 +165,7 @@ func TestProxyHandler_ForwardsRequest(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	reg := buildTestRegistry(upstream.URL)
+	reg := buildTestRegistry(t, upstream.URL)
 	handler := Handler(reg)
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/files", strings.NewReader(`{}`))
@@ -186,7 +190,7 @@ func TestProxyHandler_InjectsAuthHeader(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	reg := buildTestRegistry(upstream.URL)
+	reg := buildTestRegistry(t, upstream.URL)
 	handler := Handler(reg)
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/files", nil)
@@ -209,7 +213,7 @@ func TestProxyHandler_RemovesGatewayHeaders(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	reg := buildTestRegistry(upstream.URL)
+	reg := buildTestRegistry(t, upstream.URL)
 	handler := Handler(reg)
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/files", nil)
@@ -230,7 +234,7 @@ func TestProxyHandler_AddsGatewayProviderHeader(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	reg := buildTestRegistry(upstream.URL)
+	reg := buildTestRegistry(t, upstream.URL)
 	handler := Handler(reg)
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/files", nil)
@@ -253,7 +257,7 @@ func TestProxyHandler_RebuildsForwardedHeaders(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	reg := buildTestRegistry(upstream.URL)
+	reg := buildTestRegistry(t, upstream.URL)
 	handler := Handler(reg)
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/files", nil)
@@ -280,7 +284,7 @@ func TestProxyHandler_PassthroughNon200(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	reg := buildTestRegistry(upstream.URL)
+	reg := buildTestRegistry(t, upstream.URL)
 	handler := Handler(reg)
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/files", nil)
@@ -328,7 +332,7 @@ func TestProxyHandler_DoesNotDoubleV1Prefix(t *testing.T) {
 	defer upstream.Close()
 
 	// Provider whose base URL already ends in /v1.
-	reg := buildTestRegistry(upstream.URL + "/v1")
+	reg := buildTestRegistry(t, upstream.URL+"/v1")
 	handler := Handler(reg)
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/responses", strings.NewReader(`{}`))
@@ -355,7 +359,7 @@ func TestProxyHandler_PreservesV1PrefixForRootBase(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	reg := buildTestRegistry(upstream.URL) // base has no /v1
+	reg := buildTestRegistry(t, upstream.URL) // base has no /v1
 	handler := Handler(reg)
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/responses", strings.NewReader(`{}`))
@@ -525,7 +529,7 @@ func BenchmarkExtractTopLevelModel(b *testing.B) {
 }
 
 func BenchmarkResolveProvider_ModelInBody(b *testing.B) {
-	reg := buildTestRegistry("http://localhost")
+	reg := buildTestRegistry(b, "http://localhost")
 	body := []byte(`{
 		"messages":[
 			{"role":"user","content":"hello"},
@@ -566,7 +570,7 @@ func TestProxyHandler_ErrorHandler_GenericJSON(t *testing.T) {
 	deadURL := dead.URL
 	dead.Close()
 
-	reg := buildTestRegistry(deadURL)
+	reg := buildTestRegistry(t, deadURL)
 	handler := Handler(reg)
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/files", nil)
@@ -615,7 +619,7 @@ func TestProxyHandler_StreamingResponseUsesWriteDeadlines(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	reg := buildTestRegistry(upstream.URL)
+	reg := buildTestRegistry(t, upstream.URL)
 	handler := Handler(reg)
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-4o","stream":true}`))
@@ -665,7 +669,7 @@ func TestProxyHandler_StalledUpstreamIsCutByIdleTimeout(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	handler := Handler(buildTestRegistry(upstream.URL))
+	handler := Handler(buildTestRegistry(t, upstream.URL))
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-4o","stream":true}`))
 	req.Header.Set("X-Provider", providerOpenAI)
 	req.ContentLength = int64(len(`{"model":"gpt-4o","stream":true}`))
@@ -712,7 +716,7 @@ func TestProxyHandler_SwitchingProtocolsUpgradeStillWorks(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	gateway := httptest.NewServer(Handler(buildTestRegistry(upstream.URL)))
+	gateway := httptest.NewServer(Handler(buildTestRegistry(t, upstream.URL)))
 	defer gateway.Close()
 
 	var dialer net.Dialer

@@ -17,7 +17,8 @@ var DoctorCmd = &cobra.Command{
 }
 
 func runDoctor(cmd *cobra.Command, _ []string) error {
-	fmt.Println("  Provider API Keys")
+	out := cmd.OutOrStdout()
+	_, _ = fmt.Fprintln(out, "  Provider API Keys")
 
 	topProviders := []struct {
 		name   string
@@ -33,49 +34,49 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 	found := 0
 	for _, p := range topProviders {
 		if os.Getenv(p.envKey) != "" {
-			fmt.Printf("    %s %s\n", Clr(ColorGreen, SymOK), p.name)
+			_, _ = fmt.Fprintf(out, "    %s %s\n", Clr(ColorGreen, SymOK), p.name)
 			found++
 		} else {
-			fmt.Printf("    %s %s\n", Clr(ColorDim, SymDASH), p.name)
+			_, _ = fmt.Fprintf(out, "    %s %s\n", Clr(ColorDim, SymDASH), p.name)
 		}
 	}
 
 	if found == 0 {
-		fmt.Printf("\n    %s no provider API keys detected\n", Clr(ColorYellow, SymWARN))
+		_, _ = fmt.Fprintf(out, "\n    %s no provider API keys detected\n", Clr(ColorYellow, SymWARN))
 	} else {
-		fmt.Printf("\n    %d found\n", found)
+		_, _ = fmt.Fprintf(out, "\n    %d found\n", found)
 	}
 
 	// Configuration check.
-	fmt.Println()
-	fmt.Println("  Configuration")
+	_, _ = fmt.Fprintln(out)
+	_, _ = fmt.Fprintln(out, "  Configuration")
 	cfgPath := os.Getenv("GATEWAY_CONFIG")
 	if cfgPath == "" {
-		fmt.Printf("    %s GATEWAY_CONFIG not set (using defaults)\n", Clr(ColorDim, SymDASH))
+		_, _ = fmt.Fprintf(out, "    %s GATEWAY_CONFIG not set (using defaults)\n", Clr(ColorDim, SymDASH))
 	} else {
 		cfg, err := aigateway.LoadConfig(cfgPath)
 		if err != nil {
-			fmt.Printf("    %s %s: %v\n", Clr(ColorRed, SymFAIL), cfgPath, err)
+			_, _ = fmt.Fprintf(out, "    %s %s: %v\n", Clr(ColorRed, SymFAIL), cfgPath, err)
 		} else if err := aigateway.ValidateConfig(*cfg); err != nil {
-			fmt.Printf("    %s %s: %v\n", Clr(ColorRed, SymFAIL), cfgPath, err)
+			_, _ = fmt.Fprintf(out, "    %s %s: %v\n", Clr(ColorRed, SymFAIL), cfgPath, err)
 		} else {
-			fmt.Printf("    %s %s (strategy=%s, targets=%d)\n",
+			_, _ = fmt.Fprintf(out, "    %s %s (strategy=%s, targets=%d)\n",
 				Clr(ColorGreen, SymOK), cfgPath, cfg.Strategy.Mode, len(cfg.Targets))
 		}
 	}
 
 	// Master key check.
-	fmt.Println()
-	fmt.Println("  Auth")
+	_, _ = fmt.Fprintln(out)
+	_, _ = fmt.Fprintln(out, "  Auth")
 	if os.Getenv("MASTER_KEY") != "" {
-		fmt.Printf("    %s MASTER_KEY is set\n", Clr(ColorGreen, SymOK))
+		_, _ = fmt.Fprintf(out, "    %s MASTER_KEY is set\n", Clr(ColorGreen, SymOK))
 	} else {
-		fmt.Printf("    %s MASTER_KEY not set -- run 'ferrogw init' to generate one\n", Clr(ColorYellow, SymWARN))
+		_, _ = fmt.Fprintf(out, "    %s MASTER_KEY not set -- run 'ferrogw init' to generate one\n", Clr(ColorYellow, SymWARN))
 	}
 
 	// Connectivity check.
-	fmt.Println()
-	fmt.Println("  Gateway Connectivity")
+	_, _ = fmt.Fprintln(out)
+	_, _ = fmt.Fprintln(out, "  Gateway Connectivity")
 
 	c := adminClientFromCmd(cmd)
 	var h struct {
@@ -88,13 +89,13 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 	latency := time.Since(start)
 	switch {
 	case err != nil:
-		fmt.Printf("    %s %s: %v\n", Clr(ColorRed, SymFAIL), c.BaseURL, err)
+		_, _ = fmt.Fprintf(out, "    %s %s: %v\n", Clr(ColorRed, SymFAIL), c.BaseURL, err)
 	case h.Status != "ok":
-		fmt.Printf("    %s %s -- %s (%dms)\n", Clr(ColorYellow, SymWARN), c.BaseURL, h.Status, latency.Milliseconds())
+		_, _ = fmt.Fprintf(out, "    %s %s -- %s (%dms)\n", Clr(ColorYellow, SymWARN), c.BaseURL, h.Status, latency.Milliseconds())
 	default:
-		fmt.Printf("    %s %s -- healthy (%dms)\n", Clr(ColorGreen, SymOK), c.BaseURL, latency.Milliseconds())
+		_, _ = fmt.Fprintf(out, "    %s %s -- healthy (%dms)\n", Clr(ColorGreen, SymOK), c.BaseURL, latency.Milliseconds())
 	}
 
-	fmt.Println()
+	_, _ = fmt.Fprintln(out)
 	return nil
 }

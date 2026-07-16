@@ -35,7 +35,11 @@ func (r *otlpReceiver) handler() http.Handler {
 			http.NotFound(w, req)
 			return
 		}
-		body, _ := io.ReadAll(req.Body)
+		body, err := io.ReadAll(req.Body)
+		if err != nil {
+			http.Error(w, "read request body", http.StatusBadRequest)
+			return
+		}
 		r.mu.Lock()
 		r.posts++
 		r.lastCT = req.Header.Get("Content-Type")
@@ -68,7 +72,7 @@ func TestEndToEnd_OTLPSpanReachesCollector(t *testing.T) {
 	// 1. Stub OTLP receiver.
 	rec := &otlpReceiver{}
 	collector := httptest.NewServer(rec.handler())
-	defer collector.Close()
+	t.Cleanup(collector.Close)
 
 	// 2. Build a real OTel provider pointed at the stub.
 	endpoint := strings.TrimPrefix(collector.URL, "http://")
@@ -81,19 +85,27 @@ func TestEndToEnd_OTLPSpanReachesCollector(t *testing.T) {
 		PrivacyLevel:  gwotel.PrivacyLevelMetadata,
 		ShutdownGrace: 5 * time.Second,
 	}
-	initCtx, cancelInit := context.WithTimeout(context.Background(), 5*time.Second)
+	initCtx, cancelInit := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancelInit()
 	prov, shutdown, err := gwotel.Init(initCtx, cfg)
 	if err != nil {
 		t.Fatalf("otel.Init: %v", err)
 	}
-	defer func() {
+	var (
+		shutdownOnce sync.Once
+		shutdownErr  error
+	)
+	stopProvider := func(ctx context.Context) error {
+		shutdownOnce.Do(func() { shutdownErr = shutdown(ctx) })
+		return shutdownErr
+	}
+	t.Cleanup(func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if err := shutdown(shutdownCtx); err != nil {
-			t.Logf("otel shutdown: %v", err)
+		if err := stopProvider(shutdownCtx); err != nil {
+			t.Errorf("otel shutdown: %v", err)
 		}
-	}()
+	})
 
 	// 3. Wire a normal test gateway with the real provider installed.
 	env := newTestServer(t)
@@ -104,8 +116,11 @@ func TestEndToEnd_OTLPSpanReachesCollector(t *testing.T) {
 		"model":    stubModelName,
 		"messages": []map[string]string{{"role": "user", "content": "hello otel"}},
 	}
-	payload, _ := json.Marshal(body)
-	req, _ := http.NewRequest(
+	payload, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal chat request: %v", err)
+	}
+	req := newTestRequest(t,
 		http.MethodPost,
 		env.Server.URL+"/v1/chat/completions",
 		bytes.NewReader(payload),
@@ -117,18 +132,25 @@ func TestEndToEnd_OTLPSpanReachesCollector(t *testing.T) {
 		t.Fatalf("chat completions: %v", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		_ = resp.Body.Close()
+		respBody, readErr := io.ReadAll(resp.Body)
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			t.Errorf("close error response body: %v", closeErr)
+		}
+		if readErr != nil {
+			t.Fatalf("read error response body: %v", readErr)
+		}
 		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, string(respBody))
 	}
-	_ = resp.Body.Close()
+	if err := resp.Body.Close(); err != nil {
+		t.Fatalf("close response body: %v", err)
+	}
 
 	// 5. Force the batch span processor to flush by shutting down
 	//    the provider. This is the supported way to deterministically
 	//    drain spans in a test; production uses BatchTimeout.
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	if err := shutdown(shutdownCtx); err != nil {
+	if err := stopProvider(shutdownCtx); err != nil {
 		t.Fatalf("shutdown: %v", err)
 	}
 

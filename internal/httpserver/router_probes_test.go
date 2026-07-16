@@ -29,10 +29,11 @@ func buildTestRouterWithRateLimit(t *testing.T, gw *aigateway.Gateway, rlStore *
 
 func newProbeTestGateway(t *testing.T) *aigateway.Gateway {
 	t.Helper()
-	gw, err := aigateway.New(aigateway.Config{
+	gw, err := newTestGateway(t, aigateway.Config{
 		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeSingle},
 		Targets:  []aigateway.Target{{VirtualKey: "stub"}},
 	})
+
 	if err != nil {
 		t.Fatalf("New gateway: %v", err)
 	}

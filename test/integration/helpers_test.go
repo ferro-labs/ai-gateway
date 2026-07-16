@@ -4,16 +4,51 @@
 package integration
 
 import (
+	"context"
 	"database/sql"
 	"testing"
 
+	aigateway "github.com/ferro-labs/ai-gateway"
 	_ "github.com/lib/pq"
 )
 
 var allowedTables = map[string]bool{
-	"api_keys":     true,
-	"request_logs": true,
-	"config":       true,
+	"api_keys":       true,
+	"config_history": true,
+	"gateway_config": true,
+	"request_logs":   true,
+}
+
+type testCloser interface {
+	Close() error
+}
+
+func resetTablesAndClose(t *testing.T, closer testCloser, tables ...string) {
+	t.Helper()
+	for _, table := range tables {
+		truncateTable(t, table)
+	}
+	t.Cleanup(func() {
+		if err := closer.Close(); err != nil {
+			t.Errorf("close test resource: %v", err)
+		}
+		for _, table := range tables {
+			truncateTable(t, table)
+		}
+	})
+}
+
+func newTestGateway(t *testing.T, cfg aigateway.Config) (*aigateway.Gateway, error) {
+	t.Helper()
+	gw, err := aigateway.New(cfg)
+	if err == nil {
+		t.Cleanup(func() {
+			if closeErr := gw.Close(); closeErr != nil {
+				t.Errorf("close gateway: %v", closeErr)
+			}
+		})
+	}
+	return gw, err
 }
 
 func truncateTable(t *testing.T, table string) {
@@ -26,15 +61,13 @@ func truncateTable(t *testing.T, table string) {
 	if err != nil {
 		t.Fatalf("open db for truncate: %v", err)
 	}
-	defer func() { _ = db.Close() }()
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close truncate connection: %v", err)
+		}
+	}()
 
-	stmt, err := db.Prepare("DELETE FROM " + table) //nolint:gosec // table name is validated above
-	if err != nil {
-		t.Logf("prepare truncate %s (may not exist yet): %v", table, err)
-		return
-	}
-	defer func() { _ = stmt.Close() }()
-	if _, err := stmt.Exec(); err != nil {
-		t.Logf("truncate %s: %v", table, err)
+	if _, err := db.ExecContext(context.Background(), "DELETE FROM "+table); err != nil { //nolint:gosec // table name is validated above
+		t.Fatalf("truncate %s: %v", table, err)
 	}
 }

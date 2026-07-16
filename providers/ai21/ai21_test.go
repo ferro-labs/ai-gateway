@@ -65,7 +65,7 @@ func TestAI21Provider_Models(t *testing.T) {
 	}
 }
 
-func TestAI21Provider_isJambaModel(t *testing.T) {
+func TestIsJambaModel(t *testing.T) {
 	tests := []struct {
 		model string
 		want  bool

@@ -19,7 +19,7 @@ func TestMetrics_ExposeGatewayCounters(t *testing.T) {
 		"model": "` + stubModelName + `",
 		"messages": [{"role": "user", "content": "Hello"}]
 	}`
-	chatReq, _ := http.NewRequest("POST", env.Server.URL+"/v1/chat/completions", bytes.NewBufferString(chatBody))
+	chatReq := newTestRequest(t, "POST", env.Server.URL+"/v1/chat/completions", bytes.NewBufferString(chatBody))
 	chatReq.Header.Set("Authorization", "Bearer "+testMasterKey)
 	chatReq.Header.Set("Content-Type", "application/json")
 
@@ -27,21 +27,21 @@ func TestMetrics_ExposeGatewayCounters(t *testing.T) {
 	if err != nil {
 		t.Fatalf("chat request: %v", err)
 	}
-	chatResp.Body.Close()
+	defer closeTestBody(t, chatResp.Body)
 
 	if chatResp.StatusCode != http.StatusOK {
 		t.Fatalf("chat request failed: %d", chatResp.StatusCode)
 	}
 
 	// Now fetch metrics.
-	metricsReq, _ := http.NewRequest("GET", env.Server.URL+"/metrics", nil)
+	metricsReq := newTestRequest(t, "GET", env.Server.URL+"/metrics", nil)
 	metricsReq.Header.Set("Authorization", "Bearer "+testMasterKey)
 
 	metricsResp, err := http.DefaultClient.Do(metricsReq)
 	if err != nil {
 		t.Fatalf("GET /metrics: %v", err)
 	}
-	defer metricsResp.Body.Close()
+	defer closeTestBody(t, metricsResp.Body)
 
 	if metricsResp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(metricsResp.Body)
@@ -74,7 +74,7 @@ func TestMetrics_RequiresAuth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /metrics: %v", err)
 	}
-	defer resp.Body.Close()
+	defer closeTestBody(t, resp.Body)
 
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("expected 401 for unauthenticated metrics, got %d", resp.StatusCode)

@@ -41,10 +41,11 @@ func (p *freshMockProvider) Complete(_ context.Context, _ providers.Request) (*p
 // no MCP tool injection occurs even if a registry is installed after the lock
 // is released.
 func TestRoute_MCPSnapshotIsolation(t *testing.T) {
-	gw, err := New(Config{
+	gw, err := newTestGateway(t, Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
 		Targets:  []Target{{VirtualKey: "mock"}},
 	})
+
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,10 +81,11 @@ func TestRoute_MCPSnapshotIsolation(t *testing.T) {
 //
 // Run with: go test -race -run TestRoute_MCPFieldsSnapshotRace .
 func TestRoute_MCPFieldsSnapshotRace(t *testing.T) {
-	gw, err := New(Config{
+	gw, err := newTestGateway(t, Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
 		Targets:  []Target{{VirtualKey: "mock"}},
 	})
+
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,10 +147,11 @@ func TestRouteStream_MCPRegistrySnapshotRace(t *testing.T) {
 	ch := make(chan providers.StreamChunk)
 	close(ch)
 
-	gw, err := New(Config{
+	gw, err := newTestGateway(t, Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
 		Targets:  []Target{{VirtualKey: "mock-stream"}},
 	})
+
 	if err != nil {
 		t.Fatal(err)
 	}

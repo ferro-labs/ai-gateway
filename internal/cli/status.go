@@ -15,12 +15,13 @@ var StatusCmd = &cobra.Command{
 }
 
 func runStatus(cmd *cobra.Command, _ []string) error {
+	out := cmd.OutOrStdout()
 	c := adminClientFromCmd(cmd)
 
 	start := time.Now()
 	var health map[string]any
 	if err := c.GetHealth(cmd.Context(), "/health", &health); err != nil {
-		fmt.Printf("  %s Gateway unreachable: %v\n", Clr(ColorRed, SymFAIL), err)
+		_, _ = fmt.Fprintf(out, "  %s Gateway unreachable: %v\n", Clr(ColorRed, SymFAIL), err)
 		return nil
 	}
 	latency := time.Since(start)
@@ -36,7 +37,7 @@ func runStatus(cmd *cobra.Command, _ []string) error {
 			status = s
 		}
 	}
-	fmt.Printf("  %s %s -- %s (%s)\n",
+	_, _ = fmt.Fprintf(out, "  %s %s -- %s (%s)\n",
 		Clr(color, symbol),
 		c.BaseURL,
 		Clr(ColorBold+color, status),
@@ -44,7 +45,7 @@ func runStatus(cmd *cobra.Command, _ []string) error {
 	)
 
 	if v, ok := health["version"]; ok {
-		fmt.Printf("  Version: %s\n", Clr(ColorYellow, fmt.Sprint(v)))
+		_, _ = fmt.Fprintf(out, "  Version: %s\n", Clr(ColorYellow, fmt.Sprint(v)))
 	}
 
 	// Try to get provider count.
@@ -56,7 +57,7 @@ func runStatus(cmd *cobra.Command, _ []string) error {
 				models += len(m)
 			}
 		}
-		fmt.Printf("  Providers: %s (%d models)\n",
+		_, _ = fmt.Fprintf(out, "  Providers: %s (%d models)\n",
 			Clr(ColorCyan, fmt.Sprintf("%d", len(provResp))), models)
 	}
 

@@ -16,13 +16,13 @@ import (
 // fetchModelIDs GETs /v1/models and returns the set of model IDs.
 func fetchModelIDs(t *testing.T, url string) map[string]bool {
 	t.Helper()
-	req, _ := http.NewRequest("GET", url+"/v1/models", nil)
+	req := newTestRequest(t, "GET", url+"/v1/models", nil)
 	req.Header.Set("Authorization", "Bearer "+testMasterKey)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("GET /v1/models: %v", err)
 	}
-	defer resp.Body.Close()
+	defer closeTestBody(t, resp.Body)
 
 	var result struct {
 		Data []struct {
@@ -50,7 +50,7 @@ func TestDiscovery_OverridesModelsList(t *testing.T) {
 		return []core.ModelInfo{{ID: discovered, Object: "model", OwnedBy: "stub"}}, nil
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	// Long interval: only the immediate first refresh runs during the test.
 	if err := env.Gateway.StartDiscovery(ctx, time.Hour); err != nil {

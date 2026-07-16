@@ -15,11 +15,16 @@ type Limiter struct {
 	burst      float64 // maximum token capacity
 	tokens     float64 // current token count
 	lastRefill time.Time
+	now        func() time.Time
 }
 
 // New creates a Limiter allowing ratePerSecond requests/s with a burst capacity.
 // If burst <= 0, it defaults to ratePerSecond (no extra burst).
 func New(ratePerSecond, burst float64) *Limiter {
+	return newLimiter(ratePerSecond, burst, time.Now)
+}
+
+func newLimiter(ratePerSecond, burst float64, now func() time.Time) *Limiter {
 	if burst <= 0 {
 		burst = ratePerSecond
 	}
@@ -27,8 +32,21 @@ func New(ratePerSecond, burst float64) *Limiter {
 		rate:       ratePerSecond,
 		burst:      burst,
 		tokens:     burst,
-		lastRefill: time.Now(),
+		lastRefill: now(),
+		now:        now,
 	}
+}
+
+// SetNowForTest overrides the clock used for token refills. Passing nil
+// restores time.Now.
+func (l *Limiter) SetNowForTest(fn func() time.Time) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if fn == nil {
+		fn = time.Now
+	}
+	l.now = fn
+	l.lastRefill = fn()
 }
 
 // Allow consumes one token and returns true if the request is permitted.
@@ -36,7 +54,7 @@ func (l *Limiter) Allow() bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	now := time.Now()
+	now := l.now()
 	elapsed := now.Sub(l.lastRefill).Seconds()
 	l.tokens += elapsed * l.rate
 	if l.tokens > l.burst {
@@ -61,6 +79,7 @@ type Store struct {
 	rate     float64
 	burst    float64
 	maxKeys  int // 0 = unlimited
+	now      func() time.Time
 }
 
 // NewStore creates a Store whose per-key limiters share the same rate/burst.
@@ -69,6 +88,21 @@ func NewStore(ratePerSecond, burst float64) *Store {
 		limiters: make(map[string]*Limiter),
 		rate:     ratePerSecond,
 		burst:    burst,
+		now:      time.Now,
+	}
+}
+
+// SetNowForTest overrides the clock used for access ordering and token
+// refills. Passing nil restores time.Now.
+func (s *Store) SetNowForTest(fn func() time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if fn == nil {
+		fn = time.Now
+	}
+	s.now = fn
+	for _, limiter := range s.limiters {
+		limiter.SetNowForTest(fn)
 	}
 }
 
@@ -86,26 +120,34 @@ func (s *Store) Allow(key string) bool {
 	// Fast path — limiter already exists.
 	s.mu.RLock()
 	l, ok := s.limiters[key]
+	if ok {
+		// Record the access while still holding the read lock. Eviction runs
+		// under the write lock, so it cannot interleave here; this guarantees
+		// lastSeen never gains an entry whose limiter was already evicted,
+		// which would otherwise leak the key and grow the map past maxKeys.
+		s.lastSeen.Store(key, s.now())
+	}
 	s.mu.RUnlock()
 	if ok {
-		s.lastSeen.Store(key, time.Now())
 		return l.Allow()
 	}
 
 	// Slow path — create new limiter.
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	now := s.now()
 	// Double-check after acquiring write lock.
 	if l, ok = s.limiters[key]; ok {
-		s.lastSeen.Store(key, time.Now())
+		s.lastSeen.Store(key, now)
 		return l.Allow()
 	}
 	// Evict least recently seen entry when at cap.
 	if s.maxKeys > 0 && len(s.limiters) >= s.maxKeys {
-		oldest, oldestTime := "", time.Now()
+		oldest := ""
+		var oldestTime time.Time
 		s.lastSeen.Range(func(k, v any) bool {
 			t := v.(time.Time) //nolint:forcetypeassert // lastSeen only ever stores time.Time values
-			if t.Before(oldestTime) {
+			if oldest == "" || t.Before(oldestTime) {
 				oldest = k.(string) //nolint:forcetypeassert // lastSeen keys are always string
 				oldestTime = t
 			}
@@ -116,8 +158,8 @@ func (s *Store) Allow(key string) bool {
 			s.lastSeen.Delete(oldest)
 		}
 	}
-	l = New(s.rate, s.burst)
+	l = newLimiter(s.rate, s.burst, s.now)
 	s.limiters[key] = l
-	s.lastSeen.Store(key, time.Now())
+	s.lastSeen.Store(key, now)
 	return l.Allow()
 }

@@ -4,7 +4,6 @@
 package integration
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -16,9 +15,9 @@ func TestPostgresRequestLog_WriteAndList(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new writer: %v", err)
 	}
-	t.Cleanup(func() { truncateTable(t, "request_logs"); _ = w.Close() })
+	resetTablesAndClose(t, w, "request_logs")
 
-	ctx := context.Background()
+	ctx := t.Context()
 	entry := requestlog.Entry{
 		TraceID:          "trace-1",
 		Stage:            "after_request",
@@ -50,9 +49,9 @@ func TestPostgresRequestLog_Pagination(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new writer: %v", err)
 	}
-	t.Cleanup(func() { truncateTable(t, "request_logs"); _ = w.Close() })
+	resetTablesAndClose(t, w, "request_logs")
 
-	ctx := context.Background()
+	ctx := t.Context()
 	for i := range 5 {
 		entry := requestlog.Entry{
 			TraceID:   "page-" + string(rune('a'+i)),
@@ -91,9 +90,9 @@ func TestPostgresRequestLog_Delete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new writer: %v", err)
 	}
-	t.Cleanup(func() { truncateTable(t, "request_logs"); _ = w.Close() })
+	resetTablesAndClose(t, w, "request_logs")
 
-	ctx := context.Background()
+	ctx := t.Context()
 	now := time.Now().UTC()
 
 	old := requestlog.Entry{TraceID: "old", Stage: "after_request", Model: "m", Provider: "p", CreatedAt: now.Add(-2 * time.Hour)}
