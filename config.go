@@ -80,8 +80,8 @@ type Config struct {
 // bootstrap registration does not wire it up in v1: Bedrock builds via a
 // dual-key ConfiguredFn path (internal/bootstrap.registerBedrockProvider)
 // rather than the entry.Build-from-credentials-map flow this feature relies
-// on. A later work-stream may add a proper error or warning once
-// multi-instance Bedrock support is decided.
+// on. Multi-instance Bedrock support is not yet implemented; a bootstrap-time
+// error or warning for this case may be added once it is.
 type ProviderInstanceConfig struct {
 	// Alias is the routing key this instance is addressed by in
 	// targets[].virtual_key. Must be unique across all ProviderInstances and
@@ -94,8 +94,8 @@ type ProviderInstanceConfig struct {
 	// key names as providers.CfgKey* (e.g. CfgKeyAPIKey = "api_key",
 	// CfgKeyBaseURL = "base_url"). Values may reference environment variables
 	// via ${VAR} — these are NOT resolved here or anywhere in
-	// LoadConfig/Normalize; resolution happens at provider-construction time (a
-	// later work-stream), matching this codebase's existing internal/envref
+	// LoadConfig/Normalize; resolution happens at provider-construction time,
+	// matching this codebase's existing internal/envref
 	// convention documented in AGENTS.md ("resolved at component construction,
 	// never at config load, so Config never carries a materialized secret into
 	// config-history storage or an admin API response").

@@ -217,9 +217,9 @@ func validateProviderInstances(instances []ProviderInstanceConfig) error {
 		// internal/bootstrap.registerBedrockProvider) rather than the normal
 		// entry.Build-from-credentials-map flow every other provider instance
 		// relies on, so multi-instance Bedrock isn't wired by bootstrap
-		// registration in v1. A later work-stream may add a proper error or
-		// warning once multi-instance Bedrock support is decided; validation
-		// does not block it in the meantime.
+		// registration in v1. Validation does not block it in the meantime;
+		// a bootstrap-time error or warning may be added once multi-instance
+		// Bedrock support is implemented.
 	}
 	return nil
 }

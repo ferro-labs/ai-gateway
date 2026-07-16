@@ -400,10 +400,10 @@ func RegisterProviderInstances(registry *providers.Registry, cfg *aigateway.Conf
 
 		p, err := entry.Build(providers.ProviderConfig(resolvedCreds))
 		if err != nil {
-			// Defense-in-depth: ValidateConfig (a parallel work-stream) already
-			// validates that Type resolves to a known provider before bootstrap
-			// runs, so this should be unreachable in practice, but a bad build
-			// must not be able to take down the whole gateway.
+			// Defense-in-depth: ValidateConfig already validates that Type
+			// resolves to a known provider before bootstrap runs, so this
+			// should be unreachable in practice, but a bad build must not be
+			// able to take down the whole gateway.
 			logging.Logger.Warn("provider instance init skipped", "alias", inst.Alias, "provider", inst.Type, "error", err)
 			metrics.ProviderInitFailures.WithLabelValues(inst.Type).Inc()
 			continue
