@@ -108,7 +108,7 @@ Status: Release candidate — dated 2026-07-20, awaiting tag. Tracking issue: [#
 ### What ships
 
 - **stdio transport** for the Model Context Protocol: an `mcp_servers` entry may set `command` instead of `url`, and the gateway launches and supervises that process for its lifetime. Any `npx`, `uvx`, or binary MCP server works without a separate HTTP endpoint. Contributed by [@gr3enarr0w](https://github.com/gr3enarr0w).
-- **Subprocess environment isolation** — MCP servers do not inherit the gateway environment, so gateway credentials are unreachable from them. `${VAR}` in a server's `env` is resolved at client construction and redacted from `GET /admin/config`.
+- **Subprocess environment isolation** — MCP servers do not inherit the gateway environment, so no gateway credential reaches a server implicitly. Anything a server needs, including a credential, must be listed in its `env`; `${VAR}` there is resolved at client construction and redacted from `GET /admin/config`.
 - **Process-group teardown and stderr capture** — `npx`-style servers no longer leak their real worker on shutdown or reload, and a server's diagnostics reach the log instead of a pipe nobody reads.
 - **Two fixes to the existing MCP path**: a misconfigured server no longer collapses streaming gateway-wide, and caller-supplied tool calls are no longer intercepted by the agentic loop. Both affected operators regardless of whether they used stdio.
 

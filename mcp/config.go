@@ -44,8 +44,14 @@ type ServerConfig struct {
 	//
 	// The subprocess does NOT inherit the gateway's environment. It receives a
 	// minimal base — PATH, HOME, LANG and TMPDIR, when set — plus exactly the
-	// keys listed here, which override the base. This keeps gateway credentials
-	// such as OPENAI_API_KEY and MASTER_KEY out of MCP server processes.
+	// keys listed here, which override the base. So no gateway credential such
+	// as OPENAI_API_KEY or MASTER_KEY reaches an MCP server implicitly.
+	//
+	// This is isolation from *implicit* inheritance, not a prohibition: a value
+	// placed here deliberately — including a credential, including one drawn
+	// from the gateway's own environment via ${VAR} — is passed through as
+	// configured. Treat this map as the trust boundary and populate it
+	// knowingly.
 	//
 	// A consequence worth knowing: servers that need other inherited variables
 	// (HTTPS_PROXY, NODE_PATH, SSL_CERT_FILE, or SYSTEMROOT and APPDATA on
