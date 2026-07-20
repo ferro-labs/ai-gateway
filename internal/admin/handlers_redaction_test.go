@@ -28,6 +28,14 @@ func TestGetConfigRedactsSecrets(t *testing.T) {
 					"X-Env":         "${MCP_TOKEN}",
 				},
 			},
+			{
+				Name:    "stdio-tools",
+				Command: "some-mcp-server",
+				Env: map[string]string{
+					"API_KEY":  "literal-mcp-env-secret",
+					"REF_ONLY": "${MCP_ENV_TOKEN}",
+				},
+			},
 		},
 		Observability: aigateway.ObservabilityConfig{
 			Tracing: aigateway.TracingConfig{
@@ -105,6 +113,18 @@ func TestGetConfigRedactsSecrets(t *testing.T) {
 		t.Errorf("MCP X-Env header: got %q, want ${MCP_TOKEN}", got)
 	}
 
+	// Same for stdio Env: it is the only credential channel for a subprocess,
+	// so a literal there is as secret-bearing as an Authorization header.
+	if len(respCfg.MCPServers) < 2 {
+		t.Fatal("expected the stdio MCP server in response")
+	}
+	if got := respCfg.MCPServers[1].Env["API_KEY"]; got != "[REDACTED]" {
+		t.Errorf("MCP Env API_KEY: got %q, want [REDACTED]", got)
+	}
+	if got := respCfg.MCPServers[1].Env["REF_ONLY"]; got != "${MCP_ENV_TOKEN}" {
+		t.Errorf("MCP Env REF_ONLY: got %q, want ${MCP_ENV_TOKEN}", got)
+	}
+
 	// Exporter string config must be redacted.
 	if len(respCfg.Observability.Exporters) == 0 {
 		t.Fatal("expected exporters in response")
@@ -132,6 +152,9 @@ func TestGetConfigRedactsSecrets(t *testing.T) {
 	}
 	if got := liveCfg.MCPServers[0].Headers["Authorization"]; got != "literal-mcp-secret" {
 		t.Errorf("live config MCP Authorization mutated: got %q, want literal-mcp-secret", got)
+	}
+	if got := liveCfg.MCPServers[1].Env["API_KEY"]; got != "literal-mcp-env-secret" {
+		t.Errorf("live config MCP Env API_KEY mutated: got %q, want literal-mcp-env-secret", got)
 	}
 	if got := liveCfg.Observability.Exporters[0].Config["api_key"].(string); got != "literal-ls-key" {
 		t.Errorf("live config api_key mutated: got %q, want literal-ls-key", got)

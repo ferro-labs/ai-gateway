@@ -103,9 +103,14 @@ Builds on the v1.1.4 forwarding fix to make per-provider parameter support **exp
 
 ## v1.3.0 — MCP stdio Transport
 
-Status: Planning (target 2026-07-17). Tracking issue: [#121](https://github.com/ferro-labs/ai-gateway/issues/121).
+Status: Release candidate — dated 2026-07-20, awaiting tag. Tracking issue: [#121](https://github.com/ferro-labs/ai-gateway/issues/121).
 
-- **stdio transport** for the Model Context Protocol so the gateway can speak MCP over stdio alongside the existing transport, enabling local / embedded MCP clients.
+### What ships
+
+- **stdio transport** for the Model Context Protocol: an `mcp_servers` entry may set `command` instead of `url`, and the gateway launches and supervises that process for its lifetime. Any `npx`, `uvx`, or binary MCP server works without a separate HTTP endpoint. Contributed by [@gr3enarr0w](https://github.com/gr3enarr0w).
+- **Subprocess environment isolation** — MCP servers do not inherit the gateway environment, so gateway credentials are unreachable from them. `${VAR}` in a server's `env` is resolved at client construction and redacted from `GET /admin/config`.
+- **Process-group teardown and stderr capture** — `npx`-style servers no longer leak their real worker on shutdown or reload, and a server's diagnostics reach the log instead of a pipe nobody reads.
+- **Two fixes to the existing MCP path**: a misconfigured server no longer collapses streaming gateway-wide, and caller-supplied tool calls are no longer intercepted by the agentic loop. Both affected operators regardless of whether they used stdio.
 
 ## v1.4.0 — Embeddable Gateway
 

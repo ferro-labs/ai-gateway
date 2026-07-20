@@ -95,7 +95,10 @@ func TestShouldContinueLoopNoToolCalls(t *testing.T) {
 }
 
 func TestShouldContinueLoopWithToolCalls(t *testing.T) {
-	exec := NewExecutor(NewRegistry(), 5, nil)
+	// The loop arms only for tool calls MCP actually owns. Previously an empty
+	// registry armed it for any tool name, which is what let the executor
+	// hijack caller-supplied tool calls.
+	exec := NewExecutor(readyRegistry(t, []Tool{{Name: "do_thing"}}), 5, nil)
 	resp := &core.Response{
 		Choices: []core.Choice{{
 			Message: core.Message{
@@ -105,7 +108,7 @@ func TestShouldContinueLoopWithToolCalls(t *testing.T) {
 		}},
 	}
 	if !exec.ShouldContinueLoop(resp, 0) {
-		t.Error("expected true when tool calls present and depth < max")
+		t.Error("expected true when an MCP-owned tool call is present and depth < max")
 	}
 }
 
@@ -161,7 +164,11 @@ func TestResolvePendingToolCallsFoundTool(t *testing.T) {
 	}
 }
 
-func TestResolvePendingToolCallsUnknownTool(t *testing.T) {
+func TestResolvePendingToolCallsUnownedToolPassesThrough(t *testing.T) {
+	// A tool no MCP server owns belongs to the caller. The executor must not
+	// answer it — it previously fabricated
+	// {"error":"tool X not found in any registered MCP server"}, which swallowed
+	// the client's own function calls and hid finish_reason: tool_calls.
 	exec := NewExecutor(NewRegistry(), 5, nil) // empty registry
 
 	resp := &core.Response{
@@ -180,19 +187,8 @@ func TestResolvePendingToolCallsUnknownTool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(msgs) != 2 {
-		t.Fatalf("expected 2 messages (assistant + error tool result), got %d", len(msgs))
-	}
-	// Tool result should embed an error JSON
-	if msgs[1].Role != core.RoleTool {
-		t.Errorf("expected role tool, got %q", msgs[1].Role)
-	}
-	var payload map[string]string
-	if err := json.Unmarshal([]byte(msgs[1].Content), &payload); err != nil {
-		t.Fatalf("tool result content is not valid JSON: %v — content: %q", err, msgs[1].Content)
-	}
-	if payload["error"] == "" {
-		t.Error("expected error field in tool result content")
+	if len(msgs) != 0 {
+		t.Fatalf("expected 0 messages for an unowned tool call (caller executes it), got %d: %+v", len(msgs), msgs)
 	}
 }
 

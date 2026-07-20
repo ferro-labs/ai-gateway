@@ -2,6 +2,7 @@ package aigateway
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -60,7 +61,55 @@ const mcpInitTimeout = 60 * time.Second
 // It is safe to call from New (before the gateway is published, so no lock is
 // held) and from ReloadConfig (with g.mu held by the caller); the field writes
 // target the same gateway and, once published, are serialized by g.mu.
+// resolveMCPServerRefs returns a copy of cfg with its ${VAR} references
+// resolved, ready to hand to the transport.
+//
+// Resolution happens here rather than at config load so the Config keeps the
+// references: a bearer token or API key is never persisted to the config store
+// nor served by GET /admin/config. The returned copy owns fresh maps, so the
+// caller's Config is never mutated.
+//
+// Both Headers and Env are resolved. Env matters most: MCP subprocesses do not
+// inherit the gateway's environment (see internal/mcp.newStdioClient), which
+// makes this map the only route by which a credential can reach one.
+func resolveMCPServerRefs(cfg pubmcp.ServerConfig) (pubmcp.ServerConfig, error) {
+	headers, err := envref.StringMap(cfg.Headers)
+	if err != nil {
+		return pubmcp.ServerConfig{}, fmt.Errorf("headers: %w", err)
+	}
+	env, err := envref.StringMap(cfg.Env)
+	if err != nil {
+		return pubmcp.ServerConfig{}, fmt.Errorf("env: %w", err)
+	}
+	cfg.Headers = headers
+	cfg.Env = env
+	return cfg, nil
+}
+
 func (g *Gateway) wireMCPLocked(cfg Config, failLogMsg string) {
+	// The previous registry — and any live stdio subprocess clients it holds — is
+	// swapped out below. Retire it, or a reload leaks an orphaned subprocess per
+	// stdio server: RegisterConfig only closes old clients when re-registering
+	// into the *same* Registry, and this rebuilds a fresh one.
+	//
+	// Registry.Close is refcounted, so requests already holding this snapshot
+	// keep their subprocesses until they finish; teardown happens once the last
+	// one releases. Still dispatched to a goroutine because the caller holds
+	// g.mu and an unheld registry closes inline, which can block on the
+	// transport's shutdown ladder. Nil on the construction path.
+	if old := g.mcpRegistry; old != nil {
+		// Tracked, not fire-and-forget: Gateway.Close waits on this group, so a
+		// reload immediately before shutdown cannot leave the termination ladder
+		// running past process exit.
+		g.pendingMCPCloses.Add(1)
+		go func() {
+			defer g.pendingMCPCloses.Done()
+			if err := old.Close(); err != nil {
+				slog.Error("mcp: failed to close previous registry after reload", "error", err)
+			}
+		}()
+	}
+
 	if len(cfg.MCPServers) == 0 {
 		g.mcpRegistry = nil
 		g.mcpExecutor = nil
@@ -71,10 +120,7 @@ func (g *Gateway) wireMCPLocked(cfg Config, failLogMsg string) {
 	reg := mcp.NewRegistry()
 	registered := make([]pubmcp.ServerConfig, 0, len(cfg.MCPServers))
 	for _, mcpCfg := range cfg.MCPServers {
-		// Resolve ${VAR} references into the MCP client's headers here, not in the
-		// Config: the Config keeps the references, so a bearer token is never
-		// persisted to the config store nor served by GET /admin/config.
-		headers, err := envref.StringMap(mcpCfg.Headers)
+		resolved, err := resolveMCPServerRefs(mcpCfg)
 		if err != nil {
 			// Skip only this server: an unrelated server's config must not be able to
 			// disable every other server, and the caller (ReloadConfig) must still get
@@ -82,9 +128,8 @@ func (g *Gateway) wireMCPLocked(cfg Config, failLogMsg string) {
 			slog.Error(failLogMsg, "server", mcpCfg.Name, "error", err)
 			continue
 		}
-		mcpCfg.Headers = headers
-		reg.RegisterConfig(mcpCfg)
-		registered = append(registered, mcpCfg)
+		reg.RegisterConfig(resolved)
+		registered = append(registered, resolved)
 	}
 
 	// Only servers that actually registered can contribute to the shared

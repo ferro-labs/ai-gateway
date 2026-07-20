@@ -12,6 +12,7 @@ package aigateway
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -34,18 +35,28 @@ import (
 
 // Gateway is the main entry point for routing LLM requests.
 type Gateway struct {
-	mu                 sync.RWMutex
-	config             Config
-	catalog            models.Catalog
-	providers          map[string]providers.Provider
-	providerNames      []string
-	strategy           strategies.Strategy
-	streamingContent   []streamingContentCondition
-	plugins            *plugin.Manager
-	requestLogWriter   requestlog.Writer
-	closeOnce          sync.Once
+	mu               sync.RWMutex
+	config           Config
+	catalog          models.Catalog
+	providers        map[string]providers.Provider
+	providerNames    []string
+	strategy         strategies.Strategy
+	streamingContent []streamingContentCondition
+	plugins          *plugin.Manager
+	requestLogWriter requestlog.Writer
+	closeOnce        sync.Once
+	// closed is set under mu by Close. ReloadConfig checks it because closeOnce
+	// has already fired by then: a reload landing after shutdown would build a
+	// fresh MCP registry, spawn its subprocesses, and leave nothing to ever
+	// close them.
+	closed             bool
 	hooks              *hookBus
 	catalogRefreshDone sync.WaitGroup
+	// pendingMCPCloses tracks registries retired by a config reload, whose
+	// teardown runs asynchronously. Close waits on it so a reload landing just
+	// before shutdown cannot leave a subprocess termination ladder running past
+	// process exit.
+	pendingMCPCloses sync.WaitGroup
 	// shutdownCtx is a lifecycle context, not a request context. Storing it on the
 	// struct is the intended idiom here: it is created once in New, parents the
 	// gateway's background workers (hook dispatch, catalog refresh, MCP init), and
@@ -312,6 +323,10 @@ func (g *Gateway) ReloadConfig(ctx context.Context, cfg Config) error {
 		}
 	}()
 	g.mu.Lock()
+	if g.closed {
+		g.mu.Unlock()
+		return errors.New("gateway is closed")
+	}
 	oldPlugins := g.plugins
 	g.config = cfg
 	g.streamingContent = streamingContent
@@ -423,6 +438,17 @@ func acquirePluginManager(plugins *plugin.Manager) func() {
 	return plugins.Acquire()
 }
 
+// acquireMCPRegistry pins a registry snapshot for the life of one request, so a
+// concurrent config reload retires the old registry only after this request has
+// finished with it. Without it, a reload terminates the stdio subprocess
+// underneath an in-flight tool call and the call fails with "transport closed".
+func acquireMCPRegistry(reg *mcp.Registry) func() {
+	if reg == nil {
+		return func() {}
+	}
+	return reg.Acquire()
+}
+
 // ── Registry-consolidation helpers ──────────────────────────────────────────
 // These methods make *Gateway satisfy providers.ProviderSource so that HTTP
 // handlers that previously held a *providers.Registry can accept the gateway
@@ -502,19 +528,47 @@ func (g *Gateway) FindStreamingByModel(model string) (providers.StreamProvider, 
 // times out — Close must never block indefinitely (a panicking hook could
 // otherwise wedge shutdown).
 //
+// For stdio MCP servers this terminates their subprocesses; HTTP MCP servers
+// require no explicit teardown.
+//
 // Safe to call multiple times; subsequent calls are no-ops.
 func (g *Gateway) Close() error {
 	g.closeOnce.Do(func() {
 		g.shutdownCancel()
+		// Snapshot and clear the MCP registry under the same lock that
+		// ReloadConfig writes it through. Reading g.mcpRegistry after unlocking
+		// raced with a concurrent reload, and the losing interleaving left a
+		// live registry unclosed — every subprocess leaked for the life of the
+		// process, since closeOnce can never fire again.
 		g.mu.Lock()
 		plugins := g.plugins
 		g.plugins = plugin.NewManager()
+		mcpRegistry := g.mcpRegistry
+		g.mcpRegistry = nil
+		g.mcpExecutor = nil
+		g.closed = true
 		g.mu.Unlock()
 		if err := closePluginManager(plugins); err != nil {
 			slog.Warn("plugin close failed during gateway shutdown", "error", err)
 		}
+		// Retire MCP *inside* the bounded drain, not ahead of it. With no active
+		// holders Close tears transports down inline, and one wedged stdio server
+		// can spend seconds in the graceful/SIGTERM/SIGKILL ladder — ahead of the
+		// budget that would consume the whole grace period before the timer even
+		// starts, and an orchestrator would SIGKILL mid-cleanup.
+		//
+		// The wait also covers registries retired by earlier reloads, whose
+		// teardown runs in its own goroutine. Without that a reload shortly
+		// before shutdown could leave a termination ladder running past process
+		// exit, orphaning exactly the subprocess the sweep exists to reap.
 		done := make(chan struct{})
 		go func() {
+			if mcpRegistry != nil {
+				if err := mcpRegistry.Close(); err != nil {
+					slog.Warn("mcp registry close failed during gateway shutdown", "error", err)
+				}
+			}
+			g.pendingMCPCloses.Wait()
 			g.hooks.wait()
 			g.catalogRefreshDone.Wait()
 			close(done)

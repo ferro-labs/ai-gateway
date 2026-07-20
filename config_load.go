@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/ferro-labs/ai-gateway/internal/tracingpolicy"
+	pubmcp "github.com/ferro-labs/ai-gateway/mcp"
 	"github.com/ferro-labs/ai-gateway/providers/core"
 	"gopkg.in/yaml.v3"
 )
@@ -170,6 +171,40 @@ func ValidateConfig(cfg Config) error {
 		}
 	}
 
+	if err := validateMCPServers(cfg.MCPServers); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// validateMCPServers checks each server's transport selection: exactly one of
+// URL (Streamable HTTP) or Command (stdio) must be set. Leaving both empty fails
+// later during async initialization with a confusing error; leaving both set
+// silently prefers stdio and drops Headers, which is surprising.
+func validateMCPServers(servers []pubmcp.ServerConfig) error {
+	seen := make(map[string]struct{}, len(servers))
+	for i, mcpCfg := range servers {
+		// Name is the registry key. An empty one produces a server nothing can
+		// refer to in logs or metrics; a duplicate silently replaces the earlier
+		// server, taking its tool mappings with it.
+		if strings.TrimSpace(mcpCfg.Name) == "" {
+			return fmt.Errorf("mcp server at index %d: name is required", i)
+		}
+		if _, dup := seen[mcpCfg.Name]; dup {
+			return fmt.Errorf("mcp server %q: duplicate name; each server needs a unique name", mcpCfg.Name)
+		}
+		seen[mcpCfg.Name] = struct{}{}
+
+		hasURL := mcpCfg.URL != ""
+		hasCommand := mcpCfg.Command != ""
+		switch {
+		case hasURL && hasCommand:
+			return fmt.Errorf("mcp server %q: url and command are mutually exclusive; set exactly one to select transport", mcpCfg.Name)
+		case !hasURL && !hasCommand:
+			return fmt.Errorf("mcp server %q: either url (Streamable HTTP) or command (stdio) is required", mcpCfg.Name)
+		}
+	}
 	return nil
 }
 

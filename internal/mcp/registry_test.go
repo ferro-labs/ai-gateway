@@ -31,6 +31,14 @@ func newMockServer(t *testing.T, tools []Tool) *httptest.Server {
 				JSONRPC: "2.0", ID: req.ID,
 				Result: mustMarshal(map[string]any{"tools": tools}),
 			})
+		case mcpMethodToolsCall:
+			_ = json.NewEncoder(w).Encode(JSONRPCResponse{
+				JSONRPC: "2.0", ID: req.ID,
+				Result: mustMarshal(map[string]any{
+					"content": []map[string]any{{"type": "text", "text": "ok"}},
+					"isError": false,
+				}),
+			})
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}

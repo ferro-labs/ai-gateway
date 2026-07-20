@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	pubmcp "github.com/ferro-labs/ai-gateway/mcp"
 )
 
 func TestLoadConfig_Valid(t *testing.T) {
@@ -663,4 +665,92 @@ func writeTempFile(t *testing.T, name, content string) string {
 		t.Fatalf("writing temp file: %v", err)
 	}
 	return path
+}
+
+func TestValidateConfig_MCPServerTransportSelection(t *testing.T) {
+	base := Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: "key1"}},
+	}
+
+	t.Run("url only is valid", func(t *testing.T) {
+		cfg := base
+		cfg.MCPServers = []pubmcp.ServerConfig{{Name: "http-server", URL: "https://mcp.example.com/mcp"}}
+		if err := ValidateConfig(cfg); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("command only is valid", func(t *testing.T) {
+		cfg := base
+		cfg.MCPServers = []pubmcp.ServerConfig{{Name: "stdio-server", Command: "npx", Args: []string{"some-mcp-server"}}}
+		if err := ValidateConfig(cfg); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("both url and command is invalid", func(t *testing.T) {
+		cfg := base
+		cfg.MCPServers = []pubmcp.ServerConfig{{Name: "ambiguous", URL: "https://mcp.example.com/mcp", Command: "npx"}}
+		if err := ValidateConfig(cfg); err == nil {
+			t.Error("expected error when both url and command are set, got nil")
+		}
+	})
+
+	t.Run("neither url nor command is invalid", func(t *testing.T) {
+		cfg := base
+		cfg.MCPServers = []pubmcp.ServerConfig{{Name: "empty"}}
+		if err := ValidateConfig(cfg); err == nil {
+			t.Error("expected error when neither url nor command is set, got nil")
+		}
+	})
+}
+
+func TestValidateMCPServers_NameRequiredAndUnique(t *testing.T) {
+	base := Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: "openai"}},
+	}
+
+	t.Run("empty name is rejected", func(t *testing.T) {
+		cfg := base
+		cfg.MCPServers = []pubmcp.ServerConfig{{URL: "https://mcp.example.com/mcp"}}
+		if err := ValidateConfig(cfg); err == nil {
+			t.Error("expected an error for an unnamed mcp server, got nil")
+		}
+	})
+
+	t.Run("whitespace-only name is rejected", func(t *testing.T) {
+		cfg := base
+		cfg.MCPServers = []pubmcp.ServerConfig{{Name: "   ", URL: "https://mcp.example.com/mcp"}}
+		if err := ValidateConfig(cfg); err == nil {
+			t.Error("expected an error for a whitespace-only mcp server name, got nil")
+		}
+	})
+
+	t.Run("duplicate names are rejected", func(t *testing.T) {
+		cfg := base
+		cfg.MCPServers = []pubmcp.ServerConfig{
+			{Name: "tools", URL: "https://a.example.com/mcp"},
+			{Name: "tools", URL: "https://b.example.com/mcp"},
+		}
+		err := ValidateConfig(cfg)
+		if err == nil {
+			t.Fatal("expected an error for duplicate mcp server names, got nil")
+		}
+		if !strings.Contains(err.Error(), "tools") {
+			t.Errorf("error %q should name the duplicated server", err)
+		}
+	})
+
+	t.Run("distinct names are accepted", func(t *testing.T) {
+		cfg := base
+		cfg.MCPServers = []pubmcp.ServerConfig{
+			{Name: "a", URL: "https://a.example.com/mcp"},
+			{Name: "b", Command: "npx"},
+		}
+		if err := ValidateConfig(cfg); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
 }

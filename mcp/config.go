@@ -11,15 +11,53 @@ import "context"
 
 // ServerConfig defines how the gateway connects to one external MCP server.
 // It lives in gateway.Config.MCPServers and is consumed by the internal Registry.
+//
+// Transport selection: when Command is non-empty the gateway uses stdio transport
+// (the server is launched as a subprocess). Otherwise Streamable HTTP transport
+// is used and URL must be provided.
 type ServerConfig struct {
 	// Name is a unique human-readable identifier for this MCP server.
 	Name string `json:"name" yaml:"name"`
+
+	// ── HTTP transport (URL must be set when Command is empty) ───────────────
 	// URL is the Streamable HTTP endpoint (e.g. "https://mcp.example.com/mcp").
-	URL string `json:"url" yaml:"url"`
+	URL string `json:"url,omitempty" yaml:"url,omitempty"`
 	// Headers are additional HTTP headers sent with every MCP request
-	// (e.g. authorization tokens). When loaded via aigateway.LoadConfig,
-	// values may reference environment variables using $VAR or ${VAR}.
+	// (e.g. authorization tokens). Values may reference environment variables
+	// using ${VAR} — only the braced form is a reference, a bare $ is literal
+	// data, and an undefined variable is an error rather than a blank secret.
+	// References are resolved when the MCP client is constructed, not when the
+	// config is loaded, so the Config itself never carries a materialised secret
+	// into the config-history store or GET /admin/config.
+	//
+	// Ignored for stdio servers (those setting Command).
 	Headers map[string]string `json:"headers,omitempty" yaml:"headers,omitempty"`
+
+	// ── Stdio transport (Command must be set; URL/Headers are ignored) ───────
+	// Command is the executable to launch as an MCP stdio server.
+	// The process is started at gateway-init time and kept alive for the
+	// lifetime of the gateway.
+	Command string `json:"command,omitempty" yaml:"command,omitempty"`
+	// Args are the command-line arguments passed to Command.
+	Args []string `json:"args,omitempty" yaml:"args,omitempty"`
+	// Env are the environment variables injected into the subprocess.
+	//
+	// The subprocess does NOT inherit the gateway's environment. It receives a
+	// minimal base — PATH, HOME, LANG and TMPDIR, when set — plus exactly the
+	// keys listed here, which override the base. This keeps gateway credentials
+	// such as OPENAI_API_KEY and MASTER_KEY out of MCP server processes.
+	//
+	// A consequence worth knowing: servers that need other inherited variables
+	// (HTTPS_PROXY, NODE_PATH, SSL_CERT_FILE, or SYSTEMROOT and APPDATA on
+	// Windows) must have them listed here explicitly.
+	//
+	// Values may reference environment variables using ${VAR} — only the braced
+	// form, same rules as Headers — resolved when the MCP client is constructed.
+	// Since the gateway's own environment is not inherited, this is the only
+	// channel by which a credential can reach an MCP subprocess.
+	Env map[string]string `json:"env,omitempty" yaml:"env,omitempty"`
+
+	// ── Common options ────────────────────────────────────────────────────────
 	// AllowedTools restricts which tools from this server are exposed to the LLM.
 	// An empty slice means all discovered tools are allowed.
 	AllowedTools []string `json:"allowed_tools,omitempty" yaml:"allowed_tools,omitempty"`
@@ -28,8 +66,9 @@ type ServerConfig struct {
 	// servers with MaxCallDepth ≤ 0 are excluded from the minimum.
 	// Defaults to 5 when all servers leave MaxCallDepth unset or zero.
 	MaxCallDepth int `json:"max_call_depth,omitempty" yaml:"max_call_depth,omitempty"`
-	// TimeoutSeconds is the per-request timeout for calls to this server.
-	// Defaults to 30 when unset or zero.
+	// TimeoutSeconds is the per-request timeout for individual tool calls to
+	// this server. Applies to both HTTP and stdio transports. Defaults to 30
+	// when unset or zero.
 	TimeoutSeconds int `json:"timeout_seconds,omitempty" yaml:"timeout_seconds,omitempty"`
 }
 

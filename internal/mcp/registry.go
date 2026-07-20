@@ -2,7 +2,9 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"runtime/trace"
 	"sync"
 	"time"
@@ -20,12 +22,22 @@ type Registry struct {
 	toolMap     map[string]string       // tool name => server name (O(1) lookup)
 	regOrder    []string                // server names in registration order
 	serverIndex map[string]int          // server name => position in regOrder
+
+	// Retirement lifecycle. A request snapshots the registry at entry and uses
+	// it after releasing the gateway lock, so a config reload that closed the
+	// old registry immediately would terminate a stdio subprocess underneath an
+	// in-flight tool call. Holders are counted, and teardown waits for the last
+	// one. Mirrors the plugin.Manager lifecycle.
+	lifecycleMu sync.Mutex
+	lifecycle   *sync.Cond
+	active      int
+	closed      bool
 }
 
 // serverEntry holds the live state for one registered MCP server.
 type serverEntry struct {
 	config       ServerConfig
-	client       *Client
+	client       mcpClient
 	tools        []Tool
 	ready        bool  // true once Initialize + ListTools have succeeded
 	initializing bool  // true while initServer goroutine is running for this entry
@@ -41,21 +53,29 @@ func NewRegistry() *Registry {
 	}
 }
 
-// RegisterConfig stores an MCP server configuration and creates its client
-// without making any network calls. Call InitializeAll in a background
+// RegisterConfig stores an MCP server configuration and creates its transport
+// client without performing any I/O. Call InitializeAll in a background
 // goroutine after gateway.New() returns so the first LLM request is never
 // blocked by MCP cold-start latency.
 //
-// Re-registering a server with the same Name preserves its original
-// registration order (and therefore its tool-conflict priority). Stale
-// tool→server mappings owned by the old entry are removed immediately so
-// FindToolServer never routes to stale state.
+// Transport selection: when cfg.Command is non-empty a stdio client is created
+// (the subprocess is started immediately); otherwise an HTTP client is created.
+//
+// Re-registering a server with the same Name closes the old client, preserves
+// the original registration order (and therefore its tool-conflict priority),
+// and removes stale tool→server mappings so FindToolServer never routes to
+// stale state.
 func (r *Registry) RegisterConfig(cfg ServerConfig) {
-	timeout := time.Duration(cfg.TimeoutSeconds) * time.Second
-	if timeout <= 0 {
-		timeout = 30 * time.Second
+	var client mcpClient
+	if cfg.Command != "" {
+		client = newStdioClient(cfg.Name, cfg.Command, cfg.Args, cfg.Env)
+	} else {
+		timeout := time.Duration(cfg.TimeoutSeconds) * time.Second
+		if timeout <= 0 {
+			timeout = 30 * time.Second
+		}
+		client = NewClient(cfg.URL, cfg.Headers, timeout)
 	}
-	client := NewClient(cfg.URL, cfg.Headers, timeout)
 
 	r.mu.Lock()
 	if old, ok := r.servers[cfg.Name]; ok {
@@ -63,6 +83,15 @@ func (r *Registry) RegisterConfig(cfg ServerConfig) {
 		for _, t := range old.tools {
 			if r.toolMap[t.Name] == cfg.Name {
 				delete(r.toolMap, t.Name)
+			}
+		}
+		// Close the old client (no-op for HTTP; terminates subprocess for stdio).
+		// A failure here means a subprocess may have survived re-registration,
+		// which is the leak this call exists to prevent — never silent.
+		if old.client != nil {
+			if err := old.client.Close(); err != nil {
+				slog.Warn("mcp: failed to close replaced server client",
+					"server", cfg.Name, "error", err)
 			}
 		}
 		// Registration order and serverIndex are preserved on re-registration.
@@ -118,6 +147,12 @@ func (r *Registry) InitializeAll(ctx context.Context, logErr func(name string, e
 		wg.Add(1)
 		go func(n string) {
 			defer wg.Done()
+			// Hold the registry for the handshake. Without it Close can retire the
+			// registry mid-initialisation and return while transports are still
+			// being spoken to, and the entry could be published ready after
+			// closeClients had already detached its client.
+			release := r.Acquire()
+			defer release()
 			if err := r.initServer(ctx, n); err != nil && logErr != nil {
 				logErr(n, err)
 			}
@@ -129,16 +164,31 @@ func (r *Registry) InitializeAll(ctx context.Context, logErr func(name string, e
 // initServer performs the Initialize + ListTools handshake for a single server
 // and indexes its tools. It applies the AllowedTools filter if configured.
 func (r *Registry) initServer(ctx context.Context, name string) error {
+	// Capture the client under the lock and use that copy for the whole
+	// handshake. A concurrent Close detaches entry.client, so re-reading the
+	// field across the unlocked I/O below would nil-deref mid-initialisation.
 	r.mu.RLock()
 	entry, ok := r.servers[name]
+	var client mcpClient
+	if ok {
+		client = entry.client
+	}
 	r.mu.RUnlock()
 	if !ok {
 		return fmt.Errorf("mcp: server %q not registered", name)
 	}
+	if client == nil {
+		// The registry was closed while this initialisation was queued. Stop
+		// rather than resurrecting a retired server.
+		r.mu.Lock()
+		entry.initializing = false
+		r.mu.Unlock()
+		return fmt.Errorf("mcp: server %q closed before initialization", name)
+	}
 
 	var err error
 	trace.WithRegion(ctx, "mcp.init_server.initialize", func() {
-		_, err = entry.client.Initialize(ctx)
+		_, err = client.Initialize(ctx)
 	})
 	if err != nil {
 		r.mu.Lock()
@@ -150,7 +200,7 @@ func (r *Registry) initServer(ctx context.Context, name string) error {
 
 	var tools []Tool
 	trace.WithRegion(ctx, "mcp.init_server.list_tools", func() {
-		tools, err = entry.client.ListTools(ctx)
+		tools, err = client.ListTools(ctx)
 	})
 	if err != nil {
 		r.mu.Lock()
@@ -207,9 +257,9 @@ func (r *Registry) initServer(ctx context.Context, name string) error {
 	return nil
 }
 
-// FindToolServer returns the Client responsible for the named tool.
+// FindToolServer returns the transport client responsible for the named tool.
 // Returns (nil, false) when no ready server exposes the tool.
-func (r *Registry) FindToolServer(toolName string) (*Client, bool) {
+func (r *Registry) FindToolServer(toolName string) (mcpClient, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -222,6 +272,130 @@ func (r *Registry) FindToolServer(toolName string) (*Client, bool) {
 		return nil, false
 	}
 	return entry.client, true
+}
+
+// Owns reports whether a ready server exposes the named tool.
+//
+// This is the ownership boundary between MCP tools and tools the caller
+// supplied in their own request. A caller posting an OpenAI-style tools array
+// intends to execute those calls itself and post the results back, so the
+// agentic loop must neither execute them nor answer them — it must let the
+// tool_calls response reach the client untouched.
+func (r *Registry) Owns(toolName string) bool {
+	_, ok := r.FindToolServer(toolName)
+	return ok
+}
+
+// Acquire marks the registry as in use by one in-flight request and returns a
+// release function. Close defers the actual teardown until every holder has
+// released, so a config reload cannot terminate a stdio subprocess out from
+// under a tool call that is still running.
+//
+// The returned function is idempotent. Acquiring an already-closed registry
+// returns a no-op release rather than resurrecting it.
+func (r *Registry) Acquire() func() {
+	r.lifecycleMu.Lock()
+	r.ensureLifecycleLocked()
+	if r.closed {
+		r.lifecycleMu.Unlock()
+		return func() {}
+	}
+	r.active++
+	r.lifecycleMu.Unlock()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			r.lifecycleMu.Lock()
+			r.active--
+			if r.active == 0 {
+				r.lifecycle.Broadcast()
+			}
+			r.lifecycleMu.Unlock()
+		})
+	}
+}
+
+// ensureLifecycleLocked lazily builds the condition variable so a Registry
+// created by NewRegistry or as a zero value both work. Caller holds lifecycleMu.
+func (r *Registry) ensureLifecycleLocked() {
+	if r.lifecycle == nil {
+		r.lifecycle = sync.NewCond(&r.lifecycleMu)
+	}
+}
+
+// closeWhenDrained blocks until the last holder releases, then tears down.
+func (r *Registry) closeWhenDrained() {
+	r.lifecycleMu.Lock()
+	r.ensureLifecycleLocked()
+	for r.active > 0 {
+		r.lifecycle.Wait()
+	}
+	r.lifecycleMu.Unlock()
+
+	if err := r.closeClients(); err != nil {
+		slog.Error("mcp: failed to close retired registry", "error", err)
+	}
+}
+
+// Close shuts down all registered MCP server clients. For stdio servers this
+// terminates the subprocess; for HTTP servers it is a no-op. Errors from
+// individual clients are joined and returned together.
+// Close is idempotent. When requests still hold the registry it returns
+// immediately and teardown completes in the background once they release.
+func (r *Registry) Close() error {
+	r.lifecycleMu.Lock()
+	r.ensureLifecycleLocked()
+	if r.closed {
+		r.lifecycleMu.Unlock()
+		return nil
+	}
+	r.closed = true
+	if r.active > 0 {
+		r.lifecycleMu.Unlock()
+		go r.closeWhenDrained()
+		return nil
+	}
+	r.lifecycleMu.Unlock()
+
+	return r.closeClients()
+}
+
+// closeClients tears down every transport concurrently.
+//
+// Serial teardown does not fit the shutdown budget: one wedged stdio server can
+// spend seconds in the transport's graceful/SIGTERM/SIGKILL ladder, and
+// Gateway.Close allows only 5s in total. Several of them serially would blow an
+// orchestrator's grace period, which then SIGKILLs the process and re-orphans
+// the very subprocesses the process-group sweep exists to reap.
+func (r *Registry) closeClients() error {
+	r.mu.Lock()
+	clients := make([]mcpClient, 0, len(r.servers))
+	for _, entry := range r.servers {
+		if entry.client != nil {
+			clients = append(clients, entry.client)
+			// Detach so a second call cannot close the same transport again.
+			// Close is guarded by the closed flag, but this function is reachable
+			// from both Close and closeWhenDrained; leaving the references in
+			// place made double-close depend on that guard alone.
+			entry.client = nil
+		}
+		entry.ready = false
+	}
+	r.mu.Unlock()
+
+	errs := make([]error, len(clients))
+	var wg sync.WaitGroup
+	for i, c := range clients {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs[i] = c.Close()
+		}()
+	}
+	wg.Wait()
+
+	return errors.Join(errs...)
 }
 
 // AllTools returns the combined list of tools from all ready servers.
@@ -280,4 +454,16 @@ func (r *Registry) serverNameForTool(toolName string) string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.toolMap[toolName]
+}
+
+// timeoutForServer returns the configured per-call timeout for the named server.
+// Falls back to 30 s when the server is not found or TimeoutSeconds is unset.
+func (r *Registry) timeoutForServer(name string) time.Duration {
+	r.mu.RLock()
+	entry, ok := r.servers[name]
+	r.mu.RUnlock()
+	if ok && entry.config.TimeoutSeconds > 0 {
+		return time.Duration(entry.config.TimeoutSeconds) * time.Second
+	}
+	return 30 * time.Second
 }

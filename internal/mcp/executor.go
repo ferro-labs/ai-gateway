@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	rtrace "runtime/trace"
 	"time"
 
@@ -21,6 +22,13 @@ import (
 // MCP tool-call child spans. Matches the package import path so backends
 // can identify the source of these spans.
 const mcpTracerName = "github.com/ferro-labs/ai-gateway/internal/mcp"
+
+// maxToolCallsPerTurn bounds how many tool calls a single LLM response may
+// trigger. maxCallDepth limits how many *turns* the agentic loop runs, but
+// nothing limited the calls within one turn: a response carrying 20 000
+// tool_calls produced 20 000 executions and 20 001 conversation messages,
+// each re-sent to the provider on every subsequent turn.
+const maxToolCallsPerTurn = 64
 
 // mcpTracer returns the OpenTelemetry tracer for MCP-instrumentation
 // spans. When OTel is not configured by the gateway, the global
@@ -107,7 +115,11 @@ func (e *Executor) ShouldContinueLoop(resp *core.Response, depth int) bool {
 		return false
 	}
 	for _, ch := range resp.Choices {
-		if len(ch.Message.ToolCalls) > 0 {
+		// Only a fully MCP-owned turn arms the loop. A turn containing any
+		// caller-supplied call must reach the client with its finish_reason
+		// intact — the gateway cannot answer those, and answering only its own
+		// would leave unmatched tool_call_ids that the provider rejects.
+		if e.ownsAll(ch.Message.ToolCalls) {
 			return true
 		}
 	}
@@ -126,26 +138,66 @@ func (e *Executor) ResolvePendingToolCalls(ctx context.Context, resp *core.Respo
 	}
 
 	var extra []core.Message
+	budget := maxToolCallsPerTurn
 
 	for _, ch := range resp.Choices {
-		if len(ch.Message.ToolCalls) == 0 {
+		calls := ch.Message.ToolCalls
+		if len(calls) == 0 {
 			continue
 		}
 
-		// Preserve the full assistant message from the LLM (all fields, correct role).
+		// The gateway can only answer calls it owns, and a provider rejects an
+		// assistant turn whose tool_call_ids are not all answered. So a turn
+		// mixing MCP-owned and caller-supplied calls cannot be continued at all:
+		// executing half of it would turn a working request into a 400. Hand the
+		// whole turn back instead and let the client resolve it.
+		if !e.ownsAll(calls) {
+			continue
+		}
+
+		if budget <= 0 {
+			break
+		}
+		if len(calls) > budget {
+			// Report the number actually executed, not the per-turn constant:
+			// with several choices the remaining budget is what truncates, and
+			// logging the constant would misstate it.
+			slog.Warn("mcp: tool calls truncated for this turn",
+				"turn_limit", maxToolCallsPerTurn,
+				"executed", budget,
+				"requested", len(calls),
+			)
+			calls = calls[:budget]
+		}
+		budget -= len(calls)
+
+		// Preserve the assistant message (all fields, correct role) but carry
+		// exactly the calls answered below. Truncating the executions without
+		// truncating this list would leave unmatched tool_call_ids in the
+		// continuation, which the provider rejects outright.
 		assistantMsg := ch.Message
 		if assistantMsg.Role == "" {
 			assistantMsg.Role = core.RoleAssistant
 		}
+		assistantMsg.ToolCalls = calls
 		extra = append(extra, assistantMsg)
 
-		// Execute each tool call and collect its result message.
-		for _, tc := range ch.Message.ToolCalls {
+		for _, tc := range calls {
 			extra = append(extra, e.executeToolCall(ctx, tc))
 		}
 	}
 
 	return extra, nil
+}
+
+// ownsAll reports whether every call in the turn belongs to a ready MCP server.
+func (e *Executor) ownsAll(calls []core.ToolCall) bool {
+	for _, tc := range calls {
+		if !e.registry.Owns(tc.Function.Name) {
+			return false
+		}
+	}
+	return len(calls) > 0
 }
 
 // executeToolCall runs a single MCP tool call and returns the tool-role
@@ -187,6 +239,19 @@ func (e *Executor) executeToolCall(ctx context.Context, tc core.ToolCall) core.M
 			attribute.String(observability.AttrFerroMCPTool, toolName),
 		),
 	)
+	// Deferred, not called inline after the RPC: a panic in a transport unwinds
+	// past an inline End(), and the HTTP recover middleware keeps the process
+	// alive, so the span would be orphaned for good rather than dying with the
+	// process. Nothing below re-ends or reuses the span.
+	defer span.End()
+
+	// Guard against hung subprocesses (stdio) or slow servers (HTTP).
+	callTimeout := e.registry.timeoutForServer(serverName)
+	toolCtx, cancelCall := context.WithTimeout(toolCtx, callTimeout)
+	// Same reasoning as the span: an inline cancel is skipped on panic, stranding
+	// the timer until the timeout elapses. toolCtx is unused after the RPC, so
+	// holding it to function end costs nothing.
+	defer cancelCall()
 
 	callStart := time.Now()
 	var result *ToolCallResult
@@ -204,7 +269,6 @@ func (e *Executor) executeToolCall(ctx context.Context, tc core.ToolCall) core.M
 		// Relies on the non-blocking AuditFn contract: the per-call goroutine returns promptly.
 		e.callAuditFn(ctx, serverName, toolName, "error", latencyMs, err.Error())
 		gwotel.RecordSpanError(span, err)
-		span.End()
 		errPayload, _ := json.Marshal(map[string]string{"error": err.Error()})
 		return core.Message{
 			Role:       core.RoleTool,
@@ -217,7 +281,6 @@ func (e *Executor) executeToolCall(ctx context.Context, tc core.ToolCall) core.M
 	// Relies on the non-blocking AuditFn contract: the per-call goroutine returns promptly.
 	e.callAuditFn(ctx, serverName, toolName, "ok", latencyMs, "")
 	span.SetStatus(codes.Ok, "")
-	span.End()
 
 	// Convert MCP content blocks to a plain string for the LLM.
 	content, err := contentBlocksToString(result.Content)

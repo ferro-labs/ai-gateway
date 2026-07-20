@@ -81,11 +81,22 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 		req = g.resolveAlias(req)
 	})
 
-	// MCP redirect: when tool servers are registered, the agentic loop must
-	// run to completion before any response is sent. Route() handles this
+	// MCP redirect: when tool servers have advertised tools, the agentic loop
+	// must run to completion before any response is sent. Route() handles this
 	// entirely; we wrap its non-streaming result into a channel here.
-	hasMCP := mcpRegistrySnapshot != nil && mcpRegistrySnapshot.HasServers()
-	if hasMCP {
+	//
+	// Gate on discovered tools, not on registration. HasServers() is true from
+	// the moment a server is registered — before the handshake, and forever
+	// after one that failed — so gating on it let a single unreachable or
+	// typo'd MCP server silently collapse streaming into one buffered chunk for
+	// every caller on the gateway.
+	//
+	// The caller-tools condition mirrors Route's mcpActive: when the caller
+	// supplied its own tools MCP does not participate at all, so there is no
+	// agentic loop to buffer for and the stream must be left alone. Both paths
+	// must agree, or a request would be diverted here and then pass straight
+	// through Route as an ordinary non-streaming call.
+	if mcpRegistrySnapshot != nil && len(req.Tools) == 0 && len(mcpRegistrySnapshot.AllTools()) > 0 {
 		releasePluginManager()
 		// Do not force req.Stream = false here: let Route() capture the
 		// original stream flag via its own originalStream variable so that
