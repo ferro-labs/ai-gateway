@@ -183,7 +183,19 @@ func ValidateConfig(cfg Config) error {
 // later during async initialization with a confusing error; leaving both set
 // silently prefers stdio and drops Headers, which is surprising.
 func validateMCPServers(servers []pubmcp.ServerConfig) error {
-	for _, mcpCfg := range servers {
+	seen := make(map[string]struct{}, len(servers))
+	for i, mcpCfg := range servers {
+		// Name is the registry key. An empty one produces a server nothing can
+		// refer to in logs or metrics; a duplicate silently replaces the earlier
+		// server, taking its tool mappings with it.
+		if strings.TrimSpace(mcpCfg.Name) == "" {
+			return fmt.Errorf("mcp server at index %d: name is required", i)
+		}
+		if _, dup := seen[mcpCfg.Name]; dup {
+			return fmt.Errorf("mcp server %q: duplicate name; each server needs a unique name", mcpCfg.Name)
+		}
+		seen[mcpCfg.Name] = struct{}{}
+
 		hasURL := mcpCfg.URL != ""
 		hasCommand := mcpCfg.Command != ""
 		switch {

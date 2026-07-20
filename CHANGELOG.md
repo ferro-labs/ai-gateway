@@ -5,6 +5,33 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] — 2026-07-20
+
+MCP servers can now be launched as local subprocesses, so any `npx`, `uvx`, or binary MCP server can be used without standing up an HTTP endpoint for it. Alongside the new transport, two long-standing defects in the existing MCP path are fixed — both of which affected the gateway whether or not you used MCP deliberately.
+
+Thanks to [@gr3enarr0w](https://github.com/gr3enarr0w) for contributing the stdio transport (#121).
+
+### Added
+
+- **MCP stdio transport.** An `mcp_servers` entry may now set `command` (with optional `args`) instead of `url`, and the gateway launches that process and speaks MCP over its stdin/stdout for the gateway's lifetime. Exactly one of `url` or `command` must be set; both or neither is a config error naming the server. The existing Streamable HTTP transport is unchanged, and the two are interchangeable everywhere tools are consumed (#121).
+- **Subprocess environment isolation.** An MCP subprocess does **not** inherit the gateway's environment. It receives `PATH`, `HOME`, `LANG`, and `TMPDIR` when set, plus exactly the keys under that server's `env` — so `OPENAI_API_KEY`, `MASTER_KEY`, and every other gateway credential are unreachable from an MCP server. A server needing anything else, such as `HTTPS_PROXY`, `NODE_PATH`, or `SSL_CERT_FILE`, must have it listed explicitly.
+- **`${VAR}` references in a stdio server's `env`.** Resolved when the MCP client is constructed, the same treatment `headers` already received, so the config keeps the reference and never stores the secret. Since the gateway environment is not inherited, this is the only channel by which a credential reaches an MCP subprocess. `GET /admin/config` redacts `env` alongside `headers`.
+- **Subprocess diagnostics.** A stdio server's `stderr` is drained into the gateway log at debug level, one record per line. A server that dies on a missing API key or a permission error now says so in the log instead of surfacing as an opaque timeout.
+
+### Fixed
+
+- **A misconfigured MCP server no longer disables streaming.** The agentic-loop redirect keyed off whether any MCP server was *registered*, which is true before the handshake runs and stays true after one fails. A single unreachable endpoint or typo'd command therefore turned every `stream: true` request on the gateway into one buffered chunk — for every caller, including those making no use of MCP — with no error and no way to notice beyond the missing token-by-token delivery. Activation now keys off tools actually discovered, matching the non-streaming path.
+- **Caller-supplied tool calls are no longer intercepted.** With MCP active, every tool call in a model response was executed as if the gateway owned it. A client that sent its own `tools` array — the ordinary OpenAI function-calling pattern, where the client executes the call and posts the result back — had its call swallowed and answered with a fabricated *"tool not found in any registered MCP server"*, never receiving `finish_reason: "tool_calls"`. Tool calls the gateway does not own are now passed through untouched, so enabling MCP no longer breaks existing client-side tool integrations.
+- **A single model response can no longer trigger unbounded tool execution.** `max_call_depth` bounded how many turns the agentic loop ran but nothing bounded the calls within one turn, so a response carrying thousands of `tool_calls` produced that many executions and conversation messages, re-sent to the provider on every subsequent turn. Tool calls are capped per turn.
+- **Stdio servers launched via `npx` no longer leak processes.** `npx` and `uvx` exec the real server as a separate process, and terminating the launcher does not terminate what it started, so every gateway shutdown and config reload left a live server behind holding its pipes. Subprocesses are now started in their own process group and the group is swept after the polite shutdown sequence completes. On Windows the previous single-process teardown is retained.
+- **A stdio server writing heavily to `stderr` no longer wedges.** Its output went to a pipe nobody read, so once the operating system's pipe buffer filled, the server blocked mid-write and stopped answering requests entirely while still appearing to be running.
+
+### Changed
+
+- **MCP tools are advertised only when the request carries no tools of its own.** Previously every MCP tool definition was injected into every chat completion, alongside whatever the caller sent. That let the model answer with one MCP call and one caller call in the same turn — which neither side can complete: the gateway has no implementation for the caller's tool, and the caller never declared the MCP one. Requests that send their own `tools` array now pass through untouched, streaming included, and are unaffected by MCP entirely. Requests that send none behave exactly as before.
+- **`mcp_servers[].env` documentation corrected.** The published field documentation described `env` as merged with the gateway's environment. It is not, and was not: the values listed are combined with a minimal base only. The godoc, README, and example config now describe the actual behavior.
+- **Environment-reference documentation corrected across the config surface.** Several field docs and example comments described `$VAR` as a usable reference and attributed substitution to `LoadConfig`. Only the braced `${VAR}` form is a reference, a bare `$` is literal data, an undefined variable is an error, and resolution happens when the component is constructed — never at config load, which is what keeps secrets out of the config-history store. The behavior is unchanged since v1.2.0; only the documentation was wrong.
+
 ## [1.2.0] — 2026-07-14
 
 The capability release. The gateway now has a single, declarative record of what each provider can actually express, and enforces it — so a parameter a provider cannot honor is no longer silently dropped on the wire. Alongside it: per-request deadlines, per-target concurrency limits, split liveness/readiness probes, and a cross-provider conformance suite.
@@ -286,7 +313,7 @@ Enterprise-endpoint & Cohere fidelity release. The third provider-readiness reme
 
 ## [1.1.11] — 2026-07-03
 
-Native tier-1 provider fidelity release. Aligns the OpenAI, Anthropic, Google Gemini, and AWS Bedrock providers on request/response correctness: forwards multimodal image content and sampling parameters that the streaming paths previously dropped, surfaces token usage the Bedrock and Gemini streaming paths discarded, refreshes stale model catalogs, and consolidates the duplicated Anthropic Messages decoding shared by the native Anthropic and Anthropic-on-Bedrock paths. No breaking API changes relative to v1.1.10. Closes [#265](https://github.com/ferro-labs/ai-gateway/issues/265); advances [#264](https://github.com/ferro-labs/ai-gateway/issues/264) and [#286](https://github.com/ferro-labs/ai-gateway/issues/286).
+Native tier-1 provider fidelity release. <!-- drift-ok: release name, not a provider count --> Aligns the OpenAI, Anthropic, Google Gemini, and AWS Bedrock providers on request/response correctness: forwards multimodal image content and sampling parameters that the streaming paths previously dropped, surfaces token usage the Bedrock and Gemini streaming paths discarded, refreshes stale model catalogs, and consolidates the duplicated Anthropic Messages decoding shared by the native Anthropic and Anthropic-on-Bedrock paths. No breaking API changes relative to v1.1.10. Closes [#265](https://github.com/ferro-labs/ai-gateway/issues/265); advances [#264](https://github.com/ferro-labs/ai-gateway/issues/264) and [#286](https://github.com/ferro-labs/ai-gateway/issues/286).
 
 ### Fixed
 

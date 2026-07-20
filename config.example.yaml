@@ -125,7 +125,8 @@ aliases:
   code: deepseek-coder
 
 # Optional plugins
-# Plugin config string values loaded via LoadConfig support $VAR / ${VAR} interpolation.
+# Plugin config string values support ${VAR} references — only the braced form;
+# a bare $ is literal data. Resolved when the plugin is constructed, not at load.
 plugins:
   - name: word-filter
     type: guardrail
@@ -218,7 +219,9 @@ mcp_servers:
   - name: database
     url: "https://mcp-db.internal/mcp"
     headers:
-      # Values loaded via LoadConfig support $VAR / ${VAR} interpolation.
+      # ${VAR} is resolved when the MCP client is constructed, so the config
+      # keeps the reference and never stores the secret. Only the braced form is
+      # a reference; a bare $ is literal data, and an undefined variable errors.
       Authorization: "Bearer ${MCP_DB_TOKEN}"
     allowed_tools:
       - query_readonly
@@ -237,6 +240,13 @@ mcp_servers:
   # ── stdio transport examples ─────────────────────────────────────────────────
   # The gateway launches the subprocess and communicates via stdin/stdout.
   # The process runs for the lifetime of the gateway.
+  #
+  # The subprocess does NOT inherit the gateway's environment. It receives
+  # PATH, HOME, LANG and TMPDIR (when set) plus exactly the keys under `env`,
+  # so gateway credentials such as OPENAI_API_KEY and MASTER_KEY can never
+  # reach an MCP server. Anything else the server needs — HTTPS_PROXY,
+  # NODE_PATH, SSL_CERT_FILE, or SYSTEMROOT/APPDATA on Windows — must be
+  # listed explicitly.
 
   # npx-based MCP server (no pre-installation required).
   - name: brave-search
@@ -245,6 +255,9 @@ mcp_servers:
       - -y
       - "@modelcontextprotocol/server-brave-search"
     env:
+      # Resolved when the MCP client is constructed; the config keeps the
+      # reference. This is the only channel for a credential, since the
+      # gateway environment is not inherited.
       BRAVE_API_KEY: "${BRAVE_API_KEY}"
     max_call_depth: 3
 
@@ -284,11 +297,12 @@ observability:
     privacy_level: metadata  # none | metadata | full
     shutdown_grace: 10s      # per OTel shutdown stage; total can take up to 2x this value
     # headers:                       # OTLP export headers (e.g. vendor API keys)
-    #   dd-api-key: "${DATADOG_API_KEY}"   # values support ${ENV} interpolation
+    #   dd-api-key: "${DATADOG_API_KEY}"   # values support ${ENV_VAR} references
 
   # exporters lists plugin observability exporters that receive
   # gateway.request.completed / gateway.request.failed events.
-  # Config string values loaded via LoadConfig support $VAR / ${VAR} interpolation.
+  # Config string values support ${VAR} references — only the braced form;
+  # resolved when the exporter is constructed, not at config load.
   # Each entry names a factory registered via observability.RegisterExporter
   # in a plugin's init().  Unrecognised names emit a warning and are skipped
   # (non-fatal).  No built-in exporters ship with this repo — they are

@@ -23,8 +23,14 @@ type ServerConfig struct {
 	// URL is the Streamable HTTP endpoint (e.g. "https://mcp.example.com/mcp").
 	URL string `json:"url,omitempty" yaml:"url,omitempty"`
 	// Headers are additional HTTP headers sent with every MCP request
-	// (e.g. authorization tokens). When loaded via aigateway.LoadConfig,
-	// values may reference environment variables using $VAR or ${VAR}.
+	// (e.g. authorization tokens). Values may reference environment variables
+	// using ${VAR} — only the braced form is a reference, a bare $ is literal
+	// data, and an undefined variable is an error rather than a blank secret.
+	// References are resolved when the MCP client is constructed, not when the
+	// config is loaded, so the Config itself never carries a materialised secret
+	// into the config-history store or GET /admin/config.
+	//
+	// Ignored for stdio servers (those setting Command).
 	Headers map[string]string `json:"headers,omitempty" yaml:"headers,omitempty"`
 
 	// ── Stdio transport (Command must be set; URL/Headers are ignored) ───────
@@ -34,9 +40,21 @@ type ServerConfig struct {
 	Command string `json:"command,omitempty" yaml:"command,omitempty"`
 	// Args are the command-line arguments passed to Command.
 	Args []string `json:"args,omitempty" yaml:"args,omitempty"`
-	// Env are additional environment variables injected into the subprocess.
-	// They are merged with the current process environment; keys listed here
-	// take precedence over any identically-named inherited variables.
+	// Env are the environment variables injected into the subprocess.
+	//
+	// The subprocess does NOT inherit the gateway's environment. It receives a
+	// minimal base — PATH, HOME, LANG and TMPDIR, when set — plus exactly the
+	// keys listed here, which override the base. This keeps gateway credentials
+	// such as OPENAI_API_KEY and MASTER_KEY out of MCP server processes.
+	//
+	// A consequence worth knowing: servers that need other inherited variables
+	// (HTTPS_PROXY, NODE_PATH, SSL_CERT_FILE, or SYSTEMROOT and APPDATA on
+	// Windows) must have them listed here explicitly.
+	//
+	// Values may reference environment variables using ${VAR} — only the braced
+	// form, same rules as Headers — resolved when the MCP client is constructed.
+	// Since the gateway's own environment is not inherited, this is the only
+	// channel by which a credential can reach an MCP subprocess.
 	Env map[string]string `json:"env,omitempty" yaml:"env,omitempty"`
 
 	// ── Common options ────────────────────────────────────────────────────────

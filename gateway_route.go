@@ -136,10 +136,12 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	obsEventsActive := g.obsEventsActive
 	mcpRegistrySnapshot := g.mcpRegistry
 	mcpExecutorSnapshot := g.mcpExecutor
+	releaseMCP := acquireMCPRegistry(mcpRegistrySnapshot)
 	plugins := g.plugins
 	releasePlugins := acquirePluginManager(plugins)
 	g.mu.RUnlock()
 	defer releasePlugins()
+	defer releaseMCP()
 
 	// Bound the whole non-streaming request — plugin stages, provider call, and
 	// every retry/fallback attempt — when a request timeout is configured. The
@@ -169,6 +171,15 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	// before any early plugin short-circuit, so hook/observability consumers
 	// always see the client's requested stream preference.
 	originalStream := req.Stream
+
+	// Whether the *caller* sent tools, captured before before_request plugins
+	// can mutate req.Tools. MCP participation is a statement about the caller's
+	// request, not about what a transform plugin later added — and RouteStream
+	// decides whether to divert using this same pre-plugin state. Reading the
+	// post-plugin slice instead let a plugin that adds tools flip MCP off after
+	// the stream had already been diverted, returning one buffered chunk to a
+	// caller who was entitled to a real stream.
+	callerSentTools := len(req.Tools) > 0
 
 	s, err := g.getStrategy()
 	if err != nil {
@@ -214,17 +225,23 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	if mcpRegistrySnapshot != nil {
 		mcpTools = mcpRegistrySnapshot.AllTools()
 	}
-	if len(mcpTools) > 0 {
-		// Build a set of tool names already present in the request so we do not
-		// inject duplicate definitions when the caller has pre-populated Tools.
-		existing := make(map[string]struct{}, len(req.Tools))
-		for _, t := range req.Tools {
-			existing[t.Function.Name] = struct{}{}
-		}
+
+	// MCP participates only when the caller supplied no tools of its own.
+	//
+	// Advertising both sets manufactures a turn neither party can resolve. The
+	// model may answer with one MCP call and one caller call; the gateway cannot
+	// execute the caller's (it has no implementation), and the caller cannot
+	// execute the MCP one (it never declared it and does not know the server
+	// exists). Answering only the gateway's half leaves an unmatched
+	// tool_call_id, which every OpenAI-compatible provider rejects — so the
+	// executor declines such turns outright (internal/mcp.Executor.ownsAll).
+	// Declining is the correct behaviour once the turn exists; not creating it
+	// is the correct fix. A caller that sent its own tools keeps the plain
+	// pass-through it asked for, streaming included.
+	mcpActive := len(mcpTools) > 0 && !callerSentTools
+
+	if mcpActive {
 		for _, t := range mcpTools {
-			if _, dup := existing[t.Name]; dup {
-				continue
-			}
 			req.Tools = append(req.Tools, core.Tool{
 				Type: "function",
 				Function: core.Function{
@@ -240,7 +257,7 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	// full response can be inspected for tool_calls. The client's original
 	// stream preference (captured above) is restored on the final response
 	// (Phase 1: always returns non-streaming for MCP requests).
-	if len(mcpTools) > 0 {
+	if mcpActive {
 		req.Stream = false
 	}
 
@@ -275,7 +292,7 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	// Agentic MCP tool-call loop. Runs only when MCP is active and the LLM
 	// returned tool_calls. Each iteration executes the tools and re-contacts
 	// the LLM until no more tool_calls are present or the depth limit is hit.
-	if mcpExecutorSnapshot != nil && len(mcpTools) > 0 {
+	if mcpExecutorSnapshot != nil && mcpActive {
 		var loopDuration time.Duration
 		var loopProvider string
 		resp, loopDuration, loopProvider, err = g.runMCPLoop(ctx, mcpExecutorSnapshot, s, &req, resp)

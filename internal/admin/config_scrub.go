@@ -159,6 +159,7 @@ func scrubAnyMap(m map[string]any) map[string]any {
 // Fields scrubbed:
 //   - Observability.Tracing.Headers (map[string]string)
 //   - each MCPServers[i].Headers (map[string]string)
+//   - each MCPServers[i].Env (map[string]string)
 //   - each Observability.Exporters[i].Config (map[string]any)
 //   - each Plugins[i].Config (map[string]interface{})
 //
@@ -172,6 +173,10 @@ func scrubConfigSecrets(cfg aigateway.Config) aigateway.Config {
 		servers := make([]mcp.ServerConfig, len(cfg.MCPServers))
 		for i, server := range cfg.MCPServers {
 			server.Headers = scrubStringMap(server.Headers)
+			// Env carries stdio credentials. Since MCP subprocesses do not
+			// inherit the gateway environment, it is the only place an operator
+			// can put one, so it is at least as secret-bearing as Headers.
+			server.Env = scrubStringMap(server.Env)
 			servers[i] = server
 		}
 		cfg.MCPServers = servers

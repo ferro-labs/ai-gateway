@@ -5,6 +5,7 @@ import (
 	"os"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/ferro-labs/ai-gateway/mcp"
 	"github.com/ferro-labs/ai-gateway/providers/core"
@@ -139,6 +140,12 @@ func TestWireMCPLocked_MaxCallDepthIgnoresSkippedServers(t *testing.T) {
 	gw.shutdownCancel = cancel
 	t.Cleanup(cancel)
 
+	// The good server must actually serve tools: ShouldContinueLoop only arms
+	// for tool calls MCP owns, so a registry that discovered nothing can no
+	// longer stand in for a healthy one.
+	goodSrv := newMCPTestServer(t)
+	defer goodSrv.Close()
+
 	cfg := Config{
 		MCPServers: []mcp.ServerConfig{
 			{
@@ -151,7 +158,7 @@ func TestWireMCPLocked_MaxCallDepthIgnoresSkippedServers(t *testing.T) {
 			},
 			{
 				Name:         "good",
-				URL:          "http://127.0.0.1:1/mcp",
+				URL:          goodSrv.URL,
 				MaxCallDepth: 5,
 			},
 		},
@@ -163,9 +170,15 @@ func TestWireMCPLocked_MaxCallDepthIgnoresSkippedServers(t *testing.T) {
 		t.Fatal("mcpExecutor is nil, want an executor built from the well-formed server")
 	}
 
+	select {
+	case <-gw.MCPInitDone():
+	case <-time.After(10 * time.Second):
+		t.Fatal("MCP init timeout")
+	}
+
 	resp := &core.Response{
 		Choices: []core.Choice{
-			{Message: core.Message{ToolCalls: []core.ToolCall{{ID: "1", Function: core.FunctionCall{Name: "x"}}}}},
+			{Message: core.Message{ToolCalls: []core.ToolCall{{ID: "1", Function: core.FunctionCall{Name: "get_answer"}}}}},
 		},
 	}
 

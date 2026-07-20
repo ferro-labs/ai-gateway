@@ -383,11 +383,15 @@ mcp_servers:
   - name: brave-search
     command: npx
     args: ["-y", "@modelcontextprotocol/server-brave-search"]
+    # The subprocess does NOT inherit the gateway's environment: it gets
+    # PATH/HOME/LANG/TMPDIR plus exactly the keys below. This keeps gateway
+    # credentials out of MCP servers, so anything the server needs — including
+    # HTTPS_PROXY, NODE_PATH or SSL_CERT_FILE — must be listed here.
     env:
       BRAVE_API_KEY: ${BRAVE_API_KEY}
 ```
 
-`${VAR}` references in MCP headers, plugin config, and observability exporter config are substituted **when that component is constructed**, not when the config file is read. The config itself keeps the `${VAR}` reference for its whole life, so a secret is never written to the config-history store, never returned by `GET /admin/config`, and never restored into the database on a rollback — while the plugin, exporter, or MCP client still receives the real value.
+`${VAR}` references in MCP headers, MCP stdio `env`, plugin config, and observability exporter config are substituted **when that component is constructed**, not when the config file is read. The config itself keeps the `${VAR}` reference for its whole life, so a secret is never written to the config-history store, never returned by `GET /admin/config`, and never restored into the database on a rollback — while the plugin, exporter, or MCP client still receives the real value.
 
 Because substitution happens at construction rather than at file load, a `${VAR}` pushed through the admin/GitOps config API is resolved exactly the same way.
 

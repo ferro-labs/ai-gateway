@@ -705,3 +705,52 @@ func TestValidateConfig_MCPServerTransportSelection(t *testing.T) {
 		}
 	})
 }
+
+func TestValidateMCPServers_NameRequiredAndUnique(t *testing.T) {
+	base := Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: "openai"}},
+	}
+
+	t.Run("empty name is rejected", func(t *testing.T) {
+		cfg := base
+		cfg.MCPServers = []pubmcp.ServerConfig{{URL: "https://mcp.example.com/mcp"}}
+		if err := ValidateConfig(cfg); err == nil {
+			t.Error("expected an error for an unnamed mcp server, got nil")
+		}
+	})
+
+	t.Run("whitespace-only name is rejected", func(t *testing.T) {
+		cfg := base
+		cfg.MCPServers = []pubmcp.ServerConfig{{Name: "   ", URL: "https://mcp.example.com/mcp"}}
+		if err := ValidateConfig(cfg); err == nil {
+			t.Error("expected an error for a whitespace-only mcp server name, got nil")
+		}
+	})
+
+	t.Run("duplicate names are rejected", func(t *testing.T) {
+		cfg := base
+		cfg.MCPServers = []pubmcp.ServerConfig{
+			{Name: "tools", URL: "https://a.example.com/mcp"},
+			{Name: "tools", URL: "https://b.example.com/mcp"},
+		}
+		err := ValidateConfig(cfg)
+		if err == nil {
+			t.Fatal("expected an error for duplicate mcp server names, got nil")
+		}
+		if !strings.Contains(err.Error(), "tools") {
+			t.Errorf("error %q should name the duplicated server", err)
+		}
+	})
+
+	t.Run("distinct names are accepted", func(t *testing.T) {
+		cfg := base
+		cfg.MCPServers = []pubmcp.ServerConfig{
+			{Name: "a", URL: "https://a.example.com/mcp"},
+			{Name: "b", Command: "npx"},
+		}
+		if err := ValidateConfig(cfg); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+}

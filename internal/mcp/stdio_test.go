@@ -11,7 +11,7 @@ import (
 // TestNewStdioClientInvalidCommand verifies that starting a non-existent
 // executable returns an errClient whose Initialize method surfaces the error.
 func TestNewStdioClientInvalidCommand(t *testing.T) {
-	c := newStdioClient("/nonexistent/binary-that-does-not-exist", nil, nil)
+	c := newStdioClient("test", "/nonexistent/binary-that-does-not-exist", nil, nil)
 	if c == nil {
 		t.Fatal("expected non-nil client")
 	}
@@ -83,7 +83,7 @@ func realCmd(t *testing.T) string {
 // *stdioClient (not an errClient) when the command exists on disk.
 func TestStdioClientHappyPathCreation(t *testing.T) {
 	cmd := realCmd(t)
-	c := newStdioClient(cmd, nil, nil)
+	c := newStdioClient("test", cmd, nil, nil)
 	if c == nil {
 		t.Fatal("expected non-nil client")
 	}
@@ -96,7 +96,7 @@ func TestStdioClientHappyPathCreation(t *testing.T) {
 // TestStdioClientEnvOverrides verifies that env overrides are merged without
 // panic. Uses an invalid command so no subprocess is actually started.
 func TestStdioClientEnvOverrides(t *testing.T) {
-	c := newStdioClient("/nonexistent/mcp-srv", nil, map[string]string{
+	c := newStdioClient("test", "/nonexistent/mcp-srv", nil, map[string]string{
 		"CUSTOM_KEY": "custom_val",
 		"OTHER_KEY":  "other_val",
 	})
@@ -113,7 +113,7 @@ func TestStdioClientEnvOverrides(t *testing.T) {
 // a non-nil error when the subprocess exits without sending an MCP response.
 func TestStdioClientInitializeError(t *testing.T) {
 	cmd := realCmd(t)
-	c := newStdioClient(cmd, nil, nil)
+	c := newStdioClient("test", cmd, nil, nil)
 	if _, isErr := c.(*errClient); isErr {
 		t.Skip("command failed to start — skipping stdioClient path")
 	}
@@ -132,7 +132,7 @@ func TestStdioClientInitializeError(t *testing.T) {
 // non-nil error when the subprocess has not completed MCP initialization.
 func TestStdioClientListToolsError(t *testing.T) {
 	cmd := realCmd(t)
-	c := newStdioClient(cmd, nil, nil)
+	c := newStdioClient("test", cmd, nil, nil)
 	if _, isErr := c.(*errClient); isErr {
 		t.Skip("command failed to start — skipping stdioClient path")
 	}
@@ -151,7 +151,7 @@ func TestStdioClientListToolsError(t *testing.T) {
 // non-nil error when the subprocess has not completed MCP initialization.
 func TestStdioClientCallToolError(t *testing.T) {
 	cmd := realCmd(t)
-	c := newStdioClient(cmd, nil, nil)
+	c := newStdioClient("test", cmd, nil, nil)
 	if _, isErr := c.(*errClient); isErr {
 		t.Skip("command failed to start — skipping stdioClient path")
 	}
@@ -170,7 +170,7 @@ func TestStdioClientCallToolError(t *testing.T) {
 // stdioClient whose subprocess exited before any MCP handshake.
 func TestStdioClientCloseAfterError(t *testing.T) {
 	cmd := realCmd(t)
-	c := newStdioClient(cmd, nil, nil)
+	c := newStdioClient("test", cmd, nil, nil)
 	if _, isErr := c.(*errClient); isErr {
 		t.Skip("command failed to start — skipping stdioClient path")
 	}
