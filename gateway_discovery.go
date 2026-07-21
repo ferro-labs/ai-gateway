@@ -20,6 +20,14 @@ import (
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
+// The non-chat surfaces this file routes. The name reaches operators as the
+// span's operation and as a metrics label, so it is fixed here rather than
+// spelled out at each of its call sites.
+const (
+	surfaceEmbeddings = "embeddings"
+	surfaceImages     = "images"
+)
+
 // Gateway model alias resolution, the multi-modal (embedding / image) routing
 // endpoints, and background model auto-discovery.
 
@@ -120,7 +128,7 @@ func (g *Gateway) Embed(ctx context.Context, req providers.EmbeddingRequest) (*p
 	defer cancelDeadline()
 
 	ctx, span := obs.StartRequestSpan(ctx, observability.RequestAttrs{
-		Operation:       "embeddings",
+		Operation:       surfaceEmbeddings,
 		RequestModel:    req.Model,
 		TraceID:         logging.TraceIDFromContext(ctx),
 		RoutingStrategy: strategyMode,
@@ -132,7 +140,7 @@ func (g *Gateway) Embed(ctx context.Context, req providers.EmbeddingRequest) (*p
 
 	var resp *providers.EmbeddingResponse
 	var providerName string
-	err := g.runSurfaceGovernance(ctx, "embeddings", span, func(ctx context.Context) (*providers.Usage, error) {
+	err := g.runSurfaceGovernance(ctx, surfaceEmbeddings, span, func(ctx context.Context) (*providers.Usage, error) {
 		var routeErr error
 		resp, providerName, routeErr = g.routeEmbedding(ctx, req)
 		if routeErr != nil {
@@ -187,7 +195,7 @@ func (g *Gateway) GenerateImage(ctx context.Context, req providers.ImageRequest)
 
 	var resp *providers.ImageResponse
 	var providerName string
-	err := g.runSurfaceGovernance(ctx, "images", span, func(ctx context.Context) (*providers.Usage, error) {
+	err := g.runSurfaceGovernance(ctx, surfaceImages, span, func(ctx context.Context) (*providers.Usage, error) {
 		var routeErr error
 		resp, providerName, routeErr = g.routeImage(ctx, req)
 		if routeErr != nil {
@@ -502,9 +510,9 @@ func surfaceHasPrice(catalog models.Catalog, modelKey, surface string) bool {
 		return false
 	}
 	switch surface {
-	case "embeddings":
+	case surfaceEmbeddings:
 		return model.Mode == models.ModeEmbedding && model.Pricing.EmbeddingPerMTokens != nil
-	case "images":
+	case surfaceImages:
 		return model.Mode == models.ModeImage && model.Pricing.ImagePerTile != nil
 	default:
 		return false
@@ -513,10 +521,10 @@ func surfaceHasPrice(catalog models.Catalog, modelKey, surface string) bool {
 
 func providerSupportsSurface(p providers.Provider, surface string) bool {
 	switch surface {
-	case "embeddings":
+	case surfaceEmbeddings:
 		_, ok := p.(providers.EmbeddingProvider)
 		return ok
-	case "images":
+	case surfaceImages:
 		_, ok := p.(providers.ImageProvider)
 		return ok
 	default:
@@ -534,7 +542,7 @@ func providerSupportsSurface(p providers.Provider, surface string) bool {
 // models it serves — mirroring startStreamWithStrategy's use of
 // resolveFallbackStreamProviderLocked for the streaming surface.
 func (g *Gateway) routeEmbedding(ctx context.Context, req providers.EmbeddingRequest) (*providers.EmbeddingResponse, string, error) {
-	keys, mode, err := g.surfaceTargetOrder(req.Model, "embeddings", models.Usage{PromptTokens: 1})
+	keys, mode, err := g.surfaceTargetOrder(req.Model, surfaceEmbeddings, models.Usage{PromptTokens: 1})
 	if err != nil {
 		return nil, "", err
 	}
@@ -591,7 +599,7 @@ func (g *Gateway) routeImage(ctx context.Context, req providers.ImageRequest) (*
 	if req.N != nil && *req.N > 0 {
 		imageCount = *req.N
 	}
-	keys, mode, err := g.surfaceTargetOrder(req.Model, "images", models.Usage{ImageCount: imageCount})
+	keys, mode, err := g.surfaceTargetOrder(req.Model, surfaceImages, models.Usage{ImageCount: imageCount})
 	if err != nil {
 		return nil, "", err
 	}
