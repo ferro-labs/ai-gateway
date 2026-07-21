@@ -216,9 +216,9 @@ func Completions(registry *providers.Registry) http.HandlerFunc {
 		// Wrap the prompt as a user message and call through the chat path,
 		// then re-wrap the response in the legacy completions envelope.
 		// echo/best_of/logprobs/suffix are decoded above but intentionally
-		// not forwarded or rejected here — v1.3.0 silently ignored them and
-		// that behavior is unchanged; rejecting them is a /v1 breaking
-		// change deferred to a later minor release.
+		// neither forwarded nor rejected: the chat shim cannot express them,
+		// and refusing a request that previously succeeded would change the
+		// endpoint's behaviour for callers already sending them.
 		chatReq := providers.Request{
 			Model:            legacyReq.Model,
 			Messages:         []providers.Message{{Role: "user", Content: promptText}},

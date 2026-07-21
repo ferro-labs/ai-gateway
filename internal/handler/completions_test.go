@@ -309,11 +309,10 @@ func TestCompletionsHandler_NativeProxyAcceptsAllPromptAndStopForms(t *testing.T
 	}
 }
 
-// TestCompletionsHandler_ShimIgnoresLegacyOnlyParams is the deferral guard:
-// echo/best_of/logprobs/suffix must keep the v1.3.0 behavior of being
-// decoded and silently ignored on the chat-shim path. Turning them into a
-// 400 is a /v1 breaking change deferred to a later minor release — this
-// test fails if that rejection creeps back in.
+// TestCompletionsHandler_ShimIgnoresLegacyOnlyParams pins the compatibility
+// contract for echo/best_of/logprobs/suffix: they are decoded and ignored on
+// the chat-shim path, never rejected. Refusing them would turn a request that
+// callers send today into a 400, so this test fails if that creeps in.
 func TestCompletionsHandler_ShimIgnoresLegacyOnlyParams(t *testing.T) {
 	tests := []struct {
 		name  string

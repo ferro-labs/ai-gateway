@@ -39,8 +39,8 @@ func ProviderConfigFromEnv(entry ProviderEntry) ProviderConfig {
 // init modes that cover every deployment scenario:
 //
 //   - OSS self-hosted: populate from environment variables via ProviderConfigFromEnv.
-//   - Cloud / tenant injection: populate from an encrypted credential store
-//     (e.g. FerroCloud's credentials domain) without touching env vars.
+//   - Programmatic injection: populate from an encrypted credential store or a
+//     per-tenant secret source without touching env vars.
 //
 // Standard key names are defined as CfgKey* constants below.
 type ProviderConfig map[string]string

@@ -5,7 +5,7 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] — 1.3.1
+## [1.3.1] — 2026-07-21
 
 Seven defects reported against `v1.3.0`. Every one is reachable from ordinary
 YAML or JSON configuration, and none of them changes the `/v1` API: same request
