@@ -79,6 +79,176 @@ func TestGateway_RouteStream_ContentBasedPromptRegex(t *testing.T) {
 	}
 }
 
+func TestGateway_RouteStream_RetriesSynchronousStartBeforeFallback(t *testing.T) {
+	firstCalls := 0
+	secondCalls := 0
+	gw, err := newTestGateway(t, Config{
+		Strategy: StrategyConfig{Mode: ModeFallback},
+		Targets: []Target{
+			{VirtualKey: "first", Retry: &RetryConfig{Attempts: 2, InitialBackoffMs: 1}},
+			{VirtualKey: "second"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	gw.RegisterProvider(&mockStreamProvider{
+		mockProvider: mockProvider{name: "first", models: []string{"gpt-4o"}},
+		streamFn: func(context.Context, providers.Request) (<-chan providers.StreamChunk, error) {
+			firstCalls++
+			if firstCalls == 1 {
+				return nil, errors.New("transient start failure")
+			}
+			ch := make(chan providers.StreamChunk)
+			close(ch)
+			return ch, nil
+		},
+	})
+	gw.RegisterProvider(&mockStreamProvider{
+		mockProvider: mockProvider{name: "second", models: []string{"gpt-4o"}},
+		streamFn: func(context.Context, providers.Request) (<-chan providers.StreamChunk, error) {
+			secondCalls++
+			ch := make(chan providers.StreamChunk)
+			close(ch)
+			return ch, nil
+		},
+	})
+
+	ch, err := gw.RouteStream(context.Background(), streamTestRequest())
+	if err != nil {
+		t.Fatalf("RouteStream: %v", err)
+	}
+	drainMeteredStream(t, ch)
+	if firstCalls != 2 || secondCalls != 0 {
+		t.Fatalf("start calls first=%d second=%d, want 2/0", firstCalls, secondCalls)
+	}
+}
+
+func TestGateway_RouteStream_DoesNotReplayAfterChannelIsVisible(t *testing.T) {
+	secondCalls := 0
+	gw, err := newTestGateway(t, Config{
+		Strategy: StrategyConfig{Mode: ModeFallback},
+		Targets:  []Target{{VirtualKey: "first"}, {VirtualKey: "second"}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	gw.RegisterProvider(&mockStreamProvider{
+		mockProvider: mockProvider{name: "first", models: []string{"gpt-4o"}},
+		streamFn: func(context.Context, providers.Request) (<-chan providers.StreamChunk, error) {
+			ch := make(chan providers.StreamChunk, 2)
+			ch <- providers.StreamChunk{Choices: []providers.StreamChoice{{Delta: providers.MessageDelta{Content: "visible"}}}}
+			ch <- providers.StreamChunk{Error: errors.New("midstream failure")}
+			close(ch)
+			return ch, nil
+		},
+	})
+	gw.RegisterProvider(&mockStreamProvider{
+		mockProvider: mockProvider{name: "second", models: []string{"gpt-4o"}},
+		streamFn: func(context.Context, providers.Request) (<-chan providers.StreamChunk, error) {
+			secondCalls++
+			ch := make(chan providers.StreamChunk)
+			close(ch)
+			return ch, nil
+		},
+	})
+
+	ch, err := gw.RouteStream(context.Background(), streamTestRequest())
+	if err != nil {
+		t.Fatalf("RouteStream: %v", err)
+	}
+	drainMeteredStream(t, ch)
+	if secondCalls != 0 {
+		t.Fatalf("fallback replayed after client-visible stream start: second calls=%d", secondCalls)
+	}
+}
+
+// TestGateway_RouteStream_HangingStartAbandonedAtRequestTimeout proves the
+// start/retry phase is bounded by Config.RequestTimeout: a target configured
+// with several retry attempts against a provider that never answers must not
+// hold RouteStream open for anywhere near the full retry/backoff window (it
+// would previously block until the caller's own context was cancelled).
+func TestGateway_RouteStream_HangingStartAbandonedAtRequestTimeout(t *testing.T) {
+	gw, err := newTestGateway(t, Config{
+		RequestTimeout: "50ms",
+		Strategy:       StrategyConfig{Mode: ModeFallback},
+		Targets: []Target{
+			{VirtualKey: "hangs", Retry: &RetryConfig{Attempts: 5, InitialBackoffMs: 1}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	gw.RegisterProvider(&mockStreamProvider{
+		mockProvider: mockProvider{name: "hangs", models: []string{"gpt-4o"}},
+		streamFn: func(ctx context.Context, _ providers.Request) (<-chan providers.StreamChunk, error) {
+			<-ctx.Done() // simulate a provider that never answers on its own
+			return nil, ctx.Err()
+		},
+	})
+
+	// A generous bound so the test itself terminates even if the fix regresses;
+	// the assertion below is what actually proves the abandonment is prompt.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	_, err = gw.RouteStream(ctx, streamTestRequest())
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected RouteStream to fail once the hanging start is abandoned")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("RouteStream error = %v, want a context-deadline error from the start-phase timeout", err)
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("RouteStream took %s to abandon a hanging start with 5 configured retry attempts; want near the 50ms request timeout, not the full retry/backoff window", elapsed)
+	}
+}
+
+// TestGateway_RouteStream_LiveStreamNotKilledByStartPhaseDeadline is the
+// regression guard for the naive fix: RequestTimeout must bound only stream
+// START, never a stream already visible to the caller. A provider that
+// starts immediately but keeps sending well past RequestTimeout must drain
+// without error.
+func TestGateway_RouteStream_LiveStreamNotKilledByStartPhaseDeadline(t *testing.T) {
+	gw, err := newTestGateway(t, Config{
+		RequestTimeout: "20ms",
+		Strategy:       StrategyConfig{Mode: ModeSingle},
+		Targets:        []Target{{VirtualKey: "slow-body"}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	gw.RegisterProvider(&mockStreamProvider{
+		mockProvider: mockProvider{name: "slow-body", models: []string{"gpt-4o"}},
+		streamFn: func(ctx context.Context, _ providers.Request) (<-chan providers.StreamChunk, error) {
+			ch := make(chan providers.StreamChunk, 1)
+			go func() {
+				defer close(ch)
+				// Outlives RequestTimeout before sending its only chunk. If the
+				// start-phase deadline leaked into this context instead of being
+				// released once the channel became visible, ctx would already be
+				// done by the time we get here.
+				time.Sleep(100 * time.Millisecond)
+				if ctx.Err() != nil {
+					ch <- providers.StreamChunk{Error: errors.New("stream context was cancelled by the start-phase deadline")}
+					return
+				}
+				ch <- providers.StreamChunk{Choices: []providers.StreamChoice{{Delta: providers.MessageDelta{Content: "still streaming"}}}}
+			}()
+			return ch, nil
+		},
+	})
+
+	ch, err := gw.RouteStream(context.Background(), streamTestRequest())
+	if err != nil {
+		t.Fatalf("RouteStream: %v", err)
+	}
+	drainStream(t, ch)
+}
+
 func TestGateway_NewRejectsInvalidStreamingPromptRegex(t *testing.T) {
 	_, err := newTestGateway(t, Config{
 		Strategy: StrategyConfig{

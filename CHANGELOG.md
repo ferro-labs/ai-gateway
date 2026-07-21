@@ -5,6 +5,123 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.1] — 2026-07-21
+
+Seven defects reported against `v1.3.0`, spanning request handling, routing, and
+runtime reliability. Every one is reachable from ordinary YAML or JSON
+configuration. Nothing that worked before stops working: no request the gateway
+accepted is now refused, no response shape changes, and authentication is
+untouched. Requests that were wrongly refused now succeed.
+
+Much of this is configuration that was quietly not applied. A `retry` block
+worked on chat and was ignored on streaming. A `strategy.mode` of `fallback`
+fell back on `/v1/chat/completions` and did not on `/v1/embeddings`. If you have
+been running with settings that looked correct, some of them are now actually in
+effect — see **Upgrade notes**. The rest are plain defects: a request format the
+endpoint documented but rejected, a discarded `stream_options` value, an API-key
+update applied after it had been refused, and a panicking provider call that
+disabled its target until restart.
+
+### Fixed
+
+- **`/v1/completions` rejected documented request shapes.** A `prompt` sent as
+  an array — the batch and token-id forms — and a `stop` sent as a bare string
+  both failed to decode, returning `400`. They failed before the handler chose
+  between pass-through and the chat shim, so they were refused even when the
+  request was being forwarded verbatim to an upstream that accepts them.
+  `gpt-3.5-turbo-instruct` is exactly where batch prompts are used.
+- **Streaming ignored its retry and fallback configuration.** `RouteStream`
+  resolved one provider, called it once, and gave up, so a target returning
+  `503` failed the request outright while the same configuration retried and
+  fell back for non-streaming. Only the start of a stream is retried, and only
+  before any data reaches the caller, so a stream that has begun is never
+  replayed. The start phase is bounded by the configured request timeout; a
+  stream that starts successfully is not.
+- **Retry backoff was zero on non-chat surfaces.** Chat applied a default delay
+  between attempts where streaming, embeddings and image generation fell through
+  to no delay at all, turning three configured attempts into three immediate
+  retries against a provider that had just asked for a pause. Backoff now comes
+  from one place for every surface.
+- **Embeddings and image generation ignored the configured strategy.** Both
+  resolved to the first capable provider, with no fallback, no retry and no
+  request timeout. They now follow the configured target order with the same
+  behaviour as chat. A model served by a registered provider that is not listed
+  under `targets` remains reachable, as before.
+- **A content rule matched every promptless request.** With
+  `strategy.mode: content-based`, a `prompt_not_contains` rule treated the
+  absence of messages as a match, so one such rule captured every embedding and
+  image request regardless of its configured value.
+- **Provider lookup was not stable between calls.** Registration order was not
+  retained, so which provider served a model available from several, the default
+  target order, and the order of `GET /v1/models` could all differ from one
+  request to the next within a single process.
+- **A panicking provider call disabled its target permanently.** Circuit-breaker
+  bookkeeping was not panic-safe: the half-open probe was left held, nothing
+  releases it, and the breaker then rejected every later request for that target
+  until the process restarted.
+- **`stream_options.include_usage` was ignored.** The caller's value was
+  discarded and a usage chunk always requested. A caller asking not to receive
+  one now does not receive one. Usage is still requested upstream and still
+  recorded, so cost accounting, metrics and spend limits are unaffected by what
+  the caller asks for.
+- **Updating an API key applied changes it had rejected.** The new name and
+  scopes were written before the expiration timestamp was validated, leaving the
+  key modified by a request that returned `400`.
+- **Errors raised while starting a stream were not redacted** before reaching
+  observability exporters and event hooks, unlike every other error path.
+- **A misconfigured provider base URL was returned to the caller.** It can carry
+  a credential in its query string; it is now logged server-side only.
+
+- **The model catalog was never actually downloaded.** The fetch was bounded at
+  one second, which is below the real cost of retrieving a multi-megabyte asset
+  through a redirecting CDN, so the gateway fell back to the snapshot embedded
+  at build time on essentially every start — silently, and with pricing that
+  goes stale between releases. The budget is now ten seconds.
+
+### Added
+
+- **Request metrics, cost, tracing spans and lifecycle events for
+  `/v1/embeddings` and `/v1/images/generations`.** These surfaces previously
+  reported nothing, so they showed no traffic and no cost regardless of spend.
+- **`FERRO_MODEL_CATALOG_TIMEOUT`** bounds the catalog fetch (default `10s`).
+  The fetch runs during startup, before the listener binds, so a deployment with
+  blocked or filtered egress would otherwise wait the full budget on every start
+  before falling back. Set it to `0` to skip the remote fetch entirely and use
+  the embedded catalog immediately.
+
+### Changed
+
+- **Target ranking no longer holds the gateway lock.** Latency and cost lookups,
+  and the random draw used for weighted load balancing, previously blocked every
+  other request for their duration.
+
+### Upgrade notes
+
+No migration runs and no configuration change is required. Three things will
+look different, though, all of them the result of configuration now being
+applied where it previously was not — each is worth an operational review before
+upgrading.
+
+- **Which provider serves a request may change.** If `strategy.mode` is anything
+  other than `single` and more than one target can serve a model, embeddings and
+  image generation now follow that strategy instead of always using the first
+  capable provider. This has cost, latency and data-residency implications worth
+  checking before upgrading.
+- **Requests that used to fail may now succeed**, on streaming and on the
+  non-chat surfaces, because retry and fallback now apply there.
+- **Dashboards will show new traffic and cost.** Metrics that aggregate across
+  providers now include embedding and image requests for the first time, which
+  can look like a step change at the upgrade with no change in actual usage.
+  Volume- and cost-based alert thresholds are worth reviewing.
+- **Reported costs may change**, because the gateway now reaches the current
+  catalog instead of the one embedded at build time. Prices are more accurate;
+  models added since the embedded snapshot stop being costed at zero.
+- **Startup can take up to ten seconds longer where egress to the catalog host
+  is blocked or slow**, since the fetch precedes the listener binding. If
+  readiness probes are tight, either widen them or set
+  `FERRO_MODEL_CATALOG_TIMEOUT` to a shorter value — or to `0` on air-gapped
+  deployments, which skips the fetch entirely.
+
 ## [1.3.0] — 2026-07-20
 
 MCP servers can now be launched as local subprocesses, so any `npx`, `uvx`, or binary MCP server can be used without standing up an HTTP endpoint for it. Alongside the new transport, two long-standing defects in the existing MCP path are fixed — both of which affected the gateway whether or not you used MCP deliberately.

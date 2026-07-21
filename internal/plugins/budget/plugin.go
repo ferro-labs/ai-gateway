@@ -39,8 +39,8 @@
 //
 // All spend data is in-memory and does not survive process restarts. This
 // makes the budget plugin suitable for session-scoped soft limits and
-// development quotas. For durable billing enforcement use FerroCloud's
-// server-side budget controls which persist to PostgreSQL.
+// development quotas. Durable, cross-restart billing enforcement needs spend
+// state in a shared store, which this plugin deliberately does not implement.
 //
 // The store caps tracked keys at max_keys (default 10,000). When the cap is
 // reached on a new key insertion, the key with the lowest accumulated spend is

@@ -49,13 +49,13 @@ type Config struct {
 	// MCPServers configures external MCP tool servers for agentic tool calling.
 	// When set, the gateway injects discovered tools into every chat completion
 	// request and executes an agentic loop when the LLM returns tool_calls.
-	// FerroCloud populates this field from the tenant's mcp_servers table at
-	// gateway.New() time — no separate MCPRegistry() public method is exposed.
+	// It is read once at New() time, so a caller embedding the gateway can
+	// populate it from its own source instead of a config file.
 	MCPServers []mcp.ServerConfig `json:"mcp_servers,omitempty" yaml:"mcp_servers,omitempty"`
-	// MCPToolCallAuditFn, if non-nil, is called after every MCP tool invocation.
-	// This field cannot be set via JSON or YAML — set it programmatically before
-	// calling New. FerroCloud uses it to write async audit entries to the
-	// mcp_tool_call_logs table.
+	// MCPToolCallAuditFn, if non-nil, is called after every MCP tool invocation,
+	// giving an embedding caller a hook to record tool use. It cannot be set via
+	// JSON or YAML — set it programmatically before calling New. It runs off the
+	// request path, so it must not block.
 	MCPToolCallAuditFn mcp.ToolCallAuditFn `json:"-" yaml:"-"`
 	// Observability configures OpenTelemetry tracing. When omitted the
 	// gateway runs with a NoOp provider (zero allocations on the hot

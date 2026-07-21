@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/ferro-labs/ai-gateway/providers"
+	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
 type routeChatCompletionRequest struct {
@@ -29,9 +30,16 @@ type routeChatCompletionRequest struct {
 	LogProbs            bool                      `json:"logprobs,omitempty"`
 	TopLogProbs         *int                      `json:"top_logprobs,omitempty"`
 	Stream              bool                      `json:"stream,omitempty"`
-	User                string                    `json:"user,omitempty"`
-	LogitBias           map[string]float64        `json:"logit_bias,omitempty"`
-	ParallelToolCalls   *bool                     `json:"parallel_tool_calls,omitempty"`
+	// StreamOptions is decoded here but deliberately mapped to
+	// providers.Request.ClientStreamOptions below, NOT to
+	// providers.Request.StreamOptions — see the field doc on
+	// ClientStreamOptions in providers/core/chat.go for why the two must
+	// stay separate (an explicit include_usage:false must never reach the
+	// verbatim-forwarding path shared by the OpenAI-compatible providers).
+	StreamOptions     *core.StreamOptions `json:"stream_options,omitempty"`
+	User              string              `json:"user,omitempty"`
+	LogitBias         map[string]float64  `json:"logit_bias,omitempty"`
+	ParallelToolCalls *bool               `json:"parallel_tool_calls,omitempty"`
 }
 
 type routeChatMessage struct {
@@ -60,7 +68,7 @@ func putRouteChatCompletionRequest(r *routeChatCompletionRequest) {
 	chatRequestPool.Put(r)
 }
 
-// reset clears all 20 fields before returning to the pool.
+// reset clears all 21 fields before returning to the pool.
 // SECURITY: every field must be listed explicitly. Missing a field
 // leaks one tenant's data to another in the multi-tenant gateway.
 func (r *routeChatCompletionRequest) reset() {
@@ -81,9 +89,10 @@ func (r *routeChatCompletionRequest) reset() {
 	r.LogProbs = false          // field 15: bool
 	r.TopLogProbs = nil         // field 16: *int
 	r.Stream = false            // field 17: bool
-	r.User = ""                 // field 18: string
-	r.LogitBias = nil           // field 19: map[string]float64
-	r.ParallelToolCalls = nil   // field 20: *bool
+	r.StreamOptions = nil       // field 18: *core.StreamOptions
+	r.User = ""                 // field 19: string
+	r.LogitBias = nil           // field 20: map[string]float64
+	r.ParallelToolCalls = nil   // field 21: *bool
 }
 
 // DecodeChatCompletionRequest decodes the JSON body into a providers.Request.
@@ -128,6 +137,7 @@ func DecodeChatCompletionRequest(r io.Reader) (providers.Request, error) {
 		LogProbs:            wire.LogProbs,
 		TopLogProbs:         wire.TopLogProbs,
 		Stream:              wire.Stream,
+		ClientStreamOptions: wire.StreamOptions,
 		User:                wire.User,
 		LogitBias:           wire.LogitBias,
 		ParallelToolCalls:   wire.ParallelToolCalls,

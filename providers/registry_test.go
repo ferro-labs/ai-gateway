@@ -79,6 +79,19 @@ func TestRegistry_FindByModel(t *testing.T) {
 	}
 }
 
+func TestRegistry_FindByModelUsesRegistrationOrder(t *testing.T) {
+	r := NewRegistry()
+	r.Register(&stubProvider{name: "first", models: []string{"shared"}})
+	r.Register(&stubProvider{name: "second", models: []string{"shared"}})
+
+	for range 100 {
+		p, ok := r.FindByModel("shared")
+		if !ok || p.Name() != "first" {
+			t.Fatalf("FindByModel = %v,%v, want first registered provider", p, ok)
+		}
+	}
+}
+
 func TestRegistry_AllModels(t *testing.T) {
 	r := NewRegistry()
 	r.Register(&stubProvider{name: "a", models: []string{"m1", "m2"}})

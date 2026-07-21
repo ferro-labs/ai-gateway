@@ -108,8 +108,11 @@ func New(cfg Config) (*Gateway, error) {
 	}
 
 	// No lifecycle context exists yet at this point in construction (shutdownCtx
-	// is created below); this is a one-time startup fetch bounded by fetchRemote's
-	// own 1s client timeout, so context.Background() is the correct choice here.
+	// is created below), so context.Background() is the only choice available
+	// here. The fetch is bounded by fetchRemote's own client timeout, which an
+	// operator can shorten or disable entirely via FERRO_MODEL_CATALOG_TIMEOUT.
+	// That matters because this runs before the listener binds: until it
+	// returns, the process answers no readiness probe.
 	catalogResult, err := models.LoadWithInfoContext(context.Background())
 	recordCatalogLoad(catalogResult.Source, err)
 	catalog := catalogResult.Catalog
@@ -229,7 +232,7 @@ func (g *Gateway) startCatalogRefresh() {
 
 // refreshCatalog fetches the latest model catalog. ctx is g.shutdownCtx, so a
 // fetch already in flight when the gateway shuts down is canceled immediately
-// instead of running to fetchRemote's own 1s timeout.
+// instead of running to fetchRemote's own client timeout.
 func (g *Gateway) refreshCatalog(ctx context.Context) {
 	result, err := models.LoadWithInfoContext(ctx)
 	recordCatalogLoad(result.Source, err)

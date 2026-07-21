@@ -22,15 +22,23 @@ import (
 // LegacyCompletionRequest mirrors the OpenAI /v1/completions request body.
 // This is the non-chat (text-only) completion format supported by models
 // like gpt-3.5-turbo-instruct, deepseek-chat, etc.
+//
+// Prompt and Stop are decoded as json.RawMessage because OpenAI accepts both
+// of them in more than one JSON shape (prompt: string | []string | []int |
+// [][]int; stop: string | []string). Typing them as bare Go string/[]string
+// would hard-fail json.Unmarshal for the other valid shapes before Path 1
+// (the native proxy, which forwards the body verbatim) ever gets a chance to
+// forward them untouched. Path 2 (the chat shim) decodes them via
+// shimPrompt/shimStop.
 type LegacyCompletionRequest struct {
 	Model            string             `json:"model"`
-	Prompt           string             `json:"prompt"`
+	Prompt           json.RawMessage    `json:"prompt"`
 	MaxTokens        *int               `json:"max_tokens,omitempty"`
 	Temperature      *float64           `json:"temperature,omitempty"`
 	TopP             *float64           `json:"top_p,omitempty"`
 	N                *int               `json:"n,omitempty"`
 	Stream           bool               `json:"stream,omitempty"`
-	Stop             []string           `json:"stop,omitempty"`
+	Stop             json.RawMessage    `json:"stop,omitempty"`
 	PresencePenalty  *float64           `json:"presence_penalty,omitempty"`
 	FrequencyPenalty *float64           `json:"frequency_penalty,omitempty"`
 	Seed             *int64             `json:"seed,omitempty"`
@@ -40,6 +48,30 @@ type LegacyCompletionRequest struct {
 	Echo             bool               `json:"echo,omitempty"`
 	BestOf           *int               `json:"best_of,omitempty"`
 	Suffix           string             `json:"suffix,omitempty"`
+}
+
+// legacyChoice is a single choice in the Path 2 (chat shim) legacy response
+// envelope.
+type legacyChoice struct {
+	Text  string `json:"text"`
+	Index int    `json:"index"`
+	// Logprobs is always present and explicitly null when not requested —
+	// real OpenAI never omits the key, so no omitempty here. The shim never
+	// computes logprobs (LogProbs/Echo/BestOf/Suffix are decoded and
+	// ignored, unchanged from v1.3.0), so this is always nil.
+	Logprobs     any    `json:"logprobs"`
+	FinishReason string `json:"finish_reason"`
+}
+
+// legacyResponse is the Path 2 (chat shim) legacy /v1/completions response
+// envelope, translated from a chat completion response.
+type legacyResponse struct {
+	ID      string          `json:"id"`
+	Object  string          `json:"object"`
+	Created int64           `json:"created"`
+	Model   string          `json:"model"`
+	Choices []legacyChoice  `json:"choices"`
+	Usage   providers.Usage `json:"usage"`
 }
 
 // Completions handles POST /v1/completions (legacy text completion API).
@@ -82,7 +114,13 @@ func Completions(registry *providers.Registry) http.HandlerFunc {
 		if pp, canProxy := p.(providers.ProxiableProvider); canProxy {
 			target, err := CompletionsEndpointURL(pp.BaseURL())
 			if err != nil {
-				apierror.WriteOpenAI(w, http.StatusInternalServerError, err.Error(), "server_error", "internal_error")
+				// The error embeds the configured base URL verbatim, which can
+				// carry a credential in its query string, so it is not written
+				// anywhere — not to the client, and not to the log, which is
+				// routinely shipped off-host. The provider name is enough to
+				// locate the offending entry in the gateway's own config.
+				logging.FromContext(r.Context()).Error("invalid provider completions URL", "provider", p.Name())
+				apierror.WriteOpenAI(w, http.StatusInternalServerError, "invalid provider configuration", "server_error", "internal_error")
 				return
 			}
 			// Streaming clears http.Server's WriteTimeout per write, so an idle
@@ -159,16 +197,48 @@ func Completions(registry *providers.Registry) http.HandlerFunc {
 			return
 		}
 
+		// promptText is the only prompt shape the shim can represent as a
+		// single chat message. A multi-element batch, a token-id array, or an
+		// array of token-id arrays cannot be represented and must be
+		// rejected — at v1.3.0 these shapes already failed with a 400 (a
+		// json.Unmarshal error against the old string-typed field), so this
+		// is the same status with a clearer message, not a new break.
+		promptText, ok := shimPrompt(legacyReq.Prompt)
+		if !ok {
+			apierror.WriteOpenAI(w,
+				http.StatusBadRequest,
+				"prompt must be a string or single-element array for this provider (no native /v1/completions support); batch, token-id, and nested-array prompts are not supported",
+				"invalid_request_error",
+				"unsupported_parameter",
+			)
+			return
+		}
+
+		stopSeqs, ok := shimStop(legacyReq.Stop)
+		if !ok {
+			apierror.WriteOpenAI(w,
+				http.StatusBadRequest,
+				"stop must be a string or an array of strings",
+				"invalid_request_error",
+				"invalid_request",
+			)
+			return
+		}
+
 		// Wrap the prompt as a user message and call through the chat path,
 		// then re-wrap the response in the legacy completions envelope.
+		// echo/best_of/logprobs/suffix are decoded above but intentionally
+		// neither forwarded nor rejected: the chat shim cannot express them,
+		// and refusing a request that previously succeeded would change the
+		// endpoint's behaviour for callers already sending them.
 		chatReq := providers.Request{
 			Model:            legacyReq.Model,
-			Messages:         []providers.Message{{Role: "user", Content: legacyReq.Prompt}},
+			Messages:         []providers.Message{{Role: "user", Content: promptText}},
 			MaxTokens:        legacyReq.MaxTokens,
 			Temperature:      legacyReq.Temperature,
 			TopP:             legacyReq.TopP,
 			N:                legacyReq.N,
-			Stop:             legacyReq.Stop,
+			Stop:             stopSeqs,
 			PresencePenalty:  legacyReq.PresencePenalty,
 			FrequencyPenalty: legacyReq.FrequencyPenalty,
 			Seed:             legacyReq.Seed,
@@ -182,22 +252,10 @@ func Completions(registry *providers.Registry) http.HandlerFunc {
 		}
 
 		// Translate chat response → legacy completions response.
-		type legacyChoice struct {
-			Text         string `json:"text"`
-			Index        int    `json:"index"`
-			FinishReason string `json:"finish_reason"`
-		}
-		type legacyResponse struct {
-			ID      string          `json:"id"`
-			Object  string          `json:"object"`
-			Model   string          `json:"model"`
-			Choices []legacyChoice  `json:"choices"`
-			Usage   providers.Usage `json:"usage"`
-		}
-
 		legacy := legacyResponse{
 			ID:      chatResp.ID,
 			Object:  "text_completion",
+			Created: chatResp.Created,
 			Model:   chatResp.Model,
 			Usage:   chatResp.Usage,
 			Choices: make([]legacyChoice, 0, len(chatResp.Choices)),
@@ -214,6 +272,70 @@ func Completions(registry *providers.Registry) http.HandlerFunc {
 		w.Header().Set("X-Gateway-Provider", p.Name())
 		json.NewEncoder(w).Encode(legacy) //nolint:errcheck,gosec // response headers already committed; an encode error to the client cannot be reported
 	}
+}
+
+// shimPrompt decodes the `prompt` field for Path 2 (the chat shim), which can
+// only represent a single text prompt. It accepts a bare string or a
+// single-element string array (equivalent to a bare string) and returns
+// ok=false for shapes it cannot represent: a multi-element string array
+// (batch), token-id arrays, and arrays of token-id arrays. Path 1 (the native
+// proxy) never calls this — it forwards the raw prompt bytes verbatim.
+func shimPrompt(raw json.RawMessage) (string, bool) {
+	if len(raw) == 0 {
+		return "", true
+	}
+	var s string
+	// A bare JSON null decodes into a string as a no-op, leaving "". That is
+	// what "prompt": null has always produced here, so it stays accepted.
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s, true
+	}
+	var arr []json.RawMessage
+	if err := json.Unmarshal(raw, &arr); err == nil && len(arr) == 1 {
+		// A null element would decode to "" by the same no-op, silently
+		// turning ["prompt", null] into an empty prompt. There is no text to
+		// send, so treat it as unrepresentable rather than inventing one.
+		if isJSONNull(arr[0]) {
+			return "", false
+		}
+		if err := json.Unmarshal(arr[0], &s); err == nil {
+			return s, true
+		}
+	}
+	return "", false
+}
+
+// isJSONNull reports whether raw is the JSON literal null. Decoding null into a
+// string or a slice succeeds and leaves the zero value, so callers that must
+// distinguish "absent" from "present but empty" have to check the bytes.
+func isJSONNull(raw json.RawMessage) bool {
+	return bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
+}
+
+// shimStop normalizes the `stop` field (a bare string or an array of up to 4
+// strings, per the OpenAI spec) into the slice form providers.Request wants.
+// Both forms are representable, so this never rejects.
+func shimStop(raw json.RawMessage) ([]string, bool) {
+	// "stop": null means no stop sequences. Decoding it into a string succeeds
+	// and yields "", which would send a single empty stop sequence upstream —
+	// a different request from sending none at all.
+	if len(raw) == 0 || isJSONNull(raw) {
+		return nil, true
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return []string{s}, true
+	}
+	// A null inside the array decodes to "", which is the behaviour this
+	// endpoint has always had. Anything else — a number, an object, a boolean,
+	// or an array holding one — is not a stop sequence. Reporting it beats
+	// silently continuing with no stop sequences at all, which is what the
+	// caller would otherwise get for what is plainly a mistake on their side.
+	var arr []string
+	if err := json.Unmarshal(raw, &arr); err == nil {
+		return arr, true
+	}
+	return nil, false
 }
 
 // CompletionsEndpointURL resolves the upstream /v1/completions URL from a provider base URL.

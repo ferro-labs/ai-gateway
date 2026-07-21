@@ -30,6 +30,14 @@ var bundledCatalog []byte
 // Useful for air-gapped deployments or enterprise custom pricing.
 const CatalogURLEnv = "FERRO_MODEL_CATALOG_URL"
 
+// CatalogFetchTimeoutEnv overrides how long the remote fetch may take, as a Go
+// duration (e.g. "2s"). The default suits a normal internet connection; a
+// deployment whose egress is blocked or heavily filtered would otherwise wait
+// the whole budget on every start before falling back to the embedded catalog.
+// Setting it to "0" skips the remote fetch entirely and uses the embedded
+// snapshot immediately.
+const CatalogFetchTimeoutEnv = "FERRO_MODEL_CATALOG_TIMEOUT"
+
 const defaultCatalogURL = "https://github.com/ferro-labs/model-catalog/releases/latest/download/catalog.json"
 
 // LoadSource identifies where a catalog load came from.
@@ -175,7 +183,8 @@ type Lifecycle struct {
 	Successor       *string `json:"successor"`
 }
 
-// Load fetches the model catalog from a remote URL (1s timeout).
+// Load fetches the model catalog from a remote URL, bounded by
+// [CatalogFetchTimeoutEnv] or a 10s default.
 // On any failure it falls back to the embedded catalog_backup.json.
 // The gateway never fails to start due to catalog unavailability.
 // Equivalent to LoadContext(context.Background()).
@@ -267,7 +276,46 @@ func catalogLoadErrorForLog(err error, catalogURL string) string {
 // larger than any realistic catalog file.
 const maxCatalogResponseBytes = 8 * 1024 * 1024
 
+// catalogFetchTimeout bounds the whole remote fetch: DNS, TLS, the two redirects
+// GitHub release downloads go through, and the ~3.4 MB body itself. The previous
+// 1s budget was below the real cost of that transfer (measured ~1.2s on a home
+// connection, ~0.6s from a datacenter), so the fetch usually failed and the
+// gateway silently served the embedded snapshot — which goes stale between
+// releases and prices unknown models at zero. Callers that need a tighter bound
+// pass their own deadline via LoadWithInfoContext.
+const catalogFetchTimeout = 10 * time.Second
+
+// resolveCatalogFetchTimeout returns the effective fetch budget. An unset or
+// unparseable FERRO_MODEL_CATALOG_TIMEOUT leaves the default in place rather
+// than failing the load: the catalog is best-effort, and a typo in an optional
+// tuning knob should not change how long startup takes in a way nobody expects.
+// A non-positive value means "do not fetch at all".
+func resolveCatalogFetchTimeout() time.Duration {
+	raw := strings.TrimSpace(os.Getenv(CatalogFetchTimeoutEnv))
+	if raw == "" {
+		return catalogFetchTimeout
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		slog.Warn("invalid catalog fetch timeout; using the default", //nolint:gosec // values are CR/LF-sanitized before logging.
+			"env", CatalogFetchTimeoutEnv, "value", safeLogValue(raw), "default", catalogFetchTimeout)
+		return catalogFetchTimeout
+	}
+	if d <= 0 {
+		return 0
+	}
+	return d
+}
+
+// ErrCatalogFetchDisabled reports that the remote fetch was skipped because the
+// configured timeout is zero. Callers fall back to the embedded catalog.
+var ErrCatalogFetchDisabled = fmt.Errorf("catalog fetch: disabled by %s", CatalogFetchTimeoutEnv)
+
 func fetchRemote(ctx context.Context, rawURL string) ([]byte, error) {
+	timeout := resolveCatalogFetchTimeout()
+	if timeout <= 0 {
+		return nil, ErrCatalogFetchDisabled
+	}
 	u, err := url.Parse(rawURL)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return nil, fmt.Errorf("invalid catalog URL %q: must be http or https with a host", rawURL)
@@ -276,7 +324,7 @@ func fetchRemote(ctx context.Context, rawURL string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	client := &http.Client{Timeout: time.Second}
+	client := &http.Client{Timeout: timeout}
 	resp, err := client.Do(req) //nolint:gosec // URL scheme and host validated above
 	if err != nil {
 		return nil, err

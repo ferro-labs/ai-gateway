@@ -5,6 +5,7 @@ import "fmt"
 // Registry manages a collection of providers for lookup by name.
 type Registry struct {
 	providers map[string]Provider
+	order     []string
 }
 
 // NewRegistry creates a new empty provider registry.
@@ -16,6 +17,9 @@ func NewRegistry() *Registry {
 
 // Register adds a provider to the registry.
 func (r *Registry) Register(p Provider) {
+	if _, exists := r.providers[p.Name()]; !exists {
+		r.order = append(r.order, p.Name())
+	}
 	r.providers[p.Name()] = p
 }
 
@@ -36,25 +40,27 @@ func (r *Registry) MustGet(name string) Provider {
 
 // List returns the names of all registered providers.
 func (r *Registry) List() []string {
-	names := make([]string, 0, len(r.providers))
-	for name := range r.providers {
-		names = append(names, name)
-	}
+	names := make([]string, len(r.order))
+	copy(names, r.order)
 	return names
 }
 
 // AllModels returns ModelInfo from all registered providers.
 func (r *Registry) AllModels() []ModelInfo {
 	var models []ModelInfo
-	for _, p := range r.providers {
+	for _, name := range r.order {
+		p := r.providers[name]
 		models = append(models, p.Models()...)
 	}
 	return models
 }
 
-// FindByModel returns the first provider that supports the given model.
+// FindByModel returns the first registered provider that supports the given
+// model. Registration order is retained explicitly so overlapping/wildcard
+// providers resolve deterministically rather than following Go map iteration.
 func (r *Registry) FindByModel(model string) (Provider, bool) {
-	for _, p := range r.providers {
+	for _, name := range r.order {
+		p := r.providers[name]
 		if p.SupportsModel(model) {
 			return p, true
 		}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -228,13 +229,23 @@ func TestUpdateKeyInvalidExpiration(t *testing.T) {
 	adminKey := createAdminKey(t, h)
 	target := createTestKey(t, h, "expirable", nil, nil)
 
-	body := `{"expires_at":"not-a-timestamp"}`
+	body := `{"name":"must-not-apply","scopes":["admin"],"expires_at":"not-a-timestamp"}`
 	req := authedRequest(http.MethodPut, "/admin/keys/"+target.ID, body, adminKey)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+	fresh, ok := h.Keys.Get(context.Background(), target.ID)
+	if !ok {
+		t.Fatal("expected key to remain present")
+	}
+	// Compare the scope values, not just the count: the request body swaps
+	// scopes for a different set of the same length, so a length check alone
+	// would pass even if the rejected update had been applied.
+	if fresh.Name != target.Name || !slices.Equal(fresh.Scopes, target.Scopes) {
+		t.Fatalf("invalid expiration partially mutated key: before=%+v after=%+v", target, fresh)
 	}
 }
 

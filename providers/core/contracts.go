@@ -1,9 +1,9 @@
 // Package core defines the stable public contracts for the providers layer:
 // interfaces, shared data types, and supporting helpers.
 //
-// All provider implementations and consumer packages (gateway, admin, ferrocloud)
-// should import this package for type definitions rather than the root
-// providers package when operating from a sub-package context.
+// Provider implementations and consumer packages should import this package for
+// type definitions rather than the root providers package when operating from a
+// sub-package context.
 //
 // The root providers package re-exports everything here as type aliases so
 // existing code using providers.Provider, providers.Request, etc. continues

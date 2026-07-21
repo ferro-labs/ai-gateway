@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // TestCatalogBackupParseable verifies the embedded catalog_backup.json is
@@ -735,5 +736,62 @@ func BenchmarkGetBareModelID(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		c.Get(bareID)
+	}
+}
+
+// TestCatalogFetchTimeoutEnv_DisablesRemoteFetch covers the escape hatch for
+// deployments whose egress is blocked. Without it, every start would wait the
+// full default budget for a fetch that cannot succeed — and it waits before the
+// gateway binds its listener, so nothing answers a readiness probe meanwhile.
+func TestCatalogFetchTimeoutEnv_DisablesRemoteFetch(t *testing.T) {
+	var reached atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		reached.Store(true)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"test/remote":{"provider":"test","model_id":"remote","mode":"chat"}}`))
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv(CatalogURLEnv, server.URL)
+	t.Setenv(CatalogFetchTimeoutEnv, "0")
+
+	result, err := LoadWithInfo()
+	if err != nil {
+		t.Fatalf("LoadWithInfo returned error: %v", err)
+	}
+	if reached.Load() {
+		t.Fatal("remote catalog was fetched despite the fetch being disabled")
+	}
+	if result.Source != LoadSourceFallback {
+		t.Fatalf("Source = %q, want %q", result.Source, LoadSourceFallback)
+	}
+	if len(result.Catalog) == 0 {
+		t.Fatal("expected the embedded catalog to be served when the fetch is disabled")
+	}
+}
+
+// TestResolveCatalogFetchTimeout covers the parsing of the override. An
+// unparseable value keeps the default rather than failing the load: the catalog
+// is best-effort, and a typo in an optional knob must not silently change how
+// long startup blocks.
+func TestResolveCatalogFetchTimeout(t *testing.T) {
+	tests := []struct {
+		name string
+		env  string
+		want time.Duration
+	}{
+		{"unset keeps the default", "", catalogFetchTimeout},
+		{"explicit shorter budget", "250ms", 250 * time.Millisecond},
+		{"zero disables the fetch", "0", 0},
+		{"negative disables the fetch", "-1s", 0},
+		{"unparseable keeps the default", "soon", catalogFetchTimeout},
+		{"surrounding whitespace tolerated", "  2s  ", 2 * time.Second},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(CatalogFetchTimeoutEnv, tt.env)
+			if got := resolveCatalogFetchTimeout(); got != tt.want {
+				t.Fatalf("resolveCatalogFetchTimeout() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

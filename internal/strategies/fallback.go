@@ -25,6 +25,20 @@ type targetRetry struct {
 // defaultBackoffMs is used when RetryConfig.InitialBackoffMs is zero.
 const defaultBackoffMs = 100
 
+// NormalizeBackoffMs returns the effective initial backoff in milliseconds,
+// substituting defaultBackoffMs when ms is unset (<= 0). It is exported so
+// every retry surface shares one normalisation rule instead of re-deriving
+// the guard: Fallback.Execute applies it via resolveRetry below, and the
+// streaming start-phase retry helper in the root package applies it via
+// WaitBeforeRetry. Without a single source, an unset InitialBackoffMs can
+// silently mean "0ms backoff" on one surface and "100ms backoff" on another.
+func NormalizeBackoffMs(ms int) int {
+	if ms <= 0 {
+		return defaultBackoffMs
+	}
+	return ms
+}
+
 // Fallback tries each target in order, moving to the next on failure.
 // Per-target retry policies (attempts, status code filtering, backoff) are
 // configured via WithTargetRetry.
@@ -75,9 +89,7 @@ func (f *Fallback) resolveRetry(virtualKey string) targetRetry {
 	if !ok || r.attempts <= 0 {
 		r.attempts = 1
 	}
-	if r.initialBackoffMs <= 0 {
-		r.initialBackoffMs = defaultBackoffMs
-	}
+	r.initialBackoffMs = NormalizeBackoffMs(r.initialBackoffMs)
 	return r
 }
 
@@ -120,6 +132,15 @@ func shouldRetry(err error, onStatusCodes []int) bool {
 	return slices.Contains(onStatusCodes, code)
 }
 
+// ShouldRetry reports whether err is eligible for another configured attempt
+// against the same target. It exposes the fallback strategy's retry
+// classification to the streaming start-phase retry helper in the root
+// package so every routing surface follows one retry policy instead of
+// growing a second, possibly-diverging one.
+func ShouldRetry(err error, onStatusCodes []int) bool {
+	return shouldRetry(err, onStatusCodes)
+}
+
 // retryDelay returns how long to wait before a retry attempt (attempt >= 1). It
 // honors an upstream Retry-After hint from the previous failure when present —
 // the provider knows when it will be ready better than any local guess.
@@ -145,6 +166,25 @@ func retryDelay(attempt, initialBackoffMs int, prevErr error) time.Duration {
 	// clients, not resist prediction. A CSPRNG would buy nothing here and cost
 	// entropy on every retry.
 	return rand.N(exponential)
+}
+
+// WaitBeforeRetry blocks for the configured retry delay ahead of attempt
+// (attempt >= 1), normalising initialBackoffMs through NormalizeBackoffMs so
+// callers never have to re-derive the <=0 default themselves. The returned
+// bool is false when an upstream Retry-After hint exceeds maxRetryAfter and
+// the caller should abandon this target rather than wait; ctx cancellation is
+// returned as an error, matching Execute's own wait below.
+func WaitBeforeRetry(ctx context.Context, attempt, initialBackoffMs int, prevErr error) (bool, error) {
+	delay := retryDelay(attempt, NormalizeBackoffMs(initialBackoffMs), prevErr)
+	if delay < 0 {
+		return false, nil
+	}
+	select {
+	case <-ctx.Done():
+		return false, ctx.Err()
+	case <-time.After(delay):
+		return true, nil
+	}
 }
 
 // Execute attempts each provider in order, retrying according to the per-target

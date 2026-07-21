@@ -3,7 +3,7 @@ package models
 // Usage carries all token and media counts from a completed provider response.
 // This is intentionally a separate type from providers.Usage so the models
 // package has no dependency on the providers package and can be imported
-// independently (e.g. by FerroCloud).
+// independently.
 type Usage struct {
 	PromptTokens     int
 	CompletionTokens int
