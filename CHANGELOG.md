@@ -72,11 +72,22 @@ disabled its target until restart.
 - **A misconfigured provider base URL was returned to the caller.** It can carry
   a credential in its query string; it is now logged server-side only.
 
+- **The model catalog was never actually downloaded.** The fetch was bounded at
+  one second, which is below the real cost of retrieving a multi-megabyte asset
+  through a redirecting CDN, so the gateway fell back to the snapshot embedded
+  at build time on essentially every start — silently, and with pricing that
+  goes stale between releases. The budget is now ten seconds.
+
 ### Added
 
 - **Request metrics, cost, tracing spans and lifecycle events for
   `/v1/embeddings` and `/v1/images/generations`.** These surfaces previously
   reported nothing, so they showed no traffic and no cost regardless of spend.
+- **`FERRO_MODEL_CATALOG_TIMEOUT`** bounds the catalog fetch (default `10s`).
+  The fetch runs during startup, before the listener binds, so a deployment with
+  blocked or filtered egress would otherwise wait the full budget on every start
+  before falling back. Set it to `0` to skip the remote fetch entirely and use
+  the embedded catalog immediately.
 
 ### Changed
 
@@ -102,6 +113,14 @@ upgrading.
   providers now include embedding and image requests for the first time, which
   can look like a step change at the upgrade with no change in actual usage.
   Volume- and cost-based alert thresholds are worth reviewing.
+- **Reported costs may change**, because the gateway now reaches the current
+  catalog instead of the one embedded at build time. Prices are more accurate;
+  models added since the embedded snapshot stop being costed at zero.
+- **Startup can take up to ten seconds longer where egress to the catalog host
+  is blocked or slow**, since the fetch precedes the listener binding. If
+  readiness probes are tight, either widen them or set
+  `FERRO_MODEL_CATALOG_TIMEOUT` to a shorter value — or to `0` on air-gapped
+  deployments, which skips the fetch entirely.
 
 ## [1.3.0] — 2026-07-20
 

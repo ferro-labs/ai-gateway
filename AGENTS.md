@@ -231,6 +231,7 @@ observability:
 | `GATEWAY_ENV` | Set to `production` to enable production-mode safety guards (e.g. refuses to start if `ALLOW_UNAUTHENTICATED_PROXY=true`); unset or any other value is non-production mode |
 | `PORT` | Server port (default: 8080) |
 | `FERRO_MODEL_CATALOG_URL` | Override the model catalog source URL (used by `/v1/models` and model routing) |
+| `FERRO_MODEL_CATALOG_TIMEOUT` | Go duration bounding the catalog fetch (default 10s). The fetch runs during startup, before the listener binds, so a blocked-egress deployment waits this long before falling back to the embedded catalog. Set `0` to skip the remote fetch entirely |
 | `FERRO_MODEL_DISCOVERY_INTERVAL` | Opt-in interval (Go duration, e.g. 6h) to live-refresh model lists from provider /models endpoints; unset disables |
 | `ALLOW_UNAUTHENTICATED_PROXY` | Set to `true` to disable proxy-route auth (dev/local only; blocked when `GATEWAY_ENV=production`) |
 | `OPENAI_API_KEY` | OpenAI API key |
