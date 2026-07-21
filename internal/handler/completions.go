@@ -214,6 +214,17 @@ func Completions(registry *providers.Registry) http.HandlerFunc {
 			return
 		}
 
+		stopSeqs, ok := shimStop(legacyReq.Stop)
+		if !ok {
+			apierror.WriteOpenAI(w,
+				http.StatusBadRequest,
+				"stop must be a string or an array of strings",
+				"invalid_request_error",
+				"invalid_request",
+			)
+			return
+		}
+
 		// Wrap the prompt as a user message and call through the chat path,
 		// then re-wrap the response in the legacy completions envelope.
 		// echo/best_of/logprobs/suffix are decoded above but intentionally
@@ -227,7 +238,7 @@ func Completions(registry *providers.Registry) http.HandlerFunc {
 			Temperature:      legacyReq.Temperature,
 			TopP:             legacyReq.TopP,
 			N:                legacyReq.N,
-			Stop:             shimStop(legacyReq.Stop),
+			Stop:             stopSeqs,
 			PresencePenalty:  legacyReq.PresencePenalty,
 			FrequencyPenalty: legacyReq.FrequencyPenalty,
 			Seed:             legacyReq.Seed,
@@ -304,22 +315,27 @@ func isJSONNull(raw json.RawMessage) bool {
 // shimStop normalizes the `stop` field (a bare string or an array of up to 4
 // strings, per the OpenAI spec) into the slice form providers.Request wants.
 // Both forms are representable, so this never rejects.
-func shimStop(raw json.RawMessage) []string {
+func shimStop(raw json.RawMessage) ([]string, bool) {
 	// "stop": null means no stop sequences. Decoding it into a string succeeds
 	// and yields "", which would send a single empty stop sequence upstream —
 	// a different request from sending none at all.
 	if len(raw) == 0 || isJSONNull(raw) {
-		return nil
+		return nil, true
 	}
 	var s string
 	if err := json.Unmarshal(raw, &s); err == nil {
-		return []string{s}
+		return []string{s}, true
 	}
+	// A null inside the array decodes to "", which is the behaviour this
+	// endpoint has always had. Anything else — a number, an object, a boolean,
+	// or an array holding one — is not a stop sequence. Reporting it beats
+	// silently continuing with no stop sequences at all, which is what the
+	// caller would otherwise get for what is plainly a mistake on their side.
 	var arr []string
 	if err := json.Unmarshal(raw, &arr); err == nil {
-		return arr
+		return arr, true
 	}
-	return nil
+	return nil, false
 }
 
 // CompletionsEndpointURL resolves the upstream /v1/completions URL from a provider base URL.

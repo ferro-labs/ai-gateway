@@ -251,6 +251,33 @@ func TestCompletionsHandler_ShimStopForms(t *testing.T) {
 		// alone; changing it would alter a request the gateway already accepts.
 		{"array containing null", `["a",null]`, []string{"a", ""}},
 	}
+	// Shapes that are not stop sequences at all. Each of these was refused
+	// before the field became json.RawMessage, and silently becoming "no stop
+	// sequences" would hand the caller a longer completion than they asked for
+	// with nothing to indicate why.
+	rejected := []struct {
+		name     string
+		stopJSON string
+	}{
+		{"number", `42`},
+		{"boolean", `true`},
+		{"object", `{"a":1}`},
+		{"array holding a number", `["a",7]`},
+	}
+	for _, tt := range rejected {
+		t.Run("rejects "+tt.name, func(t *testing.T) {
+			p := &nonProxyProvider{name: "shim", models: []string{"legacy-model"}}
+			reg := providers.NewRegistry()
+			reg.Register(p)
+			body := `{"model":"legacy-model","prompt":"hi","stop":` + tt.stopJSON + `}`
+			w := httptest.NewRecorder()
+			Completions(reg)(w, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/completions", strings.NewReader(body)))
+
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400 for stop=%s: %s", w.Code, tt.stopJSON, w.Body.String())
+			}
+		})
+	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			p := &nonProxyProvider{name: "shim", models: []string{"legacy-model"}}

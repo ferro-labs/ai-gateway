@@ -229,7 +229,12 @@ func (g *Gateway) GenerateImage(ctx context.Context, req providers.ImageRequest)
 // span attribute; in this routing layer a target's virtual_key and its
 // provider's registered Name() are the same string (see RegisterProvider).
 func (g *Gateway) recordSurfaceSuccess(ctx context.Context, span observability.Span, obs observability.Provider, providerName, model string, usage models.Usage, latency time.Duration, hooksEnabled, obsEventsActive bool) {
-	requestMetrics := metrics.ForRequest(providerName, model)
+	// Bound the metric label but keep the raw model for the cost lookup below.
+	// Providers that accept any model ID (openrouter, ollama, azure_openai, …)
+	// echo the caller's string back on success, so an unbounded label here would
+	// let a client mint a new time series per request. The streaming path bounds
+	// its label the same way.
+	requestMetrics := metrics.ForRequest(providerName, g.metricModel(model))
 	requestMetrics.Duration.Observe(latency.Seconds())
 	requestMetrics.Success.Inc()
 	requestMetrics.TokensIn.Add(float64(usage.PromptTokens))
