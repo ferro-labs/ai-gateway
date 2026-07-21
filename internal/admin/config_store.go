@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -128,12 +129,18 @@ ON CONFLICT(id) DO UPDATE SET config_json = excluded.config_json, updated_at = e
 	return nil
 }
 
-// LoadHistory returns the persisted config audit trail in version order. Each
-// record is a snapshot that was active at that version; Save writes these
-// atomically with the active config, so the trail never diverges from what was
-// persisted as active.
+// LoadHistory returns the most recent persisted config versions in ascending
+// version order. Each record is a snapshot that was active at that version;
+// Save writes these atomically with the active config, so the trail never
+// diverges from what was persisted as active.
+//
+// The read is capped at maxConfigHistoryEntries — matching the in-memory
+// history bound — so a gateway with a long audit trail never decodes every
+// stored snapshot into memory to answer one call. The cap is a read bound
+// only: no history row is ever deleted, and older versions stay queryable.
 func (s *SQLConfigStore) LoadHistory(ctx context.Context) ([]PersistedConfigVersion, error) {
-	rows, err := s.db.QueryContext(ctx, "SELECT version, config_json, updated_at FROM config_history ORDER BY version")
+	query := sqldb.Bind(s.dialect, "SELECT version, config_json, updated_at FROM config_history ORDER BY version DESC LIMIT ?")
+	rows, err := s.db.QueryContext(ctx, query, maxConfigHistoryEntries)
 	if err != nil {
 		return nil, fmt.Errorf("load config history: %w", err)
 	}
@@ -156,6 +163,9 @@ func (s *SQLConfigStore) LoadHistory(ctx context.Context) ([]PersistedConfigVers
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate config history: %w", err)
 	}
+	// Rows arrive newest-first so the LIMIT selects the newest versions; flip
+	// back to ascending order, which is what callers expect.
+	slices.Reverse(history)
 	return history, nil
 }
 
@@ -209,7 +219,15 @@ func (s *SQLConfigStore) Close() error {
 // GatewayConfigManager connects runtime gateway config operations to optional
 // persistent storage.
 type GatewayConfigManager struct {
-	mu      sync.RWMutex
+	// mu serializes config mutations so persisting a config and applying it to
+	// the gateway are a single step. Two concurrent writers could otherwise
+	// persist one config while leaving the other active — a divergence that
+	// survives a restart, because the next boot adopts whatever was persisted.
+	//
+	// The lock belongs here rather than only in the admin handlers: this type
+	// owns both the store and the gateway, and it is the only place that knows
+	// the two must move together. Callers get the invariant for free.
+	mu      sync.Mutex
 	gw      *aigateway.Gateway
 	initial aigateway.Config
 	store   ConfigStore
@@ -272,6 +290,11 @@ func (m *GatewayConfigManager) ReloadConfig(ctx context.Context, cfg aigateway.C
 		return errors.Join(errConfigValidation, err)
 	}
 
+	// Validation is pure, so it stays outside the lock; everything that touches
+	// the store or the gateway is inside it.
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	previousCfg := m.gw.GetConfig()
 
 	if m.store != nil {
@@ -301,11 +324,14 @@ func (m *GatewayConfigManager) ReloadConfig(ctx context.Context, cfg aigateway.C
 
 // ResetConfig restores startup config and clears persisted overrides.
 func (m *GatewayConfigManager) ResetConfig(ctx context.Context) error {
-	m.mu.RLock()
-	initial := m.initial
-	m.mu.RUnlock()
+	// Reset is a mutation too: it must not interleave with a ReloadConfig, or
+	// the runtime config and the persisted one end up describing different
+	// states. initial is written once at construction and never mutated, so the
+	// lock is here for the ordering, not for the read.
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
-	if err := m.gw.ReloadConfig(ctx, initial); err != nil {
+	if err := m.gw.ReloadConfig(ctx, m.initial); err != nil {
 		return err
 	}
 	if m.store != nil {

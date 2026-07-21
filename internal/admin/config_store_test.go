@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	aigateway "github.com/ferro-labs/ai-gateway"
 )
@@ -457,5 +458,58 @@ func TestSQLConfigStore_Ping_NilDB(t *testing.T) {
 	store := &SQLConfigStore{}
 	if err := store.Ping(context.Background()); err == nil {
 		t.Fatal("expected error pinging a config store with a nil db")
+	}
+}
+
+// TestSQLConfigStore_LoadHistoryBoundsRowsRead proves LoadHistory reads at most
+// maxConfigHistoryEntries rows — the newest ones, still ascending — and that
+// bounding the read destroys nothing: every seeded row is still in the table.
+func TestSQLConfigStore_LoadHistoryBoundsRowsRead(t *testing.T) {
+	store, err := NewSQLiteConfigStore(t.Context(), filepath.Join(t.TempDir(), "config.db"))
+	if err != nil {
+		t.Fatalf("new config store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	const seeded = maxConfigHistoryEntries + 50
+	raw, err := json.Marshal(singleConfig())
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	now := time.Now().UTC()
+	for v := 1; v <= seeded; v++ {
+		if _, err := store.db.ExecContext(context.Background(),
+			"INSERT INTO config_history(version, config_json, updated_at) VALUES(?, ?, ?)",
+			v, string(raw), now); err != nil {
+			t.Fatalf("seed history version %d: %v", v, err)
+		}
+	}
+
+	history, err := store.LoadHistory(context.Background())
+	if err != nil {
+		t.Fatalf("load history: %v", err)
+	}
+	if len(history) != maxConfigHistoryEntries {
+		t.Fatalf("history len = %d, want %d", len(history), maxConfigHistoryEntries)
+	}
+	if got, want := history[0].Version, seeded-maxConfigHistoryEntries+1; got != want {
+		t.Fatalf("oldest returned version = %d, want %d (should return the newest window)", got, want)
+	}
+	if got := history[len(history)-1].Version; got != seeded {
+		t.Fatalf("newest returned version = %d, want %d", got, seeded)
+	}
+	for i := range history {
+		if want := history[0].Version + i; history[i].Version != want {
+			t.Fatalf("history[%d].Version = %d, want %d (must stay ascending)", i, history[i].Version, want)
+		}
+	}
+
+	// The bound is a read limit, never a retention policy: nothing was deleted.
+	var total int
+	if err := store.db.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM config_history").Scan(&total); err != nil {
+		t.Fatalf("count config_history: %v", err)
+	}
+	if total != seeded {
+		t.Fatalf("config_history has %d rows, want %d: rows must never be deleted", total, seeded)
 	}
 }
