@@ -276,8 +276,10 @@ func (r *Registry) watchTransport(name string, client mcpClient, exited <-chan s
 		// Probe only a server the registry has published as ready. Until then
 		// the handshake owns the transport — the client library tracks its own
 		// initialized state without synchronisation, so a concurrent ping races
-		// it — and there is nothing to withdraw in any case. Observing ready
-		// under r.mu orders this goroutine after that handshake.
+		// it (mark3labs/mcp-go#935) — and there is nothing to withdraw in any
+		// case. Observing ready under r.mu orders this goroutine after that
+		// handshake, which is what makes the probe safe; keep that ordering
+		// until the upstream field is synchronised.
 		if ready {
 			ctx, cancel := context.WithTimeout(r.stopCtx, transportProbeTimeout)
 			err := probe.Ping(ctx)
