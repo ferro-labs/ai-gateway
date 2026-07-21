@@ -597,3 +597,76 @@ func TestShouldRecordCircuitBreakerFailure_ClientErrorNeverBlamesProvider(t *tes
 		t.Error("a reject-mode unsupported-parameter error is a client error; it must not trip the provider circuit")
 	}
 }
+
+// TestGateway_WithTargetBreaker_PanicDoesNotStrandHalfOpenProbe pins the panic
+// safety of the real withTargetBreaker. Allow() admits one half-open probe; if
+// a panic escapes before the outcome is recorded, that permit is never returned
+// and resolveState never repairs it — Allow() then rejects this target for the
+// life of the process. The bug is invisible on the happy path, so it needs a
+// test that panics through the production helper rather than a copy of it.
+func TestGateway_WithTargetBreaker_PanicDoesNotStrandHalfOpenProbe(t *testing.T) {
+	gw, err := newTestGateway(t, Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets: []Target{{
+			VirtualKey: "panicky",
+			CircuitBreaker: &CircuitBreakerConfig{
+				FailureThreshold: 1,
+				SuccessThreshold: 1,
+				MaxHalfThreshold: 1,
+				Timeout:          "1ms",
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	gw.mu.RLock()
+	cb := gw.circuitBreakers["panicky"]
+	gw.mu.RUnlock()
+	if cb == nil {
+		t.Fatal("expected circuit breaker for panicky")
+	}
+	fakeNow := time.Unix(0, 0)
+	cb.SetNowForTest(func() time.Time { return fakeNow })
+
+	ctx := context.Background()
+	failing := func(context.Context) error { return errors.New("provider down") }
+
+	// Trip the breaker open (FailureThreshold=1).
+	if err := gw.withTargetBreaker(ctx, "panicky", failing); err == nil {
+		t.Fatal("expected the failing call to surface its error")
+	}
+	if cb.State() != circuitbreaker.StateOpen {
+		t.Fatalf("breaker state = %v, want open", cb.State())
+	}
+
+	// Advance past the timeout so the next call consumes the half-open probe,
+	// then panic inside it.
+	fakeNow = fakeNow.Add(5 * time.Millisecond)
+	func() {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Error("panic was swallowed; it must still propagate to the caller")
+			}
+		}()
+		_ = gw.withTargetBreaker(ctx, "panicky", func(context.Context) error {
+			panic("provider blew up mid-probe")
+		})
+	}()
+
+	// The panicking probe must have been resolved as a failure, leaving the
+	// breaker open rather than stuck half-open at its probe cap. After another
+	// timeout a fresh probe must reach fn.
+	fakeNow = fakeNow.Add(5 * time.Millisecond)
+	reached := false
+	if err := gw.withTargetBreaker(ctx, "panicky", func(context.Context) error {
+		reached = true
+		return nil
+	}); err != nil {
+		t.Fatalf("post-panic probe: err = %v, want the call to be admitted", err)
+	}
+	if !reached {
+		t.Fatal("post-panic probe never reached fn: the half-open permit leaked")
+	}
+}

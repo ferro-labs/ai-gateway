@@ -217,6 +217,16 @@ func (h *Handlers) updateKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var expiresAt *time.Time
+	if !body.ClearExpiration && body.ExpiresAt != "" {
+		parsed, parseErr := time.Parse(time.RFC3339, body.ExpiresAt)
+		if parseErr != nil {
+			writeError(w, http.StatusBadRequest, "invalid expires_at: must be RFC3339 format", "invalid_request_error", "invalid_request")
+			return
+		}
+		expiresAt = &parsed
+	}
+
 	key, err := h.Keys.Update(r.Context(), id, body.Name, body.Scopes)
 	if err != nil {
 		writeKeyStoreError(w, err)
@@ -229,17 +239,12 @@ func (h *Handlers) updateKey(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		key.ExpiresAt = nil
-	} else if body.ExpiresAt != "" {
-		expiresAt, parseErr := time.Parse(time.RFC3339, body.ExpiresAt)
-		if parseErr != nil {
-			writeError(w, http.StatusBadRequest, "invalid expires_at: must be RFC3339 format", "invalid_request_error", "invalid_request")
-			return
-		}
-		if err := h.Keys.SetExpiration(r.Context(), id, &expiresAt); err != nil {
+	} else if expiresAt != nil {
+		if err := h.Keys.SetExpiration(r.Context(), id, expiresAt); err != nil {
 			writeKeyStoreError(w, err)
 			return
 		}
-		t := expiresAt
+		t := *expiresAt
 		key.ExpiresAt = &t
 	}
 

@@ -21,24 +21,38 @@ type cbProvider struct {
 	name string
 }
 
-func (p *cbProvider) Complete(ctx context.Context, req providers.Request) (*providers.Response, error) {
+func (p *cbProvider) Complete(ctx context.Context, req providers.Request) (resp *providers.Response, err error) {
 	if !p.cb.Allow() {
 		metrics.CircuitBreakerState.WithLabelValues(p.name).Set(1) // open
 		return nil, circuitbreaker.ErrCircuitOpen
 	}
-	resp, err := p.Provider.Complete(ctx, req)
-	if err != nil {
-		if shouldRecordCircuitBreakerFailure(ctx, err) {
+	// Deferred so a panic from p.Provider.Complete still releases the
+	// half-open probe Allow() just admitted. Without this, a panicking probe
+	// leaks halfOpenProbes forever: resolveState() only turns Open into
+	// HalfOpen on a timeout, it never repairs a HalfOpen circuit stuck at its
+	// probe cap, so Allow() would reject every request for this provider
+	// until the process restarts. A panic is treated as a failure, then
+	// re-raised so it still propagates to the caller.
+	defer func() {
+		if r := recover(); r != nil {
 			p.cb.RecordFailure()
 			metrics.CircuitBreakerState.WithLabelValues(p.name).Set(float64(p.cb.State()))
-		} else {
-			p.cb.ReleaseProbe()
+			panic(r)
 		}
-		return nil, err
-	}
-	p.cb.RecordSuccess()
-	metrics.CircuitBreakerState.WithLabelValues(p.name).Set(float64(p.cb.State()))
-	return resp, nil
+		if err != nil {
+			if shouldRecordCircuitBreakerFailure(ctx, err) {
+				p.cb.RecordFailure()
+				metrics.CircuitBreakerState.WithLabelValues(p.name).Set(float64(p.cb.State()))
+			} else {
+				p.cb.ReleaseProbe()
+			}
+			return
+		}
+		p.cb.RecordSuccess()
+		metrics.CircuitBreakerState.WithLabelValues(p.name).Set(float64(p.cb.State()))
+	}()
+	resp, err = p.Provider.Complete(ctx, req)
+	return resp, err
 }
 
 func (p *cbProvider) CompleteStream(ctx context.Context, req providers.Request) (<-chan providers.StreamChunk, error) {
@@ -46,6 +60,19 @@ func (p *cbProvider) CompleteStream(ctx context.Context, req providers.Request) 
 		metrics.CircuitBreakerState.WithLabelValues(p.name).Set(1) // open
 		return nil, circuitbreaker.ErrCircuitOpen
 	}
+	// Deferred for the same reason as Complete: a panic out of CompleteStream
+	// would otherwise strand the half-open probe Allow() just admitted and
+	// reject every later request for this provider until restart. Only the
+	// panic path is handled here — a stream that starts is not yet a success,
+	// so the probe stays held and the outcome is reported at stream completion
+	// via MeterMeta.CircuitBreakerOutcome.
+	defer func() {
+		if r := recover(); r != nil {
+			p.cb.RecordFailure()
+			metrics.CircuitBreakerState.WithLabelValues(p.name).Set(float64(p.cb.State()))
+			panic(r)
+		}
+	}()
 	sp, ok := p.Provider.(providers.StreamProvider)
 	if !ok {
 		p.cb.ReleaseProbe()
@@ -148,6 +175,17 @@ func (g *Gateway) withTargetBreaker(ctx context.Context, target string, fn func(
 		metrics.CircuitBreakerState.WithLabelValues(target).Set(1) // open
 		return circuitbreaker.ErrCircuitOpen
 	}
+	// Deferred for the same reason as cbProvider.Complete: fn panicking must
+	// still resolve the half-open probe Allow() admitted, or the breaker gets
+	// stuck rejecting this target forever with no self-healing. A panic
+	// counts as a failure and is re-raised afterward, never swallowed.
+	defer func() {
+		if r := recover(); r != nil {
+			cb.RecordFailure()
+			metrics.CircuitBreakerState.WithLabelValues(target).Set(float64(cb.State()))
+			panic(r)
+		}
+	}()
 	err := fn(ctx)
 	recordCircuitBreakerOutcome(ctx, cb, target, err)
 	return err
