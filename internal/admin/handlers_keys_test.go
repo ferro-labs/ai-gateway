@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -240,7 +241,10 @@ func TestUpdateKeyInvalidExpiration(t *testing.T) {
 	if !ok {
 		t.Fatal("expected key to remain present")
 	}
-	if fresh.Name != target.Name || len(fresh.Scopes) != len(target.Scopes) {
+	// Compare the scope values, not just the count: the request body swaps
+	// scopes for a different set of the same length, so a length check alone
+	// would pass even if the rejected update had been applied.
+	if fresh.Name != target.Name || !slices.Equal(fresh.Scopes, target.Scopes) {
 		t.Fatalf("invalid expiration partially mutated key: before=%+v after=%+v", target, fresh)
 	}
 }

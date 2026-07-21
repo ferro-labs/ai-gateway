@@ -181,6 +181,13 @@ func TestCompletionsHandler_ShimPromptForms(t *testing.T) {
 		{"multi-element array batch", `["hi","there"]`, false, ""},
 		{"token ids", `[1,2,3]`, false, ""},
 		{"array of token-id arrays", `[[1,2],[3,4]]`, false, ""},
+		// A bare null decodes into a string as a no-op, which is the behaviour
+		// this endpoint has always had for "prompt": null.
+		{"explicit null", `null`, true, ""},
+		// A null element would decode to "" the same way, silently turning the
+		// request into an empty prompt rather than reporting that there is no
+		// text to send.
+		{"single-element array holding null", `[null]`, false, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -236,6 +243,13 @@ func TestCompletionsHandler_ShimStopForms(t *testing.T) {
 	}{
 		{"bare string", `"\n\n"`, []string{"\n\n"}},
 		{"array of strings", `["a","b"]`, []string{"a", "b"}},
+		// null means "no stop sequences". Decoding it into a string yields ""
+		// and would send a single empty stop sequence upstream, which is a
+		// different request. Must stay nil.
+		{"explicit null", `null`, nil},
+		// A null inside the array has always decoded to "", so that is left
+		// alone; changing it would alter a request the gateway already accepts.
+		{"array containing null", `["a",null]`, []string{"a", ""}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -398,7 +412,9 @@ func TestCompletionsHandler_ShimResponseIncludesCreatedAndNullLogprobs(t *testin
 // TestCompletionsHandler_NativeProxyURLErrorDoesNotLeakBaseURL is the
 // regression test for the base-URL credential leak: a malformed operator-
 // configured base URL (which may carry a secret in a query string on a
-// self-hosted OpenAI-compatible proxy) must never reach the client verbatim.
+// self-hosted OpenAI-compatible proxy) must reach neither the client nor the
+// log. Logs are routinely shipped off-host, so writing the secret there is a
+// disclosure too, just a narrower one than answering the caller with it.
 func TestCompletionsHandler_NativeProxyURLErrorDoesNotLeakBaseURL(t *testing.T) {
 	secret := "sk-" + strings.Repeat("b", 48)
 	p := &proxiableBadURLProvider{
@@ -408,6 +424,11 @@ func TestCompletionsHandler_NativeProxyURLErrorDoesNotLeakBaseURL(t *testing.T) 
 	reg := providers.NewRegistry()
 	reg.Register(p)
 
+	var logs bytes.Buffer
+	prevLogger := logging.Logger
+	logging.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+	t.Cleanup(func() { logging.Logger = prevLogger })
+
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/completions", strings.NewReader(`{"model":"bad-url-model","prompt":"hi"}`))
 	w := httptest.NewRecorder()
 	Completions(reg)(w, req)
@@ -416,7 +437,14 @@ func TestCompletionsHandler_NativeProxyURLErrorDoesNotLeakBaseURL(t *testing.T) 
 		t.Fatalf("status = %d, want 500: %s", w.Code, w.Body.String())
 	}
 	if strings.Contains(w.Body.String(), secret) {
-		t.Fatalf("completions URL error leaked provider base URL secret: %s", w.Body.String())
+		t.Fatalf("completions URL error leaked provider base URL secret to the client: %s", w.Body.String())
+	}
+	if strings.Contains(logs.String(), secret) {
+		t.Fatalf("completions URL error leaked provider base URL secret to the log: %s", logs.String())
+	}
+	// The operator still needs to know which provider is misconfigured.
+	if !strings.Contains(logs.String(), "bad-url") {
+		t.Fatalf("log should name the offending provider so it can be found in config: %s", logs.String())
 	}
 }
 

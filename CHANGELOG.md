@@ -7,15 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.3.1] — 2026-07-21
 
-Seven defects reported against `v1.3.0`. Every one is reachable from ordinary
-YAML or JSON configuration, and none of them changes the `/v1` API: same request
-shapes, same response shapes, same status codes, same authentication.
+Seven defects reported against `v1.3.0`, spanning request handling, routing, and
+runtime reliability. Every one is reachable from ordinary YAML or JSON
+configuration. Nothing that worked before stops working: no request the gateway
+accepted is now refused, no response shape changes, and authentication is
+untouched. Requests that were wrongly refused now succeed.
 
-The theme is configuration that was quietly not applied. A `retry` block worked
-on chat and was ignored on streaming. A `strategy.mode` of `fallback` fell back
-on `/v1/chat/completions` and did not on `/v1/embeddings`. If you have been
-running with settings that looked correct, some of them are now actually in
-effect — see **Upgrade notes**.
+Much of this is configuration that was quietly not applied. A `retry` block
+worked on chat and was ignored on streaming. A `strategy.mode` of `fallback`
+fell back on `/v1/chat/completions` and did not on `/v1/embeddings`. If you have
+been running with settings that looked correct, some of them are now actually in
+effect — see **Upgrade notes**. The rest are plain defects: a request format the
+endpoint documented but rejected, a discarded `stream_options` value, an API-key
+update applied after it had been refused, and a panicking provider call that
+disabled its target until restart.
 
 ### Fixed
 
@@ -81,8 +86,10 @@ effect — see **Upgrade notes**.
 
 ### Upgrade notes
 
-Nothing to do — but three things will look different, all of them the result of
-configuration now being applied where it previously was not.
+No migration runs and no configuration change is required. Three things will
+look different, though, all of them the result of configuration now being
+applied where it previously was not — each is worth an operational review before
+upgrading.
 
 - **Which provider serves a request may change.** If `strategy.mode` is anything
   other than `single` and more than one target can serve a model, embeddings and

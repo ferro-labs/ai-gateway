@@ -39,17 +39,7 @@ func (p *cbProvider) Complete(ctx context.Context, req providers.Request) (resp 
 			metrics.CircuitBreakerState.WithLabelValues(p.name).Set(float64(p.cb.State()))
 			panic(r)
 		}
-		if err != nil {
-			if shouldRecordCircuitBreakerFailure(ctx, err) {
-				p.cb.RecordFailure()
-				metrics.CircuitBreakerState.WithLabelValues(p.name).Set(float64(p.cb.State()))
-			} else {
-				p.cb.ReleaseProbe()
-			}
-			return
-		}
-		p.cb.RecordSuccess()
-		metrics.CircuitBreakerState.WithLabelValues(p.name).Set(float64(p.cb.State()))
+		recordCircuitBreakerOutcome(ctx, p.cb, p.name, err)
 	}()
 	resp, err = p.Provider.Complete(ctx, req)
 	return resp, err

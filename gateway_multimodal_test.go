@@ -3,6 +3,7 @@ package aigateway
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -772,7 +773,9 @@ func TestGateway_GenerateImage_EmitsMetricsSpanAndEvent(t *testing.T) {
 func TestGateway_Embed_FailurePathEmitsMetricsAndErrorEvent(t *testing.T) {
 	ep := &mockEmbeddingProvider{
 		mockProvider: mockProvider{name: "embed-provider", models: []string{"text-embedding-3-small"}},
-		err:          errors.New("upstream exploded"),
+		// Carries a credential-shaped token so the assertions below prove the
+		// event text is redacted, not merely non-empty.
+		err: errors.New("upstream exploded: 401 invalid api key sk-abcdefghijklmnopqrstuvwxyz012345"),
 	}
 	gw, _ := newTestGateway(t, Config{
 		Strategy: StrategyConfig{Mode: ModeSingle},
@@ -813,5 +816,14 @@ func TestGateway_Embed_FailurePathEmitsMetricsAndErrorEvent(t *testing.T) {
 	}
 	if evts[0].Error == "" {
 		t.Error("event Error should be non-empty for a failed embedding request")
+	}
+	// Events reach observability exporters, which are third-party sinks. A
+	// provider that echoes the offending key in its error body must not carry
+	// it out of the process.
+	if strings.Contains(evts[0].Error, "sk-abcdefghijklmnopqrstuvwxyz012345") {
+		t.Errorf("event Error leaked the provider credential unredacted: %q", evts[0].Error)
+	}
+	if !strings.Contains(evts[0].Error, "upstream exploded") {
+		t.Errorf("event Error lost its diagnostic content to redaction: %q", evts[0].Error)
 	}
 }

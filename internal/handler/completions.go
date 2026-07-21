@@ -114,11 +114,12 @@ func Completions(registry *providers.Registry) http.HandlerFunc {
 		if pp, canProxy := p.(providers.ProxiableProvider); canProxy {
 			target, err := CompletionsEndpointURL(pp.BaseURL())
 			if err != nil {
-				// The error embeds the operator-configured base URL verbatim,
-				// which may carry a credential in a query string (self-hosted
-				// OpenAI-compatible proxies). Log it server-side only; the
-				// client gets a generic message.
-				logging.FromContext(r.Context()).Error("invalid provider completions URL", "provider", p.Name(), "error", err)
+				// The error embeds the configured base URL verbatim, which can
+				// carry a credential in its query string, so it is not written
+				// anywhere — not to the client, and not to the log, which is
+				// routinely shipped off-host. The provider name is enough to
+				// locate the offending entry in the gateway's own config.
+				logging.FromContext(r.Context()).Error("invalid provider completions URL", "provider", p.Name())
 				apierror.WriteOpenAI(w, http.StatusInternalServerError, "invalid provider configuration", "server_error", "internal_error")
 				return
 			}
@@ -273,11 +274,19 @@ func shimPrompt(raw json.RawMessage) (string, bool) {
 		return "", true
 	}
 	var s string
+	// A bare JSON null decodes into a string as a no-op, leaving "". That is
+	// what "prompt": null has always produced here, so it stays accepted.
 	if err := json.Unmarshal(raw, &s); err == nil {
 		return s, true
 	}
 	var arr []json.RawMessage
 	if err := json.Unmarshal(raw, &arr); err == nil && len(arr) == 1 {
+		// A null element would decode to "" by the same no-op, silently
+		// turning ["prompt", null] into an empty prompt. There is no text to
+		// send, so treat it as unrepresentable rather than inventing one.
+		if isJSONNull(arr[0]) {
+			return "", false
+		}
 		if err := json.Unmarshal(arr[0], &s); err == nil {
 			return s, true
 		}
@@ -285,11 +294,21 @@ func shimPrompt(raw json.RawMessage) (string, bool) {
 	return "", false
 }
 
+// isJSONNull reports whether raw is the JSON literal null. Decoding null into a
+// string or a slice succeeds and leaves the zero value, so callers that must
+// distinguish "absent" from "present but empty" have to check the bytes.
+func isJSONNull(raw json.RawMessage) bool {
+	return bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
+}
+
 // shimStop normalizes the `stop` field (a bare string or an array of up to 4
 // strings, per the OpenAI spec) into the slice form providers.Request wants.
 // Both forms are representable, so this never rejects.
 func shimStop(raw json.RawMessage) []string {
-	if len(raw) == 0 {
+	// "stop": null means no stop sequences. Decoding it into a string succeeds
+	// and yields "", which would send a single empty stop sequence upstream —
+	// a different request from sending none at all.
+	if len(raw) == 0 || isJSONNull(raw) {
 		return nil
 	}
 	var s string
