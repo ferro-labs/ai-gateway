@@ -80,6 +80,20 @@ type MeterMeta struct {
 	// CircuitBreakerOutcome, if non-nil, is invoked once when the stream
 	// finishes. err is nil on success; non-nil on provider/stream failure.
 	CircuitBreakerOutcome func(err error)
+	// SuppressUsageForClient, when true, means the client explicitly opted
+	// out of the usage chunk (stream_options.include_usage=false on the
+	// incoming request — see providers/core.Request.ClientStreamOptions).
+	// Meter clears the Usage field on the copy of each chunk forwarded to
+	// out when this is set; it never affects accounting — the usage/cost
+	// seen by CompletionFn, PublishFn, SpanFinisher, and Prometheus metrics
+	// is always the real value the provider reported, captured before the
+	// client-facing copy is stripped.
+	//
+	// The zero value (false) preserves pre-existing behaviour: the usage
+	// chunk reaches the client whenever the provider sends one, matching
+	// every caller that predates this field. Callers should set it to
+	// `req.ClientStreamOptions != nil && !req.ClientStreamOptions.IncludeUsage`.
+	SuppressUsageForClient bool
 }
 
 // metricLabelModel returns the bounded Prometheus label for this request.
@@ -120,8 +134,12 @@ type SpanFinisherFunc func(StreamOutcome)
 // Finish implements SpanFinisher.
 func (f SpanFinisherFunc) Finish(o StreamOutcome) { f(o) }
 
-// Meter wraps src and returns a new channel that forwards every StreamChunk
-// unchanged. When a chunk carrying a non-nil Error is received, or when src
+// Meter wraps src and returns a new channel that forwards every StreamChunk,
+// with one exception: when MeterMeta.SuppressUsageForClient is set, the Usage
+// field is cleared on the forwarded copy of any chunk that carries it (the
+// rest of the chunk — content, finish_reason, error — is untouched). Internal
+// accounting always sees the real usage regardless. When a chunk carrying a
+// non-nil Error is received, or when src
 // closes, the goroutine emits request duration, token, and cost metrics then
 // closes the returned channel. On an error chunk the loop exits immediately
 // after forwarding it; any further chunks queued in src are not consumed.
@@ -189,9 +207,18 @@ func Meter(ctx context.Context, src <-chan providers.StreamChunk, start time.Tim
 				}
 
 				// Forward the chunk, but stop blocking if the consumer
-				// disconnects mid-send.
+				// disconnects mid-send. When the client opted out of usage
+				// reporting, forward a copy with Usage cleared instead of
+				// dropping the chunk outright — it may still carry content
+				// or a finish_reason that must reach the client. Accounting
+				// above already captured the real usage from the
+				// unmodified chunk, so this never affects metrics/cost/plugins.
+				forward := chunk
+				if meta.SuppressUsageForClient && forward.Usage != nil {
+					forward.Usage = nil
+				}
 				select {
-				case out <- chunk:
+				case out <- forward:
 				case <-ctx.Done():
 					clientCanceled = true
 					streamErr = drainSrc(ctx, src, streamErr)

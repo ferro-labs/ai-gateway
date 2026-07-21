@@ -540,12 +540,16 @@ func TestGateway_RouteStream_FallbackSkipsOpenCircuitBreakerTarget(t *testing.T)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	var flakyCalls atomic.Int32
 	gw.RegisterProvider(&mockStreamProvider{
 		mockProvider: mockProvider{
 			name:   "flaky-stream",
 			models: []string{"gpt-4o"},
 		},
-		streamErr: errors.New("stream startup failed"),
+		streamFn: func(_ context.Context, _ providers.Request) (<-chan providers.StreamChunk, error) {
+			flakyCalls.Add(1)
+			return nil, errors.New("stream startup failed")
+		},
 	})
 	gw.RegisterProvider(&mockStreamProvider{
 		mockProvider: mockProvider{
@@ -568,11 +572,19 @@ func TestGateway_RouteStream_FallbackSkipsOpenCircuitBreakerTarget(t *testing.T)
 
 	req := streamTestRequest()
 	for i := 0; i < 2; i++ {
-		_, err := gw.RouteStream(context.Background(), req)
-		if err == nil {
-			t.Fatalf("attempt %d: expected startup error to trip breaker", i+1)
+		ch, err := gw.RouteStream(context.Background(), req)
+		if err != nil {
+			t.Fatalf("attempt %d: RouteStream should fall back after synchronous startup failure: %v", i+1, err)
 		}
+		drainMeteredStream(t, ch)
 	}
+
+	// Snapshot before the final attempt. Now that a synchronous start failure
+	// falls back, reaching healthy-stream no longer proves the breaker did
+	// anything — an untripped flaky-stream would also fail and fall back to it.
+	// The open breaker must skip flaky-stream outright, so its call count has
+	// to stay frozen across the third attempt.
+	callsBeforeOpen := flakyCalls.Load()
 
 	ch, err := gw.RouteStream(context.Background(), req)
 	if err != nil {
@@ -581,6 +593,9 @@ func TestGateway_RouteStream_FallbackSkipsOpenCircuitBreakerTarget(t *testing.T)
 	drainMeteredStream(t, ch)
 	if got := selected.Load(); got != "healthy-stream" {
 		t.Fatalf("selected provider = %v, want healthy-stream", got)
+	}
+	if got := flakyCalls.Load(); got != callsBeforeOpen {
+		t.Fatalf("flaky-stream called %d more time(s) after its breaker opened; the open circuit must skip it, not retry it", got-callsBeforeOpen)
 	}
 }
 

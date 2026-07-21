@@ -187,6 +187,21 @@ type Request struct {
 	Stream        bool           `json:"stream,omitempty"`
 	StreamOptions *StreamOptions `json:"stream_options,omitempty"`
 
+	// ClientStreamOptions is the client's stream_options exactly as sent on
+	// the incoming request, decoded by internal/handler. It is kept separate
+	// from StreamOptions above (which providers/internal/openaicompat
+	// forwards verbatim upstream for ~20 OpenAI-compatible providers) so that
+	// a client's explicit include_usage:false can never leak into that
+	// verbatim forward and silently disable a provider's usage reporting —
+	// doing so would zero out cost/token accounting for the request without
+	// the gateway ever finding out. The only readers are
+	// providers/openai.Provider.CompleteStream (to decide whether to strip
+	// the client-facing usage chunk one layer up) and callers of
+	// internal/streamwrap.Meter (to set MeterMeta.SuppressUsageForClient).
+	// Never marshaled (json:"-"): it exists purely for gateway-internal
+	// bookkeeping, never for any provider wire body.
+	ClientStreamOptions *StreamOptions `json:"-"`
+
 	// Tools
 	ParallelToolCalls *bool `json:"parallel_tool_calls,omitempty"`
 
@@ -197,8 +212,12 @@ type Request struct {
 
 // StreamOptions carries the OpenAI stream_options object. IncludeUsage requests a
 // terminal usage chunk on the stream so cost and metrics tracking work.
+//
+// No omitempty on IncludeUsage: an explicit false must round-trip distinctly
+// from an omitted object wherever this type is marshaled, or a client's
+// opt-out becomes indistinguishable from never having asked at all.
 type StreamOptions struct {
-	IncludeUsage bool `json:"include_usage,omitempty"`
+	IncludeUsage bool `json:"include_usage"`
 }
 
 // NormalizeCompletionTokenLimits fills max_tokens from max_completion_tokens

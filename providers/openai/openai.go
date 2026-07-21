@@ -313,16 +313,32 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 	}, nil
 }
 
-// streamOptions carries the OpenAI stream_options object. The gateway always
-// requests usage so cost and metrics tracking work regardless of what the client
-// sent.
+// streamOptions carries the OpenAI stream_options object sent upstream. The
+// gateway always requests usage here — deliberately ignoring
+// req.StreamOptions / req.ClientStreamOptions — so cost and metrics tracking
+// never depend on what the client asked for.
+//
+// DO NOT thread req.ClientStreamOptions (the client's real include_usage
+// choice, see providers/core.Request) into this struct. That field exists so
+// the gateway can honor an explicit include_usage:false on the *client-facing*
+// stream, one layer up in internal/streamwrap.Meter (MeterMeta.
+// SuppressUsageForClient), while this provider keeps requesting the real
+// usage from OpenAI unconditionally. Making IncludeUsage here depend on the
+// client's choice would stop OpenAI from ever sending the terminal usage
+// chunk when a client sets include_usage:false — zeroing cost/token
+// accounting for that request without any error, which for a soft spend cap
+// means unlimited spend on demand.
 type streamOptions struct {
 	IncludeUsage bool `json:"include_usage"`
 }
 
 // streamingRequest is a core.Request forwarded verbatim (so no field can be
 // dropped, unlike a rebuilt param struct) plus the stream_options the streaming
-// path always sets.
+// path always sets. The outer StreamOptions field here has JSON-encoding
+// priority over the core.Request.StreamOptions field embedded through
+// core.Request (shallower field wins on a tag collision), so
+// core.Request.StreamOptions is never actually written to the wire by this
+// struct — only IncludeUsage: true below is.
 type streamingRequest struct {
 	core.Request
 	StreamOptions streamOptions `json:"stream_options"`
@@ -332,8 +348,11 @@ type streamingRequest struct {
 // forwards the same raw core.Request body as Complete (adding stream:true and
 // stream_options.include_usage), so streaming and non-streaming cannot diverge
 // on forwarded fields such as logit_bias and multimodal image content. Usage is
-// always requested so the final SSE chunk carries token statistics for cost and
-// metrics tracking.
+// always requested upstream — unconditionally, regardless of what the client
+// asked for in its own stream_options — so the final SSE chunk always carries
+// token statistics for cost and metrics tracking; a client that opted out of
+// the usage chunk still gets it upstream here, but has it stripped from the
+// forwarded stream one layer up by internal/streamwrap.Meter instead.
 func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan core.StreamChunk, error) {
 	// o-series reasoning models reject max_tokens; keep only the modern field.
 	req.PreferCompletionTokens()

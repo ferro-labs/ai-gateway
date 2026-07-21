@@ -15,6 +15,80 @@ import (
 
 // ── Retry hygiene: default retryable set, full jitter, Retry-After (#278) ──────
 
+func TestNormalizeBackoffMs(t *testing.T) {
+	tests := []struct {
+		name string
+		ms   int
+		want int
+	}{
+		{"zero falls back to the default", 0, defaultBackoffMs},
+		{"negative falls back to the default", -5, defaultBackoffMs},
+		{"positive value passes through unchanged", 250, 250},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := NormalizeBackoffMs(tt.ms); got != tt.want {
+				t.Errorf("NormalizeBackoffMs(%d) = %d, want %d", tt.ms, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestWaitBeforeRetry_NormalizesUnsetBackoff guards the single-source fix for
+// the streaming retry regression: an unset InitialBackoffMs (0) must produce
+// the same non-zero, jittered-exponential wait that resolveRetry already
+// applies for /v1/chat/completions — not an immediate retry.
+func TestWaitBeforeRetry_NormalizesUnsetBackoff(t *testing.T) {
+	start := time.Now()
+	proceed, err := WaitBeforeRetry(context.Background(), 1, 0, errors.New("transient"))
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("WaitBeforeRetry error = %v, want nil", err)
+	}
+	if !proceed {
+		t.Fatal("WaitBeforeRetry proceed = false, want true for a plain transient error")
+	}
+	// attempt=1, normalized backoff=defaultBackoffMs ⇒ exponential ceiling of
+	// 100ms; full jitter picks uniformly from [0, ceiling), so this can be 0,
+	// but it must never be anywhere near the immediate-retry regression this
+	// guards (hundreds of retries with 0ms backoff).
+	if elapsed >= 200*time.Millisecond {
+		t.Fatalf("WaitBeforeRetry with unset InitialBackoffMs took %v, want within the jittered 100ms ceiling", elapsed)
+	}
+}
+
+func TestWaitBeforeRetry_AbandonsWhenRetryAfterExceedsCap(t *testing.T) {
+	prev := &core.HTTPStatusError{StatusCode: 503, Message: "unavailable", RetryAfter: maxRetryAfter + time.Second}
+	proceed, err := WaitBeforeRetry(context.Background(), 1, 0, prev)
+	if err != nil {
+		t.Fatalf("WaitBeforeRetry error = %v, want nil", err)
+	}
+	if proceed {
+		t.Fatal("WaitBeforeRetry proceed = true, want false when Retry-After exceeds the cap")
+	}
+}
+
+func TestWaitBeforeRetry_ContextCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	proceed, err := WaitBeforeRetry(ctx, 1, 1000, nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("WaitBeforeRetry error = %v, want context.Canceled", err)
+	}
+	if proceed {
+		t.Fatal("WaitBeforeRetry proceed = true, want false on cancellation")
+	}
+}
+
+func TestShouldRetry_ExportedMatchesInternal(t *testing.T) {
+	if !ShouldRetry(errors.New("provider error (503): unavailable"), nil) {
+		t.Error("ShouldRetry(503, nil) = false, want true")
+	}
+	if ShouldRetry(circuitbreaker.ErrCircuitOpen, nil) {
+		t.Error("ShouldRetry(ErrCircuitOpen, nil) = true, want false")
+	}
+}
+
 func TestShouldRetry_DefaultPolicy(t *testing.T) {
 	tests := []struct {
 		name string
