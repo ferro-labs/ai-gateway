@@ -3,10 +3,14 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	rtrace "runtime/trace"
 	"time"
 
+	"github.com/mark3labs/mcp-go/client/transport"
+
+	"github.com/ferro-labs/ai-gateway/internal/metrics"
 	gwotel "github.com/ferro-labs/ai-gateway/internal/otel"
 	"github.com/ferro-labs/ai-gateway/observability"
 	"github.com/ferro-labs/ai-gateway/providers/core"
@@ -212,7 +216,7 @@ func (e *Executor) executeToolCall(ctx context.Context, tc core.ToolCall) core.M
 
 	client, ok := e.registry.FindToolServer(toolName)
 	if !ok {
-		metricUnknownToolCallsTotal.WithLabelValues(toolName).Inc()
+		metricUnknownToolCallsTotal.WithLabelValues(boundedToolLabel(serverName, toolName)).Inc()
 		// Return a friendly error result so the LLM can report it.
 		notFoundPayload, _ := json.Marshal(map[string]string{
 			"error": "tool " + toolName + " not found in any registered MCP server",
@@ -265,6 +269,14 @@ func (e *Executor) executeToolCall(ctx context.Context, tc core.ToolCall) core.M
 	span.SetAttributes(attribute.Int64(observability.AttrFerroMCPLatencyMs, int64(latencyMs)))
 
 	if err != nil {
+		// A closed transport means the server process is gone, not that this one
+		// call failed. Withdrawing it here is what stops the next thousand calls
+		// from being routed to a dead client: the registry clears the ready bit,
+		// so AllTools stops advertising its tools and FindToolServer stops
+		// resolving them. Costs exactly one failed call to detect.
+		if errors.Is(err, transport.ErrTransportClosed) {
+			e.registry.markUnready(serverName, client, err)
+		}
 		metricToolCallsTotal.WithLabelValues(serverName, toolName, "error").Inc()
 		// Relies on the non-blocking AuditFn contract: the per-call goroutine returns promptly.
 		e.callAuditFn(ctx, serverName, toolName, "error", latencyMs, err.Error())
@@ -277,16 +289,28 @@ func (e *Executor) executeToolCall(ctx context.Context, tc core.ToolCall) core.M
 		}
 	}
 
-	metricToolCallsTotal.WithLabelValues(serverName, toolName, "ok").Inc()
-	// Relies on the non-blocking AuditFn contract: the per-call goroutine returns promptly.
-	e.callAuditFn(ctx, serverName, toolName, "ok", latencyMs, "")
-	span.SetStatus(codes.Ok, "")
-
 	// Convert MCP content blocks to a plain string for the LLM.
-	content, err := contentBlocksToString(result.Content)
-	if err != nil {
-		errPayload, _ := json.Marshal(map[string]string{"error": "could not marshal tool result: " + err.Error()})
+	content, convErr := contentBlocksToString(result.Content)
+	if convErr != nil {
+		errPayload, _ := json.Marshal(map[string]string{"error": "could not marshal tool result: " + convErr.Error()})
 		content = string(errPayload)
+	}
+
+	// A tool that answers with isError is a failed call. The RPC succeeded, so
+	// err is nil and every signal here used to read "ok" — the metric, the audit
+	// record, and the span status alike — which made a server returning nothing
+	// but errors indistinguishable from one working perfectly. The result's own
+	// content carries the reason and is what the LLM sees, so it is also the
+	// most useful thing to attach to the failure.
+	if result.IsError {
+		metricToolCallsTotal.WithLabelValues(serverName, toolName, "error").Inc()
+		e.callAuditFn(ctx, serverName, toolName, "error", latencyMs, truncateForSignal(content))
+		gwotel.RecordSpanError(span, errors.New(truncateForSignal(content)))
+	} else {
+		metricToolCallsTotal.WithLabelValues(serverName, toolName, "ok").Inc()
+		// Relies on the non-blocking AuditFn contract: the per-call goroutine returns promptly.
+		e.callAuditFn(ctx, serverName, toolName, "ok", latencyMs, "")
+		span.SetStatus(codes.Ok, "")
 	}
 
 	return core.Message{
@@ -294,6 +318,35 @@ func (e *Executor) executeToolCall(ctx context.Context, tc core.ToolCall) core.M
 		ToolCallID: tc.ID,
 		Content:    content,
 	}
+}
+
+// maxSignalLen bounds a tool-supplied error string copied into a span attribute
+// or an audit record. Tool results are unbounded by design — the full text still
+// reaches the LLM — but a multi-megabyte span attribute is a way to break an
+// OTLP exporter, and no error message needs more than this to be diagnosed.
+const maxSignalLen = 2048
+
+func truncateForSignal(s string) string {
+	if len(s) <= maxSignalLen {
+		return s
+	}
+	return s[:maxSignalLen] + "… (truncated)"
+}
+
+// boundedToolLabel keeps a tool name as a Prometheus label only when the
+// registry has actually indexed it, collapsing anything else to a constant.
+//
+// Tool names on this path come straight from model output, so a hallucinated
+// name would otherwise mint a permanent time series — the same unbounded-label
+// class as the model label. serverName is non-empty exactly when the name is in
+// toolMap, which is the registry's own bounded set, so it doubles as the
+// known-name test: a real tool whose server has just died keeps its name (the
+// case worth alerting on), and an invented one does not.
+func boundedToolLabel(serverName, toolName string) string {
+	if serverName == "" {
+		return metrics.UnknownToolLabel
+	}
+	return toolName
 }
 
 // contentBlocksToString serialises MCP content blocks into a string suitable

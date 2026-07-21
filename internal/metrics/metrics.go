@@ -13,6 +13,12 @@ import (
 // UnknownModelLabel is the bounded label used for rejected requests whose model is unknown.
 const UnknownModelLabel = "unknown"
 
+// UnknownToolLabel is the bounded label used for tool calls naming a tool no
+// registered MCP server has ever advertised. Tool names arrive in model output,
+// so an unrecognised one is collapsed to this constant rather than minting a
+// new time series per hallucinated name.
+const UnknownToolLabel = "unknown"
+
 // Request-level counters and histograms.
 var (
 	// RequestsTotal counts completed requests labelled by provider, model, and
@@ -83,6 +89,31 @@ var (
 			Help: "Circuit breaker state per provider (0=closed 1=open 2=half_open).",
 		},
 		[]string{"provider"},
+	)
+
+	// MCPServerInitFailures counts MCP servers whose initialize handshake or
+	// tool discovery failed. A failure is logged and skipped so one unreachable
+	// server cannot stop the gateway, which makes this counter the only
+	// machine-readable signal that a configured MCP server never came up.
+	// Alert on any non-zero value.
+	MCPServerInitFailures = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "gateway_mcp_server_init_failures_total",
+			Help: "Total MCP server initializations that failed.",
+		},
+		[]string{"server_name"},
+	)
+
+	// MCPServerUp tracks per-MCP-server availability as a gauge:
+	// 0 = not ready (never initialized, or its transport has since died),
+	// 1 = ready and advertising tools. A server that drops from 1 to 0 without
+	// a config change has lost its transport — for stdio, its subprocess died.
+	MCPServerUp = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "gateway_mcp_server_up",
+			Help: "MCP server availability (0=not ready 1=ready).",
+		},
+		[]string{"server_name"},
 	)
 
 	// RateLimitRejections counts requests rejected by the rate-limit middleware

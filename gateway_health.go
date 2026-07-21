@@ -18,6 +18,13 @@ type Readiness struct {
 	Ready bool
 	// Providers holds one entry per registered provider, in registration order.
 	Providers []ProviderReadiness
+	// MCPServers holds one entry per registered MCP server, in registration
+	// order. Empty when no MCP servers are configured.
+	//
+	// It is reported separately from Ready on purpose: an MCP server being down
+	// says nothing about whether providers can serve, and folding the two into
+	// one boolean would leave a caller unable to tell which failed.
+	MCPServers []MCPServerReadiness
 }
 
 // ProviderReadiness reports a single provider's availability.
@@ -28,6 +35,23 @@ type ProviderReadiness struct {
 	// "half-open". A provider without a configured circuit breaker reports
 	// "closed".
 	Circuit string
+}
+
+// MCPServerReadiness reports a single MCP server's availability.
+type MCPServerReadiness struct {
+	// Name is the server's configured name.
+	Name string
+	// Ready reports whether the server completed initialization and its
+	// transport is still live.
+	Ready bool
+	// Required reports whether this server's availability gates gateway
+	// readiness, mirroring its `required` config field.
+	Required bool
+	// LastError is the most recent initialization or transport failure, empty
+	// when the server is ready. It can quote a URL, host, or command line, so
+	// callers must treat it as sensitive: log it, but never serve it on an
+	// unauthenticated endpoint.
+	LastError string
 }
 
 // Readiness returns a snapshot of provider availability derived from each
@@ -51,7 +75,29 @@ func (g *Gateway) Readiness() Readiness {
 		}
 		provs = append(provs, ProviderReadiness{Name: name, Circuit: circuit})
 	}
-	return Readiness{Ready: ready, Providers: provs}
+	return Readiness{Ready: ready, Providers: provs, MCPServers: g.mcpReadiness()}
+}
+
+// mcpReadiness projects the MCP registry's status snapshot onto the readiness
+// shape. Caller holds g.mu. Returns nil when no MCP servers are configured.
+func (g *Gateway) mcpReadiness() []MCPServerReadiness {
+	if g.mcpRegistry == nil {
+		return nil
+	}
+	status := g.mcpRegistry.Status()
+	if len(status) == 0 {
+		return nil
+	}
+	out := make([]MCPServerReadiness, 0, len(status))
+	for _, s := range status {
+		out = append(out, MCPServerReadiness{
+			Name:      s.Name,
+			Ready:     s.Ready,
+			Required:  s.Required,
+			LastError: s.LastError,
+		})
+	}
+	return out
 }
 
 // circuitStateString maps a circuit-breaker state to the readiness vocabulary

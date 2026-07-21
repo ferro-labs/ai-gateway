@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	aigateway "github.com/ferro-labs/ai-gateway"
+	mcpconfig "github.com/ferro-labs/ai-gateway/mcp"
 	"github.com/ferro-labs/ai-gateway/providers"
 )
 
@@ -209,4 +210,151 @@ func (healthProvider) Models() []providers.ModelInfo {
 }
 func (healthProvider) Complete(context.Context, providers.Request) (*providers.Response, error) {
 	return nil, nil
+}
+
+// unreachableMCP is a server config whose transport can never come up, so the
+// registry leaves it unready — the state a crashed or misconfigured MCP server
+// produces.
+func unreachableMCP(name string, required bool) mcpconfig.ServerConfig {
+	return mcpconfig.ServerConfig{
+		Name:           name,
+		URL:            "http://127.0.0.1:1/mcp",
+		TimeoutSeconds: 1,
+		Required:       required,
+	}
+}
+
+// TestReadyzMCPGating covers the readiness contract for MCP servers: an
+// unready server gates /readyz only when it opted in via `required`.
+//
+// The default matters as much as the feature. Making every MCP server gate
+// readiness would take a pod out of rotation on upgrade — stopping all LLM
+// traffic, including requests that never touch a tool — for anyone who had one
+// configured. So absent `required` must behave exactly as before.
+func TestReadyzMCPGating(t *testing.T) {
+	tests := []struct {
+		name         string
+		servers      []mcpconfig.ServerConfig
+		wantCode     int
+		wantStatus   string
+		wantReasonIn string
+	}{
+		{
+			name:       "no mcp servers configured is unaffected",
+			wantCode:   http.StatusOK,
+			wantStatus: "ready",
+		},
+		{
+			name:       "unready server without required does not gate",
+			servers:    []mcpconfig.ServerConfig{unreachableMCP("optional-srv", false)},
+			wantCode:   http.StatusOK,
+			wantStatus: "ready",
+		},
+		{
+			name:         "unready server with required gates",
+			servers:      []mcpconfig.ServerConfig{unreachableMCP("critical-srv", true)},
+			wantCode:     http.StatusServiceUnavailable,
+			wantStatus:   "not_ready",
+			wantReasonIn: "required mcp server unavailable",
+		},
+		{
+			name: "one required server down among optional ones gates",
+			servers: []mcpconfig.ServerConfig{
+				unreachableMCP("optional-a", false),
+				unreachableMCP("critical-b", true),
+				unreachableMCP("optional-c", false),
+			},
+			wantCode:     http.StatusServiceUnavailable,
+			wantStatus:   "not_ready",
+			wantReasonIn: "required mcp server unavailable",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gw, err := newTestGateway(t, aigateway.Config{
+				Strategy:   aigateway.StrategyConfig{Mode: aigateway.ModeSingle},
+				Targets:    []aigateway.Target{{VirtualKey: "health-provider"}},
+				MCPServers: tt.servers,
+			})
+			if err != nil {
+				t.Fatalf("New gateway: %v", err)
+			}
+			gw.RegisterProvider(healthProvider{})
+
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/readyz", nil)
+			w := httptest.NewRecorder()
+			Readyz(gw, fakePinger{}).ServeHTTP(w, req)
+
+			if w.Code != tt.wantCode {
+				t.Fatalf("status code = %d, want %d: %s", w.Code, tt.wantCode, w.Body.String())
+			}
+			var payload struct {
+				Status string `json:"status"`
+				Reason string `json:"reason"`
+			}
+			if err := json.NewDecoder(w.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode readyz response: %v", err)
+			}
+			if payload.Status != tt.wantStatus {
+				t.Fatalf("status = %q, want %q", payload.Status, tt.wantStatus)
+			}
+			if tt.wantReasonIn != "" && !strings.Contains(payload.Reason, tt.wantReasonIn) {
+				t.Fatalf("reason = %q, want substring %q", payload.Reason, tt.wantReasonIn)
+			}
+		})
+	}
+}
+
+// TestReadyzReportsMCPStateWithoutGating proves the observability half: MCP
+// state appears in the body for servers that do not gate readiness, so an
+// operator can watch MCP health without having to risk their rollout on it.
+func TestReadyzReportsMCPStateWithoutGating(t *testing.T) {
+	gw, err := newTestGateway(t, aigateway.Config{
+		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeSingle},
+		Targets:  []aigateway.Target{{VirtualKey: "health-provider"}},
+		MCPServers: []mcpconfig.ServerConfig{
+			unreachableMCP("watch-me", false),
+		},
+	})
+	if err != nil {
+		t.Fatalf("New gateway: %v", err)
+	}
+	gw.RegisterProvider(healthProvider{})
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/readyz", nil)
+	w := httptest.NewRecorder()
+	Readyz(gw, fakePinger{}).ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	var payload struct {
+		Status     string `json:"status"`
+		MCPServers []struct {
+			Name     string `json:"name"`
+			Ready    bool   `json:"ready"`
+			Required bool   `json:"required"`
+		} `json:"mcp_servers"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode readyz response: %v", err)
+	}
+	if len(payload.MCPServers) != 1 {
+		t.Fatalf("mcp_servers = %+v, want one entry", payload.MCPServers)
+	}
+	got := payload.MCPServers[0]
+	if got.Name != "watch-me" || got.Ready || got.Required {
+		t.Errorf("mcp_servers[0] = %+v, want {watch-me false false}", got)
+	}
+
+	// /readyz is unauthenticated and an MCP failure can quote a URL, an
+	// authorization header, or a subprocess command line. The reason is logged,
+	// never served.
+	if body := w.Body.String(); strings.Contains(body, "127.0.0.1:1") {
+		t.Errorf("readyz body leaked the MCP server address: %s", body)
+	}
+	if body := w.Body.String(); strings.Contains(strings.ToLower(body), "last_error") {
+		t.Errorf("readyz body exposed an error detail field: %s", body)
+	}
 }
