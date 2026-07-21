@@ -336,7 +336,15 @@ func (m *GatewayConfigManager) ResetConfig(ctx context.Context) error {
 	}
 	if m.store != nil {
 		if err := m.store.Delete(ctx); err != nil {
-			return err
+			// The apply already succeeded, so the gateway is running the
+			// startup config while the store still holds the override it
+			// replaced — and a restart would load that override back. Record
+			// what is actually running instead, so the two agree even though
+			// clearing the override failed.
+			if saveErr := m.store.Save(ctx, m.initial); saveErr != nil {
+				return errors.Join(errConfigPersistence, err, saveErr)
+			}
+			return errors.Join(errConfigPersistence, err)
 		}
 	}
 	return nil

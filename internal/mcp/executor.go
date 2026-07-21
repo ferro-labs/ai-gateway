@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	rtrace "runtime/trace"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ferro-labs/ai-gateway/internal/metrics"
 	gwotel "github.com/ferro-labs/ai-gateway/internal/otel"
@@ -329,11 +330,18 @@ func (e *Executor) executeToolCall(ctx context.Context, tc core.ToolCall) core.M
 // OTLP exporter, and no error message needs more than this to be diagnosed.
 const maxSignalLen = 2048
 
+// The cut is walked back to a rune boundary. A tool's output is arbitrary text,
+// so slicing on a byte offset alone can land mid-rune and leave invalid UTF-8 in
+// a span attribute and an audit record.
 func truncateForSignal(s string) string {
 	if len(s) <= maxSignalLen {
 		return s
 	}
-	return s[:maxSignalLen] + "… (truncated)"
+	cut := maxSignalLen
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "… (truncated)"
 }
 
 // boundedToolLabel keeps a tool name as a Prometheus label only when the

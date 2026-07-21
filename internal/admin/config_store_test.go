@@ -206,14 +206,58 @@ func TestNewSQLiteConfigStore_FilePermissions(t *testing.T) {
 }
 
 type failingConfigStore struct {
-	saveErr error
+	saveErr   error
+	deleteErr error
+	saved     []aigateway.Config
 }
 
-func (s *failingConfigStore) Save(context.Context, aigateway.Config) error { return s.saveErr }
+func (s *failingConfigStore) Save(_ context.Context, cfg aigateway.Config) error {
+	if s.saveErr != nil {
+		return s.saveErr
+	}
+	s.saved = append(s.saved, cfg)
+	return nil
+}
+
 func (s *failingConfigStore) Load(context.Context) (aigateway.Config, bool, error) {
 	return aigateway.Config{}, false, nil
 }
-func (s *failingConfigStore) Delete(context.Context) error { return nil }
+func (s *failingConfigStore) Delete(context.Context) error { return s.deleteErr }
+
+// A reset applies the startup config before clearing the persisted override, so
+// a failure to clear leaves the store describing a config the gateway is no
+// longer running — and a restart would load it back. The manager records what
+// is actually active instead.
+func TestGatewayConfigManager_ResetConfig_PersistsWhenDeleteFails(t *testing.T) {
+	initial := aigateway.Config{
+		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeSingle},
+		Targets:  []aigateway.Target{{VirtualKey: "openai"}},
+	}
+	gw, err := newTestGateway(t, initial)
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+
+	store := &failingConfigStore{deleteErr: errors.New("db down")}
+	mgr, err := NewGatewayConfigManager(gw, store)
+	if err != nil {
+		t.Fatalf("new config manager: %v", err)
+	}
+
+	if err := mgr.ResetConfig(context.Background()); err == nil {
+		t.Fatal("expected the delete failure to be reported")
+	} else if !errors.Is(err, errConfigPersistence) {
+		t.Fatalf("expected a persistence-classified error, got: %v", err)
+	}
+
+	if len(store.saved) == 0 {
+		t.Fatal("delete failed and nothing was persisted: the store still describes the replaced config, so a restart would load it back")
+	}
+	persisted := store.saved[len(store.saved)-1]
+	if persisted.Strategy.Mode != initial.Strategy.Mode || len(persisted.Targets) != len(initial.Targets) {
+		t.Fatalf("persisted config does not match the active one: got %+v, want %+v", persisted, initial)
+	}
+}
 
 func TestGatewayConfigManager_ReloadConfig_RollsBackWhenSaveFails(t *testing.T) {
 	initial := aigateway.Config{

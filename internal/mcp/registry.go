@@ -448,10 +448,10 @@ func (r *Registry) initServer(ctx context.Context, name string) error {
 
 	var err error
 	func() {
-		_, hsSpan := mcpTracer().Start(ctx, "mcp.initialize", trace.WithSpanKind(trace.SpanKindClient))
+		hsCtx, hsSpan := mcpTracer().Start(ctx, "mcp.initialize", trace.WithSpanKind(trace.SpanKindClient))
 		defer hsSpan.End()
-		rtrace.WithRegion(ctx, "mcp.init_server.initialize", func() {
-			_, err = client.Initialize(ctx)
+		rtrace.WithRegion(hsCtx, "mcp.init_server.initialize", func() {
+			_, err = client.Initialize(hsCtx)
 		})
 		if err != nil {
 			gwotel.RecordSpanError(hsSpan, err)
@@ -468,10 +468,10 @@ func (r *Registry) initServer(ctx context.Context, name string) error {
 
 	var tools []Tool
 	func() {
-		_, ltSpan := mcpTracer().Start(ctx, "mcp.list_tools", trace.WithSpanKind(trace.SpanKindClient))
+		ltCtx, ltSpan := mcpTracer().Start(ctx, "mcp.list_tools", trace.WithSpanKind(trace.SpanKindClient))
 		defer ltSpan.End()
-		rtrace.WithRegion(ctx, "mcp.init_server.list_tools", func() {
-			tools, err = client.ListTools(ctx)
+		rtrace.WithRegion(ltCtx, "mcp.init_server.list_tools", func() {
+			tools, err = client.ListTools(ltCtx)
 		})
 		if err != nil {
 			gwotel.RecordSpanError(ltSpan, err)
