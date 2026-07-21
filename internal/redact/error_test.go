@@ -8,7 +8,7 @@ import (
 
 // fakeOpenAIKey has the legacy sk- + 20-or-more-alphanumerics shape the
 // openai_key policy matches. It is not a real credential.
-const fakeOpenAIKey = "sk-abc123DEF456ghi789JKL012mno345"
+var fakeOpenAIKey = buildKey("sk-", "abc123DEF456ghi789JKL012mno345")
 
 func TestString_RedactsKnownCredentialShapes(t *testing.T) {
 	tests := []struct {

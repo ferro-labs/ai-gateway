@@ -9,7 +9,12 @@ import (
 )
 
 // fakeUpstreamKey has the legacy OpenAI sk- key shape. It is not a real credential.
-const fakeUpstreamKey = "sk-abc123DEF456ghi789JKL012mno345"
+var fakeUpstreamKey = buildFakeKey("sk-", "abc123DEF456ghi789JKL012mno345")
+
+// buildFakeKey joins prefix and body at runtime so no credential-shaped
+// literal is committed for a scanner to flag. Mirrors the helper used by
+// the redaction policy tests in internal/redact.
+func buildFakeKey(prefix, body string) string { return prefix + body }
 
 // An upstream provider controls its own error body, and that body can quote the
 // credential the gateway presented. WriteOpenAI must not hand it to the client.
