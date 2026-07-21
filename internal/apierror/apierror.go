@@ -6,19 +6,34 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/ferro-labs/ai-gateway/internal/redact"
 	"github.com/ferro-labs/ai-gateway/plugin"
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
 const codeModelNotFound = "model_not_found"
 
+// OpenAI error type values. These are part of the response contract: clients
+// switch on them, so they are named once here rather than repeated per branch.
+const (
+	errTypeServer         = "server_error"
+	errTypeInvalidRequest = "invalid_request_error"
+	errTypeRateLimit      = "rate_limit_error"
+	errTypeUpstream       = "upstream_error"
+)
+
 // WriteOpenAI writes a unified OpenAI-compatible JSON error response.
+//
+// message is redacted before it is written. Upstream providers control their own
+// error bodies, and those bodies can quote the credential the gateway presented,
+// so the text reaching the client is filtered rather than trusted. Only the
+// message value changes — status, type, and code are written as given.
 func WriteOpenAI(w http.ResponseWriter, status int, message, errType, code string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"error": map[string]string{
-			"message": message,
+			"message": redact.String(message),
 			"type":    errType,
 			"code":    code,
 		},
@@ -28,7 +43,7 @@ func WriteOpenAI(w http.ResponseWriter, status int, message, errType, code strin
 // RouteErrorDetails maps a routing or plugin error to an HTTP status and OpenAI error type/code.
 func RouteErrorDetails(err error) (status int, errType, code string) {
 	status = http.StatusInternalServerError
-	errType = "server_error"
+	errType = errTypeServer
 	code = "routing_error"
 
 	// A fail-closed plugin that broke did not deny anything — it never got far
@@ -38,7 +53,7 @@ func RouteErrorDetails(err error) (status int, errType, code string) {
 	// down — hand back a 429 that invites every SDK to retry into the outage.
 	var failure *plugin.FailureError
 	if errors.As(err, &failure) {
-		return http.StatusInternalServerError, "server_error", "plugin_error"
+		return http.StatusInternalServerError, errTypeServer, "plugin_error"
 	}
 
 	var rejection *plugin.RejectionError
@@ -46,30 +61,30 @@ func RouteErrorDetails(err error) (status int, errType, code string) {
 		switch rejection.Stage {
 		case plugin.StageBeforeRequest:
 			if rejection.PluginType == plugin.TypeRateLimit {
-				return http.StatusTooManyRequests, "rate_limit_error", "rate_limit_exceeded"
+				return http.StatusTooManyRequests, errTypeRateLimit, "rate_limit_exceeded"
 			}
-			return http.StatusBadRequest, "invalid_request_error", "request_rejected"
+			return http.StatusBadRequest, errTypeInvalidRequest, "request_rejected"
 		case plugin.StageAfterRequest:
-			return http.StatusBadGateway, "upstream_error", "response_rejected"
+			return http.StatusBadGateway, errTypeUpstream, "response_rejected"
 		default:
-			return http.StatusInternalServerError, "server_error", "request_rejected"
+			return http.StatusInternalServerError, errTypeServer, "request_rejected"
 		}
 	}
 
 	if errors.Is(err, core.ErrNoCapableProvider) {
-		return http.StatusNotFound, "invalid_request_error", codeModelNotFound
+		return http.StatusNotFound, errTypeInvalidRequest, codeModelNotFound
 	}
 
 	// The target is at its concurrency limit and its queue is full. This is
 	// backpressure, not a failure: 429 tells the caller to back off and retry,
 	// which is exactly the desired behaviour under saturation.
 	if errors.Is(err, core.ErrProviderSaturated) {
-		return http.StatusTooManyRequests, "rate_limit_error", "provider_saturated"
+		return http.StatusTooManyRequests, errTypeRateLimit, "provider_saturated"
 	}
 
 	var unsupportedParam *core.UnsupportedParamError
 	if errors.As(err, &unsupportedParam) {
-		return http.StatusBadRequest, "invalid_request_error", "unsupported_parameter"
+		return http.StatusBadRequest, errTypeInvalidRequest, "unsupported_parameter"
 	}
 
 	return status, errType, code

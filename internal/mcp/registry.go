@@ -5,9 +5,32 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"runtime/trace"
+	rtrace "runtime/trace"
 	"sync"
 	"time"
+
+	"github.com/ferro-labs/ai-gateway/internal/metrics"
+	gwotel "github.com/ferro-labs/ai-gateway/internal/otel"
+	"github.com/ferro-labs/ai-gateway/observability"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+)
+
+// errTransportExited is the cause recorded when a server is marked unready
+// because its transport died rather than because a call or handshake failed.
+var errTransportExited = errors.New("mcp: server transport exited")
+
+const (
+	// transportProbeInterval is how often a stdio server whose stderr reached
+	// EOF is re-probed while it keeps answering. It runs only for a server that
+	// closed stderr, so the steady-state cost is a ping a second on a local pipe
+	// for a server behaving unusually — cheap enough not to warrant a backoff.
+	transportProbeInterval = time.Second
+
+	// transportProbeTimeout bounds a single confirmation ping. A dead transport
+	// fails immediately; this only limits how long a wedged one is waited on
+	// before the next attempt.
+	transportProbeTimeout = 5 * time.Second
 )
 
 // Registry manages registered MCP servers and the tools they expose.
@@ -32,6 +55,12 @@ type Registry struct {
 	lifecycle   *sync.Cond
 	active      int
 	closed      bool
+
+	// stopCtx is cancelled by teardown. Transport watchers select on it so a
+	// closed registry leaves no goroutine behind, and it parents their probes so
+	// one already in flight is cut short rather than run to its timeout.
+	stopCtx  context.Context
+	stopFunc context.CancelFunc
 }
 
 // serverEntry holds the live state for one registered MCP server.
@@ -46,10 +75,63 @@ type serverEntry struct {
 
 // NewRegistry creates an empty Registry.
 func NewRegistry() *Registry {
+	stopCtx, stopFunc := context.WithCancel(context.Background())
 	return &Registry{
 		servers:     make(map[string]*serverEntry),
 		toolMap:     make(map[string]string),
 		serverIndex: make(map[string]int),
+		stopCtx:     stopCtx,
+		stopFunc:    stopFunc,
+	}
+}
+
+// gaugeOwners records which Registry most recently registered each server name.
+//
+// metrics.MCPServerUp is labelled by server name alone, so every Registry writes
+// the same process-wide series. A configuration reload builds the replacement
+// Registry while the previous one is still draining in-flight requests, and the
+// retired one's teardown would otherwise write 0 over the replacement's 1 —
+// permanently, because InitializeAll never re-initializes an already-ready
+// server and so nothing writes 1 again. Registration claims the label and
+// teardown writes only while that claim still holds: the same ownership
+// discipline markUnready applies to an entry, applied one level up to the label.
+var gaugeOwners struct {
+	sync.Mutex
+	owner map[string]*Registry
+}
+
+// claimServerUp takes ownership of a server's gauge series and publishes 0, so
+// a server that never initializes is visibly down rather than absent.
+func (r *Registry) claimServerUp(name string) {
+	gaugeOwners.Lock()
+	if gaugeOwners.owner == nil {
+		gaugeOwners.owner = make(map[string]*Registry)
+	}
+	gaugeOwners.owner[name] = r
+	gaugeOwners.Unlock()
+
+	metrics.MCPServerUp.WithLabelValues(name).Set(0)
+}
+
+// setServerUp writes value only while this Registry still owns the label.
+func (r *Registry) setServerUp(name string, value float64) {
+	gaugeOwners.Lock()
+	owned := gaugeOwners.owner[name] == r
+	gaugeOwners.Unlock()
+	if owned {
+		metrics.MCPServerUp.WithLabelValues(name).Set(value)
+	}
+}
+
+// releaseServerUp drops the series on teardown when this Registry still owns it.
+// Deleting rather than zeroing is what stops a server removed from the
+// configuration from lingering at 0 for the life of the process.
+func (r *Registry) releaseServerUp(name string) {
+	gaugeOwners.Lock()
+	defer gaugeOwners.Unlock()
+	if gaugeOwners.owner[name] == r {
+		delete(gaugeOwners.owner, name)
+		metrics.MCPServerUp.DeleteLabelValues(name)
 	}
 }
 
@@ -105,6 +187,158 @@ func (r *Registry) RegisterConfig(cfg ServerConfig) {
 		client: client,
 	}
 	r.mu.Unlock()
+
+	// Publish the gauge immediately so a server that never initializes is
+	// visibly down rather than absent from /metrics entirely.
+	r.claimServerUp(cfg.Name)
+
+	// Watch for the transport dying under us. Started after the entry is stored
+	// so the watcher can always resolve what it is reporting on, and keyed on
+	// this exact client so a re-registration that replaces the transport is not
+	// clobbered by the previous one's death notice.
+	if w, ok := client.(interface{ Exited() <-chan struct{} }); ok {
+		if exited := w.Exited(); exited != nil {
+			go r.watchTransport(cfg.Name, client, exited)
+		}
+	}
+}
+
+// RegisterFailed records a server the operator configured but that could not be
+// built at all — a bad env reference in its headers or environment, resolved
+// before any transport exists. It is stored unready with cause as its last
+// error and takes its place in registration order like any other server.
+//
+// Without it such a server is invisible: Status reports what the registry holds,
+// so a server that was skipped before RegisterConfig cannot appear in the
+// readiness body, and one marked `required` would leave /readyz reporting ready
+// while the server it depends on was never even attempted. Registering the
+// failure keeps the registry the single source of truth for readiness, and the
+// gauge is published here too so the server reads 0 on /metrics rather than
+// being missing.
+//
+// The entry carries no client. Nothing can initialize it, and InitializeAll
+// skips it on exactly that basis, so cause survives as the reported reason
+// until the next configuration reload rebuilds the registry.
+func (r *Registry) RegisterFailed(cfg ServerConfig, cause error) {
+	r.mu.Lock()
+	if _, ok := r.servers[cfg.Name]; !ok {
+		r.serverIndex[cfg.Name] = len(r.regOrder)
+		r.regOrder = append(r.regOrder, cfg.Name)
+	}
+	r.servers[cfg.Name] = &serverEntry{config: cfg, initErr: cause}
+	r.mu.Unlock()
+
+	r.claimServerUp(cfg.Name)
+}
+
+// watchTransport turns a stdio server's stderr EOF from a verdict into a
+// trigger.
+//
+// EOF is not proof of death. The gateway holds only the read end of the pipe,
+// so a live server that closes its own fd 2 — or hands work to a child that
+// does — produces a genuine EOF while continuing to answer calls. Acting on it
+// directly withdrew healthy servers, and with `required: true` that is a 503 for
+// a server that was never down.
+//
+// So the report is confirmed with a ping before anything is withdrawn: a live
+// server answers, a dead transport fails immediately because stdout EOF already
+// closed it. A server that answers is left alone and re-probed, which also
+// closes the gap where a server closing stderr at startup consumed its one
+// notification and was exempt from death detection from then on.
+//
+// The loop costs one ping per interval and only for a server that closed stderr
+// at all; a server holding stderr open — the ordinary case — never reaches it.
+func (r *Registry) watchTransport(name string, client mcpClient, exited <-chan struct{}) {
+	select {
+	case <-exited:
+	case <-r.stopCtx.Done():
+		return
+	}
+
+	probe, ok := client.(pinger)
+	if !ok {
+		// No way to confirm. Report the death rather than leave a transport that
+		// may well be gone advertised until the next reload.
+		r.markUnready(name, client, errTransportExited)
+		return
+	}
+
+	ticker := time.NewTicker(transportProbeInterval)
+	defer ticker.Stop()
+	for {
+		holds, ready := r.probeState(name, client)
+		// Teardown detaches the client, and re-registration replaces it. Either
+		// way this transport's fate stopped being ours to report.
+		if !holds {
+			return
+		}
+
+		// Probe only a server the registry has published as ready. Until then
+		// the handshake owns the transport — the client library tracks its own
+		// initialized state without synchronisation, so a concurrent ping races
+		// it (mark3labs/mcp-go#935) — and there is nothing to withdraw in any
+		// case. Observing ready under r.mu orders this goroutine after that
+		// handshake, which is what makes the probe safe; keep that ordering
+		// until the upstream field is synchronised.
+		if ready {
+			ctx, cancel := context.WithTimeout(r.stopCtx, transportProbeTimeout)
+			err := probe.Ping(ctx)
+			cancel()
+			if isTransportDead(err) {
+				r.markUnready(name, client, fmt.Errorf("%w: %w", errTransportExited, err))
+				return
+			}
+		}
+
+		select {
+		case <-ticker.C:
+		case <-r.stopCtx.Done():
+			return
+		}
+	}
+}
+
+// probeState reports whether the named server is still served by this exact
+// transport, and whether the registry currently considers it ready.
+func (r *Registry) probeState(name string, client mcpClient) (holds, ready bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	entry, ok := r.servers[name]
+	if !ok || entry.client != client {
+		return false, false
+	}
+	return true, entry.ready
+}
+
+// markUnready clears the ready bit for a server whose transport is gone, so
+// that AllTools stops advertising its tools and FindToolServer stops resolving
+// them. cause is retained as the server's last error and surfaced by Status.
+//
+// client identifies which transport is being reported dead. A registry that has
+// since replaced or detached that transport ignores the report: without the
+// check, a stdio server's death notice could arrive after a config reload had
+// already spawned a healthy replacement under the same name and permanently
+// mark the replacement down.
+//
+// Recovery is deliberately not attempted here. Re-registering the server
+// through RegisterConfig and re-running InitializeAll already rebuilds the
+// transport and re-indexes its tools; nothing further is needed to bring a
+// server back, and restart-with-backoff is not part of this change.
+func (r *Registry) markUnready(name string, client mcpClient, cause error) {
+	r.mu.Lock()
+	entry, ok := r.servers[name]
+	if !ok || entry.client != client || !entry.ready {
+		// Not this transport, or already down — nothing to clear, and no log.
+		r.mu.Unlock()
+		return
+	}
+	entry.ready = false
+	entry.initErr = cause
+	r.mu.Unlock()
+
+	r.setServerUp(name, 0)
+	slog.Warn("mcp: server is no longer available; its tools are withdrawn",
+		"server", name, "error", cause)
 }
 
 // InitializeAll performs the MCP handshake and tool discovery for every
@@ -113,7 +347,7 @@ func (r *Registry) RegisterConfig(cfg ServerConfig) {
 // multiple goroutines call InitializeAll simultaneously. Errors are reported
 // via logErr (never returned) so the caller can log them without blocking.
 func (r *Registry) InitializeAll(ctx context.Context, logErr func(name string, err error)) {
-	ctx, task := trace.NewTask(ctx, "mcp.initialize_all")
+	ctx, task := rtrace.NewTask(ctx, "mcp.initialize_all")
 	defer task.End()
 
 	r.mu.RLock()
@@ -124,9 +358,13 @@ func (r *Registry) InitializeAll(ctx context.Context, logErr func(name string, e
 	var wg sync.WaitGroup
 	for _, name := range names {
 		// Fast-path read: skip servers that are already done or in progress.
+		// A nil client is not something a handshake can fix: either the registry
+		// was torn down, or the server was recorded by RegisterFailed and never
+		// had a transport. Skipping keeps its recorded reason intact instead of
+		// replacing it with a generic initialization error.
 		r.mu.RLock()
 		entry, ok := r.servers[name]
-		skip := !ok || entry.ready || entry.initializing
+		skip := !ok || entry.ready || entry.initializing || entry.client == nil
 		r.mu.RUnlock()
 		if skip {
 			continue
@@ -137,7 +375,7 @@ func (r *Registry) InitializeAll(ctx context.Context, logErr func(name string, e
 		// initServer goroutines for the same server.
 		r.mu.Lock()
 		entry, ok = r.servers[name]
-		if !ok || entry.ready || entry.initializing {
+		if !ok || entry.ready || entry.initializing || entry.client == nil {
 			r.mu.Unlock()
 			continue
 		}
@@ -164,6 +402,26 @@ func (r *Registry) InitializeAll(ctx context.Context, logErr func(name string, e
 // initServer performs the Initialize + ListTools handshake for a single server
 // and indexes its tools. It applies the AllowedTools filter if configured.
 func (r *Registry) initServer(ctx context.Context, name string) error {
+	// Startup-path span. Nothing above opens one — initialization runs in a
+	// background goroutine with no request to parent it — so this is the root
+	// of the trace for one server's cold start.
+	ctx, span := mcpTracer().Start(ctx, "mcp.init_server",
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(attribute.String(observability.AttrFerroMCPServer, name)),
+	)
+	defer span.End()
+
+	// Every failure below is counted and recorded once, here, rather than at
+	// each return: three exits reporting the same outcome three ways is how
+	// they drift apart.
+	var initErr error
+	defer func() {
+		if initErr != nil {
+			metrics.MCPServerInitFailures.WithLabelValues(name).Inc()
+			gwotel.RecordSpanError(span, initErr)
+		}
+	}()
+
 	// Capture the client under the lock and use that copy for the whole
 	// handshake. A concurrent Close detaches entry.client, so re-reading the
 	// field across the unlocked I/O below would nil-deref mid-initialisation.
@@ -175,7 +433,8 @@ func (r *Registry) initServer(ctx context.Context, name string) error {
 	}
 	r.mu.RUnlock()
 	if !ok {
-		return fmt.Errorf("mcp: server %q not registered", name)
+		initErr = fmt.Errorf("mcp: server %q not registered", name)
+		return initErr
 	}
 	if client == nil {
 		// The registry was closed while this initialisation was queued. Stop
@@ -183,31 +442,50 @@ func (r *Registry) initServer(ctx context.Context, name string) error {
 		r.mu.Lock()
 		entry.initializing = false
 		r.mu.Unlock()
-		return fmt.Errorf("mcp: server %q closed before initialization", name)
+		initErr = fmt.Errorf("mcp: server %q closed before initialization", name)
+		return initErr
 	}
 
 	var err error
-	trace.WithRegion(ctx, "mcp.init_server.initialize", func() {
-		_, err = client.Initialize(ctx)
-	})
+	func() {
+		hsCtx, hsSpan := mcpTracer().Start(ctx, "mcp.initialize", trace.WithSpanKind(trace.SpanKindClient))
+		defer hsSpan.End()
+		rtrace.WithRegion(hsCtx, "mcp.init_server.initialize", func() {
+			_, err = client.Initialize(hsCtx)
+		})
+		if err != nil {
+			gwotel.RecordSpanError(hsSpan, err)
+		}
+	}()
 	if err != nil {
 		r.mu.Lock()
 		entry.initErr = err
 		entry.initializing = false
 		r.mu.Unlock()
-		return fmt.Errorf("mcp init %s: %w", name, err)
+		initErr = fmt.Errorf("mcp init %s: %w", name, err)
+		return initErr
 	}
 
 	var tools []Tool
-	trace.WithRegion(ctx, "mcp.init_server.list_tools", func() {
-		tools, err = client.ListTools(ctx)
-	})
+	func() {
+		ltCtx, ltSpan := mcpTracer().Start(ctx, "mcp.list_tools", trace.WithSpanKind(trace.SpanKindClient))
+		defer ltSpan.End()
+		rtrace.WithRegion(ltCtx, "mcp.init_server.list_tools", func() {
+			tools, err = client.ListTools(ltCtx)
+		})
+		if err != nil {
+			gwotel.RecordSpanError(ltSpan, err)
+		} else {
+			ltSpan.SetAttributes(attribute.Int("mcp.tools.count", len(tools)))
+		}
+	}()
 	if err != nil {
 		r.mu.Lock()
 		entry.initErr = err
 		entry.initializing = false
 		r.mu.Unlock()
-		return fmt.Errorf("mcp list tools %s: %w", name, err)
+		initErr = fmt.Errorf("mcp list tools %s: %w", name, err)
+		return initErr
 	}
 
 	// Apply allowed-tools filter when an explicit list is provided.
@@ -254,7 +532,56 @@ func (r *Registry) initServer(ctx context.Context, name string) error {
 	}
 	r.mu.Unlock()
 
+	r.setServerUp(name, 1)
+
 	return nil
+}
+
+// ServerStatus is a point-in-time view of one registered MCP server.
+//
+// It is not public API — internal/mcp is an internal package, so this type is
+// reachable only from within the module.
+type ServerStatus struct {
+	// Name is the server's configured name.
+	Name string
+	// Ready reports whether the server completed initialization and its
+	// transport is still live.
+	Ready bool
+	// Required mirrors ServerConfig.Required — whether this server's
+	// availability gates gateway readiness.
+	Required bool
+	// LastError is the most recent initialization or transport failure, empty
+	// when the server is ready. It can quote a URL, host, or command line, so
+	// it belongs in server-side logs and never in an unauthenticated response.
+	LastError string
+}
+
+// Status returns a snapshot of every registered server in registration order.
+//
+// It is the read side of the state initServer and markUnready maintain: without
+// it a failed handshake left entry.initErr set and unreachable, so an operator
+// could see that a server was down but never why.
+func (r *Registry) Status() []ServerStatus {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	out := make([]ServerStatus, 0, len(r.regOrder))
+	for _, name := range r.regOrder {
+		entry, ok := r.servers[name]
+		if !ok {
+			continue
+		}
+		st := ServerStatus{
+			Name:     name,
+			Ready:    entry.ready,
+			Required: entry.config.Required,
+		}
+		if entry.initErr != nil {
+			st.LastError = entry.initErr.Error()
+		}
+		out = append(out, st)
+	}
+	return out
 }
 
 // FindToolServer returns the transport client responsible for the named tool.
@@ -369,6 +696,13 @@ func (r *Registry) Close() error {
 // orchestrator's grace period, which then SIGKILLs the process and re-orphans
 // the very subprocesses the process-group sweep exists to reap.
 func (r *Registry) closeClients() error {
+	// Stop the transport watchers before detaching anything: they must not
+	// outlive the clients they report on, and a probe already in flight is
+	// cancelled rather than run to its timeout.
+	if r.stopFunc != nil {
+		r.stopFunc()
+	}
+
 	r.mu.Lock()
 	clients := make([]mcpClient, 0, len(r.servers))
 	for _, entry := range r.servers {
@@ -382,7 +716,19 @@ func (r *Registry) closeClients() error {
 		}
 		entry.ready = false
 	}
+	names := make([]string, 0, len(r.servers))
+	for name := range r.servers {
+		names = append(names, name)
+	}
 	r.mu.Unlock()
+
+	// Drop the series rather than zero it, and only while this registry still
+	// owns the label. A reload has already built the replacement by the time a
+	// retired registry drains, and writing 0 here would take the live server
+	// down on /metrics with nothing left to write 1 again.
+	for _, name := range names {
+		r.releaseServerUp(name)
+	}
 
 	errs := make([]error, len(clients))
 	var wg sync.WaitGroup

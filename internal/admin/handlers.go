@@ -30,6 +30,16 @@ type Handlers struct {
 	Logs      requestlog.Reader
 	LogAdmin  requestlog.Maintainer
 
+	// configMu serializes whole config mutations: applying a config and
+	// recording it in configHistory must happen as one step, or a concurrent
+	// mutation lands in between and the newest history entry ends up naming a
+	// config that is not the active one. Config mutation is a rare,
+	// operator-driven action, so a single coarse write lock costs nothing.
+	//
+	// Lock order is configMu → historyMu, never the reverse. historyMu stays a
+	// short slice guard so history reads never wait behind a config apply.
+	configMu sync.Mutex
+
 	historyMu     sync.Mutex
 	configHistory []ConfigHistoryEntry
 }

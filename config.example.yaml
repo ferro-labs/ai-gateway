@@ -228,6 +228,12 @@ mcp_servers:
       - list_tables
     timeout_seconds: 15
     max_call_depth: 5
+    # Opt in to gating readiness on this server. Default false: an unready
+    # server is reported in the /readyz body but does not fail the probe.
+    # Set true only where the deployment cannot serve without these tools —
+    # a required server that is down 503s /readyz and takes the instance out
+    # of rotation, stopping all traffic including requests that use no tools.
+    required: false
 
   # Web-search tool server.
   - name: web-search

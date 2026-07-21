@@ -26,6 +26,17 @@ type providerCircuit struct {
 	Circuit string `json:"circuit"`
 }
 
+// mcpServerState is the per-MCP-server state reported by Readyz.
+//
+// LastError is deliberately absent: /readyz is unauthenticated and an MCP
+// initialization failure can quote a server URL, an authorization header, or a
+// full subprocess command line. The reason is logged server-side instead.
+type mcpServerState struct {
+	Name     string `json:"name"`
+	Ready    bool   `json:"ready"`
+	Required bool   `json:"required"`
+}
+
 // Livez handles GET /livez. It reports process liveness only, performing no
 // dependency checks, so it always returns 200. Orchestrators use it to decide
 // whether to restart the process.
@@ -67,12 +78,48 @@ func Readyz(gw *aigateway.Gateway, pingers ...Pinger) http.HandlerFunc {
 			return
 		}
 
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		// Only a server explicitly marked `required` gates readiness. Every
+		// server's state is reported either way, so an operator can watch MCP
+		// health without a dead optional server pulling the instance out of
+		// rotation and stopping traffic that never touches a tool.
+		if down := requiredMCPDown(readiness); down != nil {
+			logging.FromContext(r.Context()).Error("readyz required MCP server unavailable",
+				"server", down.Name, "error", down.LastError)
+			writeNotReady(w, "required mcp server unavailable")
+			return
+		}
+
+		body := map[string]any{
 			"status":    "ready",
 			"providers": circuitsFromReadiness(readiness),
-		})
+		}
+		if mcpStates := mcpFromReadiness(readiness); len(mcpStates) > 0 {
+			body["mcp_servers"] = mcpStates
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(body)
 	}
+}
+
+// requiredMCPDown returns the first required MCP server that is not ready, or
+// nil when every required server is up.
+func requiredMCPDown(r aigateway.Readiness) *aigateway.MCPServerReadiness {
+	for i := range r.MCPServers {
+		if r.MCPServers[i].Required && !r.MCPServers[i].Ready {
+			return &r.MCPServers[i]
+		}
+	}
+	return nil
+}
+
+// mcpFromReadiness projects the MCP half of the readiness snapshot onto the
+// JSON-tagged response shape, dropping LastError.
+func mcpFromReadiness(r aigateway.Readiness) []mcpServerState {
+	out := make([]mcpServerState, 0, len(r.MCPServers))
+	for _, s := range r.MCPServers {
+		out = append(out, mcpServerState{Name: s.Name, Ready: s.Ready, Required: s.Required})
+	}
+	return out
 }
 
 // writeNotReady emits a 503 with a JSON body naming the failed readiness check.

@@ -14,7 +14,6 @@ import (
 	"github.com/ferro-labs/ai-gateway/internal/events"
 	"github.com/ferro-labs/ai-gateway/internal/logging"
 	"github.com/ferro-labs/ai-gateway/internal/metrics"
-	"github.com/ferro-labs/ai-gateway/internal/redact"
 	"github.com/ferro-labs/ai-gateway/internal/streamwrap"
 	"github.com/ferro-labs/ai-gateway/observability"
 	"github.com/ferro-labs/ai-gateway/plugin"
@@ -25,16 +24,6 @@ import (
 // Streaming request path (RouteStream) plus its streaming provider-resolution
 // and target-ordering helpers, the streaming latency/cost candidate types, and
 // the generic target-list helpers.
-
-// streamStartErrRedactor applies the default sensitive-data policies to a
-// synchronous stream-start failure before it reaches hooks and observability
-// exporters (events.HookEvent, not the span — span.SetError already redacts
-// per the configured privacy level). This is exactly the 401-with-key-fragment
-// path: an upstream error body can echo back part of the caller's own bearer
-// token. A single package-level instance avoids recompiling the redaction
-// regexes on every failed request, mirroring internal/redact's own
-// defaultRedactor.
-var streamStartErrRedactor = redact.DefaultRedactor()
 
 // RouteStream runs before-request plugins then returns a metered streaming
 // response channel. Provider resolution follows the configured strategy mode;
@@ -183,7 +172,7 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 				logging.TraceIDFromContext(ctx),
 				providerName,
 				req.Model,
-				streamStartErrRedactor.Redact(err.Error()),
+				err.Error(),
 				time.Since(start),
 				true,
 			)

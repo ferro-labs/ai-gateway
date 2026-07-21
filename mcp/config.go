@@ -76,6 +76,19 @@ type ServerConfig struct {
 	// this server. Applies to both HTTP and stdio transports. Defaults to 30
 	// when unset or zero.
 	TimeoutSeconds int `json:"timeout_seconds,omitempty" yaml:"timeout_seconds,omitempty"`
+	// Required makes this server's availability a condition of gateway
+	// readiness. When true and the server is not ready — it never completed the
+	// initialize handshake, or its transport has since died — GET /readyz
+	// answers 503 and an orchestrator takes the instance out of rotation.
+	//
+	// Defaults to false: an unset or absent Required never affects /readyz, so
+	// upgrading does not change readiness behaviour for any existing config.
+	// Opt in per server, and only for a server whose tools the deployment
+	// genuinely cannot serve without — a required server that is down stops all
+	// traffic through this instance, including requests that use no tools at
+	// all. Every server's state appears in the /readyz body either way, so
+	// operators can observe MCP health without gating on it.
+	Required bool `json:"required,omitempty" yaml:"required,omitempty"`
 }
 
 // ToolCallAuditEntry contains metadata captured after a single MCP tool

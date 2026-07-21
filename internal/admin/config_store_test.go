@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	aigateway "github.com/ferro-labs/ai-gateway"
 )
@@ -205,14 +206,58 @@ func TestNewSQLiteConfigStore_FilePermissions(t *testing.T) {
 }
 
 type failingConfigStore struct {
-	saveErr error
+	saveErr   error
+	deleteErr error
+	saved     []aigateway.Config
 }
 
-func (s *failingConfigStore) Save(context.Context, aigateway.Config) error { return s.saveErr }
+func (s *failingConfigStore) Save(_ context.Context, cfg aigateway.Config) error {
+	if s.saveErr != nil {
+		return s.saveErr
+	}
+	s.saved = append(s.saved, cfg)
+	return nil
+}
+
 func (s *failingConfigStore) Load(context.Context) (aigateway.Config, bool, error) {
 	return aigateway.Config{}, false, nil
 }
-func (s *failingConfigStore) Delete(context.Context) error { return nil }
+func (s *failingConfigStore) Delete(context.Context) error { return s.deleteErr }
+
+// A reset applies the startup config before clearing the persisted override, so
+// a failure to clear leaves the store describing a config the gateway is no
+// longer running — and a restart would load it back. The manager records what
+// is actually active instead.
+func TestGatewayConfigManager_ResetConfig_PersistsWhenDeleteFails(t *testing.T) {
+	initial := aigateway.Config{
+		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeSingle},
+		Targets:  []aigateway.Target{{VirtualKey: "openai"}},
+	}
+	gw, err := newTestGateway(t, initial)
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+
+	store := &failingConfigStore{deleteErr: errors.New("db down")}
+	mgr, err := NewGatewayConfigManager(gw, store)
+	if err != nil {
+		t.Fatalf("new config manager: %v", err)
+	}
+
+	if err := mgr.ResetConfig(context.Background()); err == nil {
+		t.Fatal("expected the delete failure to be reported")
+	} else if !errors.Is(err, errConfigPersistence) {
+		t.Fatalf("expected a persistence-classified error, got: %v", err)
+	}
+
+	if len(store.saved) == 0 {
+		t.Fatal("delete failed and nothing was persisted: the store still describes the replaced config, so a restart would load it back")
+	}
+	persisted := store.saved[len(store.saved)-1]
+	if persisted.Strategy.Mode != initial.Strategy.Mode || len(persisted.Targets) != len(initial.Targets) {
+		t.Fatalf("persisted config does not match the active one: got %+v, want %+v", persisted, initial)
+	}
+}
 
 func TestGatewayConfigManager_ReloadConfig_RollsBackWhenSaveFails(t *testing.T) {
 	initial := aigateway.Config{
@@ -457,5 +502,58 @@ func TestSQLConfigStore_Ping_NilDB(t *testing.T) {
 	store := &SQLConfigStore{}
 	if err := store.Ping(context.Background()); err == nil {
 		t.Fatal("expected error pinging a config store with a nil db")
+	}
+}
+
+// TestSQLConfigStore_LoadHistoryBoundsRowsRead proves LoadHistory reads at most
+// maxConfigHistoryEntries rows — the newest ones, still ascending — and that
+// bounding the read destroys nothing: every seeded row is still in the table.
+func TestSQLConfigStore_LoadHistoryBoundsRowsRead(t *testing.T) {
+	store, err := NewSQLiteConfigStore(t.Context(), filepath.Join(t.TempDir(), "config.db"))
+	if err != nil {
+		t.Fatalf("new config store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	const seeded = maxConfigHistoryEntries + 50
+	raw, err := json.Marshal(singleConfig())
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	now := time.Now().UTC()
+	for v := 1; v <= seeded; v++ {
+		if _, err := store.db.ExecContext(context.Background(),
+			"INSERT INTO config_history(version, config_json, updated_at) VALUES(?, ?, ?)",
+			v, string(raw), now); err != nil {
+			t.Fatalf("seed history version %d: %v", v, err)
+		}
+	}
+
+	history, err := store.LoadHistory(context.Background())
+	if err != nil {
+		t.Fatalf("load history: %v", err)
+	}
+	if len(history) != maxConfigHistoryEntries {
+		t.Fatalf("history len = %d, want %d", len(history), maxConfigHistoryEntries)
+	}
+	if got, want := history[0].Version, seeded-maxConfigHistoryEntries+1; got != want {
+		t.Fatalf("oldest returned version = %d, want %d (should return the newest window)", got, want)
+	}
+	if got := history[len(history)-1].Version; got != seeded {
+		t.Fatalf("newest returned version = %d, want %d", got, seeded)
+	}
+	for i := range history {
+		if want := history[0].Version + i; history[i].Version != want {
+			t.Fatalf("history[%d].Version = %d, want %d (must stay ascending)", i, history[i].Version, want)
+		}
+	}
+
+	// The bound is a read limit, never a retention policy: nothing was deleted.
+	var total int
+	if err := store.db.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM config_history").Scan(&total); err != nil {
+		t.Fatalf("count config_history: %v", err)
+	}
+	if total != seeded {
+		t.Fatalf("config_history has %d rows, want %d: rows must never be deleted", total, seeded)
 	}
 }

@@ -27,7 +27,33 @@ type stdioClient struct {
 	// the leader before Close returns, so it cannot be looked up afterwards.
 	// Zero when the process never started or the platform has no process groups.
 	pgid int
+	// exited is closed when the child's stderr reaches EOF, which happens once
+	// the process and every descendant inheriting that descriptor have gone.
+	// Nil when the transport exposed no stderr pipe to drain.
+	exited chan struct{}
 }
+
+// Exited returns a channel closed when the subprocess may have died.
+//
+// The signal is stderr EOF, which the gateway already watches because the drain
+// goroutine must keep the pipe moving. It is a suspicion, not a verdict: the
+// gateway holds only the read end, so a server that closes its own fd 2 while
+// running produces the same EOF as one that exited. The registry confirms with
+// a ping before withdrawing anything.
+//
+// EOF also arrives only once every descendant that inherited the descriptor has
+// closed it, so a launcher such as npx whose grandchild holds stderr open
+// delays the signal for as long as that grandchild lives — the same process-tree
+// case sweepProcessGroup exists for. That death is caught reactively instead:
+// writing to a pipe whose reader is gone fails with EPIPE, which the executor
+// treats as conclusive alongside a closed transport.
+func (c *stdioClient) Exited() <-chan struct{} { return c.exited }
+
+// Ping issues an MCP ping, the mandatory server method used to confirm that a
+// server suspected of having died is in fact gone. A live server answers; a
+// transport whose reader already saw stdout EOF fails immediately without any
+// I/O.
+func (c *stdioClient) Ping(ctx context.Context) error { return c.inner.Ping(ctx) }
 
 // newStdioClient creates a stdio MCP client by launching command with args.
 // name identifies the server in log records.
@@ -89,18 +115,27 @@ func newStdioClient(name, command string, args []string, envOverrides map[string
 		return &errClient{err: fmt.Errorf("mcp stdio: start %q: %w", command, err)}
 	}
 
-	// Draining stderr is required for correctness, not just diagnostics: the
-	// transport creates the pipe but never reads it, so once the OS pipe buffer
-	// fills the child blocks in write(2) and stops answering JSON-RPC entirely.
-	if r, ok := mcpclient.GetStderr(c); ok {
-		go drainStderr(r, name)
-	}
-
 	sc := &stdioClient{inner: c}
 	if spawned != nil && spawned.Process != nil {
 		// Setpgid made the child its own group leader, so pid == pgid.
 		sc.pgid = spawned.Process.Pid
 	}
+
+	// Draining stderr is required for correctness, not just diagnostics: the
+	// transport creates the pipe but never reads it, so once the OS pipe buffer
+	// fills the child blocks in write(2) and stops answering JSON-RPC entirely.
+	//
+	// The drain's return doubles as the child-death signal: it can only happen
+	// at EOF, and the gateway already owns the goroutine. Closing exited there
+	// costs nothing and saves a second watcher.
+	if r, ok := mcpclient.GetStderr(c); ok {
+		sc.exited = make(chan struct{})
+		go func() {
+			defer close(sc.exited)
+			drainStderr(r, name)
+		}()
+	}
+
 	return sc
 }
 

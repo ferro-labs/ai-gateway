@@ -12,11 +12,7 @@ import (
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
-const (
-	errTypeInvalidRequest = "invalid_request_error"
-	errTypeServer         = "server_error"
-	codeRequestRejected   = "request_rejected"
-)
+const codeRequestRejected = "request_rejected"
 
 func TestWriteOpenAI_SetsContentType(t *testing.T) {
 	w := httptest.NewRecorder()

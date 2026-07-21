@@ -42,10 +42,7 @@ func (h *Handlers) getConfigHistory(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 
-	h.historyMu.Lock()
-	history := make([]ConfigHistoryEntry, len(h.configHistory))
-	copy(history, h.configHistory)
-	h.historyMu.Unlock()
+	history := h.getConfigHistorySnapshot()
 
 	// Redact secret-bearing config values on each copied entry before encoding.
 	// scrubConfigSecrets operates on a copy so the live history is never mutated.
@@ -83,12 +80,17 @@ func (h *Handlers) applyConfigUpdate(w http.ResponseWriter, r *http.Request, sta
 		return
 	}
 
+	// Apply and record as one transaction. Decoding stays outside the lock so a
+	// slow request body never blocks another operator's config mutation.
+	h.configMu.Lock()
+	defer h.configMu.Unlock()
+
 	if err := h.Configs.ReloadConfig(r.Context(), cfg); err != nil {
 		writeConfigReloadError(w, err)
 		return
 	}
 
-	h.appendConfigHistory(cfg, nil)
+	h.appendConfigHistoryLocked(cfg, nil)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
@@ -107,12 +109,17 @@ func (h *Handlers) deleteConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.configMu.Lock()
+	defer h.configMu.Unlock()
+
 	if err := resetter.ResetConfig(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error(), "server_error", "internal_error")
 		return
 	}
 
-	h.appendConfigHistory(h.Configs.GetConfig(), nil)
+	// Reading the config back after the reset is only safe because configMu is
+	// still held: no concurrent mutation can replace it before it is recorded.
+	h.appendConfigHistoryLocked(h.Configs.GetConfig(), nil)
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
@@ -129,6 +136,12 @@ func (h *Handlers) rollbackConfig(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid version: must be a positive integer", "invalid_request_error", "invalid_request")
 		return
 	}
+
+	// Held across the version lookup, the apply, and the history append so
+	// latestVersion — the provenance recorded as rolled_back_from — cannot go
+	// stale between being read and being written.
+	h.configMu.Lock()
+	defer h.configMu.Unlock()
 
 	h.historyMu.Lock()
 	var target *ConfigHistoryEntry
@@ -156,17 +169,23 @@ func (h *Handlers) rollbackConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rollbackFrom := latestVersion
-	h.appendConfigHistory(target.Config, &rollbackFrom)
+	historySize := h.appendConfigHistoryLocked(target.Config, &rollbackFrom)
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"status":               "rolled_back",
 		"rolled_back_to":       requestedVersion,
-		"current_history_size": len(h.getConfigHistorySnapshot()),
+		"current_history_size": historySize,
 	})
 }
 
-func (h *Handlers) appendConfigHistory(cfg aigateway.Config, rolledBackFrom *int) {
+// appendConfigHistoryLocked records cfg as the newest history version and
+// returns the resulting history size.
+//
+// The caller must already hold h.configMu: the entry is only a truthful record
+// of the active config if no other mutation can run between applying cfg and
+// appending it. h.historyMu is taken here, for the slice write alone.
+func (h *Handlers) appendConfigHistoryLocked(cfg aigateway.Config, rolledBackFrom *int) int {
 	h.historyMu.Lock()
 	defer h.historyMu.Unlock()
 
@@ -188,6 +207,8 @@ func (h *Handlers) appendConfigHistory(cfg aigateway.Config, rolledBackFrom *int
 	if len(h.configHistory) > maxConfigHistoryEntries {
 		h.configHistory = h.configHistory[len(h.configHistory)-maxConfigHistoryEntries:]
 	}
+
+	return len(h.configHistory)
 }
 
 func writeConfigReloadError(w http.ResponseWriter, err error) {
