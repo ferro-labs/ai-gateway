@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -303,6 +304,90 @@ func TestReadyzMCPGating(t *testing.T) {
 				t.Fatalf("reason = %q, want substring %q", payload.Reason, tt.wantReasonIn)
 			}
 		})
+	}
+}
+
+// TestReadyzGatesOnAServerThatNeverRegistered is the regression test for a
+// required MCP server that fails before it can be registered at all.
+//
+// A server whose headers or environment reference an undefined variable is
+// resolved before its transport exists, so it never reaches the registry.
+// Readiness reads the registry, so the server was not merely reported unready —
+// it was absent from the response entirely, and /readyz answered 200 ready
+// while a server the operator had marked `required` had never been attempted.
+// The mixed fleet here is the worst case: mcp_servers is populated, so the body
+// looks complete while quietly omitting exactly the server that gates it.
+func TestReadyzGatesOnAServerThatNeverRegistered(t *testing.T) {
+	// The fixture's whole premise is that the variable does not resolve.
+	const undefinedVar = "FERRO_HANDLER_TEST_UNDEFINED_MCP_VAR"
+	if _, set := os.LookupEnv(undefinedVar); set {
+		t.Skipf("%s is set; this fixture requires it to be undefined", undefinedVar)
+	}
+
+	gw, err := newTestGateway(t, aigateway.Config{
+		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeSingle},
+		Targets:  []aigateway.Target{{VirtualKey: "health-provider"}},
+		MCPServers: []mcpconfig.ServerConfig{
+			unreachableMCP("optional-srv", false),
+			{
+				Name:     "vault",
+				Command:  "true",
+				Required: true,
+				Env:      map[string]string{"TOKEN": "${" + undefinedVar + "}"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("New gateway: %v", err)
+	}
+	gw.RegisterProvider(healthProvider{})
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/readyz", nil)
+	w := httptest.NewRecorder()
+	Readyz(gw, fakePinger{}).ServeHTTP(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status code = %d, want 503: a required server that never registered left the gateway reporting ready: %s",
+			w.Code, w.Body.String())
+	}
+
+	var payload struct {
+		Status     string `json:"status"`
+		Reason     string `json:"reason"`
+		MCPServers []struct {
+			Name     string `json:"name"`
+			Ready    bool   `json:"ready"`
+			Required bool   `json:"required"`
+		} `json:"mcp_servers"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode readyz response: %v", err)
+	}
+	if !strings.Contains(payload.Reason, "required mcp server unavailable") {
+		t.Errorf("reason = %q, want the required-server reason", payload.Reason)
+	}
+
+	// The 503 body carries no mcp_servers, so a second gateway proves the
+	// server is reported as configured rather than silently dropped.
+	readiness := gw.Readiness()
+	var found bool
+	for _, s := range readiness.MCPServers {
+		if s.Name != "vault" {
+			continue
+		}
+		found = true
+		if s.Ready {
+			t.Error("a server that never got a transport is reported ready")
+		}
+		if !s.Required {
+			t.Error("the server lost its Required flag, so nothing would gate on it")
+		}
+		if s.LastError == "" {
+			t.Error("no reason recorded for a server that never registered")
+		}
+	}
+	if !found {
+		t.Errorf("MCPServers = %+v, want an entry for the configured server %q", readiness.MCPServers, "vault")
 	}
 }
 

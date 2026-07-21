@@ -125,7 +125,15 @@ func (g *Gateway) wireMCPLocked(cfg Config, failLogMsg string) {
 			// Skip only this server: an unrelated server's config must not be able to
 			// disable every other server, and the caller (ReloadConfig) must still get
 			// a registry rebuilt from cfg rather than keep serving the pre-reload one.
+			//
+			// Recorded rather than dropped. Readiness reads the registry, so a
+			// server that never registered cannot be reported at all — a server
+			// marked `required` would leave /readyz answering ready while the
+			// server it depends on was silently missing from the body. Registering
+			// the failure keeps it visible, unready, and carrying its Required
+			// flag, exactly like one whose handshake fails.
 			slog.Error(failLogMsg, "server", mcpCfg.Name, "error", err)
+			reg.RegisterFailed(mcpCfg, err)
 			continue
 		}
 		reg.RegisterConfig(resolved)

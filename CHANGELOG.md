@@ -35,9 +35,29 @@ required. The one opt-in is `mcp_servers[].required`, which defaults to `false`.
   once and nothing ever cleared it, so after its subprocess died the gateway kept
   advertising that server's tools to the model, kept resolving them to a dead
   transport, and failed every call. Child exit is now detected two ways — the
-  subprocess closing its error stream, and a tool call reporting a closed
-  transport — and the server's tools are withdrawn from the model until it comes
-  back. Recovery on the next configuration reload is unchanged.
+  subprocess closing its error stream, and a tool call failing with a closed
+  transport or a broken pipe — and the server's tools are withdrawn from the
+  model until it comes back. A server closing its error stream is confirmed with
+  a ping before anything is withdrawn, so one that does so while still running
+  keeps serving, and a server that closes it at startup is still covered later.
+  Detection applies to stdio servers; an HTTP server that becomes unreachable
+  after a successful handshake is not currently detected. Recovery on the next
+  configuration reload is unchanged.
+- **An MCP server that could not be built was missing from readiness.** A server
+  whose `headers` or `env` referenced an undefined variable was resolved before
+  its transport existed, so it never reached the registry that readiness reports
+  from. It was absent from `mcp_servers` rather than listed as down, and one
+  marked `required` left `/readyz` answering ready while the server it depends on
+  had never been attempted. Such a server is now reported unready with its
+  `required` flag intact, and reads 0 on `gateway_mcp_server_up` rather than
+  being absent from `/metrics`.
+- **A configuration reload could leave `gateway_mcp_server_up` reading down for a
+  server that was up.** The gauge is labelled by server name, so the retiring
+  registry and its replacement wrote the same series; a reload with a request
+  still in flight let the old one publish 0 after the new one had already
+  reported the server ready, and nothing wrote 1 again. Teardown now writes only
+  for servers the retiring registry still owns, and drops the series for a server
+  that has left the configuration instead of pinning it at 0 forever.
 - **An MCP tool that reported failure was recorded as a success.** Servers signal
   a failed call by returning an error result rather than a transport error. That
   signal was not read, so a failing tool incremented the success counter, was

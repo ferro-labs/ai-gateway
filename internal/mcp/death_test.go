@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"syscall"
 	"testing"
 	"time"
 
@@ -57,53 +58,38 @@ func shortLivedCmd(t *testing.T) string {
 // TestStdioChildDeathMarksServerUnready is the regression test for a crashed
 // stdio subprocess going undetected.
 //
-// Before the fix nothing ever cleared serverEntry.ready outside Close, so a
-// dead child kept its tools advertised by AllTools and kept being resolved by
-// FindToolServer — every call then failed with "transport closed" while the
-// model was still being told the tools were available.
+// Nothing ever cleared serverEntry.ready outside Close, so a dead child kept its
+// tools advertised by AllTools and kept being resolved by FindToolServer — every
+// call then failed with "transport closed" while the model was still being told
+// the tools were available.
 //
-// The child here is spawned for real and exits on its own. The registry entry
-// is then hand-marked ready with its discovered tool, which is the state a
-// successful handshake would have left behind had the process lived longer.
+// The server is real and completes a real handshake, then exits on command. The
+// death is delivered through the registry's own watcher, not through a tool call
+// the executor sees, so this covers detection with no traffic to trigger it.
 func TestStdioChildDeathMarksServerUnready(t *testing.T) {
-	cmd := shortLivedCmd(t)
+	reg := initHelperServer(t, "dying", helperModeServe)
+	client := helperClient(t, reg, "dying")
 
-	reg := NewRegistry()
-	defer func() { _ = reg.Close() }()
-	reg.RegisterConfig(ServerConfig{Name: "dying", Command: cmd})
-
-	// Publish the state a completed handshake would have produced. The real
-	// handshake cannot be used: this command exits before speaking MCP, and a
-	// server that dies *after* initializing is exactly the case under test.
-	reg.mu.Lock()
-	entry := reg.servers["dying"]
-	client := entry.client
-	entry.tools = []Tool{{Name: "doomed_tool"}}
-	entry.ready = true
-	reg.toolMap["doomed_tool"] = "dying"
-	reg.mu.Unlock()
-
-	if _, isErr := client.(*errClient); isErr {
-		t.Fatal("expected a real stdio client; the command did not start")
+	// Sanity: the discovered tools are advertised and resolvable while alive.
+	if len(reg.AllTools()) == 0 {
+		t.Fatal("precondition: the helper server advertised no tools")
 	}
-
-	// Sanity: the tool is advertised and resolvable while the entry is ready.
-	if len(reg.AllTools()) != 1 {
-		t.Fatalf("precondition: AllTools = %v, want 1 tool", reg.AllTools())
-	}
-	if _, ok := reg.FindToolServer("doomed_tool"); !ok {
+	if _, ok := reg.FindToolServer(helperToolEcho); !ok {
 		t.Fatal("precondition: FindToolServer should resolve before the child dies")
 	}
 
-	// The child has already exited or is about to. Its death must flip the bit.
-	waitUntil(t, 10*time.Second, "ready to flip false after child death", func() bool {
+	// Kill it. The call goes straight to the transport so the executor's own
+	// detection path cannot be what withdraws the server.
+	_, _ = client.CallTool(t.Context(), helperToolDie, nil)
+
+	waitUntil(t, 15*time.Second, "ready to flip false after child death", func() bool {
 		return !reg.IsReady("dying")
 	})
 
 	if tools := reg.AllTools(); len(tools) != 0 {
 		t.Errorf("AllTools still advertises %v after the child died; the model would keep calling them", tools)
 	}
-	if _, ok := reg.FindToolServer("doomed_tool"); ok {
+	if _, ok := reg.FindToolServer(helperToolEcho); ok {
 		t.Error("FindToolServer still resolves a dead client after the child died")
 	}
 
@@ -117,6 +103,68 @@ func TestStdioChildDeathMarksServerUnready(t *testing.T) {
 	}
 	if st[0].LastError == "" {
 		t.Error("Status() lost the reason the server went down")
+	}
+}
+
+// TestStdioStderrEOFOnLiveServerKeepsItReady is the regression test for stderr
+// EOF being treated as the verdict on a server's death.
+//
+// The gateway holds only the read end of the child's stderr, so a healthy
+// server closing its own fd 2 produces a genuine EOF. Acting on that directly
+// withdrew a server that was still answering, and with `required: true` that is
+// a 503 for a server that was never down.
+//
+// The server here closes stderr on command, mid-life, after a completed
+// handshake — and then keeps serving.
+func TestStdioStderrEOFOnLiveServerKeepsItReady(t *testing.T) {
+	reg := initHelperServer(t, "chatty", helperModeServe)
+	client := helperClient(t, reg, "chatty")
+
+	if _, err := client.CallTool(t.Context(), helperToolCloseStderr, nil); err != nil {
+		t.Fatalf("precondition: the helper failed to close its stderr: %v", err)
+	}
+
+	// Long enough for the EOF to be observed and for at least one confirmation
+	// probe to run and find the server answering.
+	time.Sleep(3 * transportProbeInterval)
+
+	if !reg.IsReady("chatty") {
+		st := reg.Status()
+		t.Fatalf("a live server was withdrawn after closing its own stderr: %+v", st)
+	}
+	if _, ok := reg.FindToolServer(helperToolEcho); !ok {
+		t.Error("FindToolServer stopped resolving tools for a server that is still answering")
+	}
+	if _, err := client.CallTool(t.Context(), helperToolEcho, nil); err != nil {
+		t.Errorf("the server withdrawn as dead still answers tool calls: %v", err)
+	}
+}
+
+// TestStdioStderrClosedAtStartupStillDetectsLaterDeath covers the gap a
+// fire-once watcher left behind.
+//
+// A server that closes stderr before it is ready delivered its one and only
+// death notice at a moment when there was nothing to withdraw. The watcher was
+// then spent, so that server was exempt from death detection for the rest of its
+// life: it could be killed and its tools stayed advertised.
+func TestStdioStderrClosedAtStartupStillDetectsLaterDeath(t *testing.T) {
+	reg := initHelperServer(t, "quiet", helperModeStderrClosed)
+	client := helperClient(t, reg, "quiet")
+
+	// The EOF has already been delivered — before the handshake finished — and
+	// must not have withdrawn anything.
+	time.Sleep(2 * transportProbeInterval)
+	if !reg.IsReady("quiet") {
+		t.Fatalf("a server that closed stderr at startup was withdrawn while alive: %+v", reg.Status())
+	}
+
+	_, _ = client.CallTool(t.Context(), helperToolDie, nil)
+
+	waitUntil(t, 15*time.Second, "a startup-silent server's later death to be detected", func() bool {
+		return !reg.IsReady("quiet")
+	})
+	if len(reg.AllTools()) != 0 {
+		t.Error("AllTools still advertises tools from a server whose process is gone")
 	}
 }
 
@@ -234,6 +282,70 @@ func TestTransportClosedMarksServerUnready(t *testing.T) {
 	exec.executeToolCall(context.Background(), toolCallNamed("t1"))
 	if c.calls != before {
 		t.Errorf("call %d was still routed to the dead client; want no further calls", c.calls)
+	}
+}
+
+// brokenPipeClient models the death the transport never notices: a descendant
+// still holds the pipes, so stdout never reaches EOF and the transport stays
+// open, but the write to the child's stdin fails with EPIPE. The wrap chain is
+// the real one — the library's "failed to write request" wrap, its
+// *transport.Error box, then stdioClient.CallTool's own.
+type brokenPipeClient struct{ calls int }
+
+func (c *brokenPipeClient) Initialize(context.Context) (*ServerInfo, error) {
+	return &ServerInfo{}, nil
+}
+func (c *brokenPipeClient) ListTools(context.Context) ([]Tool, error) { return nil, nil }
+func (c *brokenPipeClient) CallTool(_ context.Context, name string, _ json.RawMessage) (*ToolCallResult, error) {
+	c.calls++
+	return nil, fmt.Errorf("mcp stdio tools/call %s: %w", name,
+		transport.NewError(fmt.Errorf("failed to write request: %w", syscall.EPIPE)))
+}
+func (c *brokenPipeClient) Close() error { return nil }
+
+// TestBrokenPipeMarksServerUnready proves a broken pipe counts as death.
+//
+// Only transport.ErrTransportClosed was matched, so this failure — equally
+// conclusive, and the one that occurs whenever a descendant holds the pipes
+// open — was ignored: the server stayed ready, kept its tools advertised, and
+// every subsequent call was routed to it and failed the same way.
+func TestBrokenPipeMarksServerUnready(t *testing.T) {
+	c := &brokenPipeClient{}
+	reg := registryWith(map[string]mcpClient{"s1": c})
+	reg.mu.Lock()
+	reg.servers["s1"].tools = []Tool{{Name: "t1"}}
+	reg.toolMap["t1"] = "s1"
+	reg.mu.Unlock()
+
+	exec := NewExecutor(reg, 5, nil)
+	exec.executeToolCall(context.Background(), toolCallNamed("t1"))
+
+	if reg.IsReady("s1") {
+		t.Fatal("a broken-pipe write failure did not withdraw the server")
+	}
+	if _, ok := reg.FindToolServer("t1"); ok {
+		t.Error("FindToolServer still resolves the tool after the pipe broke")
+	}
+
+	before := c.calls
+	exec.executeToolCall(context.Background(), toolCallNamed("t1"))
+	if c.calls != before {
+		t.Errorf("call %d was still routed to the dead client; want no further calls", c.calls)
+	}
+}
+
+// TestIsTransportDeadRejectsTransientErrors pins the other half of the
+// predicate. Withdrawing a server is terminal until the next configuration
+// reload, so an error that can resolve on its own must never reach it.
+func TestIsTransportDeadRejectsTransientErrors(t *testing.T) {
+	for _, err := range []error{
+		context.DeadlineExceeded,
+		errors.New("connection refused"),
+		fmt.Errorf("mcp stdio tools/call x: %w", transport.NewError(errors.New("read timeout"))),
+	} {
+		if isTransportDead(err) {
+			t.Errorf("isTransportDead(%v) = true; a recoverable failure would latch the server off", err)
+		}
 	}
 }
 

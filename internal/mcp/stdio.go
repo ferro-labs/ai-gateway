@@ -33,16 +33,27 @@ type stdioClient struct {
 	exited chan struct{}
 }
 
-// Exited returns a channel closed when the subprocess is observed to have died.
+// Exited returns a channel closed when the subprocess may have died.
 //
 // The signal is stderr EOF, which the gateway already watches because the drain
-// goroutine must keep the pipe moving. EOF arrives only once every descendant
-// that inherited the descriptor has closed it, so a launcher such as npx whose
-// grandchild holds stderr open delays this signal for as long as that
-// grandchild lives — the same process-tree case sweepProcessGroup exists for.
-// Detection is therefore prompt for a direct child and best-effort for a tree;
-// the reactive transport-closed check in the executor covers the delay.
+// goroutine must keep the pipe moving. It is a suspicion, not a verdict: the
+// gateway holds only the read end, so a server that closes its own fd 2 while
+// running produces the same EOF as one that exited. The registry confirms with
+// a ping before withdrawing anything.
+//
+// EOF also arrives only once every descendant that inherited the descriptor has
+// closed it, so a launcher such as npx whose grandchild holds stderr open
+// delays the signal for as long as that grandchild lives — the same process-tree
+// case sweepProcessGroup exists for. That death is caught reactively instead:
+// writing to a pipe whose reader is gone fails with EPIPE, which the executor
+// treats as conclusive alongside a closed transport.
 func (c *stdioClient) Exited() <-chan struct{} { return c.exited }
+
+// Ping issues an MCP ping, the mandatory server method used to confirm that a
+// server suspected of having died is in fact gone. A live server answers; a
+// transport whose reader already saw stdout EOF fails immediately without any
+// I/O.
+func (c *stdioClient) Ping(ctx context.Context) error { return c.inner.Ping(ctx) }
 
 // newStdioClient creates a stdio MCP client by launching command with args.
 // name identifies the server in log records.

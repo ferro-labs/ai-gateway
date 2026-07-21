@@ -8,8 +8,6 @@ import (
 	rtrace "runtime/trace"
 	"time"
 
-	"github.com/mark3labs/mcp-go/client/transport"
-
 	"github.com/ferro-labs/ai-gateway/internal/metrics"
 	gwotel "github.com/ferro-labs/ai-gateway/internal/otel"
 	"github.com/ferro-labs/ai-gateway/observability"
@@ -269,12 +267,17 @@ func (e *Executor) executeToolCall(ctx context.Context, tc core.ToolCall) core.M
 	span.SetAttributes(attribute.Int64(observability.AttrFerroMCPLatencyMs, int64(latencyMs)))
 
 	if err != nil {
-		// A closed transport means the server process is gone, not that this one
+		// A dead transport means the server process is gone, not that this one
 		// call failed. Withdrawing it here is what stops the next thousand calls
 		// from being routed to a dead client: the registry clears the ready bit,
 		// so AllTools stops advertising its tools and FindToolServer stops
 		// resolving them. Costs exactly one failed call to detect.
-		if errors.Is(err, transport.ErrTransportClosed) {
+		//
+		// A broken pipe counts as much as a closed transport: it is the shape a
+		// death takes when a descendant still holds the pipes open, so the
+		// transport never noticed and the write failed instead. See
+		// isTransportDead for what deliberately does not qualify.
+		if isTransportDead(err) {
 			e.registry.markUnready(serverName, client, err)
 		}
 		metricToolCallsTotal.WithLabelValues(serverName, toolName, "error").Inc()

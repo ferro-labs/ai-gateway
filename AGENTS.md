@@ -247,10 +247,21 @@ existing config behaves exactly as it did before the field existed.
 | absent / `false` | reported in the body | `200 ready` |
 | `true` | reported in the body | `503 not_ready`, reason `required mcp server unavailable` |
 
-A server is unready when it never completed the initialize handshake, or when
-its transport has since died — a stdio server whose subprocess exited is
-detected and its tools are withdrawn from the model, so it stops being
-advertised and stops resolving.
+A server is unready when it never completed the initialize handshake. That
+covers a server whose transport could not be built at all — an unresolvable
+`${VAR}` in its `headers` or `env` — which is reported unready rather than
+omitted from the body.
+
+Death **after** a successful handshake is detected for **stdio servers only**. A
+stdio server whose subprocess exits is noticed two ways — the process closing
+its error stream, confirmed with a ping before anything is withdrawn, and a tool
+call failing with a closed transport or a broken pipe — and its tools are then
+withdrawn from the model, so it stops being advertised and stops resolving.
+
+An HTTP server that becomes unreachable after a successful handshake is **not
+currently detected**: it continues to report ready and its tools stay
+advertised, and calls to it fail per request. Do not rely on `required: true`
+to take an instance out of rotation when an HTTP MCP server goes down.
 
 Set `required: true` only for a server the deployment genuinely cannot serve
 without. A required server that is down takes the instance out of rotation and

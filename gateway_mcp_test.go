@@ -72,8 +72,20 @@ func TestWireMCPLocked_MalformedServerDoesNotBlockOthers(t *testing.T) {
 	if !slices.Contains(names, "good") {
 		t.Errorf("ServerNames() = %v, want it to contain %q", names, "good")
 	}
-	if slices.Contains(names, "broken") {
-		t.Errorf("ServerNames() = %v, want it to NOT contain %q (unresolved headers)", names, "broken")
+
+	// The broken server is recorded rather than dropped: readiness reads the
+	// registry, so a server missing from it cannot be reported at all. It is
+	// present and unready, with its reason retained.
+	if !slices.Contains(names, "broken") {
+		t.Fatalf("ServerNames() = %v, want it to contain %q so its failure stays visible", names, "broken")
+	}
+	if gw.mcpRegistry.IsReady("broken") {
+		t.Error("a server whose headers never resolved is reported ready")
+	}
+	for _, st := range gw.mcpRegistry.Status() {
+		if st.Name == "broken" && st.LastError == "" {
+			t.Error("Status() lost the reason the server could not be built")
+		}
 	}
 }
 

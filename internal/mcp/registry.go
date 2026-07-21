@@ -20,6 +20,19 @@ import (
 // because its transport died rather than because a call or handshake failed.
 var errTransportExited = errors.New("mcp: server transport exited")
 
+const (
+	// transportProbeInterval is how often a stdio server whose stderr reached
+	// EOF is re-probed while it keeps answering. It runs only for a server that
+	// closed stderr, so the steady-state cost is a ping a second on a local pipe
+	// for a server behaving unusually — cheap enough not to warrant a backoff.
+	transportProbeInterval = time.Second
+
+	// transportProbeTimeout bounds a single confirmation ping. A dead transport
+	// fails immediately; this only limits how long a wedged one is waited on
+	// before the next attempt.
+	transportProbeTimeout = 5 * time.Second
+)
+
 // Registry manages registered MCP servers and the tools they expose.
 // All methods are safe for concurrent use.
 //
@@ -42,6 +55,12 @@ type Registry struct {
 	lifecycle   *sync.Cond
 	active      int
 	closed      bool
+
+	// stopCtx is cancelled by teardown. Transport watchers select on it so a
+	// closed registry leaves no goroutine behind, and it parents their probes so
+	// one already in flight is cut short rather than run to its timeout.
+	stopCtx  context.Context
+	stopFunc context.CancelFunc
 }
 
 // serverEntry holds the live state for one registered MCP server.
@@ -56,10 +75,63 @@ type serverEntry struct {
 
 // NewRegistry creates an empty Registry.
 func NewRegistry() *Registry {
+	stopCtx, stopFunc := context.WithCancel(context.Background())
 	return &Registry{
 		servers:     make(map[string]*serverEntry),
 		toolMap:     make(map[string]string),
 		serverIndex: make(map[string]int),
+		stopCtx:     stopCtx,
+		stopFunc:    stopFunc,
+	}
+}
+
+// gaugeOwners records which Registry most recently registered each server name.
+//
+// metrics.MCPServerUp is labelled by server name alone, so every Registry writes
+// the same process-wide series. A configuration reload builds the replacement
+// Registry while the previous one is still draining in-flight requests, and the
+// retired one's teardown would otherwise write 0 over the replacement's 1 —
+// permanently, because InitializeAll never re-initializes an already-ready
+// server and so nothing writes 1 again. Registration claims the label and
+// teardown writes only while that claim still holds: the same ownership
+// discipline markUnready applies to an entry, applied one level up to the label.
+var gaugeOwners struct {
+	sync.Mutex
+	owner map[string]*Registry
+}
+
+// claimServerUp takes ownership of a server's gauge series and publishes 0, so
+// a server that never initializes is visibly down rather than absent.
+func (r *Registry) claimServerUp(name string) {
+	gaugeOwners.Lock()
+	if gaugeOwners.owner == nil {
+		gaugeOwners.owner = make(map[string]*Registry)
+	}
+	gaugeOwners.owner[name] = r
+	gaugeOwners.Unlock()
+
+	metrics.MCPServerUp.WithLabelValues(name).Set(0)
+}
+
+// setServerUp writes value only while this Registry still owns the label.
+func (r *Registry) setServerUp(name string, value float64) {
+	gaugeOwners.Lock()
+	owned := gaugeOwners.owner[name] == r
+	gaugeOwners.Unlock()
+	if owned {
+		metrics.MCPServerUp.WithLabelValues(name).Set(value)
+	}
+}
+
+// releaseServerUp drops the series on teardown when this Registry still owns it.
+// Deleting rather than zeroing is what stops a server removed from the
+// configuration from lingering at 0 for the life of the process.
+func (r *Registry) releaseServerUp(name string) {
+	gaugeOwners.Lock()
+	defer gaugeOwners.Unlock()
+	if gaugeOwners.owner[name] == r {
+		delete(gaugeOwners.owner, name)
+		metrics.MCPServerUp.DeleteLabelValues(name)
 	}
 }
 
@@ -118,7 +190,7 @@ func (r *Registry) RegisterConfig(cfg ServerConfig) {
 
 	// Publish the gauge immediately so a server that never initializes is
 	// visibly down rather than absent from /metrics entirely.
-	metrics.MCPServerUp.WithLabelValues(cfg.Name).Set(0)
+	r.claimServerUp(cfg.Name)
 
 	// Watch for the transport dying under us. Started after the entry is stored
 	// so the watcher can always resolve what it is reporting on, and keyed on
@@ -126,12 +198,114 @@ func (r *Registry) RegisterConfig(cfg ServerConfig) {
 	// clobbered by the previous one's death notice.
 	if w, ok := client.(interface{ Exited() <-chan struct{} }); ok {
 		if exited := w.Exited(); exited != nil {
-			go func() {
-				<-exited
-				r.markUnready(cfg.Name, client, errTransportExited)
-			}()
+			go r.watchTransport(cfg.Name, client, exited)
 		}
 	}
+}
+
+// RegisterFailed records a server the operator configured but that could not be
+// built at all — a bad env reference in its headers or environment, resolved
+// before any transport exists. It is stored unready with cause as its last
+// error and takes its place in registration order like any other server.
+//
+// Without it such a server is invisible: Status reports what the registry holds,
+// so a server that was skipped before RegisterConfig cannot appear in the
+// readiness body, and one marked `required` would leave /readyz reporting ready
+// while the server it depends on was never even attempted. Registering the
+// failure keeps the registry the single source of truth for readiness, and the
+// gauge is published here too so the server reads 0 on /metrics rather than
+// being missing.
+//
+// The entry carries no client. Nothing can initialize it, and InitializeAll
+// skips it on exactly that basis, so cause survives as the reported reason
+// until the next configuration reload rebuilds the registry.
+func (r *Registry) RegisterFailed(cfg ServerConfig, cause error) {
+	r.mu.Lock()
+	if _, ok := r.servers[cfg.Name]; !ok {
+		r.serverIndex[cfg.Name] = len(r.regOrder)
+		r.regOrder = append(r.regOrder, cfg.Name)
+	}
+	r.servers[cfg.Name] = &serverEntry{config: cfg, initErr: cause}
+	r.mu.Unlock()
+
+	r.claimServerUp(cfg.Name)
+}
+
+// watchTransport turns a stdio server's stderr EOF from a verdict into a
+// trigger.
+//
+// EOF is not proof of death. The gateway holds only the read end of the pipe,
+// so a live server that closes its own fd 2 — or hands work to a child that
+// does — produces a genuine EOF while continuing to answer calls. Acting on it
+// directly withdrew healthy servers, and with `required: true` that is a 503 for
+// a server that was never down.
+//
+// So the report is confirmed with a ping before anything is withdrawn: a live
+// server answers, a dead transport fails immediately because stdout EOF already
+// closed it. A server that answers is left alone and re-probed, which also
+// closes the gap where a server closing stderr at startup consumed its one
+// notification and was exempt from death detection from then on.
+//
+// The loop costs one ping per interval and only for a server that closed stderr
+// at all; a server holding stderr open — the ordinary case — never reaches it.
+func (r *Registry) watchTransport(name string, client mcpClient, exited <-chan struct{}) {
+	select {
+	case <-exited:
+	case <-r.stopCtx.Done():
+		return
+	}
+
+	probe, ok := client.(pinger)
+	if !ok {
+		// No way to confirm. Report the death rather than leave a transport that
+		// may well be gone advertised until the next reload.
+		r.markUnready(name, client, errTransportExited)
+		return
+	}
+
+	ticker := time.NewTicker(transportProbeInterval)
+	defer ticker.Stop()
+	for {
+		holds, ready := r.probeState(name, client)
+		// Teardown detaches the client, and re-registration replaces it. Either
+		// way this transport's fate stopped being ours to report.
+		if !holds {
+			return
+		}
+
+		// Probe only a server the registry has published as ready. Until then
+		// the handshake owns the transport — the client library tracks its own
+		// initialized state without synchronisation, so a concurrent ping races
+		// it — and there is nothing to withdraw in any case. Observing ready
+		// under r.mu orders this goroutine after that handshake.
+		if ready {
+			ctx, cancel := context.WithTimeout(r.stopCtx, transportProbeTimeout)
+			err := probe.Ping(ctx)
+			cancel()
+			if isTransportDead(err) {
+				r.markUnready(name, client, fmt.Errorf("%w: %w", errTransportExited, err))
+				return
+			}
+		}
+
+		select {
+		case <-ticker.C:
+		case <-r.stopCtx.Done():
+			return
+		}
+	}
+}
+
+// probeState reports whether the named server is still served by this exact
+// transport, and whether the registry currently considers it ready.
+func (r *Registry) probeState(name string, client mcpClient) (holds, ready bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	entry, ok := r.servers[name]
+	if !ok || entry.client != client {
+		return false, false
+	}
+	return true, entry.ready
 }
 
 // markUnready clears the ready bit for a server whose transport is gone, so
@@ -160,7 +334,7 @@ func (r *Registry) markUnready(name string, client mcpClient, cause error) {
 	entry.initErr = cause
 	r.mu.Unlock()
 
-	metrics.MCPServerUp.WithLabelValues(name).Set(0)
+	r.setServerUp(name, 0)
 	slog.Warn("mcp: server is no longer available; its tools are withdrawn",
 		"server", name, "error", cause)
 }
@@ -182,9 +356,13 @@ func (r *Registry) InitializeAll(ctx context.Context, logErr func(name string, e
 	var wg sync.WaitGroup
 	for _, name := range names {
 		// Fast-path read: skip servers that are already done or in progress.
+		// A nil client is not something a handshake can fix: either the registry
+		// was torn down, or the server was recorded by RegisterFailed and never
+		// had a transport. Skipping keeps its recorded reason intact instead of
+		// replacing it with a generic initialization error.
 		r.mu.RLock()
 		entry, ok := r.servers[name]
-		skip := !ok || entry.ready || entry.initializing
+		skip := !ok || entry.ready || entry.initializing || entry.client == nil
 		r.mu.RUnlock()
 		if skip {
 			continue
@@ -195,7 +373,7 @@ func (r *Registry) InitializeAll(ctx context.Context, logErr func(name string, e
 		// initServer goroutines for the same server.
 		r.mu.Lock()
 		entry, ok = r.servers[name]
-		if !ok || entry.ready || entry.initializing {
+		if !ok || entry.ready || entry.initializing || entry.client == nil {
 			r.mu.Unlock()
 			continue
 		}
@@ -352,7 +530,7 @@ func (r *Registry) initServer(ctx context.Context, name string) error {
 	}
 	r.mu.Unlock()
 
-	metrics.MCPServerUp.WithLabelValues(name).Set(1)
+	r.setServerUp(name, 1)
 
 	return nil
 }
@@ -516,6 +694,13 @@ func (r *Registry) Close() error {
 // orchestrator's grace period, which then SIGKILLs the process and re-orphans
 // the very subprocesses the process-group sweep exists to reap.
 func (r *Registry) closeClients() error {
+	// Stop the transport watchers before detaching anything: they must not
+	// outlive the clients they report on, and a probe already in flight is
+	// cancelled rather than run to its timeout.
+	if r.stopFunc != nil {
+		r.stopFunc()
+	}
+
 	r.mu.Lock()
 	clients := make([]mcpClient, 0, len(r.servers))
 	for _, entry := range r.servers {
@@ -535,8 +720,12 @@ func (r *Registry) closeClients() error {
 	}
 	r.mu.Unlock()
 
+	// Drop the series rather than zero it, and only while this registry still
+	// owns the label. A reload has already built the replacement by the time a
+	// retired registry drains, and writing 0 here would take the live server
+	// down on /metrics with nothing left to write 1 again.
 	for _, name := range names {
-		metrics.MCPServerUp.WithLabelValues(name).Set(0)
+		r.releaseServerUp(name)
 	}
 
 	errs := make([]error, len(clients))
