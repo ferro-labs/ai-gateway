@@ -9,9 +9,7 @@ import (
 	"testing"
 )
 
-// buildFakeKey joins prefix and body at runtime so no credential-shaped
-// literal is committed for a scanner to flag. Mirrors the helper used by
-// the redaction policy tests in internal/redact.
+// buildFakeKey joins prefix and body at runtime to avoid committing credential-shaped literals.
 func buildFakeKey(prefix, body string) string { return prefix + body }
 
 // A store or validation error can quote text it was handed, so the admin

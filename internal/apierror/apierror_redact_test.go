@@ -11,9 +11,7 @@ import (
 // fakeUpstreamKey has the legacy OpenAI sk- key shape. It is not a real credential.
 var fakeUpstreamKey = buildFakeKey("sk-", "abc123DEF456ghi789JKL012mno345")
 
-// buildFakeKey joins prefix and body at runtime so no credential-shaped
-// literal is committed for a scanner to flag. Mirrors the helper used by
-// the redaction policy tests in internal/redact.
+// buildFakeKey joins prefix and body at runtime to avoid committing credential-shaped literals.
 func buildFakeKey(prefix, body string) string { return prefix + body }
 
 // An upstream provider controls its own error body, and that body can quote the
