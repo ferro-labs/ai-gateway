@@ -5,6 +5,102 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.2] — 2026-07-21
+
+Disclosure and durability. Upstream error text is filtered before it leaves the
+process, a crashed MCP subprocess is now noticed instead of being advertised as
+healthy, admin config changes and their audit entries are recorded atomically,
+and MCP gains the metrics needed to alert on a server that never came up.
+
+Default behaviour is unchanged. No request that was accepted is now refused, no
+response shape changes, no status code changes, and no configuration becomes
+required. The one opt-in is `mcp_servers[].required`, which defaults to `false`.
+
+### Fixed
+
+- **Provider error text could carry a credential to clients, logs, streams, and
+  observability backends.** A provider controls the body of its own error
+  responses, and some echo the value of the `Authorization` or `api-key` header
+  they were sent. That text became the error message the gateway reported, so
+  the gateway's own credential could reach an end user, a log aggregator, an SSE
+  frame, or an exporter. Error messages are now filtered at the points every
+  caller passes through — the OpenAI-compatible error writer, the admin error
+  writer, the streaming error frame, the request-failure event, and the failure
+  log lines. Only the message text changes; status, `type`, and `code` are
+  written exactly as before. Filtering is best-effort pattern matching and
+  covers the key formats that carry a recognisable prefix; a provider whose keys
+  have no distinguishing shape cannot be matched, so it reduces exposure rather
+  than eliminating it.
+- **A crashed MCP stdio subprocess was never noticed.** A server was marked ready
+  once and nothing ever cleared it, so after its subprocess died the gateway kept
+  advertising that server's tools to the model, kept resolving them to a dead
+  transport, and failed every call. Child exit is now detected two ways — the
+  subprocess closing its error stream, and a tool call reporting a closed
+  transport — and the server's tools are withdrawn from the model until it comes
+  back. Recovery on the next configuration reload is unchanged.
+- **An MCP tool that reported failure was recorded as a success.** Servers signal
+  a failed call by returning an error result rather than a transport error. That
+  signal was not read, so a failing tool incremented the success counter, was
+  audited as successful, and produced a successful span. It is now recorded as an
+  error in all three. What the model and the client receive is unchanged.
+- **Admin config changes and their audit entries could disagree.** Applying a
+  config and recording its history entry were separate steps under separate
+  locks, so two concurrent admin writes could interleave and leave the newest
+  history entry describing a config that was not the active one — with a rollback
+  then targeting the wrong version. The same gap existed one level lower, between
+  persisting a config and applying it, where the disagreement survived a restart.
+  Each admin config mutation is now applied and recorded as one serialized
+  operation. History reads are unaffected and never wait on a config apply.
+- **An unknown MCP tool name became an unbounded metric label.** The tool name on
+  the unknown-tool counter came from the model's output, so an invented name
+  minted a new time series. Names that do not resolve to a registered tool now
+  collapse to a single bounded label, matching how unroutable model names are
+  already handled.
+
+### Added
+
+- **`mcp_servers[].required`** — marks an MCP server whose availability gates
+  `/readyz`. Defaults to `false`, so an existing configuration behaves exactly as
+  before. See **Upgrade notes**.
+- **MCP server state on `/readyz`.** The readiness body now reports each
+  configured MCP server's name, readiness, and whether it is required, so MCP
+  health is observable without gating on it. The failure reason is deliberately
+  omitted — the endpoint is unauthenticated and a failure can quote a server URL,
+  an authorization header, or a subprocess command line. It is logged instead.
+- **`gateway_mcp_server_up`** — per-server gauge, `1` when a server completed its
+  handshake and its transport is alive, `0` otherwise.
+- **`gateway_mcp_server_init_failures_total`** — per-server counter incremented
+  when a server fails to initialize. Initialization failures were previously only
+  logged, which left a fully dead MCP fleet indistinguishable from an idle one.
+  Alert on any non-zero value.
+- **Tracing for MCP startup.** Server initialization and tool discovery now emit
+  spans, so the phase where MCP most often fails is visible in a trace rather
+  than only in logs.
+
+### Changed
+
+- The stored config history query now reads a bounded number of the most recent
+  entries instead of the whole table. This is a read bound only; no history row
+  is ever deleted.
+
+### Upgrade notes
+
+- **`/readyz` behaviour is unchanged unless you opt in.** Setting
+  `required: true` on an MCP server means that if the server is unavailable the
+  instance reports not-ready and an orchestrator will take it out of rotation —
+  stopping all traffic through it, including requests that use no tools. Set it
+  only for a server the deployment genuinely cannot serve without.
+- Deployments that already configure `mcp_servers` will see a new `mcp_servers`
+  array in the `/readyz` response body. It is additive; existing fields are
+  unchanged.
+- Error messages returned to clients, written to logs, and sent to observability
+  exporters are now filtered. Text that matches a credential pattern is masked,
+  so tooling that matches on exact upstream error strings may need adjusting.
+- MCP tool calls that return an error result now increment
+  `ferrogw_mcp_tool_calls_total` with `status="error"` rather than `status="ok"`.
+  Dashboards that treated the MCP success rate as near-100% will show the real
+  rate. Label sets on existing metrics are unchanged.
+
 ## [1.3.1] — 2026-07-21
 
 Seven defects reported against `v1.3.0`, spanning request handling, routing, and

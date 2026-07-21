@@ -207,6 +207,20 @@ plugins:
     config:
       blocked_words: ["password", "secret"]
 
+mcp_servers:                 # external MCP tool servers for agentic tool calling
+  - name: filesystem
+    command: npx             # stdio transport: launched as a subprocess
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "/data"]
+    env:                     # the subprocess inherits NO gateway environment
+      SOME_TOKEN: ${SOME_TOKEN}
+    timeout_seconds: 30      # per tool call; default 30
+    required: false          # see below; default false
+  - name: search
+    url: https://mcp.example.com/mcp   # Streamable HTTP transport
+    headers:
+      Authorization: Bearer ${SEARCH_TOKEN}
+    allowed_tools: ["web_search"]      # empty means all discovered tools
+
 observability:
   tracing:
     enabled: true
@@ -221,6 +235,32 @@ observability:
       enabled: false
       config: {}
 ```
+
+### MCP Server Readiness (`mcp_servers[].required`)
+
+`required` decides whether one MCP server's availability gates the whole
+instance's readiness. It is **opt-in per server and defaults to `false`**, so an
+existing config behaves exactly as it did before the field existed.
+
+| `required` | Server unready | `/readyz` |
+|------------|----------------|-----------|
+| absent / `false` | reported in the body | `200 ready` |
+| `true` | reported in the body | `503 not_ready`, reason `required mcp server unavailable` |
+
+A server is unready when it never completed the initialize handshake, or when
+its transport has since died — a stdio server whose subprocess exited is
+detected and its tools are withdrawn from the model, so it stops being
+advertised and stops resolving.
+
+Set `required: true` only for a server the deployment genuinely cannot serve
+without. A required server that is down takes the instance out of rotation and
+stops **all** traffic through it, including requests that use no tools at all.
+Every server's state appears under `mcp_servers` in the `/readyz` body whether
+or not it is required, so MCP health can be monitored without gating on it.
+
+The failure *reason* is deliberately not in the `/readyz` body: the endpoint is
+unauthenticated and an MCP failure can quote a server URL, an authorization
+header, or a subprocess command line. It is logged server-side instead.
 
 ### Key Environment Variables
 
