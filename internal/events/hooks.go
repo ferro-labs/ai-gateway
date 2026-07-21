@@ -5,6 +5,7 @@ package events
 import (
 	"time"
 
+	"github.com/ferro-labs/ai-gateway/internal/redact"
 	"github.com/ferro-labs/ai-gateway/models"
 )
 
@@ -28,13 +29,17 @@ type HookEvent struct {
 }
 
 // FailedRequest builds the internal hook payload for a failed request.
+//
+// errMsg is redacted here, at the single point every failed-request event is
+// built, so no observability exporter or hook consumer receives raw upstream
+// error text. Callers pass the message through unfiltered.
 func FailedRequest(traceID, provider, model, errMsg string, latency time.Duration, stream bool) HookEvent {
 	return HookEvent{
 		Subject:   "gateway.request.failed",
 		TraceID:   traceID,
 		Provider:  provider,
 		Model:     model,
-		Error:     errMsg,
+		Error:     redact.String(errMsg),
 		Status:    500,
 		LatencyMs: latency.Milliseconds(),
 		Stream:    stream,

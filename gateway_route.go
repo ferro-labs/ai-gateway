@@ -14,6 +14,7 @@ import (
 	"github.com/ferro-labs/ai-gateway/internal/logging"
 	"github.com/ferro-labs/ai-gateway/internal/mcp"
 	"github.com/ferro-labs/ai-gateway/internal/metrics"
+	"github.com/ferro-labs/ai-gateway/internal/redact"
 	"github.com/ferro-labs/ai-gateway/internal/strategies"
 	"github.com/ferro-labs/ai-gateway/models"
 	"github.com/ferro-labs/ai-gateway/observability"
@@ -433,7 +434,7 @@ func (g *Gateway) routeError(ctx context.Context, span observability.Span, obs o
 	logging.FromContext(ctx).Error("request failed",
 		"model", model,
 		"latency_ms", latency.Milliseconds(),
-		"error", err.Error(),
+		"error", redact.ErrorMessage(err),
 	)
 
 	if hooksEnabled || obsEventsActive {

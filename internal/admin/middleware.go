@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/ferro-labs/ai-gateway/internal/authctx"
+	"github.com/ferro-labs/ai-gateway/internal/redact"
 )
 
 type contextKey string
@@ -170,6 +171,10 @@ func RequireScope(scopes ...string) func(http.Handler) http.Handler {
 //	{"error":{"message":"...","type":"...","code":"..."}}
 //
 // errType and code may be empty; defaults are derived from the HTTP status.
+//
+// message is redacted for the same reason it is in the request-path writer:
+// several callers pass an underlying error through, and a store or validation
+// error can quote text it was handed. Only the message value changes.
 func writeError(w http.ResponseWriter, status int, message, errType, code string) {
 	if errType == "" {
 		errType = defaultErrType(status)
@@ -181,7 +186,7 @@ func writeError(w http.ResponseWriter, status int, message, errType, code string
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"error": map[string]string{
-			"message": message,
+			"message": redact.String(message),
 			"type":    errType,
 			"code":    code,
 		},

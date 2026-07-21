@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ferro-labs/ai-gateway/internal/logging"
+	"github.com/ferro-labs/ai-gateway/internal/redact"
 	"github.com/ferro-labs/ai-gateway/internal/streamio"
 	"github.com/ferro-labs/ai-gateway/providers"
 )
@@ -71,7 +72,9 @@ func Write(ctx context.Context, w http.ResponseWriter, ch <-chan providers.Strea
 				_ = writeAndFlush(ctx, controller, bw, func() error {
 					return writeEvent(bw, enc, map[string]any{
 						"error": map[string]string{
-							"message": chunk.Error.Error(),
+							// Mid-stream failures carry provider-controlled text,
+							// which can quote the gateway's own credential.
+							"message": redact.ErrorMessage(chunk.Error),
 							"type":    "stream_error",
 							"code":    "stream_error",
 						},

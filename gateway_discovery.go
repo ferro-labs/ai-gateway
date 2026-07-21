@@ -13,6 +13,7 @@ import (
 	"github.com/ferro-labs/ai-gateway/internal/authctx"
 	"github.com/ferro-labs/ai-gateway/internal/logging"
 	"github.com/ferro-labs/ai-gateway/internal/metrics"
+	"github.com/ferro-labs/ai-gateway/internal/redact"
 	"github.com/ferro-labs/ai-gateway/models"
 	"github.com/ferro-labs/ai-gateway/observability"
 	"github.com/ferro-labs/ai-gateway/plugin"
@@ -283,16 +284,15 @@ func (g *Gateway) recordSurfaceSuccess(ctx context.Context, span observability.S
 // the Prometheus error counter, stamps the span with the error, and
 // dispatches the failed lifecycle event. It is the non-chat counterpart of
 // routeError (gateway_route.go), reusing its lifecycle-event plumbing
-// (dispatchRequestEvent, failedEventData) and gateway_stream.go's redaction
-// policy (streamStartErrRedactor) rather than duplicating them. providerName
-// is "" when routing never resolved any target, matching chat's
+// (dispatchRequestEvent, failedEventData) rather than duplicating it.
+// providerName is "" when routing never resolved any target, matching chat's
 // empty-provider error label (see Route's own routeError call on a strategy
-// Execute failure). It returns the redacted message so the caller's own log
-// line does not redact the same error twice.
+// Execute failure). It returns the redacted message for the caller's own log
+// line; the lifecycle event is redacted independently by events.FailedRequest.
 func (g *Gateway) recordSurfaceError(ctx context.Context, span observability.Span, obs observability.Provider, providerName, model string, err error, latency time.Duration, hooksEnabled, obsEventsActive bool) string {
 	metrics.ForRequest(providerName, g.metricModel(model)).Error.Inc()
 	span.SetError(err)
-	safeErr := streamStartErrRedactor.Redact(err.Error())
+	safeErr := redact.ErrorMessage(err)
 
 	if hooksEnabled || obsEventsActive {
 		he := failedEventData(
@@ -716,7 +716,7 @@ func (g *Gateway) runDiscovery(ctx context.Context, log *slog.Logger) {
 		}
 		models, err := dp.DiscoverModels(ctx)
 		if err != nil {
-			log.Error("model discovery failed", "provider", name, "error", err.Error())
+			log.Error("model discovery failed", "provider", name, "error", redact.ErrorMessage(err))
 			continue
 		}
 		g.mu.Lock()
