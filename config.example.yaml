@@ -114,6 +114,7 @@ targets:
   - virtual_key: nvidia-nim
   - virtual_key: openrouter
   - virtual_key: qwen
+  - virtual_key: requesty
   - virtual_key: sambanova
 
 # Model aliases: map friendly names to actual model IDs.

@@ -118,6 +118,11 @@ func catalogCoverageExcluded(providerID string) bool {
 		// These providers primarily route user-configured/local model IDs, so a
 		// single embedded public-catalog sample is not stable enough for this gate.
 		return true
+	case providers.NameRequesty:
+		// Requesty is an OpenAI-compatible gateway that routes user-configured
+		// provider/model IDs; its model list is not part of the embedded public
+		// catalog, so a single sample is not stable enough for this gate.
+		return true
 	default:
 		return false
 	}
