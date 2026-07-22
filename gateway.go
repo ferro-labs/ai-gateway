@@ -523,6 +523,27 @@ func (g *Gateway) FindStreamingByModel(model string) (providers.StreamProvider, 
 	return g.findStreamingProviderByModelLocked(model)
 }
 
+// CircuitState returns the circuit-breaker state for the given target key, or
+// circuitbreaker.StateClosed when no breaker is configured (the gateway treats
+// a missing breaker as closed). Safe for concurrent use; used by the dry-run
+// route trace endpoint so it never perturbs breaker counters.
+func (g *Gateway) CircuitState(name string) circuitbreaker.State {
+	g.mu.RLock()
+	cb, ok := g.circuitBreakers[name]
+	g.mu.RUnlock()
+	if !ok || cb == nil {
+		return circuitbreaker.StateClosed
+	}
+	return cb.State()
+}
+
+// LatencyTracker returns the gateway's latency tracker (nil when least-
+// latency routing is not active). Used by the dry-run route trace to surface
+// P50 estimates without recording a sample.
+func (g *Gateway) LatencyTracker() *latency.Tracker {
+	return g.latencyTracker
+}
+
 // Close cleans up resources.
 //
 // Cancels the gateway shutdown context (which signals hook workers and the

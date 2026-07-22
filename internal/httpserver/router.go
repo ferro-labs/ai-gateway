@@ -301,6 +301,11 @@ func mountOpenAIRoutes(r chi.Router, gw *aigateway.Gateway, registry *providers.
 		r.Get("/v1/capabilities", handler.Capabilities(registry))
 		r.Post("/v1/chat/completions", handler.ChatCompletions(gw))
 
+		// Dry-run route explanation: explains which target/strategy a request
+		// would route to WITHOUT calling a provider. Exposed under the same
+		// authed /v1/* group so it inherits auth, audit, and OTel/request IDs.
+		r.Post("/v1/route/trace", handler.RouteTrace(gw))
+
 		// Legacy text completions.
 		r.Post("/v1/completions", handler.Completions(registry))
 

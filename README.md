@@ -134,6 +134,27 @@ curl http://localhost:8080/v1/chat/completions \
   }' | jq
 ```
 
+### Dry-run route trace (no tokens spent)
+
+Explain why a request would route to a given target/strategy WITHOUT calling a provider — handy for router UX, debugging routing config, and preflight checks.
+
+```bash
+curl http://localhost:8080/v1/route/trace \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $MASTER_KEY" \
+  -d '{
+    "model": "gpt-4o-mini",
+    "messages": [{"role": "user", "content": "trace me"}]
+  }' | jq
+```
+
+Returns the active `strategy`, `requested_model` / `resolved_model` (after alias
+resolution), `selected_target_key`, ordered `candidate_targets` with per-target
+`healthy` / `circuit_open` / `supports_model` / `estimated_cost_usd`, and a
+`catalog` block with `model_found` / `priced` / `context_window`. Always sets
+`dry_run: true`. Never consumes provider quota.
+
+
 ---
 
 ## Why Ferro Labs AI Gateway

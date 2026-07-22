@@ -329,6 +329,7 @@ header, or a subprocess command line. It is logged server-side instead.
 | `/v1/models` | GET | List all available models |
 | `/v1/capabilities` | GET | Per-provider parameter support, serialized from the capability matrix |
 | `/v1/chat/completions` | POST | Chat completion (supports `stream: true`) |
+| `/v1/route/trace` | POST | Dry-run route explanation — selects a target/strategy WITHOUT calling a provider; returns candidates, health/circuit state, catalog match (issue #238) |
 | `/v1/completions` | POST | Legacy text completion |
 | `/v1/*` | Any | Pass-through proxy to provider |
 | `/admin/keys` | GET, POST | API key management (requires auth) |
