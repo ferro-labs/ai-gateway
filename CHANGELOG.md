@@ -1212,9 +1212,9 @@ call the gateway from elsewhere.
 
 ### Added
 
-- A standalone React and TypeScript operations application for overview, key management, request logs, provider status, configuration history, analytics, and streaming playground workflows.
+- An embedded React and TypeScript operations application for overview, key management, request logs, provider status, configuration history, analytics, and streaming playground workflows.
 - Component health details on `GET /admin/health` for the API, key store, config store, and request-log backend.
-- A dedicated frontend container with runtime gateway-origin configuration and independent CI and browser checks.
+- An independent frontend CI job — lint, unit tests, TypeScript, production build, and rendered browser checks — running alongside the Go suite.
 - Dashboard sign-in exchanges a gateway key for a short-lived session. The session expires after 24 hours or an hour of inactivity, signing out revokes it server-side, and `DELETE /admin/sessions` signs every operator out at once. The key itself is no longer kept in the browser.
 - Configuration history records who applied each version. A dashboard session is attributed to the credential it was minted from, since the session identifies a browser and the credential identifies the operator. Versions written before this release keep no actor rather than being backfilled with a guess.
 - Credential changes are recorded. Creating, updating, deleting, revoking or rotating a key, and signing every operator out, each emit a structured log entry naming the actor and the target. Previously only failures were logged, so a successful deletion of the last admin key left no record at all. These are log entries, so log retention is what bounds how far back the question can be answered.
@@ -1238,7 +1238,7 @@ call the gateway from elsewhere.
 - Gemini reports completion tokens including thinking tokens, so prompt plus completion equals the total it reports and thinking output is costed at the right rate. The OpenAI `developer` role is mapped to the system role on providers that reject it. Replicate no longer drops an explicit `temperature`, `top_p` or `seed` of `0`. Model lists read from the environment are trimmed, so a space after a comma no longer produces a model name that can never match.
 - Request-log column migrations are idempotent, and the timing and cost columns store the same precision on both backends — they were declared `REAL`, which Postgres stores with about seven significant digits, enough to visibly round a per-request cost.
 - A target is no longer taken out of rotation permanently by a stream start that was abandoned at the request deadline and then succeeded. Its half-open circuit-breaker probe was never resolved, and nothing repairs a half-open circuit stuck at its probe cap, so every later request to that target — streaming and non-streaming — failed with "circuit breaker open" until the process restarted.
-- A request shed while queued on a target's concurrency limiter no longer counts against that target's circuit breaker. It returned a bare context error, which reads as the gateway's own deadline firing against the provider, so a burst of load opened the breaker of a target that was answering everything it was given. It now reports `429 provider_saturated`, as the queue-full shed already did.
+- A request shed while queued on a target's concurrency limiter no longer counts against that target's circuit breaker. It returned a bare context error, which reads as the gateway's own deadline firing against the provider, so a burst of load opened the breaker of a target that was answering everything it was given. It now reports `429 provider_saturated`, as the queue-full shed already did. <!-- drift-ok: 429 is an HTTP status code, not a provider count -->
 - A configuration reload preserves circuit-breaker and concurrency-limiter state for targets whose settings did not change. Reloading previously rebuilt both, so an open circuit closed and re-admitted traffic to a provider that was still failing, and a second full-capacity limiter briefly joined the in-flight requests. Targets that are new, changed or removed are rebuilt as before.
 - A malformed `targets[].circuit_breaker.timeout` is reported instead of silently becoming the 30-second default.
 - Per-IP rate limiting no longer stalls once its key store fills. At the shipped 100,000-key cap, every request from an unseen address walked the whole store to evict one entry while holding the lock that fronts the rate-limit check on every route — 15ms per insert with all concurrent traffic queued behind it. Eviction is now amortised over the oldest one percent: 52µs per insert on the same benchmark.
@@ -1312,9 +1312,9 @@ call the gateway from elsewhere.
 - The dashboard is built on Tailwind and a component library rather than a hand-written stylesheet, on the palette it already used. The light theme's accent is one step darker to meet WCAG AA contrast, which it previously failed both as link text and as a button fill.
 - Every route is reachable by keyboard without traversing the navigation first.
 - Active dashboard sessions are visible from the API keys page, and a key's expiry can be extended or cleared instead of requiring the key to be recreated.
-- The web application now owns its client routes and consumes the existing Admin and OpenAI-compatible APIs without being served by the gateway process.
+- The web application now owns its client routes and consumes the existing Admin and OpenAI-compatible APIs from the same origin the gateway serves it on.
 - Dashboard sessions live only in `sessionStorage` and do not survive closing the tab; read-only scopes hide mutation controls.
-- The standalone web server applies the dashboard Content Security Policy and immutable asset caching independently from gateway API headers.
+- The dashboard's page and assets are served under the dashboard Content Security Policy and immutable asset caching, applied independently from gateway API headers.
 - `GET /admin/sessions` lists active dashboard sessions; sessions persist across restarts when a SQLite or PostgreSQL key-store backend is configured, and are held in memory otherwise.
 
 ### Removed
