@@ -131,3 +131,65 @@ The dashboard's PromQL is built against the gateway's real metric names
 credential in the compose file — `MASTER_KEY`, the Grafana and Postgres logins —
 is a throwaway demo sentinel, safe to commit and not for reuse.
 
+
+## Compose with PostgreSQL
+
+A self-contained pairing that comes up from a clean checkout —
+`OPENAI_API_KEY=sk-... docker compose up` — with all three stores on Postgres:
+
+```yaml
+services:
+  ferrogw:
+    image: ghcr.io/ferro-labs/ai-gateway:latest
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - CONFIG_STORE_BACKEND=postgres
+      - CONFIG_STORE_DSN=postgresql://ferrogw:ferrogw@db:5432/ferrogw?sslmode=disable
+      - API_KEY_STORE_BACKEND=postgres
+      - API_KEY_STORE_DSN=postgresql://ferrogw:ferrogw@db:5432/ferrogw?sslmode=disable
+      - REQUEST_LOG_STORE_BACKEND=postgres
+      - REQUEST_LOG_STORE_DSN=postgresql://ferrogw:ferrogw@db:5432/ferrogw?sslmode=disable
+    depends_on:
+      db:
+        # Not the `depends_on: [db]` short form: that waits for the container to
+        # START, and postgres:16-alpine then runs initdb for several seconds. The
+        # gateway pings its store once while constructing it and exits on
+        # failure, so the short form loses the race on a first `up` every time.
+        condition: service_healthy
+
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ferrogw
+      POSTGRES_PASSWORD: ferrogw
+      POSTGRES_DB: ferrogw
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ferrogw -d ferrogw"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:
+```
+
+No config file is mounted, so the gateway derives its targets from the provider
+credentials in the environment — which is what makes this run cold. To serve a
+config instead, copy the tracked example (`cp config.example.yaml config.yaml`),
+mount it, and set `GATEWAY_CONFIG` beside the mount (see
+[Mounting a config takes two lines, not one](#mounting-a-config-takes-two-lines-not-one)
+— and without the `cp`, Docker creates a *directory* named `config.yaml` and the
+gateway exits):
+
+```yaml
+    environment:
+      - GATEWAY_CONFIG=/etc/ferrogw/config.yaml
+    volumes:
+      - ./config.yaml:/etc/ferrogw/config.yaml:ro
+```

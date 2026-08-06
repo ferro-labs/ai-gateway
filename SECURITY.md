@@ -82,3 +82,49 @@ Operators pointing the pass-through at an upstream they do not control should tr
 payloads as relayed verbatim. Keep `ALLOW_UNAUTHENTICATED_PROXY` unset — it removes
 authentication from every `/v1/*` endpoint, and startup refuses it outright under
 `GATEWAY_ENV=production` — and rotate provider credentials on your normal schedule.
+
+## Verifying Releases
+
+Every release publishes a SHA-256 checksum file, a keyless [cosign](https://github.com/sigstore/cosign)
+signature over it, and an SPDX SBOM beside each archive. There are no long-lived signing keys:
+the identity on the certificate is the release workflow itself.
+
+```bash
+VER=v1.4.0                                  # the release tag you downloaded
+REPO=ferro-labs/ai-gateway
+BASE="https://github.com/$REPO/releases/download/$VER"
+IDENTITY="https://github.com/$REPO/.github/workflows/release.yml@refs/tags/$VER"
+
+for f in checksums.txt checksums.txt.pem checksums.txt.sig; do curl -fsSLO "$BASE/$f"; done
+
+# 1. Verify the signature over the checksum file.
+cosign verify-blob checksums.txt \
+  --certificate checksums.txt.pem \
+  --signature checksums.txt.sig \
+  --certificate-identity "$IDENTITY" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+
+# 2. Verify what you downloaded against the now-trusted checksum file.
+sha256sum --ignore-missing -c checksums.txt
+```
+
+`checksums.txt` lists every archive **and** every SBOM, so one signature covers both.
+`--ignore-missing` checks only the files present in the current directory (on macOS,
+`shasum -a 256 --ignore-missing -c checksums.txt`). Signature verification needs cosign v2 or newer.
+
+**Container images.** Verify the version tag directly — it is a multi-platform manifest and it
+is what carries the signature. Image tags carry no leading `v`; the certificate identity does,
+because it names the git tag:
+
+```bash
+cosign verify ghcr.io/ferro-labs/ai-gateway:1.4.0 \
+  --certificate-identity "https://github.com/ferro-labs/ai-gateway/.github/workflows/release.yml@refs/tags/v1.4.0" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+Images also carry an SPDX SBOM as a build attestation, readable with
+`cosign download attestation` or `docker buildx imagetools inspect` — separate from the
+per-archive SBOM files, which describe the archives rather than the image.
+
+**SBOMs.** One SPDX-JSON document per archive, published next to it as
+`<archive-name>.sbom.json` — for example `ferrogw_1.4.0_linux_amd64.tar.gz.sbom.json`.
