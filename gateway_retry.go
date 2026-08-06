@@ -1,63 +1,58 @@
 package aigateway
 
 import (
-	"context"
-	"fmt"
-
 	"github.com/ferro-labs/ai-gateway/internal/strategies"
 )
 
-// runTargetAttempts applies the configured fallback retry policy to a generic
-// provider-start call. Other strategy modes perform exactly one attempt;
-// their retry fields have never been part of the documented contract — only
-// fallback's per-target retry block is. Backoff normalisation (an unset
-// InitialBackoffMs falling back to a sane default rather than 0) lives once
-// in strategies.WaitBeforeRetry, via strategies.NormalizeBackoffMs, so this
-// helper never re-derives that guard: an unset InitialBackoffMs gets the same
-// jittered-exponential wait here as it does for /v1/chat/completions instead
-// of hammering the provider with immediate retries.
-func (g *Gateway) runTargetAttempts(ctx context.Context, targetKey string, call func(context.Context) error) error {
+// retryPolicy is one target's resolved retry configuration.
+type retryPolicy struct {
+	attempts         int
+	onStatusCodes    []int
+	initialBackoffMs int
+}
+
+// retryPolicyFor resolves targetKey's `retry` block.
+//
+// It is the ONE place the gateway decides how many times a target is tried, and
+// it does not consult the routing mode. `targets[].retry` used to be honoured
+// only under `mode: fallback`, so the same block meant three attempts on one
+// mode and one attempt on the other seven, with nothing logged and no caveat in
+// the shipped example — which documents `weight`'s mode limitation right above
+// it. Retry and fallback are different questions and now answer separately:
+// RETRY is how many times ONE target is asked, FALLBACK is whether a SECOND
+// target is asked at all. Only the second is the strategy's business, which is
+// how Envoy splits it too — its retry policy hangs off the route, not off the
+// cluster's load-balancing policy.
+//
+// Backoff normalisation lives once, in strategies.NormalizeBackoffMs, so an
+// unset initial_backoff_ms gets a jittered exponential wait rather than
+// hammering the provider with immediate retries.
+func (g *Gateway) retryPolicyFor(targetKey string) retryPolicy {
 	g.mu.RLock()
-	mode := g.config.Strategy.Mode
-	var retry *RetryConfig
+	var (
+		attempts      int
+		onStatusCodes []int
+		backoffMs     int
+	)
 	for i := range g.config.Targets {
-		if g.config.Targets[i].VirtualKey == targetKey {
-			retry = g.config.Targets[i].Retry
-			break
+		if g.config.Targets[i].VirtualKey != targetKey {
+			continue
 		}
+		if r := g.config.Targets[i].Retry; r != nil {
+			attempts = r.Attempts
+			onStatusCodes = r.OnStatusCodes
+			backoffMs = r.InitialBackoffMs
+		}
+		break
 	}
 	g.mu.RUnlock()
 
-	attempts := 1
-	if mode == ModeFallback && retry != nil && retry.Attempts > 0 {
-		attempts = retry.Attempts
+	if attempts <= 0 {
+		attempts = 1
 	}
-
-	var lastErr error
-	for attempt := 0; attempt < attempts; attempt++ {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if attempt > 0 {
-			proceed, err := strategies.WaitBeforeRetry(ctx, attempt, retry.InitialBackoffMs, lastErr)
-			if err != nil {
-				return err
-			}
-			if !proceed {
-				break
-			}
-		}
-		err := call(ctx)
-		if err == nil {
-			return nil
-		}
-		lastErr = err
-		if mode != ModeFallback || retry == nil || !strategies.ShouldRetry(err, retry.OnStatusCodes) {
-			break
-		}
+	return retryPolicy{
+		attempts:         attempts,
+		onStatusCodes:    onStatusCodes,
+		initialBackoffMs: strategies.NormalizeBackoffMs(backoffMs),
 	}
-	if lastErr == nil {
-		return fmt.Errorf("provider %s was not attempted", targetKey)
-	}
-	return lastErr
 }

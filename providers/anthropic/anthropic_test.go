@@ -70,33 +70,7 @@ func TestNewAnthropic(t *testing.T) {
 	}
 }
 
-// TestAnthropicProvider_SupportedModels tests the SupportedModels method.
-func TestAnthropicProvider_SupportedModels(t *testing.T) {
-	provider, _ := New("sk-test-key", "")
-
-	models := provider.SupportedModels()
-	if len(models) == 0 {
-		t.Error("SupportedModels() returned empty list")
-	}
-
-	expected := []string{
-		"claude-opus-4-7",
-		"claude-opus-4-6",
-		"claude-sonnet-4-6",
-		"claude-haiku-4-5-20251001",
-	}
-
-	if len(models) != len(expected) {
-		t.Fatalf("SupportedModels() returned %d models, want %d", len(models), len(expected))
-	}
-
-	for i, model := range models {
-		if model != expected[i] {
-			t.Errorf("SupportedModels()[%d] = %v, want %v", i, model, expected[i])
-		}
-	}
-}
-
+// TestAnthropicProvider_ConfiguredModels tests the ConfiguredModels method.
 // TestAnthropicProvider_SupportsModel tests the SupportsModel method.
 func TestAnthropicProvider_SupportsModel(t *testing.T) {
 	provider, _ := New("sk-test-key", "")
@@ -124,20 +98,6 @@ func TestAnthropicProvider_SupportsModel(t *testing.T) {
 }
 
 // TestAnthropicProvider_Models tests the Models method.
-func TestAnthropicProvider_Models(t *testing.T) {
-	provider, _ := New("sk-test-key", "")
-
-	models := provider.Models()
-	if len(models) == 0 {
-		t.Error("Models() returned empty list")
-	}
-	for _, m := range models {
-		if m.OwnedBy != "anthropic" {
-			t.Errorf("ModelInfo.OwnedBy = %v, want anthropic", m.OwnedBy)
-		}
-	}
-}
-
 func TestAnthropicProvider_CompleteStream_Interface(_ *testing.T) {
 	p, _ := New("sk-test-key", "")
 	var _ core.StreamProvider = p

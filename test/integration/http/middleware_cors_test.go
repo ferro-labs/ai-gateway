@@ -9,9 +9,14 @@ import (
 )
 
 func TestMiddlewareCORS_Preflight_NoOriginsConfigured_Blocked(t *testing.T) {
-	// No CORS_ORIGINS set → deny-by-default: CORS middleware emits no headers
-	// and does not intercept preflight OPTIONS. The request falls through to auth
-	// middleware, which returns 401. No Access-Control-Allow-Origin is set.
+	// No CORS_ORIGINS set → the request is denied by WITHHOLDING
+	// Access-Control-Allow-Origin, never by refusing the preflight. The CORS
+	// layer answers the preflight 204 ahead of authentication and ahead of the
+	// route's method guard, so neither a 401 (a preflight carries no
+	// credentials) nor a 405 (the resource does serve OPTIONS, and answers 204
+	// the moment the origin is listed) can leak out. The header is what the
+	// browser enforces: without it, it blocks the request that would have
+	// followed.
 	env := newTestServer(t)
 
 	req := newTestRequest(t, "OPTIONS", env.Server.URL+"/v1/chat/completions", nil)
@@ -24,9 +29,8 @@ func TestMiddlewareCORS_Preflight_NoOriginsConfigured_Blocked(t *testing.T) {
 	}
 	defer closeTestBody(t, resp.Body)
 
-	// Preflight is not intercepted — auth middleware rejects unauthenticated requests.
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("expected 401 for unconfigured origin preflight (deny-by-default), got %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204 for unconfigured-origin preflight (denial is the missing ACAO, not the status), got %d", resp.StatusCode)
 	}
 	if origin := resp.Header.Get("Access-Control-Allow-Origin"); origin != "" {
 		t.Fatalf("expected no ACAO header when no origins configured, got %q", origin)
@@ -47,6 +51,11 @@ func TestMiddlewareCORS_RestrictedOrigins(t *testing.T) {
 	}
 	defer closeTestBody(t, resp.Body)
 
+	// Both branches below answer 204: the preflight is settled by the CORS
+	// layer either way, and only the presence of ACAO differs.
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204 for allowed-origin preflight, got %d", resp.StatusCode)
+	}
 	origin := resp.Header.Get("Access-Control-Allow-Origin")
 	if origin != "https://allowed.example.com" {
 		t.Fatalf("expected ACAO=https://allowed.example.com, got %q", origin)
@@ -63,6 +72,9 @@ func TestMiddlewareCORS_RestrictedOrigins(t *testing.T) {
 	}
 	defer closeTestBody(t, resp2.Body)
 
+	if resp2.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204 for disallowed-origin preflight, got %d", resp2.StatusCode)
+	}
 	origin2 := resp2.Header.Get("Access-Control-Allow-Origin")
 	if origin2 != "" {
 		t.Fatalf("expected no ACAO for disallowed origin, got %q", origin2)

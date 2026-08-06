@@ -40,14 +40,19 @@ func TestCompleteStream_ReportsUsage(t *testing.T) {
 	if usage == nil {
 		t.Fatal("no usage reported on stream")
 	}
-	if usage.PromptTokens != 25 {
-		t.Errorf("PromptTokens = %d, want 25", usage.PromptTokens)
+	// 25 fresh + 4 cache-read. Anthropic reports those separately on the wire;
+	// the decoder folds the cache-read in so prompt_tokens means the same thing
+	// here as it does on an OpenAI-wire provider, which is what lets one pricing
+	// rule serve both. The cache-read subset is still reported below and is
+	// priced at its own rate, so nothing is billed twice.
+	if usage.PromptTokens != 29 {
+		t.Errorf("PromptTokens = %d, want 29", usage.PromptTokens)
 	}
 	if usage.CompletionTokens != 15 {
 		t.Errorf("CompletionTokens = %d, want 15", usage.CompletionTokens)
 	}
-	if usage.TotalTokens != 40 {
-		t.Errorf("TotalTokens = %d, want 40", usage.TotalTokens)
+	if usage.TotalTokens != 44 {
+		t.Errorf("TotalTokens = %d, want 44", usage.TotalTokens)
 	}
 	if usage.CacheReadTokens != 4 || usage.CacheWriteTokens != 6 {
 		t.Errorf("cache tokens = %d/%d, want 4/6", usage.CacheReadTokens, usage.CacheWriteTokens)

@@ -1,0 +1,19 @@
+# Grafana datasources for the fullstack observability demo, provisioned on start.
+# Fixed uids so the bundled dashboard can reference them without manual binding.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    jsonData:
+      timeInterval: 5s
+
+  - name: Jaeger
+    type: jaeger
+    uid: jaeger
+    access: proxy
+    url: http://jaeger:16686

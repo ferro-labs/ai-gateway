@@ -4,12 +4,10 @@ package cerebras
 import (
 	"context"
 	"net/http"
-	"strings"
 
-	discov "github.com/ferro-labs/ai-gateway/internal/discovery"
 	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
 	"github.com/ferro-labs/ai-gateway/providers/core"
-	"github.com/ferro-labs/ai-gateway/providers/internal/openaicompat"
+	"github.com/ferro-labs/ai-gateway/providers/core/openaicompat"
 )
 
 const (
@@ -37,13 +35,10 @@ var (
 
 // New creates a new Cerebras provider.
 func New(apiKey, baseURL string) (*Provider, error) {
-	baseURL = strings.TrimSpace(baseURL)
-	if baseURL == "" {
-		baseURL = defaultBaseURL
-	} else if err := core.ValidateBaseURL(Name, baseURL); err != nil {
+	baseURL, err := core.ResolveAPIRoot(Name, baseURL, defaultBaseURL)
+	if err != nil {
 		return nil, err
 	}
-	baseURL = strings.TrimRight(baseURL, "/")
 	return &Provider{
 		name:       Name,
 		apiKey:     apiKey,
@@ -63,29 +58,12 @@ func (p *Provider) AuthHeaders() map[string]string {
 	return map[string]string{"Authorization": "Bearer " + p.apiKey}
 }
 
-// SupportedModels returns a static list of known Cerebras models.
-func (p *Provider) SupportedModels() []string {
-	return []string{
-		"llama-3.3-70b",
-		"llama3.1-70b",
-		"llama3.1-8b",
-		"gpt-oss-120b",
-		"qwen-3-32b",
-		"zai-glm-4.7",
-	}
-}
-
 // SupportsModel returns true for any model name.
 func (p *Provider) SupportsModel(_ string) bool { return true }
 
-// Models returns structured model metadata.
-func (p *Provider) Models() []core.ModelInfo {
-	return core.ModelsFromList(p.name, p.SupportedModels())
-}
-
 // DiscoverModels fetches the live model list from the Cerebras /models endpoint.
 func (p *Provider) DiscoverModels(ctx context.Context) ([]core.ModelInfo, error) {
-	return discov.DiscoverOpenAICompatibleModels(ctx, p.httpClient, p.baseURL+"/models", p.apiKey, p.name)
+	return core.DiscoverOpenAICompatibleModels(ctx, p.httpClient, p.baseURL+"/models", p.apiKey, p.name)
 }
 
 // Complete sends a chat completion request to Cerebras.

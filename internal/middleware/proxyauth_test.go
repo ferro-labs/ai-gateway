@@ -5,12 +5,12 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/ferro-labs/ai-gateway/internal/admin"
+	"github.com/ferro-labs/ai-gateway/internal/admin/repository"
 	"github.com/ferro-labs/ai-gateway/internal/middleware"
 )
 
 func TestProxyAuthMiddleware_MasterKeyRequired(t *testing.T) {
-	store := admin.NewKeyStore()
+	store := repository.NewKeyStore()
 	mw := middleware.ProxyAuth(store, "test-master-key")
 
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -37,7 +37,7 @@ func TestProxyAuthMiddleware_MasterKeyRequired(t *testing.T) {
 
 func TestProxyAuthMiddleware_UnauthenticatedProxy(t *testing.T) {
 	t.Setenv("ALLOW_UNAUTHENTICATED_PROXY", "true")
-	store := admin.NewKeyStore()
+	store := repository.NewKeyStore()
 	mw := middleware.ProxyAuth(store, "")
 
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -54,7 +54,7 @@ func TestProxyAuthMiddleware_UnauthenticatedProxy(t *testing.T) {
 }
 
 func TestProxyAuthMiddleware_DefaultRequiresAuth(t *testing.T) {
-	store := admin.NewKeyStore()
+	store := repository.NewKeyStore()
 	mw := middleware.ProxyAuth(store, "")
 
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

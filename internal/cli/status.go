@@ -11,18 +11,29 @@ import (
 var StatusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Check health of a running gateway instance",
+	Args:  cobra.NoArgs,
 	RunE:  runStatus,
 }
 
 func runStatus(cmd *cobra.Command, _ []string) error {
+	if err := requireDefaultFormat(cmd); err != nil {
+		return err
+	}
 	out := cmd.OutOrStdout()
 	c := adminClientFromCmd(cmd)
 
 	start := time.Now()
 	var health map[string]any
 	if err := c.GetHealth(cmd.Context(), "/health", &health); err != nil {
-		_, _ = fmt.Fprintf(out, "  %s Gateway unreachable: %v\n", Clr(ColorRed, SymFAIL), err)
-		return nil
+		// An unreachable gateway is a failure, not a state to report: `ferrogw
+		// status || alert` has to be able to see it, and it could not while this
+		// exited 0. A gateway that ANSWERS stays exit-0 however unhappy the
+		// answer — 503-degraded is reported below and is not an error here.
+		//
+		// The diagnostic is returned rather than printed: cobra writes a
+		// returned error to stderr, which keeps stdout the machine channel and
+		// leaves `ferrogw status | jq` reading only what status chose to emit.
+		return fmt.Errorf("gateway unreachable at %s: %w", c.BaseURL, err)
 	}
 	latency := time.Since(start)
 

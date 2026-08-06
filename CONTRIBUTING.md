@@ -6,7 +6,7 @@ Thank you for contributing to Ferro Labs AI Gateway.
 
 ## Branching Strategy
 
-```
+```sh
 main          — stable, always releasable, protected
 release/*     — integration branch for the next release (branch from main)
 feature/*     — new features (branch from the active release/* branch)
@@ -87,15 +87,42 @@ changes do **not** trigger CI. A docs-only PR (for example, one touching only
 
 ## Adding a New Provider
 
-1. Create `providers/<id>/<id>.go` — implement `core.Provider` and optional interfaces (`core.StreamProvider`, etc.)
-2. Add `const Name = "<id>"` and re-export in `providers/names.go`
-3. Add a `ProviderEntry` to `providers/providers_list.go`
-4. Add `providers/<id>/<id>_test.go` — run `go test ./providers/...`
-5. Add or update model metadata in `ferro-labs/model-catalog`
-6. Update the provider table in README.md
-7. Add a `{ "virtual_key": "<id>" }` entry to `config.example.json` and a `- virtual_key: <id>` line to `config.example.yaml`
-8. Add the provider's env var(s) (commented out) to `docker-compose.yml`
-9. Add an example in [ferro-labs/ai-gateway-examples](https://github.com/ferro-labs/ai-gateway-examples)
+No change to `cmd/ferrogw/main.go` is needed — every entry in
+`providers/providers_list.go` auto-registers.
+
+1. Create `providers/<id>/<id>.go` — implement `core.Provider` (`Name` /
+   `Complete` / `SupportsModel`) and any optional interfaces
+   (`core.StreamProvider`, `core.EmbeddingProvider`, `core.ImageProvider`, …).
+   Add compile-time assertions, e.g. `var _ core.Provider = (*Provider)(nil)`.
+   A provider does **not** report a model list — models come from the catalog
+   plus discovery. Implement `core.ConfiguredModelProvider` only when the model
+   set is this instance's own config (an Azure deployment name, a
+   `FERRO_OLLAMA_MODELS` entry).
+2. Add `const Name = "<id>"` and re-export it in `providers/names.go`.
+3. Add a `ProviderEntry` to `providers/providers_list.go` (`ID`,
+   `Capabilities`, `EnvMappings`, `Build`).
+4. **Capability matrix** — if the provider *cannot express* some OpenAI chat
+   parameters, add an entry to `providers/capabilities/matrix.go` listing them
+   (the complement of what it forwards). Anything absent defaults to `Forward`.
+   Do **not** keep a private supported-parameter list on the provider; the
+   matrix is the only source `core.EnforceUnsupportedParams` and
+   `GET /v1/capabilities` read, so the two cannot drift apart.
+5. **Conformance fixture** — add the provider's *native* success payload to
+   `test/conformance/conformance_test.go` so the suite proves your translation
+   yields a correct `core.Response`. If the provider genuinely cannot be pointed
+   at an httptest stub (e.g. an SDK-signed transport), allowlist it in
+   `uncoveredProviders()` with a reason. `TestConformanceCoverage` fails if you
+   do neither.
+6. Add `providers/<id>/<id>_test.go` — run `go test ./providers/...`.
+   `providers/stability_test.go` centrally catches name drift and missing
+   capabilities for every provider.
+7. Add or update model metadata in `ferro-labs/model-catalog` when catalog
+   coverage changes.
+8. Update the provider table in `README.md`.
+9. Add a `{ "virtual_key": "<id>" }` entry to `config.example.json` and a
+   `- virtual_key: <id>` line to `config.example.yaml`.
+10. Add the provider's env var(s) (commented out) to `deploy/compose.yaml`.
+11. Add an example in [ferro-labs/ai-gateway-examples](https://github.com/ferro-labs/ai-gateway-examples).
 
 **Important:** Providers go in the OSS repo only. Never add provider integrations to FerroCloud.
 
@@ -103,12 +130,33 @@ changes do **not** trigger CI. A docs-only PR (for example, one touching only
 
 ## Adding a Plugin
 
-1. Create `internal/plugins/<name>/<name>.go` implementing `plugin.Plugin`
-2. Register via `plugin.RegisterFactory(...)` in `init()`
-3. Add blank import in `cmd/ferrogw/main.go`: `_ "github.com/ferro-labs/ai-gateway/internal/plugins/<name>"`
-4. Plugin config is passed as `map[string]interface{}` to `Init()`
+**Deny with `pctx.Reject` + `pctx.Reason`, and return `nil`.** Return an error
+only when the plugin itself failed — an error means "I broke", and for every
+type except logging and metrics it aborts the request as a `500`. The authority
+for that policy is the type the plugin reports from `Type()`, not the
+`plugins[].type` written in config.
 
-See `internal/plugins/wordfilter/wordfilter.go` for a minimal example.
+1. Create `plugin/<name>/<name>.go` implementing `plugin.Plugin` (`Name`,
+   `Type`, `Init(config map[string]any)`, `Execute(ctx, pctx)`, `Close`).
+2. Register a factory via `plugin.RegisterFactory("<name>", ...)` in `init()`.
+3. Add a blank import in `cmd/ferrogw/main.go`:
+   `_ "github.com/ferro-labs/ai-gateway/plugin/<name>"`.
+4. Add a `BuiltinPlugin` entry to `plugin.Builtins()` (`plugin/catalog.go`) —
+   `Name` / `Type` / `Summary` / `Settings`. It is served by
+   `GET /admin/plugins/catalog` and read by the dashboard, and
+   `plugin/catalog_test.go` asserts its `Settings` equal the config keys the
+   plugin actually reads, so the two cannot drift.
+5. **Multi-stage plugins** — if `Execute` branches on the stage (checking
+   `before_request`, recording `after_request`, as `response-cache`, `budget`
+   and `request-logger` do), it needs **one config entry per stage with
+   identical config** so both resolve to the same instance and share state.
+   `validateMultiStagePlugins` (`gateway.go`) fails startup on disagreeing
+   entries; add the name to `multiStagePlugins` in
+   `config/example_plugin_stages_test.go` and give it both entries in the config
+   examples.
+6. Add test coverage.
+
+See `plugin/wordfilter/wordfilter.go` for a minimal single-stage example.
 
 ---
 
@@ -149,7 +197,7 @@ traces itself.
 
 ## Commit Convention (Conventional Commits)
 
-```
+```sh
 feat: add support for Cerebras provider
 fix: resolve connection pool exhaustion under high load
 perf: reduce hot-path allocations with sync.Pool
@@ -232,7 +280,7 @@ make test-integration   # go test -tags=integration -race -timeout 180s ./test/i
    ```
 
 3. Use the shared `stubProvider` in `test/integration/http/stub_provider_test.go` (or
-   `internal/testutil/stub_provider.go` if one is added later) to simulate provider
+   `test/testutil/stub_provider.go` if one is added later) to simulate provider
    responses without real API calls.
 
 4. Run your new test to verify it compiles and passes:

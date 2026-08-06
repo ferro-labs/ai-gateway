@@ -12,6 +12,7 @@ import (
 var VersionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Print version information",
+	Args:  cobra.NoArgs,
 	RunE:  runVersion,
 }
 

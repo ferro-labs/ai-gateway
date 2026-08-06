@@ -1,0 +1,8 @@
+data: {"id":"sambanova-conformance","model":"Meta-Llama-3.1-8B-Instruct","choices":[{"index":0,"delta":{"role":"assistant","content":"conformance"},"finish_reason":null}]}
+
+data: {"id":"sambanova-conformance","model":"Meta-Llama-3.1-8B-Instruct","choices":[{"index":0,"delta":{"content":" ok"},"finish_reason":null}]}
+
+data: {"id":"sambanova-conformance","model":"Meta-Llama-3.1-8B-Instruct","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":7,"total_tokens":18}}
+
+data: [DONE]
+

@@ -32,59 +32,104 @@ func TestSecurityHeaders_SetsBaselineHeaders(t *testing.T) {
 	}
 }
 
-// The policy protects an admin token held in localStorage. These are the
-// directives that do that work; a future edit must not quietly relax them.
-func TestSecurityHeaders_ContentSecurityPolicyBlocksInjectedScript(t *testing.T) {
-	mustContain := []string{
-		"script-src 'self'",
-		"object-src 'none'",
-		"frame-ancestors 'none'",
-		"base-uri 'self'",
-	}
-	for _, directive := range mustContain {
-		if !strings.Contains(ContentSecurityPolicy, directive) {
-			t.Errorf("CSP is missing %q: %s", directive, ContentSecurityPolicy)
-		}
+// The policy protects an admin token held in localStorage and, now that the
+// gateway serves the dashboard itself, the page holding it. Asserting each
+// directive's full value rather than a substring means a future edit that
+// widens one — adding a host to script-src, a scheme to connect-src — fails
+// here instead of shipping.
+func TestSecurityHeaders_ContentSecurityPolicyDirectives(t *testing.T) {
+	served := servedHeaders(t, false).Get("Content-Security-Policy")
+
+	got := map[string]string{}
+	for _, directive := range strings.Split(served, ";") {
+		name, value, _ := strings.Cut(strings.TrimSpace(directive), " ")
+		got[name] = value
 	}
 
-	// 'unsafe-inline'/'unsafe-eval' in script-src would defeat the whole policy.
-	// It is allowed in style-src, so check the script-src directive alone.
-	scriptSrc := ""
-	for _, directive := range strings.Split(ContentSecurityPolicy, ";") {
-		if strings.HasPrefix(strings.TrimSpace(directive), "script-src") {
-			scriptSrc = directive
-		}
+	tests := []struct {
+		name  string
+		value string
+	}{
+		{"default-src", "'self'"},
+		{"base-uri", "'self'"},
+		{"form-action", "'self'"},
+		{"frame-ancestors", "'none'"},
+		{"object-src", "'none'"},
+		{"script-src", "'self'"},
+		{"style-src", "'self' 'sha256-kLmvWqfziFavKtqHqRsb90f006UAK2Dmd0It5Iz2KFA='"},
+		{"font-src", "'self'"},
+		{"img-src", "'self' data:"},
+		// The dashboard is served by the gateway it calls, so no cross-origin
+		// endpoint has to be allowed here.
+		{"connect-src", "'self'"},
 	}
-	if strings.Contains(scriptSrc, "unsafe-inline") || strings.Contains(scriptSrc, "unsafe-eval") {
-		t.Fatalf("script-src must not allow unsafe script execution: %q", scriptSrc)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			value, ok := got[tt.name]
+			if !ok {
+				t.Fatalf("CSP has no %s directive: %s", tt.name, served)
+			}
+			if value != tt.value {
+				t.Errorf("%s = %q, want %q", tt.name, value, tt.value)
+			}
+		})
+	}
+	if len(got) != len(tests) {
+		t.Errorf("CSP has %d directives, want %d: %s", len(got), len(tests), served)
 	}
 }
 
-func TestSecurityHeaders_NoHSTS_WhenNotTLS(t *testing.T) {
-	handler := SecurityHeaders(dummyHandler)
+// The single stylesheet allowed by digest is the only inline style the policy
+// permits. 'unsafe-inline' anywhere would not add to that — in style-src it
+// disables the digest and admits any inline style, and in script-src it defeats
+// the policy outright.
+func TestSecurityHeaders_ContentSecurityPolicyForbidsUnsafeSources(t *testing.T) {
+	served := servedHeaders(t, false).Get("Content-Security-Policy")
 
-	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
-	// r.TLS is nil by default — plain HTTP
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, r)
-
-	if got := w.Header().Get("Strict-Transport-Security"); got != "" {
-		t.Errorf("expected no Strict-Transport-Security on plain HTTP, got %q", got)
+	for _, unsafe := range []string{"unsafe-inline", "unsafe-eval", "unsafe-hashes"} {
+		if strings.Contains(served, unsafe) {
+			t.Errorf("CSP must not contain %q: %s", unsafe, served)
+		}
+	}
+	if !strings.Contains(served, "'sha256-kLmvWqfziFavKtqHqRsb90f006UAK2Dmd0It5Iz2KFA='") {
+		t.Errorf("CSP is missing the stylesheet digest the dashboard needs: %s", served)
 	}
 }
 
-func TestSecurityHeaders_HSTS_WhenTLS(t *testing.T) {
-	handler := SecurityHeaders(dummyHandler)
+// HSTS is emitted only over TLS: a browser ignores it on plain HTTP anyway, and
+// sending it unconditionally would pin a plain-HTTP local deployment to a scheme
+// it does not serve.
+func TestSecurityHeaders_StrictTransportSecurity(t *testing.T) {
+	tests := []struct {
+		name string
+		tls  bool
+		want string
+	}{
+		{"plain HTTP", false, ""},
+		{"TLS", true, "max-age=31536000; includeSubDomains"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := servedHeaders(t, tt.tls).Get("Strict-Transport-Security")
+			if got != tt.want {
+				t.Errorf("Strict-Transport-Security = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// servedHeaders runs one request through the middleware and returns what a
+// browser would receive, so tests assert the response rather than the constant.
+func servedHeaders(t *testing.T, useTLS bool) http.Header {
+	t.Helper()
 
 	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
-	r.TLS = &tls.ConnectionState{}
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, r)
-
-	want := "max-age=31536000; includeSubDomains"
-	if got := w.Header().Get("Strict-Transport-Security"); got != want {
-		t.Errorf("Strict-Transport-Security = %q, want %q", got, want)
+	if useTLS {
+		r.TLS = &tls.ConnectionState{}
 	}
+	w := httptest.NewRecorder()
+	SecurityHeaders(dummyHandler).ServeHTTP(w, r)
+	return w.Header()
 }
 
 func TestSecurityHeaders_CallsNextHandler(t *testing.T) {

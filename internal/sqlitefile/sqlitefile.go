@@ -48,16 +48,36 @@ func Secure(dsn string) error {
 	return nil
 }
 
+// SplitQuery splits dsn on its first '?' into a base path/URI and the query
+// string that follows it (without the leading '?'; "" if dsn has none). It is
+// the same split filePath applies before resolving a path, exposed for
+// callers that must derive a different DSN from this one while preserving
+// any "?query" suffix (busy_timeout, journal_mode, ...) — see
+// bootstrap.sessionDSN, which cannot silently drop it.
+func SplitQuery(dsn string) (base, query string) {
+	if i := strings.IndexByte(dsn, '?'); i >= 0 {
+		return dsn[:i], dsn[i+1:]
+	}
+	return dsn, ""
+}
+
+// IsInMemory reports whether dsn resolves to an in-memory SQLite database
+// with no backing file — the same resolution Secure applies via filePath (see
+// its doc comment for the recognized forms). A dsn this cannot parse is
+// reported as not in-memory rather than propagating the error, since the
+// only current caller (bootstrap.sessionDSN) just needs to decide whether to
+// derive a second DSN from this one; sql.Open surfaces the real parse error
+// later when the DSN is actually opened.
+func IsInMemory(dsn string) bool {
+	path, err := filePath(dsn)
+	return err == nil && path == ""
+}
+
 // filePath extracts the on-disk file path from a SQLite DSN. SQLite decodes
 // percent escapes in file: URIs before opening the file, so this helper must
 // resolve the same path before creating and restricting it.
 func filePath(dsn string) (string, error) {
-	path := dsn
-	query := ""
-	if i := strings.IndexByte(path, '?'); i >= 0 {
-		query = path[i+1:]
-		path = path[:i]
-	}
+	path, query := SplitQuery(dsn)
 	if strings.HasPrefix(path, "file:") {
 		if q, err := url.ParseQuery(query); err == nil && q.Get("mode") == "memory" {
 			return "", nil

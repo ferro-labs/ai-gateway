@@ -1,0 +1,151 @@
+# Fullstack observability stack — the gateway wired to Postgres, Jaeger,
+# Prometheus, and Grafana. This BASE file is the production-shaped stack: it
+# builds the gateway from source and routes to REAL providers using whatever
+# keys you put in a repository-root `.env`. Nothing here is a mock.
+#
+# Run from the repository root:
+#   make up-fullstack-live    # this base only — real providers from .env
+#   make up-fullstack         # base + compose.fullstack.mock.yaml (mock demo)
+#   make down-fullstack
+#
+# Every image tag, port, and credential below is overridable via env (`${VAR:-default}`),
+# so put overrides in a repo-root `.env` and never edit this file for a deployment.
+#
+# | Setting                    | Env var                         | Default |
+# |----------------------------|---------------------------------|---------|
+# | Gateway port               | GATEWAY_PORT                    | 8080    |
+# | Grafana port / login       | GRAFANA_PORT / GRAFANA_ADMIN_*  | 3000 / admin:admin |
+# | Prometheus port            | PROMETHEUS_PORT                 | 9090    |
+# | Jaeger UI port             | JAEGER_UI_PORT                  | 16686   |
+# | Admin credential           | MASTER_KEY                      | (demo)  |
+# | Postgres password          | POSTGRES_PASSWORD               | ferrogw |
+# | Store DSN                  | DATABASE_URL                    | (built from the above) |
+# | Image tags                 | *_IMAGE                         | pinned  |
+#
+# NOTE: Prometheus scrapes /metrics with MASTER_KEY as the bearer (see
+# fullstack/prometheus/prometheus.yml). If you change MASTER_KEY, update that
+# file too — or, for production, mint a dedicated read_only key with
+# POST /admin/keys and use that instead.
+
+name: ai-gateway-fullstack
+
+services:
+  postgres:
+    image: ${POSTGRES_IMAGE:-postgres:16-alpine}
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-ferrogw}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ferrogw}
+      POSTGRES_DB: ${POSTGRES_DB:-ferrogw}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ferrogw} -d ${POSTGRES_DB:-ferrogw}"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  jaeger:
+    image: ${JAEGER_IMAGE:-jaegertracing/all-in-one:1.64.0}
+    restart: unless-stopped
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "${JAEGER_UI_PORT:-16686}:16686"        # UI
+      - "${JAEGER_OTLP_GRPC_PORT:-4317}:4317"   # OTLP gRPC
+      - "${JAEGER_OTLP_HTTP_PORT:-4318}:4318"   # OTLP HTTP
+
+  gateway:
+    build:
+      # Context is the repo root: the Go build needs the whole module and Docker
+      # reads .dockerignore from the context root.
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: gateway
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      jaeger:
+        condition: service_started
+    ports:
+      - "${GATEWAY_PORT:-8080}:8080"
+    environment:
+      - PORT=8080
+      - MASTER_KEY=${MASTER_KEY:-fgw_fullstack_demo_master_key}
+      # Tracing straight to Jaeger over OTLP — no config file required for it.
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-jaeger:4317}
+      # Optional: mount your own config and name it here to customise routing,
+      # plugins, and strategy. Left empty, the gateway derives targets from the
+      # provider keys below.
+      - GATEWAY_CONFIG=${GATEWAY_CONFIG:-}
+      - CORS_ORIGINS=${CORS_ORIGINS:-}
+      # Durable stores in Postgres. One DSN drives all three; override DATABASE_URL
+      # if you change the Postgres credentials above.
+      - CONFIG_STORE_BACKEND=postgres
+      - CONFIG_STORE_DSN=${DATABASE_URL:-postgres://ferrogw:ferrogw@postgres:5432/ferrogw?sslmode=disable}
+      - API_KEY_STORE_BACKEND=postgres
+      - API_KEY_STORE_DSN=${DATABASE_URL:-postgres://ferrogw:ferrogw@postgres:5432/ferrogw?sslmode=disable}
+      - REQUEST_LOG_STORE_BACKEND=postgres
+      - REQUEST_LOG_STORE_DSN=${DATABASE_URL:-postgres://ferrogw:ferrogw@postgres:5432/ferrogw?sslmode=disable}
+      # ─── Provider credentials — set the ones you use in a repo-root .env ───
+      # A provider is registered only when its key is non-empty, so leaving one
+      # blank simply means it is not routed. Multi-variable providers (Azure,
+      # Bedrock, Vertex, Cloudflare, Databricks) need their extra vars added here
+      # — see AGENTS.md for the full list.
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - MISTRAL_API_KEY=${MISTRAL_API_KEY:-}
+      - COHERE_API_KEY=${COHERE_API_KEY:-}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - TOGETHER_API_KEY=${TOGETHER_API_KEY:-}
+      - FIREWORKS_API_KEY=${FIREWORKS_API_KEY:-}
+      - PERPLEXITY_API_KEY=${PERPLEXITY_API_KEY:-}
+      - AI21_API_KEY=${AI21_API_KEY:-}
+      - XAI_API_KEY=${XAI_API_KEY:-}
+      - CEREBRAS_API_KEY=${CEREBRAS_API_KEY:-}
+      - DEEPINFRA_API_KEY=${DEEPINFRA_API_KEY:-}
+      - MOONSHOT_API_KEY=${MOONSHOT_API_KEY:-}
+      - NOVITA_API_KEY=${NOVITA_API_KEY:-}
+      - NVIDIA_NIM_API_KEY=${NVIDIA_NIM_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - QWEN_API_KEY=${QWEN_API_KEY:-}
+      - SAMBANOVA_API_KEY=${SAMBANOVA_API_KEY:-}
+      - HUGGING_FACE_API_KEY=${HUGGING_FACE_API_KEY:-}
+      - REPLICATE_API_TOKEN=${REPLICATE_API_TOKEN:-}
+
+  prometheus:
+    image: ${PROMETHEUS_IMAGE:-prom/prometheus:v3.13.2}
+    restart: unless-stopped
+    depends_on:
+      - gateway
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./fullstack/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - promdata:/prometheus
+
+  grafana:
+    image: ${GRAFANA_IMAGE:-grafana/grafana:13.1.2}
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_AUTH_ANONYMOUS_ENABLED=${GRAFANA_ANONYMOUS_ENABLED:-true}
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      - GF_USERS_DEFAULT_THEME=dark
+    volumes:
+      - ./fullstack/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./fullstack/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafanadata:/var/lib/grafana
+
+volumes:
+  pgdata:
+  promdata:
+  grafanadata:

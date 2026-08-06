@@ -48,14 +48,18 @@ type bedrockNovaResponse struct {
 }
 
 func (p *Provider) completeNova(ctx context.Context, req core.Request) (*core.Response, error) {
-	warnDroppedImageParts(ctx, p.name, req.Model, req.Messages)
-
 	novaReq := bedrockNovaRequest{
 		SchemaVersion: "messages-v1",
 	}
 	for _, msg := range req.Messages {
-		content := bedrockNovaMessageTextContent(msg)
-		if msg.Role == core.RoleSystem {
+		// Nova keeps its native message boundaries and system channel; it shares
+		// only the guard, because a text block cannot carry an image either.
+		text, err := core.SinglePromptText(p.name, req.Model, msg)
+		if err != nil {
+			return nil, err
+		}
+		content := []bedrockNovaTextBlock{{Text: text}}
+		if core.IsSystemRole(msg.Role) {
 			novaReq.System = append(novaReq.System, content...)
 			continue
 		}
@@ -106,21 +110,4 @@ func (p *Provider) completeNova(ctx context.Context, req core.Request) (*core.Re
 			TotalTokens:      totalTokens,
 		},
 	}, nil
-}
-
-func bedrockNovaMessageTextContent(msg core.Message) []bedrockNovaTextBlock {
-	if len(msg.ContentParts) == 0 {
-		return []bedrockNovaTextBlock{{Text: msg.Content}}
-	}
-
-	content := make([]bedrockNovaTextBlock, 0, len(msg.ContentParts))
-	for _, part := range msg.ContentParts {
-		if part.Type == core.ContentTypeText {
-			content = append(content, bedrockNovaTextBlock{Text: part.Text})
-		}
-	}
-	if len(content) == 0 && msg.Content != "" {
-		content = append(content, bedrockNovaTextBlock{Text: msg.Content})
-	}
-	return content
 }

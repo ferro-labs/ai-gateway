@@ -1,0 +1,60 @@
+# Keeps the embedded catalog fallback current.
+#
+# models/catalog_backup.json is only read when the remote fetch fails — blocked
+# egress, or FERRO_MODEL_CATALOG_TIMEOUT=0. That is exactly when nothing else
+# can supply model metadata, so a fallback that has drifted for several releases
+# is a fallback that reports wrong pricing on the day it is finally needed.
+#
+# Runs after model-catalog's own Monday scrape so it picks up that week's data.
+name: Refresh catalog backup
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      # Pinned by commit, as everywhere else. A tag is a mutable pointer, and
+      # this is the workflow that most needs it not to be: it holds
+      # contents: write plus pull-requests: write, and it runs unattended on a
+      # cron with nobody watching the diff it opens.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version-file: go.mod
+
+      # The script fetches the catalog, checks it parses as JSON, and runs
+      # TestCatalogBackupParseable — so a truncated or malformed download fails
+      # here rather than becoming a pull request.
+      - name: Refresh embedded backup
+        run: scripts/refresh_catalog_backup.sh
+
+      # Opened as a pull request, never pushed: the backup ships inside the
+      # binary, so the diff belongs in review alongside everything else that does.
+      - name: Open pull request
+        uses: peter-evans/create-pull-request@22a9089034f40e5a961c8808d113e2c98fb63676 # v7.0.11
+        with:
+          branch: chore/catalog-backup
+          delete-branch: true
+          title: "chore: refresh embedded model catalog backup"
+          commit-message: "chore: refresh embedded model catalog backup"
+          body: |
+            Refreshes `models/catalog_backup.json` from the latest
+            model-catalog release.
+
+            This file is the fallback used when the remote catalog cannot be
+            fetched at startup. It does not affect a gateway with normal egress,
+            which loads the catalog from the release directly and refreshes it
+            every 24h.

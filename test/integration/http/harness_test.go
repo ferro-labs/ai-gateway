@@ -17,20 +17,26 @@ import (
 	"testing"
 
 	aigateway "github.com/ferro-labs/ai-gateway"
-	"github.com/ferro-labs/ai-gateway/internal/admin"
+	"github.com/ferro-labs/ai-gateway/config"
+	"github.com/ferro-labs/ai-gateway/internal/admin/repository"
 	"github.com/ferro-labs/ai-gateway/internal/httpserver"
-	"github.com/ferro-labs/ai-gateway/internal/ratelimit"
 	"github.com/ferro-labs/ai-gateway/internal/requestlog"
-	"github.com/ferro-labs/ai-gateway/internal/testutil"
+	"github.com/ferro-labs/ai-gateway/mcp"
+	"github.com/ferro-labs/ai-gateway/pkg/ratelimit"
 	"github.com/ferro-labs/ai-gateway/providers"
+	"github.com/ferro-labs/ai-gateway/test/testutil"
 )
 
 const (
-	testMasterKey  = "test-master-key-for-integration"
-	stubModelName  = "stub-model-v1"
-	stubModelName2 = "stub-model-v2"
-	stubEmbedModel = "stub-embed-v1"
-	stubImageModel = "stub-image-v1"
+	testMasterKey          = "test-master-key-for-integration"
+	stubModelName          = "stub-model-v1"
+	stubModelName2         = "stub-model-v2"
+	stubEmbedModel         = "stub-embed-v1"
+	stubImageModel         = "stub-image-v1"
+	stubRerankModel        = "stub-rerank-v1"
+	stubModerationModel    = "stub-moderation-v1"
+	stubTranscriptionModel = "stub-transcription-v1"
+	stubSpeechModel        = "stub-speech-v1"
 )
 
 // testEnv holds a fully wired test server and its dependencies.
@@ -38,7 +44,7 @@ type testEnv struct {
 	Server   *httptest.Server
 	Gateway  *aigateway.Gateway
 	Registry *providers.Registry
-	KeyStore admin.Store
+	KeyStore repository.Store
 	Stub     *stubProvider
 }
 
@@ -59,14 +65,17 @@ func newTestServer(t *testing.T, opts ...testOption) *testEnv {
 	// Ensure ALLOW_UNAUTHENTICATED_PROXY is not set so auth middleware is active.
 	t.Setenv("ALLOW_UNAUTHENTICATED_PROXY", "false")
 
-	stub := newStubProvider("stub", []string{stubModelName, stubModelName2, stubEmbedModel, stubImageModel})
+	stub := newStubProvider("stub", []string{stubModelName, stubModelName2, stubEmbedModel, stubImageModel, stubRerankModel, stubModerationModel, stubTranscriptionModel, stubSpeechModel})
 
 	registry := providers.NewRegistry()
 	registry.Register(stub)
 
-	gwCfg := aigateway.Config{
-		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeFallback},
-		Targets:  []aigateway.Target{{VirtualKey: "stub"}},
+	gwCfg := config.Config{
+		Strategy:        config.StrategyConfig{Mode: config.ModeFallback},
+		Targets:         []config.Target{{VirtualKey: "stub"}},
+		MCPServers:      cfg.mcpServers,
+		BatchTarget:     cfg.batchTarget,
+		ResponsesTarget: cfg.responsesTarget,
 	}
 	gw, err := aigateway.New(gwCfg)
 	if err != nil {
@@ -79,17 +88,19 @@ func newTestServer(t *testing.T, opts ...testOption) *testEnv {
 	})
 	gw.RegisterProvider(stub)
 
-	keyStore := admin.NewKeyStore()
+	keyStore := repository.NewKeyStore()
 
 	router := httpserver.NewRouter(
 		registry,
 		keyStore,
+		nil, // sessionStore — dashboard sessions are not exercised by these tests
 		cfg.corsOrigins,
 		gw,
 		nil, // cfgManager — not needed for these tests
 		cfg.rlStore,
 		noopReader{},
 		noopMaintainer{},
+		nil, // auditStore — not exercised by these tests
 		testMasterKey,
 		nil, // trustedProxies — use loopback default
 	)
@@ -107,8 +118,11 @@ func newTestServer(t *testing.T, opts ...testOption) *testEnv {
 }
 
 type testConfig struct {
-	corsOrigins []string
-	rlStore     *ratelimit.Store
+	corsOrigins     []string
+	rlStore         *ratelimit.Store
+	mcpServers      []mcp.ServerConfig
+	batchTarget     string
+	responsesTarget string
 }
 
 type testOption func(*testConfig)
@@ -117,8 +131,24 @@ func withCORSOrigins(origins ...string) testOption {
 	return func(c *testConfig) { c.corsOrigins = origins }
 }
 
+// withMCPServers configures MCP tool servers on the gateway the test server
+// wraps, so /readyz can be exercised over the wired router.
+func withMCPServers(servers ...mcp.ServerConfig) testOption {
+	return func(c *testConfig) { c.mcpServers = servers }
+}
+
 func withRateLimit(rps, burst float64) testOption {
 	return func(c *testConfig) { c.rlStore = ratelimit.NewStore(rps, burst) }
+}
+
+// withBatchTarget names the target that serves the batch/files pass-through.
+func withBatchTarget(vk string) testOption {
+	return func(c *testConfig) { c.batchTarget = vk }
+}
+
+// withResponsesTarget names the target that serves the Responses id sub-routes.
+func withResponsesTarget(vk string) testOption {
+	return func(c *testConfig) { c.responsesTarget = vk }
 }
 
 // assertOpenAIError decodes an OpenAI-style error envelope and asserts its

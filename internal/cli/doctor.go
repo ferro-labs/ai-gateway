@@ -5,7 +5,7 @@ import (
 	"os"
 	"time"
 
-	aigateway "github.com/ferro-labs/ai-gateway"
+	"github.com/ferro-labs/ai-gateway/config"
 	"github.com/spf13/cobra"
 )
 
@@ -13,10 +13,14 @@ import (
 var DoctorCmd = &cobra.Command{
 	Use:   "doctor",
 	Short: "Check environment, configuration, and gateway connectivity",
+	Args:  cobra.NoArgs,
 	RunE:  runDoctor,
 }
 
 func runDoctor(cmd *cobra.Command, _ []string) error {
+	if err := requireDefaultFormat(cmd); err != nil {
+		return err
+	}
 	out := cmd.OutOrStdout()
 	_, _ = fmt.Fprintln(out, "  Provider API Keys")
 
@@ -48,17 +52,34 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 	}
 
 	// Configuration check.
+	//
+	// configErr is the one finding doctor exits non-zero on. Everything else it
+	// reports is a diagnostic an operator reads and judges — no provider keys is
+	// a laptop, an unreachable gateway is one that is not running yet. An invalid
+	// config is different in kind: `ferrogw validate` exits 1 on it and startup
+	// refuses it, so a doctor that printed it in red and exited 0 made itself
+	// useless as a pipeline gate while looking like one.
+	var configErr error
 	_, _ = fmt.Fprintln(out)
 	_, _ = fmt.Fprintln(out, "  Configuration")
 	cfgPath := os.Getenv("GATEWAY_CONFIG")
 	if cfgPath == "" {
 		_, _ = fmt.Fprintf(out, "    %s GATEWAY_CONFIG not set (using defaults)\n", Clr(ColorDim, SymDASH))
 	} else {
-		cfg, err := aigateway.LoadConfig(cfgPath)
+		// doctor answers "will this deployment work", so it applies the same
+		// checks validate does — including validateReferences, which resolves
+		// provider ids and plugin names against this binary. Reporting a config
+		// green that `ferrogw validate` rejects would make doctor the least
+		// trustworthy of the three commands that read the same file.
+		cfg, err := config.LoadConfig(cfgPath)
+		if err == nil {
+			if err = config.ValidateConfig(*cfg); err == nil {
+				err = validateReferences(*cfg)
+			}
+		}
 		if err != nil {
 			_, _ = fmt.Fprintf(out, "    %s %s: %v\n", Clr(ColorRed, SymFAIL), cfgPath, err)
-		} else if err := aigateway.ValidateConfig(*cfg); err != nil {
-			_, _ = fmt.Fprintf(out, "    %s %s: %v\n", Clr(ColorRed, SymFAIL), cfgPath, err)
+			configErr = err
 		} else {
 			_, _ = fmt.Fprintf(out, "    %s %s (strategy=%s, targets=%d)\n",
 				Clr(ColorGreen, SymOK), cfgPath, cfg.Strategy.Mode, len(cfg.Targets))
@@ -97,5 +118,8 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 	}
 
 	_, _ = fmt.Fprintln(out)
+	if configErr != nil {
+		return fmt.Errorf("configuration is invalid: %w", configErr)
+	}
 	return nil
 }

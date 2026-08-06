@@ -6,10 +6,9 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/ferro-labs/ai-gateway/internal/discovery"
 	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
 	"github.com/ferro-labs/ai-gateway/providers/core"
-	"github.com/ferro-labs/ai-gateway/providers/internal/openaicompat"
+	"github.com/ferro-labs/ai-gateway/providers/core/openaicompat"
 )
 
 const (
@@ -38,12 +37,8 @@ var (
 
 // New creates a new xAI provider.
 func New(apiKey, baseURL string) (*Provider, error) {
-	baseURL = strings.TrimSpace(baseURL)
-	if baseURL == "" {
-		baseURL = defaultBaseURL
-	}
-	baseURL = strings.TrimRight(baseURL, "/")
-	if err := core.ValidateBaseURL(Name, baseURL); err != nil {
+	baseURL, err := core.ResolveAPIRoot(Name, baseURL, defaultBaseURL)
+	if err != nil {
 		return nil, err
 	}
 	return &Provider{
@@ -65,43 +60,15 @@ func (p *Provider) AuthHeaders() map[string]string {
 	return map[string]string{"Authorization": "Bearer " + p.apiKey}
 }
 
-// SupportedModels returns the static list of known xAI models.
-func (p *Provider) SupportedModels() []string {
-	// grok-2-latest is kept first because the model catalog resolves it as
-	// xai/grok-2-latest (see models/catalog_backup.json). SupportsModel accepts
-	// any grok*/xai* name by prefix, so the grok-3/grok-4 entries below are for
-	// discovery/listing surfaces.
-	return []string{
-		"grok-2-latest",
-		"grok-2-vision-latest",
-		"grok-beta",
-		"grok-3",
-		"grok-3-mini",
-		"grok-4",
-		"grok-4-latest",
-		"grok-4-fast-reasoning",
-		"grok-4-fast-non-reasoning",
-		"grok-code-fast-1",
-		"grok-2-image",
-		"grok-2-image-1212",
-		"grok-2-image-latest",
-	}
-}
-
 // SupportsModel returns true for Grok/xAI model names.
 func (p *Provider) SupportsModel(model string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(model))
 	return strings.HasPrefix(normalized, "grok") || strings.HasPrefix(normalized, "xai")
 }
 
-// Models returns structured model metadata.
-func (p *Provider) Models() []core.ModelInfo {
-	return core.ModelsFromList(p.name, p.SupportedModels())
-}
-
 // DiscoverModels fetches the live model list from the xAI /models endpoint.
 func (p *Provider) DiscoverModels(ctx context.Context) ([]core.ModelInfo, error) {
-	return discovery.DiscoverOpenAICompatibleModels(ctx, p.httpClient, p.baseURL+"/models", p.apiKey, p.name)
+	return core.DiscoverOpenAICompatibleModels(ctx, p.httpClient, p.baseURL+"/models", p.apiKey, p.name)
 }
 
 // chatParams builds the shared OpenAI-compatible chat endpoint configuration.

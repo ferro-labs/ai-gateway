@@ -25,8 +25,10 @@ type Config struct {
 	// ServiceName sets the service.name OTel resource attribute.
 	ServiceName string `yaml:"service_name" json:"service_name"`
 
-	// SampleRatio is the head sampler ratio between 0.0 and 1.0.
-	// Overridden by OTEL_TRACES_SAMPLER + OTEL_TRACES_SAMPLER_ARG.
+	// SampleRatio is the head sampler ratio between 0.0 and 1.0. It is the only
+	// source for the sampler: the standard OTEL_TRACES_SAMPLER and
+	// OTEL_TRACES_SAMPLER_ARG variables are not consulted, so a deployment that
+	// sets them alone samples at whatever this says.
 	SampleRatio float64 `yaml:"sample_ratio" json:"sample_ratio"`
 
 	// PrivacyLevel controls whether prompt/response content is exported.
@@ -86,23 +88,45 @@ const (
 	PrivacyLevelFull     = tracingpolicy.PrivacyLevelFull
 )
 
-// Validate returns an error when PrivacyLevel is set to an unrecognised
-// value. An empty string is accepted and treated as the default
-// ("metadata") by the provider. Callers should invoke this before
-// constructing a provider. The allowed set lives in the internal
-// tracingpolicy package so this validator and the gateway config validator
-// share one source of truth.
+// Validate returns an error when PrivacyLevel is set to an unrecognised value
+// or Endpoint cannot be understood. An empty string is accepted for both:
+// PrivacyLevel is then the default ("metadata"), and an empty Endpoint means
+// tracing is driven by the OTEL_EXPORTER_OTLP_* environment or not at all.
+// Callers should invoke this before constructing a provider. The allowed
+// privacy levels live in the internal tracingpolicy package so this validator
+// and the gateway config validator share one source of truth.
+//
+// The endpoint is checked here, at validation, rather than left to fail at
+// export time. An endpoint the exporter cannot use disables tracing completely
+// while the gateway reports itself as tracing, and the only symptom is a
+// per-batch error deep inside the SDK long after anyone was watching.
 func (c Config) Validate() error {
-	return tracingpolicy.ValidatePrivacyLevel(c.PrivacyLevel)
+	if err := tracingpolicy.ValidatePrivacyLevel(c.PrivacyLevel); err != nil {
+		return err
+	}
+	_, err := parseConfiguredEndpoint(c.Endpoint, isHTTPProtocol(c.Protocol))
+	return err
 }
 
-// effectiveEndpoint resolves the OTLP endpoint. The standard
-// OTEL_EXPORTER_OTLP_ENDPOINT environment variable takes precedence over the
+// effectiveEndpoint resolves whether a collector is configured, and which
+// setting named it. The standard environment variables take precedence over the
 // configured Endpoint — this matches the documented OTEL_* precedence and is
 // required so containerised deployments can redirect telemetry by env var
 // regardless of any baked-in config. The configured Endpoint is the fallback.
 // An empty result means OTel is effectively disabled even when Enabled is true.
+//
+// Both standard variables count. OTEL_EXPORTER_OTLP_TRACES_ENDPOINT alone is a
+// complete traces configuration under the specification, and a deployment that
+// set only it used to get a NoOp provider — tracing off, with nothing said.
+//
+// The value returned here decides whether to build a pipeline, not where to
+// send. Where to send is resolveExportTarget's job, and for both variables it
+// hands the value to the SDK unread, because the two have different and precise
+// path semantics that only the SDK implements correctly.
 func (c Config) effectiveEndpoint(getenv func(string) string) string {
+	if v := getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"); v != "" {
+		return v
+	}
 	if v := getenv("OTEL_EXPORTER_OTLP_ENDPOINT"); v != "" {
 		return v
 	}

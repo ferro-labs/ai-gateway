@@ -1,0 +1,92 @@
+# config.plugin-test.yaml — every built-in plugin enabled, for exercising the
+# gateway's plugin pipeline against one real provider. Used by
+# scripts/plugin_smoke.sh, and safe to run by hand:
+#
+#   GATEWAY_CONFIG=scripts/config.plugin-test.yaml \
+#   DEEPSEEK_API_KEY=... ALLOW_UNAUTHENTICATED_PROXY=true ./bin/ferrogw serve
+#
+# The target defaults to deepseek (cheap, no tight free-tier RPM). To use another
+# provider, change virtual_key below and set that provider's credential.
+#
+# budget and rate-limit are ENABLED but PERMISSIVE here, on purpose: the config
+# is meant to be safe to run, so the guardrails (word-filter, max-token) still
+# reject crafted input, the cache still serves repeats and the logger still
+# records — while budget and rate-limit stay out of the way. To watch those two
+# actually REJECT, tighten their limits (spend_limit_usd, or
+# requests_per_second/burst). A tight budget or rate limit cannot coexist with
+# the other plugins' checks in one run — a spent budget blocks every later
+# request, a low rate limit throttles them — so plugin_smoke.sh demonstrates
+# those two in their own isolated phases rather than from this file.
+#
+# Note: budget and rate-limit's per-credential logic only applies to
+# AUTHENTICATED requests (they key on the API credential); the global
+# rate-limit requests_per_second applies to all traffic.
+strategy:
+  mode: single
+
+targets:
+  - virtual_key: deepseek
+
+plugins:
+  - name: word-filter
+    type: guardrail
+    stage: before_request
+    enabled: true
+    config:
+      blocked_words: ["password", "secret"]
+      case_sensitive: false
+
+  - name: max-token
+    type: guardrail
+    stage: before_request
+    enabled: true
+    config:
+      max_tokens: 4096
+      max_messages: 50
+      max_input_length: 0
+
+  - name: response-cache
+    type: transform
+    stage: before_request
+    enabled: true
+    config: { max_age: 300, max_entries: 1000 }
+  - name: response-cache
+    type: transform
+    stage: after_request
+    enabled: true
+    config: { max_age: 300, max_entries: 1000 }
+
+  - name: request-logger
+    type: logging
+    stage: before_request
+    enabled: true
+    config: { level: info, persist: true }
+  - name: request-logger
+    type: logging
+    stage: after_request
+    enabled: true
+    config: { level: info, persist: true }
+  - name: request-logger
+    type: logging
+    stage: on_error
+    enabled: true
+    config: { level: info, persist: true }
+
+  # Permissive (see header). Lower spend_limit_usd to watch it reject with 402.
+  - name: budget
+    type: guardrail
+    stage: before_request
+    enabled: true
+    config: { store_id: default, spend_limit_usd: 50.0, input_per_m_tokens: 3.0, output_per_m_tokens: 15.0, max_keys: 10000 }
+  - name: budget
+    type: guardrail
+    stage: after_request
+    enabled: true
+    config: { store_id: default, spend_limit_usd: 50.0, input_per_m_tokens: 3.0, output_per_m_tokens: 15.0, max_keys: 10000 }
+
+  # Permissive (see header). Lower requests_per_second/burst to watch it 429.
+  - name: rate-limit
+    type: guardrail
+    stage: before_request
+    enabled: true
+    config: { requests_per_second: 100, burst: 100 }

@@ -6,12 +6,11 @@ import (
 	"github.com/ferro-labs/ai-gateway/providers"
 )
 
-// TestLoadBalance_SelectTargets_MatchesExecuteCandidates asserts SelectTargets
-// (the streaming path) draws from the same candidate set as Execute: only
-// model-compatible, registered targets. A high-weight target that is
-// incompatible or unregistered must never appear, otherwise streaming selection
-// would skew toward a provider Route never picks.
-func TestLoadBalance_SelectTargets_MatchesExecuteCandidates(t *testing.T) {
+// TestLoadBalance_SelectTargets_ExcludesUnusableTargets asserts the candidate
+// set is only model-compatible, registered targets. A high-weight target that is
+// incompatible or unregistered must never appear, or it would absorb the share
+// its weight claims and starve the targets that can actually serve the request.
+func TestLoadBalance_SelectTargets_ExcludesUnusableTargets(t *testing.T) {
 	tests := []struct {
 		name    string
 		targets []Target

@@ -29,23 +29,6 @@ func TestNewNVIDIANIM(t *testing.T) {
 	}
 }
 
-func TestNVIDIANIMProvider_SupportedModels(t *testing.T) {
-	p, _ := New("test-key", "")
-	models := p.SupportedModels()
-	if len(models) == 0 {
-		t.Error("SupportedModels() returned empty")
-	}
-	found := false
-	for _, m := range models {
-		if m == "nvidia/Llama-3.1-Nemotron-70B-Instruct" {
-			found = true
-		}
-	}
-	if !found {
-		t.Error("nvidia/Llama-3.1-Nemotron-70B-Instruct not found")
-	}
-}
-
 func TestNVIDIANIMProvider_SupportsModel(t *testing.T) {
 	p, _ := New("test-key", "")
 	if !p.SupportsModel("nvidia/Llama-3.1-Nemotron-70B-Instruct") {
@@ -53,16 +36,6 @@ func TestNVIDIANIMProvider_SupportsModel(t *testing.T) {
 	}
 	if !p.SupportsModel("custom-model") {
 		t.Error("passthrough: expected all models to return true")
-	}
-}
-
-func TestNVIDIANIMProvider_Models(t *testing.T) {
-	p, _ := New("test-key", "")
-	models := p.Models()
-	for _, m := range models {
-		if m.OwnedBy != "nvidia-nim" {
-			t.Errorf("ModelInfo.OwnedBy = %q, want nvidia-nim", m.OwnedBy)
-		}
 	}
 }
 
@@ -200,8 +173,8 @@ func TestNVIDIANIMProvider_Embed_MockHTTP(t *testing.T) {
 		if r.Method != http.MethodPost {
 			t.Errorf("method = %s, want POST", r.Method)
 		}
-		if r.URL.Path != "/embeddings" {
-			t.Errorf("path = %q, want /embeddings", r.URL.Path)
+		if r.URL.Path != "/v1/embeddings" {
+			t.Errorf("path = %q, want /v1/embeddings", r.URL.Path)
 		}
 		if got := r.Header.Get("Authorization"); got != testBearerAPIKey {
 			t.Errorf("Authorization = %q, want %s", got, testBearerAPIKey)
@@ -324,8 +297,8 @@ func TestNVIDIANIMProvider_CompleteStream_UpstreamError(t *testing.T) {
 
 func TestNVIDIANIMProvider_Embed_UpstreamError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/embeddings" {
-			t.Errorf("path = %q, want /embeddings", r.URL.Path)
+		if r.URL.Path != "/v1/embeddings" {
+			t.Errorf("path = %q, want /v1/embeddings", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
@@ -356,8 +329,8 @@ func TestNVIDIANIMProvider_DiscoverModels(t *testing.T) {
 		if r.Method != http.MethodGet {
 			t.Errorf("method = %q, want GET", r.Method)
 		}
-		if r.URL.Path != "/models" {
-			t.Errorf("path = %q, want /models", r.URL.Path)
+		if r.URL.Path != "/v1/models" {
+			t.Errorf("path = %q, want /v1/models", r.URL.Path)
 		}
 		if got := r.Header.Get("Authorization"); got != testBearerAPIKey {
 			t.Errorf("Authorization = %q, want %s", got, testBearerAPIKey)

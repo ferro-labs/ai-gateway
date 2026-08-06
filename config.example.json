@@ -1,4 +1,5 @@
 {
+  "apiVersion": "v1",
   "max_request_bytes": 10485760,
   "strategy": {
     "mode": "fallback"
@@ -6,6 +7,7 @@
   "targets": [
     {
       "virtual_key": "openai",
+      "weight": 1.0,
       "retry": {
         "attempts": 3,
         "on_status_codes": [
@@ -22,9 +24,11 @@
     },
     {
       "virtual_key": "anthropic",
+      "weight": 1.0,
       "circuit_breaker": {
         "failure_threshold": 5,
         "success_threshold": 1,
+        "max_half_threshold": 1,
         "timeout": "30s"
       }
     },
@@ -32,7 +36,10 @@
       "virtual_key": "xai"
     },
     {
-      "virtual_key": "gemini"
+      "virtual_key": "gemini",
+      "models": [
+        "gemini-2.5-flash"
+      ]
     },
     {
       "virtual_key": "mistral"
@@ -155,9 +162,39 @@
       }
     },
     {
+      "name": "response-cache",
+      "type": "transform",
+      "stage": "after_request",
+      "enabled": false,
+      "config": {
+        "max_age": 300,
+        "max_entries": 1000
+      }
+    },
+    {
       "name": "request-logger",
       "type": "logging",
       "stage": "before_request",
+      "enabled": true,
+      "config": {
+        "level": "info",
+        "persist": false
+      }
+    },
+    {
+      "name": "request-logger",
+      "type": "logging",
+      "stage": "after_request",
+      "enabled": true,
+      "config": {
+        "level": "info",
+        "persist": false
+      }
+    },
+    {
+      "name": "request-logger",
+      "type": "logging",
+      "stage": "on_error",
       "enabled": true,
       "config": {
         "level": "info",
@@ -188,6 +225,19 @@
         "output_per_m_tokens": 15.0,
         "max_keys": 10000
       }
+    },
+    {
+      "name": "budget",
+      "type": "guardrail",
+      "stage": "after_request",
+      "enabled": false,
+      "config": {
+        "store_id": "default",
+        "spend_limit_usd": 10.0,
+        "input_per_m_tokens": 3.0,
+        "output_per_m_tokens": 15.0,
+        "max_keys": 10000
+      }
     }
   ],
   "mcp_servers": [
@@ -208,7 +258,8 @@
         "list_tables"
       ],
       "timeout_seconds": 15,
-      "max_call_depth": 5
+      "max_call_depth": 5,
+      "required": false
     },
     {
       "name": "web-search",
@@ -222,15 +273,28 @@
     {
       "name": "brave-search",
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-brave-search"],
-      "env": { "BRAVE_API_KEY": "${BRAVE_API_KEY}" },
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-brave-search"
+      ],
+      "env": {
+        "BRAVE_API_KEY": "${BRAVE_API_KEY}"
+      },
       "max_call_depth": 3
     },
     {
       "name": "sqlite-db",
       "command": "/path/to/venv/bin/python",
-      "args": ["-m", "mcp_server_sqlite", "--db-path", "/var/data/app.db"],
-      "allowed_tools": ["query", "list_tables"],
+      "args": [
+        "-m",
+        "mcp_server_sqlite",
+        "--db-path",
+        "/var/data/app.db"
+      ],
+      "allowed_tools": [
+        "query",
+        "list_tables"
+      ],
       "max_call_depth": 5
     }
   ],

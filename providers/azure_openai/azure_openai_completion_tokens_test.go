@@ -56,14 +56,20 @@ func TestComplete_DropsMaxTokensForCompletionTokens(t *testing.T) {
 		}
 	})
 
-	t.Run("legacy max_tokens only is preserved", func(t *testing.T) {
+	t.Run("legacy max_tokens only is promoted to max_completion_tokens", func(t *testing.T) {
+		// A caller sending only max_tokens must still reach an Azure o-series /
+		// GPT-5 deployment, which rejects max_tokens — so it is promoted to the
+		// modern field, carrying the same ceiling, and max_tokens is dropped.
 		body := captureAzureBody(t, core.Request{
 			Model:     "gpt-4o",
 			Messages:  []core.Message{{Role: core.RoleUser, Content: "hi"}},
 			MaxTokens: intPtr(256),
 		})
-		if got := string(body["max_tokens"]); got != "256" {
-			t.Errorf("max_tokens = %s, want 256", got)
+		if _, ok := body["max_tokens"]; ok {
+			t.Errorf("max_tokens must not be forwarded (Azure reasoning deployments reject it), body=%v", body)
+		}
+		if got := string(body["max_completion_tokens"]); got != "256" {
+			t.Errorf("max_completion_tokens = %s, want 256 (promoted from max_tokens)", got)
 		}
 	})
 }

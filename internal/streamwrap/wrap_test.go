@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ferro-labs/ai-gateway/internal/circuitbreaker"
 	"github.com/ferro-labs/ai-gateway/internal/events"
-	"github.com/ferro-labs/ai-gateway/internal/metrics"
 	"github.com/ferro-labs/ai-gateway/models"
+	"github.com/ferro-labs/ai-gateway/pkg/circuitbreaker"
+	"github.com/ferro-labs/ai-gateway/pkg/metrics"
 	"github.com/ferro-labs/ai-gateway/plugin"
 	"github.com/ferro-labs/ai-gateway/providers"
 	"github.com/prometheus/client_golang/prometheus"
@@ -337,7 +337,7 @@ func TestMeter_CallsCircuitBreakerOutcome_OnAfterPluginError(t *testing.T) {
 		Model:       "gpt-4o",
 		MetricModel: "gpt-4o",
 		Catalog:     models.Catalog{},
-		CompletionFn: func(context.Context, *providers.Response) error {
+		CompletionFn: func(context.Context, *providers.Response, Measurements) error {
 			return pluginErr
 		},
 		CircuitBreakerOutcome: func(err error) {

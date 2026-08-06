@@ -60,34 +60,6 @@ func TestNewTogether(t *testing.T) {
 	}
 }
 
-func TestTogetherProvider_SupportedModels(t *testing.T) {
-	p, _ := New("test-key", "")
-	models := p.SupportedModels()
-	if len(models) == 0 {
-		t.Error("SupportedModels() returned empty")
-	}
-	found := false
-	for _, m := range models {
-		if m == "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo" {
-			found = true
-		}
-	}
-	if !found {
-		t.Error("meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo not found")
-	}
-}
-
-func TestTogetherProvider_SupportedModels_NoDuplicates(t *testing.T) {
-	p, _ := New("test-key", "")
-	seen := make(map[string]struct{})
-	for _, m := range p.SupportedModels() {
-		if _, dup := seen[m]; dup {
-			t.Errorf("duplicate model ID in SupportedModels(): %q", m)
-		}
-		seen[m] = struct{}{}
-	}
-}
-
 func TestTogetherProvider_SupportsModel(t *testing.T) {
 	p, _ := New("test-key", "")
 	if !p.SupportsModel("meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo") {
@@ -95,16 +67,6 @@ func TestTogetherProvider_SupportsModel(t *testing.T) {
 	}
 	if !p.SupportsModel("gpt-4o") {
 		t.Error("passthrough: expected any model including gpt-4o to return true")
-	}
-}
-
-func TestTogetherProvider_Models(t *testing.T) {
-	p, _ := New("test-key", "")
-	models := p.Models()
-	for _, m := range models {
-		if m.OwnedBy != "together" {
-			t.Errorf("ModelInfo.OwnedBy = %q, want together", m.OwnedBy)
-		}
 	}
 }
 
@@ -246,24 +208,6 @@ func intPtr(i int) *int { return &i }
 func TestTogetherProvider_Embed_Interface(_ *testing.T) {
 	p, _ := New("test-key", "")
 	var _ core.EmbeddingProvider = p
-}
-
-func TestTogetherProvider_SupportedModels_Embeddings(t *testing.T) {
-	p, _ := New("test-key", "")
-	models := p.SupportedModels()
-	found := false
-	for _, m := range models {
-		if m == testEmbeddingModel {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatalf("embedding model %q not found in SupportedModels()", testEmbeddingModel)
-	}
-	if !p.SupportsModel(testEmbeddingModel) {
-		t.Fatalf("SupportsModel(%q) = false, want true", testEmbeddingModel)
-	}
 }
 
 func TestTogetherProvider_Embed_StringInput_MockHTTP(t *testing.T) {
@@ -426,8 +370,8 @@ func TestNewTogether_DefaultDomain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if got := p.BaseURL(); got != "https://api.together.ai" {
-		t.Errorf("default BaseURL() = %q, want https://api.together.ai", got)
+	if got := p.BaseURL(); got != "https://api.together.ai/v1" {
+		t.Errorf("default BaseURL() = %q, want https://api.together.ai/v1", got)
 	}
 }
 

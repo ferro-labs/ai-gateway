@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/ferro-labs/ai-gateway/config"
 	"github.com/ferro-labs/ai-gateway/plugin"
 	"github.com/ferro-labs/ai-gateway/providers"
 )
@@ -33,9 +34,9 @@ func (p *testPlugin) Close() error {
 }
 
 func TestGateway_Route_WithBeforePlugin(t *testing.T) {
-	gw, _ := newTestGateway(t, Config{
-		Strategy: StrategyConfig{Mode: ModeSingle},
-		Targets:  []Target{{VirtualKey: mockProviderName}},
+	gw, _ := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets:  []config.Target{{VirtualKey: mockProviderName}},
 	})
 
 	gw.RegisterProvider(&mockProvider{
@@ -67,9 +68,9 @@ func TestGateway_Route_WithBeforePlugin(t *testing.T) {
 }
 
 func TestGateway_Route_PluginRejectsRequest(t *testing.T) {
-	gw, _ := newTestGateway(t, Config{
-		Strategy: StrategyConfig{Mode: ModeSingle},
-		Targets:  []Target{{VirtualKey: mockProviderName}},
+	gw, _ := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets:  []config.Target{{VirtualKey: mockProviderName}},
 	})
 
 	gw.RegisterProvider(&mockProvider{

@@ -1,7 +1,7 @@
 package strategies
 
 import (
-	"context"
+	"strings"
 	"testing"
 
 	"github.com/ferro-labs/ai-gateway/models"
@@ -38,55 +38,35 @@ func buildCatalog() models.Catalog {
 	}
 }
 
+// unpricedEntry is a catalog entry that exists but carries no usable pricing.
+func unpricedEntry(provider string) models.Model {
+	return models.Model{Provider: provider, ModelID: "gpt-4o", Mode: models.ModeChat, Pricing: models.Pricing{}}
+}
+
 func TestCostOptimized_PicksCheapest(t *testing.T) {
-	cheap := &mockProvider{name: "cheap", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "cheap"}}
-	expensive := &mockProvider{name: "expensive", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "expensive"}}
+	cheap := &mockProvider{name: "cheap", models: []string{"gpt-4o"}}
+	expensive := &mockProvider{name: "expensive", models: []string{"gpt-4o"}}
 
-	catalog := buildCatalog()
 	targets := []Target{{VirtualKey: "cheap"}, {VirtualKey: "expensive"}}
-	s := NewCostOptimized(targets, newLookup(cheap, expensive), catalog)
+	s := NewCostOptimized(targets, newLookup(cheap, expensive), buildCatalog())
 
-	resp, err := s.Execute(context.Background(), providers.Request{
-		Model:    "gpt-4o",
-		Messages: []providers.Message{{Role: "user", Content: "hello world"}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resp.ID != "cheap" {
-		t.Errorf("expected cheap provider, got %q", resp.ID)
-	}
+	assertLeadsWith(t, s, req("hello world"), "cheap")
 }
 
 func TestCostOptimized_FallsBackWhenNoPricing(t *testing.T) {
 	// Catalog has no entry for "unknown/gpt-4o".
-	mp := &mockProvider{name: "unknown", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "ok"}}
-	targets := []Target{{VirtualKey: "unknown"}}
-	s := NewCostOptimized(targets, newLookup(mp), models.Catalog{})
+	mp := &mockProvider{name: "unknown", models: []string{"gpt-4o"}}
+	s := NewCostOptimized([]Target{{VirtualKey: "unknown"}}, newLookup(mp), models.Catalog{})
 
-	resp, err := s.Execute(context.Background(), providers.Request{
-		Model:    "gpt-4o",
-		Messages: []providers.Message{{Role: "user", Content: "hi"}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resp.ID != "ok" {
-		t.Errorf("expected ok, got %q", resp.ID)
-	}
+	assertLeadsWith(t, s, req("hi"), "unknown")
 }
 
 func TestCostOptimized_SkipsUnpricedCatalogEntryWhenPricedCandidateExists(t *testing.T) {
-	unpriced := &mockProvider{name: "unpriced", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "unpriced"}}
-	priced := &mockProvider{name: "priced", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "priced"}}
+	unpriced := &mockProvider{name: "unpriced", models: []string{"gpt-4o"}}
+	priced := &mockProvider{name: "priced", models: []string{"gpt-4o"}}
 
 	catalog := models.Catalog{
-		"unpriced/gpt-4o": {
-			Provider: "unpriced",
-			ModelID:  "gpt-4o",
-			Mode:     models.ModeChat,
-			Pricing:  models.Pricing{},
-		},
+		"unpriced/gpt-4o": unpricedEntry("unpriced"),
 		"priced/gpt-4o": {
 			Provider: "priced",
 			ModelID:  "gpt-4o",
@@ -100,30 +80,19 @@ func TestCostOptimized_SkipsUnpricedCatalogEntryWhenPricedCandidateExists(t *tes
 	targets := []Target{{VirtualKey: "unpriced"}, {VirtualKey: "priced"}}
 	s := NewCostOptimized(targets, newLookup(unpriced, priced), catalog)
 
-	resp, err := s.Execute(context.Background(), providers.Request{
-		Model:    "gpt-4o",
-		Messages: []providers.Message{{Role: "user", Content: "hello"}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resp.ID != "priced" {
-		t.Errorf("expected priced provider, got %q", resp.ID)
-	}
+	assertLeadsWith(t, s, req("hello"), "priced")
 }
 
 func TestCostOptimized_DoesNotRankOutputOnlyPricingAsFreeInput(t *testing.T) {
-	outputOnly := &mockProvider{name: "output-only", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "output-only"}}
-	priced := &mockProvider{name: "priced", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "priced"}}
+	outputOnly := &mockProvider{name: "output-only", models: []string{"gpt-4o"}}
+	priced := &mockProvider{name: "priced", models: []string{"gpt-4o"}}
 
 	catalog := models.Catalog{
 		"output-only/gpt-4o": {
 			Provider: "output-only",
 			ModelID:  "gpt-4o",
 			Mode:     models.ModeChat,
-			Pricing: models.Pricing{
-				OutputPerMTokens: ptrF(2.0),
-			},
+			Pricing:  models.Pricing{OutputPerMTokens: ptrF(2.0)},
 		},
 		"priced/gpt-4o": {
 			Provider: "priced",
@@ -138,212 +107,128 @@ func TestCostOptimized_DoesNotRankOutputOnlyPricingAsFreeInput(t *testing.T) {
 	targets := []Target{{VirtualKey: "output-only"}, {VirtualKey: "priced"}}
 	s := NewCostOptimized(targets, newLookup(outputOnly, priced), catalog)
 
-	resp, err := s.Execute(context.Background(), providers.Request{
-		Model:    "gpt-4o",
-		Messages: []providers.Message{{Role: "user", Content: "hello"}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resp.ID != "priced" {
-		t.Errorf("expected priced provider, got %q", resp.ID)
-	}
+	assertLeadsWith(t, s, req("hello"), "priced")
 }
 
 func TestCostOptimized_FallsBackToFirstCompatibleWhenAllCandidatesUnpriced(t *testing.T) {
-	first := &mockProvider{name: "first", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "first"}}
-	second := &mockProvider{name: "second", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "second"}}
+	first := &mockProvider{name: "first", models: []string{"gpt-4o"}}
+	second := &mockProvider{name: "second", models: []string{"gpt-4o"}}
 
 	catalog := models.Catalog{
-		"first/gpt-4o": {
-			Provider: "first",
-			ModelID:  "gpt-4o",
-			Mode:     models.ModeChat,
-			Pricing:  models.Pricing{},
-		},
-		"second/gpt-4o": {
-			Provider: "second",
-			ModelID:  "gpt-4o",
-			Mode:     models.ModeChat,
-			Pricing:  models.Pricing{},
-		},
+		"first/gpt-4o":  unpricedEntry("first"),
+		"second/gpt-4o": unpricedEntry("second"),
 	}
 	targets := []Target{{VirtualKey: "first"}, {VirtualKey: "second"}}
 	s := NewCostOptimized(targets, newLookup(first, second), catalog)
 
-	resp, err := s.Execute(context.Background(), providers.Request{
-		Model:    "gpt-4o",
-		Messages: []providers.Message{{Role: "user", Content: "hello"}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resp.ID != "first" {
-		t.Errorf("expected first compatible provider fallback, got %q", resp.ID)
-	}
+	assertLeadsWith(t, s, req("hello"), "first")
 }
 
 func TestCostOptimized_InvalidUnpricedStrategyFallsBackToFirstCompatible(t *testing.T) {
-	first := &mockProvider{name: "first", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "first"}}
-	second := &mockProvider{name: "second", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "second"}}
+	first := &mockProvider{name: "first", models: []string{"gpt-4o"}}
+	second := &mockProvider{name: "second", models: []string{"gpt-4o"}}
 
 	catalog := models.Catalog{
-		"first/gpt-4o": {
-			Provider: "first",
-			ModelID:  "gpt-4o",
-			Mode:     models.ModeChat,
-			Pricing:  models.Pricing{},
-		},
-		"second/gpt-4o": {
-			Provider: "second",
-			ModelID:  "gpt-4o",
-			Mode:     models.ModeChat,
-			Pricing:  models.Pricing{},
-		},
+		"first/gpt-4o":  unpricedEntry("first"),
+		"second/gpt-4o": unpricedEntry("second"),
 	}
 	targets := []Target{{VirtualKey: "first"}, {VirtualKey: "second"}}
 	s := NewCostOptimized(targets, newLookup(first, second), catalog, "unknown")
 
-	resp, err := s.Execute(context.Background(), providers.Request{
-		Model:    "gpt-4o",
-		Messages: []providers.Message{{Role: "user", Content: "hello"}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resp.ID != "first" {
-		t.Errorf("expected invalid unpriced strategy to use fallback mode, got %q", resp.ID)
-	}
+	assertLeadsWith(t, s, req("hello"), "first")
 }
 
 func TestCostOptimized_AllowTreatsUnpricedAsZeroCost(t *testing.T) {
-	priced := &mockProvider{name: "priced", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "priced"}}
-	unpriced := &mockProvider{name: "unpriced", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "unpriced"}}
+	priced := &mockProvider{name: "priced", models: []string{"gpt-4o"}}
+	unpriced := &mockProvider{name: "unpriced", models: []string{"gpt-4o"}}
 
 	catalog := models.Catalog{
 		"priced/gpt-4o": {
 			Provider: "priced",
 			ModelID:  "gpt-4o",
 			Mode:     models.ModeChat,
-			Pricing: models.Pricing{
-				InputPerMTokens: ptrF(1.0),
-			},
+			Pricing:  models.Pricing{InputPerMTokens: ptrF(1.0)},
 		},
-		"unpriced/gpt-4o": {
-			Provider: "unpriced",
-			ModelID:  "gpt-4o",
-			Mode:     models.ModeChat,
-			Pricing:  models.Pricing{},
-		},
+		"unpriced/gpt-4o": unpricedEntry("unpriced"),
 	}
 	targets := []Target{{VirtualKey: "priced"}, {VirtualKey: "unpriced"}}
 	s := NewCostOptimized(targets, newLookup(priced, unpriced), catalog, "allow")
 
-	resp, err := s.Execute(context.Background(), providers.Request{
-		Model:    "gpt-4o",
-		Messages: []providers.Message{{Role: "user", Content: "hello"}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resp.ID != "unpriced" {
-		t.Errorf("expected allow mode to pick zero-cost unpriced provider, got %q", resp.ID)
-	}
+	assertLeadsWith(t, s, req("hello"), "unpriced")
 }
 
 func TestCostOptimized_SkipErrorsWhenAllCandidatesUnpriced(t *testing.T) {
-	first := &mockProvider{name: "first", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "first"}}
-	second := &mockProvider{name: "second", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "second"}}
+	first := &mockProvider{name: "first", models: []string{"gpt-4o"}}
+	second := &mockProvider{name: "second", models: []string{"gpt-4o"}}
 
 	catalog := models.Catalog{
-		"first/gpt-4o": {
-			Provider: "first",
-			ModelID:  "gpt-4o",
-			Mode:     models.ModeChat,
-			Pricing:  models.Pricing{},
-		},
-		"second/gpt-4o": {
-			Provider: "second",
-			ModelID:  "gpt-4o",
-			Mode:     models.ModeChat,
-			Pricing:  models.Pricing{},
-		},
+		"first/gpt-4o":  unpricedEntry("first"),
+		"second/gpt-4o": unpricedEntry("second"),
 	}
 	targets := []Target{{VirtualKey: "first"}, {VirtualKey: "second"}}
 	s := NewCostOptimized(targets, newLookup(first, second), catalog, "skip")
 
-	_, err := s.Execute(context.Background(), providers.Request{
-		Model:    "gpt-4o",
-		Messages: []providers.Message{{Role: "user", Content: "hello"}},
-	})
-	if err == nil {
+	if _, err := s.SelectTargets(req("hello")); err == nil {
 		t.Fatal("expected error when skip mode has no priced candidates")
 	}
 }
 
 func TestCostOptimized_SkipsUnsupportedModel(t *testing.T) {
-	p1 := &mockProvider{name: "cheap", models: []string{"gpt-3.5-turbo"}, resp: &providers.Response{ID: "wrong"}}
-	p2 := &mockProvider{name: "expensive", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "right"}}
-
-	catalog := buildCatalog()
-	targets := []Target{{VirtualKey: "cheap"}, {VirtualKey: "expensive"}}
-	s := NewCostOptimized(targets, newLookup(p1, p2), catalog)
-
-	resp, err := s.Execute(context.Background(), providers.Request{
-		Model:    "gpt-4o",
-		Messages: []providers.Message{{Role: "user", Content: "hi"}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resp.ID != "right" {
-		t.Errorf("only expensive supports gpt-4o, expected right, got %q", resp.ID)
-	}
-}
-
-func TestCostOptimized_UnresolvableSelectedTargetReturnsError(t *testing.T) {
-	mp := &mockProvider{name: "cheap", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "cheap"}}
-	s := NewCostOptimized(
-		[]Target{{VirtualKey: "cheap"}},
-		lookupMissingAfterFirstHit(mp),
-		buildCatalog(),
-	)
-
-	_, err := s.Execute(context.Background(), providers.Request{
-		Model:    "gpt-4o",
-		Messages: []providers.Message{{Role: "user", Content: "hi"}},
-	})
-	if err == nil {
-		t.Fatal("expected error when selected provider is no longer resolvable")
-	}
-}
-
-func TestCostOptimized_ErrorsWhenNoProviderSupportsModel(t *testing.T) {
-	p1 := &mockProvider{name: "cheap", models: []string{"gpt-3.5-turbo"}, resp: &providers.Response{ID: "wrong"}}
-	p2 := &mockProvider{name: "expensive", models: []string{"claude-3"}, resp: &providers.Response{ID: "wrong"}}
+	p1 := &mockProvider{name: "cheap", models: []string{"gpt-3.5-turbo"}}
+	p2 := &mockProvider{name: "expensive", models: []string{"gpt-4o"}}
 
 	targets := []Target{{VirtualKey: "cheap"}, {VirtualKey: "expensive"}}
 	s := NewCostOptimized(targets, newLookup(p1, p2), buildCatalog())
 
-	_, err := s.Execute(context.Background(), providers.Request{
-		Model:    "gpt-4o",
-		Messages: []providers.Message{{Role: "user", Content: "hi"}},
-	})
+	// Only expensive serves gpt-4o, so it must LEAD despite being the dearer of
+	// the two. cheap still trails as a declared fallback; the pipeline skips it
+	// on model support, which is where that question belongs.
+	assertLeadsWith(t, s, req("hi"), "expensive")
+}
+
+func TestCostOptimized_NoCandidateWhenNoProviderSupportsModel(t *testing.T) {
+	p1 := &mockProvider{name: "cheap", models: []string{"gpt-3.5-turbo"}}
+	p2 := &mockProvider{name: "expensive", models: []string{"claude-3"}}
+
+	targets := []Target{{VirtualKey: "cheap"}, {VirtualKey: "expensive"}}
+	s := NewCostOptimized(targets, newLookup(p1, p2), buildCatalog())
+
+	keys, err := s.SelectTargets(req("hi"))
+	if err != nil {
+		t.Fatalf("nothing serving the model is the caller's 404, not a strategy error: %v", err)
+	}
+	if keys != nil {
+		t.Errorf("expected no candidates, got %v", keys)
+	}
+}
+
+func TestCostOptimized_SkipModeErrorIsNotACapableProviderFault(t *testing.T) {
+	p := &mockProvider{name: "first", models: []string{"gpt-4o"}}
+	s := NewCostOptimized(
+		[]Target{{VirtualKey: "first"}},
+		newLookup(p),
+		models.Catalog{"first/gpt-4o": unpricedEntry("first")},
+		"skip",
+	)
+
+	_, err := s.SelectTargets(req("hi"))
 	if err == nil {
-		t.Fatal("expected error when no provider supports model")
+		t.Fatal("expected an error in skip mode with no priced candidate")
 	}
-	if err.Error() != "no provider supports model gpt-4o" {
-		t.Errorf("unexpected error: %v", err)
-	}
-	if p1.calls != 0 || p2.calls != 0 {
-		t.Errorf("providers should not be called, got cheap=%d expensive=%d", p1.calls, p2.calls)
+	// The message names the model, because the model is what makes it
+	// unroutable: another model against the same config would route.
+	if !strings.Contains(err.Error(), "gpt-4o") {
+		t.Errorf("error should name the model, got %v", err)
 	}
 }
 
 func TestCostOptimized_NoTargets(t *testing.T) {
 	s := NewCostOptimized(nil, newLookup(), models.Catalog{})
-	_, err := s.Execute(context.Background(), providers.Request{Model: "gpt-4o"})
-	if err == nil {
-		t.Fatal("expected error for no targets")
+	keys, err := s.SelectTargets(providers.Request{Model: "gpt-4o"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if keys != nil {
+		t.Errorf("expected no candidates with no targets, got %v", keys)
 	}
 }

@@ -43,12 +43,15 @@ func TestNewValidationAndDefaults(t *testing.T) {
 	if p.baseURL != defaultBaseURL {
 		t.Fatalf("default base URL = %q, want %q", p.baseURL, defaultBaseURL)
 	}
-	if defaultBaseURL != "https://ollama.com" {
-		t.Fatalf("default base URL must stay https://ollama.com (api.ollama.com 301-redirects), got %q", defaultBaseURL)
+	if defaultBaseURL != "https://ollama.com/v1" {
+		t.Fatalf("default base URL must stay on the ollama.com host (api.ollama.com 301-redirects), got %q", defaultBaseURL)
+	}
+	if p.nativeURL != "https://ollama.com/api" {
+		t.Fatalf("native root = %q, want https://ollama.com/api", p.nativeURL)
 	}
 	wantModels := []string{"gpt-oss:120b", "gpt-oss:20b", "qwen3-coder:480b", "deepseek-v3.1:671b"}
-	if !reflect.DeepEqual(p.SupportedModels(), wantModels) {
-		t.Fatalf("default models = %#v, want %#v", p.SupportedModels(), wantModels)
+	if !reflect.DeepEqual(p.ConfiguredModels(), wantModels) {
+		t.Fatalf("default models = %#v, want %#v", p.ConfiguredModels(), wantModels)
 	}
 	if _, ok := any(p).(core.ProxiableProvider); ok {
 		t.Fatal("ollama-cloud must not implement core.ProxiableProvider")
@@ -58,11 +61,16 @@ func TestNewValidationAndDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New with custom URL returned error: %v", err)
 	}
-	if p.baseURL != "https://example.com" {
-		t.Fatalf("base URL = %q, want trimmed URL", p.baseURL)
+	// A host with no path is not an API root, so it resolves to one, and the
+	// native root follows it.
+	if p.baseURL != "https://example.com/v1" {
+		t.Fatalf("base URL = %q, want https://example.com/v1", p.baseURL)
 	}
-	if !reflect.DeepEqual(p.SupportedModels(), []string{"custom"}) {
-		t.Fatalf("custom models = %#v, want [custom]", p.SupportedModels())
+	if p.nativeURL != "https://example.com/api" {
+		t.Fatalf("native root = %q, want https://example.com/api", p.nativeURL)
+	}
+	if !reflect.DeepEqual(p.ConfiguredModels(), []string{"custom"}) {
+		t.Fatalf("custom models = %#v, want [custom]", p.ConfiguredModels())
 	}
 }
 
@@ -500,5 +508,43 @@ func TestEmbed_PreservesRetryAfter(t *testing.T) {
 	}
 	if got := core.RetryAfterFrom(err); got != 5*time.Second {
 		t.Errorf("RetryAfterFrom(err) = %v, want 5s", got)
+	}
+}
+
+// ConfiguredModels is the union of what the operator configured and what the
+// account turned out to have. Both matter: a configured model stays routable
+// before any discovery has run, and a discovered one becomes routable without
+// a config change. Neither is something a public catalog can answer, because
+// both depend on this account.
+func TestConfiguredModelsMergesConfiguredAndDiscovered(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{
+				{"id": "gpt-oss:120b"},
+				// Already configured: the merge must not list it twice, or the
+				// gateway indexes one model as two routable ids.
+				{"id": "llama3.2"},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	p, err := New("test-key", srv.URL, []string{"llama3.2"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	if got := p.ConfiguredModels(); !reflect.DeepEqual(got, []string{"llama3.2"}) {
+		t.Fatalf("before discovery ConfiguredModels() = %v, want [llama3.2]", got)
+	}
+
+	if _, err := p.DiscoverModels(context.Background()); err != nil {
+		t.Fatalf("DiscoverModels: %v", err)
+	}
+
+	want := []string{"llama3.2", "gpt-oss:120b"}
+	if got := p.ConfiguredModels(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("after discovery ConfiguredModels() = %v, want %v", got, want)
 	}
 }

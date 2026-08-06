@@ -1,7 +1,6 @@
 package strategies
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -10,8 +9,8 @@ import (
 )
 
 func TestLeastLatency_PicksFastest(t *testing.T) {
-	fast := &mockProvider{name: "fast", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "fast"}}
-	slow := &mockProvider{name: "slow", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "slow"}}
+	fast := &mockProvider{name: "fast", models: []string{"gpt-4o"}}
+	slow := &mockProvider{name: "slow", models: []string{"gpt-4o"}}
 
 	tr := latency.New(10)
 	tr.Record("fast", 20*time.Millisecond)
@@ -20,86 +19,45 @@ func TestLeastLatency_PicksFastest(t *testing.T) {
 	targets := []Target{{VirtualKey: "fast"}, {VirtualKey: "slow"}}
 	s := NewLeastLatency(targets, newLookup(fast, slow), tr)
 
-	resp, err := s.Execute(context.Background(), providers.Request{Model: "gpt-4o"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resp.ID != "fast" {
-		t.Errorf("expected fast provider, got %q", resp.ID)
-	}
+	assertLeadsWith(t, s, providers.Request{Model: "gpt-4o"}, "fast")
 }
 
-func TestLeastLatency_FallsBackToRandom_WhenNoSamples(t *testing.T) {
-	mp := &mockProvider{name: "p1", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "ok"}}
+func TestLeastLatency_UnseenTargetsLeadSoTheyGetProfiled(t *testing.T) {
+	seen := &mockProvider{name: "seen", models: []string{"gpt-4o"}}
+	unseen := &mockProvider{name: "unseen", models: []string{"gpt-4o"}}
 
-	tr := latency.New(10) // no samples recorded
-	targets := []Target{{VirtualKey: "p1"}}
-	s := NewLeastLatency(targets, newLookup(mp), tr)
+	tr := latency.New(10)
+	tr.Record("seen", 1*time.Millisecond) // fastest known, but still yields
 
-	_, err := s.Execute(context.Background(), providers.Request{Model: "gpt-4o"})
-	if err != nil {
-		t.Fatalf("expected success, got %v", err)
-	}
+	targets := []Target{{VirtualKey: "seen"}, {VirtualKey: "unseen"}}
+	s := NewLeastLatency(targets, newLookup(seen, unseen), tr)
+
+	assertLeadsWith(t, s, providers.Request{Model: "gpt-4o"}, "unseen")
 }
 
 func TestLeastLatency_SkipsUnsupportedModel(t *testing.T) {
-	p1 := &mockProvider{name: "p1", models: []string{"gpt-3.5-turbo"}, resp: &providers.Response{ID: "p1"}}
-	p2 := &mockProvider{name: "p2", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "p2"}}
+	p1 := &mockProvider{name: "p1", models: []string{"gpt-3.5-turbo"}}
+	p2 := &mockProvider{name: "p2", models: []string{"gpt-4o"}}
 
 	tr := latency.New(10)
-	tr.Record("p1", 10*time.Millisecond) // p1 is "faster" but doesn't support gpt-4o
+	tr.Record("p1", 10*time.Millisecond) // p1 is "faster" but does not serve gpt-4o
 	tr.Record("p2", 100*time.Millisecond)
 
 	targets := []Target{{VirtualKey: "p1"}, {VirtualKey: "p2"}}
 	s := NewLeastLatency(targets, newLookup(p1, p2), tr)
 
-	resp, err := s.Execute(context.Background(), providers.Request{Model: "gpt-4o"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resp.ID != "p2" {
-		t.Errorf("expected p2 (only one supporting gpt-4o), got %q", resp.ID)
-	}
-}
-
-func TestLeastLatency_UnresolvableUnseenTargetReturnsError(t *testing.T) {
-	mp := &mockProvider{name: "p1", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "ok"}}
-
-	tr := latency.New(10)
-	s := NewLeastLatency(
-		[]Target{{VirtualKey: "p1"}},
-		lookupMissingAfterFirstHit(mp),
-		tr,
-	)
-
-	_, err := s.Execute(context.Background(), providers.Request{Model: "gpt-4o"})
-	if err == nil {
-		t.Fatal("expected error when selected unseen provider is no longer resolvable")
-	}
-}
-
-func TestLeastLatency_UnresolvableSampledTargetReturnsError(t *testing.T) {
-	mp := &mockProvider{name: "p1", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "ok"}}
-
-	tr := latency.New(10)
-	tr.Record("p1", 20*time.Millisecond)
-	s := NewLeastLatency(
-		[]Target{{VirtualKey: "p1"}},
-		lookupMissingAfterFirstHit(mp),
-		tr,
-	)
-
-	_, err := s.Execute(context.Background(), providers.Request{Model: "gpt-4o"})
-	if err == nil {
-		t.Fatal("expected error when selected sampled provider is no longer resolvable")
-	}
+	// p1 has the better p50 but does not serve gpt-4o, so p2 must lead. p1 still
+	// trails as a declared fallback; the pipeline skips it on model support.
+	assertLeadsWith(t, s, providers.Request{Model: "gpt-4o"}, "p2")
 }
 
 func TestLeastLatency_NoTargets(t *testing.T) {
-	tr := latency.New(10)
-	s := NewLeastLatency(nil, newLookup(), tr)
-	_, err := s.Execute(context.Background(), providers.Request{Model: "gpt-4o"})
-	if err == nil {
-		t.Fatal("expected error for no targets")
+	s := NewLeastLatency(nil, newLookup(), latency.New(10))
+	keys, err := s.SelectTargets(providers.Request{Model: "gpt-4o"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if keys != nil {
+		t.Errorf("expected no candidates with no targets, got %v", keys)
 	}
 }

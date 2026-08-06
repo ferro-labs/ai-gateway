@@ -12,7 +12,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -21,6 +20,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/ferro-labs/ai-gateway/pkg/logger"
 )
 
 //go:embed catalog_backup.json
@@ -95,6 +96,18 @@ var catalogProviderAliases = map[string][]string{
 	"azure-openai":  {"azure_openai", "azure"},
 	"azure-foundry": {"azure_foundry", "azure"},
 	"vertex-ai":     {"vertex_ai"},
+	// The catalog spells these three with an underscore where the gateway
+	// spells them with a hyphen. Without the mapping every row under them is
+	// unreachable: /v1/models lists nothing and cost is calculated at zero.
+	"hugging-face": {"hugging_face"},
+	"nvidia-nim":   {"nvidia_nim"},
+	"ollama-cloud": {"ollama_cloud"},
+	// qwen is a vendor-brand difference, not a spelling one: the gateway's
+	// qwen provider is a client for Alibaba's DashScope compatible-mode API
+	// (providers/qwen, defaultBaseURL dashscope-intl.aliyuncs.com), which the
+	// catalog files under dashscope/. Its own qwen/ rows stay first — they are
+	// exact keys today and dropping them would unlist five models.
+	"qwen": {"qwen", "dashscope"},
 }
 
 // BuildIndex constructs the reverse modelID → key index for a catalog that
@@ -220,9 +233,9 @@ func LoadWithInfoContext(ctx context.Context) (LoadResult, error) {
 		if parseErr == nil {
 			return LoadResult{Catalog: c, Source: LoadSourceRemote, URL: catalogURL}, nil
 		}
-		slog.Warn("model catalog remote response could not be parsed; using embedded fallback", "url", CatalogURLForLog(catalogURL), "error", catalogLoadErrorForLog(parseErr, catalogURL)) //nolint:gosec // values are CR/LF-sanitized before logging.
+		logger.Default().Warn("model catalog remote response could not be parsed; using embedded fallback", "url", CatalogURLForLog(catalogURL), "error", catalogLoadErrorForLog(parseErr, catalogURL)) // values are CR/LF-sanitized before logging.
 	} else {
-		slog.Warn("model catalog remote fetch failed; using embedded fallback", "url", CatalogURLForLog(catalogURL), "error", catalogLoadErrorForLog(err, catalogURL)) //nolint:gosec // values are CR/LF-sanitized before logging.
+		logger.Default().Warn("model catalog remote fetch failed; using embedded fallback", "url", CatalogURLForLog(catalogURL), "error", catalogLoadErrorForLog(err, catalogURL)) // values are CR/LF-sanitized before logging.
 	}
 
 	c, err := parse(bundledCatalog)
@@ -297,7 +310,7 @@ func resolveCatalogFetchTimeout() time.Duration {
 	}
 	d, err := time.ParseDuration(raw)
 	if err != nil {
-		slog.Warn("invalid catalog fetch timeout; using the default", //nolint:gosec // values are CR/LF-sanitized before logging.
+		logger.Default().Warn("invalid catalog fetch timeout; using the default", // values are CR/LF-sanitized before logging.
 			"env", CatalogFetchTimeoutEnv, "value", safeLogValue(raw), "default", catalogFetchTimeout)
 		return catalogFetchTimeout
 	}
@@ -324,7 +337,55 @@ func fetchRemote(ctx context.Context, rawURL string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	client := &http.Client{Timeout: timeout}
+	// Stdlib defaults, not the provider transport in internal/httpclient: this is
+	// a single control-plane GET, so it wants the small per-host pool and the
+	// HTTP(S)_PROXY handling the provider transport deliberately omits.
+	client := &http.Client{
+		Timeout: timeout,
+		// This client DELIBERATELY follows redirects, unlike every other
+		// outbound client (see SEC-002 / internal/transport.noRedirect).
+		//
+		// It has to: defaultCatalogURL is a GitHub
+		// `releases/latest/download/<asset>` alias, which cannot be served
+		// except by redirect — GitHub resolves `latest` to a tag and then to the
+		// release object store. Refusing redirects here breaks the remote
+		// catalog and its periodic refresh on the default configuration, which
+		// is what REG-001 recorded.
+		//
+		// What makes that safe is that the request carries nothing to leak: no
+		// auth header is attached below, and operator-supplied userinfo cannot
+		// cross a hop. The mechanism is net/url.(*URL).ResolveReference, NOT
+		// net/http's sensitive-header stripping. An absolute Location is
+		// returned carrying its own User (i.e. none), and the relative branches
+		// assign url.Host and url.User together — so userinfo is only ever
+		// inherited alongside the host it was supplied with.
+		//
+		// Do not reason about this from net/http's shouldCopyHeaderOnRedirect:
+		// that rule delegates to isDomainOrSubdomain, which is a suffix match
+		// rather than host equality, so an explicitly set Authorization header
+		// WOULD survive a hop from example.com to sub.example.com. The guarantee
+		// above covers userinfo only. Attaching a real token to this client —
+		// for a private catalog mirror, say — voids it.
+		//
+		// Two costs this exception accepts, neither of them zero:
+		//
+		//   - Userinfo does not survive an absolute redirect, by the same rule
+		//     that makes it safe. An operator pointing
+		//     FERRO_MODEL_CATALOG_URL at https://user:pass@mirror.internal/…
+		//     behind a server that redirects absolutely gets a 401 and a silent
+		//     fall back to the embedded catalog.
+		//   - The redirect DESTINATION is unrestricted: no allowlist, no
+		//     same-host constraint, and no re-check of the scheme validated
+		//     above. A hostile or hijacked catalog origin can send this fetch to
+		//     any host and have that body accepted as the catalog. That is
+		//     tolerable because the fetch carries no credential and the body is
+		//     read only as pricing data under maxCatalogResponseBytes — not
+		//     because the risk is nil.
+		//
+		// nil is the stdlib default (follow up to 10). It is named explicitly
+		// so the exception is a visible decision rather than an omission.
+		CheckRedirect: nil,
+	}
 	resp, err := client.Do(req) //nolint:gosec // URL scheme and host validated above
 	if err != nil {
 		return nil, err
@@ -529,6 +590,32 @@ func (c Catalog) ModelsForProvider(providerID string) []string {
 	}
 	sort.Strings(ids)
 	return ids
+}
+
+// ActiveModelCountForProvider counts the provider's non-deprecated catalog
+// models, de-duplicated by bare model ID across the provider's catalog prefix
+// chain (see [CatalogPrefixesFor]). It answers the same population
+// [Catalog.ModelsForProvider] enumerates, minus the deprecated and legacy
+// lifecycle states, and works for a provider with no registered credential —
+// the count comes from the catalog alone. An unknown provider yields 0.
+func (c Catalog) ActiveModelCountForProvider(providerID string) int {
+	prefixes := CatalogPrefixesFor(providerID)
+	wanted := make(map[string]struct{}, len(prefixes))
+	for _, p := range prefixes {
+		wanted[p] = struct{}{}
+	}
+
+	active := make(map[string]struct{})
+	for _, m := range c {
+		if _, ok := wanted[m.Provider]; !ok {
+			continue
+		}
+		if m.IsDeprecated() {
+			continue
+		}
+		active[m.ModelID] = struct{}{}
+	}
+	return len(active)
 }
 
 // IsDeprecated returns true when the model's lifecycle status is deprecated or legacy.

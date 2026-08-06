@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -46,30 +47,6 @@ func TestNewGemini(t *testing.T) {
 	}
 }
 
-func TestGeminiProvider_SupportedModels(t *testing.T) {
-	p, _ := New("test-key", "")
-	models := p.SupportedModels()
-	if len(models) == 0 {
-		t.Error("SupportedModels() returned empty")
-	}
-	found := false
-	foundEmbedding := false
-	for _, m := range models {
-		if m == "gemini-2.5-flash" {
-			found = true
-		}
-		if m == "gemini-embedding-001" {
-			foundEmbedding = true
-		}
-	}
-	if !found {
-		t.Error("gemini-2.5-flash not found")
-	}
-	if !foundEmbedding {
-		t.Error("gemini-embedding-001 not found")
-	}
-}
-
 func TestGeminiProvider_SupportsModel(t *testing.T) {
 	p, _ := New("test-key", "")
 	if !p.SupportsModel("gemini-2.5-flash") {
@@ -80,16 +57,6 @@ func TestGeminiProvider_SupportsModel(t *testing.T) {
 	}
 	if !p.SupportsModel("text-embedding-004") {
 		t.Error("expected text-embedding-004 to be supported")
-	}
-}
-
-func TestGeminiProvider_Models(t *testing.T) {
-	p, _ := New("test-key", "")
-	models := p.Models()
-	for _, m := range models {
-		if m.OwnedBy != "gemini" {
-			t.Errorf("ModelInfo.OwnedBy = %q, want gemini", m.OwnedBy)
-		}
 	}
 }
 
@@ -629,6 +596,84 @@ func TestGeminiProvider_FinishReason_ContentFilter(t *testing.T) {
 	}
 }
 
+// TestGeminiProvider_FinishReason_NativeReasonOutranksToolCalls verifies a
+// candidate that carries tool calls still reports why Gemini actually stopped:
+// truncation, blocking and rejected calls must not be reported as tool_calls.
+func TestGeminiProvider_FinishReason_NativeReasonOutranksToolCalls(t *testing.T) {
+	const bodyFmt = `{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"id":"call_1","name":"lookup","args":{"city":"SF"}}}]},"finishReason":%q}],"usageMetadata":{"totalTokenCount":1}}`
+
+	tests := []struct {
+		name   string
+		native string
+		want   string
+	}{
+		{"stop becomes tool_calls", "STOP", core.FinishReasonToolCalls},
+		{"truncation reports length", "MAX_TOKENS", core.FinishReasonLength},
+		{"blocking reports content_filter", "SAFETY", core.FinishReasonContentFilter},
+		{"rejected call passes through", "MALFORMED_FUNCTION_CALL", "MALFORMED_FUNCTION_CALL"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, resp := geminiCompleteBody(t, core.Request{
+				Model:    "gemini-2.5-flash",
+				Messages: []core.Message{{Role: core.RoleUser, Content: "weather?"}},
+			}, fmt.Sprintf(bodyFmt, tt.native))
+
+			if len(resp.Choices) != 1 || len(resp.Choices[0].Message.ToolCalls) != 1 {
+				t.Fatalf("choices = %#v, want one candidate with one tool call", resp.Choices)
+			}
+			if got := resp.Choices[0].FinishReason; got != tt.want {
+				t.Fatalf("finish_reason = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestGeminiProvider_CompleteStream_FinishReasonOnlyOnTerminalChunk verifies a
+// mid-stream functionCall chunk carries no finish_reason, so a client that stops
+// at the first non-null one still receives the tool calls Gemini emits later.
+func TestGeminiProvider_CompleteStream_FinishReasonOnlyOnTerminalChunk(t *testing.T) {
+	sse := `data: {"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"id":"call_1","name":"lookup_weather","args":{"city":"SF"}}}]}}]}` + "\n\n" +
+		`data: {"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"id":"call_2","name":"lookup_time","args":{"city":"SF"}}}]},"finishReason":"STOP"}]}` + "\n\n"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, sse)
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	ch, err := p.CompleteStream(context.Background(), core.Request{
+		Model:    "gemini-2.5-flash",
+		Messages: []core.Message{{Role: core.RoleUser, Content: "weather and time?"}},
+	})
+	if err != nil {
+		t.Fatalf("CompleteStream: %v", err)
+	}
+
+	var chunks []core.StreamChunk
+	for c := range ch {
+		if c.Error != nil {
+			t.Fatalf("stream error: %v", c.Error)
+		}
+		chunks = append(chunks, c)
+	}
+
+	if len(chunks) != 2 || len(chunks[0].Choices) != 1 || len(chunks[1].Choices) != 1 {
+		t.Fatalf("chunks = %#v, want two single-candidate chunks", chunks)
+	}
+	if got := chunks[0].Choices[0].FinishReason; got != "" {
+		t.Errorf("non-terminal chunk finish_reason = %q, want empty", got)
+	}
+	if len(chunks[0].Choices[0].Delta.ToolCalls) != 1 {
+		t.Errorf("non-terminal chunk tool calls = %#v, want one", chunks[0].Choices[0].Delta.ToolCalls)
+	}
+	if got := chunks[1].Choices[0].FinishReason; got != core.FinishReasonToolCalls {
+		t.Errorf("terminal chunk finish_reason = %q, want tool_calls", got)
+	}
+}
+
 // TestGeminiProvider_Complete_ErrorPath verifies a non-200 surfaces the upstream
 // message via core.APIError.
 func TestGeminiProvider_Complete_ErrorPath(t *testing.T) {
@@ -655,7 +700,7 @@ func TestGeminiProvider_Complete_ErrorPath(t *testing.T) {
 // token usage from the final chunk's usageMetadata.
 func TestGeminiProvider_CompleteStream_ReportsUsage(t *testing.T) {
 	sse := "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hi\"}]}}]}\n\n" +
-		"data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":9,\"candidatesTokenCount\":4,\"totalTokenCount\":13,\"thoughtsTokenCount\":2}}\n\n"
+		"data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":9,\"candidatesTokenCount\":4,\"totalTokenCount\":15,\"thoughtsTokenCount\":2}}\n\n"
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -684,33 +729,46 @@ func TestGeminiProvider_CompleteStream_ReportsUsage(t *testing.T) {
 	if usage == nil {
 		t.Fatal("no usage reported on gemini stream")
 	}
-	if usage.PromptTokens != 9 || usage.CompletionTokens != 4 || usage.TotalTokens != 13 || usage.ReasoningTokens != 2 {
-		t.Fatalf("usage = %+v, want 9/4/13 with 2 reasoning", usage)
+	// candidatesTokenCount excludes thinking tokens but totalTokenCount includes
+	// them, so completion must carry both for prompt+completion == total.
+	if usage.PromptTokens != 9 || usage.CompletionTokens != 6 || usage.TotalTokens != 15 || usage.ReasoningTokens != 2 {
+		t.Fatalf("usage = %+v, want 9/6/15 with 2 reasoning", usage)
+	}
+}
+
+// TestGeminiProvider_Complete_FoldsThinkingIntoCompletion pins the token
+// accounting: thinking tokens are reported inside completion tokens (as OpenAI
+// counts reasoning tokens) and repeated as the reasoning breakdown, so the
+// three counts add up and thinking output is billed at the output rate.
+func TestGeminiProvider_Complete_FoldsThinkingIntoCompletion(t *testing.T) {
+	const body = `{"candidates":[{"content":{"role":"model","parts":[{"text":"hi"}]},"finishReason":"STOP"}],` +
+		`"usageMetadata":{"promptTokenCount":9,"candidatesTokenCount":4,"totalTokenCount":15,"thoughtsTokenCount":2}}`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, body)
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	resp, err := p.Complete(context.Background(), core.Request{
+		Model:    "gemini-2.5-flash",
+		Messages: []core.Message{{Role: core.RoleUser, Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if resp.Usage.CompletionTokens != 6 || resp.Usage.ReasoningTokens != 2 {
+		t.Errorf("usage = %+v, want 6 completion tokens with 2 reasoning", resp.Usage)
+	}
+	if got := resp.Usage.PromptTokens + resp.Usage.CompletionTokens; got != resp.Usage.TotalTokens {
+		t.Errorf("prompt+completion = %d, want total %d", got, resp.Usage.TotalTokens)
 	}
 }
 
 func TestGeminiProvider_New_RejectsInvalidBaseURL(t *testing.T) {
 	if _, err := New("test-key", "://nope"); err == nil {
 		t.Fatal("New() accepted an invalid base URL")
-	}
-}
-
-func TestBuildImagenRequest_MapsSizeToAspectRatio(t *testing.T) {
-	cases := map[string]string{
-		"1024x1024": "1:1",
-		"1792x1024": "16:9",
-		"1024x1792": "9:16",
-		"640x480":   "", // unmapped
-	}
-	for size, want := range cases {
-		got := buildImagenRequest(core.ImageRequest{Prompt: "x", Size: size})
-		var ar string
-		if got.Parameters != nil {
-			ar = got.Parameters.AspectRatio
-		}
-		if ar != want {
-			t.Errorf("size %q -> aspectRatio %q, want %q", size, ar, want)
-		}
 	}
 }
 

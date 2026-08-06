@@ -1,0 +1,15 @@
+# Grafana dashboard provider for the fullstack observability demo. Loads every
+# dashboard JSON under the mounted path on start.
+apiVersion: 1
+
+providers:
+  - name: ferro
+    orgId: 1
+    folder: 'Ferro AI Gateway'
+    type: file
+    disableDeletion: false
+    allowUiUpdates: true
+    updateIntervalSeconds: 10
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

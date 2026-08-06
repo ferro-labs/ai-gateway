@@ -4,12 +4,10 @@ package moonshot
 import (
 	"context"
 	"net/http"
-	"strings"
 
-	"github.com/ferro-labs/ai-gateway/internal/discovery"
 	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
 	"github.com/ferro-labs/ai-gateway/providers/core"
-	"github.com/ferro-labs/ai-gateway/providers/internal/openaicompat"
+	"github.com/ferro-labs/ai-gateway/providers/core/openaicompat"
 )
 
 const (
@@ -36,14 +34,8 @@ var (
 
 // New creates a new Moonshot provider.
 func New(apiKey, baseURL string) (*Provider, error) {
-	baseURL = strings.TrimSpace(baseURL)
-	if baseURL == "" {
-		baseURL = defaultBaseURL
-	}
-	baseURL = strings.TrimRight(baseURL, "/")
-	// Moonshot's default base URL already carries the /v1 prefix, so unlike
-	// deepseek we do not trim a trailing /v1 — native paths append directly to it.
-	if err := core.ValidateBaseURL(Name, baseURL); err != nil {
+	baseURL, err := core.ResolveAPIRoot(Name, baseURL, defaultBaseURL)
+	if err != nil {
 		return nil, err
 	}
 	return &Provider{
@@ -65,30 +57,14 @@ func (p *Provider) AuthHeaders() map[string]string {
 	return map[string]string{"Authorization": "Bearer " + p.apiKey}
 }
 
-// SupportedModels returns a static list of known Moonshot models.
-func (p *Provider) SupportedModels() []string {
-	return []string{
-		"kimi-k2.5",
-		"kimi-latest",
-		"kimi-thinking-preview",
-		"kimi-k2-thinking",
-		"kimi-k2-turbo-preview",
-	}
-}
-
 // SupportsModel returns true for any model name.
 func (p *Provider) SupportsModel(_ string) bool { return true }
-
-// Models returns structured model metadata.
-func (p *Provider) Models() []core.ModelInfo {
-	return core.ModelsFromList(p.name, p.SupportedModels())
-}
 
 // DiscoverModels fetches the live model list from the Moonshot /v1/models
 // endpoint. The base URL already carries the /v1 prefix, so the models path is
 // baseURL+"/models" (not baseURL+"/v1/models").
 func (p *Provider) DiscoverModels(ctx context.Context) ([]core.ModelInfo, error) {
-	return discovery.DiscoverOpenAICompatibleModels(ctx, p.httpClient, p.baseURL+"/models", p.apiKey, p.name)
+	return core.DiscoverOpenAICompatibleModels(ctx, p.httpClient, p.baseURL+"/models", p.apiKey, p.name)
 }
 
 // Complete sends a chat completion request to Moonshot. Cache-hit tokens

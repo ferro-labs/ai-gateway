@@ -28,30 +28,28 @@ func TestNewDeepSeek_InvalidBaseURL(t *testing.T) {
 	}
 }
 
-func TestNewDeepSeek_TrimsTrailingV1(t *testing.T) {
-	p, err := New("test-key", "https://api.deepseek.com/v1")
-	if err != nil {
-		t.Fatalf("New() error: %v", err)
-	}
-	if p.BaseURL() != "https://api.deepseek.com" {
-		t.Errorf("BaseURL() = %q, want https://api.deepseek.com", p.BaseURL())
-	}
-}
-
-func TestDeepSeekProvider_SupportedModels(t *testing.T) {
-	p, _ := New("test-key", "")
-	models := p.SupportedModels()
-	if len(models) == 0 {
-		t.Error("SupportedModels() returned empty")
-	}
-	found := false
-	for _, m := range models {
-		if m == "deepseek-chat" {
-			found = true
+// TestNewDeepSeek_BaseURLIsTheAPIRoot pins the shape a base URL is written in:
+// the API root, /v1 included, exactly as DeepSeek documents its base_url for the
+// OpenAI clients. It used to be trimmed off and re-appended per request, which
+// is what made the same value mean something different here than on the provider
+// next door.
+func TestNewDeepSeek_BaseURLIsTheAPIRoot(t *testing.T) {
+	for base, want := range map[string]string{
+		"":                             "https://api.deepseek.com/v1",
+		"https://api.deepseek.com/v1":  "https://api.deepseek.com/v1",
+		"https://api.deepseek.com/v1/": "https://api.deepseek.com/v1",
+		// A bare host is not an API root, so it resolves to one.
+		"https://api.deepseek.com": "https://api.deepseek.com/v1",
+		// Anything carrying a path is the operator's own root, used verbatim.
+		"https://proxy.example.com/deepseek/v1": "https://proxy.example.com/deepseek/v1",
+	} {
+		p, err := New("test-key", base)
+		if err != nil {
+			t.Fatalf("New(_, %q) error: %v", base, err)
 		}
-	}
-	if !found {
-		t.Error("deepseek-chat not found")
+		if got := p.BaseURL(); got != want {
+			t.Errorf("New(_, %q).BaseURL() = %q, want %q", base, got, want)
+		}
 	}
 }
 
@@ -65,16 +63,6 @@ func TestDeepSeekProvider_SupportsModel(t *testing.T) {
 	}
 	if p.SupportsModel("gpt-4o") {
 		t.Error("deepseek should not support gpt-4o")
-	}
-}
-
-func TestDeepSeekProvider_Models(t *testing.T) {
-	p, _ := New("test-key", "")
-	models := p.Models()
-	for _, m := range models {
-		if m.OwnedBy != "deepseek" {
-			t.Errorf("ModelInfo.OwnedBy = %q, want deepseek", m.OwnedBy)
-		}
 	}
 }
 

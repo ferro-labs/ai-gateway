@@ -12,32 +12,50 @@
 package strategies
 
 import (
-	"context"
-
 	"github.com/ferro-labs/ai-gateway/providers"
 )
 
 // Strategy defines the interface for routing strategies.
+//
+// A strategy decides ORDER, and that is the whole of it. It does not retry, it
+// does not consult a circuit breaker, it does not classify a failure and it does
+// not decide which capability a target needs — those belong to the gateway's
+// request pipeline, which is the one place they can be identical on every
+// surface. This mirrors how Envoy splits the same problem: the route table and
+// the load balancer say where a request may go, while the retry policy hangs off
+// the route and the circuit breaker off the cluster.
+//
+// The interface used to carry a second method, Execute, which fused selection
+// with the provider call. That fusion is why retry worked only in the one mode
+// that happened to implement a loop, and why the same config could order targets
+// differently on two surfaces. Ordering is now stated once, here, and executed
+// once, in the pipeline.
 type Strategy interface {
-	// Execute runs the strategy and returns a response.
-	Execute(ctx context.Context, req providers.Request) (*providers.Response, error)
-
 	// SelectTargets returns the ordered target virtual keys the strategy would
-	// try for req, most-preferred first, with any remaining configured targets
-	// appended as fallbacks. It is the streaming counterpart to Execute's
-	// implicit provider selection so Route and RouteStream share one ordering.
-	// Only CostOptimized returns an error: in skip mode when no priced provider
-	// supports the model. All other strategies return a nil error.
+	// try for req, most-preferred first, followed by the remaining configured
+	// targets. Every routed surface walks this one ordering.
+	//
+	// What the pipeline does with the keys after the first depends on the routing
+	// mode, and the two behaviours are worth keeping apart. Only `fallback`
+	// ADVANCES: when a target fails it asks the next one. Every other mode
+	// commits to a single key and asks that one alone, so a failure there is the
+	// request's answer however many keys this method returned —
+	// `targets[].retry` still asks that one target repeatedly, under every mode.
+	//
+	// Under a committing mode the tail is not dead weight: it is the set the
+	// pipeline substitutes from BEFORE it commits. A key whose circuit is open,
+	// or whose provider cannot serve the requested surface at all, is passed over
+	// in favour of the next one. Model support is not such a reason — a target
+	// the strategy named while holding the request is a decision the pipeline
+	// honours. See Gateway.eligibleKeys.
+	//
+	// A nil slice means no configured target serves the model at all, which the
+	// caller reports as the caller's 404 rather than attempting anything.
+	// Implementations may return a slice they own, so callers must not modify
+	// it. Only CostOptimized returns an error: in skip mode when no priced
+	// provider supports the model. All other strategies return a nil error.
 	SelectTargets(req providers.Request) ([]string, error)
 }
 
 // ProviderLookup resolves a provider name to a Provider instance.
 type ProviderLookup func(name string) (providers.Provider, bool)
-
-func responseWithProvider(resp *providers.Response, provider string) *providers.Response {
-	if resp == nil || resp.Provider != "" {
-		return resp
-	}
-	resp.Provider = provider
-	return resp
-}

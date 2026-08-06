@@ -25,6 +25,13 @@ type geminiBatchEmbedRequest struct {
 	Requests []geminiBatchEmbedContentRequest `json:"requests"`
 }
 
+// geminiBatchEmbedResponse decodes batchEmbedContents. UsageMetadata is
+// declared but the endpoint does not currently send it — neither does
+// embedContent, nor Gemini's own OpenAI-compatible embeddings route — so the
+// reported token counts are zero for every Gemini embedding. There is no way to
+// fill them from the response; the only source is a second countTokens call per
+// request, which is not worth a round trip. The field stays so the counts
+// appear on their own if Google starts reporting them.
 type geminiBatchEmbedResponse struct {
 	Embeddings []struct {
 		Values []float64 `json:"values"`
@@ -63,7 +70,7 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 		})
 	}
 
-	url := fmt.Sprintf("%s/v1beta/models/%s:batchEmbedContents", p.baseURL, url.PathEscape(model))
+	url := fmt.Sprintf("%s/models/%s:batchEmbedContents", p.baseURL, url.PathEscape(model))
 	httpResp, release, err := p.doJSONRequest(ctx, url, "embed ", geminiReq)
 	if err != nil {
 		return nil, err

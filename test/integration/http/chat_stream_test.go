@@ -88,7 +88,7 @@ func TestChatStream_MidStreamError(t *testing.T) {
 	env := newTestServer(t)
 
 	// Override to send one good chunk then an error chunk.
-	env.Stub.CompleteStreamHook = func(ctx context.Context, req core.Request) (<-chan core.StreamChunk, error) {
+	env.Stub.CompleteStreamHook = func(_ context.Context, req core.Request) (<-chan core.StreamChunk, error) {
 		ch := make(chan core.StreamChunk, 2)
 		go func() {
 			defer close(ch)

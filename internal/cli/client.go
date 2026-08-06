@@ -11,6 +11,8 @@ import (
 	"os"
 	"slices"
 	"time"
+
+	"github.com/ferro-labs/ai-gateway/internal/transport"
 )
 
 // AdminClient talks to a running gateway's admin API.
@@ -41,8 +43,17 @@ func NewAdminClient(flagURL, flagKey string) *AdminClient {
 	return &AdminClient{
 		BaseURL: url,
 		APIKey:  key,
+		// Stdlib defaults, not the provider transport in internal/httpclient: a
+		// CLI invocation makes a handful of admin calls to one host and wants
+		// neither a 100-connection idle pool nor outbound OTel client spans.
 		HTTPClient: &http.Client{
 			Timeout: 15 * time.Second,
+			// Redirects are surfaced, not followed: every admin call carries the
+			// operator's key as a bearer token, and following a redirect would
+			// replay it to whatever host the response names.
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
 		},
 	}
 }
@@ -101,11 +112,23 @@ func (c *AdminClient) do(ctx context.Context, method, path string, body, dest an
 		return fmt.Errorf("read response: %w", err)
 	}
 
-	if resp.StatusCode >= 400 && !slices.Contains(tolerate, resp.StatusCode) {
+	// Anything outside 2xx is a failure. The bound is not `>= 400`: this client
+	// surfaces redirects rather than following them (SEC-002), so a 3xx reaches
+	// here as an ordinary response. A bodyless redirect — which is what Go emits
+	// for any non-GET/HEAD method — would otherwise skip the decode below and
+	// return nil, making `keys revoke` report success while the key stayed live
+	// (REG-002).
+	if (resp.StatusCode < 200 || resp.StatusCode >= 300) && !slices.Contains(tolerate, resp.StatusCode) {
 		var apiErr struct {
 			Error struct {
 				Message string `json:"message"`
 			} `json:"error"`
+		}
+		// Named before the body is consulted: a refused redirect has none, and
+		// the realistic cause is an ingress upgrading http to https, which the
+		// status alone gives the operator no way to guess.
+		if hint := transport.RedirectTarget(resp); hint != "" {
+			return fmt.Errorf("%s %s: HTTP %d (%s)", method, path, resp.StatusCode, hint)
 		}
 		if json.Unmarshal(respBody, &apiErr) == nil && apiErr.Error.Message != "" {
 			return fmt.Errorf("%s %s: %s", method, path, apiErr.Error.Message)
@@ -113,10 +136,24 @@ func (c *AdminClient) do(ctx context.Context, method, path string, body, dest an
 		return fmt.Errorf("%s %s: HTTP %d", method, path, resp.StatusCode)
 	}
 
-	if dest != nil && len(respBody) > 0 {
-		if err := json.Unmarshal(respBody, dest); err != nil {
-			return fmt.Errorf("decode response: %w", err)
-		}
+	// A caller that passed a destination asked for a payload, so a 2xx carrying
+	// no body did not do what it reports having done. Skipping the decode
+	// returned nil and left dest at its zero value: `admin keys create` printed
+	// `null` and exited 0, which a script reads as a key it never received.
+	//
+	// This is REG-002's harm one status band over — there a bodyless redirect,
+	// here a bodyless success — so it is refused the same way. A caller that
+	// passed no destination is unaffected, which is what keeps `keys revoke`
+	// working: its endpoint answers 204 and owes nothing back.
+	if dest == nil {
+		return nil
+	}
+	if len(respBody) == 0 {
+		return fmt.Errorf("%s %s: HTTP %d with an empty response body, expected a payload",
+			method, path, resp.StatusCode)
+	}
+	if err := json.Unmarshal(respBody, dest); err != nil {
+		return fmt.Errorf("decode response: %w", err)
 	}
 	return nil
 }

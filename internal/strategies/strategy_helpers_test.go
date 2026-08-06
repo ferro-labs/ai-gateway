@@ -15,7 +15,7 @@ type mockProvider struct {
 }
 
 func (m *mockProvider) Name() string                  { return m.name }
-func (m *mockProvider) SupportedModels() []string     { return m.models }
+func (m *mockProvider) ConfiguredModels() []string    { return m.models }
 func (m *mockProvider) Models() []providers.ModelInfo { return nil }
 func (m *mockProvider) SupportsModel(model string) bool {
 	for _, mm := range m.models {
@@ -38,19 +38,5 @@ func newLookup(pp ...providers.Provider) ProviderLookup {
 	return func(name string) (providers.Provider, bool) {
 		p, ok := m[name]
 		return p, ok
-	}
-}
-
-func lookupMissingAfterFirstHit(p providers.Provider) ProviderLookup {
-	calls := 0
-	return func(name string) (providers.Provider, bool) {
-		if name != p.Name() {
-			return nil, false
-		}
-		calls++
-		if calls == 1 {
-			return p, true
-		}
-		return nil, false
 	}
 }

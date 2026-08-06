@@ -47,7 +47,7 @@ func TestNewContext(t *testing.T) {
 }
 
 func TestManager_Register(t *testing.T) {
-	m := NewManager()
+	m := NewManager(nil)
 	p := &mockPlugin{name: "test", typ: TypeGuardrail}
 
 	if err := m.Register(StageBeforeRequest, p); err != nil {
@@ -63,7 +63,7 @@ func TestManager_Register(t *testing.T) {
 }
 
 func TestManager_RunBefore(t *testing.T) {
-	m := NewManager()
+	m := NewManager(nil)
 	called := false
 	_ = m.Register(StageBeforeRequest, &mockPlugin{
 		name: "track",
@@ -84,7 +84,7 @@ func TestManager_RunBefore(t *testing.T) {
 }
 
 func TestManager_RunBefore_Reject(t *testing.T) {
-	m := NewManager()
+	m := NewManager(nil)
 	_ = m.Register(StageBeforeRequest, &mockPlugin{
 		name: "blocker",
 		typ:  TypeGuardrail,
@@ -108,7 +108,7 @@ func TestManager_RunBefore_Reject(t *testing.T) {
 }
 
 func TestManager_RunBefore_RejectWithError_ReturnsRejectionError(t *testing.T) {
-	m := NewManager()
+	m := NewManager(nil)
 	_ = m.Register(StageBeforeRequest, &mockPlugin{
 		name: "rate-limit",
 		typ:  TypeRateLimit,
@@ -138,7 +138,7 @@ func TestManager_RunBefore_RejectWithError_ReturnsRejectionError(t *testing.T) {
 }
 
 func TestManager_RunBefore_RejectWithError_FallsBackToErrorMessage(t *testing.T) {
-	m := NewManager()
+	m := NewManager(nil)
 	_ = m.Register(StageBeforeRequest, &mockPlugin{
 		name: "guardrail",
 		typ:  TypeGuardrail,
@@ -187,7 +187,7 @@ func TestManager_RunBefore_FailOpenPluginFailureDoesNotAbort(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			m := NewManager()
+			m := NewManager(nil)
 			_ = m.Register(StageBeforeRequest, &mockPlugin{name: "fail-open", typ: tt.typ, execFn: tt.execFn})
 			nextCalled := false
 			_ = m.Register(StageBeforeRequest, &mockPlugin{
@@ -214,7 +214,7 @@ func TestManager_RunBefore_FailOpenPluginFailureDoesNotAbort(t *testing.T) {
 }
 
 func TestManager_RunAfter(t *testing.T) {
-	m := NewManager()
+	m := NewManager(nil)
 	called := false
 	_ = m.Register(StageAfterRequest, &mockPlugin{
 		name: "logger",
@@ -234,7 +234,7 @@ func TestManager_RunAfter(t *testing.T) {
 }
 
 func TestManager_RunAfter_RejectWithEmptyReason_UsesDefault(t *testing.T) {
-	m := NewManager()
+	m := NewManager(nil)
 	_ = m.Register(StageAfterRequest, &mockPlugin{
 		name: "post-guardrail",
 		typ:  TypeGuardrail,
@@ -261,7 +261,7 @@ func TestManager_RunAfter_RejectWithEmptyReason_UsesDefault(t *testing.T) {
 }
 
 func TestManager_RunAfter_RejectWithErrorAndEmptyReason_UsesErrorMessage(t *testing.T) {
-	m := NewManager()
+	m := NewManager(nil)
 	_ = m.Register(StageAfterRequest, &mockPlugin{
 		name: "schema-guard",
 		typ:  TypeGuardrail,
@@ -311,7 +311,7 @@ func TestManager_RunAfter_FailOpenPluginFailureDoesNotAbort(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			m := NewManager()
+			m := NewManager(nil)
 			_ = m.Register(StageAfterRequest, &mockPlugin{name: "fail-open", typ: tt.typ, execFn: tt.execFn})
 			nextCalled := false
 			_ = m.Register(StageAfterRequest, &mockPlugin{
@@ -339,7 +339,7 @@ func TestManager_RunAfter_FailOpenPluginFailureDoesNotAbort(t *testing.T) {
 }
 
 func TestManager_RunOnError_PanicDoesNotPropagate(t *testing.T) {
-	m := NewManager()
+	m := NewManager(nil)
 	called := false
 	_ = m.Register(StageOnError, &mockPlugin{
 		name: "panic-reporter",
@@ -357,7 +357,7 @@ func TestManager_RunOnError_PanicDoesNotPropagate(t *testing.T) {
 }
 
 func TestManager_CloseClosesRegisteredPlugins(t *testing.T) {
-	m := NewManager()
+	m := NewManager(nil)
 	var closed int
 	_ = m.Register(StageBeforeRequest, &mockPlugin{
 		name: "closer",
@@ -377,7 +377,7 @@ func TestManager_CloseClosesRegisteredPlugins(t *testing.T) {
 }
 
 func TestManager_CloseCallsCloseOncePerInstance(t *testing.T) {
-	m := NewManager()
+	m := NewManager(nil)
 	var closed int
 	p := &mockPlugin{
 		name: "multi-stage",
@@ -399,7 +399,7 @@ func TestManager_CloseCallsCloseOncePerInstance(t *testing.T) {
 }
 
 func TestManager_CloseClosesDistinctInstances(t *testing.T) {
-	m := NewManager()
+	m := NewManager(nil)
 	var closed int
 	for _, name := range []string{"first", "second"} {
 		_ = m.Register(StageBeforeRequest, &mockPlugin{
@@ -421,7 +421,7 @@ func TestManager_CloseClosesDistinctInstances(t *testing.T) {
 }
 
 func TestManager_CloseReturnsWhileActiveAndClosesAfterRelease(t *testing.T) {
-	m := NewManager()
+	m := NewManager(nil)
 	closed := make(chan struct{})
 	var closeOnce sync.Once
 	_ = m.Register(StageAfterRequest, &mockPlugin{
@@ -463,7 +463,7 @@ func TestManager_CloseReturnsWhileActiveAndClosesAfterRelease(t *testing.T) {
 }
 
 func TestManager_NoPlugins(t *testing.T) {
-	m := NewManager()
+	m := NewManager(nil)
 	if m.HasPlugins() {
 		t.Error("expected HasPlugins=false")
 	}
@@ -477,7 +477,7 @@ func TestManager_NoPlugins(t *testing.T) {
 // plugin is registered at any stage and that each stage is independent.
 func TestManager_Register_AllStages(t *testing.T) {
 	for _, stage := range []Stage{StageBeforeRequest, StageAfterRequest, StageOnError} {
-		m := NewManager()
+		m := NewManager(nil)
 		if m.HasPlugins() {
 			t.Fatalf("stage %s: expected HasPlugins=false before register", stage)
 		}
@@ -494,7 +494,7 @@ func TestManager_Register_AllStages(t *testing.T) {
 // after RunBefore takes its slice snapshot is not included in that run.
 // This checks the snapshot semantics introduced by the RLock fix.
 func TestManager_RunBefore_SnapshotIsolation(t *testing.T) {
-	m := NewManager()
+	m := NewManager(nil)
 
 	// firstStarted is closed by the first plugin's Execute, proving that
 	// RunBefore has already taken the slice snapshot and entered the loop.

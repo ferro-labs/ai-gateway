@@ -1,0 +1,83 @@
+# Mock overlay for compose.fullstack.yaml — turns the production stack into a
+# self-contained demo: an in-cluster OpenAI-compatible mock upstream stands in
+# for every provider, and a load generator drives continuous traffic so every
+# dashboard panel fills. No real provider key is used and nothing is billed.
+#
+# Run from the repository root (base + this overlay):
+#   make up-fullstack     (docker compose -f deploy/compose.fullstack.yaml \
+#                                          -f deploy/compose.fullstack.mock.yaml up -d --build)
+#
+# The mock LLM and the load generator are reusable tools that live in scripts/
+# (scripts/mockllm, scripts/loadgen.sh) — this overlay just wires them in.
+
+name: ai-gateway-fullstack
+
+services:
+  # OpenAI-compatible mock upstream: randomized latency, tokens, and a small
+  # error fraction (all tunable via the env below — see scripts/mockllm).
+  mockllm:
+    build:
+      context: ../scripts/mockllm
+    restart: unless-stopped
+    environment:
+      - PORT=9090
+      - MOCK_ERROR_PCT=${MOCK_ERROR_PCT:-3}
+      - MOCK_RATE_LIMIT_PCT=${MOCK_RATE_LIMIT_PCT:-2}
+      - MOCK_LATENCY_MIN_MS=${MOCK_LATENCY_MIN_MS:-40}
+      - MOCK_LATENCY_MAX_MS=${MOCK_LATENCY_MAX_MS:-200}
+
+  gateway:
+    depends_on:
+      mockllm:
+        condition: service_started
+    environment:
+      # Route every OpenAI-compatible provider to the mock, with placeholder keys
+      # (only have to be non-empty). This overrides the empty defaults in the base.
+      - GATEWAY_CONFIG=/etc/ferrogw/gateway.yaml
+      - OPENAI_API_KEY=sk-mock-not-a-real-key
+      - OPENAI_BASE_URL=http://mockllm:9090/v1
+      - GROQ_API_KEY=sk-mock-not-a-real-key
+      - GROQ_BASE_URL=http://mockllm:9090/v1
+      - MISTRAL_API_KEY=sk-mock-not-a-real-key
+      - MISTRAL_BASE_URL=http://mockllm:9090/v1
+      - DEEPSEEK_API_KEY=sk-mock-not-a-real-key
+      - DEEPSEEK_BASE_URL=http://mockllm:9090/v1
+      - TOGETHER_API_KEY=sk-mock-not-a-real-key
+      - TOGETHER_BASE_URL=http://mockllm:9090/v1
+      - FIREWORKS_API_KEY=sk-mock-not-a-real-key
+      - FIREWORKS_BASE_URL=http://mockllm:9090/v1
+      - XAI_API_KEY=sk-mock-not-a-real-key
+      - XAI_BASE_URL=http://mockllm:9090/v1
+      - MOONSHOT_API_KEY=sk-mock-not-a-real-key
+      - MOONSHOT_BASE_URL=http://mockllm:9090/v1
+      - NOVITA_API_KEY=sk-mock-not-a-real-key
+      - NOVITA_BASE_URL=http://mockllm:9090/v1
+      - NVIDIA_NIM_API_KEY=sk-mock-not-a-real-key
+      - NVIDIA_NIM_BASE_URL=http://mockllm:9090/v1
+      - SAMBANOVA_API_KEY=sk-mock-not-a-real-key
+      - SAMBANOVA_BASE_URL=http://mockllm:9090/v1
+      - CEREBRAS_API_KEY=sk-mock-not-a-real-key
+      - CEREBRAS_BASE_URL=http://mockllm:9090/v1
+      - PERPLEXITY_API_KEY=sk-mock-not-a-real-key
+      - PERPLEXITY_BASE_URL=http://mockllm:9090/v1
+      - OPENROUTER_API_KEY=sk-mock-not-a-real-key
+      - OPENROUTER_BASE_URL=http://mockllm:9090/v1
+      - DEEPINFRA_API_KEY=sk-mock-not-a-real-key
+      - DEEPINFRA_BASE_URL=http://mockllm:9090/v1
+      - QWEN_API_KEY=sk-mock-not-a-real-key
+      - QWEN_BASE_URL=http://mockllm:9090/v1
+    volumes:
+      - ./fullstack/gateway.yaml:/etc/ferrogw/gateway.yaml:ro
+
+  # Continuous mixed traffic so the dashboard is never empty.
+  loadgen:
+    image: ${CURL_IMAGE:-curlimages/curl:8.21.0}
+    restart: unless-stopped
+    depends_on:
+      - gateway
+    entrypoint: ["sh", "/loadgen.sh"]
+    environment:
+      - GATEWAY_URL=http://gateway:8080
+      - MASTER_KEY=${MASTER_KEY:-fgw_fullstack_demo_master_key}
+    volumes:
+      - ../scripts/loadgen.sh:/loadgen.sh:ro

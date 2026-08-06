@@ -13,7 +13,7 @@ func TestMiddlewareAuth_MissingBearer_Returns401(t *testing.T) {
 	env := newTestServer(t)
 
 	// Request to an auth-protected endpoint without Authorization header.
-	resp, err := http.Get(env.Server.URL + "/v1/models")
+	resp, err := http.DefaultClient.Do(newTestRequest(t, http.MethodGet, env.Server.URL+"/v1/models", nil))
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
@@ -75,7 +75,7 @@ func TestMiddlewareAuth_AdminEndpoint_RejectsMissing(t *testing.T) {
 	env := newTestServer(t)
 
 	// Admin endpoints should also require auth.
-	resp, err := http.Get(env.Server.URL + "/admin/keys")
+	resp, err := http.DefaultClient.Do(newTestRequest(t, http.MethodGet, env.Server.URL+"/admin/keys", nil))
 	if err != nil {
 		t.Fatalf("GET /admin/keys: %v", err)
 	}

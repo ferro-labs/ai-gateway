@@ -9,10 +9,10 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/ferro-labs/ai-gateway/internal/sqldb"
+	"github.com/ferro-labs/ai-gateway/pkg/logger"
 )
 
 // ErrDeferStep is returned by a Fn or NoTx step to report that it did not
@@ -69,6 +69,52 @@ type Step struct {
 // with an application lock.
 const lockID int64 = 4872193001
 
+// Advisory-lock acquisition is polled rather than blocked on, and bounded.
+//
+// A blocking SELECT pg_advisory_lock holds an open snapshot for the whole wait.
+// CREATE INDEX CONCURRENTLY run inside the lock must then wait for that waiter's
+// virtualxid before its second table scan, and the waiter cannot proceed until
+// the lock is released: a cycle whose two edges are an advisory-lock wait and a
+// virtualxid wait. Postgres's deadlock detector only looks for cycles among
+// regular lock waits, so it never breaks this one — two instances cold-starting
+// against one fresh database stall permanently with nothing listening.
+//
+// Polling pg_try_advisory_lock makes every attempt its own statement, so the
+// waiter holds no snapshot between attempts and nothing inside the lock can wait
+// on it.
+const (
+	// lockPollInterval is the gap between acquisition attempts. Short enough
+	// that an uncontended second instance is delayed imperceptibly, long enough
+	// that a fleet polling in parallel costs nothing.
+	lockPollInterval = 250 * time.Millisecond
+	// lockProgressInterval bounds how often the wait is logged, so a blocked
+	// startup says so rather than looking hung.
+	lockProgressInterval = 5 * time.Second
+	// lockAcquireBudget bounds the total wait. Exceeding it fails startup with
+	// a diagnosable error rather than retrying in-process: a pod that exits is
+	// visible to the orchestrator, which already implements restart backoff and
+	// re-reads config and secrets on the way back up, while an internal retry
+	// loop is visible to nobody. By the next restart the instance holding the
+	// lock has usually finished.
+	lockAcquireBudget = 2 * time.Minute
+)
+
+// PostgresLockTimeout bounds how long a migration statement waits for a table
+// lock before failing.
+//
+// Postgres queues lock requests first-in-first-out, so DDL that blocks also
+// blocks every query that arrives behind it — a migration waiting on a lock
+// freezes the table for everyone. Failing instead lets the queue drain, and the
+// orchestrator restarts the instance.
+//
+// Five seconds sits between the two published conventions: strong_migrations
+// suggests ten, Squawk and postgres.ai one to two. This DDL runs at startup
+// before the listener binds, where recovery is a pod restart rather than a human
+// re-running a migration, so it can be stricter than ten; and a first attempt is
+// expected to succeed outright, so one second would turn any brief lock convoy
+// into a crash loop.
+const PostgresLockTimeout = "5s"
+
 // defaultLedger is the ledger table Run uses. Stores that may share one physical
 // database pass a distinct ledger via RunNamed so their version sequences do not
 // collide.
@@ -94,7 +140,9 @@ func Run(ctx context.Context, db *sql.DB, dialect Dialect, primaryTable string, 
 // Concurrent callers are serialized. On Postgres, where several gateway
 // instances can share one database, RunNamed holds an advisory lock for its
 // whole duration, so a second instance waits and then finds every step already
-// recorded. SQLite serializes writers itself.
+// recorded. The wait is polled and bounded (see lockAcquireBudget) rather than
+// blocked on, and reports progress while it lasts. SQLite serializes writers
+// itself.
 func RunNamed(ctx context.Context, db *sql.DB, dialect Dialect, ledger, primaryTable string, steps []Step) error {
 	// Everything below treats "not Postgres" as SQLite — the ledger DDL, the
 	// table probe, and the placeholder form. An unrecognized dialect would
@@ -120,8 +168,8 @@ func RunNamed(ctx context.Context, db *sql.DB, dialect Dialect, ledger, primaryT
 		}
 		defer func() { _ = conn.Close() }()
 
-		if _, err := conn.ExecContext(ctx, "SELECT pg_advisory_lock($1)", lockID); err != nil {
-			return fmt.Errorf("acquire migration lock: %w", err)
+		if err := acquireLock(ctx, conn, ledger); err != nil {
+			return err
 		}
 		defer func() {
 			// The caller's context may already be done; releasing the lock is
@@ -164,12 +212,12 @@ func RunNamed(ctx context.Context, db *sql.DB, dialect Dialect, ledger, primaryT
 		if _, done := applied[step.Version]; done {
 			continue
 		}
-		if err := applyStep(ctx, db, ledgerInsert, step); err != nil {
+		if err := applyStep(ctx, db, dialect, ledgerInsert, step); err != nil {
 			if errors.Is(err, ErrDeferStep) {
 				// The step chose not to complete (see ErrDeferStep). It is not
 				// recorded, so the next start retries it; later independent
 				// steps still run this time.
-				slog.Warn("migration step deferred; not recorded, will retry on next start",
+				logger.Default().Warn("migration step deferred; not recorded, will retry on next start",
 					"version", step.Version, "name", step.Name, "error", err)
 				continue
 			}
@@ -179,7 +227,45 @@ func RunNamed(ctx context.Context, db *sql.DB, dialect Dialect, ledger, primaryT
 	return nil
 }
 
-func applyStep(ctx context.Context, db *sql.DB, ledgerInsert string, step Step) error {
+// acquireLock takes the migration advisory lock, polling rather than blocking.
+// See lockPollInterval and the comment above it for why blocking is unsafe here.
+func acquireLock(ctx context.Context, conn *sql.Conn, ledger string) error {
+	waitCtx, cancel := context.WithTimeout(ctx, lockAcquireBudget)
+	defer cancel()
+
+	start := time.Now()
+	reportedAt := start
+	for attempt := 1; ; attempt++ {
+		var acquired bool
+		if err := conn.QueryRowContext(waitCtx, "SELECT pg_try_advisory_lock($1)", lockID).Scan(&acquired); err != nil {
+			return fmt.Errorf("acquire migration lock for %s after %s: %w", ledger, time.Since(start).Round(time.Millisecond), err)
+		}
+		if acquired {
+			if attempt > 1 {
+				logger.Default().Info("migration lock acquired; another instance had it",
+					"ledger", ledger, "waited", time.Since(start).Round(time.Millisecond))
+			}
+			return nil
+		}
+
+		if time.Since(reportedAt) >= lockProgressInterval {
+			reportedAt = time.Now()
+			logger.Default().Info("waiting for another instance to finish migrating; startup is blocked until it does",
+				"ledger", ledger,
+				"waited", time.Since(start).Round(time.Second),
+				"budget", lockAcquireBudget)
+		}
+
+		select {
+		case <-waitCtx.Done():
+			return fmt.Errorf("acquire migration lock for %s: gave up after %s waiting for another instance to finish migrating; check for a stalled migration or a long-running transaction, then restart: %w",
+				ledger, time.Since(start).Round(time.Second), waitCtx.Err())
+		case <-time.After(lockPollInterval):
+		}
+	}
+}
+
+func applyStep(ctx context.Context, db *sql.DB, dialect Dialect, ledgerInsert string, step Step) error {
 	now := time.Now().UTC()
 
 	if step.NoTx != nil {
@@ -195,6 +281,15 @@ func applyStep(ctx context.Context, db *sql.DB, ledgerInsert string, step Step) 
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin migration %d (%s): %w", step.Version, step.Name, err)
+	}
+
+	if dialect == Postgres {
+		// SET LOCAL, so it reverts with the transaction and never rides back
+		// into the pool on a reused connection. See PostgresLockTimeout.
+		if _, err := tx.ExecContext(ctx, "SET LOCAL lock_timeout = '"+PostgresLockTimeout+"'"); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("set lock_timeout for migration %d (%s): %w", step.Version, step.Name, err)
+		}
 	}
 
 	if step.SQL != "" {

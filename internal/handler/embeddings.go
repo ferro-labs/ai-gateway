@@ -7,6 +7,7 @@ import (
 	aigateway "github.com/ferro-labs/ai-gateway"
 	"github.com/ferro-labs/ai-gateway/internal/apierror"
 	"github.com/ferro-labs/ai-gateway/providers"
+	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
 // Embeddings handles POST /v1/embeddings.
@@ -27,10 +28,15 @@ func Embeddings(gw *aigateway.Gateway) http.HandlerFunc {
 			return
 		}
 
+		// Resolved once, here, so no provider sees a format the response type
+		// cannot hold — azure-openai and the shared OpenAI-compatible body
+		// forward this field verbatim. See core.NormalizeEncodingFormat for why
+		// "base64" is accepted rather than refused.
+		req.EncodingFormat = core.NormalizeEncodingFormat(req.EncodingFormat)
+
 		resp, err := gw.Embed(r.Context(), req)
 		if err != nil {
-			status, errType, code := apierror.RouteErrorDetails(err)
-			apierror.WriteOpenAI(w, status, err.Error(), errType, code)
+			apierror.WriteRouteError(w, err)
 			return
 		}
 

@@ -1,0 +1,14 @@
+-- Records that this version restored an earlier one, and which version it
+-- replaced doing so.
+--
+-- A rollback and an ordinary update are the same shape in this table without
+-- it — a new version carrying an older config — so the trail could not answer
+-- the one question it is read for after an incident: was this change someone
+-- editing, or someone undoing.
+--
+-- NULL means an ordinary update. Rows written before this column existed are
+-- NULL too, and that conflation is deliberate: an update is what almost every
+-- historical row was, and a third state for "we were not tracking this yet"
+-- would have to be rendered somewhere, in a column whose whole value is that it
+-- is empty for the common case.
+ALTER TABLE config_history ADD COLUMN IF NOT EXISTS rolled_back_from INTEGER NULL;

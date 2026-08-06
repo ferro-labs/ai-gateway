@@ -58,23 +58,6 @@ func TestNewMistral(t *testing.T) {
 	}
 }
 
-func TestMistralProvider_SupportedModels(t *testing.T) {
-	p, _ := New("test-key", "")
-	models := p.SupportedModels()
-	if len(models) == 0 {
-		t.Error("SupportedModels() returned empty")
-	}
-	found := false
-	for _, m := range models {
-		if m == "mistral-large-latest" {
-			found = true
-		}
-	}
-	if !found {
-		t.Error("mistral-large-latest not found")
-	}
-}
-
 func TestMistralProvider_SupportsModel(t *testing.T) {
 	p, _ := New("test-key", "")
 	if !p.SupportsModel("mistral-large-latest") {
@@ -82,16 +65,6 @@ func TestMistralProvider_SupportsModel(t *testing.T) {
 	}
 	if p.SupportsModel("gpt-4o") {
 		t.Error("mistral should not support gpt-4o")
-	}
-}
-
-func TestMistralProvider_Models(t *testing.T) {
-	p, _ := New("test-key", "")
-	models := p.Models()
-	for _, m := range models {
-		if m.OwnedBy != "mistral" {
-			t.Errorf("ModelInfo.OwnedBy = %q, want mistral", m.OwnedBy)
-		}
 	}
 }
 
@@ -294,24 +267,6 @@ func TestMistralProvider_Embed_DimensionsRewrite(t *testing.T) {
 func TestMistralProvider_Embed_Interface(_ *testing.T) {
 	p, _ := New("test-key", "")
 	var _ core.EmbeddingProvider = p
-}
-
-func TestMistralProvider_SupportedModels_Embeddings(t *testing.T) {
-	p, _ := New("test-key", "")
-	models := p.SupportedModels()
-	found := false
-	for _, m := range models {
-		if m == testEmbeddingModel {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatalf("embedding model %q not found in SupportedModels()", testEmbeddingModel)
-	}
-	if !p.SupportsModel(testEmbeddingModel) {
-		t.Fatalf("SupportsModel(%q) = false, want true", testEmbeddingModel)
-	}
 }
 
 func TestMistralProvider_Embed_StringInput_MockHTTP(t *testing.T) {

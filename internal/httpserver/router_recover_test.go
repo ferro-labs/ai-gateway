@@ -8,15 +8,15 @@ import (
 	"strings"
 	"testing"
 
-	aigateway "github.com/ferro-labs/ai-gateway"
+	"github.com/ferro-labs/ai-gateway/config"
 	"github.com/ferro-labs/ai-gateway/providers"
 )
 
 // panicProvider panics inside the provider call, i.e. below every middleware.
 type panicProvider struct{}
 
-func (panicProvider) Name() string              { return "panic-provider" }
-func (panicProvider) SupportedModels() []string { return []string{"panic-model"} }
+func (panicProvider) Name() string               { return "panic-provider" }
+func (panicProvider) ConfiguredModels() []string { return []string{"panic-model"} }
 func (panicProvider) SupportsModel(m string) bool {
 	return m == "panic-model"
 }
@@ -31,9 +31,9 @@ func (panicProvider) Complete(context.Context, providers.Request) (*providers.Re
 // error envelope, with the trace ID that logging.Middleware assigned still on the
 // response. This pins RecoverJSON's position at the outside of the chain.
 func TestRouter_PanicReturnsJSONEnvelopeWithTraceID(t *testing.T) {
-	gw, err := newTestGateway(t, aigateway.Config{
-		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeSingle},
-		Targets:  []aigateway.Target{{VirtualKey: "panic-provider"}},
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets:  []config.Target{{VirtualKey: "panic-provider"}},
 	})
 
 	if err != nil {

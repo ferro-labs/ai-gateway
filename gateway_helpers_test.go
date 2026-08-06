@@ -4,13 +4,14 @@ import (
 	"context"
 	"testing"
 
+	"github.com/ferro-labs/ai-gateway/config"
 	"github.com/ferro-labs/ai-gateway/providers"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 
 	// Register built-in plugins so benchmark helpers can load them via LoadPlugins.
-	_ "github.com/ferro-labs/ai-gateway/internal/plugins/maxtoken"
-	_ "github.com/ferro-labs/ai-gateway/internal/plugins/wordfilter"
+	_ "github.com/ferro-labs/ai-gateway/plugin/maxtoken"
+	_ "github.com/ferro-labs/ai-gateway/plugin/wordfilter"
 )
 
 // mockProviderName is the canonical provider name used by test mock providers.
@@ -26,7 +27,7 @@ type mockProvider struct {
 }
 
 func (m *mockProvider) Name() string                  { return m.name }
-func (m *mockProvider) SupportedModels() []string     { return m.models }
+func (m *mockProvider) ConfiguredModels() []string    { return m.models }
 func (m *mockProvider) Models() []providers.ModelInfo { return nil }
 func (m *mockProvider) SupportsModel(model string) bool {
 	for _, mm := range m.models {
@@ -136,7 +137,7 @@ func streamTargetOrder(t *testing.T, gw *Gateway, req providers.Request) []strin
 	return keys
 }
 
-func assertSameTargetSet(t *testing.T, got []string, targets []Target) {
+func assertSameTargetSet(t *testing.T, got []string, targets []config.Target) {
 	t.Helper()
 	want := make(map[string]bool, len(targets))
 	for _, tgt := range targets {
@@ -157,7 +158,7 @@ func assertSameTargetSet(t *testing.T, got []string, targets []Target) {
 	}
 }
 
-func assertInTargets(t *testing.T, key string, targets []Target) {
+func assertInTargets(t *testing.T, key string, targets []config.Target) {
 	t.Helper()
 	for _, tgt := range targets {
 		if tgt.VirtualKey == key {

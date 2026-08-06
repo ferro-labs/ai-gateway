@@ -7,16 +7,16 @@ import (
 	"strings"
 	"testing"
 
-	aigateway "github.com/ferro-labs/ai-gateway"
+	"github.com/ferro-labs/ai-gateway/config"
 )
 
 // TestChatCompletions_BodyTooLarge_Returns413 verifies that when the request body is
 // wrapped with http.MaxBytesReader and the payload exceeds the limit, the handler
 // returns HTTP 413 (not 400 or 500).
 func TestChatCompletions_BodyTooLarge_Returns413(t *testing.T) {
-	gw, err := newTestGateway(t, aigateway.Config{
-		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeSingle},
-		Targets:  []aigateway.Target{{VirtualKey: "unused"}},
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets:  []config.Target{{VirtualKey: "unused"}},
 	})
 
 	if err != nil {

@@ -131,10 +131,7 @@ func chatRequest(t *testing.T, env *testEnv, hdrs map[string]string, stream bool
 		"stream":   stream,
 	}
 	payload, _ := json.Marshal(body)
-	req, err := http.NewRequest(http.MethodPost, env.Server.URL+"/v1/chat/completions", bytes.NewReader(payload))
-	if err != nil {
-		t.Fatalf("new request: %v", err)
-	}
+	req := newTestRequest(t, http.MethodPost, env.Server.URL+"/v1/chat/completions", bytes.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+testMasterKey)
 	for k, v := range hdrs {
@@ -166,7 +163,7 @@ func TestObservability_TraceIDUnification_InboundTraceparent(t *testing.T) {
 		"traceparent": "00-" + traceID + "-00f067aa0ba902b7-01",
 	}, false)
 	defer closeTestBody(t, resp.Body)
-	io.Copy(io.Discard, resp.Body)
+	_, _ = io.Copy(io.Discard, resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
@@ -197,7 +194,7 @@ func TestObservability_TraceIDUnification_SelfOriginated(t *testing.T) {
 
 	resp := chatRequest(t, env, nil, false)
 	defer closeTestBody(t, resp.Body)
-	io.Copy(io.Discard, resp.Body)
+	_, _ = io.Copy(io.Discard, resp.Body)
 
 	reqID := resp.Header.Get("X-Request-ID")
 	if len(reqID) != 32 {
@@ -221,7 +218,7 @@ func TestObservability_ExporterReceivesCompletedEvent(t *testing.T) {
 
 	resp := chatRequest(t, env, nil, false)
 	defer closeTestBody(t, resp.Body)
-	io.Copy(io.Discard, resp.Body)
+	_, _ = io.Copy(io.Discard, resp.Body)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
@@ -258,7 +255,7 @@ func TestObservability_ExporterReceivesFailedEvent(t *testing.T) {
 
 	resp := chatRequest(t, env, nil, false)
 	defer closeTestBody(t, resp.Body)
-	io.Copy(io.Discard, resp.Body)
+	_, _ = io.Copy(io.Discard, resp.Body)
 	if resp.StatusCode < 500 {
 		t.Fatalf("expected a 5xx status for provider failure, got %d", resp.StatusCode)
 	}
@@ -283,8 +280,10 @@ func TestObservability_ExporterReceivesStreamingEvent(t *testing.T) {
 
 	resp := chatRequest(t, env, nil, true)
 	// Drain the SSE stream fully so the finisher runs.
-	io.Copy(io.Discard, resp.Body)
-	resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	// Closed directly rather than via closeTestBody: bodyclose only sees a
+	// literal Body.Close() when the call is not deferred.
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}

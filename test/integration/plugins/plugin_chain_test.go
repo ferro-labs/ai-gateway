@@ -14,16 +14,17 @@ import (
 	"time"
 
 	aigateway "github.com/ferro-labs/ai-gateway"
-	"github.com/ferro-labs/ai-gateway/internal/admin"
-	"github.com/ferro-labs/ai-gateway/internal/testutil"
+	"github.com/ferro-labs/ai-gateway/config"
+	"github.com/ferro-labs/ai-gateway/internal/admin/model"
 	"github.com/ferro-labs/ai-gateway/plugin"
 	"github.com/ferro-labs/ai-gateway/providers/core"
+	"github.com/ferro-labs/ai-gateway/test/testutil"
 
 	// Register built-in plugin factories via side-effect imports.
-	_ "github.com/ferro-labs/ai-gateway/internal/plugins/cache"
-	_ "github.com/ferro-labs/ai-gateway/internal/plugins/logger"
-	_ "github.com/ferro-labs/ai-gateway/internal/plugins/ratelimit"
-	_ "github.com/ferro-labs/ai-gateway/internal/plugins/wordfilter"
+	_ "github.com/ferro-labs/ai-gateway/plugin/cache"
+	_ "github.com/ferro-labs/ai-gateway/plugin/logger"
+	_ "github.com/ferro-labs/ai-gateway/plugin/ratelimit"
+	_ "github.com/ferro-labs/ai-gateway/plugin/wordfilter"
 )
 
 // stubProv is a minimal Provider that lets tests hook response/error behavior.
@@ -38,8 +39,8 @@ var (
 	_ core.StreamProvider = (*stubProv)(nil)
 )
 
-func (s *stubProv) Name() string              { return s.name }
-func (s *stubProv) SupportedModels() []string { return s.models }
+func (s *stubProv) Name() string               { return s.name }
+func (s *stubProv) ConfiguredModels() []string { return s.models }
 func (s *stubProv) SupportsModel(m string) bool {
 	for _, n := range s.models {
 		if n == m {
@@ -87,10 +88,10 @@ const pluginTestModel = "plugin-model-v1"
 func newWordFilterGateway(t *testing.T, blockedWords []string, completeFunc func(context.Context, core.Request) (*core.Response, error)) *aigateway.Gateway {
 	t.Helper()
 	prov := &stubProv{name: "wfstub", models: []string{pluginTestModel}, CompleteFunc: completeFunc}
-	cfg := aigateway.Config{
-		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeFallback},
-		Targets:  []aigateway.Target{{VirtualKey: "wfstub"}},
-		Plugins: []aigateway.PluginConfig{
+	cfg := config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeFallback},
+		Targets:  []config.Target{{VirtualKey: "wfstub"}},
+		Plugins: []config.PluginConfig{
 			{
 				Name:    "word-filter",
 				Type:    "guardrail",
@@ -186,9 +187,9 @@ func TestPluginChain_ResponseCache_Hit(t *testing.T) {
 		}, nil
 	}
 
-	gw, err := testutil.NewTestGateway(t, aigateway.Config{
-		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeFallback},
-		Targets:  []aigateway.Target{{VirtualKey: "cachestub"}},
+	gw, err := testutil.NewTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeFallback},
+		Targets:  []config.Target{{VirtualKey: "cachestub"}},
 	})
 
 	if err != nil {
@@ -261,10 +262,10 @@ func TestPluginChain_PerKeyRateLimit(t *testing.T) {
 	// key_rpm=1 means the token bucket holds 1 token at most; the first request
 	// drains it. At a fill rate of 1/60 r/s the second request is immediately
 	// rejected (within the test's timescale).
-	gw, err := testutil.NewTestGateway(t, aigateway.Config{
-		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeFallback},
-		Targets:  []aigateway.Target{{VirtualKey: "rlstub"}},
-		Plugins: []aigateway.PluginConfig{
+	gw, err := testutil.NewTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeFallback},
+		Targets:  []config.Target{{VirtualKey: "rlstub"}},
+		Plugins: []config.PluginConfig{
 			{
 				Name:    "rate-limit",
 				Type:    "ratelimit",
@@ -294,11 +295,11 @@ func TestPluginChain_PerKeyRateLimit(t *testing.T) {
 	// ctxWithKey injects a fake authenticated API key into a context so the
 	// gateway's per-key plugin propagation path is exercised.
 	ctxWithKey := func(keyID string) context.Context {
-		return admin.ContextWithAPIKey(t.Context(), &admin.APIKey{
+		return model.ContextWithAPIKey(t.Context(), &model.APIKey{
 			ID:     keyID,
 			Name:   keyID,
 			Active: true,
-			Scopes: []string{admin.ScopeAdmin},
+			Scopes: []string{model.ScopeAdmin},
 		})
 	}
 
@@ -334,7 +335,7 @@ func TestPluginChain_PerKeyRateLimit(t *testing.T) {
 // TestPluginChain_OnError_Fires confirms that a failing provider produces an
 // error that propagates correctly through the gateway (on_error path).
 func TestPluginChain_OnError_Fires(t *testing.T) {
-	plugins := []aigateway.PluginConfig{
+	plugins := []config.PluginConfig{
 		{
 			Name:    "request-logger",
 			Type:    "logging",
@@ -348,9 +349,9 @@ func TestPluginChain_OnError_Fires(t *testing.T) {
 		return nil, errors.New("upstream provider error: internal server error")
 	}
 
-	gw, err := testutil.NewTestGateway(t, aigateway.Config{
-		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeFallback},
-		Targets:  []aigateway.Target{{VirtualKey: "errstub"}},
+	gw, err := testutil.NewTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeFallback},
+		Targets:  []config.Target{{VirtualKey: "errstub"}},
 		Plugins:  plugins,
 	})
 

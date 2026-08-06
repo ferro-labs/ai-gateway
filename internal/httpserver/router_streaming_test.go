@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	aigateway "github.com/ferro-labs/ai-gateway"
-	"github.com/ferro-labs/ai-gateway/internal/admin"
+	"github.com/ferro-labs/ai-gateway/config"
+	"github.com/ferro-labs/ai-gateway/internal/admin/repository"
 	"github.com/ferro-labs/ai-gateway/internal/httpserver"
 	"github.com/ferro-labs/ai-gateway/providers"
 	openaipkg "github.com/ferro-labs/ai-gateway/providers/openai"
@@ -29,9 +29,13 @@ func buildProxyTestRouter(t *testing.T, upstreamURL string) http.Handler {
 	t.Helper()
 	t.Setenv("ALLOW_UNAUTHENTICATED_PROXY", "true")
 
-	gw, err := newTestGateway(t, aigateway.Config{
-		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeSingle},
-		Targets:  []aigateway.Target{{VirtualKey: "stub"}},
+	// The target names the provider registered below. The pass-through only
+	// reaches providers a configured target names, so a fixture whose target
+	// named something else described a config production cannot produce: a
+	// credential present for a provider the operator never routes to.
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets:  []config.Target{{VirtualKey: openaipkg.Name}},
 	})
 
 	if err != nil {
@@ -44,8 +48,13 @@ func buildProxyTestRouter(t *testing.T, upstreamURL string) http.Handler {
 		t.Fatalf("build openai provider: %v", err)
 	}
 	reg.Register(p)
+	// The provider goes into both, which is what bootstrap.BuildGateway does
+	// with every provider a credential registered. The pass-through resolves
+	// through the gateway now, so a provider only the registry holds is a state
+	// production never produces and would make X-Provider unresolvable here.
+	gw.RegisterProvider(p)
 
-	return httpserver.NewRouter(reg, admin.NewKeyStore(), nil, gw, nil, nil, nil, nil, "", nil)
+	return httpserver.NewRouter(reg, repository.NewKeyStore(), nil, nil, gw, nil, nil, nil, nil, nil, "", nil)
 }
 
 func TestRouter_ProxyUpgradeSurvivesResponseWriterWrapping(t *testing.T) {
@@ -130,7 +139,9 @@ func TestRouter_ProxyStreamReachesClientIncrementally(t *testing.T) {
 	gateway := httptest.NewServer(buildProxyTestRouter(t, upstream.URL))
 	defer gateway.Close()
 
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, gateway.URL+"/v1/responses", nil)
+	// /v1/realtime exercises the generic /v1/* streaming pass-through; /v1/responses
+	// is now a native (POST-only) route, so it no longer stands in for one.
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, gateway.URL+"/v1/realtime", nil)
 	if err != nil {
 		t.Fatalf("build request: %v", err)
 	}

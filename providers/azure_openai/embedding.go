@@ -35,11 +35,13 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 	if err != nil {
 		return nil, err
 	}
-	switch req.EncodingFormat {
-	case "", "float", "base64":
-		// accepted
-	default:
-		return nil, fmt.Errorf("embed: unsupported encoding_format %q; valid values are \"float\" and \"base64\"", req.EncodingFormat)
+	// "base64" was accepted here and forwarded, but core.Embedding.Embedding is
+	// []float64 and cannot hold the string that comes back: the request died at
+	// the unmarshal below as an untyped 500, blaming the gateway for a value the
+	// caller chose and retrying it until the budget was gone. The shared
+	// validator refuses it once, as a typed 400.
+	if err := core.ValidateEmbeddingEncodingFormat(req.EncodingFormat); err != nil {
+		return nil, err
 	}
 
 	pReq := embeddingRequest{
@@ -55,7 +57,10 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 	}
 	defer release()
 
-	url := p.opEndpoint(p.deploymentFor(req.Model), "embeddings")
+	url, err := p.opEndpoint(p.deploymentFor(req.Model), "embeddings")
+	if err != nil {
+		return nil, err
+	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bodyReader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)

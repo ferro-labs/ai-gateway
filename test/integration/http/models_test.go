@@ -65,7 +65,7 @@ func TestModels_ListStubModels(t *testing.T) {
 func TestModels_RequiresAuth(t *testing.T) {
 	env := newTestServer(t)
 
-	resp, err := http.Get(env.Server.URL + "/v1/models")
+	resp, err := http.DefaultClient.Do(newTestRequest(t, http.MethodGet, env.Server.URL+"/v1/models", nil))
 	if err != nil {
 		t.Fatalf("GET /v1/models: %v", err)
 	}

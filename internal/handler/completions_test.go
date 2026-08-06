@@ -1,11 +1,8 @@
 package handler
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -13,22 +10,27 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ferro-labs/ai-gateway/internal/logging"
-	"github.com/ferro-labs/ai-gateway/internal/streamio"
+	aigateway "github.com/ferro-labs/ai-gateway"
+	"github.com/ferro-labs/ai-gateway/config"
 	"github.com/ferro-labs/ai-gateway/providers"
-	openaipkg "github.com/ferro-labs/ai-gateway/providers/openai"
+	"github.com/ferro-labs/ai-gateway/providers/core"
+
+	_ "github.com/ferro-labs/ai-gateway/plugin/wordfilter"
 )
+
+const legacyTestModel = "legacy-model"
 
 type nonProxyProvider struct {
 	name    string
 	models  []string
 	resp    *providers.Response
+	err     error
 	calls   int
 	lastReq providers.Request
 }
 
 func (m *nonProxyProvider) Name() string                  { return m.name }
-func (m *nonProxyProvider) SupportedModels() []string     { return m.models }
+func (m *nonProxyProvider) ConfiguredModels() []string    { return m.models }
 func (m *nonProxyProvider) Models() []providers.ModelInfo { return nil }
 func (m *nonProxyProvider) SupportsModel(model string) bool {
 	for _, mm := range m.models {
@@ -41,12 +43,15 @@ func (m *nonProxyProvider) SupportsModel(model string) bool {
 func (m *nonProxyProvider) Complete(_ context.Context, req providers.Request) (*providers.Response, error) {
 	m.calls++
 	m.lastReq = req
+	if m.err != nil {
+		return nil, m.err
+	}
 	if m.resp != nil {
 		return m.resp, nil
 	}
 	return &providers.Response{
 		ID:    "np-1",
-		Model: "non-proxy-model",
+		Model: req.Model,
 		Choices: []providers.Choice{{
 			Index:        0,
 			Message:      providers.Message{Role: providers.RoleAssistant, Content: "ok"},
@@ -55,119 +60,269 @@ func (m *nonProxyProvider) Complete(_ context.Context, req providers.Request) (*
 	}, nil
 }
 
-// proxiableBadURLProvider is a ProxiableProvider whose BaseURL is deliberately
-// malformed, used to exercise the CompletionsEndpointURL error path without
-// depending on a real provider constructor's own URL validation.
-type proxiableBadURLProvider struct {
-	nonProxyProvider
-	baseURL string
+// proxiableProvider is a provider that also advertises a pass-through base URL,
+// i.e. one that could in principle serve /v1/completions natively upstream.
+type proxiableProvider struct {
+	*nonProxyProvider
 }
 
-func (p *proxiableBadURLProvider) BaseURL() string                { return p.baseURL }
-func (p *proxiableBadURLProvider) AuthHeaders() map[string]string { return nil }
+func (p *proxiableProvider) BaseURL() string                { return "https://upstream.invalid/v1" }
+func (p *proxiableProvider) AuthHeaders() map[string]string { return nil }
 
-func TestCompletionsEndpointURL(t *testing.T) {
-	tests := []struct {
-		name    string
-		baseURL string
-		want    string
-		wantErr bool
-	}{
-		{name: "root base URL", baseURL: "https://api.openai.com", want: "https://api.openai.com/v1/completions"},
-		{name: "already has v1", baseURL: "https://api.example.com/v1", want: "https://api.example.com/v1/completions"},
-		{name: "already has v1 trailing slash", baseURL: "https://api.example.com/v1/", want: "https://api.example.com/v1/completions"},
-		{name: "invalid", baseURL: "not a url", wantErr: true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := CompletionsEndpointURL(tt.baseURL)
-			if tt.wantErr {
-				if err == nil {
-					t.Fatalf("expected error for base URL %q", tt.baseURL)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if got != tt.want {
-				t.Fatalf("got %q, want %q", got, tt.want)
-			}
-		})
-	}
+// nativeWireProvider is a proxiable provider whose upstream API is not
+// OpenAI-wire-compatible (Anthropic, Gemini, Bedrock, Cohere, Vertex, Azure).
+type nativeWireProvider struct {
+	proxiableProvider
 }
 
-func TestCompletionsHandler_ProxyPath_DoesNotDuplicateV1(t *testing.T) {
-	var gotPath string
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotPath = r.URL.Path
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"id":"cmpl-1","object":"text_completion","model":"gpt-4o","choices":[{"text":"ok","index":0,"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
-	}))
-	defer upstream.Close()
+func (p *nativeWireProvider) NonOpenAIWire() {}
 
-	reg := providers.NewRegistry()
-	op, err := openaipkg.New("sk-test", upstream.URL+"/v1")
+// completionsGateway builds a gateway from cfg, registers ps on it, and loads
+// any plugins cfg declares.
+func completionsGateway(t *testing.T, cfg config.Config, ps ...providers.Provider) *aigateway.Gateway {
+	t.Helper()
+	gw, err := newTestGateway(t, cfg)
 	if err != nil {
-		t.Fatalf("failed to build openai provider: %v", err)
+		t.Fatalf("New: %v", err)
 	}
-	reg.Register(op)
-
-	h := Completions(reg)
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/completions", strings.NewReader(`{"model":"gpt-4o","prompt":"hi"}`))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-
-	h(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	for _, p := range ps {
+		gw.RegisterProvider(p)
 	}
-	if gotPath != "/v1/completions" {
-		t.Fatalf("expected upstream path /v1/completions, got %q", gotPath)
+	if err := gw.LoadPlugins(); err != nil {
+		t.Fatalf("LoadPlugins: %v", err)
 	}
+	return gw
 }
 
-func TestCompletionsHandler_ShimsStreamRequest_ReturnsExplicitError(t *testing.T) {
-	np := &nonProxyProvider{name: "non-proxy", models: []string{"non-proxy-model"}}
+// shimGateway is the common single-target setup: one provider serving
+// legacyTestModel, listed under targets.
+func shimGateway(t *testing.T, p providers.Provider) *aigateway.Gateway {
+	t.Helper()
+	return completionsGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeFallback},
+		Targets:  []config.Target{{VirtualKey: p.Name()}},
+	}, p)
+}
 
-	reg := providers.NewRegistry()
-	reg.Register(np)
-
-	h := Completions(reg)
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/completions", strings.NewReader(`{"model":"non-proxy-model","prompt":"hi","stream":true}`))
-	req.Header.Set("Content-Type", "application/json")
+func postCompletions(t *testing.T, gw *aigateway.Gateway, body string) *httptest.ResponseRecorder {
+	t.Helper()
 	w := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/completions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	Completions(gw)(w, req)
+	return w
+}
 
-	h(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
-	}
-
+func errorCode(t *testing.T, w *httptest.ResponseRecorder) string {
+	t.Helper()
 	var payload struct {
 		Error struct {
 			Code string `json:"code"`
 		} `json:"error"`
 	}
-	if err := json.NewDecoder(w.Body).Decode(&payload); err != nil {
-		t.Fatalf("decode error response: %v", err)
+	if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode error response: %v (body=%s)", err, w.Body.String())
 	}
-	if payload.Error.Code != "streaming_not_supported" {
-		t.Fatalf("expected error code streaming_not_supported, got %q", payload.Error.Code)
+	return payload.Error.Code
+}
+
+// TestCompletionsHandler_PluginBlocksLikeChat is the regression test for the
+// pipeline bypass: an operator who configures a guardrail and verifies it on
+// /v1/chat/completions must get the same answer for the same prompt on
+// /v1/completions. Serving it from the provider registry meant the identical
+// request was answered unfiltered here.
+func TestCompletionsHandler_PluginBlocksLikeChat(t *testing.T) {
+	p := &nonProxyProvider{name: "shim", models: []string{legacyTestModel}}
+	gw := completionsGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeFallback},
+		Targets:  []config.Target{{VirtualKey: "shim"}},
+		Plugins: []config.PluginConfig{{
+			Name:    "word-filter",
+			Type:    "guardrail",
+			Stage:   "before_request",
+			Enabled: true,
+			Config:  map[string]any{"blocked_words": []any{"forbidden"}},
+		}},
+	}, p)
+
+	chat := httptest.NewRecorder()
+	ChatCompletions(gw)(chat, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"`+legacyTestModel+`","messages":[{"role":"user","content":"a forbidden thing"}]}`)))
+	if chat.Code != http.StatusBadRequest {
+		t.Fatalf("chat status = %d, want 400 (guardrail must block): %s", chat.Code, chat.Body.String())
 	}
-	if np.calls != 0 {
-		t.Fatalf("provider should not be called for unsupported stream shim, got %d calls", np.calls)
+
+	w := postCompletions(t, gw, `{"model":"`+legacyTestModel+`","prompt":"a forbidden thing"}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("completions status = %d, want 400 (same guardrail, same prompt): %s", w.Code, w.Body.String())
+	}
+	if got := errorCode(t, w); got != "request_rejected" {
+		t.Fatalf("error code = %q, want request_rejected", got)
+	}
+	if p.calls != 0 {
+		t.Fatalf("provider calls = %d, want 0 — the guardrail must run before the provider", p.calls)
+	}
+}
+
+// TestCompletionsHandler_ServesOnlyConfiguredTargets pins the access-control
+// half of the same bypass: a provider whose credential is configured but which
+// an operator deliberately left out of `targets` must not be reachable here.
+func TestCompletionsHandler_ServesOnlyConfiguredTargets(t *testing.T) {
+	t.Run("listed target is served", func(t *testing.T) {
+		p := &nonProxyProvider{name: "listed", models: []string{legacyTestModel}}
+		gw := completionsGateway(t, config.Config{
+			Strategy: config.StrategyConfig{Mode: config.ModeFallback},
+			Targets:  []config.Target{{VirtualKey: "listed"}},
+		}, p)
+
+		w := postCompletions(t, gw, `{"model":"`+legacyTestModel+`","prompt":"hi"}`)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+		}
+		if p.calls != 1 {
+			t.Fatalf("provider calls = %d, want 1", p.calls)
+		}
+	})
+
+	t.Run("excluded provider is not served", func(t *testing.T) {
+		listed := &nonProxyProvider{name: "listed", models: []string{"listed-model"}}
+		excluded := &nonProxyProvider{name: "excluded", models: []string{"excluded-model"}}
+		gw := completionsGateway(t, config.Config{
+			Strategy: config.StrategyConfig{Mode: config.ModeFallback},
+			Targets:  []config.Target{{VirtualKey: "listed"}},
+		}, listed, excluded)
+
+		w := postCompletions(t, gw, `{"model":"excluded-model","prompt":"hi"}`)
+		if w.Code == http.StatusOK {
+			t.Fatalf("a provider excluded from targets was served: %s", w.Body.String())
+		}
+		if excluded.calls != 0 {
+			t.Fatalf("excluded provider calls = %d, want 0", excluded.calls)
+		}
+	})
+}
+
+// TestCompletionsHandler_ResolvesAlias verifies a configured alias routes here
+// the way it routes on chat. The handler saw only a provider registry before,
+// which cannot see config.Aliases at all.
+func TestCompletionsHandler_ResolvesAlias(t *testing.T) {
+	p := &nonProxyProvider{name: "shim", models: []string{legacyTestModel}}
+	gw := completionsGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeFallback},
+		Targets:  []config.Target{{VirtualKey: "shim"}},
+		Aliases:  map[string]string{"fast": legacyTestModel},
+	}, p)
+
+	w := postCompletions(t, gw, `{"model":"fast","prompt":"hi"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	if p.lastReq.Model != legacyTestModel {
+		t.Fatalf("provider saw model %q, want the alias target %q", p.lastReq.Model, legacyTestModel)
+	}
+}
+
+// TestCompletionsHandler_ProxiableProvidersUseTheShim covers the providers that
+// used to be forwarded verbatim to an upstream /v1/completions route. A
+// non-OpenAI-wire upstream has no such route, so the raw forward returned the
+// provider's own 404 in a provider-shaped body; every provider now goes through
+// the translated chat path instead.
+func TestCompletionsHandler_ProxiableProvidersUseTheShim(t *testing.T) {
+	tests := []struct {
+		name string
+		of   func(*nonProxyProvider) providers.Provider
+	}{
+		{"openai-wire proxiable", func(base *nonProxyProvider) providers.Provider {
+			return &proxiableProvider{base}
+		}},
+		{"native-wire proxiable", func(base *nonProxyProvider) providers.Provider {
+			return &nativeWireProvider{proxiableProvider{base}}
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			base := &nonProxyProvider{name: "proxiable", models: []string{legacyTestModel}}
+			gw := shimGateway(t, tt.of(base))
+
+			w := postCompletions(t, gw, `{"model":"`+legacyTestModel+`","prompt":"hi"}`)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+			}
+			var payload legacyResponse
+			if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if payload.Object != "text_completion" {
+				t.Fatalf("object = %q, want text_completion", payload.Object)
+			}
+			if base.calls != 1 {
+				t.Fatalf("provider Complete calls = %d, want 1 (the shim, not a native forward)", base.calls)
+			}
+		})
+	}
+}
+
+// TestCompletionsHandler_UpstreamStatusIsPreserved pins the shared error
+// classification: a throttled upstream stays a 429 and carries its Retry-After,
+// rather than being flattened into a 500.
+func TestCompletionsHandler_UpstreamStatusIsPreserved(t *testing.T) {
+	upstream := &core.HTTPStatusError{
+		StatusCode: http.StatusTooManyRequests,
+		Message:    "shim API error (429): rate limited",
+		RetryAfter: 7 * time.Second,
+	}
+	p := &nonProxyProvider{name: "shim", models: []string{legacyTestModel}, err: upstream}
+	gw := shimGateway(t, p)
+
+	w := postCompletions(t, gw, `{"model":"`+legacyTestModel+`","prompt":"hi"}`)
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429: %s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("Retry-After"); got != "7" {
+		t.Fatalf("Retry-After = %q, want 7", got)
+	}
+	if got := errorCode(t, w); got != "rate_limit_exceeded" {
+		t.Fatalf("error code = %q, want rate_limit_exceeded", got)
+	}
+}
+
+// The status is the router's, not this handler's: 404 is what every routed
+// surface answers for a model the gateway does not serve. See
+// TestSurfaces_UnroutableModel_AgreeOnOneAnswer.
+func TestCompletionsHandler_UnknownModelIsRejected(t *testing.T) {
+	gw := shimGateway(t, &nonProxyProvider{name: "shim", models: []string{legacyTestModel}})
+
+	w := postCompletions(t, gw, `{"model":"no-such-model","prompt":"hi"}`)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404: %s", w.Code, w.Body.String())
+	}
+	if got := errorCode(t, w); got != "model_not_found" {
+		t.Fatalf("error code = %q, want model_not_found", got)
+	}
+}
+
+// Streaming has no legacy envelope through the gateway, so it is refused
+// outright rather than left to hang or return an empty 200.
+func TestCompletionsHandler_StreamRequestIsRefused(t *testing.T) {
+	p := &nonProxyProvider{name: "shim", models: []string{legacyTestModel}}
+	gw := shimGateway(t, p)
+
+	w := postCompletions(t, gw, `{"model":"`+legacyTestModel+`","prompt":"hi","stream":true}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", w.Code, w.Body.String())
+	}
+	if got := errorCode(t, w); got != "streaming_not_supported" {
+		t.Fatalf("error code = %q, want streaming_not_supported", got)
+	}
+	if p.calls != 0 {
+		t.Fatalf("provider calls = %d, want 0", p.calls)
 	}
 }
 
 // TestCompletionsHandler_ShimPromptForms covers every OpenAI-valid `prompt`
-// shape through the chat shim (Path 2): a bare string and a single-element
-// array are representable as one text message and must be accepted; a
-// multi-element array (batch), token-id arrays, and arrays of token-id
-// arrays cannot be represented as a single chat message and must be
+// shape: a bare string and a single-element array are representable as one
+// chat message and must be accepted; a multi-element array (batch), token-id
+// arrays, and arrays of token-id arrays cannot be represented and must be
 // rejected with a 400, not silently mangled.
 func TestCompletionsHandler_ShimPromptForms(t *testing.T) {
 	tests := []struct {
@@ -191,27 +346,16 @@ func TestCompletionsHandler_ShimPromptForms(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			p := &nonProxyProvider{name: "shim", models: []string{"legacy-model"}}
-			reg := providers.NewRegistry()
-			reg.Register(p)
-			body := `{"model":"legacy-model","prompt":` + tt.promptJSON + `}`
-			w := httptest.NewRecorder()
-			Completions(reg)(w, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/completions", strings.NewReader(body)))
+			p := &nonProxyProvider{name: "shim", models: []string{legacyTestModel}}
+			gw := shimGateway(t, p)
+			w := postCompletions(t, gw, `{"model":"`+legacyTestModel+`","prompt":`+tt.promptJSON+`}`)
 
 			if !tt.wantOK {
 				if w.Code != http.StatusBadRequest {
 					t.Fatalf("status = %d, want 400: %s", w.Code, w.Body.String())
 				}
-				var payload struct {
-					Error struct {
-						Code string `json:"code"`
-					} `json:"error"`
-				}
-				if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
-					t.Fatalf("decode error response: %v", err)
-				}
-				if payload.Error.Code != "unsupported_parameter" {
-					t.Fatalf("error code = %q, want unsupported_parameter", payload.Error.Code)
+				if got := errorCode(t, w); got != "unsupported_parameter" {
+					t.Fatalf("error code = %q, want unsupported_parameter", got)
 				}
 				if p.calls != 0 {
 					t.Fatalf("provider called despite unsupported prompt shape")
@@ -233,8 +377,8 @@ func TestCompletionsHandler_ShimPromptForms(t *testing.T) {
 }
 
 // TestCompletionsHandler_ShimStopForms covers both OpenAI-valid `stop` shapes
-// (bare string, array of strings) through the chat shim, asserting they
-// normalize into the []string form providers.Request expects.
+// (bare string, array of strings), asserting they normalize into the []string
+// form providers.Request expects.
 func TestCompletionsHandler_ShimStopForms(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -251,8 +395,7 @@ func TestCompletionsHandler_ShimStopForms(t *testing.T) {
 		// alone; changing it would alter a request the gateway already accepts.
 		{"array containing null", `["a",null]`, []string{"a", ""}},
 	}
-	// Shapes that are not stop sequences at all. Each of these was refused
-	// before the field became json.RawMessage, and silently becoming "no stop
+	// Shapes that are not stop sequences at all. Silently becoming "no stop
 	// sequences" would hand the caller a longer completion than they asked for
 	// with nothing to indicate why.
 	rejected := []struct {
@@ -266,13 +409,8 @@ func TestCompletionsHandler_ShimStopForms(t *testing.T) {
 	}
 	for _, tt := range rejected {
 		t.Run("rejects "+tt.name, func(t *testing.T) {
-			p := &nonProxyProvider{name: "shim", models: []string{"legacy-model"}}
-			reg := providers.NewRegistry()
-			reg.Register(p)
-			body := `{"model":"legacy-model","prompt":"hi","stop":` + tt.stopJSON + `}`
-			w := httptest.NewRecorder()
-			Completions(reg)(w, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/completions", strings.NewReader(body)))
-
+			gw := shimGateway(t, &nonProxyProvider{name: "shim", models: []string{legacyTestModel}})
+			w := postCompletions(t, gw, `{"model":"`+legacyTestModel+`","prompt":"hi","stop":`+tt.stopJSON+`}`)
 			if w.Code != http.StatusBadRequest {
 				t.Fatalf("status = %d, want 400 for stop=%s: %s", w.Code, tt.stopJSON, w.Body.String())
 			}
@@ -280,13 +418,9 @@ func TestCompletionsHandler_ShimStopForms(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			p := &nonProxyProvider{name: "shim", models: []string{"legacy-model"}}
-			reg := providers.NewRegistry()
-			reg.Register(p)
-			body := `{"model":"legacy-model","prompt":"hi","stop":` + tt.stopJSON + `}`
-			w := httptest.NewRecorder()
-			Completions(reg)(w, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/completions", strings.NewReader(body)))
-
+			p := &nonProxyProvider{name: "shim", models: []string{legacyTestModel}}
+			gw := shimGateway(t, p)
+			w := postCompletions(t, gw, `{"model":"`+legacyTestModel+`","prompt":"hi","stop":`+tt.stopJSON+`}`)
 			if w.Code != http.StatusOK {
 				t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
 			}
@@ -297,102 +431,136 @@ func TestCompletionsHandler_ShimStopForms(t *testing.T) {
 	}
 }
 
-// TestCompletionsHandler_NativeProxyAcceptsAllPromptAndStopForms is the
-// regression test for the shipped bug: Path 1 forwards the request body
-// verbatim to a provider that natively supports every OpenAI prompt/stop
-// shape, so json.Unmarshal into LegacyCompletionRequest must never reject a
-// valid body before the proxy ever sees it.
-func TestCompletionsHandler_NativeProxyAcceptsAllPromptAndStopForms(t *testing.T) {
-	tests := []struct {
-		name string
-		body string
-	}{
-		{"bare string prompt", `{"model":"gpt-4o","prompt":"hi"}`},
-		{"single-element array prompt", `{"model":"gpt-4o","prompt":["hi"]}`},
-		{"multi-element array prompt batch", `{"model":"gpt-4o","prompt":["hi","there"]}`},
-		{"token id prompt", `{"model":"gpt-4o","prompt":[1,2,3]}`},
-		{"array of token-id arrays prompt", `{"model":"gpt-4o","prompt":[[1,2],[3,4]]}`},
-		{"bare string stop", `{"model":"gpt-4o","prompt":"hi","stop":"\n\n"}`},
-		{"array stop", `{"model":"gpt-4o","prompt":"hi","stop":["a","b"]}`},
+// choiceTexts reads choices[].text out of a legacy completions response.
+func choiceTexts(t *testing.T, w *httptest.ResponseRecorder) []string {
+	t.Helper()
+	var payload struct {
+		Choices []struct {
+			Text string `json:"text"`
+		} `json:"choices"`
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var gotBody []byte
-			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				gotBody, _ = io.ReadAll(r.Body)
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusOK)
-				_, _ = w.Write([]byte(`{"id":"cmpl-1","object":"text_completion","model":"gpt-4o","choices":[{"text":"ok","index":0,"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
-			}))
-			defer upstream.Close()
-
-			reg := providers.NewRegistry()
-			op, err := openaipkg.New("sk-test", upstream.URL+"/v1")
-			if err != nil {
-				t.Fatalf("failed to build openai provider: %v", err)
-			}
-			reg.Register(op)
-
-			h := Completions(reg)
-			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/completions", strings.NewReader(tt.body))
-			req.Header.Set("Content-Type", "application/json")
-			w := httptest.NewRecorder()
-
-			h(w, req)
-
-			if w.Code != http.StatusOK {
-				t.Fatalf("status = %d, want 200 (verbatim forward must accept every valid prompt/stop shape): %s", w.Code, w.Body.String())
-			}
-			if string(gotBody) != tt.body {
-				t.Fatalf("upstream body = %s, want verbatim %s", gotBody, tt.body)
-			}
-		})
+	if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v (body=%s)", err, w.Body.String())
 	}
+	texts := make([]string, 0, len(payload.Choices))
+	for _, c := range payload.Choices {
+		texts = append(texts, c.Text)
+	}
+	return texts
 }
 
 // TestCompletionsHandler_ShimIgnoresLegacyOnlyParams pins the compatibility
-// contract for echo/best_of/logprobs/suffix: they are decoded and ignored on
-// the chat-shim path, never rejected. Refusing them would turn a request that
-// callers send today into a 400, so this test fails if that creeps in.
+// contract for best_of/logprobs/suffix: they are decoded and ignored, never
+// rejected. Refusing them would turn a request that callers send today into a
+// 400, so this test fails if that creeps in.
+//
+// It also asserts the returned text is the completion and nothing else. suffix
+// is the one of the three that LOOKS appendable — it is not: OpenAI treats it
+// as text the model generates INTO and returns only the bridging middle, so
+// appending it here would hand back text no model wrote. echo is honoured and
+// covered separately below.
 func TestCompletionsHandler_ShimIgnoresLegacyOnlyParams(t *testing.T) {
 	tests := []struct {
 		name  string
 		field string
 	}{
 		{"logprobs", `"logprobs":2`},
-		{"echo", `"echo":true`},
 		{"best_of", `"best_of":2`},
 		{"suffix", `"suffix":"done"`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			p := &nonProxyProvider{name: "shim", models: []string{"legacy-model"}}
-			reg := providers.NewRegistry()
-			reg.Register(p)
-			body := `{"model":"legacy-model","prompt":"hi",` + tt.field + `}`
-			w := httptest.NewRecorder()
-			Completions(reg)(w, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/completions", strings.NewReader(body)))
+			p := &nonProxyProvider{name: "shim", models: []string{legacyTestModel}}
+			gw := shimGateway(t, p)
+			w := postCompletions(t, gw, `{"model":"`+legacyTestModel+`","prompt":"hi",`+tt.field+`}`)
 			if w.Code != http.StatusOK {
 				t.Fatalf("status = %d, want 200 (this field must remain ignored, not rejected): %s", w.Code, w.Body.String())
 			}
 			if p.calls != 1 {
 				t.Fatalf("provider calls = %d, want 1", p.calls)
 			}
+			if got := choiceTexts(t, w); !reflect.DeepEqual(got, []string{"ok"}) {
+				t.Fatalf("text = %q, want the completion alone — %s is accepted and dropped, not rendered", got, tt.name)
+			}
+		})
+	}
+}
+
+// TestCompletionsHandler_EchoReturnsPromptPlusCompletion covers the one legacy
+// field the chat shim can express exactly. OpenAI documents echo as "echo back
+// the prompt in addition to the completion", which is a statement about the
+// response envelope alone: each choice's text becomes prompt+completion, the
+// request that goes upstream is untouched, and with n>1 every candidate is
+// echoed because every candidate is its own completion.
+func TestCompletionsHandler_EchoReturnsPromptPlusCompletion(t *testing.T) {
+	const prompt = "Once upon a time"
+
+	twoChoices := func() *providers.Response {
+		return &providers.Response{
+			ID:    "cmpl-echo",
+			Model: legacyTestModel,
+			Choices: []providers.Choice{
+				{Index: 0, Message: providers.Message{Role: providers.RoleAssistant, Content: " there was a cat."}, FinishReason: "stop"},
+				{Index: 1, Message: providers.Message{Role: providers.RoleAssistant, Content: " there was a dog."}, FinishReason: "stop"},
+			},
+		}
+	}
+
+	tests := []struct {
+		name  string
+		field string
+		want  []string
+	}{
+		{
+			name:  "echo true prepends the prompt to every choice",
+			field: `,"echo":true`,
+			want:  []string{prompt + " there was a cat.", prompt + " there was a dog."},
+		},
+		{
+			name:  "echo false returns the completion alone",
+			field: `,"echo":false`,
+			want:  []string{" there was a cat.", " there was a dog."},
+		},
+		{
+			name:  "echo absent returns the completion alone",
+			field: ``,
+			want:  []string{" there was a cat.", " there was a dog."},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := &nonProxyProvider{name: "shim", models: []string{legacyTestModel}, resp: twoChoices()}
+			gw := shimGateway(t, p)
+
+			w := postCompletions(t, gw, `{"model":"`+legacyTestModel+`","prompt":"`+prompt+`"`+tt.field+`}`)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+			}
+			if got := choiceTexts(t, w); !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("choices[].text = %q, want %q", got, tt.want)
+			}
+			// echo describes the response. Nothing about it may reach the
+			// provider, or a guardrail and a bill would see a prompt the
+			// caller did not send.
+			if len(p.lastReq.Messages) != 1 || p.lastReq.Messages[0].Content != prompt {
+				t.Fatalf("upstream messages = %#v, want the prompt unchanged", p.lastReq.Messages)
+			}
 		})
 	}
 }
 
 // TestCompletionsHandler_ShimResponseIncludesCreatedAndNullLogprobs asserts
-// the shim response envelope matches the real OpenAI completions object:
-// `created` populated from the underlying chat response, and `logprobs`
-// present as an explicit null (not an omitted key) on every choice.
+// the response envelope matches the real OpenAI completions object: `created`
+// populated from the underlying chat response, and `logprobs` present as an
+// explicit null (not an omitted key) on every choice.
 func TestCompletionsHandler_ShimResponseIncludesCreatedAndNullLogprobs(t *testing.T) {
 	p := &nonProxyProvider{
 		name:   "shim",
-		models: []string{"legacy-model"},
+		models: []string{legacyTestModel},
 		resp: &providers.Response{
 			ID:      "cmpl-created",
-			Model:   "legacy-model",
+			Model:   legacyTestModel,
 			Created: 1234567890,
 			Choices: []providers.Choice{{
 				Index:        0,
@@ -401,15 +569,14 @@ func TestCompletionsHandler_ShimResponseIncludesCreatedAndNullLogprobs(t *testin
 			}},
 		},
 	}
-	reg := providers.NewRegistry()
-	reg.Register(p)
+	gw := shimGateway(t, p)
 
-	w := httptest.NewRecorder()
-	Completions(reg)(w, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/completions", strings.NewReader(
-		`{"model":"legacy-model","prompt":"hi"}`)))
-
+	w := postCompletions(t, gw, `{"model":"`+legacyTestModel+`","prompt":"hi"}`)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("X-Gateway-Provider"); got != "shim" {
+		t.Fatalf("X-Gateway-Provider = %q, want the routed target name", got)
 	}
 
 	var payload map[string]any
@@ -434,153 +601,4 @@ func TestCompletionsHandler_ShimResponseIncludesCreatedAndNullLogprobs(t *testin
 	if logprobs != nil {
 		t.Fatalf("logprobs = %v, want null", logprobs)
 	}
-}
-
-// TestCompletionsHandler_NativeProxyURLErrorDoesNotLeakBaseURL is the
-// regression test for the base-URL credential leak: a malformed operator-
-// configured base URL (which may carry a secret in a query string on a
-// self-hosted OpenAI-compatible proxy) must reach neither the client nor the
-// log. Logs are routinely shipped off-host, so writing the secret there is a
-// disclosure too, just a narrower one than answering the caller with it.
-func TestCompletionsHandler_NativeProxyURLErrorDoesNotLeakBaseURL(t *testing.T) {
-	secret := "sk-" + strings.Repeat("b", 48)
-	p := &proxiableBadURLProvider{
-		nonProxyProvider: nonProxyProvider{name: "bad-url", models: []string{"bad-url-model"}},
-		baseURL:          "not-a-url?api_key=" + secret,
-	}
-	reg := providers.NewRegistry()
-	reg.Register(p)
-
-	var logs bytes.Buffer
-	prevLogger := logging.Logger
-	logging.Logger = slog.New(slog.NewTextHandler(&logs, nil))
-	t.Cleanup(func() { logging.Logger = prevLogger })
-
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/completions", strings.NewReader(`{"model":"bad-url-model","prompt":"hi"}`))
-	w := httptest.NewRecorder()
-	Completions(reg)(w, req)
-
-	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500: %s", w.Code, w.Body.String())
-	}
-	if strings.Contains(w.Body.String(), secret) {
-		t.Fatalf("completions URL error leaked provider base URL secret to the client: %s", w.Body.String())
-	}
-	if strings.Contains(logs.String(), secret) {
-		t.Fatalf("completions URL error leaked provider base URL secret to the log: %s", logs.String())
-	}
-	// The operator still needs to know which provider is misconfigured.
-	if !strings.Contains(logs.String(), "bad-url") {
-		t.Fatalf("log should name the offending provider so it can be found in config: %s", logs.String())
-	}
-}
-
-func TestCompletionsHandler_ProxyStreamPathUsesWriteDeadlines(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("data: {\"id\":\"chunk-1\"}\n\n"))
-	}))
-	defer upstream.Close()
-
-	reg := providers.NewRegistry()
-	op, err := openaipkg.New("sk-test", upstream.URL)
-	if err != nil {
-		t.Fatalf("failed to build openai provider: %v", err)
-	}
-	reg.Register(op)
-
-	h := Completions(reg)
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/completions", strings.NewReader(`{"model":"gpt-4o","prompt":"hi","stream":true}`))
-	req.Header.Set("Content-Type", "application/json")
-	w := newCompletionDeadlineRecorder()
-
-	h(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
-	if !strings.Contains(w.Body.String(), "data:") {
-		t.Fatalf("expected streamed body, got %q", w.Body.String())
-	}
-	if len(w.deadlines) < 2 {
-		t.Fatalf("expected write deadline set and clear, got %d entries", len(w.deadlines))
-	}
-	if w.deadlines[0].IsZero() {
-		t.Fatal("first deadline should set a timeout")
-	}
-	if !w.deadlines[len(w.deadlines)-1].IsZero() {
-		t.Fatalf("last deadline should clear timeout, got %v", w.deadlines[len(w.deadlines)-1])
-	}
-	if w.flushes == 0 {
-		t.Fatal("expected streaming response flush")
-	}
-}
-
-// Cutting a stalled upstream must not be silent: the copy error is the only
-// evidence the idle bound fired, and a client that hung up is not an error.
-func TestCompletionsHandler_StalledUpstreamCutIsLogged(t *testing.T) {
-	defer streamio.SetIdleTimeoutForTest(50 * time.Millisecond)()
-
-	var logs bytes.Buffer
-	prevLogger := logging.Logger
-	logging.Logger = slog.New(slog.NewTextHandler(&logs, nil))
-	defer func() { logging.Logger = prevLogger }()
-
-	upstreamDone := make(chan struct{})
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("data: {\"id\":\"chunk-1\"}\n\n"))
-		if flusher, ok := w.(http.Flusher); ok {
-			flusher.Flush()
-		}
-		<-r.Context().Done() // stall until the gateway gives up
-		close(upstreamDone)
-	}))
-	defer upstream.Close()
-
-	reg := providers.NewRegistry()
-	op, err := openaipkg.New("sk-test", upstream.URL)
-	if err != nil {
-		t.Fatalf("failed to build openai provider: %v", err)
-	}
-	reg.Register(op)
-
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/completions",
-		strings.NewReader(`{"model":"gpt-4o","prompt":"hi","stream":true}`))
-	req.Header.Set("Content-Type", "application/json")
-	w := newCompletionDeadlineRecorder()
-
-	Completions(reg)(w, req)
-
-	select {
-	case <-upstreamDone:
-	case <-time.After(10 * time.Second):
-		t.Fatal("upstream request was never cancelled by the idle bound")
-	}
-
-	if got := logs.String(); !strings.Contains(got, "completions response copy failed") {
-		t.Fatalf("idle-timeout cut was not logged: %s", got)
-	}
-}
-
-type completionDeadlineRecorder struct {
-	*httptest.ResponseRecorder
-	deadlines []time.Time
-	flushes   int
-}
-
-func newCompletionDeadlineRecorder() *completionDeadlineRecorder {
-	return &completionDeadlineRecorder{ResponseRecorder: httptest.NewRecorder()}
-}
-
-func (r *completionDeadlineRecorder) Flush() {
-	r.flushes++
-	r.ResponseRecorder.Flush()
-}
-
-func (r *completionDeadlineRecorder) SetWriteDeadline(deadline time.Time) error {
-	r.deadlines = append(r.deadlines, deadline)
-	return nil
 }

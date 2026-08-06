@@ -2,10 +2,20 @@ services:
   - type: web
     name: ferrogw
     runtime: docker
-    dockerfilePath: ./Dockerfile
-    healthCheckPath: /health
+    dockerfilePath: ./deploy/Dockerfile
+    # /readyz, not /health. /health answers 200 while every configured target
+    # is unroutable, so Render would keep an instance failing 100% of traffic
+    # in rotation. /readyz is the endpoint that reports that case as 503.
+    healthCheckPath: /readyz
     autoDeployTrigger: off
     envVars:
+      # Turns on the production startup checks. Two settings become startup
+      # ERRORS rather than warnings under it: ALLOW_UNAUTHENTICATED_PROXY=true
+      # and a CORS_ORIGINS containing "*". Neither is set by this blueprint,
+      # but a service that added one in the Render dashboard will stop booting
+      # until it is removed — see the release notes.
+      - key: GATEWAY_ENV
+        value: production
       - key: MASTER_KEY
         generateValue: true
       - key: OPENAI_API_KEY

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"golang.org/x/sync/errgroup"
@@ -68,10 +69,10 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 		return nil, err
 	}
 
-	switch req.EncodingFormat {
-	case "", "float":
-	default:
-		return nil, fmt.Errorf("embed: unsupported encoding_format %q; Bedrock embeddings return float vectors", req.EncodingFormat)
+	// The shared validator accepts exactly the set Bedrock embeddings serve
+	// ("" and "float"), and returns the typed 400 the hand-rolled check did not.
+	if err := core.ValidateEmbeddingEncodingFormat(req.EncodingFormat); err != nil {
+		return nil, err
 	}
 
 	modelID := bedrockModelRoutingID(req.Model)
@@ -81,13 +82,17 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 	case isBedrockCohereEmbeddingModel(modelID):
 		return p.embedCohere(ctx, req, modelID, texts)
 	default:
-		return nil, fmt.Errorf("unsupported Bedrock embedding model: %s", req.Model)
+		// The caller named a model this provider does not embed with. That is a
+		// 400, not the 500 a bare error classifies as, and no retry changes it.
+		return nil, core.StatusError(Name, http.StatusBadRequest,
+			"unsupported Bedrock embedding model: "+req.Model)
 	}
 }
 
 func (p *Provider) embedTitan(ctx context.Context, req core.EmbeddingRequest, modelID string, texts []string) (*core.EmbeddingResponse, error) {
 	if req.Dimensions != nil && !strings.HasPrefix(modelID, "amazon.titan-embed-text-v2") {
-		return nil, fmt.Errorf("embed: dimensions are only supported for amazon.titan-embed-text-v2 models")
+		return nil, core.StatusError(Name, http.StatusBadRequest,
+			"embed: dimensions are only supported for amazon.titan-embed-text-v2 models")
 	}
 
 	data := make([]core.Embedding, len(texts))
@@ -156,14 +161,16 @@ func resolveCohereInputType(requested string) (string, error) {
 		return cohereEmbedDefaultInputType, nil
 	}
 	if !cohereEmbedInputTypes[requested] {
-		return "", fmt.Errorf("embed: unsupported input_type %q; want one of search_document, search_query, classification, clustering", requested)
+		return "", core.StatusError(Name, http.StatusBadRequest,
+			fmt.Sprintf("embed: unsupported input_type %q; want one of search_document, search_query, classification, clustering", requested))
 	}
 	return requested, nil
 }
 
 func (p *Provider) embedCohere(ctx context.Context, req core.EmbeddingRequest, modelID string, texts []string) (*core.EmbeddingResponse, error) {
 	if req.Dimensions != nil {
-		return nil, fmt.Errorf("embed: dimensions are not supported for Bedrock Cohere embeddings")
+		return nil, core.StatusError(Name, http.StatusBadRequest,
+			"embed: dimensions are not supported for Bedrock Cohere embeddings")
 	}
 
 	inputType, err := resolveCohereInputType(req.InputType)

@@ -1,0 +1,479 @@
+package repository
+
+import (
+	"context"
+	"crypto/rand"
+	"database/sql"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/ferro-labs/ai-gateway/internal/admin/model"
+	"github.com/ferro-labs/ai-gateway/internal/migrations"
+	"github.com/ferro-labs/ai-gateway/internal/sqldb"
+	"github.com/ferro-labs/ai-gateway/pkg/logger"
+)
+
+// SQLStore persists API keys in SQL backends (SQLite or Postgres).
+type SQLStore struct {
+	db            *sql.DB
+	dialect       sqldb.Dialect
+	stmtGetByID   *sql.Stmt
+	stmtGetByHash *sql.Stmt
+	stmtRevoke    *sql.Stmt
+	stmtUpdate    *sql.Stmt
+	stmtSetExpiry *sql.Stmt
+	stmtDelete    *sql.Stmt
+	stmtUsage     *sql.Stmt
+	stmtRotate    *sql.Stmt
+}
+
+// NewSQLiteStore creates a SQLite-backed key store.
+// dsn can be a file path (e.g. /tmp/keys.db) or SQLite DSN.
+func NewSQLiteStore(ctx context.Context, dsn string) (*SQLStore, error) {
+	db, err := sqldb.Open(ctx, sqldb.SQLite, dsn, "ferrogw-keys.db")
+	if err != nil {
+		return nil, err
+	}
+	store := &SQLStore{db: db, dialect: sqldb.SQLite}
+	if err := store.init(ctx); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return store, nil
+}
+
+// NewPostgresStore creates a Postgres-backed key store.
+func NewPostgresStore(ctx context.Context, dsn string) (*SQLStore, error) {
+	db, err := sqldb.Open(ctx, sqldb.Postgres, dsn, "")
+	if err != nil {
+		return nil, err
+	}
+	store := &SQLStore{db: db, dialect: sqldb.Postgres}
+	if err := store.init(ctx); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return store, nil
+}
+
+func (s *SQLStore) init(ctx context.Context) error {
+	if err := migrations.RunNamed(ctx, s.db, s.dialect, keyStoreLedger, "api_keys", keyStoreSteps(s.dialect)); err != nil {
+		return fmt.Errorf("migrate %s store schema: %w", s.dialect, err)
+	}
+	return s.prepareStmts(ctx)
+}
+
+// keyRowSelect lists the columns scanAPIKey expects. key_display stands in for
+// the secret: the store has no way to produce the plaintext.
+const keyRowSelect = `SELECT id, key_display, name, scopes, created_at, revoked_at, expires_at, rotated_at, last_used_at, usage_count, active FROM api_keys`
+
+func (s *SQLStore) prepareStmts(ctx context.Context) error {
+	stmts := []struct {
+		dest  **sql.Stmt
+		query string
+	}{
+		{&s.stmtGetByID, keyRowSelect + ` WHERE id = ?`},
+		{&s.stmtGetByHash, keyRowSelect + ` WHERE key_hash = ?`},
+		{&s.stmtRevoke, `UPDATE api_keys SET revoked_at = ?, active = ? WHERE id = ?`},
+		{&s.stmtUpdate, `UPDATE api_keys SET name = ?, scopes = ? WHERE id = ?`},
+		{&s.stmtSetExpiry, `UPDATE api_keys SET expires_at = ? WHERE id = ?`},
+		{&s.stmtDelete, `DELETE FROM api_keys WHERE id = ?`},
+		{&s.stmtUsage, `UPDATE api_keys SET usage_count = usage_count + 1, last_used_at = ? WHERE id = ?`},
+		{&s.stmtRotate, `UPDATE api_keys SET key_hash = ?, key_display = ?, rotated_at = ? WHERE id = ?`},
+	}
+	for _, s2 := range stmts {
+		// These are long-lived prepared statements cached on the SQLStore for
+		// its whole lifetime, not a per-call resource — closed in Close()
+		// (below), which sqlclosecheck's static analysis can't trace through
+		// the *s2.dest indirection.
+		stmt, err := s.db.PrepareContext(ctx, sqldb.Bind(s.dialect, s2.query)) //nolint:sqlclosecheck // closed in (*SQLStore).Close
+		if err != nil {
+			return fmt.Errorf("prepare statement: %w", err)
+		}
+		*s2.dest = stmt
+	}
+	return nil
+}
+
+// Close closes the underlying SQL connection.
+func (s *SQLStore) Close() error {
+	if s == nil || s.db == nil {
+		return nil
+	}
+	for _, stmt := range []*sql.Stmt{s.stmtGetByID, s.stmtGetByHash, s.stmtRevoke, s.stmtUpdate, s.stmtSetExpiry, s.stmtDelete, s.stmtUsage, s.stmtRotate} {
+		if stmt != nil {
+			_ = stmt.Close()
+		}
+	}
+	return s.db.Close()
+}
+
+// Create inserts a new API key in the SQL store. An empty scope list yields a
+// read-only key (see defaultScopes). The returned key carries the full secret;
+// only its hash and display form are persisted.
+func (s *SQLStore) Create(ctx context.Context, name string, scopes []string, expiresAt *time.Time) (*model.APIKey, error) {
+	scopes = defaultScopes(scopes)
+	key, err := generateAPIKeyString()
+	if err != nil {
+		return nil, err
+	}
+	id, err := generateID()
+	if err != nil {
+		return nil, err
+	}
+
+	now := time.Now().UTC()
+	if expiresAt != nil {
+		t := expiresAt.UTC()
+		expiresAt = &t
+	}
+
+	scopesJSON, err := json.Marshal(scopes)
+	if err != nil {
+		return nil, fmt.Errorf("encode scopes: %w", err)
+	}
+
+	q := sqldb.Bind(s.dialect, `
+INSERT INTO api_keys(id, key_hash, key_display, name, scopes, created_at, revoked_at, expires_at, rotated_at, active, usage_count, last_used_at)
+VALUES(?, ?, ?, ?, ?, ?, NULL, ?, NULL, ?, ?, NULL)`)
+
+	if _, err := s.db.ExecContext(ctx, q, id, hashKey(key), DisplayKey(key), name, string(scopesJSON), now, expiresAt, true, 0); err != nil {
+		return nil, fmt.Errorf("create key: %w", err)
+	}
+
+	return &model.APIKey{
+		ID:         id,
+		Key:        key,
+		Name:       name,
+		Scopes:     scopes,
+		CreatedAt:  now,
+		ExpiresAt:  expiresAt,
+		UsageCount: 0,
+		Active:     true,
+	}, nil
+}
+
+// IsEmpty reports whether the store holds no API keys. It stops at the first
+// row rather than materializing the whole table.
+func (s *SQLStore) IsEmpty(ctx context.Context) (bool, error) {
+	var one int
+	err := s.db.QueryRowContext(ctx, "SELECT 1 FROM api_keys LIMIT 1").Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return true, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("count keys: %w", err)
+	}
+	return false, nil
+}
+
+// countAdminKeysQuery counts the keys that can authenticate an admin request.
+//
+// scopes is persisted as a JSON array of strings, so the quoted pattern matches
+// the exact element "admin" and not a longer scope that merely contains it
+// ("superadmin" and "admin_read" both fail to match). The expiry bound mirrors
+// model.IsUsableAdmin, which the memory store scans with: an expired key
+// authenticates nothing, and the two implementations must answer the same guard
+// identically. A single aggregate keeps the count consistent without holding a
+// transaction open.
+//
+// revoked_at is checked as well as active, because model.KeyIsUsable checks
+// both. Revoke() writes the two together, so on a row this store wrote they
+// always agree — but a row that reaches the table any other way (a restore, a
+// hand-repaired database, an operator UPDATE) can carry a revocation while
+// active is still true. Matching the predicate rather than the behaviour of one
+// write path is what keeps the guard from counting a key that authenticates
+// nothing, which is how the last working admin key gets deleted.
+const countAdminKeysQuery = `SELECT COUNT(*) FROM api_keys WHERE active = ? AND revoked_at IS NULL AND scopes LIKE '%"admin"%' AND (expires_at IS NULL OR expires_at >= ?)`
+
+// CountAdminKeys returns the number of stored keys that can authenticate an
+// admin request.
+func (s *SQLStore) CountAdminKeys(ctx context.Context) (int, error) {
+	var count int
+	q := sqldb.Bind(s.dialect, countAdminKeysQuery)
+	if err := s.db.QueryRowContext(ctx, q, true, time.Now().UTC()).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count admin keys: %w", err)
+	}
+	return count, nil
+}
+
+// Get retrieves an API key by ID from the SQL store.
+func (s *SQLStore) Get(ctx context.Context, id string) (*model.APIKey, bool) {
+	key, err := s.scanOne(ctx, s.stmtGetByID, id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false
+	}
+	if err != nil {
+		return nil, false
+	}
+	return key, true
+}
+
+// lookupForMutate fetches a key by ID for lookup-before-mutate paths. Unlike
+// Get, it distinguishes a genuine not-found (wrapped ErrKeyNotFound → 404) from
+// a transient DB/scan failure (wrapped generic error → 500) so a database
+// outage is never reported to callers as a 404.
+func (s *SQLStore) lookupForMutate(ctx context.Context, id string) (*model.APIKey, error) {
+	key, err := s.scanOne(ctx, s.stmtGetByID, id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("%w: %s", model.ErrKeyNotFound, id)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("lookup key %s: %w", id, err)
+	}
+	return key, nil
+}
+
+// keyListOrder is the order GET /admin/keys serves, newest first. The id
+// tiebreak matters because created_at alone leaves keys minted in the same clock
+// tick to the planner, which can reorder them between two reads of an unchanged
+// table. KeyStore.List sorts by the same two fields so the two backends cannot
+// present the same keys differently.
+const keyListOrder = ` ORDER BY created_at DESC, id DESC`
+
+// List returns all API keys. The signature carries no error (fixed by the
+// admin.Store interface), so a database failure cannot be returned — it is
+// logged instead, and the partial or empty result is returned rather than being
+// presented as an authoritative empty key list.
+func (s *SQLStore) List(ctx context.Context) []*model.APIKey {
+	rows, err := s.db.QueryContext(ctx, keyRowSelect+keyListOrder)
+	if err != nil {
+		logger.Default().Warn("admin key list: query failed", "error", err)
+		return []*model.APIKey{}
+	}
+	defer func() {
+		_ = rows.Close()
+	}()
+
+	keys := make([]*model.APIKey, 0)
+	for rows.Next() {
+		k, scanErr := scanAPIKey(rows)
+		if scanErr != nil {
+			logger.Default().Warn("admin key list: skipped unscannable row", "error", scanErr)
+			continue
+		}
+		keys = append(keys, k)
+	}
+	if err := rows.Err(); err != nil {
+		logger.Default().Warn("admin key list: iteration error", "error", err)
+	}
+	return keys
+}
+
+// Revoke marks an API key as inactive and records the revocation timestamp.
+func (s *SQLStore) Revoke(ctx context.Context, id string) error {
+	now := time.Now().UTC()
+	res, err := s.stmtRevoke.ExecContext(ctx, now, false, id)
+	if err != nil {
+		return fmt.Errorf("revoke key: %w", err)
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		return fmt.Errorf("%w: %s", model.ErrKeyNotFound, id)
+	}
+	return nil
+}
+
+// Update modifies API key metadata (name/scopes).
+func (s *SQLStore) Update(ctx context.Context, id string, name string, scopes []string) (*model.APIKey, error) {
+	current, err := s.lookupForMutate(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	if name != "" {
+		current.Name = name
+	}
+	if len(scopes) > 0 {
+		current.Scopes = scopes
+	}
+
+	scopesJSON, err := json.Marshal(current.Scopes)
+	if err != nil {
+		return nil, fmt.Errorf("encode scopes: %w", err)
+	}
+
+	if _, err := s.stmtUpdate.ExecContext(ctx, current.Name, string(scopesJSON), id); err != nil {
+		return nil, fmt.Errorf("update key: %w", err)
+	}
+
+	return current, nil
+}
+
+// SetExpiration updates or clears the API key expiration time.
+func (s *SQLStore) SetExpiration(ctx context.Context, id string, expiresAt *time.Time) error {
+	if expiresAt != nil {
+		t := expiresAt.UTC()
+		expiresAt = &t
+	}
+
+	res, err := s.stmtSetExpiry.ExecContext(ctx, expiresAt, id)
+	if err != nil {
+		return fmt.Errorf("set key expiration: %w", err)
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		return fmt.Errorf("%w: %s", model.ErrKeyNotFound, id)
+	}
+	return nil
+}
+
+// Delete removes an API key by ID.
+func (s *SQLStore) Delete(ctx context.Context, id string) error {
+	res, err := s.stmtDelete.ExecContext(ctx, id)
+	if err != nil {
+		return fmt.Errorf("delete key: %w", err)
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		return fmt.Errorf("%w: %s", model.ErrKeyNotFound, id)
+	}
+	return nil
+}
+
+// ValidateKey validates a full API key value and updates usage counters.
+// Auth succeeds as long as the key lookup and validity checks pass.
+// A transient failure of the usage-counter UPDATE is logged but does not fail
+// authentication — dropping one increment is preferable to returning a 401 on a
+// legitimate request.
+func (s *SQLStore) ValidateKey(ctx context.Context, key string) (*model.APIKey, bool) {
+	// The empty string is never a valid key: an "Authorization: Bearer " header
+	// with no value must not match a stored record, however it came to exist.
+	if key == "" {
+		return nil, false
+	}
+	apiKey, err := s.scanOne(ctx, s.stmtGetByHash, hashKey(key))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false
+	}
+	if err != nil {
+		return nil, false
+	}
+	if !model.KeyIsUsable(apiKey) {
+		return nil, false
+	}
+
+	// Auth check passed. Attempt to update usage counters. A failure here is
+	// non-fatal: log the error and return the authenticated key anyway.
+	now := time.Now().UTC()
+	if _, counterErr := s.stmtUsage.ExecContext(ctx, now, apiKey.ID); counterErr != nil {
+		logger.Default().Warn("failed to update key usage counter; authentication still succeeds",
+			"key_id", apiKey.ID, "error", counterErr)
+	} else {
+		apiKey.UsageCount++
+		apiKey.LastUsedAt = &now
+	}
+	return apiKey, true
+}
+
+// RotateKey rotates the secret value for an existing API key. The returned key
+// carries the new secret, which the read-back cannot recover.
+func (s *SQLStore) RotateKey(ctx context.Context, id string) (*model.APIKey, error) {
+	newKey, err := generateAPIKeyString()
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+
+	res, err := s.stmtRotate.ExecContext(ctx, hashKey(newKey), DisplayKey(newKey), now, id)
+	if err != nil {
+		return nil, fmt.Errorf("rotate key: %w", err)
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		return nil, fmt.Errorf("%w: %s", model.ErrKeyNotFound, id)
+	}
+
+	updated, err := s.lookupForMutate(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	updated.Key = newKey
+	return updated, nil
+}
+
+// Ping verifies the backing database is reachable.
+func (s *SQLStore) Ping(ctx context.Context) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("key store ping: store not initialized")
+	}
+	if err := s.db.PingContext(ctx); err != nil {
+		return fmt.Errorf("key store ping: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLStore) scanOne(ctx context.Context, stmt *sql.Stmt, arg any) (*model.APIKey, error) {
+	return scanAPIKey(stmt.QueryRowContext(ctx, arg))
+}
+
+func scanAPIKey(scanner interface {
+	Scan(dest ...any) error
+}) (*model.APIKey, error) {
+	var (
+		k         model.APIKey
+		scopesRaw string
+		revoked   sql.NullTime
+		expires   sql.NullTime
+		rotated   sql.NullTime
+		lastUsed  sql.NullTime
+	)
+
+	err := scanner.Scan(
+		&k.ID,
+		&k.Key,
+		&k.Name,
+		&scopesRaw,
+		&k.CreatedAt,
+		&revoked,
+		&expires,
+		&rotated,
+		&lastUsed,
+		&k.UsageCount,
+		&k.Active,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := json.Unmarshal([]byte(scopesRaw), &k.Scopes); err != nil {
+		return nil, fmt.Errorf("decode scopes: %w", err)
+	}
+	if revoked.Valid {
+		t := revoked.Time
+		k.RevokedAt = &t
+	}
+	if expires.Valid {
+		t := expires.Time
+		k.ExpiresAt = &t
+	}
+	if rotated.Valid {
+		t := rotated.Time
+		k.RotatedAt = &t
+	}
+	if lastUsed.Valid {
+		t := lastUsed.Time
+		k.LastUsedAt = &t
+	}
+	return &k, nil
+}
+
+func generateAPIKeyString() (string, error) {
+	keyBytes := make([]byte, 32)
+	if _, err := rand.Read(keyBytes); err != nil {
+		return "", fmt.Errorf("generating key: %w", err)
+	}
+	return "fgw_" + hex.EncodeToString(keyBytes), nil
+}
+
+func generateID() (string, error) {
+	idBytes := make([]byte, 16)
+	if _, err := rand.Read(idBytes); err != nil {
+		return "", fmt.Errorf("generating id: %w", err)
+	}
+	return fmt.Sprintf("%x-%x-%x-%x-%x",
+		idBytes[0:4], idBytes[4:6], idBytes[6:8], idBytes[8:10], idBytes[10:16]), nil
+}

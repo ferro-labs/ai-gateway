@@ -1,0 +1,37 @@
+# Development overrides — build from source, verbose logging, no restart policy.
+# Usage: make up   (or: docker compose -f deploy/compose.yaml -f deploy/compose.dev.yaml up)
+#
+# One container. The gateway embeds the dashboard and serves it from its own
+# port, so http://localhost:8080 is both the API and the UI.
+
+services:
+  ferrogw:
+    build:
+      # The context is the repository root, not this directory: the Go build
+      # needs the whole module, and Docker reads .dockerignore from the context
+      # root. A context of "." here would both miss the source and silently
+      # drop the ignore rules that keep .env and the dashboard's node_modules
+      # out of the build.
+      context: ..
+      # Relative to the context above, so it carries the deploy/ prefix.
+      dockerfile: deploy/Dockerfile
+      target: gateway
+    # image: is overridden by build above
+    environment:
+      - LOG_LEVEL=debug
+      # The embedded dashboard is same-origin and needs no entry here. This one
+      # is the Vite dev server (`make -C web dev`), which serves the UI from
+      # its own port and so does cross-origin calls to the gateway.
+      - CORS_ORIGINS=http://localhost:5173
+      # The gateway reads a config file only when GATEWAY_CONFIG names one — it
+      # discovers nothing. Without this line the mount below is present and
+      # ignored, and the gateway falls back to key-derived defaults, so a
+      # narrowed `targets` list silently does not apply. Keep the two together.
+      - GATEWAY_CONFIG=/etc/ferrogw/config.yaml
+    volumes:
+      # Live-reload config without rebuilding the image. Paths in a compose
+      # file resolve against the file's own directory, hence the ../.
+      - ../config.example.yaml:/etc/ferrogw/config.yaml:ro
+    extra_hosts:
+      # Allows the container to reach Ollama running on the host machine.
+      - "host.docker.internal:host-gateway"

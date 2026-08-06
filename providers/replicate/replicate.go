@@ -50,21 +50,19 @@ type Provider struct {
 
 // Compile-time interface assertions.
 var (
-	_ core.Provider          = (*Provider)(nil)
-	_ core.StreamProvider    = (*Provider)(nil)
-	_ core.ImageProvider     = (*Provider)(nil)
-	_ core.ProxiableProvider = (*Provider)(nil)
+	_ core.Provider                = (*Provider)(nil)
+	_ core.StreamProvider          = (*Provider)(nil)
+	_ core.ImageProvider           = (*Provider)(nil)
+	_ core.ProxiableProvider       = (*Provider)(nil)
+	_ core.NonOpenAIWireProvider   = (*Provider)(nil)
+	_ core.ConfiguredModelProvider = (*Provider)(nil)
 )
 
 // New creates a new Replicate provider.
 // textModels and imageModels should be "owner/name" or "owner/name:version" paths.
 func New(apiToken, baseURL string, textModels, imageModels []string) (*Provider, error) {
-	baseURL = strings.TrimSpace(baseURL)
-	if baseURL == "" {
-		baseURL = defaultBaseURL
-	}
-	baseURL = strings.TrimRight(baseURL, "/")
-	if err := core.ValidateBaseURL(Name, baseURL); err != nil {
+	baseURL, err := core.ResolveAPIRoot(Name, baseURL, defaultBaseURL)
+	if err != nil {
 		return nil, err
 	}
 
@@ -99,6 +97,15 @@ func (p *Provider) Name() string { return p.name }
 // BaseURL implements core.ProxiableProvider.
 func (p *Provider) BaseURL() string { return p.baseURL }
 
+// NonOpenAIWire marks Replicate as ineligible for transparent OpenAI-wire proxy
+// pass-through: its upstream is the asynchronous predictions API — submit to
+// /predictions or /models/{owner}/{name}/predictions, then poll — which serves
+// no OpenAI-shaped route at its base URL. Forwarding transparently also exposed
+// raw Replicate endpoints (/v1/predictions, /v1/account) under the gateway's
+// token. It remains fully usable via its native translated chat, streaming and
+// image endpoints. See core.NonOpenAIWireProvider.
+func (*Provider) NonOpenAIWire() {}
+
 // authHeader returns the Authorization header value. Replicate accepts both the
 // legacy "Token" scheme and the documented "Bearer" scheme; Bearer is used.
 func (p *Provider) authHeader() string { return "Bearer " + p.apiKey }
@@ -108,8 +115,8 @@ func (p *Provider) AuthHeaders() map[string]string {
 	return map[string]string{"Authorization": p.authHeader()}
 }
 
-// SupportedModels returns all configured models.
-func (p *Provider) SupportedModels() []string {
+// ConfiguredModels returns all configured models.
+func (p *Provider) ConfiguredModels() []string {
 	all := make([]string, 0, len(p.textModels)+len(p.imageModels))
 	all = append(all, p.textModels...)
 	all = append(all, p.imageModels...)
@@ -129,11 +136,6 @@ func (p *Provider) SupportsModel(model string) bool {
 		}
 	}
 	return false
-}
-
-// Models returns structured model metadata.
-func (p *Provider) Models() []core.ModelInfo {
-	return core.ModelsFromList(p.name, p.SupportedModels())
 }
 
 // ModelBaseName strips the version suffix (:sha) from a model path.
@@ -170,15 +172,18 @@ type Prediction struct {
 	} `json:"metrics"`
 }
 
+// replicatePredictionInput is the prediction input body. The sampling knobs are
+// pointers so an explicitly requested zero — a deterministic temperature or seed
+// — survives omitempty instead of being dropped as an absent value.
 type replicatePredictionInput struct {
 	Prompt           string   `json:"prompt"`
 	MaxTokens        int      `json:"max_tokens,omitempty"`
-	Temperature      float64  `json:"temperature,omitempty"`
-	TopP             float64  `json:"top_p,omitempty"`
-	Seed             int64    `json:"seed,omitempty"`
+	Temperature      *float64 `json:"temperature,omitempty"`
+	TopP             *float64 `json:"top_p,omitempty"`
+	Seed             *int64   `json:"seed,omitempty"`
 	Stop             []string `json:"stop_sequences,omitempty"`
-	PresencePenalty  float64  `json:"presence_penalty,omitempty"`
-	FrequencyPenalty float64  `json:"frequency_penalty,omitempty"`
+	PresencePenalty  *float64 `json:"presence_penalty,omitempty"`
+	FrequencyPenalty *float64 `json:"frequency_penalty,omitempty"`
 }
 
 type replicatePredictionRequest struct {
@@ -199,48 +204,35 @@ type replicateImageRequest struct {
 	Input   replicateImageInput `json:"input"`
 }
 
-// buildPrompt flattens the OpenAI chat messages into Replicate's single-prompt
-// input, appending a trailing "assistant:" turn to cue the completion.
-func buildPrompt(req core.Request) string {
-	var sb strings.Builder
-	for _, msg := range req.Messages {
-		sb.WriteString(msg.Role)
-		sb.WriteString(": ")
-		sb.WriteString(msg.Content)
-		sb.WriteString("\n")
-	}
-	sb.WriteString("assistant: ")
-	return sb.String()
-}
-
 // buildTextInput translates an OpenAI-style request into Replicate's prediction
 // input, forwarding the sampling parameters Replicate language models accept.
 // Parameters Replicate cannot express are handled by the compatibility mode in
 // Complete/CompleteStream before this runs.
-func buildTextInput(req core.Request) replicatePredictionInput {
-	input := replicatePredictionInput{Prompt: buildPrompt(req)}
+//
+// The conversation is flattened into Replicate's single "prompt" field by the
+// shared join — this provider's own convention, now every single-prompt
+// provider's — which also refuses a content part no prompt string can carry
+// rather than dropping it under a 200. See core.JoinMessagesAsPrompt.
+func buildTextInput(req core.Request) (replicatePredictionInput, error) {
+	prompt, err := core.JoinMessagesAsPrompt(Name, req.Model, req.Messages)
+	if err != nil {
+		return replicatePredictionInput{}, err
+	}
+	input := replicatePredictionInput{
+		Prompt:           prompt,
+		Temperature:      req.Temperature,
+		TopP:             req.TopP,
+		Seed:             req.Seed,
+		PresencePenalty:  req.PresencePenalty,
+		FrequencyPenalty: req.FrequencyPenalty,
+	}
 	if req.MaxTokens != nil {
 		input.MaxTokens = *req.MaxTokens
-	}
-	if req.Temperature != nil {
-		input.Temperature = *req.Temperature
-	}
-	if req.TopP != nil {
-		input.TopP = *req.TopP
-	}
-	if req.Seed != nil {
-		input.Seed = *req.Seed
 	}
 	if len(req.Stop) > 0 {
 		input.Stop = req.Stop
 	}
-	if req.PresencePenalty != nil {
-		input.PresencePenalty = *req.PresencePenalty
-	}
-	if req.FrequencyPenalty != nil {
-		input.FrequencyPenalty = *req.FrequencyPenalty
-	}
-	return input
+	return input, nil
 }
 
 // resolveModelURL returns the prediction submission URL and the pinned version
@@ -318,7 +310,11 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 	if err := core.EnforceUnsupportedParams(ctx, Name, req.Model, req); err != nil {
 		return nil, err
 	}
-	predReq := replicatePredictionRequest{Version: version, Input: buildTextInput(req)}
+	input, err := buildTextInput(req)
+	if err != nil {
+		return nil, err
+	}
+	predReq := replicatePredictionRequest{Version: version, Input: input}
 
 	bodyReader, _, release, err := core.JSONBodyReader(predReq)
 	if err != nil {
@@ -357,7 +353,11 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 	if err := core.EnforceUnsupportedParams(ctx, Name, req.Model, req); err != nil {
 		return nil, err
 	}
-	predReq := replicatePredictionRequest{Version: version, Input: buildTextInput(req), Stream: true}
+	input, err := buildTextInput(req)
+	if err != nil {
+		return nil, err
+	}
+	predReq := replicatePredictionRequest{Version: version, Input: input, Stream: true}
 
 	bodyReader, _, release, err := core.JSONBodyReader(predReq)
 	if err != nil {
@@ -404,6 +404,9 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 
 // GenerateImage submits an image generation prediction and polls until done.
 func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*core.ImageResponse, error) {
+	if err := core.EnforceImageResponseFormat(Name, req); err != nil {
+		return nil, err
+	}
 	input := replicateImageInput{Prompt: req.Prompt}
 	if req.N != nil {
 		input.NumImages = *req.N
@@ -607,6 +610,32 @@ func doneFinishReason(payload string) string {
 	return core.NormalizeFinishReason(reason)
 }
 
+// streamUsage reads the finished prediction's token metrics, for the terminal
+// chunk of a stream. Replicate's SSE stream carries no token counts — they live
+// on the prediction object — so without this a streaming request bills zero
+// while the polled Complete path reports usage from the same field.
+//
+// It runs once, on the stream's "done" event, so the prediction is already
+// complete and this costs one GET at the end rather than latency on every chunk.
+//
+// It is best-effort: the content has already been delivered to the caller, so a
+// failed or unreadable fetch reports no usage rather than failing the stream —
+// the same nil a model that reports no metrics gives.
+func (p *Provider) streamUsage(ctx context.Context, predictionID string) *core.Usage {
+	if predictionID == "" {
+		return nil
+	}
+	pred, err := p.pollOnce(ctx, fmt.Sprintf("%s/predictions/%s", p.baseURL, predictionID))
+	if err != nil {
+		return nil
+	}
+	usage, ok := usageFromMetrics(pred)
+	if !ok {
+		return nil
+	}
+	return &usage
+}
+
 func (p *Provider) readStream(ctx context.Context, body io.ReadCloser, ch chan<- core.StreamChunk, predictionID, model string) {
 	defer close(ch)
 	defer func() { _ = body.Close() }()
@@ -641,6 +670,7 @@ func (p *Provider) readStream(ctx context.Context, body io.ReadCloser, ch chan<-
 					Index:        0,
 					FinishReason: doneFinishReason(payload),
 				}},
+				Usage: p.streamUsage(ctx, predictionID),
 			})
 			return false
 		}

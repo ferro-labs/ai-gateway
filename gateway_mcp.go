@@ -3,12 +3,11 @@ package aigateway
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"time"
 
+	"github.com/ferro-labs/ai-gateway/config"
 	"github.com/ferro-labs/ai-gateway/internal/envref"
-	"github.com/ferro-labs/ai-gateway/internal/mcp"
-	pubmcp "github.com/ferro-labs/ai-gateway/mcp"
+	"github.com/ferro-labs/ai-gateway/mcp"
 )
 
 // MCP (Model Context Protocol) wiring for the Gateway: registry/executor
@@ -17,12 +16,12 @@ import (
 // buildMCPAuditFn converts the public ToolCallAuditFn into the internal
 // mcp.AuditFn expected by the Executor.  Returns nil when fn is nil so the
 // Executor skips audit logging entirely.
-func buildMCPAuditFn(fn pubmcp.ToolCallAuditFn) mcp.AuditFn {
+func buildMCPAuditFn(fn mcp.ToolCallAuditFn) mcp.AuditFn {
 	if fn == nil {
 		return nil
 	}
 	return func(ctx context.Context, serverName, toolName, status string, latencyMs int, errMsg string) {
-		fn(ctx, pubmcp.ToolCallAuditEntry{
+		fn(ctx, mcp.ToolCallAuditEntry{
 			ServerName:   serverName,
 			ToolName:     toolName,
 			Status:       status,
@@ -70,23 +69,23 @@ const mcpInitTimeout = 60 * time.Second
 // caller's Config is never mutated.
 //
 // Both Headers and Env are resolved. Env matters most: MCP subprocesses do not
-// inherit the gateway's environment (see internal/mcp.newStdioClient), which
+// inherit the gateway's environment (see mcp.newStdioClient), which
 // makes this map the only route by which a credential can reach one.
-func resolveMCPServerRefs(cfg pubmcp.ServerConfig) (pubmcp.ServerConfig, error) {
+func resolveMCPServerRefs(cfg mcp.ServerConfig) (mcp.ServerConfig, error) {
 	headers, err := envref.StringMap(cfg.Headers)
 	if err != nil {
-		return pubmcp.ServerConfig{}, fmt.Errorf("headers: %w", err)
+		return mcp.ServerConfig{}, fmt.Errorf("headers: %w", err)
 	}
 	env, err := envref.StringMap(cfg.Env)
 	if err != nil {
-		return pubmcp.ServerConfig{}, fmt.Errorf("env: %w", err)
+		return mcp.ServerConfig{}, fmt.Errorf("env: %w", err)
 	}
 	cfg.Headers = headers
 	cfg.Env = env
 	return cfg, nil
 }
 
-func (g *Gateway) wireMCPLocked(cfg Config, failLogMsg string) {
+func (g *Gateway) wireMCPLocked(cfg config.Config, failLogMsg string) {
 	// The previous registry — and any live stdio subprocess clients it holds — is
 	// swapped out below. Retire it, or a reload leaks an orphaned subprocess per
 	// stdio server: RegisterConfig only closes old clients when re-registering
@@ -105,7 +104,7 @@ func (g *Gateway) wireMCPLocked(cfg Config, failLogMsg string) {
 		go func() {
 			defer g.pendingMCPCloses.Done()
 			if err := old.Close(); err != nil {
-				slog.Error("mcp: failed to close previous registry after reload", "error", err)
+				g.log.Error("mcp: failed to close previous registry after reload", "error", err)
 			}
 		}()
 	}
@@ -117,8 +116,8 @@ func (g *Gateway) wireMCPLocked(cfg Config, failLogMsg string) {
 		return
 	}
 
-	reg := mcp.NewRegistry()
-	registered := make([]pubmcp.ServerConfig, 0, len(cfg.MCPServers))
+	reg := mcp.NewRegistry(g.log)
+	registered := make([]mcp.ServerConfig, 0, len(cfg.MCPServers))
 	for _, mcpCfg := range cfg.MCPServers {
 		resolved, err := resolveMCPServerRefs(mcpCfg)
 		if err != nil {
@@ -132,7 +131,7 @@ func (g *Gateway) wireMCPLocked(cfg Config, failLogMsg string) {
 			// server it depends on was silently missing from the body. Registering
 			// the failure keeps it visible, unready, and carrying its Required
 			// flag, exactly like one whose handshake fails.
-			slog.Error(failLogMsg, "server", mcpCfg.Name, "error", err)
+			g.log.Error(failLogMsg, "server", mcpCfg.Name, "error", err)
 			reg.RegisterFailed(mcpCfg, err)
 			continue
 		}
@@ -160,7 +159,7 @@ func (g *Gateway) wireMCPLocked(cfg Config, failLogMsg string) {
 		ctx, cancel := context.WithTimeout(g.shutdownCtx, mcpInitTimeout)
 		defer cancel()
 		reg.InitializeAll(ctx, func(name string, initErr error) {
-			slog.Error(failLogMsg,
+			g.log.Error(failLogMsg,
 				"server", name,
 				"error", initErr,
 			)
@@ -173,7 +172,7 @@ func (g *Gateway) wireMCPLocked(cfg Config, failLogMsg string) {
 // mcp.NewExecutor apply its default (5). Callers must pass only the servers
 // that actually registered — a server skipped for a config error must not
 // contribute its MaxCallDepth to this minimum.
-func minPositiveMaxCallDepth(servers []pubmcp.ServerConfig) int {
+func minPositiveMaxCallDepth(servers []mcp.ServerConfig) int {
 	maxDepth := 0
 	for _, mcpCfg := range servers {
 		if mcpCfg.MaxCallDepth > 0 && (maxDepth == 0 || mcpCfg.MaxCallDepth < maxDepth) {

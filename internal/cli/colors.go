@@ -3,6 +3,8 @@ package cli
 import (
 	"os"
 	"runtime"
+
+	"golang.org/x/term"
 )
 
 // ANSI color codes for terminal output.
@@ -26,6 +28,12 @@ const (
 	SymDASH = "[-]"
 )
 
+// stdoutIsTerminal reports whether this process's stdout is an interactive
+// terminal. It is a var because there is no portable way to open a pty just to
+// assert that colour IS emitted in front of one, so the positive case is pinned
+// by overriding this rather than by faking a device.
+var stdoutIsTerminal = func() bool { return term.IsTerminal(int(os.Stdout.Fd())) }
+
 // NoColor returns true when colored output should be suppressed.
 var NoColor = func() bool {
 	if os.Getenv("NO_COLOR") != "" {
@@ -38,7 +46,11 @@ var NoColor = func() bool {
 			return true
 		}
 	}
-	return false
+	// An ANSI escape is for a human at a terminal. Without this, `ferrogw
+	// version > out.txt` and `ferrogw status | grep` carried escape bytes in
+	// the payload, so the file and the pipe held something no consumer asked
+	// for. --format json/yaml was never affected; the human paths were.
+	return !stdoutIsTerminal()
 }
 
 // Clr wraps s in the given ANSI code unless NoColor() is true.

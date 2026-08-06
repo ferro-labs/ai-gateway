@@ -10,102 +10,31 @@ import (
 	"time"
 
 	"github.com/ferro-labs/ai-gateway/providers/core"
+	"github.com/ferro-labs/ai-gateway/providers/core/imagenwire"
 )
 
-// imagenInstance is a single Imagen prediction input.
-type imagenInstance struct {
-	Prompt string `json:"prompt"`
-}
-
-// imagenParameters carries the optional Imagen generation knobs.
-type imagenParameters struct {
-	SampleCount *int   `json:"sampleCount,omitempty"`
-	AspectRatio string `json:"aspectRatio,omitempty"`
-}
-
-// imagenRequest is the Imagen :predict request envelope.
-type imagenRequest struct {
-	Instances  []imagenInstance  `json:"instances"`
-	Parameters *imagenParameters `json:"parameters,omitempty"`
-}
-
-// imagenPrediction is a single Imagen :predict result.
-type imagenPrediction struct {
-	BytesBase64Encoded string `json:"bytesBase64Encoded"`
-	MimeType           string `json:"mimeType"`
-	RAIFilteredReason  string `json:"raiFilteredReason"`
-}
-
-// imagenResponse is the Imagen :predict response envelope.
-type imagenResponse struct {
-	Predictions []imagenPrediction `json:"predictions"`
-}
-
-// buildImagenRequest maps a gateway ImageRequest onto the Imagen :predict shape.
-// A recognized req.Size ("WxH") is mapped to the nearest Imagen aspectRatio;
-// req.ResponseFormat is ignored (Imagen returns base64 only).
-func buildImagenRequest(req core.ImageRequest) imagenRequest {
-	out := imagenRequest{
-		Instances: []imagenInstance{{Prompt: req.Prompt}},
-	}
-	params := imagenParameters{SampleCount: req.N}
-	if ar := imagenAspectRatio(req.Size); ar != "" {
-		params.AspectRatio = ar
-	}
-	if params.SampleCount != nil || params.AspectRatio != "" {
-		out.Parameters = &params
-	}
-	return out
-}
-
-// imagenAspectRatio maps a common OpenAI "WxH" size to the nearest Imagen
-// aspectRatio. An unmapped or empty size returns "" (Imagen defaults to 1:1).
-func imagenAspectRatio(size string) string {
-	switch size {
-	case "1024x1024", "512x512", "256x256":
-		return "1:1"
-	case "1792x1024", "1536x1024":
-		return "16:9"
-	case "1024x1792", "1024x1536":
-		return "9:16"
-	case "1408x1024":
-		return "4:3"
-	case "1024x1408":
-		return "3:4"
-	default:
-		return ""
-	}
-}
-
-// mapImagenPredictions converts Imagen predictions to gateway images. It returns
-// an error when every prediction was rai-filtered or empty.
-func mapImagenPredictions(model string, predictions []imagenPrediction) ([]core.GeneratedImage, error) {
-	images := make([]core.GeneratedImage, 0, len(predictions))
-	var filterReason string
-	for _, pred := range predictions {
-		if pred.BytesBase64Encoded == "" {
-			if filterReason == "" {
-				filterReason = pred.RAIFilteredReason
-			}
-			continue
-		}
-		images = append(images, core.GeneratedImage{B64JSON: pred.BytesBase64Encoded})
-	}
-	if len(images) == 0 {
-		if filterReason != "" {
-			return nil, fmt.Errorf("gemini image generation for %q returned no images: %s", model, filterReason)
-		}
-		return nil, fmt.Errorf("gemini image generation for %q returned no images (all predictions were filtered or empty)", model)
-	}
-	return images, nil
-}
-
-// GenerateImage sends an image generation request to Gemini's Imagen :predict endpoint.
+// GenerateImage routes to the correct Gemini image surface by model family.
+// Imagen models generate through the :predict endpoint; the gemini image models
+// (gemini-2.5-flash-image and newer) generate through :generateContent and
+// return the image as base64 inlineData inside a candidate part. Both paths are
+// required because Google no longer grants Imagen :predict to new API keys — a
+// new account can only generate images through the generateContent models.
 func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*core.ImageResponse, error) {
-	imagenReq := buildImagenRequest(req)
-
+	if err := core.EnforceImageResponseFormat(Name, req); err != nil {
+		return nil, err
+	}
 	model := strings.TrimPrefix(req.Model, "models/")
-	reqURL := fmt.Sprintf("%s/v1beta/models/%s:predict", p.baseURL, url.PathEscape(model))
+	if strings.HasPrefix(model, "imagen") {
+		return p.generateImagePredict(ctx, req, model)
+	}
+	return p.generateImageContent(ctx, req, model)
+}
+
+// generateImagePredict calls Imagen's :predict endpoint (Imagen 3/4 family).
+func (p *Provider) generateImagePredict(ctx context.Context, req core.ImageRequest, model string) (*core.ImageResponse, error) {
+	imagenReq := imagenwire.BuildRequest(req, model)
+
+	reqURL := fmt.Sprintf("%s/models/%s:predict", p.baseURL, url.PathEscape(model))
 	httpResp, release, err := p.doJSONRequest(ctx, reqURL, "image ", imagenReq)
 	if err != nil {
 		return nil, err
@@ -122,14 +51,67 @@ func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*c
 		return nil, core.APIErrorFromResponse("gemini image", httpResp, respBody)
 	}
 
-	var imagenResp imagenResponse
+	var imagenResp imagenwire.Response
 	if err := json.Unmarshal(respBody, &imagenResp); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal image response: %w", err)
 	}
 
-	images, err := mapImagenPredictions(req.Model, imagenResp.Predictions)
+	images, err := imagenwire.MapPredictions(Name, req.Model, imagenResp.Predictions)
 	if err != nil {
 		return nil, err
+	}
+
+	return &core.ImageResponse{
+		Created: time.Now().Unix(),
+		Data:    images,
+	}, nil
+}
+
+// generateImageContent calls the generateContent endpoint for the gemini image
+// models, whose generated image comes back as base64 inlineData in a candidate
+// part — the same shape the chat path already decodes.
+func (p *Provider) generateImageContent(ctx context.Context, req core.ImageRequest, model string) (*core.ImageResponse, error) {
+	gReq := geminiRequest{
+		Contents: []geminiContent{{Parts: []geminiPart{{Text: req.Prompt}}}},
+		// responseModalities is documented for these models and makes the older
+		// *-image-generation preview models emit an image too; flash-image would
+		// default to it. OpenAI's pixel Size does not map to Gemini's
+		// aspectRatio/imageSize, so size/quality hints are dropped here.
+		GenerationConfig: &geminiGenerationConfig{ResponseModalities: []string{"TEXT", "IMAGE"}},
+	}
+
+	reqURL := fmt.Sprintf("%s/models/%s:generateContent", p.baseURL, url.PathEscape(model))
+	httpResp, release, err := p.doJSONRequest(ctx, reqURL, "image ", gReq)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	defer func() { _ = httpResp.Body.Close() }()
+
+	respBody, err := core.ReadResponseBody(httpResp.Body, core.MaxProviderResponseBytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read image response: %w", err)
+	}
+
+	if httpResp.StatusCode != http.StatusOK {
+		return nil, core.APIErrorFromResponse("gemini image", httpResp, respBody)
+	}
+
+	var decoded geminiResponse
+	if err := json.Unmarshal(respBody, &decoded); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal image response: %w", err)
+	}
+
+	var images []core.GeneratedImage
+	for _, c := range decoded.Candidates {
+		for _, part := range c.Content.Parts {
+			if part.InlineData != nil && part.InlineData.Data != "" {
+				images = append(images, core.GeneratedImage{B64JSON: part.InlineData.Data})
+			}
+		}
+	}
+	if len(images) == 0 {
+		return nil, fmt.Errorf("gemini image: response carried no image data")
 	}
 
 	return &core.ImageResponse{

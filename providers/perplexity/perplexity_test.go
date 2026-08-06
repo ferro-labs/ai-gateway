@@ -27,23 +27,6 @@ func TestNewPerplexity(t *testing.T) {
 	}
 }
 
-func TestPerplexityProvider_SupportedModels(t *testing.T) {
-	p, _ := New("test-key", "")
-	models := p.SupportedModels()
-	if len(models) == 0 {
-		t.Error("SupportedModels() returned empty")
-	}
-	found := false
-	for _, m := range models {
-		if m == "sonar" {
-			found = true
-		}
-	}
-	if !found {
-		t.Error("sonar not found in supported models")
-	}
-}
-
 func TestPerplexityProvider_SupportsModel(t *testing.T) {
 	p, _ := New("test-key", "")
 	if !p.SupportsModel("sonar") {
@@ -51,16 +34,6 @@ func TestPerplexityProvider_SupportsModel(t *testing.T) {
 	}
 	if !p.SupportsModel("any-model") {
 		t.Error("passthrough: expected all models to return true")
-	}
-}
-
-func TestPerplexityProvider_Models(t *testing.T) {
-	p, _ := New("test-key", "")
-	models := p.Models()
-	for _, m := range models {
-		if m.OwnedBy != "perplexity" {
-			t.Errorf("ModelInfo.OwnedBy = %q, want perplexity", m.OwnedBy)
-		}
 	}
 }
 
@@ -249,5 +222,25 @@ func TestPerplexityProvider_Complete_ErrorStatus(t *testing.T) {
 func TestNewPerplexity_InvalidBaseURL(t *testing.T) {
 	if _, err := New(testAPIKey, "not-a-url"); err == nil {
 		t.Error("expected error for invalid base URL, got nil")
+	}
+}
+
+// TestNewPerplexity_BaseURLIsTheAPIRoot pins the shape a base URL is written in: the
+// API root, used verbatim. The one net: a bare host is not an API root, so it
+// adopts the trailing version segment of the provider's default root.
+func TestNewPerplexity_BaseURLIsTheAPIRoot(t *testing.T) {
+	for base, want := range map[string]string{
+		"": "https://api.perplexity.ai",
+		// The default root is a bare host, so a bare-host override gains nothing.
+		"https://proxy.example.com":     "https://proxy.example.com",
+		"https://proxy.example.com/ppx": "https://proxy.example.com/ppx",
+	} {
+		p, err := New("test-key", base)
+		if err != nil {
+			t.Fatalf("New(_, %q) error: %v", base, err)
+		}
+		if got := p.BaseURL(); got != want {
+			t.Errorf("New(_, %q).BaseURL() = %q, want %q", base, got, want)
+		}
 	}
 }

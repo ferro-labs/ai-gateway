@@ -1,0 +1,493 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+@import 'shadcn/tailwind.css';
+
+/*
+ * Theming contract
+ * ================
+ *
+ * There is one token system, not two. shadcn components reference the semantic
+ * names below (--primary, --card, --border, …), so those names are kept — but
+ * their values are the dashboard's own palette rather than shadcn's default
+ * greyscale. Adding a component therefore inherits the brand automatically and
+ * no call site needs to override colours.
+ *
+ * Two deliberate deviations from a stock shadcn install:
+ *
+ *  - Dark mode keys off [data-theme='dark'], not `.dark`. The theme toggle
+ *    writes that attribute, and a stock install would have left shadcn's dark
+ *    values permanently inert.
+ *  - The font stays Inter. Geist arrives with the preset and is not used.
+ *
+ * A note on one confusing name: shadcn's `--accent` is the subtle hover surface,
+ * NOT the brand accent. The brand teal is `--primary`.
+ */
+
+@custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
+
+:root {
+  color-scheme: light;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+
+  /*
+   * Neutrals are slate-tinted to align with the managed console panel: a
+   * recessed page (#e8edf3) so white cards separate, near-black text (#1f2328),
+   * and neutral hover/selected surfaces. The teal brand lives in --primary
+   * (fills, links, the active-nav bar) rather than in the surfaces themselves.
+   */
+  --background: #e8edf3;
+  --foreground: #1f2328;
+
+  --card: #ffffff;
+  --card-foreground: #1f2328;
+  --popover: #ffffff;
+  --popover-foreground: #1f2328;
+
+  --primary: #0f766e;
+  --primary-foreground: #ffffff;
+  /*
+   * Used wherever the brand carries text rather than fills a shape — a darker
+   * teal step for brand text on the selected surface where the fill --primary
+   * would sit below AA.
+   */
+  --primary-strong: #0c5f58;
+
+  --secondary: #eef2f7;
+  --secondary-foreground: #1f2328;
+  --muted: #eef2f7;
+  --muted-foreground: #59636e;
+
+  /* Subtle neutral hover/selected surface — not the brand colour. */
+  --accent: #eef2f7;
+  --accent-foreground: #1f2328;
+
+  /*
+   * Darker than the #c23b3b it came from, because of how the component library
+   * builds its destructive controls: they set the text and a 10% tint of the
+   * same colour as the fill, and at 20% on hover. #c23b3b against its own 10%
+   * tint is 4.28 — the composite an accessibility pass measures, and one no
+   * amount of checking the raw pair against a background would have caught.
+   * This value clears 4.5 against both tints on every surface, and still takes
+   * white at 6.62 when used as a solid fill.
+   */
+  --destructive: #a73333;
+  --destructive-foreground: #ffffff;
+
+  --border: #c3ccd6;
+  --border-strong: #aeb8c2;
+  --input: #c3ccd6;
+  --ring: #0f766e;
+
+  --radius: 8px;
+
+  /*
+   * The sidebar is a light surface. It was dark navy in both themes, which made
+   * signing in feel like arriving at a different product: the sign-in page has
+   * no sidebar, so the first thing an operator saw after authenticating was a
+   * large dark shape that had not been there a moment earlier. The dark
+   * treatment now appears once, as the sign-in aside, where it introduces the
+   * product rather than interrupting it.
+   */
+  --sidebar: #ffffff;
+  --sidebar-foreground: #59636e;
+  --sidebar-primary: #0f766e;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #eef2f7;
+  --sidebar-accent-foreground: #1f2328;
+  --sidebar-border: #c3ccd6;
+  --sidebar-ring: #0f766e;
+}
+
+[data-theme='dark'] {
+  color-scheme: dark;
+
+  --background: #0f172a;
+  --foreground: #f8fafc;
+
+  --card: #1e293b;
+  --card-foreground: #f8fafc;
+  --popover: #1e293b;
+  --popover-foreground: #f8fafc;
+
+  --primary: #1ec9b4;
+  --primary-foreground: #042f2c;
+  --primary-strong: #5fded0;
+
+  --secondary: #2a3a52;
+  --secondary-foreground: #f1f5f9;
+  --muted: #243249;
+  --muted-foreground: #b4c5d4;
+
+  --accent: #2a3a52;
+  --accent-foreground: #f1f5f9;
+
+  --destructive: #f08080;
+  --destructive-foreground: #2a1010;
+
+  --border: #465873;
+  --border-strong: #53637a;
+  --input: #53637a;
+  --ring: #1ec9b4;
+
+  --sidebar: #0f172a;
+  --sidebar-foreground: #b4c5d4;
+  --sidebar-primary: #1ec9b4;
+  --sidebar-primary-foreground: #042f2c;
+  --sidebar-accent: #2a3a52;
+  --sidebar-accent-foreground: #f1f5f9;
+  --sidebar-border: #465873;
+  --sidebar-ring: #1ec9b4;
+}
+
+/*
+ * Status colours.
+ *
+ * shadcn ships only `destructive`, but an operations console needs to say
+ * "healthy", "degraded" and "informational" as distinct states. These follow
+ * the same light/dark override pattern so components use one vocabulary.
+ */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-danger: var(--destructive);
+  --color-danger-soft: var(--danger-soft);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
+  --color-primary-soft: var(--primary-soft);
+  --color-primary-strong: var(--primary-strong);
+  --color-border-strong: var(--border-strong);
+  --color-faint: var(--faint);
+
+  --color-code-key: var(--code-key);
+  --color-code-string: var(--code-string);
+  --color-code-number: var(--code-number);
+  --color-code-literal: var(--code-literal);
+  --color-code-punct: var(--code-punct);
+
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  --font-sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-heading: var(--font-sans);
+
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+
+  --shadow-card: var(--shadow-elevation);
+
+  /*
+   * An operations console is read, not browsed. These are tighter than the
+   * defaults so a table shows more rows before scrolling.
+   */
+  --spacing-sidebar: 224px;
+  --spacing-topbar: 56px;
+}
+
+:root {
+  --success: #167a55;
+  --success-soft: #e7f4ee;
+  /*
+   * #ad6500 from the source palette scores 4.25 on the page background and 4.36
+   * on the subtle surface, both under AA. Darkening it to clear those still left
+   * it at 4.44 against its own soft badge fill — the surface it sits on most
+   * often. This value clears 4.5 on all five: page, card, subtle, selected, and
+   * the warning badge itself.
+   */
+  --warning: #a15e00;
+  --warning-soft: #fff3df;
+  --danger-soft: #fceceb;
+  --info: #346b9a;
+  --info-soft: #eaf1f7;
+  --primary-soft: #dff1ef;
+  /*
+   * Decorative only — dividers, disabled glyphs, an icon that already sits
+   * beside its own label. It scores 2.97 at best and must never carry text; the
+   * accessibility pass over every route is what enforces that.
+   */
+  --faint: #8a9996;
+  --shadow-elevation: 0 1px 2px rgb(15 23 42 / 4%), 0 4px 12px rgb(15 23 42 / 6%);
+
+  /*
+   * Syntax colours for the configuration document.
+   *
+   * Deliberately outside the status vocabulary: green here means "a string",
+   * not "healthy", and reusing --success would make a perfectly ordinary
+   * document look like a screen full of passing checks. Each clears 4.5 on the
+   * subtle surface the editor is drawn on.
+   */
+  --code-key: #0550ae;
+  --code-string: #0a6640;
+  --code-number: #7c3aed;
+  --code-literal: #953800;
+  --code-punct: #60706d;
+}
+
+[data-theme='dark'] {
+  --success: #65c79b;
+  --success-soft: #16382c;
+  --warning: #f0b45f;
+  --warning-soft: #3c2d18;
+  --danger-soft: #402222;
+  --info: #7db3de;
+  --info-soft: #1f3343;
+  --primary-soft: #153b3a;
+  --faint: #788986;
+  --shadow-elevation: 0 1px 3px rgb(0 0 0 / 40%);
+
+  --code-key: #79c0ff;
+  --code-string: #7ee2b8;
+  --code-number: #d2a8ff;
+  --code-literal: #ffa657;
+  --code-punct: #9eaeab;
+}
+
+@layer base {
+  /*
+   * A bare `border-b` has to mean the border token, not the text colour.
+   *
+   * Tailwind v3's preflight defaulted every border to a grey; v4 dropped that
+   * and resolves an uncoloured border utility to `currentColor`. The component
+   * library's primitives were written against the v4 default this replaces and
+   * so name no colour — a table row, a table footer, a dialog footer. Without
+   * this every one of those hairlines was drawn in the foreground colour:
+   * #142321 on a light page and near-white on a dark one, in exactly the places
+   * the design calls for the faintest line on the screen.
+   *
+   * Utilities sit in a later cascade layer, so an explicit `border-border` or
+   * `border-primary/30` still wins wherever a call site states one.
+   */
+  *,
+  ::before,
+  ::after,
+  ::backdrop,
+  ::file-selector-button {
+    border-color: var(--color-border);
+  }
+
+  html {
+    /* Below this the dense tables stop being usable at any font size. */
+    min-width: 320px;
+  }
+
+  body {
+    @apply min-h-screen bg-background font-sans text-foreground antialiased;
+  }
+
+  /*
+   * A visible focus ring on every interactive element, defined once.
+   *
+   * Preflight removes the browser's default outline. Without replacing it,
+   * keyboard navigation loses its only affordance — and an accessibility audit
+   * confirmed this dashboard currently keeps focus visible everywhere, so this
+   * preserves a property rather than adding one.
+   */
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-ring;
+  }
+}
+
+/*
+ * The screens of last resort.
+ *
+ * Four of them: the configuration failure the entry point renders when the
+ * application cannot start, the error boundary's fallback, the lazy-route
+ * suspense fallback, and the session check. Each is shown at a moment when
+ * Tailwind's utilities may be the very thing that failed to load, and the first
+ * two can render before any theme attribute is on the document — so these rules
+ * are plain CSS against the :root tokens, which resolve to the light palette
+ * with no JavaScript having run at all. No inline styles: the deployed
+ * Content-Security-Policy drops the style attribute silently, and a fatal error
+ * that renders unreadable is worse than the fault it is reporting.
+ */
+.fatal-error,
+.route-loading,
+.session-check {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-block-size: 100vh;
+  padding: 1.5rem;
+  background: var(--background);
+  color: var(--foreground);
+  font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+.fatal-error > div {
+  max-inline-size: 34rem;
+  padding: 1.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card);
+  box-shadow: var(--shadow-elevation);
+}
+
+.fatal-error h1 {
+  margin: 0 0 0.5rem;
+  font-size: 1.25rem;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.fatal-error p {
+  margin: 0 0 1rem;
+  color: var(--muted-foreground);
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+
+/*
+ * An eyebrow above the heading. It names the failure class — "Configuration
+ * error", "Dashboard error" — which is the part an operator reads first and
+ * repeats when reporting it.
+ */
+.eyeless-label {
+  margin: 0 0 0.35rem;
+  color: var(--destructive);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.5rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card);
+  color: var(--foreground);
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.button:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.button-primary {
+  border-color: transparent;
+  background: var(--primary);
+  color: var(--primary-foreground);
+}
+
+/*
+ * The onboarding progress bar.
+ *
+ * A native <progress> takes its fill from an attribute, which the
+ * Content-Security-Policy permits where an inline width is not. Its parts are
+ * only reachable through vendor pseudo-elements, so the styling lives here
+ * rather than in utility classes.
+ */
+.onboarding-progress {
+  appearance: none;
+  overflow: hidden;
+  border: 0;
+  border-radius: 9999px;
+  background: var(--muted);
+}
+
+.onboarding-progress::-webkit-progress-bar {
+  background: var(--muted);
+}
+
+.onboarding-progress::-webkit-progress-value {
+  border-radius: 9999px;
+  background: var(--primary);
+  transition: inline-size 200ms ease;
+}
+
+.onboarding-progress::-moz-progress-bar {
+  border-radius: 9999px;
+  background: var(--primary);
+}
+
+/*
+ * Ranking bars.
+ *
+ * A <meter> takes its fill from an attribute, which the Content-Security-Policy
+ * permits where an inline width would not. Left unstyled it renders in the
+ * browser's own green — the "optimum" colour — which has nothing to do with the
+ * palette and reads as a status the data is not reporting. Its parts are
+ * reachable only through vendor pseudo-elements, so this cannot be expressed as
+ * utility classes. `accent-color` does not reach them either.
+ */
+.ranking-meter {
+  appearance: none;
+  overflow: hidden;
+  border: 0;
+  border-radius: 9999px;
+  background: var(--muted);
+}
+
+.ranking-meter::-webkit-meter-inner-element {
+  block-size: 100%;
+}
+
+.ranking-meter::-webkit-meter-bar {
+  border: 0;
+  border-radius: 9999px;
+  background: var(--muted);
+}
+
+.ranking-meter::-webkit-meter-optimum-value,
+.ranking-meter::-webkit-meter-suboptimum-value,
+.ranking-meter::-webkit-meter-even-less-good-value {
+  border-radius: 9999px;
+  background: var(--primary);
+}
+
+.ranking-meter::-moz-meter-bar {
+  border-radius: 9999px;
+  background: var(--primary);
+}
+
+/*
+ * Reduced motion, honoured globally rather than per-animation so a component
+ * added later cannot forget it.
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

@@ -29,23 +29,6 @@ func TestNewQwen(t *testing.T) {
 	}
 }
 
-func TestQwenProvider_SupportedModels(t *testing.T) {
-	p, _ := New("test-key", "")
-	models := p.SupportedModels()
-	if len(models) == 0 {
-		t.Error("SupportedModels() returned empty")
-	}
-	found := false
-	for _, m := range models {
-		if m == "qwen-plus" {
-			found = true
-		}
-	}
-	if !found {
-		t.Error("qwen-plus not found")
-	}
-}
-
 func TestQwenProvider_SupportsModel(t *testing.T) {
 	p, _ := New("test-key", "")
 	if !p.SupportsModel("qwen-plus") {
@@ -53,16 +36,6 @@ func TestQwenProvider_SupportsModel(t *testing.T) {
 	}
 	if !p.SupportsModel("custom-model") {
 		t.Error("passthrough: expected all models to return true")
-	}
-}
-
-func TestQwenProvider_Models(t *testing.T) {
-	p, _ := New("test-key", "")
-	models := p.Models()
-	for _, m := range models {
-		if m.OwnedBy != "qwen" {
-			t.Errorf("ModelInfo.OwnedBy = %q, want qwen", m.OwnedBy)
-		}
 	}
 }
 
@@ -200,8 +173,8 @@ func TestQwenProvider_Embed_MockHTTP(t *testing.T) {
 		if r.Method != http.MethodPost {
 			t.Errorf("method = %s, want POST", r.Method)
 		}
-		if r.URL.Path != "/embeddings" {
-			t.Errorf("path = %q, want /embeddings", r.URL.Path)
+		if r.URL.Path != "/v1/embeddings" {
+			t.Errorf("path = %q, want /v1/embeddings", r.URL.Path)
 		}
 		if got := r.Header.Get("Authorization"); got != testBearerAPIKey {
 			t.Errorf("Authorization = %q, want %s", got, testBearerAPIKey)
@@ -374,8 +347,8 @@ func TestQwenProvider_DiscoverModels(t *testing.T) {
 		if r.Method != http.MethodGet {
 			t.Errorf("method = %q, want GET", r.Method)
 		}
-		if r.URL.Path != "/models" {
-			t.Errorf("path = %q, want /models", r.URL.Path)
+		if r.URL.Path != "/v1/models" {
+			t.Errorf("path = %q, want /v1/models", r.URL.Path)
 		}
 		if got := r.Header.Get("Authorization"); got != testBearerAPIKey {
 			t.Errorf("Authorization = %q, want %s", got, testBearerAPIKey)
@@ -399,5 +372,24 @@ func TestQwenProvider_DiscoverModels(t *testing.T) {
 	}
 	if models[0].OwnedBy != "qwen" {
 		t.Errorf("model[0].OwnedBy = %q, want qwen", models[0].OwnedBy)
+	}
+}
+
+// TestNewQwen_BaseURLIsTheAPIRoot pins the shape a base URL is written in: the
+// API root, used verbatim. The one net: a bare host is not an API root, so it
+// adopts the trailing version segment of the provider's default root.
+func TestNewQwen_BaseURLIsTheAPIRoot(t *testing.T) {
+	for base, want := range map[string]string{
+		"":                               "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+		"https://dashscope.aliyuncs.com": "https://dashscope.aliyuncs.com/v1",
+		"https://proxy.example.com/compatible-mode/v1": "https://proxy.example.com/compatible-mode/v1",
+	} {
+		p, err := New("test-key", base)
+		if err != nil {
+			t.Fatalf("New(_, %q) error: %v", base, err)
+		}
+		if got := p.BaseURL(); got != want {
+			t.Errorf("New(_, %q).BaseURL() = %q, want %q", base, got, want)
+		}
 	}
 }

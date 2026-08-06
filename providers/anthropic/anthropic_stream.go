@@ -6,7 +6,7 @@ import (
 	"net/http"
 
 	"github.com/ferro-labs/ai-gateway/providers/core"
-	"github.com/ferro-labs/ai-gateway/providers/internal/anthropicwire"
+	"github.com/ferro-labs/ai-gateway/providers/core/anthropicwire"
 )
 
 // CompleteStream sends a streaming chat completion request to Anthropic. The

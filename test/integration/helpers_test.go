@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	aigateway "github.com/ferro-labs/ai-gateway"
+	"github.com/ferro-labs/ai-gateway/config"
 	_ "github.com/lib/pq"
 )
 
@@ -38,7 +39,7 @@ func resetTablesAndClose(t *testing.T, closer testCloser, tables ...string) {
 	})
 }
 
-func newTestGateway(t *testing.T, cfg aigateway.Config) (*aigateway.Gateway, error) {
+func newTestGateway(t *testing.T, cfg config.Config) (*aigateway.Gateway, error) {
 	t.Helper()
 	gw, err := aigateway.New(cfg)
 	if err == nil {

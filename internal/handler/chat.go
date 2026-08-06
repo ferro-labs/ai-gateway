@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,36 +31,42 @@ func ChatCompletions(gw *aigateway.Gateway) http.HandlerFunc {
 		}
 
 		// --- Streaming path ---
+		//
+		// Whether anything here serves this model is the router's question, not
+		// this handler's. It used to be asked twice: once here against the
+		// REGISTERED provider set, which is not the routable one — targets is an
+		// allowlist — and again inside the pipeline against the targets. The two
+		// answered differently for the same condition, so a model nothing served
+		// was a 400 on chat and a 404 on embeddings. The pipeline's answer is the
+		// only one now: see apierror.WriteModelNotFound.
+		//
+		// That also folds the separate "provider does not support streaming"
+		// refusal into the same 404. A target that cannot stream is not a
+		// candidate for a streaming request, which is exactly what a target that
+		// cannot embed is for /v1/embeddings — and that surface has always
+		// reported it as model_not_found. One capability miss, one answer.
 		if req.Stream {
-			if _, ok := gw.FindByModel(req.Model); !ok {
-				apierror.WriteOpenAI(w, http.StatusBadRequest, "no provider supports model: "+req.Model, "invalid_request_error", "model_not_found")
-				return
-			}
-			if _, ok := gw.FindStreamingByModel(req.Model); !ok {
-				apierror.WriteOpenAI(w, http.StatusBadRequest, "provider does not support streaming", "invalid_request_error", "streaming_not_supported")
-				return
-			}
+			// The producer runs under a context this handler can cancel WITH A
+			// REASON. Without one, the only cancellation it ever saw was the
+			// request context dying as the handler returned, which says nothing
+			// about why — so the gateway's own idle bound firing on a stalled
+			// upstream was recorded as the caller hanging up.
+			streamCtx, cancelStream := context.WithCancelCause(r.Context())
+			defer cancelStream(nil)
 
-			ch, err := gw.RouteStream(r.Context(), req)
+			ch, err := gw.RouteStream(streamCtx, req)
 			if err != nil {
-				status, errType, code := apierror.RouteErrorDetails(err)
-				apierror.WriteOpenAI(w, status, err.Error(), errType, code)
+				apierror.WriteRouteError(w, err)
 				return
 			}
-			sse.Write(r.Context(), w, ch)
+			sse.Write(streamCtx, w, ch, cancelStream)
 			return
 		}
 
 		// --- Non-streaming path ---
-		if _, ok := gw.FindByModel(req.Model); !ok {
-			apierror.WriteOpenAI(w, http.StatusBadRequest, "no provider supports model: "+req.Model, "invalid_request_error", "model_not_found")
-			return
-		}
-
 		resp, err := gw.Route(r.Context(), req)
 		if err != nil {
-			status, errType, code := apierror.RouteErrorDetails(err)
-			apierror.WriteOpenAI(w, status, err.Error(), errType, code)
+			apierror.WriteRouteError(w, err)
 			return
 		}
 
@@ -87,8 +94,7 @@ func Health(gw *aigateway.Gateway) http.HandlerFunc {
 		}
 		var providerStatuses []providerHealth
 		for _, name := range gw.ListProviders() {
-			p, ok := gw.GetProvider(name)
-			if !ok {
+			if _, ok := gw.GetProvider(name); !ok {
 				continue
 			}
 			circuit := circuits[name]
@@ -99,7 +105,7 @@ func Health(gw *aigateway.Gateway) http.HandlerFunc {
 				Name:    name,
 				Status:  "available",
 				Circuit: circuit,
-				Models:  len(p.Models()),
+				Models:  len(gw.ModelsFor(name)),
 			})
 		}
 		if providerStatuses == nil {

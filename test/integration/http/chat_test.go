@@ -179,7 +179,9 @@ func TestChat_MissingModel_Returns400(t *testing.T) {
 	}
 }
 
-func TestChat_UnknownModel_Returns400(t *testing.T) {
+// A model the gateway does not serve is a 404 on every routed surface — see
+// internal/handler.TestSurfaces_UnroutableModel_AgreeOnOneAnswer.
+func TestChat_UnknownModel_Returns404(t *testing.T) {
 	env := newTestServer(t)
 
 	body := `{
@@ -197,8 +199,8 @@ func TestChat_UnknownModel_Returns400(t *testing.T) {
 	}
 	defer closeTestBody(t, resp.Body)
 
-	if resp.StatusCode != http.StatusBadRequest {
+	if resp.StatusCode != http.StatusNotFound {
 		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("expected 400, got %d: %s", resp.StatusCode, body)
+		t.Fatalf("expected 404, got %d: %s", resp.StatusCode, body)
 	}
 }

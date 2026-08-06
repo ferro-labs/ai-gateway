@@ -14,40 +14,6 @@ func TestBedrockProvider_GenerateImage_Interface(_ *testing.T) {
 	var _ core.ImageProvider = (*Provider)(nil)
 }
 
-func TestBedrockProvider_SupportsImageModels(t *testing.T) {
-	p := &Provider{name: Name}
-
-	for _, want := range []string{
-		"amazon.nova-canvas-v1:0",
-		"amazon.titan-image-generator-v1",
-		"amazon.titan-image-generator-v2:0",
-		"stability.stable-diffusion-xl-v1",
-	} {
-		if !containsString(p.SupportedModels(), want) {
-			t.Errorf("SupportedModels() missing %q", want)
-		}
-		if !p.SupportsModel(want) {
-			t.Errorf("SupportsModel(%q) = false, want true", want)
-		}
-	}
-
-	// Cross-region inference-profile and region-prefixed forms must also match.
-	for _, want := range []string{
-		"us.amazon.nova-canvas-v1:0",
-		"global.amazon.titan-image-generator-v2:0",
-		"us-gov-west-1/stability.stable-diffusion-xl-v1",
-	} {
-		if !p.SupportsModel(want) {
-			t.Errorf("SupportsModel(%q) = false, want true", want)
-		}
-	}
-
-	// The titan-image prefix must NOT capture the titan-embed-image family.
-	if p.SupportsModel("amazon.titan-embed-image-v1") {
-		t.Error("SupportsModel(amazon.titan-embed-image-v1) = true, want false (embeddings, not image)")
-	}
-}
-
 func TestIsBedrockImageModel_StabilityOnlySDXL(t *testing.T) {
 	// Only stability.stable-diffusion-xl is actually dispatched, so the
 	// capability claim must not cover unimplemented stability.* families.
@@ -247,5 +213,70 @@ func TestBedrockProvider_GenerateImage_UnsupportedModel(t *testing.T) {
 	}
 	if len(fake.invokeCalls) != 0 {
 		t.Errorf("InvokeModel calls = %d, want 0 for unsupported model", len(fake.invokeCalls))
+	}
+}
+
+// TestBedrockProvider_GenerateImage_RejectsURLFormat: every Bedrock image family
+// returns base64, so a caller that asked for a URL was answered 200 with an
+// empty data[0].url. The fake client records invocations, so this also pins that
+// nothing is spent upstream on a request that cannot be served.
+func TestBedrockProvider_GenerateImage_RejectsURLFormat(t *testing.T) {
+	fake := &fakeBedrockRuntimeClient{}
+	p := &Provider{name: Name, client: fake}
+
+	_, err := p.GenerateImage(context.Background(), core.ImageRequest{
+		Model: "amazon.nova-canvas-v1:0", Prompt: "a cat", ResponseFormat: "url",
+	})
+	if err == nil {
+		t.Fatal("GenerateImage = nil error, want a refusal (Bedrock returns base64 only)")
+	}
+	if got := core.ParseStatusCode(err); got != 400 {
+		t.Errorf("status = %d, want 400", got)
+	}
+	if len(fake.invokeCalls) != 0 {
+		t.Errorf("InvokeModel calls = %d, want 0", len(fake.invokeCalls))
+	}
+}
+
+// TestBedrockImageQuality maps OpenAI's image quality vocabulary onto Bedrock's.
+// "hd" is DALL·E 3's spelling of the high setting and was forwarded verbatim
+// into an imageGenerationConfig.quality field whose values are standard |
+// premium, so the caller's request either errored upstream or was ignored.
+func TestBedrockImageQuality(t *testing.T) {
+	cases := map[string]string{
+		"hd":       "premium",
+		"standard": "standard",
+		"premium":  "premium",
+		"":         "",
+	}
+	for in, want := range cases {
+		if got := bedrockImageQuality(in); got != want {
+			t.Errorf("bedrockImageQuality(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestBedrockProvider_GenerateImage_QualityHDBecomesPremium proves the mapping
+// reaches the wire, not just the helper.
+func TestBedrockProvider_GenerateImage_QualityHDBecomesPremium(t *testing.T) {
+	fake := &fakeBedrockRuntimeClient{
+		responses: [][]byte{[]byte(`{"images":["aGk="]}`)},
+	}
+	p := &Provider{name: Name, client: fake}
+
+	if _, err := p.GenerateImage(context.Background(), core.ImageRequest{
+		Model: "amazon.nova-canvas-v1:0", Prompt: "a cat", Quality: "hd",
+	}); err != nil {
+		t.Fatalf("GenerateImage: %v", err)
+	}
+	if len(fake.invokeCalls) != 1 {
+		t.Fatalf("InvokeModel calls = %d, want 1", len(fake.invokeCalls))
+	}
+	body := string(fake.invokeCalls[0].Body)
+	if !strings.Contains(body, `"quality":"premium"`) {
+		t.Errorf("request body = %s, want quality premium", body)
+	}
+	if strings.Contains(body, `"quality":"hd"`) {
+		t.Errorf("request body = %s, still carries OpenAI's hd spelling", body)
 	}
 }

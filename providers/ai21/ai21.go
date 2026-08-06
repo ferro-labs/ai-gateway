@@ -6,11 +6,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 
 	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
 	"github.com/ferro-labs/ai-gateway/providers/core"
-	"github.com/ferro-labs/ai-gateway/providers/internal/openaicompat"
+	"github.com/ferro-labs/ai-gateway/providers/core/openaicompat"
 )
 
 // Name is the canonical provider identifier.
@@ -37,12 +38,8 @@ var (
 
 // New creates a new AI21 provider.
 func New(apiKey, baseURL string) (*Provider, error) {
-	baseURL = strings.TrimSpace(baseURL)
-	if baseURL == "" {
-		baseURL = defaultBaseURL
-	}
-	baseURL = strings.TrimRight(baseURL, "/")
-	if err := core.ValidateBaseURL(Name, baseURL); err != nil {
+	baseURL, err := core.ResolveAPIRoot(Name, baseURL, defaultBaseURL)
+	if err != nil {
 		return nil, err
 	}
 	return &Provider{
@@ -64,28 +61,24 @@ func (p *Provider) AuthHeaders() map[string]string {
 	return map[string]string{"Authorization": "Bearer " + p.apiKey}
 }
 
-// SupportedModels returns known AI21 models. AI21 is Jamba-only; the legacy
-// Jurassic (j2-*) models are deprecated and no longer advertised.
-func (p *Provider) SupportedModels() []string {
-	return []string{
-		"jamba-large-1.7",
-		"jamba-mini-1.7",
-		"jamba-1.5-large",
-		"jamba-1.5-mini",
-	}
-}
-
 // SupportsModel returns true for any model — AI21 validates model names.
 func (p *Provider) SupportsModel(_ string) bool { return true }
-
-// Models returns structured model metadata.
-func (p *Provider) Models() []core.ModelInfo {
-	return core.ModelsFromList(p.name, p.SupportedModels())
-}
 
 // IsJambaModel returns true for Jamba models that use the OpenAI-compatible endpoint.
 func IsJambaModel(model string) bool {
 	return strings.HasPrefix(model, "jamba")
+}
+
+// escapeModelSegment percent-escapes a model id for use as the single path
+// segment the Jurassic /complete route is keyed by. Empty, dot ("."/"..") and
+// separator-bearing values are rejected: url.PathEscape leaves those intact, so
+// they would otherwise let a caller-supplied model reach a different AI21 route
+// with the operator's API key attached.
+func escapeModelSegment(model string) (string, error) {
+	if model == "" || model == "." || model == ".." || strings.ContainsAny(model, `/\`) {
+		return "", fmt.Errorf("ai21: invalid model %q", model)
+	}
+	return url.PathEscape(model), nil
 }
 
 // chatParams builds the shared OpenAI-compatible request parameters for the
@@ -143,11 +136,18 @@ func (p *Provider) completeJamba(ctx context.Context, req core.Request) (*core.R
 // deprecated. AI21 is Jamba-only going forward; this path is kept functional for
 // callers still pinned to Jurassic models but is no longer advertised.
 func (p *Provider) completeJurassic(ctx context.Context, req core.Request) (*core.Response, error) {
-	prompt := ""
-	for _, msg := range req.Messages {
-		if msg.Role == core.RoleUser {
-			prompt = msg.Content
-		}
+	escaped, err := escapeModelSegment(req.Model)
+	if err != nil {
+		return nil, err
+	}
+
+	// /complete has one input field and no system channel, so the conversation is
+	// flattened into it by the shared join every single-prompt provider uses. An
+	// image part has no field to travel in and is refused with a 400 rather than
+	// dropped under a 200 — see core.JoinMessagesAsPrompt.
+	prompt, err := core.JoinMessagesAsPrompt(Name, req.Model, req.Messages)
+	if err != nil {
+		return nil, err
 	}
 
 	// AI21 is dual-path: Jamba speaks the OpenAI-compatible chat API (and forwards
@@ -175,8 +175,8 @@ func (p *Provider) completeJurassic(ctx context.Context, req core.Request) (*cor
 	}
 	defer release()
 
-	url := fmt.Sprintf("%s/%s/complete", p.baseURL, req.Model)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bodyReader)
+	completeURL := fmt.Sprintf("%s/%s/complete", p.baseURL, escaped)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, completeURL, bodyReader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -227,7 +227,11 @@ func (p *Provider) completeJurassic(ctx context.Context, req core.Request) (*cor
 // Only Jamba models support streaming via the OpenAI-compatible endpoint.
 func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan core.StreamChunk, error) {
 	if !IsJambaModel(req.Model) {
-		return nil, fmt.Errorf("streaming is only supported for Jamba models; use a jamba-* model for streaming")
+		// 400, not the 500 a bare error classifies as: the caller named a model
+		// this provider cannot stream, which only the caller can fix and no
+		// retry can change.
+		return nil, core.StatusError(Name, http.StatusBadRequest,
+			"streaming is only supported for Jamba models; use a jamba-* model for streaming")
 	}
 	return openaicompat.PostStream(ctx, p.chatParams(), req)
 }

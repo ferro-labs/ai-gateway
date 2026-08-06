@@ -12,7 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ferro-labs/ai-gateway/internal/admin"
+	"github.com/ferro-labs/ai-gateway/internal/admin/model"
+	"github.com/ferro-labs/ai-gateway/internal/admin/repository"
 
 	_ "github.com/lib/pq"
 )
@@ -122,7 +123,7 @@ func TestPostgresMigration_HashesExistingKeys(t *testing.T) {
 	seedLegacyKeyTable(t, db)
 	t.Cleanup(func() { resetKeySchema(t, db) })
 
-	store, err := admin.NewPostgresStore(t.Context(), testDSN)
+	store, err := repository.NewPostgresStore(t.Context(), testDSN)
 	if err != nil {
 		t.Fatalf("open migrated store: %v", err)
 	}
@@ -180,7 +181,7 @@ func TestPostgresMigration_IsIdempotent(t *testing.T) {
 	t.Cleanup(func() { resetKeySchema(t, db) })
 
 	for i := range 3 {
-		store, err := admin.NewPostgresStore(t.Context(), testDSN)
+		store, err := repository.NewPostgresStore(t.Context(), testDSN)
 		if err != nil {
 			t.Fatalf("open store on start %d: %v", i+1, err)
 		}
@@ -212,7 +213,7 @@ func TestPostgresMigration_ConcurrentStartupsSerialize(t *testing.T) {
 		wg     sync.WaitGroup
 		start  = make(chan struct{})
 		errs   = make([]error, instances)
-		stores = make([]*admin.SQLStore, instances)
+		stores = make([]*repository.SQLStore, instances)
 	)
 
 	for i := range instances {
@@ -220,7 +221,7 @@ func TestPostgresMigration_ConcurrentStartupsSerialize(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			stores[i], errs[i] = admin.NewPostgresStore(context.Background(), testDSN)
+			stores[i], errs[i] = repository.NewPostgresStore(context.Background(), testDSN)
 		}()
 	}
 	close(start)
@@ -255,7 +256,7 @@ func TestPostgresMigration_FreshDatabaseMatchesMigrated(t *testing.T) {
 	resetKeySchema(t, db)
 	t.Cleanup(func() { resetKeySchema(t, db) })
 
-	fresh, err := admin.NewPostgresStore(t.Context(), testDSN)
+	fresh, err := repository.NewPostgresStore(t.Context(), testDSN)
 	if err != nil {
 		t.Fatalf("open fresh store: %v", err)
 	}
@@ -274,7 +275,7 @@ func TestPostgresMigration_FreshDatabaseMatchesMigrated(t *testing.T) {
 		t.Error("fresh schema still has the plaintext column")
 	}
 
-	created, err := fresh.Create(context.Background(), "fresh", []string{admin.ScopeAdmin}, nil)
+	created, err := fresh.Create(context.Background(), "fresh", []string{model.ScopeAdmin}, nil)
 	if err != nil {
 		t.Fatalf("create key: %v", err)
 	}

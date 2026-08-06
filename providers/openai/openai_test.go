@@ -30,28 +30,7 @@ func TestNewOpenAI(t *testing.T) {
 	}
 }
 
-// TestOpenAIProvider_SupportedModels tests the SupportedModels method.
-func TestOpenAIProvider_SupportedModels(t *testing.T) {
-	provider, _ := New("sk-test-key", "")
-
-	models := provider.SupportedModels()
-	if len(models) == 0 {
-		t.Error("SupportedModels() returned empty list")
-	}
-
-	// Check that gpt-4o is in the list
-	found := false
-	for _, model := range models {
-		if model == "gpt-4o" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Error("gpt-4o not found in models list")
-	}
-}
-
+// TestOpenAIProvider_ConfiguredModels tests the ConfiguredModels method.
 // TestOpenAIProvider_SupportsModel tests the SupportsModel method.
 // With passthrough enabled, all model strings are accepted.
 func TestOpenAIProvider_SupportsModel(t *testing.T) {
@@ -80,20 +59,6 @@ func TestOpenAIProvider_SupportsModel(t *testing.T) {
 }
 
 // TestOpenAIProvider_Models tests the Models method.
-func TestOpenAIProvider_Models(t *testing.T) {
-	provider, _ := New("sk-test-key", "")
-
-	models := provider.Models()
-	if len(models) == 0 {
-		t.Error("Models() returned empty list")
-	}
-	for _, m := range models {
-		if m.OwnedBy != "openai" {
-			t.Errorf("ModelInfo.OwnedBy = %v, want openai", m.OwnedBy)
-		}
-	}
-}
-
 // TestOpenAIProvider_Complete_Integration tests actual API calls.
 // This test only runs if OPENAI_API_KEY environment variable is set.
 func TestOpenAIProvider_Complete_Integration(t *testing.T) {
@@ -555,7 +520,8 @@ func TestOpenAIProvider_Embed_ValidEncodingFormats(t *testing.T) {
 	p, _ := New("sk-test", srv.URL)
 	ctx := context.Background()
 
-	for _, format := range []string{"", "float", "base64"} {
+	// base64 is deliberately absent: see TestOpenAIProvider_Embed_RejectsBase64.
+	for _, format := range []string{"", "float"} {
 		t.Run("format="+format, func(t *testing.T) {
 			_, err := p.Embed(ctx, core.EmbeddingRequest{
 				Model:          "text-embedding-3-small",

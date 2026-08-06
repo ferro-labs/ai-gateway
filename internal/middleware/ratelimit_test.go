@@ -3,10 +3,11 @@ package middleware
 import (
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
-	"github.com/ferro-labs/ai-gateway/internal/ratelimit"
+	"github.com/ferro-labs/ai-gateway/pkg/ratelimit"
 )
 
 const testIP = "1.2.3.4:1234"
@@ -78,6 +79,42 @@ func TestRateLimit_Returns429WithOpenAIErrorBody(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("response body missing %q: %s", want, body)
 		}
+	}
+}
+
+// TestRateLimit_429CarriesRetryAfter pins the header that keeps a rate-limited
+// client from turning into a retry storm. RFC 9110 §10.2.3 defines Retry-After,
+// RFC 6585 recommends it on 429, and the OpenAI, Anthropic, and OpenRouter SDKs
+// all read it to schedule their backoff. Without it those SDKs fall back to a
+// fixed short delay and hammer the limiter that just shed them.
+func TestRateLimit_429CarriesRetryAfter(t *testing.T) {
+	store := ratelimit.NewStore(1, 1)
+	handler := makeRateLimitHandler(store)
+
+	req := func() *httptest.ResponseRecorder {
+		r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
+		r.RemoteAddr = testIP
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		return w
+	}
+
+	req() // exhaust the bucket
+	w := req()
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429, got %d", w.Code)
+	}
+
+	got := w.Header().Get("Retry-After")
+	if got == "" {
+		t.Fatal("429 response carries no Retry-After header")
+	}
+	secs, err := strconv.Atoi(got)
+	if err != nil {
+		t.Fatalf("Retry-After = %q, want RFC 9110 delay-seconds: %v", got, err)
+	}
+	if secs < 1 {
+		t.Fatalf("Retry-After = %d, want at least 1 second", secs)
 	}
 }
 

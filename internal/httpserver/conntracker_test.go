@@ -1,14 +1,13 @@
 package httpserver
 
 import (
-	"context"
 	"io"
 	"net"
 	"net/http"
 	"testing"
 	"time"
 
-	"github.com/ferro-labs/ai-gateway/internal/metrics"
+	"github.com/ferro-labs/ai-gateway/pkg/metrics"
 	dto "github.com/prometheus/client_model/go"
 )
 
@@ -43,28 +42,6 @@ func TestConnTracker_TracksConnectionStates(t *testing.T) {
 	}
 	if got := counterValueMetric(t, metrics.ServerConnectionTransitionsTotal.WithLabelValues("closed")); got != closedBefore+1 {
 		t.Fatalf("closed transitions = %v, want %v", got, closedBefore+1)
-	}
-}
-
-func TestConnTracker_StoresConnMetadataInContext(t *testing.T) {
-	tracker := newConnTracker()
-	ctx := tracker.ConnContext(context.Background(), testConn{
-		local:  testAddr("127.0.0.1:8080"),
-		remote: testAddr("203.0.113.6:4567"),
-	})
-
-	meta, ok := ConnMetadataFromContext(ctx)
-	if !ok {
-		t.Fatal("expected connection metadata in context")
-	}
-	if meta.ID == 0 {
-		t.Fatal("expected non-zero connection ID")
-	}
-	if meta.LocalAddr != "127.0.0.1:8080" {
-		t.Fatalf("LocalAddr = %q, want %q", meta.LocalAddr, "127.0.0.1:8080")
-	}
-	if meta.RemoteAddr != "203.0.113.6:4567" {
-		t.Fatalf("RemoteAddr = %q, want %q", meta.RemoteAddr, "203.0.113.6:4567")
 	}
 }
 

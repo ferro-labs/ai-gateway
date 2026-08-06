@@ -4,9 +4,9 @@ import (
 	"os"
 	"time"
 
-	aigateway "github.com/ferro-labs/ai-gateway"
-	"github.com/ferro-labs/ai-gateway/internal/logging"
+	"github.com/ferro-labs/ai-gateway/config"
 	gwotel "github.com/ferro-labs/ai-gateway/internal/otel"
+	"github.com/ferro-labs/ai-gateway/pkg/logger"
 )
 
 // otelConfigFromGateway translates the public gateway ObservabilityConfig
@@ -20,7 +20,7 @@ import (
 //
 // The provider is activated when an OTLP endpoint is set (via config OR
 // OTEL_EXPORTER_OTLP_ENDPOINT) OR at least one enabled exporter is listed.
-func otelConfigFromGateway(obs aigateway.ObservabilityConfig) gwotel.Config {
+func otelConfigFromGateway(obs config.ObservabilityConfig) gwotel.Config {
 	t := obs.Tracing
 	cfg := gwotel.DefaultConfig()
 
@@ -34,10 +34,19 @@ func otelConfigFromGateway(obs aigateway.ObservabilityConfig) gwotel.Config {
 	}
 
 	// Enabled is a tri-state pointer. nil infers activation from a configured
-	// endpoint (config OR OTEL_EXPORTER_OTLP_ENDPOINT) or enabled exporters;
-	// an explicit false is a hard kill switch that wins over all of those; an
-	// explicit true forces the pipeline on.
+	// endpoint (config OR either standard OTLP endpoint variable) or enabled
+	// exporters; an explicit false is a hard kill switch that wins over all of
+	// those; an explicit true forces the pipeline on.
+	//
+	// Both variables count, and must: gwotel.Config.effectiveEndpoint reads the
+	// per-signal OTEL_EXPORTER_OTLP_TRACES_ENDPOINT as well, so inferring
+	// activation from the base variable alone made the per-signal one configure
+	// an exporter that was never started — tracing silently off with a correct
+	// endpoint set.
 	envEndpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+	if envEndpoint == "" {
+		envEndpoint = os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
+	}
 	switch {
 	case t.Enabled != nil && !*t.Enabled:
 		cfg.Enabled = false
@@ -67,7 +76,7 @@ func otelConfigFromGateway(obs aigateway.ObservabilityConfig) gwotel.Config {
 		if d, err := time.ParseDuration(t.ShutdownGrace); err == nil {
 			cfg.ShutdownGrace = d
 		} else {
-			logging.Logger.Warn("otel: invalid shutdown_grace duration; using default",
+			logger.Default().Warn("otel: invalid shutdown_grace duration; using default",
 				"value", t.ShutdownGrace,
 				"error", err,
 				"default", cfg.ShutdownGrace,

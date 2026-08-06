@@ -3,19 +3,20 @@ package aigateway
 import (
 	"fmt"
 	"io"
-	"log/slog"
 	"os"
 	"testing"
 
-	"github.com/ferro-labs/ai-gateway/internal/testutil"
+	"github.com/ferro-labs/ai-gateway/config"
+	"github.com/ferro-labs/ai-gateway/pkg/logger"
+	"github.com/ferro-labs/ai-gateway/test/testutil"
 	"go.uber.org/goleak"
 )
 
 func TestMain(m *testing.M) {
 	code := testutil.RunWithEmbeddedCatalog(func() int {
-		previousLogger := slog.Default()
-		slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
-		defer slog.SetDefault(previousLogger)
+		previousLogger := logger.Default()
+		logger.SetDefault(logger.New(logger.Options{Output: io.Discard}))
+		defer logger.SetDefault(previousLogger)
 
 		ignoreCurrent := goleak.IgnoreCurrent()
 		code := m.Run()
@@ -28,7 +29,7 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-func newTestGateway(tb testing.TB, cfg Config) (*Gateway, error) {
+func newTestGateway(tb testing.TB, cfg config.Config) (*Gateway, error) {
 	tb.Helper()
 	gw, err := New(cfg)
 	if err == nil {

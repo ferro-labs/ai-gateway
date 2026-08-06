@@ -6,7 +6,7 @@ package integration
 import (
 	"testing"
 
-	aigateway "github.com/ferro-labs/ai-gateway"
+	"github.com/ferro-labs/ai-gateway/config"
 	"github.com/ferro-labs/ai-gateway/internal/bootstrap"
 )
 
@@ -62,9 +62,9 @@ func TestBootstrap_ConfigManager_Postgres(t *testing.T) {
 	t.Setenv("CONFIG_STORE_BACKEND", "postgres")
 	t.Setenv("CONFIG_STORE_DSN", testDSN)
 
-	gw, err := newTestGateway(t, aigateway.Config{
-		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeFallback},
-		Targets:  []aigateway.Target{{VirtualKey: "test"}},
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeFallback},
+		Targets:  []config.Target{{VirtualKey: "test"}},
 	})
 
 	if err != nil {

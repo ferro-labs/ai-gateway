@@ -1,0 +1,8 @@
+data: {"type":"message-start","id":"cohere-stream-conformance","delta":{"message":{"role":"assistant"}}}
+
+data: {"type":"content-delta","delta":{"message":{"content":{"text":"conformance"}}}}
+
+data: {"type":"content-delta","delta":{"message":{"content":{"text":" ok"}}}}
+
+data: {"type":"message-end","delta":{"finish_reason":"COMPLETE","usage":{"tokens":{"input_tokens":11,"output_tokens":7}}}}
+

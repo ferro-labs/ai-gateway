@@ -9,7 +9,7 @@ import (
 
 	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
 	"github.com/ferro-labs/ai-gateway/providers/core"
-	"github.com/ferro-labs/ai-gateway/providers/internal/openaicompat"
+	"github.com/ferro-labs/ai-gateway/providers/core/openaicompat"
 )
 
 // Name is the canonical provider identifier.
@@ -31,8 +31,10 @@ type Provider struct {
 var (
 	_ core.Provider              = (*Provider)(nil)
 	_ core.StreamProvider        = (*Provider)(nil)
+	_ core.EmbeddingProvider     = (*Provider)(nil)
 	_ core.ProxiableProvider     = (*Provider)(nil)
 	_ core.NonOpenAIWireProvider = (*Provider)(nil)
+	_ core.AnyModelProvider      = (*Provider)(nil)
 )
 
 // New creates a new Azure AI Foundry provider.
@@ -81,22 +83,14 @@ func (p *Provider) AuthHeaders() map[string]string {
 	return map[string]string{"api-key": p.apiKey}
 }
 
-// SupportedModels returns known Azure Foundry models.
-func (p *Provider) SupportedModels() []string {
-	return []string{
-		"gpt-4o",
-		"gpt-4.1",
-		"phi-4",
-	}
-}
-
 // SupportsModel returns true for any model — Azure Foundry validates model names.
+// Advisory only; see core.Provider.
 func (p *Provider) SupportsModel(_ string) bool { return true }
 
-// Models returns structured model metadata.
-func (p *Provider) Models() []core.ModelInfo {
-	return core.ModelsFromList(p.name, p.SupportedModels())
-}
+// ServesAnyModel declares core.AnyModelProvider: a Foundry model name is a
+// deployment created in the operator's own resource, so no catalog entry and no
+// /models call can enumerate what this endpoint serves.
+func (p *Provider) ServesAnyModel() {}
 
 // endpoint targets the GA OpenAI v1-compatible route. The older Model Inference
 // "/models" route (with an api-version query parameter) is retired by the
@@ -125,10 +119,14 @@ func (p *Provider) chatParams() openaicompat.ChatParams {
 
 // Complete sends a chat completion request to Azure AI Foundry.
 func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
+	// The GA /openai/v1 route is the OpenAI surface, so o-series and gpt-5
+	// deployments reject max_tokens outright; forward only the modern field.
+	req.PreferCompletionTokens()
 	return openaicompat.PostChat(ctx, p.chatParams(), req)
 }
 
 // CompleteStream sends a streaming chat completion request to Azure AI Foundry.
 func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan core.StreamChunk, error) {
+	req.PreferCompletionTokens()
 	return openaicompat.PostStream(ctx, p.chatParams(), req)
 }

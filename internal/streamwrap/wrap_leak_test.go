@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/ferro-labs/ai-gateway/internal/events"
-	"github.com/ferro-labs/ai-gateway/internal/metrics"
 	"github.com/ferro-labs/ai-gateway/models"
+	"github.com/ferro-labs/ai-gateway/pkg/metrics"
 	"github.com/ferro-labs/ai-gateway/providers"
 	"go.uber.org/goleak"
 )

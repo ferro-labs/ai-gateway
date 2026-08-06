@@ -19,8 +19,25 @@ permissions:
   id-token: write        # needed for keyless signing (future)
 
 jobs:
+  # Gate the release on the merge gate itself. CI does not run on tag pushes,
+  # so without this a broken commit could be tagged and published.
+  #
+  # It calls the workflow rather than restating its steps, because the two
+  # cannot then disagree: the inline gate this replaced had drifted to `go
+  # build` + `go vet` + `go test -short -race`, which is silent about lint,
+  # formatting, the integration suite, known vulnerabilities and the dashboard
+  # bundle that ships inside the binary. Anything CI gains gates releases from
+  # the same commit, with no edit here.
+  #
+  # No secrets are passed: the only step in CI that reads one is the Codecov
+  # upload, which is skipped on tag runs.
+  ci:
+    name: CI
+    uses: ./.github/workflows/ci.yml
+
   release:
     name: GoReleaser
+    needs: ci
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -35,14 +52,15 @@ jobs:
           go-version: "1.25.12"
           cache: true
 
-      # Gate the release on the test suite. CI does not run on tag pushes, so a
-      # broken commit could otherwise be tagged and published; this fails the
-      # release before any artifact is built.
-      - name: Gate release on tests
-        run: |
-          go build ./...
-          go vet ./...
-          go test -short -race ./...
+      # The dashboard is embedded in the binary, so GoReleaser's before-hooks
+      # build the frontend before any cross-compilation. Without Node on the
+      # runner the release fails at that hook rather than at the Go build.
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
 
       - name: Set up QEMU (for cross-platform Docker builds)
         uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3 # v4
@@ -80,7 +98,14 @@ jobs:
         uses: goreleaser/goreleaser-action@ec59f474b9834571250b370d4735c50f8e2d1e29 # v7.0.0
         with:
           distribution: goreleaser
-          version: "~> v2"
+          # Exact, not "~> v2". The release tool decides what the published
+          # artifacts are, so a floating major means two tags cut from the same
+          # commit can ship different archives, images and SBOMs.
+          #
+          # Dependabot does not track this input — it only rewrites `uses:`
+          # refs — so bump it by hand. The image config uses `dockers_v2`, whose
+          # SBOM attestation this version is the one verified against.
+          version: "2.17.1"
           args: release --clean --release-notes="${{ runner.temp }}/release-notes.md"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -67,10 +67,12 @@ func TestCalculateChatCacheAndReasoning(t *testing.T) {
 		},
 	})
 
+	// PromptTokens is inclusive of CacheReadTokens, so 1.5M prompt tokens of
+	// which 500k were cache hits leaves 1M billing at the input rate.
 	got := Calculate(c, "anthropic/claude-3-7-sonnet", Usage{
-		PromptTokens:     1_000_000,
+		PromptTokens:     1_500_000,
 		CompletionTokens: 1_000_000,
-		CacheReadTokens:  1_000_000,
+		CacheReadTokens:  500_000,
 		CacheWriteTokens: 1_000_000,
 		ReasoningTokens:  1_000_000,
 	})
@@ -81,8 +83,8 @@ func TestCalculateChatCacheAndReasoning(t *testing.T) {
 	if got.OutputUSD != 15.0 {
 		t.Errorf("OutputUSD: got %v, want 15.0", got.OutputUSD)
 	}
-	if got.CacheReadUSD != 0.30 {
-		t.Errorf("CacheReadUSD: got %v, want 0.30", got.CacheReadUSD)
+	if got.CacheReadUSD != 0.15 {
+		t.Errorf("CacheReadUSD: got %v, want 0.15", got.CacheReadUSD)
 	}
 	if got.CacheWriteUSD != 3.75 {
 		t.Errorf("CacheWriteUSD: got %v, want 3.75", got.CacheWriteUSD)
@@ -90,7 +92,7 @@ func TestCalculateChatCacheAndReasoning(t *testing.T) {
 	if got.ReasoningUSD != 15.0 {
 		t.Errorf("ReasoningUSD: got %v, want 15.0", got.ReasoningUSD)
 	}
-	want := 3.0 + 15.0 + 0.30 + 3.75 + 15.0
+	want := 3.0 + 15.0 + 0.15 + 3.75 + 15.0
 	if got.TotalUSD != want {
 		t.Errorf("TotalUSD: got %v, want %v", got.TotalUSD, want)
 	}
@@ -468,5 +470,274 @@ func TestCalculateTotalIsSumOfComponents(t *testing.T) {
 		got.AudioUSD + got.EmbeddingUSD
 	if got.TotalUSD != wantTotal {
 		t.Errorf("TotalUSD %v != sum of components %v", got.TotalUSD, wantTotal)
+	}
+}
+
+// ---- Priced is per mode --------------------------------------------------
+
+// Priced must answer "does the catalog price what this mode bills off", not
+// "does it have an input-token price".
+//
+// It was resolved from InputPerMTokens before the mode switch ran, and no mode
+// except chat bills off that field — so every embedding model and every image
+// model reported unpriced however complete its catalog entry was. The value is
+// load-bearing: cost-optimized routing ranks only priced candidates, so under
+// `unpriced_strategy: skip` an embeddings request could not rank a single
+// target and was refused outright.
+func TestCalculatePricedFollowsTheModesOwnPriceField(t *testing.T) {
+	tests := []struct {
+		name       string
+		mode       ModelMode
+		pricing    Pricing
+		usage      Usage
+		wantPriced bool
+		wantTotal  float64
+	}{
+		{
+			name:       "embedding with an embedding price",
+			mode:       ModeEmbedding,
+			pricing:    Pricing{EmbeddingPerMTokens: ptr(0.02)},
+			usage:      Usage{PromptTokens: 1_000_000},
+			wantPriced: true,
+			wantTotal:  0.02,
+		},
+		{
+			name:    "embedding with no embedding price",
+			mode:    ModeEmbedding,
+			pricing: Pricing{},
+			usage:   Usage{PromptTokens: 1_000_000},
+		},
+		{
+			// An input-token price is not an embedding price and buys nothing
+			// here — reporting priced would promise a cost this arm cannot bill.
+			name:    "embedding priced only on input tokens",
+			mode:    ModeEmbedding,
+			pricing: Pricing{InputPerMTokens: ptr(3.0)},
+			usage:   Usage{PromptTokens: 1_000_000},
+		},
+		{
+			name:       "image with a per-tile price",
+			mode:       ModeImage,
+			pricing:    Pricing{ImagePerTile: ptr(0.04)},
+			usage:      Usage{ImageCount: 2},
+			wantPriced: true,
+			wantTotal:  0.08,
+		},
+		{
+			name:    "image with no per-tile price",
+			mode:    ModeImage,
+			pricing: Pricing{},
+			usage:   Usage{ImageCount: 2},
+		},
+		{
+			// The gpt-image shape: no per-tile price, a per-token one, and a
+			// provider that reports the tokens. This is a real bill and must be
+			// reported as one.
+			name:       "image priced per token, usage reported",
+			mode:       ModeImage,
+			pricing:    Pricing{InputPerMTokens: ptr(5.0), OutputPerMTokens: ptr(10.0)},
+			usage:      Usage{ImageCount: 1, PromptTokens: 1_000_000, CompletionTokens: 1_000_000},
+			wantPriced: true,
+			wantTotal:  15.0,
+		},
+		{
+			// The same catalog row against a provider that reports no usage —
+			// every image provider except OpenAI and Azure OpenAI. There is
+			// nothing to bill, and claiming $0.00 was billed is the known-zero
+			// this flag exists to prevent.
+			name:    "image priced per token, no usage reported",
+			mode:    ModeImage,
+			pricing: Pricing{InputPerMTokens: ptr(5.0), OutputPerMTokens: ptr(10.0)},
+			usage:   Usage{ImageCount: 1},
+		},
+		{
+			// The gemini and vertex-ai image rows carry both prices. Per-image is
+			// what those providers bill, so the token fallback must not reach
+			// them.
+			name:       "image with both a per-tile and a per-token price bills per tile",
+			mode:       ModeImage,
+			pricing:    Pricing{ImagePerTile: ptr(0.04), InputPerMTokens: ptr(5.0), OutputPerMTokens: ptr(10.0)},
+			usage:      Usage{ImageCount: 2, PromptTokens: 1_000_000, CompletionTokens: 1_000_000},
+			wantPriced: true,
+			wantTotal:  0.08,
+		},
+		{
+			// dall-e-2/-3 and the nscale image rows: the catalog prices them no
+			// way at all. Reported usage must not conjure a price.
+			name:    "image the catalog prices no way stays unpriced despite usage",
+			mode:    ModeImage,
+			pricing: Pricing{},
+			usage:   Usage{ImageCount: 1, PromptTokens: 1_000_000, CompletionTokens: 1_000_000},
+		},
+		{
+			name:       "audio in with a per-minute price",
+			mode:       ModeAudioIn,
+			pricing:    Pricing{AudioInputPerMinute: ptr(0.006)},
+			usage:      Usage{AudioInputSecs: 60},
+			wantPriced: true,
+			wantTotal:  0.006,
+		},
+		{
+			name:    "audio in with no per-minute price",
+			mode:    ModeAudioIn,
+			pricing: Pricing{},
+			usage:   Usage{AudioInputSecs: 60},
+		},
+		{
+			name:       "audio out with a per-character price",
+			mode:       ModeAudioOut,
+			pricing:    Pricing{AudioOutputPerCharacter: ptr(0.00003)},
+			usage:      Usage{AudioOutputChars: 100},
+			wantPriced: true,
+			wantTotal:  0.003,
+		},
+		{
+			name:    "audio out with no per-character price",
+			mode:    ModeAudioOut,
+			pricing: Pricing{},
+			usage:   Usage{AudioOutputChars: 100},
+		},
+		{
+			name:       "chat is unchanged: input price decides",
+			mode:       ModeChat,
+			pricing:    Pricing{InputPerMTokens: ptr(3.0)},
+			usage:      Usage{PromptTokens: 1_000_000},
+			wantPriced: true,
+			wantTotal:  3.0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := catalogWith("p/m", Model{Provider: "p", ModelID: "m", Mode: tt.mode, Pricing: tt.pricing})
+
+			got := Calculate(c, "p/m", tt.usage)
+
+			if !got.ModelFound {
+				t.Fatal("ModelFound should be true; the rest of this case proves nothing otherwise")
+			}
+			if got.Priced != tt.wantPriced {
+				t.Errorf("Priced = %v, want %v — cost-optimized routing skips unpriced candidates",
+					got.Priced, tt.wantPriced)
+			}
+			if math.Abs(got.TotalUSD-tt.wantTotal) > 1e-12 {
+				t.Errorf("TotalUSD = %v, want %v", got.TotalUSD, tt.wantTotal)
+			}
+		})
+	}
+}
+
+// ---- Cache-read is billed once, not twice --------------------------------
+
+// PromptTokens is inclusive of CacheReadTokens on every provider (the OpenAI
+// convention; providers/core/anthropicwire folds Anthropic's exclusive count
+// into it at decode). Pricing the FULL prompt at the input rate and then adding
+// the cache-read cost on top charged the cached subset twice — once at the full
+// input rate and once at the cache rate.
+//
+// The worked case is the one from the report: gpt-4o, 10000 prompt tokens of
+// which 8000 were cache hits, $2.50/M input and $1.25/M cache read.
+//
+//	double-billed: 10000*2.50/M + 8000*1.25/M = $0.025 + $0.010 = $0.035
+//	correct:        2000*2.50/M + 8000*1.25/M = $0.005 + $0.010 = $0.015
+func TestCalculateChatCachedPromptBillsInputOnRemainderOnly(t *testing.T) {
+	c := catalogWith("openai/gpt-4o", Model{
+		Provider: "openai",
+		ModelID:  "gpt-4o",
+		Mode:     ModeChat,
+		Pricing: Pricing{
+			InputPerMTokens:     ptr(2.50),
+			CacheReadPerMTokens: ptr(1.25),
+		},
+	})
+
+	got := Calculate(c, "openai/gpt-4o", Usage{PromptTokens: 10_000, CacheReadTokens: 8_000})
+
+	if math.Abs(got.InputUSD-0.005) > 1e-12 {
+		t.Errorf("InputUSD = %v, want 0.005 (2000 uncached tokens, not all 10000)", got.InputUSD)
+	}
+	if math.Abs(got.CacheReadUSD-0.010) > 1e-12 {
+		t.Errorf("CacheReadUSD = %v, want 0.010", got.CacheReadUSD)
+	}
+	if math.Abs(got.TotalUSD-0.015) > 1e-12 {
+		t.Errorf("TotalUSD = %v, want 0.015 (0.035 is the double-billed figure)", got.TotalUSD)
+	}
+}
+
+// The two wire conventions must reach the same bill. Anthropic reports 2000
+// fresh + 8000 cache-read; the anthropicwire decoder folds that into
+// PromptTokens: 10000, which is byte-for-byte the usage an OpenAI-wire provider
+// reports for the same workload. Same input, same cost.
+func TestCalculateChatCachedCostIsWireConventionIndependent(t *testing.T) {
+	c := catalogWith("p/m", Model{
+		Provider: "p", ModelID: "m", Mode: ModeChat,
+		Pricing: Pricing{InputPerMTokens: ptr(2.50), CacheReadPerMTokens: ptr(1.25)},
+	})
+
+	// What core.Usage looks like after either provider's decode.
+	openAIWire := Usage{PromptTokens: 10_000, CacheReadTokens: 8_000}
+	anthropicWire := Usage{PromptTokens: 2_000 + 8_000, CacheReadTokens: 8_000}
+
+	a := Calculate(c, "p/m", openAIWire)
+	b := Calculate(c, "p/m", anthropicWire)
+	if a.TotalUSD != b.TotalUSD {
+		t.Fatalf("openai-wire $%v != anthropic-wire $%v for the same workload", a.TotalUSD, b.TotalUSD)
+	}
+	if math.Abs(a.TotalUSD-0.015) > 1e-12 {
+		t.Errorf("TotalUSD = %v, want 0.015", a.TotalUSD)
+	}
+}
+
+// A request with no cache hits must price exactly as it always did: the whole
+// prompt at the input rate.
+func TestCalculateChatUncachedPromptIsUnchanged(t *testing.T) {
+	c := catalogWith("openai/gpt-4o", Model{
+		Provider: "openai", ModelID: "gpt-4o", Mode: ModeChat,
+		Pricing: Pricing{InputPerMTokens: ptr(2.50), CacheReadPerMTokens: ptr(1.25)},
+	})
+
+	got := Calculate(c, "openai/gpt-4o", Usage{PromptTokens: 10_000})
+
+	if math.Abs(got.InputUSD-0.025) > 1e-12 {
+		t.Errorf("InputUSD = %v, want 0.025 (all 10000 tokens billable)", got.InputUSD)
+	}
+	if got.CacheReadUSD != 0 {
+		t.Errorf("CacheReadUSD = %v, want 0", got.CacheReadUSD)
+	}
+}
+
+// With no cache rate in the catalog there is no discount to apply, so the
+// cached subset stays on the input rate rather than silently becoming free.
+func TestCalculateChatCachedPromptWithoutCacheRateBillsAtInputRate(t *testing.T) {
+	c := catalogWith("p/m", Model{
+		Provider: "p", ModelID: "m", Mode: ModeChat,
+		Pricing: Pricing{InputPerMTokens: ptr(2.50)}, // no CacheReadPerMTokens
+	})
+
+	got := Calculate(c, "p/m", Usage{PromptTokens: 10_000, CacheReadTokens: 8_000})
+
+	if math.Abs(got.InputUSD-0.025) > 1e-12 {
+		t.Errorf("InputUSD = %v, want 0.025 — an unknown cache rate must not bill as zero", got.InputUSD)
+	}
+	if math.Abs(got.TotalUSD-0.025) > 1e-12 {
+		t.Errorf("TotalUSD = %v, want 0.025", got.TotalUSD)
+	}
+}
+
+// A provider reporting more cached tokens than prompt tokens is nonsense, but
+// it must not produce a negative billable count (and so a negative cost).
+func TestCalculateChatCacheReadExceedingPromptClampsAtZero(t *testing.T) {
+	c := catalogWith("p/m", Model{
+		Provider: "p", ModelID: "m", Mode: ModeChat,
+		Pricing: Pricing{InputPerMTokens: ptr(2.50), CacheReadPerMTokens: ptr(1.25)},
+	})
+
+	got := Calculate(c, "p/m", Usage{PromptTokens: 1_000, CacheReadTokens: 8_000})
+
+	if got.InputUSD != 0 {
+		t.Errorf("InputUSD = %v, want 0 (clamped, never negative)", got.InputUSD)
+	}
+	if got.TotalUSD < 0 {
+		t.Errorf("TotalUSD = %v, must never be negative", got.TotalUSD)
 	}
 }

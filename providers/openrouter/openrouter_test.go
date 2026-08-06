@@ -24,23 +24,6 @@ func TestNewOpenRouter(t *testing.T) {
 	}
 }
 
-func TestOpenRouterProvider_SupportedModels(t *testing.T) {
-	p, _ := New("test-key", "")
-	models := p.SupportedModels()
-	if len(models) == 0 {
-		t.Error("SupportedModels() returned empty")
-	}
-	found := false
-	for _, m := range models {
-		if m == "openrouter/auto" {
-			found = true
-		}
-	}
-	if !found {
-		t.Error("openrouter/auto not found")
-	}
-}
-
 func TestOpenRouterProvider_SupportsModel(t *testing.T) {
 	p, _ := New("test-key", "")
 	if !p.SupportsModel("openrouter/auto") {
@@ -48,16 +31,6 @@ func TestOpenRouterProvider_SupportsModel(t *testing.T) {
 	}
 	if !p.SupportsModel("custom-model") {
 		t.Error("passthrough: expected all models to return true")
-	}
-}
-
-func TestOpenRouterProvider_Models(t *testing.T) {
-	p, _ := New("test-key", "")
-	models := p.Models()
-	for _, m := range models {
-		if m.OwnedBy != "openrouter" {
-			t.Errorf("ModelInfo.OwnedBy = %q, want openrouter", m.OwnedBy)
-		}
 	}
 }
 
@@ -200,8 +173,8 @@ func TestOpenRouterProvider_Embed_MockHTTP(t *testing.T) {
 		if r.Method != http.MethodPost {
 			t.Errorf("method = %s, want POST", r.Method)
 		}
-		if r.URL.Path != "/embeddings" {
-			t.Errorf("path = %q, want /embeddings", r.URL.Path)
+		if r.URL.Path != "/v1/embeddings" {
+			t.Errorf("path = %q, want /v1/embeddings", r.URL.Path)
 		}
 		if got := r.Header.Get("Authorization"); got != testBearerAPIKey {
 			t.Errorf("Authorization = %q, want %s", got, testBearerAPIKey)
@@ -310,8 +283,8 @@ func TestOpenRouterProvider_DiscoverModels(t *testing.T) {
 		if r.Method != http.MethodGet {
 			t.Errorf("method = %q, want GET", r.Method)
 		}
-		if r.URL.Path != "/models" {
-			t.Errorf("path = %q, want /models", r.URL.Path)
+		if r.URL.Path != "/v1/models" {
+			t.Errorf("path = %q, want /v1/models", r.URL.Path)
 		}
 		if got := r.Header.Get("Authorization"); got != testBearerAPIKey {
 			t.Errorf("Authorization = %q, want %s", got, testBearerAPIKey)
@@ -342,5 +315,24 @@ func TestOpenRouterProvider_DiscoverModels(t *testing.T) {
 func TestNewOpenRouter_RejectsInvalidBaseURL(t *testing.T) {
 	if _, err := New("k", "://bad"); err == nil {
 		t.Fatal("New accepted an invalid base URL")
+	}
+}
+
+// TestNewOpenRouter_BaseURLIsTheAPIRoot pins the shape a base URL is written in: the
+// API root, used verbatim. The one net: a bare host is not an API root, so it
+// adopts the trailing version segment of the provider's default root.
+func TestNewOpenRouter_BaseURLIsTheAPIRoot(t *testing.T) {
+	for base, want := range map[string]string{
+		"":                                 "https://openrouter.ai/api/v1",
+		"https://openrouter.ai":            "https://openrouter.ai/v1",
+		"https://proxy.example.com/api/v1": "https://proxy.example.com/api/v1",
+	} {
+		p, err := New("test-key", base)
+		if err != nil {
+			t.Fatalf("New(_, %q) error: %v", base, err)
+		}
+		if got := p.BaseURL(); got != want {
+			t.Errorf("New(_, %q).BaseURL() = %q, want %q", base, got, want)
+		}
 	}
 }

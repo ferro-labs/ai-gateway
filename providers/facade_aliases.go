@@ -30,8 +30,29 @@ type EmbeddingProvider = core.EmbeddingProvider
 // ImageProvider is an alias for core.ImageProvider.
 type ImageProvider = core.ImageProvider
 
+// RerankProvider is an alias for core.RerankProvider.
+type RerankProvider = core.RerankProvider
+
+// ModerationProvider is an alias for core.ModerationProvider.
+type ModerationProvider = core.ModerationProvider
+
+// TranscriptionProvider is an alias for core.TranscriptionProvider.
+type TranscriptionProvider = core.TranscriptionProvider
+
+// SpeechProvider is an alias for core.SpeechProvider.
+type SpeechProvider = core.SpeechProvider
+
+// BatchProvider is an alias for core.BatchProvider.
+type BatchProvider = core.BatchProvider
+
 // DiscoveryProvider is an alias for core.DiscoveryProvider.
 type DiscoveryProvider = core.DiscoveryProvider
+
+// ConfiguredModelProvider is an alias for core.ConfiguredModelProvider.
+type ConfiguredModelProvider = core.ConfiguredModelProvider
+
+// AnyModelProvider is an alias for core.AnyModelProvider.
+type AnyModelProvider = core.AnyModelProvider
 
 // ProviderSource is an alias for core.ProviderSource.
 type ProviderSource = core.ProviderSource
@@ -58,6 +79,9 @@ type StreamChoice = core.StreamChoice
 
 // MessageDelta is an alias for core.MessageDelta.
 type MessageDelta = core.MessageDelta
+
+// StreamNormalizer is an alias for core.StreamNormalizer.
+type StreamNormalizer = core.StreamNormalizer
 
 // Usage is an alias for core.Usage.
 type Usage = core.Usage
@@ -104,6 +128,33 @@ type ImageRequest = core.ImageRequest
 // ImageResponse is an alias for core.ImageResponse.
 type ImageResponse = core.ImageResponse
 
+// RerankRequest is an alias for core.RerankRequest.
+type RerankRequest = core.RerankRequest
+
+// RerankResponse is an alias for core.RerankResponse.
+type RerankResponse = core.RerankResponse
+
+// RerankResult is an alias for core.RerankResult.
+type RerankResult = core.RerankResult
+
+// ModerationRequest is an alias for core.ModerationRequest.
+type ModerationRequest = core.ModerationRequest
+
+// ModerationResponse is an alias for core.ModerationResponse.
+type ModerationResponse = core.ModerationResponse
+
+// TranscriptionRequest is an alias for core.TranscriptionRequest.
+type TranscriptionRequest = core.TranscriptionRequest
+
+// TranscriptionResponse is an alias for core.TranscriptionResponse.
+type TranscriptionResponse = core.TranscriptionResponse
+
+// SpeechRequest is an alias for core.SpeechRequest.
+type SpeechRequest = core.SpeechRequest
+
+// SpeechResponse is an alias for core.SpeechResponse.
+type SpeechResponse = core.SpeechResponse
+
 // GeneratedImage is an alias for core.GeneratedImage.
 type GeneratedImage = core.GeneratedImage
 
@@ -115,6 +166,7 @@ const (
 	RoleAssistant = core.RoleAssistant
 	RoleSystem    = core.RoleSystem
 	RoleTool      = core.RoleTool
+	RoleDeveloper = core.RoleDeveloper
 
 	ContentTypeText = core.ContentTypeText
 	SSEDone         = core.SSEDone

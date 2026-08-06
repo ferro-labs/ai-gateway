@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/ferro-labs/ai-gateway/providers/core"
-	"github.com/ferro-labs/ai-gateway/providers/internal/openaicompat"
+	"github.com/ferro-labs/ai-gateway/providers/core/openaicompat"
 )
 
 // Embed sends an OpenAI-compatible embedding request to Novita.

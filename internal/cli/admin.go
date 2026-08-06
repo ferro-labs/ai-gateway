@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -40,11 +41,11 @@ func runKeysList(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	return printResult(cmd, &jsonSlice{
-		headers: []string{"ID", "NAME", "SCOPE", "EXPIRES", "REVOKED"},
+		headers: []string{"ID", "NAME", "SCOPES", "EXPIRES", "REVOKED"},
 		data:    toSlice(result),
 		rowFn: func(m map[string]any) []string {
 			return []string{
-				str(m, "id"), str(m, "name"), str(m, "scope"),
+				str(m, "id"), str(m, "name"), strList(m, "scopes"),
 				fmtTime(m, "expires_at"), strBool(m, "revoked"),
 			}
 		},
@@ -78,9 +79,14 @@ func runKeysCreate(cmd *cobra.Command, _ []string) error {
 	scope, _ := cmd.Flags().GetString("scope")
 	expiresIn, _ := cmd.Flags().GetString("expires-in")
 
+	// The Admin API takes a scope *list*; a request that carries none is granted
+	// admin, so the requested scope has to arrive under the name and in the shape
+	// the server reads or the key comes back more privileged than it was asked
+	// for. The flag stays single-valued because a key needs exactly one of the
+	// two scopes.
 	body := map[string]any{
-		"name":  name,
-		"scope": scope,
+		"name":   name,
+		"scopes": []string{scope},
 	}
 	if expiresIn != "" {
 		d, err := time.ParseDuration(expiresIn)
@@ -166,7 +172,7 @@ func runConfigHistory(cmd *cobra.Command, _ []string) error {
 	}
 	return printResult(cmd, &jsonSlice{
 		headers: []string{"VERSION", "UPDATED_AT", "ROLLED_BACK_FROM"},
-		data:    toSlice(result),
+		data:    toSlice(envelopeRows(result)),
 		rowFn: func(m map[string]any) []string {
 			rolledBack := ""
 			if v, ok := m["rolled_back_from"]; ok && v != nil {
@@ -245,14 +251,12 @@ func runLogsList(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	return printResult(cmd, &jsonSlice{
-		headers: []string{"TRACE_ID", "PROVIDER", "MODEL", "STATUS", "LATENCY_MS", "TIMESTAMP"},
-		data:    toSlice(result),
+		headers: []string{"TRACE_ID", "PROVIDER", "MODEL", "STAGE", "DURATION_MS", "CREATED_AT"},
+		data:    toSlice(envelopeRows(result)),
 		rowFn: func(m map[string]any) []string {
 			return []string{
 				str(m, "trace_id"), str(m, "provider"), str(m, "model"),
-				fmt.Sprintf("%.0f", numVal(m, "status")),
-				fmt.Sprintf("%.0f", numVal(m, "latency_ms")),
-				str(m, "timestamp"),
+				str(m, "stage"), fmtNum(m, "duration_ms"), fmtTime(m, "created_at"),
 			}
 		},
 	})
@@ -296,7 +300,9 @@ func runProvidersList(cmd *cobra.Command, _ []string) error {
 		headers: []string{"PROVIDER", "MODELS"},
 		data:    toSlice(result),
 		rowFn: func(m map[string]any) []string {
-			return []string{str(m, "name"), fmt.Sprintf("%.0f", numVal(m, "model_count"))}
+			// The endpoint sends each provider's model list, not a count.
+			models, _ := m["models"].([]any)
+			return []string{str(m, "name"), fmt.Sprintf("%d", len(models))}
 		},
 	})
 }
@@ -363,7 +369,7 @@ func (j *jsonSlice) Rows() [][]string {
 func (j *jsonSlice) MarshalJSON() ([]byte, error) { return json.Marshal(j.data) }
 
 // MarshalYAML so Print(jsonSlice) emits the underlying slice as YAML.
-// Without this, gopkg.in/yaml.v3 reflects over unexported fields and produces {}.
+// Without this, go.yaml.in/yaml/v3 reflects over unexported fields and produces {}.
 func (j *jsonSlice) MarshalYAML() (any, error) { return j.data, nil }
 
 // toSlice converts an any (decoded from JSON) to []map[string]any.
@@ -384,12 +390,38 @@ func toSlice(v any) []map[string]any {
 	return nil
 }
 
+// envelopeRows returns the rows of an admin list response. The endpoints that
+// paginate — request logs, config history — wrap their rows in an object under
+// "data", alongside summary and filter metadata; the ones that do not send a
+// bare array, which passes through untouched.
+func envelopeRows(v any) any {
+	if m, ok := v.(map[string]any); ok {
+		if data, ok := m["data"]; ok {
+			return data
+		}
+	}
+	return v
+}
+
 // str safely extracts a string field from a map.
 func str(m map[string]any, key string) string {
 	if v, ok := m[key]; ok && v != nil {
 		return fmt.Sprintf("%v", v)
 	}
 	return ""
+}
+
+// strList renders a JSON array field as a comma-separated cell.
+func strList(m map[string]any, key string) string {
+	items, ok := m[key].([]any)
+	if !ok {
+		return ""
+	}
+	parts := make([]string, 0, len(items))
+	for _, item := range items {
+		parts = append(parts, fmt.Sprintf("%v", item))
+	}
+	return strings.Join(parts, ",")
 }
 
 // strBool prints "yes" or "no" for a boolean field.
@@ -410,6 +442,24 @@ func numVal(m map[string]any, key string) float64 {
 		}
 	}
 	return 0
+}
+
+// fmtNum renders a JSON number field, or "-" when it is absent or null.
+//
+// The request log's measurements are nullable — a non-streaming request has no
+// time to first token, and rows written before a column existed have nothing at
+// all — so printing 0 for those would read as a measurement rather than as its
+// absence.
+func fmtNum(m map[string]any, key string) string {
+	v, ok := m[key]
+	if !ok || v == nil {
+		return "-"
+	}
+	f, ok := v.(float64)
+	if !ok {
+		return fmt.Sprintf("%v", v)
+	}
+	return fmt.Sprintf("%.0f", f)
 }
 
 // fmtTime parses an RFC3339 timestamp field and returns a short human form.

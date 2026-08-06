@@ -31,23 +31,6 @@ func TestNewFireworks(t *testing.T) {
 	}
 }
 
-func TestFireworksProvider_SupportedModels(t *testing.T) {
-	p, _ := New("test-key", "")
-	models := p.SupportedModels()
-	if len(models) == 0 {
-		t.Error("SupportedModels() returned empty")
-	}
-	found := false
-	for _, m := range models {
-		if m == "accounts/fireworks/models/llama-v3p1-8b-instruct" {
-			found = true
-		}
-	}
-	if !found {
-		t.Error("accounts/fireworks/models/llama-v3p1-8b-instruct not found")
-	}
-}
-
 func TestFireworksProvider_SupportsModel(t *testing.T) {
 	p, _ := New("test-key", "")
 	if !p.SupportsModel("accounts/fireworks/models/llama-v3p1-8b-instruct") {
@@ -55,16 +38,6 @@ func TestFireworksProvider_SupportsModel(t *testing.T) {
 	}
 	if !p.SupportsModel("any-model") {
 		t.Error("passthrough: expected all models to return true")
-	}
-}
-
-func TestFireworksProvider_Models(t *testing.T) {
-	p, _ := New("test-key", "")
-	models := p.Models()
-	for _, m := range models {
-		if m.OwnedBy != "fireworks" {
-			t.Errorf("ModelInfo.OwnedBy = %q, want fireworks", m.OwnedBy)
-		}
 	}
 }
 
@@ -174,24 +147,6 @@ func assertFireworksChatRequest(t *testing.T, r *http.Request) {
 func TestFireworksProvider_Embed_Interface(_ *testing.T) {
 	p, _ := New("test-key", "")
 	var _ core.EmbeddingProvider = p
-}
-
-func TestFireworksProvider_SupportedModels_Embeddings(t *testing.T) {
-	p, _ := New("test-key", "")
-	models := p.SupportedModels()
-	found := false
-	for _, m := range models {
-		if m == testEmbeddingModel {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatalf("embedding model %q not found in SupportedModels()", testEmbeddingModel)
-	}
-	if !p.SupportsModel(testEmbeddingModel) {
-		t.Fatalf("SupportsModel(%q) = false, want true", testEmbeddingModel)
-	}
 }
 
 func TestFireworksProvider_Embed_StringInput_MockHTTP(t *testing.T) {

@@ -32,6 +32,7 @@ var (
 	_ core.ProxiableProvider     = (*Provider)(nil)
 	_ core.NonOpenAIWireProvider = (*Provider)(nil)
 	_ core.EmbeddingProvider     = (*Provider)(nil)
+	_ core.RerankProvider        = (*Provider)(nil)
 )
 
 // New creates a new Cohere provider.
@@ -68,23 +69,6 @@ func (p *Provider) AuthHeaders() map[string]string {
 	return map[string]string{"Authorization": "Bearer " + p.apiKey}
 }
 
-// SupportedModels returns the static list of known Cohere models.
-func (p *Provider) SupportedModels() []string {
-	return []string{
-		"command-r-plus",
-		"command-r",
-		"command-light",
-		"command",
-		"embed-v4.0",
-		"embed-english-v3.0",
-		"embed-multilingual-v3.0",
-		"embed-english-light-v3.0",
-		"embed-multilingual-light-v3.0",
-		"embed-english-v2.0",
-		"embed-multilingual-v2.0",
-	}
-}
-
 // SupportsModel returns true if the model matches a known Cohere prefix.
 func (p *Provider) SupportsModel(model string) bool {
 	for _, prefix := range []string{"command", "embed-", "rerank-"} {
@@ -93,11 +77,6 @@ func (p *Provider) SupportsModel(model string) bool {
 		}
 	}
 	return false
-}
-
-// Models returns structured model metadata for the /v1/models endpoint.
-func (p *Provider) Models() []core.ModelInfo {
-	return core.ModelsFromList(p.name, p.SupportedModels())
 }
 
 type cohereRequest struct {
@@ -185,8 +164,14 @@ func cohereToolChoice(choice any) string {
 func cohereMessages(messages []core.Message) []cohereRequestMessage {
 	out := make([]cohereRequestMessage, 0, len(messages))
 	for _, msg := range messages {
+		role := msg.Role
+		// Cohere v2 has a system role but no developer role, OpenAI's successor
+		// to it.
+		if core.IsSystemRole(role) {
+			role = core.RoleSystem
+		}
 		cohMsg := cohereRequestMessage{
-			Role:       msg.Role,
+			Role:       role,
 			ToolCalls:  msg.ToolCalls,
 			ToolCallID: msg.ToolCallID,
 		}
@@ -241,23 +226,19 @@ func cohereContentParts(parts []core.ContentPart) []any {
 }
 
 // cohereAPIError builds a provider error from a non-2xx Cohere response, whose
-// error envelope is a flat {"message":…} (not the OpenAI {"error":{…}} shape),
-// so core.APIError cannot decode it. prefix is the full message prefix (e.g.
-// "cohere API error"), unlike core.APIError's bare provider-name label. The
-// returned *core.HTTPStatusError lets core.ParseStatusCode recover the status
-// via errors.As, same as core.APIError, and carries resp's Retry-After hint so
-// the fallback strategy can honor it instead of guessing a backoff.
-func cohereAPIError(prefix string, resp *http.Response, body []byte) error {
-	msg := string(body)
+// error envelope is a flat {"message":…}. Decoding it here rather than in
+// core.APIError is what keeps the shared constructor from having to guess at an
+// unrecognised body: this function knows Cohere's shape, so core does not have
+// to. Everything past that — the bound on the message, the operator-facing
+// rendering, the typed status — is core.StatusError's, same as every other
+// provider.
+func cohereAPIError(resp *http.Response, body []byte) error {
 	var errResp cohereErrorResponse
-	if json.Unmarshal(body, &errResp) == nil && errResp.Message != "" {
+	msg := ""
+	if json.Unmarshal(body, &errResp) == nil {
 		msg = errResp.Message
 	}
-	return &core.HTTPStatusError{
-		StatusCode: resp.StatusCode,
-		Message:    fmt.Sprintf("%s (%d): %s", prefix, resp.StatusCode, msg),
-		RetryAfter: core.ParseRetryAfter(resp.Header.Get("Retry-After")),
-	}
+	return core.StatusError(Name, resp.StatusCode, msg).WithRetryAfter(resp.Header)
 }
 
 // Complete sends a chat completion request to Cohere.
@@ -305,7 +286,7 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 	}
 
 	if httpResp.StatusCode != http.StatusOK {
-		return nil, cohereAPIError("cohere API error", httpResp, respBody)
+		return nil, cohereAPIError(httpResp, respBody)
 	}
 
 	var cohResp cohereResponse
@@ -362,6 +343,12 @@ type cohereContentDelta struct {
 type cohereMessageEndDelta struct {
 	FinishReason string      `json:"finish_reason"`
 	Usage        cohereUsage `json:"usage"`
+	// Error is how Cohere reports a stream that died after it had already
+	// answered 200 and sent content. Nothing else in the event says so — the
+	// deltas already forwarded are real and message-end still arrives — so
+	// modelling only finish_reason and usage delivered a truncated answer to the
+	// client as a success, and metered, cached and billed it as one.
+	Error string `json:"error"`
 }
 
 // cohereToolCallDelta carries the tool_calls payload from both the
@@ -461,7 +448,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 		if err != nil {
 			return nil, fmt.Errorf("failed to read response: %w", err)
 		}
-		return nil, cohereAPIError("cohere API error", httpResp, respBody)
+		return nil, cohereAPIError(httpResp, respBody)
 	}
 
 	ch := make(chan core.StreamChunk)
@@ -470,11 +457,19 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 		defer func() { _ = httpResp.Body.Close() }()
 
 		lines, scanErr := core.SSEDataLines(httpResp.Body)
+		// Cohere reports the message id once, on message-start, the way
+		// Anthropic does. Every chunk is stamped with it so a client can
+		// correlate the stream with the id, and with the model it asked for —
+		// Cohere echoes neither on the later events.
+		var msgID string
 		for data := range lines {
 
 			var event cohereStreamEvent
 			if json.Unmarshal([]byte(data), &event) != nil {
 				continue
+			}
+			if event.ID != "" {
+				msgID = event.ID
 			}
 
 			switch event.Type {
@@ -484,6 +479,8 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 					continue
 				}
 				if !core.SendChunk(ctx, ch, core.StreamChunk{
+					ID:    msgID,
+					Model: req.Model,
 					Choices: []core.StreamChoice{
 						{
 							Index: 0,
@@ -505,7 +502,8 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 					continue
 				}
 				if !core.SendChunk(ctx, ch, core.StreamChunk{
-					ID: event.ID,
+					ID:    msgID,
+					Model: req.Model,
 					Choices: []core.StreamChoice{
 						{
 							Index: 0,
@@ -527,7 +525,8 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 					continue
 				}
 				if !core.SendChunk(ctx, ch, core.StreamChunk{
-					ID: event.ID,
+					ID:    msgID,
+					Model: req.Model,
 					Choices: []core.StreamChoice{
 						{
 							Index: 0,
@@ -544,7 +543,19 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 				if json.Unmarshal(event.Delta, &delta) != nil {
 					continue
 				}
+				if delta.Error != "" {
+					// A failure, not a completion: send it as one so the stream
+					// is recorded as failed rather than as a short answer.
+					core.SendChunk(ctx, ch, core.StreamChunk{
+						ID:    msgID,
+						Model: req.Model,
+						Error: fmt.Errorf("cohere stream error: %s", delta.Error),
+					})
+					return
+				}
 				sc := core.StreamChunk{
+					ID:    msgID,
+					Model: req.Model,
 					Choices: []core.StreamChoice{
 						{
 							Index:        0,
@@ -637,10 +648,12 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 	if len(texts) == 0 {
 		return nil, fmt.Errorf("embedding input must contain at least one text")
 	}
-	switch req.EncodingFormat {
-	case "", "float":
-	default:
-		return nil, fmt.Errorf("embed: unsupported encoding_format %q; Cohere embeddings return float vectors", req.EncodingFormat)
+	// The shared validator accepts exactly the set this path serves ("" and
+	// "float") and returns the typed 400 the hand-rolled check did not: a bare
+	// error classifies as a 500 and is retried as a transport failure, so a
+	// caller's bad value spent the whole retry budget before being refused.
+	if err := core.ValidateEmbeddingEncodingFormat(req.EncodingFormat); err != nil {
+		return nil, err
 	}
 	if req.Dimensions != nil {
 		return nil, fmt.Errorf("embed: dimensions are not supported by Cohere embeddings")
@@ -684,7 +697,7 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 	}
 
 	if httpResp.StatusCode != http.StatusOK {
-		return nil, cohereAPIError("cohere embed API error", httpResp, respBody)
+		return nil, cohereAPIError(httpResp, respBody)
 	}
 
 	var cohResp cohereEmbedResponse

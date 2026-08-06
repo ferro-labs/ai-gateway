@@ -1,6 +1,7 @@
 package events
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -20,7 +21,7 @@ func TestFailedRequest_RedactsErrorMessage(t *testing.T) {
 		"trace-1",
 		"openai",
 		"gpt-4o",
-		"openai API error (401): Incorrect API key provided: "+fakeUpstreamKey,
+		errors.New("openai API error (401): Incorrect API key provided: "+fakeUpstreamKey),
 		250*time.Millisecond,
 		false,
 	)
@@ -35,7 +36,7 @@ func TestFailedRequest_RedactsErrorMessage(t *testing.T) {
 
 // The redacted message must survive into the public map form exporters receive.
 func TestFailedRequest_MapCarriesRedactedError(t *testing.T) {
-	he := FailedRequest("trace-1", "openai", "gpt-4o", "bad key "+fakeUpstreamKey, time.Second, true)
+	he := FailedRequest("trace-1", "openai", "gpt-4o", errors.New("bad key "+fakeUpstreamKey), time.Second, true)
 
 	got, _ := he.Map()["error"].(string)
 	if strings.Contains(got, fakeUpstreamKey) {
@@ -48,7 +49,7 @@ func TestFailedRequest_MapCarriesRedactedError(t *testing.T) {
 
 // Redaction must not disturb the rest of the payload.
 func TestFailedRequest_RedactionPreservesOtherFields(t *testing.T) {
-	he := FailedRequest("trace-1", "openai", "gpt-4o", "upstream is unavailable", 250*time.Millisecond, true)
+	he := FailedRequest("trace-1", "openai", "gpt-4o", errors.New("upstream is unavailable"), 250*time.Millisecond, true)
 
 	if he.Error != "upstream is unavailable" {
 		t.Errorf("Error = %q, want it unchanged", he.Error)

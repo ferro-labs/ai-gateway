@@ -6,20 +6,20 @@ package integration
 import (
 	"testing"
 
-	aigateway "github.com/ferro-labs/ai-gateway"
-	"github.com/ferro-labs/ai-gateway/internal/admin"
+	"github.com/ferro-labs/ai-gateway/config"
+	"github.com/ferro-labs/ai-gateway/internal/admin/repository"
 )
 
 func TestPostgresConfigStore_SaveLoadRoundtrip(t *testing.T) {
-	store, err := admin.NewPostgresConfigStore(t.Context(), testDSN)
+	store, err := repository.NewPostgresConfigStore(t.Context(), testDSN)
 	if err != nil {
 		t.Fatalf("new config store: %v", err)
 	}
 	resetTablesAndClose(t, store, "config_history", "gateway_config")
 
-	cfg := aigateway.Config{
-		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeFallback},
-		Targets: []aigateway.Target{
+	cfg := config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeFallback},
+		Targets: []config.Target{
 			{VirtualKey: "openai"},
 			{VirtualKey: "anthropic"},
 		},
@@ -35,7 +35,7 @@ func TestPostgresConfigStore_SaveLoadRoundtrip(t *testing.T) {
 	if !found {
 		t.Fatal("expected config to be found")
 	}
-	if loaded.Strategy.Mode != aigateway.ModeFallback {
+	if loaded.Strategy.Mode != config.ModeFallback {
 		t.Fatalf("expected fallback, got %q", loaded.Strategy.Mode)
 	}
 	if len(loaded.Targets) != 2 {
@@ -44,15 +44,15 @@ func TestPostgresConfigStore_SaveLoadRoundtrip(t *testing.T) {
 }
 
 func TestPostgresConfigStore_Delete(t *testing.T) {
-	store, err := admin.NewPostgresConfigStore(t.Context(), testDSN)
+	store, err := repository.NewPostgresConfigStore(t.Context(), testDSN)
 	if err != nil {
 		t.Fatalf("new config store: %v", err)
 	}
 	resetTablesAndClose(t, store, "config_history", "gateway_config")
 
-	cfg := aigateway.Config{
-		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeSingle},
-		Targets:  []aigateway.Target{{VirtualKey: "openai"}},
+	cfg := config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets:  []config.Target{{VirtualKey: "openai"}},
 	}
 	if err := store.Save(t.Context(), cfg); err != nil {
 		t.Fatalf("save: %v", err)
@@ -71,34 +71,34 @@ func TestPostgresConfigStore_Delete(t *testing.T) {
 }
 
 func TestPostgresConfigManager_ReloadPersists(t *testing.T) {
-	store, err := admin.NewPostgresConfigStore(t.Context(), testDSN)
+	store, err := repository.NewPostgresConfigStore(t.Context(), testDSN)
 	if err != nil {
 		t.Fatalf("new config store: %v", err)
 	}
 	resetTablesAndClose(t, store, "config_history", "gateway_config")
 
-	initial := aigateway.Config{
-		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeSingle},
-		Targets:  []aigateway.Target{{VirtualKey: "openai"}},
+	initial := config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets:  []config.Target{{VirtualKey: "openai"}},
 	}
 	gw, err := newTestGateway(t, initial)
 	if err != nil {
 		t.Fatalf("new gateway: %v", err)
 	}
 
-	mgr, err := admin.NewGatewayConfigManager(gw, store)
+	mgr, err := repository.NewGatewayConfigManager(gw, store)
 	if err != nil {
 		t.Fatalf("new config manager: %v", err)
 	}
 
-	next := aigateway.Config{
-		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeFallback},
-		Targets:  []aigateway.Target{{VirtualKey: "openai"}, {VirtualKey: "anthropic"}},
+	next := config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeFallback},
+		Targets:  []config.Target{{VirtualKey: "openai"}, {VirtualKey: "anthropic"}},
 	}
 	if err := mgr.ReloadConfig(t.Context(), next); err != nil {
 		t.Fatalf("reload: %v", err)
 	}
-	if mgr.GetConfig().Strategy.Mode != aigateway.ModeFallback {
+	if mgr.GetConfig().Strategy.Mode != config.ModeFallback {
 		t.Fatalf("expected fallback in manager, got %q", mgr.GetConfig().Strategy.Mode)
 	}
 
@@ -109,7 +109,7 @@ func TestPostgresConfigManager_ReloadPersists(t *testing.T) {
 	if !found {
 		t.Fatal("expected persisted config")
 	}
-	if loaded.Strategy.Mode != aigateway.ModeFallback {
+	if loaded.Strategy.Mode != config.ModeFallback {
 		t.Fatalf("expected persisted fallback, got %q", loaded.Strategy.Mode)
 	}
 }

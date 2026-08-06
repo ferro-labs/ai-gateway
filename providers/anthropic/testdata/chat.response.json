@@ -1,0 +1,9 @@
+{
+				"id": "msg_conformance",
+				"type": "message",
+				"role": "assistant",
+				"model": "claude-sonnet-4-6",
+				"content": [{"type": "text", "text": "conformance ok"}],
+				"stop_reason": "end_turn",
+				"usage": {"input_tokens": 11, "output_tokens": 7}
+			}

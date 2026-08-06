@@ -10,8 +10,8 @@ type stubProvider struct {
 	models []string
 }
 
-func (s *stubProvider) Name() string              { return s.name }
-func (s *stubProvider) SupportedModels() []string { return s.models }
+func (s *stubProvider) Name() string               { return s.name }
+func (s *stubProvider) ConfiguredModels() []string { return s.models }
 func (s *stubProvider) SupportsModel(m string) bool {
 	for _, mm := range s.models {
 		if mm == m {

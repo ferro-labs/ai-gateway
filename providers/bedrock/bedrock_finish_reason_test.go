@@ -36,9 +36,18 @@ func TestComplete_NormalizesFinishReason(t *testing.T) {
 			want:  "length",
 		},
 		{
-			name:  "titan FINISH -> stop",
+			// Titan's documented value is FINISHED, not FINISH. The old fixture
+			// used FINISH — which maps only because Cohere's "finish" is in the
+			// stop set — so the gap it was meant to cover stayed invisible.
+			name:  "titan FINISHED -> stop",
 			model: "amazon.titan-text-express-v1",
-			body:  `{"inputTextTokenCount":1,"results":[{"tokenCount":1,"outputText":"hi","completionReason":"FINISH"}]}`,
+			body:  `{"inputTextTokenCount":1,"results":[{"tokenCount":1,"outputText":"hi","completionReason":"FINISHED"}]}`,
+			want:  "stop",
+		},
+		{
+			name:  "titan STOP_CRITERIA_MET -> stop",
+			model: "amazon.titan-text-express-v1",
+			body:  `{"inputTextTokenCount":1,"results":[{"tokenCount":1,"outputText":"hi","completionReason":"STOP_CRITERIA_MET"}]}`,
 			want:  "stop",
 		},
 		{

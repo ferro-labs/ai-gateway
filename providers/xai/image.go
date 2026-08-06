@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/ferro-labs/ai-gateway/internal/logging"
+	"github.com/ferro-labs/ai-gateway/pkg/logger"
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
@@ -25,10 +25,13 @@ type xaiImageRequest struct {
 // GenerateImage sends an image generation request to xAI (Grok image models).
 // It is OpenAI-compatible against the /images/generations endpoint.
 func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*core.ImageResponse, error) {
+	if err := core.EnforceImageResponseFormat(p.name, req); err != nil {
+		return nil, err
+	}
 	// grok-2-image ignores size/quality/style. Surface the drop instead of
 	// discarding it silently so the caller can observe the mismatch.
 	if dropped := droppedImageParams(req); len(dropped) > 0 {
-		logging.FromContext(ctx).Warn(
+		logger.Ctx(ctx).Warn(
 			"xai image models ignore size/quality/style request parameter(s); dropping",
 			"provider", p.name,
 			"model", req.Model,

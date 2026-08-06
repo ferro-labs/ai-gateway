@@ -1,0 +1,5 @@
+CREATE TABLE IF NOT EXISTS gateway_config (
+	id SMALLINT PRIMARY KEY,
+	config_json TEXT NOT NULL,
+	updated_at TIMESTAMPTZ NOT NULL
+);

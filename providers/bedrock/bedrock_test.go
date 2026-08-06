@@ -177,46 +177,6 @@ func TestBedrockProvider_Embed_Interface(_ *testing.T) {
 	var _ core.EmbeddingProvider = (*Provider)(nil)
 }
 
-func TestBedrockProvider_SupportedEmbeddingModels(t *testing.T) {
-	p := &Provider{name: Name}
-	models := p.SupportedModels()
-	for _, want := range []string{
-		"amazon.titan-embed-text-v1",
-		"amazon.titan-embed-text-v2:0",
-		"cohere.embed-english-v3",
-		"cohere.embed-multilingual-v3",
-		"cohere.embed-v4:0",
-	} {
-		if !containsString(models, want) {
-			t.Errorf("SupportedModels() missing %q", want)
-		}
-		if !p.SupportsModel(want) {
-			t.Errorf("SupportsModel(%q) = false, want true", want)
-		}
-	}
-
-	for _, wantSupported := range []string{
-		"us.amazon.titan-embed-text-v2:0",
-		"global.amazon.titan-embed-text-v2:0",
-		"us-gov-east-1/amazon.titan-embed-text-v1",
-		"cohere.embed-future:0",
-	} {
-		if !p.SupportsModel(wantSupported) {
-			t.Errorf("SupportsModel(%q) = false, want true", wantSupported)
-		}
-	}
-
-	for _, wantRejected := range []string{
-		"text-embedding-3-small",
-		"amazon.titan-embed-image-v1",
-		"amazon.nova-2-multimodal-embeddings-v1:0",
-	} {
-		if p.SupportsModel(wantRejected) {
-			t.Errorf("SupportsModel(%q) = true, want false", wantRejected)
-		}
-	}
-}
-
 func TestBedrockProvider_SupportsModel_CrossRegionInferenceProfiles(t *testing.T) {
 	p := &Provider{name: Name}
 
@@ -1230,15 +1190,6 @@ func mustUnmarshalBody(t *testing.T, body []byte, out any) {
 	if err := json.Unmarshal(body, out); err != nil {
 		t.Fatalf("failed to unmarshal body %s: %v", string(body), err)
 	}
-}
-
-func containsString(values []string, target string) bool {
-	for _, value := range values {
-		if value == target {
-			return true
-		}
-	}
-	return false
 }
 
 func intPtr(v int) *int { return &v }

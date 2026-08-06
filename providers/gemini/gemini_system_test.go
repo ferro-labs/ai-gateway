@@ -126,3 +126,23 @@ func TestSystemPrompt_AbsentWhenNoSystemMessage(t *testing.T) {
 		t.Errorf("systemInstruction should be absent, got %+v", got.SystemInstruction)
 	}
 }
+
+// TestSystemPrompt_DeveloperRoleRoutedToSystemInstruction verifies OpenAI's
+// "developer" role — the successor to "system" — reaches Gemini's
+// systemInstruction rather than being forwarded as a role Gemini rejects.
+func TestSystemPrompt_DeveloperRoleRoutedToSystemInstruction(t *testing.T) {
+	got := captureComplete(t, []core.Message{
+		{Role: core.RoleDeveloper, Content: "Answer tersely."},
+		{Role: core.RoleUser, Content: "Hello"},
+	})
+
+	if got.SystemInstruction == nil {
+		t.Fatalf("systemInstruction missing for a developer turn")
+	}
+	if want := "Answer tersely."; got.SystemInstruction.Parts[0].Text != want {
+		t.Errorf("systemInstruction = %q, want %q", got.SystemInstruction.Parts[0].Text, want)
+	}
+	if len(got.Contents) != 1 || got.Contents[0].Role != core.RoleUser {
+		t.Errorf("contents = %+v, want the user turn only", got.Contents)
+	}
+}

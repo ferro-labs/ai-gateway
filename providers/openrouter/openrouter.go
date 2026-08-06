@@ -4,12 +4,10 @@ package openrouter
 import (
 	"context"
 	"net/http"
-	"strings"
 
-	discov "github.com/ferro-labs/ai-gateway/internal/discovery"
 	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
 	"github.com/ferro-labs/ai-gateway/providers/core"
-	"github.com/ferro-labs/ai-gateway/providers/internal/openaicompat"
+	"github.com/ferro-labs/ai-gateway/providers/core/openaicompat"
 )
 
 const (
@@ -34,18 +32,15 @@ var (
 	_ core.ProxiableProvider = (*Provider)(nil)
 	_ core.DiscoveryProvider = (*Provider)(nil)
 	_ core.EmbeddingProvider = (*Provider)(nil)
+	_ core.AnyModelProvider  = (*Provider)(nil)
 )
 
 // New creates a new OpenRouter provider.
 func New(apiKey, baseURL string) (*Provider, error) {
-	baseURL = strings.TrimSpace(baseURL)
-	if baseURL == "" {
-		baseURL = defaultBaseURL
-	}
-	if err := core.ValidateBaseURL(Name, baseURL); err != nil {
+	baseURL, err := core.ResolveAPIRoot(Name, baseURL, defaultBaseURL)
+	if err != nil {
 		return nil, err
 	}
-	baseURL = strings.TrimRight(baseURL, "/")
 	return &Provider{
 		name:       Name,
 		apiKey:     apiKey,
@@ -65,29 +60,21 @@ func (p *Provider) AuthHeaders() map[string]string {
 	return map[string]string{"Authorization": "Bearer " + p.apiKey}
 }
 
-// SupportedModels returns a static list of known OpenRouter models.
-func (p *Provider) SupportedModels() []string {
-	return []string{
-		"openrouter/auto",
-		"openai/gpt-4o",
-		"openai/gpt-5",
-		"anthropic/claude-sonnet-4.5",
-		"google/gemini-2.5-pro",
-		"deepseek/deepseek-r1",
-	}
-}
-
 // SupportsModel returns true for any OpenRouter model name.
 func (p *Provider) SupportsModel(_ string) bool { return true }
 
-// Models returns structured model metadata.
-func (p *Provider) Models() []core.ModelInfo {
-	return core.ModelsFromList(p.name, p.SupportedModels())
-}
+// ServesAnyModel declares core.AnyModelProvider: OpenRouter is an aggregator of
+// 400+ upstream models whose roster changes continuously, so a catalog snapshot
+// is stale the day it ships and live discovery is opt-in. Without this, a real
+// model this target serves was refused 404 by the routing index and the request
+// never reached OpenRouter at all — which is the whole reason to configure an
+// aggregator. It stays additive: a model the index already has an owner for is
+// routed to that owner and never offered here.
+func (p *Provider) ServesAnyModel() {}
 
 // DiscoverModels fetches the live model list from the OpenRouter /models endpoint.
 func (p *Provider) DiscoverModels(ctx context.Context) ([]core.ModelInfo, error) {
-	return discov.DiscoverOpenAICompatibleModels(ctx, p.httpClient, p.baseURL+"/models", p.apiKey, p.name)
+	return core.DiscoverOpenAICompatibleModels(ctx, p.httpClient, p.baseURL+"/models", p.apiKey, p.name)
 }
 
 // Complete sends a chat completion request to OpenRouter.

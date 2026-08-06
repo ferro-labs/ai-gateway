@@ -14,7 +14,7 @@ import (
 
 	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
 	"github.com/ferro-labs/ai-gateway/providers/core"
-	"github.com/ferro-labs/ai-gateway/providers/internal/openaicompat"
+	"github.com/ferro-labs/ai-gateway/providers/core/openaicompat"
 )
 
 // Name is the canonical provider identifier.
@@ -67,6 +67,7 @@ func New(opts Options) (*Provider, error) {
 	// many requests. It is a construction-time/lifetime construct, not
 	// request-scoped, so binding it to any single request's context would
 	// wrongly cancel token refresh when that request completes.
+	tokenCtx := tokenHTTPContext()
 	var tokenSource oauth2.TokenSource
 	switch {
 	case serviceAccountJSON != "":
@@ -74,13 +75,13 @@ func New(opts Options) (*Provider, error) {
 		if err != nil {
 			return nil, fmt.Errorf("invalid Vertex AI service account JSON: %w", err)
 		}
-		tokenSource = cfg.TokenSource(context.Background())
+		tokenSource = cfg.TokenSource(tokenCtx)
 	case apiKey == "":
 		// No API key or service-account JSON: fall back to Application Default
 		// Credentials (GOOGLE_APPLICATION_CREDENTIALS, gcloud, workload identity,
 		// or the GCE/GKE metadata server) so managed environments authenticate
 		// without an explicit key.
-		creds, err := google.FindDefaultCredentials(context.Background(), "https://www.googleapis.com/auth/cloud-platform")
+		creds, err := google.FindDefaultCredentials(tokenCtx, "https://www.googleapis.com/auth/cloud-platform")
 		if err != nil {
 			return nil, fmt.Errorf("vertex-ai requires an API key, service account JSON, or application default credentials: %w", err)
 		}
@@ -143,25 +144,6 @@ func (p *Provider) AuthHeaders() map[string]string {
 	return map[string]string{name: value}
 }
 
-// SupportedModels returns known Vertex AI model examples.
-func (p *Provider) SupportedModels() []string {
-	return []string{
-		"gemini-2.5-pro",
-		"gemini-2.5-flash",
-		"gemini-2.5-flash-lite",
-		"gemini-embedding-001",
-		"text-embedding-005",
-		"text-embedding-004",
-		"text-multilingual-embedding-002",
-		"textembedding-gecko@003",
-		"textembedding-gecko-multilingual@001",
-		"imagen-4.0-generate-001",
-		"imagen-4.0-ultra-generate-001",
-		"imagen-4.0-fast-generate-001",
-		"imagen-3.0-generate-002",
-	}
-}
-
 // SupportsModel returns true for known Vertex AI chat, text embedding, and image model families.
 func (p *Provider) SupportsModel(model string) bool {
 	model = vertexAIModelID(model)
@@ -170,11 +152,6 @@ func (p *Provider) SupportsModel(model string) bool {
 		strings.HasPrefix(model, "textembedding-gecko") ||
 		strings.HasPrefix(model, "text-multilingual-embedding-") ||
 		strings.HasPrefix(model, "imagen-")
-}
-
-// Models returns structured model metadata.
-func (p *Provider) Models() []core.ModelInfo {
-	return core.ModelsFromList(p.name, p.SupportedModels())
 }
 
 type vertexAIEmbeddingRequest struct {
@@ -414,4 +391,38 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 		Provider:   p.name,
 		Label:      "vertex ai",
 	}, req)
+}
+
+// tokenHTTPContext returns the long-lived context used to fetch and refresh
+// OAuth tokens.
+//
+// It carries the provider's own HTTP client so the token exchange inherits the
+// gateway's no-redirect policy. Without it, golang.org/x/oauth2 falls back to
+// http.DefaultClient (its own internal/transport.go ContextClient, not this
+// repository's internal/transport), which follows redirects: a 307/308
+// preserves method and body, so the credential POSTed to the token endpoint —
+// the signed service-account assertion, or a refresh or subject token — would
+// be replayed to whatever host the response names (SEC-008).
+//
+// Covered: every branch that builds a token source from credentials JSON. That
+// is the service-account path New takes for Options.ServiceAccountJSON, plus
+// the authorized_user, external_account and impersonation types
+// golang.org/x/oauth2/google resolves from GOOGLE_APPLICATION_CREDENTIALS or
+// the gcloud well-known file. All of them are handed this context and read the
+// client off it.
+//
+// Not covered: the GCE/GKE metadata-server branch, which
+// google.FindDefaultCredentials reaches only after both credentials-file
+// lookups miss. It takes no context — metadata.ProjectID, metadata.Get and
+// computeTokenSource are ctx-free and use the package-level client in
+// cloud.google.com/go/compute/metadata, which declares no redirect policy — so
+// this context is discarded there. Nothing leaks if that client follows a
+// redirect: the request carries only Metadata-Flavor and a User-Agent, and the
+// access token arrives in the response rather than being sent.
+//
+// context.Background() is deliberate: the token source outlives any single
+// request, so binding it to a request context would cancel token refresh when
+// that request completes.
+func tokenHTTPContext() context.Context {
+	return context.WithValue(context.Background(), oauth2.HTTPClient, providerhttp.ForProvider(Name))
 }

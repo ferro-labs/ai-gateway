@@ -58,3 +58,39 @@ func TestComplete_OmitsContentOnAssistantToolCall(t *testing.T) {
 		t.Errorf("assistant tool-call message must omit content, got content=%s", c)
 	}
 }
+
+// TestComplete_DeveloperRoleBecomesSystem verifies OpenAI's "developer" role is
+// sent as Cohere v2's system role rather than a role Cohere rejects.
+func TestComplete_DeveloperRoleBecomesSystem(t *testing.T) {
+	var rawBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rawBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"x","message":{"role":"assistant","content":[{"type":"text","text":"ok"}]},"finish_reason":"COMPLETE","usage":{"tokens":{"input_tokens":1,"output_tokens":1}}}`)
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	_, err := p.Complete(context.Background(), core.Request{
+		Model: "command-r-plus",
+		Messages: []core.Message{
+			{Role: core.RoleDeveloper, Content: "be concise"},
+			{Role: core.RoleUser, Content: "hi"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	var body struct {
+		Messages []struct {
+			Role string `json:"role"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(rawBody, &body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if len(body.Messages) != 2 || body.Messages[0].Role != core.RoleSystem {
+		t.Errorf("messages = %+v, want the developer turn sent as system", body.Messages)
+	}
+}

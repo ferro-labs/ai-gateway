@@ -1,0 +1,51 @@
+# Production overrides — pinned image tag, restart policy, resource limits, health check.
+# Usage: make up-prod   (docker compose -f deploy/compose.yaml -f deploy/compose.prod.yaml up -d)
+#
+# Before deploying:
+#   1. Pin IMAGE_TAG to a specific release (e.g. v1.0.1) — never use "latest" in prod.
+#   2. Supply secrets via environment or a .env file (never commit keys to the repo).
+#      A .env is read from the directory compose is invoked from, so from the
+#      repository root that is ./.env, not deploy/.env.
+
+services:
+  ferrogw:
+    image: ghcr.io/ferro-labs/ai-gateway:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      # Turns on the production startup checks. Without it this file ships
+      # with every one of them off: a CORS_ORIGINS of "*" is accepted, an
+      # unauthenticated pass-through is accepted, and nothing warns about an
+      # in-memory key store losing every operator key on restart.
+      - GATEWAY_ENV=production
+      - CORS_ORIGINS=${CORS_ORIGINS:-}
+      # The gateway reads a config file only when GATEWAY_CONFIG names one — it
+      # discovers nothing. Without this line the mount below is present and
+      # ignored, and the gateway falls back to key-derived defaults: an operator
+      # who narrowed `targets` for safety would get every credentialled provider
+      # routable instead. Keep the two together.
+      - GATEWAY_CONFIG=/etc/ferrogw/config.yaml
+    volumes:
+      # Resolves against this file's directory, so ../ keeps the operator's
+      # config.yaml at the repository root where .gitignore already covers it.
+      - ../config.yaml:/etc/ferrogw/config.yaml:ro
+    healthcheck:
+      # /readyz, not /health: /health answers 200 while every configured target
+      # is unroutable, which is exactly the outage a health check should catch.
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/readyz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 128M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

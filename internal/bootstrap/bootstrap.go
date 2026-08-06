@@ -14,38 +14,120 @@ import (
 	"time"
 
 	aigateway "github.com/ferro-labs/ai-gateway"
-	"github.com/ferro-labs/ai-gateway/internal/admin"
+	"github.com/ferro-labs/ai-gateway/config"
+	"github.com/ferro-labs/ai-gateway/internal/admin/handlers"
+	"github.com/ferro-labs/ai-gateway/internal/admin/repository"
 	"github.com/ferro-labs/ai-gateway/internal/httpserver"
-	"github.com/ferro-labs/ai-gateway/internal/logging"
-	"github.com/ferro-labs/ai-gateway/internal/metrics"
 	gwotel "github.com/ferro-labs/ai-gateway/internal/otel"
-	"github.com/ferro-labs/ai-gateway/internal/ratelimit"
 	"github.com/ferro-labs/ai-gateway/internal/requestlog"
 	"github.com/ferro-labs/ai-gateway/internal/version"
+	"github.com/ferro-labs/ai-gateway/pkg/logger"
+	"github.com/ferro-labs/ai-gateway/pkg/metrics"
+	"github.com/ferro-labs/ai-gateway/pkg/ratelimit"
 	"github.com/ferro-labs/ai-gateway/providers"
 	bedrockpkg "github.com/ferro-labs/ai-gateway/providers/bedrock"
 )
 
-// CheckProductionSafety returns an error if ALLOW_UNAUTHENTICATED_PROXY=true is
-// combined with GATEWAY_ENV=production.  Allowing unauthenticated proxy access
-// in a production environment silently removes all /v1/* data-plane auth, so
-// the gateway refuses to start rather than serve in an insecure state.
-//
-// Outside of production (GATEWAY_ENV unset or any value other than
-// "production"), the flag is honoured and a warning is emitted at startup
-// (existing dev-mode behaviour is preserved).
-func CheckProductionSafety() error {
-	allowUnauth := strings.EqualFold(strings.TrimSpace(os.Getenv("ALLOW_UNAUTHENTICATED_PROXY")), "true")
-	isProduction := strings.EqualFold(strings.TrimSpace(os.Getenv("GATEWAY_ENV")), "production")
+// IsProduction reports whether GATEWAY_ENV names the production environment.
+// Unset, or any other value, is non-production.
+func IsProduction() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv("GATEWAY_ENV")), "production")
+}
 
-	if allowUnauth && isProduction {
-		return fmt.Errorf(
-			"ALLOW_UNAUTHENTICATED_PROXY=true is not allowed when GATEWAY_ENV=production: " +
-				"all /v1/* data-plane endpoints would be unauthenticated; " +
-				"unset ALLOW_UNAUTHENTICATED_PROXY or change GATEWAY_ENV to a non-production value",
-		)
+// corsOriginsWildcard reports whether a CORS_ORIGINS value contains a "*"
+// entry. Origins are matched literally against the request's Origin header, so
+// "*" matches nothing a browser will ever send: an operator who writes it
+// asking for allow-all gets allow-nothing, silently.
+// Quotes are stripped before the comparison. A value written `CORS_ORIGINS="*"`
+// in a compose list entry arrives with its quotes intact, so the check saw the
+// three-character string `"*"`, let it through, and the middleware then
+// registered a literal origin no browser can send — the exact allow-nothing
+// state the refusal exists to prevent, reached by the spelling an operator is
+// most likely to use.
+func corsOriginsWildcard(value string) bool {
+	for _, origin := range strings.Split(value, ",") {
+		if strings.Trim(strings.TrimSpace(origin), `"'`) == "*" {
+			return true
+		}
 	}
-	return nil
+	return false
+}
+
+// CheckProductionSafety returns an error naming every production setting the
+// gateway refuses to serve under. It reports all of them at once, so fixing a
+// production deployment is one edit rather than a restart per problem. Outside
+// production (GATEWAY_ENV unset or any other value) it always returns nil, and
+// the same settings are honoured with a startup warning.
+//
+// Refusing to start is reserved for a setting that cannot become correct on its
+// own and cannot do what the operator asked:
+//
+//   - ALLOW_UNAUTHENTICATED_PROXY=true removes all /v1/* data-plane auth.
+//   - CORS_ORIGINS containing "*" is not a wildcard here; it is one literal
+//     origin no browser sends, so it denies every cross-origin request while
+//     reading like it permits them all. Every listed origin has to be spelled
+//     out.
+//
+// Settings that are merely risky are warnings instead — see
+// warnProductionRisks. A gateway that refuses to boot over a defensible
+// deployment choice is a crash loop, and the crash loop is the bigger outage.
+func CheckProductionSafety() error {
+	if !IsProduction() {
+		return nil
+	}
+
+	var problems []string
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("ALLOW_UNAUTHENTICATED_PROXY")), "true") {
+		problems = append(problems,
+			"ALLOW_UNAUTHENTICATED_PROXY=true would leave all /v1/* data-plane endpoints unauthenticated; "+
+				"unset it or change GATEWAY_ENV to a non-production value")
+	}
+	if corsOriginsWildcard(os.Getenv("CORS_ORIGINS")) {
+		problems = append(problems,
+			`CORS_ORIGINS contains "*", which is matched literally rather than as a wildcard and therefore `+
+				"allows no cross-origin request at all; list each allowed origin explicitly, or unset CORS_ORIGINS "+
+				"to serve no CORS headers")
+	}
+	if len(problems) == 0 {
+		return nil
+	}
+	return fmt.Errorf("GATEWAY_ENV=production rejects this configuration: %s", strings.Join(problems, "; "))
+}
+
+// warnProductionRisks reports, once at startup, every production setting that
+// is allowed but worth knowing is in force. Each is a defensible deployment
+// choice, which is exactly why none of them blocks startup:
+//
+//   - Per-IP rate limiting off (RATE_LIMIT_RPS=0) is normal when limits are
+//     enforced by an ingress or API gateway in front of this one.
+//   - Profiling routes mounted (ENABLE_PPROF) is how a production incident gets
+//     diagnosed. They sit behind the admin scope; the risk is leaving them
+//     mounted past the incident, since a profile is a memory image.
+//   - An in-memory API key store loses every operator key, dashboard session and
+//     audit entry on restart, leaving MASTER_KEY as the only way back in. It is
+//     the documented default and serves correctly until the process restarts.
+//
+// Silence is the failure mode being fixed: each of these was previously either
+// an INFO line or nothing at all, so a production gateway could not be told
+// apart from a laptop by reading its own startup log.
+// rateLimitDisabled is what the limiter actually resolved to, not what the
+// environment says. Re-reading RATE_LIMIT_RPS here and comparing it as a string
+// answered a different question than the parse the limiter performs, and drifted
+// in both directions: "0.0" and "00" disabled limiting with no warning at all,
+// while " 0 " warned about a limiter that was still running at the default rate.
+func warnProductionRisks(keyStoreBackend string, rateLimitDisabled bool) {
+	if !IsProduction() {
+		return
+	}
+	if rateLimitDisabled {
+		logger.Default().Warn("production: per-IP rate limiting is disabled by RATE_LIMIT_RPS -- the gateway applies no request-rate limit of its own")
+	}
+	if httpserver.PprofEnabled() {
+		logger.Default().Warn("production: ENABLE_PPROF mounts /debug/pprof -- profiles are memory images that can contain request bodies and credentials; they require the admin scope, and are best unmounted once an investigation ends")
+	}
+	if keyStoreBackend == BackendMemory {
+		logger.Default().Warn("production: the API key store is in-memory -- operator keys, dashboard sessions and the audit trail are lost on restart, leaving MASTER_KEY as the only way back in; set API_KEY_STORE_BACKEND=sqlite or postgres")
+	}
 }
 
 // defaultListenAddr is the address the HTTP server listens on when PORT is unset.
@@ -58,16 +140,20 @@ const shutdownGracePeriod = 15 * time.Second
 // Serve runs the full gateway server startup sequence and blocks until the
 // server shuts down.  It exits the process on fatal errors.
 func Serve() {
-	logging.Setup(os.Getenv("LOG_LEVEL"), os.Getenv("LOG_FORMAT"))
+	// Configure the process logger from the environment (LOG_LEVEL) and install
+	// it as the default (mirrored into slog.SetDefault). lg is then threaded
+	// explicitly into the components that hold their own logger.
+	lg := logger.New(logger.FromEnv())
+	logger.SetDefault(lg)
 
 	if err := CheckProductionSafety(); err != nil {
-		logging.Logger.Error("startup blocked: unsafe configuration", "error", err)
+		lg.Error("startup blocked: unsafe configuration", "error", err)
 		os.Exit(1)
 	}
 
-	gw, srv, cfgManager, keyStore, logReader, otelShutdown := buildServer()
+	gw, srv, cfgManager, keyStore, sessionStore, auditStore, logReader, otelShutdown := buildServer(lg)
 	listenErr := runUntilShutdown(gw, srv)
-	gracefulShutdown(srv, gw, cfgManager, keyStore, logReader, otelShutdown, listenErr)
+	gracefulShutdown(srv, gw, cfgManager, keyStore, sessionStore, auditStore, logReader, otelShutdown, listenErr)
 }
 
 // buildServer runs the startup sequence: it loads configuration, registers
@@ -75,24 +161,29 @@ func Serve() {
 // the router and HTTP server, prints the startup banner, and logs readiness.
 // It exits the process on any fatal initialization error and returns the
 // long-lived components needed to run and later shut down the server.
-func buildServer() (
+func buildServer(lg *logger.Logger) (
 	*aigateway.Gateway,
 	*http.Server,
-	admin.ConfigManager,
-	admin.Store,
+	handlers.ConfigManager,
+	repository.Store,
+	repository.SessionStore,
+	repository.AuditStore,
 	requestlog.Reader,
 	gwotel.ShutdownFunc,
 ) {
 	cfg := LoadConfig()
+	// Ahead of RegisterProviders, so an operator reads the rename before the
+	// line reporting the provider that was built from the deprecated variable.
+	LogDeprecatedEnvVars()
 	registry := RegisterProviders()
 	masterKey := ResolveMasterKey()
 
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("ALLOW_UNAUTHENTICATED_PROXY")), "true") {
-		logging.Logger.Warn("ALLOW_UNAUTHENTICATED_PROXY is set -- proxy routes are unauthenticated (dev mode only; not for production)")
+		logger.Default().Warn("ALLOW_UNAUTHENTICATED_PROXY is set -- proxy routes are unauthenticated (dev mode only; not for production)")
 	}
 
 	if len(registry.List()) == 0 {
-		logging.Logger.Warn("no providers configured; set provider API keys (e.g. OPENAI_API_KEY) or OLLAMA_HOST, or add them later via the admin API")
+		logger.Default().Warn("no providers configured; set provider API keys (e.g. OPENAI_API_KEY) or OLLAMA_HOST before starting -- providers are registered at startup and cannot be added to a running process")
 	}
 
 	// Build the request-log store before the gateway so it can be handed to
@@ -101,46 +192,87 @@ func buildServer() (
 	// no request-log backend is configured.
 	logReader, logMaintainer, logReaderBackend, err := CreateRequestLogReaderFromEnv(context.Background())
 	if err != nil {
-		logging.Logger.Error("failed to initialize request log reader", "error", err)
+		logger.Default().Error("failed to initialize request log reader", "error", err)
 		os.Exit(1)
 	}
 	logWriter, _ := logReader.(requestlog.Writer)
 
-	gw := BuildGateway(cfg, registry, logWriter)
-
 	// Initialise OpenTelemetry. Init returns a NoOp provider (and a
 	// no-op shutdown) when neither an OTLP endpoint nor any enabled
 	// exporter is configured, so this is free for users who don't opt in.
-	var obsCfg aigateway.ObservabilityConfig
+	//
+	// This runs BEFORE the gateway is built, and the order is load-bearing.
+	// Constructing the gateway starts MCP initialization in the background, and
+	// those handshakes open spans through the global tracer. Installing the
+	// TracerProvider afterwards left every span opened in that window
+	// non-recording, so mcp.init_server and mcp.initialize were never exported
+	// and mcp.list_tools arrived at the collector as a parentless root.
+	var obsCfg config.ObservabilityConfig
 	if cfg != nil {
 		obsCfg = cfg.Observability
 	}
 	obsProvider, otelShutdown, err := gwotel.Init(context.Background(), otelConfigFromGateway(obsCfg))
 	if err != nil {
-		logging.Logger.Error("failed to initialize observability", "error", err)
+		logger.Default().Error("failed to initialize observability", "error", err)
 		os.Exit(1)
 	}
+
+	gw := BuildGateway(cfg, registry, logWriter, lg)
 	gw.SetObservability(obsProvider)
+
+	// Resolve gateway_circuit_breaker_state from this gateway's live breakers on
+	// every scrape, rather than from whenever a request last finished.
+	gw.PublishCircuitBreakerMetrics()
 
 	// No lifecycle context exists yet at this point in startup (signal.NotifyContext
 	// is only set up later, in runUntilShutdown), matching the gwotel.Init call
 	// above — these are one-time store-initialization calls, not per-request work.
 	cfgManager, configStoreBackend, err := CreateConfigManagerFromEnv(context.Background(), gw)
 	if err != nil {
-		logging.Logger.Error("failed to initialize config store", "error", err)
+		logger.Default().Error("failed to initialize config store", "error", err)
 		os.Exit(1)
 	}
 
+	// Config resolution is complete only here: the store, when it holds one,
+	// has just superseded whatever the gateway was built from. Everything
+	// logged above this point describes a source, not the outcome — so the
+	// outcome is named once, now, and the banner below is drawn from it rather
+	// than from the file.
+	active := ResolveActiveConfig(gw, cfgManager, cfg, configStoreBackend)
+
 	keyStore, keyStoreBackend, err := CreateKeyStoreFromEnv(context.Background())
 	if err != nil {
-		logging.Logger.Error("failed to initialize API key store", "error", err)
+		logger.Default().Error("failed to initialize API key store", "error", err)
 		os.Exit(1)
 	}
-	LogDeprecatedBootstrapKeys()
+
+	// The session store follows the key store's backend so an operator
+	// configures persistence once (see CreateSessionStoreFromEnv). It is a
+	// distinct store, and for SQLite a distinct database file, from the key
+	// store built above.
+	sessionStore, _, err := CreateSessionStoreFromEnv(context.Background())
+	if err != nil {
+		logger.Default().Error("failed to initialize session store", "error", err)
+		os.Exit(1)
+	}
+
+	// The audit store follows the key store's backend too, for the same reason
+	// (see CreateAuditStoreFromEnv). It is a distinct store and, for SQLite, a
+	// distinct file from the key, session, and config stores.
+	auditStore, auditStoreBackend, err := CreateAuditStoreFromEnv(context.Background())
+	if err != nil {
+		logger.Default().Error("failed to initialize audit store", "error", err)
+		os.Exit(1)
+	}
 
 	var corsOrigins []string
 	if origins := os.Getenv("CORS_ORIGINS"); origins != "" {
 		corsOrigins = strings.Split(origins, ",")
+		// Production refuses this outright (CheckProductionSafety), so this
+		// line is what a non-production run gets instead of silence.
+		if corsOriginsWildcard(origins) {
+			logger.Default().Warn(`CORS_ORIGINS contains "*", which is matched literally, not as a wildcard -- no cross-origin request will be allowed; list each origin explicitly`)
+		}
 	}
 
 	// TRUSTED_PROXIES is a comma-separated list of CIDR blocks whose
@@ -149,13 +281,17 @@ func buildServer() (
 	// (127.0.0.0/8, ::1/128), which is appropriate for a local reverse proxy.
 	trustedProxies, err := httpserver.ParseTrustedProxyCIDRs(os.Getenv("TRUSTED_PROXIES"))
 	if err != nil {
-		logging.Logger.Error("invalid TRUSTED_PROXIES", "error", err)
+		logger.Default().Error("invalid TRUSTED_PROXIES", "error", err)
 		os.Exit(1)
 	}
 
 	rlStore := NewRateLimitStore()
 
-	r := httpserver.NewRouter(registry, keyStore, corsOrigins, gw, cfgManager, rlStore, logReader, logMaintainer, masterKey, trustedProxies)
+	// After the stores and the rate limiter exist, so the report describes what
+	// this process actually ended up with rather than what was asked for.
+	warnProductionRisks(keyStoreBackend, rlStore == nil)
+
+	r := httpserver.NewRouter(registry, keyStore, sessionStore, corsOrigins, gw, cfgManager, rlStore, logReader, logMaintainer, auditStore, masterKey, trustedProxies)
 
 	addr := defaultListenAddr
 	if p := os.Getenv("PORT"); p != "" {
@@ -163,17 +299,18 @@ func buildServer() (
 	}
 	srv := httpserver.NewServer(addr, r)
 
-	PrintStartupBanner(addr, registry, cfg, masterKey, keyStoreBackend, configStoreBackend)
-	logging.Logger.Info("ferrogw started",
+	PrintStartupBanner(addr, registry, &active, masterKey, keyStoreBackend, configStoreBackend)
+	logger.Default().Info("ferrogw started",
 		"version", version.Short(),
 		"addr", addr,
 		"providers", len(registry.List()),
 		"config_store", configStoreBackend,
 		"api_key_store", keyStoreBackend,
 		"request_log_store", logReaderBackend,
+		"audit_store", auditStoreBackend,
 	)
 
-	return gw, srv, cfgManager, keyStore, logReader, otelShutdown
+	return gw, srv, cfgManager, keyStore, sessionStore, auditStore, logReader, otelShutdown
 }
 
 // runUntilShutdown starts the HTTP server and optional live model discovery,
@@ -192,19 +329,19 @@ func runUntilShutdown(gw *aigateway.Gateway, srv *http.Server) error {
 	// background and stops when the lifecycle ctx is cancelled on shutdown.
 	if interval, ok := discoveryIntervalFromEnv(); ok {
 		if err := gw.StartDiscovery(ctx, interval); err != nil {
-			logging.Logger.Warn("model discovery not started", "error", err)
+			logger.Default().Warn("model discovery not started", "error", err)
 		} else {
-			logging.Logger.Info("model discovery enabled", "interval", interval.String())
+			logger.Default().Info("model discovery enabled", "interval", interval.String())
 		}
 	}
 
 	var listenErr error
 	select {
 	case <-ctx.Done():
-		logging.Logger.Info("shutdown signal received")
+		logger.Default().Info("shutdown signal received")
 	case listenErr = <-serveErr:
 		if listenErr != nil && !errors.Is(listenErr, http.ErrServerClosed) {
-			logging.Logger.Error("server error", "error", listenErr)
+			logger.Default().Error("server error", "error", listenErr)
 		}
 	}
 	stop() // release signal resources; called explicitly so os.Exit below doesn't bypass it
@@ -217,18 +354,20 @@ func runUntilShutdown(gw *aigateway.Gateway, srv *http.Server) error {
 func gracefulShutdown(
 	srv *http.Server,
 	gw *aigateway.Gateway,
-	cfgManager admin.ConfigManager,
-	keyStore admin.Store,
+	cfgManager handlers.ConfigManager,
+	keyStore repository.Store,
+	sessionStore repository.SessionStore,
+	auditStore repository.AuditStore,
 	logReader requestlog.Reader,
 	otelShutdown gwotel.ShutdownFunc,
 	listenErr error,
 ) {
 	// Shutdown drains active connections before returning — CloseResources must
 	// come after so in-flight requests can still reach the stores.
-	logging.Logger.Info("shutting down gracefully")
+	logger.Default().Info("shutting down gracefully")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownGracePeriod)
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		logging.Logger.Error("shutdown error", "error", err)
+		logger.Default().Error("shutdown error", "error", err)
 	}
 	cancel()
 
@@ -236,9 +375,11 @@ func gracefulShutdown(
 		httpserver.NamedResource{Name: "gateway", Value: gw},
 		httpserver.NamedResource{Name: "config manager", Value: cfgManager},
 		httpserver.NamedResource{Name: "api key store", Value: keyStore},
+		httpserver.NamedResource{Name: "session store", Value: sessionStore},
+		httpserver.NamedResource{Name: "audit store", Value: auditStore},
 		httpserver.NamedResource{Name: "request log store", Value: logReader},
 	); err != nil {
-		logging.Logger.Error("shutdown cleanup error", "error", err)
+		logger.Default().Error("shutdown cleanup error", "error", err)
 	}
 
 	// Drain OTel exporters last so spans emitted during the rest of the
@@ -247,10 +388,10 @@ func gracefulShutdown(
 	// deadline derived from cfg.ShutdownGrace, so we pass context.Background()
 	// here rather than duplicating the duration parse.
 	if err := otelShutdown(context.Background()); err != nil {
-		logging.Logger.Error("otel shutdown error", "error", err)
+		logger.Default().Error("otel shutdown error", "error", err)
 	}
 
-	logging.Logger.Info("server stopped")
+	logger.Default().Info("server stopped")
 
 	if listenErr != nil && !errors.Is(listenErr, http.ErrServerClosed) {
 		os.Exit(1)
@@ -279,33 +420,77 @@ func ResolveMasterKey() string {
 	return strings.TrimSpace(os.Getenv("MASTER_KEY"))
 }
 
-// LogDeprecatedBootstrapKeys warns about deprecated env vars.
-func LogDeprecatedBootstrapKeys() {
-	if strings.TrimSpace(os.Getenv("ADMIN_BOOTSTRAP_KEY")) != "" {
-		logging.Logger.Warn("ADMIN_BOOTSTRAP_KEY is deprecated -- use MASTER_KEY instead")
+// LogDeprecatedEnvVars warns about environment variables the gateway still
+// honours but is going to stop reading.
+func LogDeprecatedEnvVars() {
+	if strings.TrimSpace(os.Getenv("OLLAMA_MODELS")) != "" {
+		logger.Default().Warn("OLLAMA_MODELS is deprecated -- use FERRO_OLLAMA_MODELS instead; " +
+			"OLLAMA_MODELS is Ollama's own variable for its models directory and will stop being read")
 	}
-	if strings.TrimSpace(os.Getenv("ADMIN_BOOTSTRAP_READ_ONLY_KEY")) != "" {
-		logging.Logger.Warn("ADMIN_BOOTSTRAP_READ_ONLY_KEY is deprecated -- use MASTER_KEY instead")
+}
+
+// configFilePath returns the config path the operator named, or "" when
+// GATEWAY_CONFIG is unset.
+func configFilePath() string {
+	return strings.TrimSpace(os.Getenv("GATEWAY_CONFIG"))
+}
+
+// wellKnownConfigPaths are the container locations a config file is
+// conventionally mounted at. The gateway does not read them — see
+// warnUnreadConfigFile.
+var wellKnownConfigPaths = []string{
+	"/etc/ferrogw/config.yaml",
+	"/etc/ferrogw/config.yml",
+	"/etc/ferrogw/config.json",
+}
+
+// warnUnreadConfigFile reports a config file sitting at a conventional path
+// that the gateway is not reading because GATEWAY_CONFIG is unset.
+//
+// It warns and does not load. Reading an unnamed file would mean a stray file
+// on a host silently changes how a gateway routes — the opposite failure, and a
+// worse one. The explicit-source rule is what kubelet follows: it takes
+// --config and discovers nothing. But a mounted file the process ignores in
+// silence is how an operator ends up believing a narrowed target list is in
+// force when every credentialled provider is still routable, so the file is
+// worth naming.
+func warnUnreadConfigFile() {
+	for _, path := range wellKnownConfigPaths {
+		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+			logger.Default().Warn(
+				"a config file exists at a well-known path but GATEWAY_CONFIG is unset, so it is ignored; "+
+					"set GATEWAY_CONFIG to this path to apply it",
+				"path", path,
+			)
+		}
 	}
 }
 
 // LoadConfig loads and validates the gateway config from GATEWAY_CONFIG env var.
 // Returns nil if GATEWAY_CONFIG is not set (caller uses default config).
-func LoadConfig() *aigateway.Config {
-	cfgPath := os.Getenv("GATEWAY_CONFIG")
+//
+// What it returns is the *file's* config, which is not necessarily the config
+// the gateway ends up running: a persistent config store, if it holds one,
+// supersedes this later in startup. ResolveActiveConfig names the winner.
+func LoadConfig() *config.Config {
+	cfgPath := configFilePath()
 	if cfgPath == "" {
+		warnUnreadConfigFile()
 		return nil
 	}
-	loaded, err := aigateway.LoadConfig(cfgPath)
+	loaded, err := config.LoadConfig(cfgPath)
 	if err != nil {
-		logging.Logger.Error("failed to load config", "error", err)
+		logger.Default().Error("failed to load config", "error", err)
 		os.Exit(1)
 	}
-	if err := aigateway.ValidateConfig(*loaded); err != nil {
-		logging.Logger.Error("invalid config", "error", err)
+	if err := config.ValidateConfig(*loaded); err != nil {
+		logger.Default().Error("invalid config", "error", err)
 		os.Exit(1)
 	}
-	logging.Logger.Info("config loaded",
+	// "config file loaded" rather than "config loaded": this line describes the
+	// file, and a persisted config may still replace all of it below.
+	logger.Default().Info("config file loaded",
+		"path", cfgPath,
 		"strategy", loaded.Strategy.Mode,
 		"targets", len(loaded.Targets),
 	)
@@ -336,12 +521,12 @@ func registerProviderEntries(registry *providers.Registry, entries []providers.P
 			// Warn-and-skip so one bad credential cannot stop the whole gateway.
 			// The counter is what keeps that from being a silent partial outage:
 			// /health only counts registered providers, so it stays 200 here.
-			logging.Logger.Warn("provider init skipped", "provider", entry.ID, "error", err)
+			logger.Default().Warn("provider init skipped", "provider", entry.ID, "error", err)
 			metrics.ProviderInitFailures.WithLabelValues(entry.ID).Inc()
 			continue
 		}
 		registry.Register(p)
-		logging.Logger.Info("provider registered", "provider", entry.ID)
+		logger.Default().Info("provider registered", "provider", entry.ID)
 	}
 }
 
@@ -361,36 +546,36 @@ func registerBedrockProvider(registry *providers.Registry) {
 		if err != nil {
 			// Same warn-and-skip contract as registerProviderEntries: the counter
 			// is the only machine-readable signal that this provider is missing.
-			logging.Logger.Error("provider init failed", "provider", providers.NameBedrock, "error", err)
+			logger.Default().Error("provider init failed", "provider", providers.NameBedrock, "error", err)
 			metrics.ProviderInitFailures.WithLabelValues(providers.NameBedrock).Inc()
 		} else {
 			registry.Register(p)
-			logging.Logger.Info("provider registered", "provider", providers.NameBedrock, "region", p.Region())
+			logger.Default().Info("provider registered", "provider", providers.NameBedrock, "region", p.Region())
 		}
 	}
 }
 
 // BuildGateway constructs the Gateway, wires providers, and loads plugins.
 // If cfg is nil a default fallback config is created from the registry.
-func BuildGateway(cfg *aigateway.Config, registry *providers.Registry, logWriter requestlog.Writer) *aigateway.Gateway {
+func BuildGateway(cfg *config.Config, registry *providers.Registry, logWriter requestlog.Writer, lg *logger.Logger) *aigateway.Gateway {
 	if cfg == nil {
-		defaultTargets := make([]aigateway.Target, 0, len(registry.List()))
+		defaultTargets := make([]config.Target, 0, len(registry.List()))
 		for _, name := range registry.List() {
-			defaultTargets = append(defaultTargets, aigateway.Target{VirtualKey: name})
+			defaultTargets = append(defaultTargets, config.Target{VirtualKey: name})
 		}
-		cfg = &aigateway.Config{
-			Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeFallback},
+		cfg = &config.Config{
+			Strategy: config.StrategyConfig{Mode: config.ModeFallback},
 			Targets:  defaultTargets,
 		}
-		logging.Logger.Info("using default config",
+		logger.Default().Info("using default config",
 			"strategy", cfg.Strategy.Mode,
 			"targets", len(cfg.Targets),
 		)
 	}
 
-	gw, err := aigateway.New(*cfg)
+	gw, err := aigateway.New(*cfg, aigateway.WithLogger(lg))
 	if err != nil {
-		logging.Logger.Error("failed to create gateway", "error", err)
+		logger.Default().Error("failed to create gateway", "error", err)
 		os.Exit(1)
 	}
 	// Install the shared request-log store before LoadPlugins, so a logging
@@ -401,14 +586,52 @@ func BuildGateway(cfg *aigateway.Config, registry *providers.Registry, logWriter
 			gw.RegisterProvider(p)
 		}
 	}
+	warnUnroutableTargets(gw)
 	if len(cfg.Plugins) > 0 {
 		if err := gw.LoadPlugins(); err != nil {
-			logging.Logger.Error("failed to load plugins", "error", err)
+			logger.Default().Error("failed to load plugins", "error", err)
 			os.Exit(1)
 		}
-		logging.Logger.Info("plugins loaded", "count", len(cfg.Plugins))
+		logger.Default().Info("plugins loaded", "count", len(cfg.Plugins))
 	}
 	return gw
+}
+
+// warnUnroutableTargets reports every configured target that resolves to no
+// registered provider, once, at startup.
+//
+// It warns rather than exits. A provider is registered only when its credential
+// is present, so a target naming a provider whose key has not been rolled out
+// yet is a legitimate config that starts serving the moment the secret lands —
+// refusing to boot would turn a staged credential rollout into a crash loop.
+// The same reasoning is why an xDS-driven proxy accepts a route naming a cluster
+// it does not have yet while a fully static one refuses to load: a reference
+// that can still become valid is not the same fault as one that cannot.
+//
+// Warning is not the whole answer, only the part that belongs at startup. An
+// unroutable target also shows up in Gateway.Readiness, so /readyz reports it,
+// and takes the instance out of rotation when *no* target resolves. That is the
+// signal an orchestrator watches; this line is what an operator greps for.
+func warnUnroutableTargets(gw *aigateway.Gateway) {
+	readiness := gw.Readiness()
+	unroutable := make([]string, 0, len(readiness.Targets))
+	for _, t := range readiness.Targets {
+		if !t.Routable {
+			unroutable = append(unroutable, t.Name)
+		}
+	}
+	if len(unroutable) == 0 {
+		return
+	}
+	if len(unroutable) == len(readiness.Targets) {
+		logger.Default().Error(
+			"no configured target resolves to a registered provider; every request will fail with a routing error",
+			"targets", strings.Join(unroutable, ","))
+		return
+	}
+	logger.Default().Warn(
+		"configured target has no registered provider; requests routed to it will fail",
+		"targets", strings.Join(unroutable, ","))
 }
 
 const (
@@ -444,9 +667,9 @@ func NewRateLimitStore() *ratelimit.Store {
 		v, err := strconv.ParseFloat(rpsStr, 64)
 		switch {
 		case err != nil || math.IsNaN(v) || math.IsInf(v, 0) || v < 0:
-			logging.Logger.Warn("ignoring invalid RATE_LIMIT_RPS; using default", "value", rpsStr, "default", defaultRateLimitRPS)
+			logger.Default().Warn("ignoring invalid RATE_LIMIT_RPS; using default", "value", rpsStr, "default", defaultRateLimitRPS)
 		case v == 0:
-			logging.Logger.Info("rate limiting disabled via RATE_LIMIT_RPS=0")
+			logger.Default().Info("rate limiting disabled via RATE_LIMIT_RPS=0")
 			return nil
 		default:
 			rps = v
@@ -458,17 +681,17 @@ func NewRateLimitStore() *ratelimit.Store {
 		if v, err := strconv.ParseFloat(burstStr, 64); err == nil && !math.IsNaN(v) && !math.IsInf(v, 0) && v >= 0 {
 			burst = v
 		} else {
-			logging.Logger.Warn("ignoring invalid RATE_LIMIT_BURST; using default", "value", burstStr, "default", defaultRateLimitBurst)
+			logger.Default().Warn("ignoring invalid RATE_LIMIT_BURST; using default", "value", burstStr, "default", defaultRateLimitBurst)
 		}
 	}
 
 	store := ratelimit.NewStoreWithMax(rps, burst, defaultRateLimitMaxKeys)
-	logging.Logger.Info("rate limiting enabled", "rps", rps, "burst", burst, "max_keys", defaultRateLimitMaxKeys)
+	logger.Default().Info("rate limiting enabled", "rps", rps, "burst", burst, "max_keys", defaultRateLimitMaxKeys)
 	return store
 }
 
 // PrintStartupBanner prints a branded, informative banner to stderr on server start.
-func PrintStartupBanner(addr string, registry *providers.Registry, cfg *aigateway.Config, masterKey, keyStoreBackend, configStoreBackend string) {
+func PrintStartupBanner(addr string, registry *providers.Registry, cfg *config.Config, masterKey, keyStoreBackend, configStoreBackend string) {
 	const (
 		orange = "\033[38;5;208m"
 		bold   = "\033[1m"
@@ -493,8 +716,6 @@ func PrintStartupBanner(addr string, registry *providers.Registry, cfg *aigatewa
 		bold+white, reset, dim, version.Short(), reset)
 	fmt.Fprintf(os.Stderr, "  %s->%s  http://localhost%s\n",
 		orange, reset, addr)
-	fmt.Fprintf(os.Stderr, "  %s->%s  http://localhost%s/dashboard\n",
-		dim, reset, addr)
 	fmt.Fprintf(os.Stderr, "\n")
 
 	// Provider status.

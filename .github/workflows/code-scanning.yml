@@ -24,7 +24,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        language: ["go"]
+        # The dashboard is compiled into the binary, so its TypeScript ships in
+        # the same artifact the Go does and belongs in the same perimeter. It is
+        # also the half that renders operator-supplied config and API keys in a
+        # browser, which is the half Go analysis says nothing about.
+        #
+        # javascript-typescript needs no build: CodeQL reads the sources, and
+        # Autobuild is a no-op for it.
+        language: ["go", "javascript-typescript"]
 
     steps:
       - name: Checkout
@@ -33,6 +40,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Go
+        if: matrix.language == 'go'
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
           go-version: "1.25.12"

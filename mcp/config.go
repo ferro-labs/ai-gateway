@@ -1,10 +1,7 @@
-// Package mcp exposes the public configuration types for Ferro Labs AI Gateway's
-// MCP (Model Context Protocol) integration.
-//
-// The types in this package are intentionally shallow — they carry only what an
-// external consumer needs to wire an MCP server into gateway.Config. All
-// protocol-level types (JSON-RPC envelopes, Tool definitions, etc.) remain
-// unexported in internal/mcp.
+// This file holds the public configuration types callers embed in the gateway
+// config (ServerConfig and the tool-call audit hook). The package is documented
+// in types.go.
+
 package mcp
 
 import "context"
@@ -77,9 +74,15 @@ type ServerConfig struct {
 	// when unset or zero.
 	TimeoutSeconds int `json:"timeout_seconds,omitempty" yaml:"timeout_seconds,omitempty"`
 	// Required makes this server's availability a condition of gateway
-	// readiness. When true and the server is not ready — it never completed the
-	// initialize handshake, or its transport has since died — GET /readyz
-	// answers 503 and an orchestrator takes the instance out of rotation.
+	// readiness. When true and the server is not ready, GET /readyz answers 503
+	// and an orchestrator takes the instance out of rotation.
+	//
+	// A server is unready when it never completed the initialize handshake,
+	// which includes one whose transport could not be built at all. Death after
+	// a successful handshake is detected for stdio servers only: an HTTP server
+	// that becomes unreachable keeps reporting ready and keeps its tools
+	// advertised, so Required cannot be relied on to withdraw an instance when
+	// one goes down.
 	//
 	// Defaults to false: an unset or absent Required never affects /readyz, so
 	// upgrading does not change readiness behaviour for any existing config.
@@ -112,5 +115,5 @@ type ToolCallAuditEntry struct {
 //
 // The ctx is the same context used for the Route call — callers may embed
 // per-request values (e.g. trace ID, API key ID) for retrieval inside the hook.
-// Set MCPToolCallAuditFn on aigateway.Config before calling New.
+// Set MCPToolCallAuditFn on config.Config before calling New.
 type ToolCallAuditFn func(ctx context.Context, entry ToolCallAuditEntry)

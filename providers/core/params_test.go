@@ -137,21 +137,58 @@ func TestNormalizeCompletionTokenLimits_FillsMaxTokensFromFallback(t *testing.T)
 	}
 }
 
-func TestNormalizeCompletionTokenLimits_PreservesExplicitMaxTokens(t *testing.T) {
-	maxTokens := 23
-	maxCompletionTokens := 17
-	req := Request{
-		MaxTokens:           &maxTokens,
-		MaxCompletionTokens: &maxCompletionTokens,
+// TestNormalizeCompletionTokenLimits_ReconcilesBothFields pins the property the
+// rest of the request path depends on: after normalization the two
+// completion-length fields carry one value, so no consumer can be handed a
+// different ceiling than the one a guardrail approved. The value is the one
+// EffectiveMaxTokens reports — max_completion_tokens supersedes max_tokens,
+// matching the API this request is written against.
+func TestNormalizeCompletionTokenLimits_ReconcilesBothFields(t *testing.T) {
+	tests := []struct {
+		name                string
+		maxTokens           *int
+		maxCompletionTokens *int
+		want                *int
+	}{
+		{name: "neither set", want: nil},
+		{name: "only max_tokens", maxTokens: pI(23), want: pI(23)},
+		{name: "only max_completion_tokens", maxCompletionTokens: pI(17), want: pI(17)},
+		{name: "equal", maxTokens: pI(17), maxCompletionTokens: pI(17), want: pI(17)},
+		{name: "both set: max_completion_tokens supersedes", maxTokens: pI(5), maxCompletionTokens: pI(500000), want: pI(500000)},
+		{name: "both set, roles swapped", maxTokens: pI(500000), maxCompletionTokens: pI(5), want: pI(5)},
 	}
 
-	req.NormalizeCompletionTokenLimits()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := Request{MaxTokens: tt.maxTokens, MaxCompletionTokens: tt.maxCompletionTokens}
 
-	if req.MaxTokens == nil || *req.MaxTokens != maxTokens {
-		t.Fatalf("MaxTokens = %v, want explicit %d", req.MaxTokens, maxTokens)
-	}
-	if req.MaxCompletionTokens == nil || *req.MaxCompletionTokens != maxCompletionTokens {
-		t.Fatalf("MaxCompletionTokens = %v, want preserved %d", req.MaxCompletionTokens, maxCompletionTokens)
+			req.NormalizeCompletionTokenLimits()
+
+			if tt.want == nil {
+				if req.MaxTokens != nil || req.MaxCompletionTokens != nil {
+					t.Fatalf("MaxTokens = %v, MaxCompletionTokens = %v, want both nil", req.MaxTokens, req.MaxCompletionTokens)
+				}
+				return
+			}
+			if req.MaxTokens == nil || *req.MaxTokens != *tt.want {
+				t.Errorf("MaxTokens = %v, want %d", req.MaxTokens, *tt.want)
+			}
+			// Only max_tokens set is the one case that leaves
+			// max_completion_tokens absent: filling it would put a field on the
+			// wire the caller never sent.
+			if tt.maxCompletionTokens == nil {
+				if req.MaxCompletionTokens != nil {
+					t.Errorf("MaxCompletionTokens = %v, want nil when the caller did not send it", req.MaxCompletionTokens)
+				}
+				return
+			}
+			if req.MaxCompletionTokens == nil || *req.MaxCompletionTokens != *tt.want {
+				t.Errorf("MaxCompletionTokens = %v, want %d", req.MaxCompletionTokens, *tt.want)
+			}
+			if req.MaxTokens == req.MaxCompletionTokens {
+				t.Error("the two fields share one pointer; clamping one in place would silently move the other")
+			}
+		})
 	}
 }
 
@@ -193,16 +230,23 @@ func TestDroppedParamsForProvider_MaxCompletionTokensReconciliationScoping(t *te
 			wantDropped: []string{"max_completion_tokens"},
 		},
 		{
-			// Normalization only fills MaxTokens when it is nil, so an explicit,
-			// differing max_tokens is left untouched. Anthropic still cannot
-			// honor the caller's distinct max_completion_tokens value, so it must
-			// keep being reported (and rejected) like any other unsupported param.
-			name: "explicit max_tokens differs from max_completion_tokens: still dropped",
+			// Normalization resolves two differing values to one, so after it
+			// runs there is no distinct max_completion_tokens value left for
+			// anthropic to be unable to honor: max_tokens carries it.
+			name: "max_tokens and max_completion_tokens differ, then reconciled: not dropped",
 			req: func() Request {
 				r := Request{MaxTokens: pI(100), MaxCompletionTokens: pI(256)}
 				r.NormalizeCompletionTokenLimits()
 				return r
 			}(),
+			wantDropped: nil,
+		},
+		{
+			// The same pair never normalized — reachable only from a
+			// programmatically built Request — still reports the parameter the
+			// provider cannot express.
+			name:        "max_tokens and max_completion_tokens differ, not reconciled: still dropped",
+			req:         Request{MaxTokens: pI(100), MaxCompletionTokens: pI(256)},
 			wantDropped: []string{"max_completion_tokens"},
 		},
 		{
@@ -246,4 +290,42 @@ func TestDroppedParamsForProvider_MaxCompletionTokensReconciliationScoping(t *te
 			}
 		})
 	}
+}
+
+// TestPreferCompletionTokens guards the OpenAI-surface providers' outbound field:
+// they must always send max_completion_tokens (accepted by every chat model) and
+// never max_tokens, which o-series / GPT-5 models reject. A max_tokens-only
+// request is promoted rather than dropped so the ceiling survives, and nothing
+// is invented when the caller set no limit.
+func TestPreferCompletionTokens(t *testing.T) {
+	t.Run("promotes a max_tokens-only request to max_completion_tokens", func(t *testing.T) {
+		r := Request{MaxTokens: pI(256)}
+		r.PreferCompletionTokens()
+		if r.MaxTokens != nil {
+			t.Errorf("MaxTokens = %v, want nil", *r.MaxTokens)
+		}
+		if r.MaxCompletionTokens == nil || *r.MaxCompletionTokens != 256 {
+			t.Errorf("MaxCompletionTokens = %v, want 256", r.MaxCompletionTokens)
+		}
+	})
+
+	t.Run("drops max_tokens when both are set", func(t *testing.T) {
+		r := Request{MaxTokens: pI(4096), MaxCompletionTokens: pI(4096)}
+		r.PreferCompletionTokens()
+		if r.MaxTokens != nil {
+			t.Errorf("MaxTokens = %v, want nil", *r.MaxTokens)
+		}
+		if r.MaxCompletionTokens == nil || *r.MaxCompletionTokens != 4096 {
+			t.Errorf("MaxCompletionTokens = %v, want 4096", r.MaxCompletionTokens)
+		}
+	})
+
+	t.Run("invents nothing when neither is set", func(t *testing.T) {
+		r := Request{}
+		r.PreferCompletionTokens()
+		if r.MaxTokens != nil || r.MaxCompletionTokens != nil {
+			t.Errorf("both fields must stay nil, got max_tokens=%v max_completion_tokens=%v",
+				r.MaxTokens, r.MaxCompletionTokens)
+		}
+	})
 }

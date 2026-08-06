@@ -3,12 +3,14 @@ package aigateway
 import (
 	"testing"
 	"time"
+
+	"github.com/ferro-labs/ai-gateway/config"
 )
 
 func TestGatewayReadiness(t *testing.T) {
 	const cbTimeout = time.Minute
-	cbCfg := func() *CircuitBreakerConfig {
-		return &CircuitBreakerConfig{
+	cbCfg := func() *config.CircuitBreakerConfig {
+		return &config.CircuitBreakerConfig{
 			FailureThreshold: 1,
 			SuccessThreshold: 1,
 			MaxHalfThreshold: 1,
@@ -42,7 +44,7 @@ func TestGatewayReadiness(t *testing.T) {
 		{
 			name: "mixed circuits with a no-breaker provider",
 			setup: func(t *testing.T) *Gateway {
-				gw := newReadinessGateway(t, []Target{
+				gw := newReadinessGateway(t, []config.Target{
 					{VirtualKey: "closed-prov", CircuitBreaker: cbCfg()},
 					{VirtualKey: "open-prov", CircuitBreaker: cbCfg()},
 					{VirtualKey: "half-prov", CircuitBreaker: cbCfg()},
@@ -63,7 +65,7 @@ func TestGatewayReadiness(t *testing.T) {
 		{
 			name: "all providers open is not ready",
 			setup: func(t *testing.T) *Gateway {
-				gw := newReadinessGateway(t, []Target{
+				gw := newReadinessGateway(t, []config.Target{
 					{VirtualKey: "a", CircuitBreaker: cbCfg()},
 					{VirtualKey: "b", CircuitBreaker: cbCfg()},
 				})
@@ -77,7 +79,7 @@ func TestGatewayReadiness(t *testing.T) {
 		{
 			name: "half-open counts as ready",
 			setup: func(t *testing.T) *Gateway {
-				gw := newReadinessGateway(t, []Target{
+				gw := newReadinessGateway(t, []config.Target{
 					{VirtualKey: "a", CircuitBreaker: cbCfg()},
 				})
 				tripHalfOpen(gw, "a")
@@ -92,9 +94,9 @@ func TestGatewayReadiness(t *testing.T) {
 				// A configured target with no provider registered: the gateway
 				// requires at least one target, but readiness counts registered
 				// providers, so this reports zero.
-				gw, err := newTestGateway(t, Config{
-					Strategy: StrategyConfig{Mode: ModeFallback},
-					Targets:  []Target{{VirtualKey: "unregistered"}},
+				gw, err := newTestGateway(t, config.Config{
+					Strategy: config.StrategyConfig{Mode: config.ModeFallback},
+					Targets:  []config.Target{{VirtualKey: "unregistered"}},
 				})
 
 				if err != nil {
@@ -135,10 +137,10 @@ func TestGatewayReadiness(t *testing.T) {
 // newReadinessGateway builds a gateway with the given targets and registers a
 // stub provider for every target so ListProviders and the circuit-breaker map
 // are populated.
-func newReadinessGateway(t *testing.T, targets []Target) *Gateway {
+func newReadinessGateway(t *testing.T, targets []config.Target) *Gateway {
 	t.Helper()
-	gw, err := newTestGateway(t, Config{
-		Strategy: StrategyConfig{Mode: ModeFallback},
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeFallback},
 		Targets:  targets,
 	})
 

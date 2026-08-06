@@ -4,12 +4,10 @@ package nvidianim
 import (
 	"context"
 	"net/http"
-	"strings"
 
-	discov "github.com/ferro-labs/ai-gateway/internal/discovery"
 	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
 	"github.com/ferro-labs/ai-gateway/providers/core"
-	"github.com/ferro-labs/ai-gateway/providers/internal/openaicompat"
+	"github.com/ferro-labs/ai-gateway/providers/core/openaicompat"
 )
 
 const (
@@ -17,6 +15,15 @@ const (
 	// Re-exported as providers.NameNVIDIANIM in providers/names.go.
 	Name           = "nvidia-nim"
 	defaultBaseURL = "https://integrate.api.nvidia.com/v1"
+
+	// hostedRerankURL is NVIDIA's managed reranking endpoint. Chat and embeddings
+	// live on integrate.api.nvidia.com, but the hosted reranking NIM sits on a
+	// different host under a fixed retrieval path, so it cannot be derived from
+	// baseURL. A self-hosted NIM exposes reranking at <base>/ranking instead, so
+	// that path is used whenever baseURL is overridden away from the managed
+	// default. an operator proxying the managed API would also need to
+	// front ai.api.nvidia.com; point NVIDIA_NIM_BASE_URL at a self-hosted NIM.
+	hostedRerankURL = "https://ai.api.nvidia.com/v1/retrieval/nvidia/reranking"
 )
 
 // Provider implements the core.Provider interface for NVIDIA NIM.
@@ -24,6 +31,7 @@ type Provider struct {
 	name       string
 	apiKey     string
 	baseURL    string
+	rerankURL  string
 	httpClient *http.Client
 }
 
@@ -33,23 +41,27 @@ var (
 	_ core.StreamProvider    = (*Provider)(nil)
 	_ core.ProxiableProvider = (*Provider)(nil)
 	_ core.EmbeddingProvider = (*Provider)(nil)
+	_ core.RerankProvider    = (*Provider)(nil)
 	_ core.DiscoveryProvider = (*Provider)(nil)
 )
 
 // New creates a new NVIDIA NIM provider.
 func New(apiKey, baseURL string) (*Provider, error) {
-	baseURL = strings.TrimSpace(baseURL)
-	if baseURL == "" {
-		baseURL = defaultBaseURL
-	}
-	if err := core.ValidateBaseURL(Name, baseURL); err != nil {
+	baseURL, err := core.ResolveAPIRoot(Name, baseURL, defaultBaseURL)
+	if err != nil {
 		return nil, err
 	}
-	baseURL = strings.TrimRight(baseURL, "/")
+	// Derived after the resolve, so a bare-host override of the managed default
+	// resolves to defaultBaseURL and still gets the hosted rerank endpoint.
+	rerankURL := baseURL + "/ranking"
+	if baseURL == defaultBaseURL {
+		rerankURL = hostedRerankURL
+	}
 	return &Provider{
 		name:       Name,
 		apiKey:     apiKey,
 		baseURL:    baseURL,
+		rerankURL:  rerankURL,
 		httpClient: providerhttp.ForProvider(Name),
 	}, nil
 }
@@ -65,28 +77,12 @@ func (p *Provider) AuthHeaders() map[string]string {
 	return map[string]string{"Authorization": "Bearer " + p.apiKey}
 }
 
-// SupportedModels returns a static list of known NVIDIA NIM model examples.
-func (p *Provider) SupportedModels() []string {
-	return []string{
-		"nvidia/Llama-3.1-Nemotron-70B-Instruct",
-		"nvidia/Llama-3.3-Nemotron-Super-49B-v1.5",
-		"nvidia/NVIDIA-Nemotron-Nano-9B-v2",
-		"meta/llama-3.1-8b-instruct",
-		"deepseek-ai/deepseek-r1",
-	}
-}
-
 // SupportsModel returns true for any model name.
 func (p *Provider) SupportsModel(_ string) bool { return true }
 
-// Models returns structured model metadata.
-func (p *Provider) Models() []core.ModelInfo {
-	return core.ModelsFromList(p.name, p.SupportedModels())
-}
-
 // DiscoverModels fetches the live model list from the NVIDIA NIM /models endpoint.
 func (p *Provider) DiscoverModels(ctx context.Context) ([]core.ModelInfo, error) {
-	return discov.DiscoverOpenAICompatibleModels(ctx, p.httpClient, p.baseURL+"/models", p.apiKey, p.name)
+	return core.DiscoverOpenAICompatibleModels(ctx, p.httpClient, p.baseURL+"/models", p.apiKey, p.name)
 }
 
 // chatParams builds the shared OpenAI-compatible chat endpoint configuration.

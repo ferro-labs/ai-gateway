@@ -9,7 +9,7 @@ import (
 
 	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
 	"github.com/ferro-labs/ai-gateway/providers/core"
-	"github.com/ferro-labs/ai-gateway/providers/internal/openaicompat"
+	"github.com/ferro-labs/ai-gateway/providers/core/openaicompat"
 )
 
 const (
@@ -32,6 +32,7 @@ var (
 	_ core.StreamProvider    = (*Provider)(nil)
 	_ core.EmbeddingProvider = (*Provider)(nil)
 	_ core.ProxiableProvider = (*Provider)(nil)
+	_ core.AnyModelProvider  = (*Provider)(nil)
 )
 
 // New creates a new Databricks provider.
@@ -77,25 +78,14 @@ func (p *Provider) AuthHeaders() map[string]string {
 	return map[string]string{"Authorization": "Bearer " + p.apiKey}
 }
 
-// SupportedModels returns known Databricks-hosted foundation model examples.
-func (p *Provider) SupportedModels() []string {
-	return []string{
-		"databricks-claude-sonnet-4-5",
-		"databricks-gemini-2-5-pro",
-		"databricks-gpt-oss-120b",
-		"databricks-llama-4-maverick",
-		"databricks-bge-large-en",
-		"databricks-gte-large-en",
-	}
-}
-
 // SupportsModel returns true for any Databricks serving endpoint name.
+// Advisory only; see core.Provider.
 func (p *Provider) SupportsModel(model string) bool { return strings.TrimSpace(model) != "" }
 
-// Models returns structured model metadata.
-func (p *Provider) Models() []core.ModelInfo {
-	return core.ModelsFromList(p.name, p.SupportedModels())
-}
+// ServesAnyModel declares core.AnyModelProvider: the "model" here is a serving
+// endpoint the workspace named, so it exists in no catalog and the provider has
+// no endpoint that lists them.
+func (p *Provider) ServesAnyModel() {}
 
 // chatParams builds the shared OpenAI-compatible chat endpoint configuration.
 func (p *Provider) chatParams() openaicompat.ChatParams {

@@ -10,8 +10,27 @@ on:
   pull_request:
     branches: ["main", "release/**"]
     paths-ignore:
-      - "**.md"
       - "docs/**"
+  # Called by release.yml, so a tag is gated by this definition rather than by
+  # a weaker restatement of it. Every job below therefore gates releases too,
+  # and a job added here needs no corresponding edit there.
+  workflow_call:
+  # A vulnerability is disclosed against a dependency, not against a commit, so
+  # the vulnerability job below has to run on a clock as well as on a diff:
+  # without this, a repository nobody pushed to all month reports green while
+  # the advisory that affects it has been public for weeks.
+  #
+  # Actions has no per-job schedule, so this runs the whole workflow — which is
+  # the cheaper answer anyway. Restricting it to one job means an `if:` on every
+  # other job, i.e. a second, hand-maintained definition of what runs when, in
+  # the workflow whose entire point is that one definition exists. A full run
+  # also catches the rot a scan cannot see: a floating dependency, a changed
+  # toolchain, a base action that moved under a tag.
+  #
+  # Scheduled runs use the default branch. 04:00 Monday sits between
+  # code-scanning (03:00) and catalog-backup (06:00) rather than on top of them.
+  schedule:
+    - cron: "0 4 * * 1"
 
 # Cancel superseded in-progress runs on the same ref (e.g. rapid pushes to a PR).
 concurrency:
@@ -88,8 +107,13 @@ jobs:
           path: coverage.out
           if-no-files-found: error
 
+      # Not run on tag pushes (this workflow called from release.yml): the tag
+      # points at a commit main already measured, so the upload is duplicate
+      # telemetry — and it is the one step here that is not a gate, yet
+      # fail_ci_if_error would let a Codecov outage block a release. Keeping it
+      # off the tag path is also why the reusable call passes no secrets.
       - name: Upload coverage to Codecov
-        if: matrix.go == '1.25.12'
+        if: matrix.go == '1.25.12' && github.ref_type != 'tag'
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
@@ -97,6 +121,27 @@ jobs:
           flags: unittests
           name: ai-gateway-go-${{ matrix.go }}
           fail_ci_if_error: true
+
+  web:
+    name: Web application
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --prefix web
+
+      - name: Check application
+        run: npm run check --prefix web
 
   integration:
     name: Integration Tests
@@ -162,3 +207,26 @@ jobs:
       with:
         version: v2.11.4
         args: --verbose
+
+    # Build-tagged sources are invisible to the run above — tags have to be
+    # named, and the untagged analysis simply skips those files. That is the
+    # same hole the formatter step below documents, and it had let a similar
+    # amount of drift accumulate before anyone measured it.
+    #
+    # The scope is written out rather than `./...` because a repo-wide tagged
+    # analysis does not build: test/testutil is itself integration-tagged and
+    # imports the root package, so tagging everything produces an import cycle
+    # in test. `make lint` runs the identical scope and fails if a tagged file
+    # appears outside it, so the two cannot drift apart.
+    - name: Run golangci-lint (build-tagged sources)
+      uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
+      with:
+        version: v2.11.4
+        args: --verbose --build-tags=integration,live ./mcp/... ./test/...
+
+    # Separate from golangci-lint rather than folded into it: that run enables
+    # no formatter, and it skips every build-tagged file unless build-tags are
+    # configured, which is where formatting had actually drifted. This checks
+    # the same file set `make fmt` rewrites, so the two cannot disagree.
+    - name: Check formatting
+      run: make fmt-check

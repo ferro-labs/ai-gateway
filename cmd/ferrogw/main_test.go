@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,12 +12,14 @@ import (
 	"testing"
 
 	aigateway "github.com/ferro-labs/ai-gateway"
-	"github.com/ferro-labs/ai-gateway/internal/admin"
+	"github.com/ferro-labs/ai-gateway/config"
+	"github.com/ferro-labs/ai-gateway/internal/admin/repository"
 	"github.com/ferro-labs/ai-gateway/internal/apierror"
 	"github.com/ferro-labs/ai-gateway/internal/bootstrap"
 	"github.com/ferro-labs/ai-gateway/internal/handler"
 	"github.com/ferro-labs/ai-gateway/internal/httpserver"
 	"github.com/ferro-labs/ai-gateway/internal/sse"
+	"github.com/ferro-labs/ai-gateway/internal/webui"
 	"github.com/ferro-labs/ai-gateway/plugin"
 	"github.com/ferro-labs/ai-gateway/providers"
 )
@@ -33,8 +34,8 @@ type fakeProvider struct {
 	models []string
 }
 
-func (f *fakeProvider) Name() string              { return f.name }
-func (f *fakeProvider) SupportedModels() []string { return f.models }
+func (f *fakeProvider) Name() string               { return f.name }
+func (f *fakeProvider) ConfiguredModels() []string { return f.models }
 func (f *fakeProvider) SupportsModel(m string) bool {
 	for _, mm := range f.models {
 		if mm == m {
@@ -68,13 +69,13 @@ func testRegistry() *providers.Registry {
 	return r
 }
 
-func testKeyStore() *admin.KeyStore {
-	return admin.NewKeyStore()
+func testKeyStore() *repository.KeyStore {
+	return repository.NewKeyStore()
 }
 
 func TestHealth(t *testing.T) {
 	ks := testKeyStore()
-	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "", nil)
+	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, nil, nil, "", nil)
 	req := httptest.NewRequestWithContext(t.Context(), "GET", "/health", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -97,7 +98,7 @@ func TestHealth(t *testing.T) {
 func TestModels(t *testing.T) {
 	t.Setenv("ALLOW_UNAUTHENTICATED_PROXY", "true")
 	ks := testKeyStore()
-	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "", nil)
+	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, nil, nil, "", nil)
 	req := httptest.NewRequestWithContext(t.Context(), "GET", "/v1/models", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -115,7 +116,7 @@ func TestModels(t *testing.T) {
 
 func TestPprofDisabledByDefault(t *testing.T) {
 	ks := testKeyStore()
-	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "", nil)
+	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, nil, nil, "", nil)
 	req := httptest.NewRequestWithContext(t.Context(), "GET", "/debug/pprof/", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -129,7 +130,7 @@ func TestPprofEnabledRequiresAuthEvenWhenUnauthenticatedProxyEnabled(t *testing.
 	t.Setenv("ENABLE_PPROF", "true")
 	t.Setenv("ALLOW_UNAUTHENTICATED_PROXY", "true")
 	ks := testKeyStore()
-	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "", nil)
+	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, nil, nil, "", nil)
 	req := httptest.NewRequestWithContext(t.Context(), "GET", "/debug/pprof/", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -143,7 +144,7 @@ func TestPprofEnabledWithAuth(t *testing.T) {
 	t.Setenv("ENABLE_PPROF", "true")
 	t.Setenv("ALLOW_UNAUTHENTICATED_PROXY", "true")
 	ks := testKeyStore()
-	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "test-master-key", nil)
+	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, nil, nil, "test-master-key", nil)
 	req := httptest.NewRequestWithContext(t.Context(), "GET", "/debug/pprof/", nil)
 	req.Header.Set("Authorization", "Bearer test-master-key")
 	w := httptest.NewRecorder()
@@ -160,7 +161,7 @@ func TestPprofEnabledWithAuth(t *testing.T) {
 func TestDebugVarsRequireAuthEvenWhenUnauthenticatedProxyEnabled(t *testing.T) {
 	t.Setenv("ALLOW_UNAUTHENTICATED_PROXY", "true")
 	ks := testKeyStore()
-	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "", nil)
+	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, nil, nil, "", nil)
 	req := httptest.NewRequestWithContext(t.Context(), "GET", "/debug/vars", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -173,7 +174,7 @@ func TestDebugVarsRequireAuthEvenWhenUnauthenticatedProxyEnabled(t *testing.T) {
 func TestMetricsRequireAuthEvenWhenUnauthenticatedProxyEnabled(t *testing.T) {
 	t.Setenv("ALLOW_UNAUTHENTICATED_PROXY", "true")
 	ks := testKeyStore()
-	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "", nil)
+	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, nil, nil, "", nil)
 	req := httptest.NewRequestWithContext(t.Context(), "GET", "/metrics", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -186,7 +187,7 @@ func TestMetricsRequireAuthEvenWhenUnauthenticatedProxyEnabled(t *testing.T) {
 func TestDebugVarsEnabledWithAuth(t *testing.T) {
 	t.Setenv("ALLOW_UNAUTHENTICATED_PROXY", "true")
 	ks := testKeyStore()
-	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "test-master-key", nil)
+	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, nil, nil, "test-master-key", nil)
 	req := httptest.NewRequestWithContext(t.Context(), "GET", "/debug/vars", nil)
 	req.Header.Set("Authorization", "Bearer test-master-key")
 	w := httptest.NewRecorder()
@@ -200,71 +201,93 @@ func TestDebugVarsEnabledWithAuth(t *testing.T) {
 	}
 }
 
-func TestDashboardUIPage(t *testing.T) {
+// TestDashboardIsServed covers the dashboard the gateway embeds. The handler
+// sits on chi's not-found hook, which is the only reason a client-side route
+// like /overview resolves at all — so these cases are really asserting that the
+// hook is reached for browser navigation and nothing else.
+func TestDashboardIsServed(t *testing.T) {
 	ks := testKeyStore()
-	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "", nil)
-	tests := []struct {
-		path  string
-		title string
-	}{
-		{"/dashboard/getting-started", "Getting Started"},
-		{"/dashboard/overview", "Overview"},
-		{"/dashboard/keys", "API Keys"},
-		{"/dashboard/logs", "Request Logs"},
-		{"/dashboard/providers", "Providers"},
-		{"/dashboard/config", "Config"},
-		{"/dashboard/analytics", "Analytics"},
-		{"/dashboard/playground", "Playground"},
+	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, nil, nil, "", nil)
+
+	const html = "text/html"
+
+	dashboardOK := http.StatusServiceUnavailable
+	if webui.Available() {
+		dashboardOK = http.StatusOK
 	}
-	for _, tt := range tests {
-		t.Run(tt.path, func(t *testing.T) {
-			req := httptest.NewRequestWithContext(t.Context(), "GET", tt.path, nil)
+
+	tests := []struct {
+		name   string
+		method string
+		path   string
+		accept string
+		want   int
+	}{
+		// dashboardOK, not a literal: whether a bundle is embedded depends on
+		// whether `make build` has run in this tree, and a test that flips
+		// verdict on that is a false green waiting to happen. Both values mean
+		// the handler was reached, which is what this asserts; a 404 would mean
+		// the routing never got there.
+		{"root", http.MethodGet, "/", html, dashboardOK},
+		// Neither path exists as a route; both are React Router destinations
+		// that must survive a hard refresh.
+		{"client-side route", http.MethodGet, "/overview", html, dashboardOK},
+		{"nested client-side route", http.MethodGet, "/keys/new", html, dashboardOK},
+		// A caller that did not ask for HTML mistyped a path. Answering with the
+		// app shell and a 200 would turn its bug into a JSON parse error a layer
+		// away from the cause.
+		{"api client gets 404", http.MethodGet, "/overview", "application/json", http.StatusNotFound},
+		{"no accept header gets 404", http.MethodGet, "/overview", "", http.StatusNotFound},
+		{"write method gets 404", http.MethodPost, "/overview", html, http.StatusNotFound},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequestWithContext(t.Context(), tc.method, tc.path, nil)
+			if tc.accept != "" {
+				req.Header.Set("Accept", tc.accept)
+			}
 			w := httptest.NewRecorder()
 			r.ServeHTTP(w, req)
-			if w.Code != http.StatusOK {
-				t.Errorf("status = %d, want 200", w.Code)
-			}
-			if ct := w.Header().Get("Content-Type"); !strings.Contains(ct, "text/html") {
-				t.Errorf("Content-Type = %q, want text/html", ct)
-			}
-			if !strings.Contains(w.Body.String(), tt.title) {
-				t.Errorf("page missing title %q", tt.title)
+			if w.Code != tc.want {
+				t.Fatalf("status = %d, want %d", w.Code, tc.want)
 			}
 		})
 	}
 }
 
-func TestDashboardRedirect(t *testing.T) {
+// TestDashboardDoesNotShadowAPI is the risk the not-found placement carries: a
+// handler that answers every unmatched path could swallow an API route that
+// failed to match for its own reasons, turning a 401 or a 404 into a 200 and an
+// HTML body. Each request below asks for HTML, which is the case that would be
+// swallowed if the routing precedence were wrong.
+func TestDashboardDoesNotShadowAPI(t *testing.T) {
 	ks := testKeyStore()
-	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "", nil)
-	req := httptest.NewRequestWithContext(t.Context(), "GET", "/dashboard", nil)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-	if w.Code != http.StatusFound {
-		t.Errorf("status = %d, want 302", w.Code)
-	}
-	if loc := w.Header().Get("Location"); loc != "/dashboard/getting-started" {
-		t.Errorf("Location = %q, want /dashboard/getting-started", loc)
-	}
-}
+	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, nil, nil, "test-master-key", nil)
 
-func TestDashboardStaticAssets(t *testing.T) {
-	ks := testKeyStore()
-	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "", nil)
-
-	assets := []string{
-		"/dashboard/static/style.css",
-		"/dashboard/static/dashboard.js",
-		"/dashboard/static/pages/overview.js",
-		"/dashboard/static/pages/keys.js",
-	}
-	for _, path := range assets {
-		t.Run(path, func(t *testing.T) {
-			req := httptest.NewRequestWithContext(t.Context(), "GET", path, nil)
+	for _, tc := range []struct {
+		path    string
+		wantNot int
+	}{
+		{"/health", http.StatusNotFound},
+		{"/livez", http.StatusNotFound},
+		{"/v1/models", http.StatusNotFound},
+		{"/admin/keys", http.StatusOK},
+		{"/metrics", http.StatusOK},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, tc.path, nil)
+			req.Header.Set("Accept", "text/html")
 			w := httptest.NewRecorder()
 			r.ServeHTTP(w, req)
-			if w.Code != http.StatusOK {
-				t.Errorf("status = %d, want 200", w.Code)
+
+			if strings.Contains(w.Body.String(), "<html") {
+				t.Fatalf("%s served the dashboard shell (status %d): %s", tc.path, w.Code, w.Body.String())
+			}
+			// /admin and /metrics must reject an unauthenticated caller rather
+			// than fall through to the dashboard; the probes must answer.
+			if w.Code == tc.wantNot {
+				t.Fatalf("%s status = %d, which means it fell through to the not-found handler", tc.path, w.Code)
 			}
 		})
 	}
@@ -273,7 +296,7 @@ func TestDashboardStaticAssets(t *testing.T) {
 func TestChatCompletions(t *testing.T) {
 	t.Setenv("ALLOW_UNAUTHENTICATED_PROXY", "true")
 	ks := testKeyStore()
-	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "", nil)
+	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, nil, nil, "", nil)
 	payload := `{"model":"test-model","messages":[{"role":"user","content":"hi"}]}`
 	req := httptest.NewRequestWithContext(t.Context(), "POST", "/v1/chat/completions", strings.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
@@ -336,7 +359,7 @@ func TestDecodeChatCompletionRequest_ToolChoiceString(t *testing.T) {
 func TestChatCompletions_ValidationError(t *testing.T) {
 	t.Setenv("ALLOW_UNAUTHENTICATED_PROXY", "true")
 	ks := testKeyStore()
-	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "", nil)
+	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, nil, nil, "", nil)
 	payload := `{"model":"","messages":[]}`
 	req := httptest.NewRequestWithContext(t.Context(), "POST", "/v1/chat/completions", strings.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
@@ -351,15 +374,17 @@ func TestChatCompletions_ValidationError(t *testing.T) {
 func TestChatCompletions_UnsupportedModel(t *testing.T) {
 	t.Setenv("ALLOW_UNAUTHENTICATED_PROXY", "true")
 	ks := testKeyStore()
-	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "", nil)
+	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, nil, nil, "", nil)
 	payload := `{"model":"unknown","messages":[{"role":"user","content":"hi"}]}`
 	req := httptest.NewRequestWithContext(t.Context(), "POST", "/v1/chat/completions", strings.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, want 400", w.Code)
+	// 404 is the one answer every routed surface gives for a model this gateway
+	// does not serve — see TestSurfaces_UnroutableModel_AgreeOnOneAnswer.
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", w.Code)
 	}
 }
 
@@ -399,7 +424,7 @@ func testStreamRegistry() *providers.Registry {
 func TestChatCompletions_Stream(t *testing.T) {
 	t.Setenv("ALLOW_UNAUTHENTICATED_PROXY", "true")
 	ks := testKeyStore()
-	r := httpserver.NewRouter(testStreamRegistry(), ks, nil, nil, nil, nil, nil, nil, "", nil)
+	r := httpserver.NewRouter(testStreamRegistry(), ks, nil, nil, nil, nil, nil, nil, nil, nil, "", nil)
 	payload := `{"model":"test-stream-model","messages":[{"role":"user","content":"hi"}],"stream":true}`
 	req := httptest.NewRequestWithContext(t.Context(), "POST", "/v1/chat/completions", strings.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
@@ -428,7 +453,7 @@ func TestWriteSSE_StreamError(t *testing.T) {
 	close(ch)
 
 	w := httptest.NewRecorder()
-	sse.Write(context.Background(), w, ch)
+	sse.Write(context.Background(), w, ch, nil)
 
 	body := w.Body.String()
 	if !strings.Contains(body, `"type":"stream_error"`) {
@@ -442,15 +467,18 @@ func TestWriteSSE_StreamError(t *testing.T) {
 func TestChatCompletions_StreamUnsupported(t *testing.T) {
 	t.Setenv("ALLOW_UNAUTHENTICATED_PROXY", "true")
 	ks := testKeyStore()
-	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, "", nil)
+	r := httpserver.NewRouter(testRegistry(), ks, nil, nil, nil, nil, nil, nil, nil, nil, "", nil)
 	payload := `{"model":"test-model","messages":[{"role":"user","content":"hi"}],"stream":true}`
 	req := httptest.NewRequestWithContext(t.Context(), "POST", "/v1/chat/completions", strings.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, want 400", w.Code)
+	// A target that cannot stream is not a candidate for a streaming request,
+	// which is what a target that cannot embed is for /v1/embeddings. Both are
+	// 404 model_not_found; see the streaming comment in internal/handler/chat.go.
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", w.Code)
 	}
 }
 
@@ -465,111 +493,8 @@ func TestCreateKeyStoreFromEnv_DefaultMemory(t *testing.T) {
 	if backend != "memory" {
 		t.Fatalf("backend = %s, want memory", backend)
 	}
-	if _, ok := store.(*admin.KeyStore); !ok {
+	if _, ok := store.(*repository.KeyStore); !ok {
 		t.Fatalf("expected memory KeyStore type")
-	}
-}
-
-func BenchmarkWriteSSE(b *testing.B) {
-	chunk := providers.StreamChunk{
-		ID:    "stream-1",
-		Model: "test-stream-model",
-		Choices: []providers.StreamChoice{{
-			Index: 0,
-			Delta: providers.MessageDelta{Role: "assistant", Content: "hello"},
-		}},
-	}
-
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		ch := make(chan providers.StreamChunk, 1)
-		ch <- chunk
-		close(ch)
-
-		w := httptest.NewRecorder()
-		sse.Write(context.Background(), w, ch)
-	}
-}
-
-func BenchmarkDecodeChatCompletionRequest(b *testing.B) {
-	payload := []byte(`{
-		"model":"test-model",
-		"messages":[
-			{"role":"system","content":"You are a helpful assistant."},
-			{"role":"user","content":"Summarize the latest deploy and highlight errors."},
-			{"role":"user","content":[
-				{"type":"text","text":"Also mention latency regressions."}
-			]}
-		],
-		"temperature":0.2,
-		"max_tokens":512,
-		"stream":false,
-		"tools":[
-			{
-				"type":"function",
-				"function":{
-					"name":"get_release_status",
-					"description":"Fetch release status",
-					"parameters":{
-						"type":"object",
-						"properties":{"environment":{"type":"string"}},
-						"required":["environment"]
-					}
-				}
-			}
-		],
-		"metadata":{"tenant":"bench","request_id":"req-123"}
-	}`)
-
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		if _, err := handler.DecodeChatCompletionRequest(bytes.NewReader(payload)); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
-func BenchmarkEncodeChatCompletionResponse(b *testing.B) {
-	resp := providers.Response{
-		ID:       "chatcmpl-bench",
-		Object:   "chat.completion",
-		Created:  1710000000,
-		Model:    "test-model",
-		Provider: "test",
-		Choices: []providers.Choice{{
-			Index: 0,
-			Message: providers.Message{
-				Role:    "assistant",
-				Content: "Deployment completed successfully. One provider showed elevated p95 latency, but error rate remained stable.",
-			},
-			FinishReason: "stop",
-		}},
-		Usage: providers.Usage{
-			PromptTokens:     128,
-			CompletionTokens: 32,
-			TotalTokens:      160,
-		},
-	}
-
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		buf := bytes.NewBuffer(make([]byte, 0, 512))
-		if err := json.NewEncoder(buf).Encode(resp); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
-func BenchmarkWriteOpenAIError(b *testing.B) {
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		w := httptest.NewRecorder()
-		apierror.WriteOpenAI(w, http.StatusBadRequest, "invalid request", "invalid_request_error", "invalid_request")
-		_, _ = io.Copy(io.Discard, w.Result().Body)
 	}
 }
 
@@ -622,9 +547,9 @@ func TestCreateConfigManagerFromEnv_DefaultMemory(t *testing.T) {
 	t.Setenv("CONFIG_STORE_BACKEND", "")
 	t.Setenv("CONFIG_STORE_DSN", "")
 
-	gw := newTestGateway(t, aigateway.Config{
-		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeSingle},
-		Targets:  []aigateway.Target{{VirtualKey: "openai"}},
+	gw := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets:  []config.Target{{VirtualKey: "openai"}},
 	})
 
 	mgr, backend, err := bootstrap.CreateConfigManagerFromEnv(t.Context(), gw)
@@ -634,7 +559,7 @@ func TestCreateConfigManagerFromEnv_DefaultMemory(t *testing.T) {
 	if backend != "memory" {
 		t.Fatalf("backend = %s, want memory", backend)
 	}
-	if cfg := mgr.GetConfig(); cfg.Strategy.Mode != aigateway.ModeSingle {
+	if cfg := mgr.GetConfig(); cfg.Strategy.Mode != config.ModeSingle {
 		t.Fatalf("unexpected config mode: %s", cfg.Strategy.Mode)
 	}
 }
@@ -644,13 +569,13 @@ func TestCreateConfigManagerFromEnv_SQLitePersistence(t *testing.T) {
 	t.Setenv("CONFIG_STORE_BACKEND", "sqlite")
 	t.Setenv("CONFIG_STORE_DSN", dsn)
 
-	initialCfg := aigateway.Config{
-		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeSingle},
-		Targets:  []aigateway.Target{{VirtualKey: "openai"}},
+	initialCfg := config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets:  []config.Target{{VirtualKey: "openai"}},
 	}
-	updatedCfg := aigateway.Config{
-		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeFallback},
-		Targets: []aigateway.Target{
+	updatedCfg := config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeFallback},
+		Targets: []config.Target{
 			{VirtualKey: "openai"},
 			{VirtualKey: "anthropic"},
 		},
@@ -674,7 +599,7 @@ func TestCreateConfigManagerFromEnv_SQLitePersistence(t *testing.T) {
 		t.Fatalf("bootstrap.CreateConfigManagerFromEnv (second) returned error: %v", err)
 	}
 	loaded := mgr2.GetConfig()
-	if loaded.Strategy.Mode != aigateway.ModeFallback {
+	if loaded.Strategy.Mode != config.ModeFallback {
 		t.Fatalf("expected persisted fallback mode, got %s", loaded.Strategy.Mode)
 	}
 	if len(loaded.Targets) != 2 {
@@ -686,9 +611,9 @@ func TestCreateConfigManagerFromEnv_UnknownBackend(t *testing.T) {
 	t.Setenv("CONFIG_STORE_BACKEND", "unknown")
 	t.Setenv("CONFIG_STORE_DSN", "")
 
-	gw := newTestGateway(t, aigateway.Config{
-		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeSingle},
-		Targets:  []aigateway.Target{{VirtualKey: "openai"}},
+	gw := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets:  []config.Target{{VirtualKey: "openai"}},
 	})
 
 	if _, _, err := bootstrap.CreateConfigManagerFromEnv(t.Context(), gw); err == nil {
@@ -700,9 +625,9 @@ func TestCreateConfigManagerFromEnv_PostgresMissingDSN(t *testing.T) {
 	t.Setenv("CONFIG_STORE_BACKEND", "postgres")
 	t.Setenv("CONFIG_STORE_DSN", "")
 
-	gw := newTestGateway(t, aigateway.Config{
-		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeSingle},
-		Targets:  []aigateway.Target{{VirtualKey: "openai"}},
+	gw := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets:  []config.Target{{VirtualKey: "openai"}},
 	})
 
 	if _, _, err := bootstrap.CreateConfigManagerFromEnv(t.Context(), gw); err == nil {
@@ -815,7 +740,7 @@ func TestRouteErrorDetails_NonRejectionError(t *testing.T) {
 	}
 }
 
-func newTestGateway(t *testing.T, cfg aigateway.Config) *aigateway.Gateway {
+func newTestGateway(t *testing.T, cfg config.Config) *aigateway.Gateway {
 	t.Helper()
 	gw, err := aigateway.New(cfg)
 	if err != nil {

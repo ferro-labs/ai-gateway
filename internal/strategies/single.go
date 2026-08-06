@@ -1,9 +1,6 @@
 package strategies
 
 import (
-	"context"
-	"fmt"
-
 	"github.com/ferro-labs/ai-gateway/providers"
 )
 
@@ -15,32 +12,20 @@ type Target struct {
 
 // Single routes all requests to a single provider.
 type Single struct {
-	target Target
-	lookup ProviderLookup
+	// keys is the SelectTargets answer, built once. The order is a property of
+	// the config, not of the request, so recomputing it per request would put
+	// an allocation on the hot path for a slice that can never differ.
+	// SelectTargets' contract is read-only, so sharing it is safe.
+	keys []string
 }
 
 // NewSingle creates a new single-provider strategy.
-func NewSingle(target Target, lookup ProviderLookup) *Single {
-	return &Single{target: target, lookup: lookup}
+func NewSingle(target Target) *Single {
+	return &Single{keys: []string{target.VirtualKey}}
 }
 
-// Execute sends the request to the single configured provider.
-func (s *Single) Execute(ctx context.Context, req providers.Request) (*providers.Response, error) {
-	p, ok := s.lookup(s.target.VirtualKey)
-	if !ok {
-		return nil, fmt.Errorf("provider not found: %s", s.target.VirtualKey)
-	}
-	if !p.SupportsModel(req.Model) {
-		return nil, fmt.Errorf("provider %s does not support model %s", s.target.VirtualKey, req.Model)
-	}
-	resp, err := p.Complete(ctx, req)
-	if err != nil {
-		return nil, err
-	}
-	return responseWithProvider(resp, s.target.VirtualKey), nil
-}
-
-// SelectTargets returns the single configured target key.
+// SelectTargets returns the single configured target key. The returned slice is
+// shared and must not be modified.
 func (s *Single) SelectTargets(_ providers.Request) ([]string, error) {
-	return []string{s.target.VirtualKey}, nil
+	return s.keys, nil
 }

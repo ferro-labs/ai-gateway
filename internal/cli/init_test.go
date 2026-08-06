@@ -25,6 +25,10 @@ func TestGenerateMasterKey(t *testing.T) {
 }
 
 func TestWriteConfigYAML(t *testing.T) {
+	// The scaffolded targets follow the environment's provider credentials, so
+	// pin the environment to assert the zero-credential placeholder.
+	clearProviderEnv(t)
+
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 

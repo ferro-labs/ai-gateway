@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -129,6 +130,40 @@ func TestBedrockProvider_CompleteStream_TranslatesStatus(t *testing.T) {
 	}
 	if got := core.RetryAfterFrom(err); got != 3*time.Second {
 		t.Errorf("RetryAfterFrom(err) = %v, want 3s", got)
+	}
+}
+
+// TestBedrockInvokeError_PreservesBothErrors verifies the translated error keeps
+// the gateway contract on the typed *core.HTTPStatusError (status, message,
+// Retry-After) AND leaves the original AWS *smithyhttp.ResponseError reachable
+// via errors.As, so unwrapping to the SDK error (RequestID, modeled fault type)
+// still works.
+func TestBedrockInvokeError_PreservesBothErrors(t *testing.T) {
+	err := bedrockInvokeError("invoke", smithyResponseError(http.StatusTooManyRequests, "3"))
+	if err == nil {
+		t.Fatal("bedrockInvokeError() = nil, want a translated error")
+	}
+
+	var statusErr *core.HTTPStatusError
+	if !errors.As(err, &statusErr) {
+		t.Fatalf("errors.As(err, *core.HTTPStatusError) = false; err = %v", err)
+	}
+	if statusErr.StatusCode != http.StatusTooManyRequests {
+		t.Errorf("StatusCode = %d, want 429", statusErr.StatusCode)
+	}
+	if statusErr.RetryAfter != 3*time.Second {
+		t.Errorf("RetryAfter = %v, want 3s", statusErr.RetryAfter)
+	}
+	if !strings.Contains(statusErr.Message, "ThrottlingException") {
+		t.Errorf("Message = %q, want it to mention the upstream fault", statusErr.Message)
+	}
+
+	var respErr *smithyhttp.ResponseError
+	if !errors.As(err, &respErr) {
+		t.Fatalf("errors.As(err, *smithyhttp.ResponseError) = false; the original AWS error was dropped from the chain: %v", err)
+	}
+	if respErr.HTTPStatusCode() != http.StatusTooManyRequests {
+		t.Errorf("respErr.HTTPStatusCode() = %d, want 429", respErr.HTTPStatusCode())
 	}
 }
 

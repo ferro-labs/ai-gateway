@@ -386,3 +386,25 @@ func TestEmbed_RejectsTraversalModel(t *testing.T) {
 		t.Fatal("Embed accepted a traversal model path, want error")
 	}
 }
+
+// TestHuggingFaceProvider_GenerateImage_RejectsURLFormat pins the refusal at the
+// provider. The task API returns raw image bytes, which the provider
+// base64-encodes; there is no URL to hand back and never was, so a caller that
+// asked for one was previously answered 200 with an empty data[0].url.
+func TestHuggingFaceProvider_GenerateImage_RejectsURLFormat(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("upstream must not be called for a format the provider cannot produce")
+	}))
+	defer srv.Close()
+
+	p, _ := New(testAPIKey, srv.URL)
+	_, err := p.GenerateImage(context.Background(), core.ImageRequest{
+		Model: "black-forest-labs/FLUX.1-schnell", Prompt: "a cat", ResponseFormat: "url",
+	})
+	if err == nil {
+		t.Fatal("GenerateImage = nil error, want a refusal (the task API returns bytes only)")
+	}
+	if got := core.ParseStatusCode(err); got != 400 {
+		t.Errorf("status = %d, want 400", got)
+	}
+}

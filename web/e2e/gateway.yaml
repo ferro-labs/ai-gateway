@@ -1,0 +1,67 @@
+# Gateway configuration for the dashboard end-to-end tests.
+#
+# The single target is the `openai` provider pointed at a local stub via
+# OPENAI_BASE_URL, so every route through the gateway is real — real plugin
+# stages, real request-log rows, real usage numbers — with no provider
+# credential and nothing billed.
+
+strategy:
+  mode: single
+
+targets:
+  - virtual_key: openai
+    retry:
+      attempts: 2
+      initial_backoff_ms: 100
+
+plugins:
+  # Enabled so a prompt containing one of these words is rejected. Worth having
+  # on: it is the only easy way to see the dashboard render a guardrail
+  # rejection rather than an upstream failure.
+  - name: word-filter
+    type: guardrail
+    stage: before_request
+    enabled: true
+    config:
+      blocked_words: ['forbidden-word']
+      case_sensitive: false
+
+  - name: max-token
+    type: guardrail
+    stage: before_request
+    enabled: true
+    config:
+      max_tokens: 4096
+      max_messages: 50
+
+  # persist: true is what puts rows in the request-log store, which is what the
+  # Logs, Analytics and Overview pages read. Without it those pages are empty.
+  #
+  # A plugin registers at exactly one stage, so the logger is listed three
+  # times. Only the before_request entry would record requests but never their
+  # outcomes, and the dashboard derives "completed" and "failed" from the
+  # after_request and on_error rows — with those missing every request looks
+  # permanently in flight.
+  - name: request-logger
+    type: logging
+    stage: before_request
+    enabled: true
+    config:
+      level: info
+      persist: true
+
+  - name: request-logger
+    type: logging
+    stage: after_request
+    enabled: true
+    config:
+      level: info
+      persist: true
+
+  - name: request-logger
+    type: logging
+    stage: on_error
+    enabled: true
+    config:
+      level: info
+      persist: true

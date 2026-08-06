@@ -1,0 +1,8 @@
+{
+				"responseId": "gemini-conformance",
+				"candidates": [{
+					"content": {"role": "model", "parts": [{"text": "conformance ok"}]},
+					"finishReason": "STOP"
+				}],
+				"usageMetadata": {"promptTokenCount": 11, "candidatesTokenCount": 7, "totalTokenCount": 18}
+			}

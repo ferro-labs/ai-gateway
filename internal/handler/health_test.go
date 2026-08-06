@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	aigateway "github.com/ferro-labs/ai-gateway"
+	"github.com/ferro-labs/ai-gateway/config"
 	mcpconfig "github.com/ferro-labs/ai-gateway/mcp"
 	"github.com/ferro-labs/ai-gateway/providers"
 )
@@ -28,9 +28,9 @@ func TestHealthStatusCodes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gw, err := newTestGateway(t, aigateway.Config{
-				Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeSingle},
-				Targets:  []aigateway.Target{{VirtualKey: "health-provider"}},
+			gw, err := newTestGateway(t, config.Config{
+				Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+				Targets:  []config.Target{{VirtualKey: "health-provider"}},
 			})
 
 			if err != nil {
@@ -113,7 +113,7 @@ func TestReadyz(t *testing.T) {
 			pingers:      []Pinger{fakePinger{}},
 			wantCode:     http.StatusServiceUnavailable,
 			wantStatus:   "not_ready",
-			wantReasonIn: "no ready providers",
+			wantReasonIn: "no routable targets",
 		},
 		{
 			name:       "nil pinger is skipped",
@@ -126,9 +126,9 @@ func TestReadyz(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gw, err := newTestGateway(t, aigateway.Config{
-				Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeSingle},
-				Targets:  []aigateway.Target{{VirtualKey: "health-provider"}},
+			gw, err := newTestGateway(t, config.Config{
+				Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+				Targets:  []config.Target{{VirtualKey: "health-provider"}},
 			})
 
 			if err != nil {
@@ -173,9 +173,9 @@ func TestReadyzNilGateway(t *testing.T) {
 }
 
 func TestReadyzDoesNotLeakStoreErrorDetail(t *testing.T) {
-	gw, err := newTestGateway(t, aigateway.Config{
-		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeSingle},
-		Targets:  []aigateway.Target{{VirtualKey: "health-provider"}},
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets:  []config.Target{{VirtualKey: "health-provider"}},
 	})
 
 	if err != nil {
@@ -201,8 +201,8 @@ func TestReadyzDoesNotLeakStoreErrorDetail(t *testing.T) {
 
 type healthProvider struct{}
 
-func (healthProvider) Name() string              { return "health-provider" }
-func (healthProvider) SupportedModels() []string { return []string{"health-model"} }
+func (healthProvider) Name() string               { return "health-provider" }
+func (healthProvider) ConfiguredModels() []string { return []string{"health-model"} }
 func (healthProvider) SupportsModel(model string) bool {
 	return model == "health-model"
 }
@@ -273,9 +273,9 @@ func TestReadyzMCPGating(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gw, err := newTestGateway(t, aigateway.Config{
-				Strategy:   aigateway.StrategyConfig{Mode: aigateway.ModeSingle},
-				Targets:    []aigateway.Target{{VirtualKey: "health-provider"}},
+			gw, err := newTestGateway(t, config.Config{
+				Strategy:   config.StrategyConfig{Mode: config.ModeSingle},
+				Targets:    []config.Target{{VirtualKey: "health-provider"}},
 				MCPServers: tt.servers,
 			})
 			if err != nil {
@@ -324,9 +324,9 @@ func TestReadyzGatesOnAServerThatNeverRegistered(t *testing.T) {
 		t.Skipf("%s is set; this fixture requires it to be undefined", undefinedVar)
 	}
 
-	gw, err := newTestGateway(t, aigateway.Config{
-		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeSingle},
-		Targets:  []aigateway.Target{{VirtualKey: "health-provider"}},
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets:  []config.Target{{VirtualKey: "health-provider"}},
 		MCPServers: []mcpconfig.ServerConfig{
 			unreachableMCP("optional-srv", false),
 			{
@@ -395,9 +395,9 @@ func TestReadyzGatesOnAServerThatNeverRegistered(t *testing.T) {
 // state appears in the body for servers that do not gate readiness, so an
 // operator can watch MCP health without having to risk their rollout on it.
 func TestReadyzReportsMCPStateWithoutGating(t *testing.T) {
-	gw, err := newTestGateway(t, aigateway.Config{
-		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeSingle},
-		Targets:  []aigateway.Target{{VirtualKey: "health-provider"}},
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets:  []config.Target{{VirtualKey: "health-provider"}},
 		MCPServers: []mcpconfig.ServerConfig{
 			unreachableMCP("watch-me", false),
 		},
@@ -441,5 +441,97 @@ func TestReadyzReportsMCPStateWithoutGating(t *testing.T) {
 	}
 	if body := w.Body.String(); strings.Contains(strings.ToLower(body), "last_error") {
 		t.Errorf("readyz body exposed an error detail field: %s", body)
+	}
+}
+
+// TestReadyzGatesOnAConfigThatCanRouteNothing is the regression test for a
+// deployment that passed every probe while serving 100% errors: the config's
+// only target named a provider that does not exist, so the router had nothing to
+// dispatch to, yet a healthy unrelated provider was enough to report ready.
+func TestReadyzGatesOnAConfigThatCanRouteNothing(t *testing.T) {
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets:  []config.Target{{VirtualKey: "not-a-real-provider"}},
+	})
+	if err != nil {
+		t.Fatalf("New gateway: %v", err)
+	}
+	// A perfectly healthy provider that no target names. It cannot rescue a
+	// config that never routes to it.
+	gw.RegisterProvider(healthProvider{})
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/readyz", nil)
+	w := httptest.NewRecorder()
+	Readyz(gw, fakePinger{}).ServeHTTP(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status code = %d, want %d: %s", w.Code, http.StatusServiceUnavailable, w.Body.String())
+	}
+	var payload struct {
+		Status string `json:"status"`
+		Reason string `json:"reason"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode readyz response: %v", err)
+	}
+	if payload.Status != "not_ready" {
+		t.Fatalf("status = %q, want %q", payload.Status, "not_ready")
+	}
+	if !strings.Contains(payload.Reason, "no routable targets") {
+		t.Fatalf("reason = %q, want substring %q", payload.Reason, "no routable targets")
+	}
+}
+
+// TestReadyzReportsPartiallyRoutableTargetsWithoutGating is the other half of
+// the threshold: one unroutable target among several is degraded, not dead. The
+// instance keeps serving, and the unroutable target is named in the body so the
+// misconfiguration stays visible without taking the pod out of rotation.
+func TestReadyzReportsPartiallyRoutableTargetsWithoutGating(t *testing.T) {
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeFallback},
+		Targets: []config.Target{
+			{VirtualKey: "health-provider"},
+			{VirtualKey: "not-a-real-provider"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("New gateway: %v", err)
+	}
+	gw.RegisterProvider(healthProvider{})
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/readyz", nil)
+	w := httptest.NewRecorder()
+	Readyz(gw, fakePinger{}).ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	var payload struct {
+		Status  string `json:"status"`
+		Targets []struct {
+			Name     string `json:"name"`
+			Routable bool   `json:"routable"`
+		} `json:"targets"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode readyz response: %v", err)
+	}
+	if payload.Status != "ready" {
+		t.Fatalf("status = %q, want %q", payload.Status, "ready")
+	}
+	got := map[string]bool{}
+	for _, tr := range payload.Targets {
+		got[tr.Name] = tr.Routable
+	}
+	want := map[string]bool{"health-provider": true, "not-a-real-provider": false}
+	for name, wantRoutable := range want {
+		routable, ok := got[name]
+		if !ok {
+			t.Errorf("target %q missing from readyz body: %+v", name, payload.Targets)
+			continue
+		}
+		if routable != wantRoutable {
+			t.Errorf("target %q routable = %v, want %v", name, routable, wantRoutable)
+		}
 	}
 }

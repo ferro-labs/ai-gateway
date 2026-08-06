@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/ferro-labs/ai-gateway/plugin"
 	"github.com/ferro-labs/ai-gateway/providers/core"
@@ -226,6 +227,117 @@ func TestRouteErrorDetails_BrokenPluginIsAServerErrorNotARateLimit(t *testing.T)
 	}
 }
 
+// upstreamErr builds the error shape a provider failure actually reaches the
+// handler in: the strategy wraps the last attempt's error before returning it.
+func upstreamErr(status int) error {
+	body := []byte(`{"error":{"message":"upstream said no"}}`)
+	return fmt.Errorf("all providers failed: %w", core.APIError("groq", status, body))
+}
+
+func TestRouteErrorDetails_UpstreamStatus(t *testing.T) {
+	tests := []struct {
+		name       string
+		upstream   int
+		wantStatus int
+		wantType   string
+		wantCode   string
+	}{
+		{"throttled", http.StatusTooManyRequests, http.StatusTooManyRequests, "rate_limit_error", "rate_limit_exceeded"},
+		{"provider_key_rejected", http.StatusUnauthorized, http.StatusBadGateway, "upstream_error", "upstream_auth_error"},
+		{"provider_key_forbidden", http.StatusForbidden, http.StatusBadGateway, "upstream_error", "upstream_auth_error"},
+		{"malformed_request", http.StatusBadRequest, http.StatusBadRequest, errTypeInvalidRequest, "invalid_request"},
+		{"unprocessable_request", http.StatusUnprocessableEntity, http.StatusUnprocessableEntity, errTypeInvalidRequest, "invalid_request"},
+		{"unknown_model", http.StatusNotFound, http.StatusNotFound, errTypeInvalidRequest, codeModelNotFound},
+		{"upstream_timed_out", http.StatusGatewayTimeout, http.StatusGatewayTimeout, "upstream_error", "upstream_timeout"},
+		{"upstream_crashed", http.StatusInternalServerError, http.StatusBadGateway, "upstream_error", "upstream_error"},
+		{"upstream_unavailable", http.StatusServiceUnavailable, http.StatusBadGateway, "upstream_error", "upstream_error"},
+		{"upstream_conflict", http.StatusConflict, http.StatusBadGateway, "upstream_error", "upstream_error"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			status, errType, code := RouteErrorDetails(upstreamErr(tt.upstream))
+			if status != tt.wantStatus {
+				t.Errorf("upstream %d: status = %d, want %d", tt.upstream, status, tt.wantStatus)
+			}
+			if errType != tt.wantType || code != tt.wantCode {
+				t.Errorf("upstream %d: type/code = %q/%q, want %q/%q", tt.upstream, errType, code, tt.wantType, tt.wantCode)
+			}
+		})
+	}
+}
+
+func TestRouteErrorDetails_GatewayDecisionOutranksUpstreamStatus(t *testing.T) {
+	// The upstream error is joined first in every case, so a classification that
+	// read the provider status before the gateway's own decision would win here.
+	tests := []struct {
+		name       string
+		err        error
+		wantStatus int
+		wantType   string
+		wantCode   string
+	}{
+		{
+			name:       "saturated_target",
+			err:        errors.Join(upstreamErr(http.StatusServiceUnavailable), core.ErrProviderSaturated),
+			wantStatus: http.StatusTooManyRequests,
+			wantType:   "rate_limit_error",
+			wantCode:   "provider_saturated",
+		},
+		{
+			name: "guardrail_rejection",
+			err: errors.Join(upstreamErr(http.StatusServiceUnavailable), &plugin.RejectionError{
+				Plugin:     "word-filter",
+				PluginType: plugin.TypeGuardrail,
+				Stage:      plugin.StageBeforeRequest,
+				Reason:     "blocked word",
+			}),
+			wantStatus: http.StatusBadRequest,
+			wantType:   errTypeInvalidRequest,
+			wantCode:   codeRequestRejected,
+		},
+		{
+			name: "broken_plugin",
+			err: errors.Join(upstreamErr(http.StatusTooManyRequests), &plugin.FailureError{
+				Plugin:     "rate-limit",
+				PluginType: plugin.TypeRateLimit,
+				Stage:      plugin.StageBeforeRequest,
+				Err:        errors.New("redis: connection refused"),
+			}),
+			wantStatus: http.StatusInternalServerError,
+			wantType:   errTypeServer,
+			wantCode:   "plugin_error",
+		},
+		{
+			name:       "unsupported_parameter",
+			err:        errors.Join(upstreamErr(http.StatusBadGateway), core.NewUnsupportedParamError("gemini", []string{"logit_bias"})),
+			wantStatus: http.StatusBadRequest,
+			wantType:   errTypeInvalidRequest,
+			wantCode:   "unsupported_parameter",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			status, errType, code := RouteErrorDetails(tt.err)
+			if status != tt.wantStatus {
+				t.Errorf("status = %d, want %d", status, tt.wantStatus)
+			}
+			if errType != tt.wantType || code != tt.wantCode {
+				t.Errorf("type/code = %q/%q, want %q/%q", errType, code, tt.wantType, tt.wantCode)
+			}
+		})
+	}
+}
+
+func TestRouteErrorDetails_ProviderSaturated(t *testing.T) {
+	status, errType, code := RouteErrorDetails(fmt.Errorf("routing: %w", core.ErrProviderSaturated))
+	if status != http.StatusTooManyRequests {
+		t.Fatalf("expected 429, got %d", status)
+	}
+	if errType != "rate_limit_error" || code != "provider_saturated" {
+		t.Errorf("type/code = %q/%q, want rate_limit_error/provider_saturated", errType, code)
+	}
+}
+
 func TestRouteErrorDetails_DeliberateRateLimitRejectionStays429(t *testing.T) {
 	rejection := &plugin.RejectionError{
 		Plugin:     "rate-limit",
@@ -240,5 +352,50 @@ func TestRouteErrorDetails_DeliberateRateLimitRejectionStays429(t *testing.T) {
 	}
 	if errType != "rate_limit_error" || code != "rate_limit_exceeded" {
 		t.Errorf("type/code = %q/%q, want rate_limit_error/rate_limit_exceeded", errType, code)
+	}
+}
+
+// A throttled upstream tells the caller how long to wait, and that hint is only
+// worth capturing if it survives to the response.
+func TestWriteRouteError_CarriesRetryAfter(t *testing.T) {
+	tests := map[string]struct {
+		err       error
+		wantCode  int
+		wantRetry string
+	}{
+		"upstream retry hint reaches the client": {
+			err:       fmt.Errorf("all providers failed: %w", &core.HTTPStatusError{StatusCode: 429, Message: "groq API error (429): slow down", RetryAfter: 30 * time.Second}),
+			wantCode:  http.StatusTooManyRequests,
+			wantRetry: "30",
+		},
+		"a sub-second hint is rounded up rather than truncated to zero": {
+			err:       &core.HTTPStatusError{StatusCode: 429, Message: "throttled", RetryAfter: 1500 * time.Millisecond},
+			wantCode:  http.StatusTooManyRequests,
+			wantRetry: "2",
+		},
+		"no hint sets no header": {
+			err:       &core.HTTPStatusError{StatusCode: 503, Message: "upstream down"},
+			wantCode:  http.StatusBadGateway,
+			wantRetry: "",
+		},
+		"a non-upstream error sets no header": {
+			err:       errors.New("something else"),
+			wantCode:  http.StatusInternalServerError,
+			wantRetry: "",
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			WriteRouteError(w, tt.err)
+
+			if w.Code != tt.wantCode {
+				t.Errorf("status = %d, want %d", w.Code, tt.wantCode)
+			}
+			if got := w.Header().Get("Retry-After"); got != tt.wantRetry {
+				t.Errorf("Retry-After = %q, want %q", got, tt.wantRetry)
+			}
+		})
 	}
 }

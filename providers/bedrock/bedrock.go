@@ -5,16 +5,19 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/bedrockagentruntime"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 	"github.com/aws/smithy-go/auth/bearer"
 
 	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
+	"github.com/ferro-labs/ai-gateway/pkg/logger"
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
@@ -47,6 +50,13 @@ type bedrockEventStream interface {
 	Err() error
 }
 
+// bedrockRerankClient is the minimal surface Rerank needs from the Bedrock
+// agent-runtime service (a different AWS service than bedrockruntime).
+// *bedrockagentruntime.Client satisfies it; tests supply a fake.
+type bedrockRerankClient interface {
+	Rerank(context.Context, *bedrockagentruntime.RerankInput, ...func(*bedrockagentruntime.Options)) (*bedrockagentruntime.RerankOutput, error)
+}
+
 // realBedrockClient adapts the AWS SDK client to bedrockRuntimeClient, unwrapping
 // the streaming Output to its event stream so the interface stays test-friendly.
 type realBedrockClient struct {
@@ -63,10 +73,11 @@ func (c realBedrockClient) InvokeModelWithResponseStream(ctx context.Context, in
 
 // Provider implements the AWS Bedrock API client.
 type Provider struct {
-	name        string
-	client      bedrockRuntimeClient
-	region      string
-	bearerToken string
+	name         string
+	client       bedrockRuntimeClient
+	rerankClient bedrockRerankClient
+	region       string
+	bearerToken  string
 }
 
 // Compile-time interface assertions.
@@ -75,6 +86,7 @@ var (
 	_ core.StreamProvider        = (*Provider)(nil)
 	_ core.EmbeddingProvider     = (*Provider)(nil)
 	_ core.ImageProvider         = (*Provider)(nil)
+	_ core.RerankProvider        = (*Provider)(nil)
 	_ core.ProxiableProvider     = (*Provider)(nil)
 	_ core.NonOpenAIWireProvider = (*Provider)(nil)
 )
@@ -132,22 +144,72 @@ func NewWithOptions(opts Options) (*Provider, error) {
 	// the whole lifetime of the provider (refreshing credentials as needed). It
 	// is not request-scoped, so binding it to a request's context would wrongly
 	// cancel config loading / credential refresh when that request completes.
-	cfg, err := awsconfig.LoadDefaultConfig(context.Background(), cfgOpts...)
+	cfg, err := loadAWSConfig(context.Background(), cfgOpts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load AWS config: %w", err)
 	}
 
 	// Use the gateway's tuned per-provider HTTP client (higher dial/header
-	// timeouts for Bedrock's cold starts) rather than the SDK default.
+	// timeouts for Bedrock's cold starts) rather than the SDK default. Set again
+	// rather than relying on loadAWSConfig: on its CA-bundle path the SDK owns
+	// cfg.HTTPClient, and the data plane must not inherit that client's
+	// redirect-following behaviour.
 	cfg.HTTPClient = providerhttp.ForProvider(Name)
 
 	client := realBedrockClient{bedrockruntime.NewFromConfig(cfg, clientOpts...)}
+	// Rerank lives on the separate bedrock-agent-runtime service; it is SigV4 via
+	// the same resolved config (and inherits cfg.HTTPClient set above).
 	return &Provider{
-		name:        Name,
-		client:      client,
-		region:      region,
-		bearerToken: bearerToken,
+		name:         Name,
+		client:       client,
+		rerankClient: bedrockagentruntime.NewFromConfig(cfg),
+		region:       region,
+		bearerToken:  bearerToken,
 	}, nil
+}
+
+// loadAWSConfig loads the AWS config with the gateway's own HTTP client passed
+// IN, not assigned afterwards.
+//
+// The credential chain — IMDS, SSO, STS, ssooidc — is constructed inside
+// LoadDefaultConfig (resolveCredentials calls imds/sso/sts.NewFromConfig), and
+// resolveHTTPClient runs well before it. A client assigned to cfg.HTTPClient
+// after the call therefore reaches the Bedrock data plane only; the credential
+// clients keep the SDK's own BuildableClient, which follows 307 and 308. Go
+// strips Authorization across hosts and the SDK strips X-Amz-Security-Token,
+// but the IMDSv2 x-aws-ec2-metadata-token and SSO x-amz-sso_bearer_token
+// headers are custom and are replayed verbatim to the redirect target.
+//
+// A configured CA bundle (AWS_CA_BUNDLE, or the shared-config ca_bundle key)
+// makes that impossible, and the bundle wins. resolveCustomCABundle can only
+// add RootCAs to a *awshttp.BuildableClient and hard-errors on anything else,
+// so passing our own client turns those deployments into a startup failure.
+// Resolving the bundle ourselves does not avoid it: the SDK resolves it
+// independently from env and shared config and fails the same way, and there is
+// no option that suppresses that. Silently dropping an explicit TLS trust
+// decision would be worse than following a redirect, so the fallback keeps the
+// SDK's client and the pre-existing behaviour.
+//
+// The retry is not error-string matching: WithHTTPClient can only change
+// whether resolveCustomCABundle succeeds, so a load that fails with it and
+// succeeds without it is that case and no other. A genuinely broken config
+// fails both times and reports the first error.
+func loadAWSConfig(ctx context.Context, cfgOpts []func(*awsconfig.LoadOptions) error) (aws.Config, error) {
+	withClient := append(slices.Clone(cfgOpts), awsconfig.WithHTTPClient(providerhttp.ForProvider(Name)))
+	cfg, err := awsconfig.LoadDefaultConfig(ctx, withClient...)
+	if err == nil {
+		return cfg, nil
+	}
+
+	cfg, fallbackErr := awsconfig.LoadDefaultConfig(ctx, cfgOpts...)
+	if fallbackErr != nil {
+		return aws.Config{}, err
+	}
+	logger.Ctx(ctx).Warn(
+		"a custom CA bundle is configured, so the AWS credential chain keeps the SDK's HTTP client and will follow 307/308 redirects from the metadata, SSO or STS endpoint",
+		"provider", Name,
+	)
+	return cfg, nil
 }
 
 // Name implements core.Provider.
@@ -176,46 +238,30 @@ func (p *Provider) AuthHeaders() map[string]string {
 	return map[string]string{"Authorization": "Bearer " + p.bearerToken}
 }
 
-// SupportedModels returns well-known Bedrock model IDs.
-func (p *Provider) SupportedModels() []string {
-	return []string{
-		"anthropic.claude-3-5-sonnet-20241022-v2:0",
-		"anthropic.claude-3-5-haiku-20241022-v1:0",
-		"anthropic.claude-3-opus-20240229-v1:0",
-		"anthropic.claude-3-sonnet-20240229-v1:0",
-		"anthropic.claude-3-haiku-20240307-v1:0",
-		"amazon.titan-text-express-v1",
-		"amazon.titan-text-lite-v1",
-		"amazon.titan-text-premier-v1:0",
-		"amazon.nova-micro-v1:0",
-		"amazon.nova-lite-v1:0",
-		"amazon.nova-pro-v1:0",
-		"amazon.nova-premier-v1:0",
-		"meta.llama3-1-405b-instruct-v1:0",
-		"meta.llama3-1-70b-instruct-v1:0",
-		"meta.llama3-1-8b-instruct-v1:0",
-		"meta.llama3-70b-instruct-v1:0",
-		"meta.llama3-8b-instruct-v1:0",
-		"amazon.titan-embed-text-v1",
-		"amazon.titan-embed-text-v2:0",
-		"cohere.embed-english-v3",
-		"cohere.embed-multilingual-v3",
-		"cohere.embed-v4:0",
-		"amazon.nova-canvas-v1:0",
-		"amazon.titan-image-generator-v1",
-		"amazon.titan-image-generator-v2:0",
-		"stability.stable-diffusion-xl-v1",
-	}
+// knownModelIDs are Bedrock IDs this provider has a translated request shape
+// for but whose names the prefix rules below do not reach — a titan or
+// stability id carries no family prefix to match on.
+//
+// This is not an inventory and is not advertised anywhere: the catalog and
+// live discovery answer what Bedrock serves. It exists only so SupportsModel
+// can say yes to an id it can actually translate.
+var knownModelIDs = map[string]struct{}{
+	"amazon.titan-text-express-v1":      {},
+	"amazon.titan-text-lite-v1":         {},
+	"amazon.titan-text-premier-v1:0":    {},
+	"amazon.titan-embed-text-v1":        {},
+	"amazon.titan-embed-text-v2:0":      {},
+	"amazon.titan-image-generator-v1":   {},
+	"amazon.titan-image-generator-v2:0": {},
+	"stability.stable-diffusion-xl-v1":  {},
 }
 
 // SupportsModel returns true for model families with request shapes implemented
 // by this provider. Bedrock still validates the exact model ID upstream.
 func (p *Provider) SupportsModel(model string) bool {
 	model = bedrockModelRoutingID(model)
-	for _, supported := range p.SupportedModels() {
-		if model == supported {
-			return true
-		}
+	if _, ok := knownModelIDs[model]; ok {
+		return true
 	}
 	// Image families are matched here so the Nova-text exclusion guard below does
 	// not reject amazon.nova-canvas. The "amazon.titan-image-" prefix is distinct
@@ -239,11 +285,6 @@ func (p *Provider) SupportsModel(model string) bool {
 		}
 	}
 	return false
-}
-
-// Models returns structured model metadata.
-func (p *Provider) Models() []core.ModelInfo {
-	return core.ModelsFromList(p.name, p.SupportedModels())
 }
 
 func (p *Provider) invokeModelJSON(ctx context.Context, modelID string, payload any, out any) error {
@@ -305,7 +346,7 @@ func isBedrockNovaTextModel(model string) bool {
 func bedrockSupportedParams(modelID string) []string {
 	switch {
 	case strings.HasPrefix(modelID, "anthropic."):
-		return []string{"temperature", "top_p", "max_tokens", "stop", "tools", "tool_choice"}
+		return []string{"temperature", "top_p", "max_tokens", "stop", "tools", "tool_choice", "parallel_tool_calls"}
 	case strings.HasPrefix(modelID, "amazon.titan"):
 		return []string{"temperature", "top_p", "max_tokens", "stop"}
 	case isBedrockNovaTextModel(modelID):

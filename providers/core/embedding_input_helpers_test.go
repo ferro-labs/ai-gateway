@@ -1,7 +1,10 @@
 package core
 
 import (
+	"errors"
+	"net/http"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -55,5 +58,37 @@ func TestValidateEmbeddingEncodingFormat(t *testing.T) {
 		if err := ValidateEmbeddingEncodingFormat(bad); err == nil {
 			t.Errorf("format %q: expected error, got nil", bad)
 		}
+	}
+}
+
+// TestValidateEmbeddingEncodingFormat_Rejects400 pins the classification of the
+// rejection, not just its existence. A bare error carries no status: it reaches
+// the caller as a 500 saying the gateway is broken, and shouldRetry reads a
+// status-less error as a transport failure and spends the whole retry budget on
+// a value that can never become valid. All fifteen callers of this helper
+// inherit the answer from here.
+func TestValidateEmbeddingEncodingFormat_Rejects400(t *testing.T) {
+	for _, bad := range []string{"base64", "int8", "FLOAT"} {
+		t.Run(bad, func(t *testing.T) {
+			err := ValidateEmbeddingEncodingFormat(bad)
+			if err == nil {
+				t.Fatalf("format %q: expected error, got nil", bad)
+			}
+			if got := ParseStatusCode(err); got != http.StatusBadRequest {
+				t.Errorf("ParseStatusCode(%v) = %d, want %d", err, got, http.StatusBadRequest)
+			}
+			var statusErr *HTTPStatusError
+			if !errors.As(err, &statusErr) {
+				t.Fatalf("error is %T, want *HTTPStatusError", err)
+			}
+			// The rejected VALUE is the only actionable detail the caller gets.
+			if !strings.Contains(statusErr.Message, bad) {
+				t.Errorf("caller-facing message = %q, want it to name %q", statusErr.Message, bad)
+			}
+			// No upstream produced this, so no provider is named at it.
+			if statusErr.Provider != "" {
+				t.Errorf("Provider = %q, want empty for a gateway-side refusal", statusErr.Provider)
+			}
+		})
 	}
 }

@@ -69,17 +69,20 @@ func TestComplete_PrefersMaxCompletionTokens(t *testing.T) {
 		}
 	})
 
-	t.Run("legacy max_tokens only still emits max_tokens", func(t *testing.T) {
+	t.Run("legacy max_tokens only is promoted to max_completion_tokens", func(t *testing.T) {
+		// A max_tokens-only request (what most OpenAI SDKs still default to) must
+		// reach an o-series / GPT-5 model, which rejects max_tokens — so the
+		// OpenAI provider promotes it to the modern field and drops max_tokens.
 		body := captureOpenAIBody(t, core.Request{
 			Model:     "gpt-4o",
 			Messages:  []core.Message{{Role: core.RoleUser, Content: "hi"}},
 			MaxTokens: intPtr(256),
 		})
-		if got := string(body["max_tokens"]); got != "256" {
-			t.Errorf("max_tokens = %s, want 256", got)
+		if _, ok := body["max_tokens"]; ok {
+			t.Errorf("max_tokens must not be sent (reasoning models reject it), body=%v", body)
 		}
-		if _, ok := body["max_completion_tokens"]; ok {
-			t.Errorf("max_completion_tokens must not appear for a legacy max_tokens request, body=%v", body)
+		if got := string(body["max_completion_tokens"]); got != "256" {
+			t.Errorf("max_completion_tokens = %s, want 256 (promoted from max_tokens)", got)
 		}
 	})
 }

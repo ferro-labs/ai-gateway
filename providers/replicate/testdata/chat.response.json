@@ -1,0 +1,6 @@
+{
+				"id": "pred-conformance",
+				"status": "succeeded",
+				"output": "conformance ok",
+				"metrics": {"input_token_count": 11, "output_token_count": 7}
+			}

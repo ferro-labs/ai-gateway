@@ -1,0 +1,18 @@
+{
+  "object": "rerank",
+  "id": "9dfa1a09-5ebc-4a40-970f-586cb8f4ae47",
+  "model": "mixedbread-ai/mxbai-rerank-large-v2",
+  "results": [
+    {
+      "index": 1,
+      "relevance_score": 0.95,
+      "document": { "text": "The llama is a domesticated South American camelid." }
+    },
+    {
+      "index": 3,
+      "relevance_score": 0.88,
+      "document": { "text": "The guanaco is a camelid native to South America, closely related to the llama." }
+    }
+  ],
+  "usage": { "prompt_tokens": 1837, "completion_tokens": 0, "total_tokens": 1837 }
+}

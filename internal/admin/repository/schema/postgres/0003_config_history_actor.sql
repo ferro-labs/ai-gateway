@@ -1,0 +1,11 @@
+-- Records who changed the config, not only what changed and when.
+--
+-- The value is a frozen display string composed at write time, not a foreign
+-- key. An audit trail has to stay true after its subject is gone: a reference
+-- to an api_keys row would read as blank once that key is deleted, which is
+-- exactly the moment the record matters most.
+--
+-- Rows written before this column existed keep the empty default. That is
+-- deliberately distinguishable from a recorded actor, because "we did not
+-- track this yet" and "nobody" are different claims.
+ALTER TABLE config_history ADD COLUMN IF NOT EXISTS actor TEXT NOT NULL DEFAULT '';

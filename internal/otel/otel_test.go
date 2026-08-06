@@ -1,18 +1,22 @@
 package otel
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/ferro-labs/ai-gateway/observability"
+	"github.com/ferro-labs/ai-gateway/pkg/logger"
 	"go.opentelemetry.io/otel"
 )
 
@@ -640,6 +644,93 @@ func TestRecordEvent_DropOnFull(t *testing.T) {
 	}
 }
 
+// panickingExporter is a third-party exporter that breaks: every Export panics.
+type panickingExporter struct{ name string }
+
+func (e *panickingExporter) Name() string                                   { return e.name }
+func (e *panickingExporter) Init(_ context.Context, _ map[string]any) error { return nil }
+func (e *panickingExporter) Export(_ context.Context, _ observability.Event) error {
+	panic("exporter blew up")
+}
+func (e *panickingExporter) Shutdown(_ context.Context) error { return nil }
+
+// lockedBuffer is a concurrency-safe log sink: the dispatch worker goroutine
+// writes the panic line while the test goroutine reads it.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// TestRecordEvent_PanickingExporterIsContained verifies that an exporter that
+// panics neither takes the process down nor keeps the event from the exporters
+// behind it, and that the panic is logged against the exporter's name.
+func TestRecordEvent_PanickingExporterIsContained(t *testing.T) {
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+
+	var logs lockedBuffer
+	original := logger.Default()
+	logger.SetDefault(logger.New(logger.Options{Level: "info", Output: &logs}))
+	t.Cleanup(func() { logger.SetDefault(original) })
+
+	panicName := uniqueExporterName(t, "panicking")
+	observability.RegisterExporter(panicName, func() observability.Exporter {
+		return &panickingExporter{name: panicName}
+	})
+	healthyName := uniqueExporterName(t, "healthy")
+	healthy := &fakeExporter{}
+	observability.RegisterExporter(healthyName, func() observability.Exporter { return healthy })
+
+	cfg := DefaultConfig()
+	cfg.Enabled = true
+	cfg.Endpoint = ""
+	cfg.Exporters = []ExporterConfig{
+		{Name: panicName, Enabled: true},
+		{Name: healthyName, Enabled: true},
+	}
+
+	prov, shutdown, err := Init(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("Init returned error: %v", err)
+	}
+
+	prov.RecordEvent(context.Background(), observability.Event{Subject: "gateway.request.completed"})
+
+	// Shutdown drains the queue and waits for the worker, so both the export and
+	// the panic log have happened by the time it returns.
+	shutCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := shutdown(shutCtx); err != nil {
+		t.Fatalf("shutdown returned error: %v", err)
+	}
+
+	healthy.mu.Lock()
+	delivered := len(healthy.exported)
+	healthy.mu.Unlock()
+	if delivered != 1 {
+		t.Errorf("exporter behind the panicking one received %d events, want 1", delivered)
+	}
+
+	logged := logs.String()
+	if !strings.Contains(logged, "exporter panicked") {
+		t.Errorf("panic was not logged: %q", logged)
+	}
+	if !strings.Contains(logged, panicName) {
+		t.Errorf("panic log does not name the exporter %q: %q", panicName, logged)
+	}
+}
+
 // --- resolveHeaders tests ---
 
 func TestResolveHeaders_LiteralPassThrough(t *testing.T) {
@@ -774,28 +865,39 @@ func TestNewSpanExporter_WithHeaders(t *testing.T) {
 	}
 }
 
-// TestEndpointIsSecure verifies the scheme→security decision used by
-// newSpanExporter: https:// → secure, http:// → insecure,
-// bare host:port → insecure (backward-compatible default).
-func TestEndpointIsSecure(t *testing.T) {
+// TestConfiguredEndpointKeepsSchemeAndBareHostPort covers what the removed
+// endpointIsSecure helper used to: a scheme-carrying endpoint is handed to the
+// exporter whole, so the SDK derives transport security from it, and a bare
+// host:port keeps its historical plaintext meaning.
+func TestConfiguredEndpointKeepsSchemeAndBareHostPort(t *testing.T) {
 	tests := []struct {
-		endpoint string
-		want     bool // true = secure (TLS), false = insecure
+		endpoint     string
+		httpProtocol bool
+		wantURL      string
+		wantHostPort string
 	}{
-		{"https://collector.example.com:4317", true},
-		{"https://localhost:4317", true},
-		{"http://collector.example.com:4317", false},
-		{"http://localhost:4318", false},
-		{"localhost:4317", false},          // bare host:port → insecure (backward compat)
-		{"collector.internal:4317", false}, // bare host:port → insecure
-		{"", false},                        // empty → insecure
+		{endpoint: "https://collector.example.com:4317", wantURL: "https://collector.example.com:4317"},
+		{endpoint: "http://collector.example.com:4317", wantURL: "http://collector.example.com:4317"},
+		{endpoint: "localhost:4317", wantHostPort: "localhost:4317"},
+		{endpoint: "collector.internal:4317", wantHostPort: "collector.internal:4317"},
+		{endpoint: ""},
+		// OTLP/HTTP: the configured endpoint is a base, so the traces signal
+		// path is appended to whatever path it already carries.
+		{endpoint: "https://collector.example.com:4318", httpProtocol: true, wantURL: "https://collector.example.com:4318/v1/traces"},
+		{endpoint: "http://localhost:4318/otlp", httpProtocol: true, wantURL: "http://localhost:4318/otlp/v1/traces"},
 	}
 
 	for _, tc := range tests {
-		t.Run(tc.endpoint, func(t *testing.T) {
-			got := endpointIsSecure(tc.endpoint)
-			if got != tc.want {
-				t.Errorf("endpointIsSecure(%q) = %v, want %v", tc.endpoint, got, tc.want)
+		t.Run(tc.endpoint+"/http="+strconv.FormatBool(tc.httpProtocol), func(t *testing.T) {
+			got, err := parseConfiguredEndpoint(tc.endpoint, tc.httpProtocol)
+			if err != nil {
+				t.Fatalf("parseConfiguredEndpoint(%q) errored: %v", tc.endpoint, err)
+			}
+			if got.url != tc.wantURL {
+				t.Errorf("url = %q, want %q", got.url, tc.wantURL)
+			}
+			if got.hostPort != tc.wantHostPort {
+				t.Errorf("hostPort = %q, want %q", got.hostPort, tc.wantHostPort)
 			}
 		})
 	}

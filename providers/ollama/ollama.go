@@ -11,7 +11,7 @@ import (
 
 	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
 	"github.com/ferro-labs/ai-gateway/providers/core"
-	"github.com/ferro-labs/ai-gateway/providers/internal/openaicompat"
+	"github.com/ferro-labs/ai-gateway/providers/core/openaicompat"
 )
 
 // Name is the canonical provider identifier.
@@ -21,19 +21,25 @@ const defaultBaseURL = "http://localhost:11434"
 
 // Provider implements the Ollama API client.
 type Provider struct {
-	name       string
-	baseURL    string
+	name string
+	// baseURL is the server root, which mounts both of Ollama's APIs.
+	baseURL string
+	// apiRoot is the OpenAI-compatible surface beneath it, resolved once here so
+	// no request-time code has to know where it sits.
+	apiRoot    string
 	httpClient *http.Client
 	models     []string
 }
 
 // Compile-time interface assertions.
 var (
-	_ core.Provider          = (*Provider)(nil)
-	_ core.StreamProvider    = (*Provider)(nil)
-	_ core.ProxiableProvider = (*Provider)(nil)
-	_ core.EmbeddingProvider = (*Provider)(nil)
-	_ core.DiscoveryProvider = (*Provider)(nil)
+	_ core.Provider                = (*Provider)(nil)
+	_ core.StreamProvider          = (*Provider)(nil)
+	_ core.ProxiableProvider       = (*Provider)(nil)
+	_ core.EmbeddingProvider       = (*Provider)(nil)
+	_ core.DiscoveryProvider       = (*Provider)(nil)
+	_ core.ConfiguredModelProvider = (*Provider)(nil)
+	_ core.AnyModelProvider        = (*Provider)(nil)
 )
 
 // New creates a new Ollama provider.
@@ -54,6 +60,7 @@ func New(baseURL string, models []string) (*Provider, error) {
 	return &Provider{
 		name:       Name,
 		baseURL:    baseURL,
+		apiRoot:    baseURL + "/v1",
 		httpClient: providerhttp.ForProvider(Name),
 		models:     models,
 	}, nil
@@ -62,23 +69,29 @@ func New(baseURL string, models []string) (*Provider, error) {
 // Name implements core.Provider.
 func (p *Provider) Name() string { return p.name }
 
-// BaseURL implements core.ProxiableProvider.
-func (p *Provider) BaseURL() string { return p.baseURL }
+// BaseURL implements core.ProxiableProvider, which asks for the API root the
+// pass-through hangs an operation beneath — not the server root OLLAMA_HOST
+// names. One Ollama server mounts two APIs, and only the OpenAI-compatible one
+// at /v1 can serve a forwarded OpenAI-shaped request.
+func (p *Provider) BaseURL() string { return p.apiRoot }
 
 // AuthHeaders implements core.ProxiableProvider.
 // Ollama is a local server with no API key requirement.
 func (p *Provider) AuthHeaders() map[string]string { return nil }
 
-// SupportedModels returns the configured models.
-func (p *Provider) SupportedModels() []string { return p.models }
+// ConfiguredModels returns the configured models.
+func (p *Provider) ConfiguredModels() []string { return p.models }
 
 // SupportsModel returns true for any model — the upstream server validates model names.
+// Advisory only; see core.Provider.
 func (p *Provider) SupportsModel(_ string) bool { return true }
 
-// Models returns structured model metadata.
-func (p *Provider) Models() []core.ModelInfo {
-	return core.ModelsFromList(p.name, p.SupportedModels())
-}
+// ServesAnyModel declares core.AnyModelProvider: a self-hosted Ollama serves
+// whatever the operator pulled onto it, which no catalog knows. OLLAMA_MODELS
+// and DiscoverModels both narrow that when they are set, but neither is
+// required to run one — so without this declaration the common case, an Ollama
+// host with no model list configured, would route nothing at all.
+func (p *Provider) ServesAnyModel() {}
 
 // Complete sends a chat completion request and returns the full response. It
 // speaks Ollama's OpenAI-compatible /v1/chat/completions endpoint via the shared
@@ -123,18 +136,14 @@ type tagsResponse struct {
 // Retry-After hint is preserved so the fallback strategy can honor it instead
 // of guessing a backoff.
 func ollamaAPIError(resp *http.Response, body []byte) error {
-	msg := string(body)
 	var envelope struct {
 		Error string `json:"error"`
 	}
-	if json.Unmarshal(body, &envelope) == nil && envelope.Error != "" {
+	msg := ""
+	if json.Unmarshal(body, &envelope) == nil {
 		msg = envelope.Error
 	}
-	return &core.HTTPStatusError{
-		StatusCode: resp.StatusCode,
-		Message:    fmt.Sprintf("ollama API error (%d): %s", resp.StatusCode, msg),
-		RetryAfter: core.ParseRetryAfter(resp.Header.Get("Retry-After")),
-	}
+	return core.StatusError(Name, resp.StatusCode, msg).WithRetryAfter(resp.Header)
 }
 
 // DiscoverModels fetches the live model list from the self-hosted Ollama

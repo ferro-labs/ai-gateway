@@ -25,23 +25,6 @@ func TestNewCloudflare(t *testing.T) {
 	}
 }
 
-func TestCloudflareProvider_SupportedModels(t *testing.T) {
-	p, _ := New("test-key", "acct-123", "")
-	models := p.SupportedModels()
-	if len(models) == 0 {
-		t.Error("SupportedModels() returned empty")
-	}
-	found := false
-	for _, m := range models {
-		if m == "@cf/meta/llama-3.1-8b-instruct" {
-			found = true
-		}
-	}
-	if !found {
-		t.Error("@cf/meta/llama-3.1-8b-instruct not found")
-	}
-}
-
 func TestCloudflareProvider_SupportsModel(t *testing.T) {
 	p, _ := New("test-key", "acct-123", "")
 	if !p.SupportsModel("@cf/meta/llama-3.1-8b-instruct") {
@@ -49,16 +32,6 @@ func TestCloudflareProvider_SupportsModel(t *testing.T) {
 	}
 	if !p.SupportsModel("@cf/custom/model") {
 		t.Error("passthrough: expected all models to return true")
-	}
-}
-
-func TestCloudflareProvider_Models(t *testing.T) {
-	p, _ := New("test-key", "acct-123", "")
-	models := p.Models()
-	for _, m := range models {
-		if m.OwnedBy != "cloudflare" {
-			t.Errorf("ModelInfo.OwnedBy = %q, want cloudflare", m.OwnedBy)
-		}
 	}
 }
 
@@ -364,5 +337,24 @@ func TestCloudflareProvider_CompleteStream_ToolCallAndUsage(t *testing.T) {
 	}
 	if gotUsage.TotalTokens != 15 {
 		t.Errorf("usage.TotalTokens = %d, want 15", gotUsage.TotalTokens)
+	}
+}
+
+// TestNewCloudflare_BaseURLIsTheAPIRoot pins the shape a base URL is written in: the
+// API root, used verbatim. The one net: a bare host is not an API root, so it
+// adopts the trailing version segment of the provider's default root.
+func TestNewCloudflare_BaseURLIsTheAPIRoot(t *testing.T) {
+	for base, want := range map[string]string{
+		"":                                "https://api.cloudflare.com/client/v4/accounts/acct-123/ai/v1",
+		"https://gw.example.com":          "https://gw.example.com/v1",
+		"https://gw.example.com/cf/ai/v1": "https://gw.example.com/cf/ai/v1",
+	} {
+		p, err := New("test-key", "acct-123", base)
+		if err != nil {
+			t.Fatalf("New(_, %q) error: %v", base, err)
+		}
+		if got := p.BaseURL(); got != want {
+			t.Errorf("New(_, %q).BaseURL() = %q, want %q", base, got, want)
+		}
 	}
 }

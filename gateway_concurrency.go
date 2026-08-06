@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sync/atomic"
 
-	"github.com/ferro-labs/ai-gateway/internal/circuitbreaker"
+	"github.com/ferro-labs/ai-gateway/pkg/circuitbreaker"
 	"github.com/ferro-labs/ai-gateway/providers"
 )
 
@@ -27,15 +27,8 @@ import (
 // in-flight slot when a target sets max_concurrency but omits queue_size.
 const DefaultConcurrencyQueueSize = 1000
 
-// MaxTargetConcurrency is the highest value ValidateConfig accepts for a target's
-// max_concurrency or queue_size.
-//
-// The bound is about intent, not memory: slots is a chan struct{}, whose zero-size
-// element means capacity costs no buffer at all. What an absurd value does instead
-// is admit every request, so the cap the operator asked for silently stops applying.
-// Real per-target concurrency is bounded by what the upstream provider will accept —
-// orders of magnitude below this — so a larger value is a typo, not a deployment.
-const MaxTargetConcurrency = 10_000
+// MaxTargetConcurrency moved to the config package; it is re-exported as an
+// alias in config_aliases.go.
 
 // providerLimiter bounds how many requests may be in flight against a single
 // target, and how many may wait for a slot.
@@ -61,8 +54,15 @@ func newProviderLimiter(maxConcurrency, queueSize int) *providerLimiter {
 //
 // It returns ErrProviderSaturated immediately when the queue is already full —
 // callers get a fast, explicit backpressure signal rather than blocking forever —
-// and ctx.Err() when the caller goes away while waiting, so a cancelled request
-// never occupies a slot.
+// and sheds a request whose context ends while it is still queued, so a cancelled
+// request never occupies a slot.
+//
+// Both sheds carry ErrProviderSaturated, because both are the gateway turning work
+// away under its own concurrency limit rather than anything the target did. That
+// distinction is what keeps the target's circuit breaker out of it: a request shed
+// from the queue never reached the provider, and blaming it would open the breaker
+// on a perfectly healthy target every time a burst outlasts request_timeout. The
+// context error stays in the chain so callers still see why the wait ended.
 func (l *providerLimiter) acquire(ctx context.Context) error {
 	select {
 	case l.slots <- struct{}{}:
@@ -80,7 +80,7 @@ func (l *providerLimiter) acquire(ctx context.Context) error {
 	case l.slots <- struct{}{}:
 		return nil
 	case <-ctx.Done():
-		return ctx.Err()
+		return fmt.Errorf("%w: %w", providers.ErrProviderSaturated, ctx.Err())
 	}
 }
 
@@ -129,22 +129,54 @@ func (p *limitedProvider) CompleteStream(ctx context.Context, req providers.Requ
 	go func() {
 		defer p.lim.release()
 		defer close(out)
-		for chunk := range upstream {
+		for {
 			select {
-			case out <- chunk:
-			case <-ctx.Done():
-				// The consumer abandoned the stream. Keep draining upstream so the
-				// provider's sender goroutine can finish and close its channel rather
-				// than blocking forever on a send nobody will receive, then release
-				// the slot.
-				//nolint:revive // empty-block: consuming the remaining chunks IS the work
-				for range upstream {
+			case chunk, ok := <-upstream:
+				if !ok {
+					return
 				}
+				select {
+				case out <- chunk:
+				case <-ctx.Done():
+					drainPending(upstream)
+					return
+				}
+			case <-ctx.Done():
+				// Selecting on the RECEIVE matters as much as on the send. A provider
+				// that returns a channel and then never sends leaves the send arm
+				// unreachable, so without this arm the forwarder sits blocked here and
+				// the slot stays taken until the provider closes — which for a hung
+				// upstream is never, and the whole target's queue waits behind it.
+				drainPending(upstream)
 				return
 			}
 		}
 	}()
 	return out, nil
+}
+
+// drainPending takes what upstream has ready — including a send a provider has
+// already parked on it — so that provider's sender goroutine can finish and
+// close its channel instead of blocking on a send nobody will receive.
+//
+// It never waits. Waiting is what the concurrency slot cannot afford: the slot
+// is released only once this forwarder returns, and a provider that has hung is
+// exactly the one that would never let an unbounded drain finish. Nothing is
+// normally parked anyway — every streaming provider sends through
+// core.SendChunk, which abandons a pending send on the same ctx that ended
+// here — so this covers only the instant between a send being parked and that
+// abandonment, and any provider that does not guard its sends at all.
+func drainPending(upstream <-chan providers.StreamChunk) {
+	for {
+		select {
+		case _, ok := <-upstream:
+			if !ok {
+				return
+			}
+		default:
+			return
+		}
+	}
 }
 
 // decorateProvider composes the per-target decorators around p.
@@ -162,30 +194,11 @@ func decorateProvider(name string, p providers.Provider, cb *circuitbreaker.Circ
 	return p
 }
 
-// withTargetSlot runs fn under target's concurrency limiter, gating only the
-// upstream call — never the surrounding plugin-governance pipeline, so a
-// budget or rate-limit rejection never holds a slot. It returns fn(ctx)
-// directly when target has no limiter configured.
-//
-// This is the call-site equivalent of limitedProvider.Complete for surfaces
-// (Embed, GenerateImage) that resolve a capability interface directly out of
-// the registry instead of through decorateProvider: those values must not be
-// wrapped, since a wrapper embedding only providers.Provider would fail the
-// EmbeddingProvider / ImageProvider type assertion the caller already made.
-func (g *Gateway) withTargetSlot(ctx context.Context, target string, fn func(context.Context) error) error {
-	g.mu.RLock()
-	lim := g.limiters[target]
-	g.mu.RUnlock()
-
-	if lim == nil {
-		return fn(ctx)
-	}
-	if err := lim.acquire(ctx); err != nil {
-		return err
-	}
-	defer lim.release()
-	return fn(ctx)
-}
+// The embeddings and image surfaces used to reach the limiter through a
+// withTargetSlot helper here, because they resolved a capability interface out
+// of the registry and could not be wrapped by decorateProvider. They now share
+// the pipeline's callUnderResilience, which applies the limiter at the call site
+// for every surface, so the helper had no callers left.
 
 // ensureProviderLimitersLocked creates a concurrency limiter for every target that
 // configures one. Caller must hold g.mu.

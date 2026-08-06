@@ -28,23 +28,6 @@ func TestNewAI21(t *testing.T) {
 	}
 }
 
-func TestAI21Provider_SupportedModels(t *testing.T) {
-	p, _ := New("test-key", "")
-	models := p.SupportedModels()
-	if len(models) == 0 {
-		t.Error("SupportedModels() returned empty")
-	}
-	found := false
-	for _, m := range models {
-		if m == "jamba-1.5-large" {
-			found = true
-		}
-	}
-	if !found {
-		t.Error("jamba-1.5-large not found in supported models")
-	}
-}
-
 func TestAI21Provider_SupportsModel(t *testing.T) {
 	p, _ := New("test-key", "")
 	if !p.SupportsModel("jamba-1.5-large") {
@@ -52,16 +35,6 @@ func TestAI21Provider_SupportsModel(t *testing.T) {
 	}
 	if !p.SupportsModel("any-model") {
 		t.Error("passthrough: expected all models to return true")
-	}
-}
-
-func TestAI21Provider_Models(t *testing.T) {
-	p, _ := New("test-key", "")
-	models := p.Models()
-	for _, m := range models {
-		if m.OwnedBy != "ai21" {
-			t.Errorf("ModelInfo.OwnedBy = %q, want ai21", m.OwnedBy)
-		}
 	}
 }
 
@@ -193,8 +166,8 @@ func TestAI21Provider_Complete_JurassicModel(t *testing.T) {
 // core.ParseStatusCode can recover.
 func TestAI21Provider_Complete_JurassicAPIError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/j2-ultra/complete" {
-			t.Errorf("path = %q, want /j2-ultra/complete", r.URL.Path)
+		if r.URL.Path != "/v1/j2-ultra/complete" {
+			t.Errorf("path = %q, want /v1/j2-ultra/complete", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -217,7 +190,7 @@ func TestAI21Provider_Complete_JurassicAPIError(t *testing.T) {
 
 // TestAI21Provider_Complete_RoutesByModelFamily verifies Complete dispatches by
 // model family: Jurassic (j2-*) models hit the native /<model>/complete endpoint
-// while Jamba models hit the OpenAI-compatible /chat/completions endpoint.
+// while Jamba models hit the OpenAI-compatible /v1/chat/completions endpoint.
 func TestAI21Provider_Complete_RoutesByModelFamily(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -228,13 +201,13 @@ func TestAI21Provider_Complete_RoutesByModelFamily(t *testing.T) {
 		{
 			name:     "jurassic model hits /<model>/complete",
 			model:    "j2-ultra",
-			wantPath: "/j2-ultra/complete",
+			wantPath: "/v1/j2-ultra/complete",
 			respBody: `{"id":"j2-1","completions":[{"data":{"text":"hi","tokens":[]},"finishReason":{"reason":"stop"}}]}`,
 		},
 		{
-			name:     "jamba model hits /chat/completions",
+			name:     "jamba model hits /v1/chat/completions",
 			model:    "jamba-large-1.7",
-			wantPath: "/chat/completions",
+			wantPath: "/v1/chat/completions",
 			respBody: `{"id":"chatcmpl-1","model":"jamba-large-1.7","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{}}`,
 		},
 	}
@@ -315,7 +288,7 @@ func TestAI21Provider_CompleteStream_JambaAPIError(t *testing.T) {
 }
 
 // TestAI21Provider_Complete_JambaRequestShape verifies the Jamba path issues a
-// POST to /chat/completions with Bearer auth and forwards the requested model.
+// POST to /v1/chat/completions with Bearer auth and forwards the requested model.
 func TestAI21Provider_Complete_JambaRequestShape(t *testing.T) {
 	var (
 		gotMethod string
@@ -350,8 +323,8 @@ func TestAI21Provider_Complete_JambaRequestShape(t *testing.T) {
 	if gotMethod != http.MethodPost {
 		t.Errorf("method = %q, want POST", gotMethod)
 	}
-	if gotPath != "/chat/completions" {
-		t.Errorf("path = %q, want /chat/completions", gotPath)
+	if gotPath != "/v1/chat/completions" {
+		t.Errorf("path = %q, want /v1/chat/completions", gotPath)
 	}
 	if gotAuth != "Bearer test-key" {
 		t.Errorf("Authorization = %q, want 'Bearer test-key'", gotAuth)
@@ -394,5 +367,196 @@ func TestAI21Provider_Complete_DetailError(t *testing.T) {
 	}
 	if code := core.ParseStatusCode(err); code != http.StatusUnauthorized {
 		t.Errorf("ParseStatusCode = %d, want 401", code)
+	}
+}
+
+// TestAI21Provider_Complete_JurassicModelPathSegment verifies the Jurassic
+// /complete route keeps a caller-supplied model inside its own path segment: an
+// ordinary model reaches the endpoint unchanged, while a traversal- or
+// separator-shaped one is refused before any request carrying the operator's API
+// key leaves the process.
+func TestAI21Provider_Complete_JurassicModelPathSegment(t *testing.T) {
+	cases := []struct {
+		name     string
+		model    string
+		wantPath string // empty means the request must be rejected
+	}{
+		{name: "plain model", model: "j2-ultra", wantPath: "/v1/j2-ultra/complete"},
+		{name: "space is escaped", model: "j2 ultra", wantPath: "/v1/j2 ultra/complete"},
+		{name: "parent traversal", model: "../../v1/keys"},
+		{name: "single dot", model: "."},
+		{name: "double dot", model: ".."},
+		{name: "embedded separator", model: "j2/ultra"},
+		{name: "backslash separator", model: `j2\ultra`},
+		{name: "empty", model: ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotPath string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotPath = r.URL.Path
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"id":"j2-1","completions":[]}`)
+			}))
+			defer srv.Close()
+
+			p, err := New("test-key", srv.URL)
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			_, err = p.Complete(context.Background(), core.Request{
+				Model:    tc.model,
+				Messages: []core.Message{{Role: core.RoleUser, Content: "Hi"}},
+			})
+
+			if tc.wantPath == "" {
+				if err == nil {
+					t.Fatalf("Complete(%q) succeeded; want rejection", tc.model)
+				}
+				if gotPath != "" {
+					t.Errorf("Complete(%q) reached the AI21 host at %q", tc.model, gotPath)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Complete(%q) error: %v", tc.model, err)
+			}
+			if gotPath != tc.wantPath {
+				t.Errorf("path = %q, want %q", gotPath, tc.wantPath)
+			}
+		})
+	}
+}
+
+// TestAI21Provider_Complete_JurassicJoinsConversationAndRefusesImages covers the
+// one thing the legacy /complete shim must never do: send a single prompt built
+// from part of a request and report success. It took only the last user message,
+// so a system prompt, the earlier turns of a conversation and any image part were
+// dropped silently under a 200.
+//
+// A conversation now reaches the endpoint joined, one line per turn with a
+// trailing completion cue — lossy in that the model reads the role names as text,
+// but every message travels. Only content no prompt string can carry (an image
+// part) is refused, and it is refused before the call.
+func TestAI21Provider_Complete_JurassicJoinsConversationAndRefusesImages(t *testing.T) {
+	cases := []struct {
+		name       string
+		messages   []core.Message
+		wantPrompt string // non-empty: the request must reach AI21 carrying this
+	}{
+		{
+			name:       "single user message",
+			messages:   []core.Message{{Role: core.RoleUser, Content: "Hi"}},
+			wantPrompt: "user: Hi\nassistant: ",
+		},
+		{
+			name: "text content parts are collapsed into the turn, so nothing is lost",
+			messages: []core.Message{{Role: core.RoleUser, Content: "ab", ContentParts: []core.ContentPart{
+				{Type: core.ContentTypeText, Text: "a"},
+				{Type: core.ContentTypeText, Text: "b"},
+			}}},
+			wantPrompt: "user: ab\nassistant: ",
+		},
+		{
+			name: "every turn of a conversation reaches the endpoint",
+			messages: []core.Message{
+				{Role: core.RoleSystem, Content: "You are terse."},
+				{Role: core.RoleUser, Content: "first"},
+				{Role: core.RoleAssistant, Content: "reply"},
+				{Role: core.RoleUser, Content: "second"},
+			},
+			wantPrompt: "system: You are terse.\nuser: first\nassistant: reply\nuser: second\nassistant: ",
+		},
+		{
+			name:       "a lone system message still travels",
+			messages:   []core.Message{{Role: core.RoleSystem, Content: "you are terse"}},
+			wantPrompt: "system: you are terse\nassistant: ",
+		},
+		{
+			name: "an image part has no field to travel in",
+			messages: []core.Message{{Role: core.RoleUser, Content: "what is this", ContentParts: []core.ContentPart{
+				{Type: core.ContentTypeText, Text: "what is this"},
+				{Type: "image_url", ImageURL: &core.ImageURLPart{URL: "https://example.com/a.png"}},
+			}}},
+		},
+		{
+			name: "an image part in an earlier turn is refused too",
+			messages: []core.Message{
+				{Role: core.RoleUser, Content: "look", ContentParts: []core.ContentPart{
+					{Type: "image_url", ImageURL: &core.ImageURLPart{URL: "https://example.com/a.png"}},
+				}},
+				{Role: core.RoleAssistant, Content: "ok"},
+				{Role: core.RoleUser, Content: "and now?"},
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var called bool
+			var gotPrompt string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				called = true
+				var body struct {
+					Prompt string `json:"prompt"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Errorf("decode forwarded body: %v", err)
+				}
+				gotPrompt = body.Prompt
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"id":"j2-1","completions":[{"data":{"text":"ok"},"finishReason":{"reason":"stop"}}]}`)
+			}))
+			defer srv.Close()
+
+			p, err := New("test-key", srv.URL)
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			_, err = p.Complete(context.Background(), core.Request{
+				Model:    "j2-ultra",
+				Messages: tc.messages,
+			})
+
+			if tc.wantPrompt != "" {
+				if err != nil {
+					t.Fatalf("Complete() error: %v", err)
+				}
+				if gotPrompt != tc.wantPrompt {
+					t.Errorf("forwarded prompt = %q, want %q", gotPrompt, tc.wantPrompt)
+				}
+				return
+			}
+
+			if err == nil {
+				t.Fatal("Complete() succeeded; content the endpoint cannot express must be refused, not partially sent")
+			}
+			if got := core.ParseStatusCode(err); got != http.StatusBadRequest {
+				t.Errorf("ParseStatusCode = %d, want %d — the caller can fix this and no retry can", got, http.StatusBadRequest)
+			}
+			if called {
+				t.Errorf("a refused request still reached AI21 (prompt %q); it must be refused before the call", gotPrompt)
+			}
+		})
+	}
+}
+
+// TestNewAI21_BaseURLIsTheAPIRoot pins the shape a base URL is written in: the
+// API root, used verbatim. The one net: a bare host is not an API root, so it
+// adopts the trailing version segment of the provider's default root.
+func TestNewAI21_BaseURLIsTheAPIRoot(t *testing.T) {
+	for base, want := range map[string]string{
+		"":                                  "https://api.ai21.com/studio/v1",
+		"https://api.ai21.com":              "https://api.ai21.com/v1",
+		"https://proxy.example.com/ai21/v1": "https://proxy.example.com/ai21/v1",
+	} {
+		p, err := New("test-key", base)
+		if err != nil {
+			t.Fatalf("New(_, %q) error: %v", base, err)
+		}
+		if got := p.BaseURL(); got != want {
+			t.Errorf("New(_, %q).BaseURL() = %q, want %q", base, got, want)
+		}
 	}
 }

@@ -39,7 +39,7 @@ func TestMeter_SuppressUsageForClient_AccountingSeesRealUsage(t *testing.T) {
 		MetricModel:            "gpt-4o",
 		Catalog:                models.Catalog{},
 		SuppressUsageForClient: true, // client sent include_usage:false
-		CompletionFn: func(_ context.Context, resp *providers.Response) error {
+		CompletionFn: func(_ context.Context, resp *providers.Response, _ Measurements) error {
 			completionFnCalled = true
 			pluginSawUsage = resp.Usage
 			return nil

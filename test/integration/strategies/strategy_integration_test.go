@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	aigateway "github.com/ferro-labs/ai-gateway"
-	"github.com/ferro-labs/ai-gateway/internal/testutil"
+	"github.com/ferro-labs/ai-gateway/config"
 	"github.com/ferro-labs/ai-gateway/providers/core"
+	"github.com/ferro-labs/ai-gateway/test/testutil"
 )
 
 // miniStub is a minimal Provider for strategy tests.
@@ -28,8 +28,8 @@ type miniStub struct {
 
 var _ core.Provider = (*miniStub)(nil)
 
-func (s *miniStub) Name() string              { return s.name }
-func (s *miniStub) SupportedModels() []string { return s.models }
+func (s *miniStub) Name() string               { return s.name }
+func (s *miniStub) ConfiguredModels() []string { return s.models }
 func (s *miniStub) SupportsModel(m string) bool {
 	for _, n := range s.models {
 		if n == m {
@@ -55,7 +55,7 @@ func (s *miniStub) Complete(ctx context.Context, req core.Request) (*core.Respon
 	}, nil
 }
 
-const stratModel = "strat-model-v1"
+const stratModel = "strategy-model-v1"
 
 // TestStrategy_Fallback_PrimaryFails_SecondarySucceeds verifies that when the
 // primary target errors, the fallback strategy tries the secondary and returns
@@ -70,9 +70,9 @@ func TestStrategy_Fallback_PrimaryFails_SecondarySucceeds(t *testing.T) {
 	}
 	secondary := &miniStub{name: "secondary", models: []string{stratModel}}
 
-	gw, err := testutil.NewTestGateway(t, aigateway.Config{
-		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeFallback},
-		Targets: []aigateway.Target{
+	gw, err := testutil.NewTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeFallback},
+		Targets: []config.Target{
 			{VirtualKey: "primary"},
 			{VirtualKey: "secondary"},
 		},
@@ -101,9 +101,9 @@ func TestStrategy_Fallback_PrimaryFails_SecondarySucceeds(t *testing.T) {
 
 // TestStrategy_Fallback_AllFail returns an error wrapping all provider failures.
 func TestStrategy_Fallback_AllFail(t *testing.T) {
-	gw, err := testutil.NewTestGateway(t, aigateway.Config{
-		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeFallback},
-		Targets: []aigateway.Target{
+	gw, err := testutil.NewTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeFallback},
+		Targets: []config.Target{
 			{VirtualKey: "p1"},
 			{VirtualKey: "p2"},
 		},
@@ -152,9 +152,9 @@ func TestStrategy_LoadBalance_DistributesRequests(t *testing.T) {
 		}
 	}
 
-	gw, err := testutil.NewTestGateway(t, aigateway.Config{
-		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeLoadBalance},
-		Targets: []aigateway.Target{
+	gw, err := testutil.NewTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeLoadBalance},
+		Targets: []config.Target{
 			{VirtualKey: "lb1", Weight: 1.0},
 			{VirtualKey: "lb2", Weight: 1.0},
 		},
@@ -221,9 +221,9 @@ func TestStrategy_LeastLatency_LocksOntoFastestSeen(t *testing.T) {
 		},
 	}
 
-	gw, err := testutil.NewTestGateway(t, aigateway.Config{
-		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeLatency},
-		Targets: []aigateway.Target{
+	gw, err := testutil.NewTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeLatency},
+		Targets: []config.Target{
 			{VirtualKey: "fast"},
 			{VirtualKey: "slow"},
 		},

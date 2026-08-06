@@ -3,42 +3,38 @@ package aigateway
 import (
 	"context"
 	"errors"
-	"fmt"
-	"log/slog"
 	"runtime/trace"
 	"sync"
 	"time"
 
-	"github.com/ferro-labs/ai-gateway/internal/authctx"
-	"github.com/ferro-labs/ai-gateway/internal/circuitbreaker"
 	"github.com/ferro-labs/ai-gateway/internal/events"
-	"github.com/ferro-labs/ai-gateway/internal/logging"
-	"github.com/ferro-labs/ai-gateway/internal/metrics"
 	"github.com/ferro-labs/ai-gateway/internal/streamwrap"
 	"github.com/ferro-labs/ai-gateway/observability"
+	"github.com/ferro-labs/ai-gateway/pkg/logger"
+	"github.com/ferro-labs/ai-gateway/pkg/metrics"
 	"github.com/ferro-labs/ai-gateway/plugin"
 	"github.com/ferro-labs/ai-gateway/providers"
-	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
-// Streaming request path (RouteStream) plus its streaming provider-resolution
-// and target-ordering helpers, the streaming latency/cost candidate types, and
-// the generic target-list helpers.
+// streamAfterBudget bounds the detached after_request stage on the streaming
+// path. Dropping the request's cancellation also drops its deadline, and a
+// stage that only records what already happened must not be able to hold the
+// metering goroutine open on an unresponsive store. It matches the bound the
+// on_error stage applies for the same reason.
+const streamAfterBudget = 10 * time.Second
 
 // RouteStream runs before-request plugins then returns a metered streaming
-// response channel. Provider resolution follows the configured strategy mode;
-// when no configured target matches the model it falls back to any registered
-// streaming-capable provider (matching Route's discovery-provider fallbacks).
-// Synchronous stream-start failures are retried and, in fallback mode,
-// advanced to the next target using the same per-target retry policy that
-// /v1/chat/completions honors — before any channel is exposed to the caller.
-// Once CompleteStream succeeds, nothing is retried or replayed. Target
-// selection, each CompleteStream call, and the retry/backoff waits between
-// them are bounded by Config.RequestTimeout, if configured; a stream that
-// does start is never bounded by it once its channel is visible below — see
-// startStreamWithStrategy and raceCompleteStream. Prometheus metrics and
-// event hooks are emitted when the returned channel drains (matching the
-// behaviour of Route for non-streaming).
+// response channel. The stream START goes through the same request pipeline
+// /v1/chat/completions uses, so target ordering, per-target retry, the circuit
+// breaker, the concurrency limit and error classification are identical on both
+// surfaces; when no configured target serves the model the request is refused,
+// because targets is an allowlist. Once CompleteStream succeeds, nothing is
+// retried or replayed. Target selection, each CompleteStream call, and the
+// retry/backoff waits between them are bounded by Config.RequestTimeout, if
+// configured; a stream that does start is never bounded by it once its channel
+// is visible below — see startStreamWithStrategy and raceCompleteStream.
+// Prometheus metrics and event hooks are emitted when the returned channel
+// drains (matching the behaviour of Route for non-streaming).
 //
 // When MCP servers are configured the request is routed through Route instead
 // so that the full agentic tool-call loop can run. The final response is
@@ -73,11 +69,15 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 	releasePluginManager := func() {
 		releasePluginsOnce.Do(releasePlugins)
 	}
+	// See Route: this entry point is exported too, and the trace ID read here is
+	// the one every later read in this function (the meter meta, the span
+	// finisher, the failure path) inherits from ctx.
+	ctx = logger.EnsureTraceID(ctx)
 	ctx, span := obs.StartRequestSpan(ctx, observability.RequestAttrs{
 		Operation:       "chat",
 		RequestModel:    req.Model,
 		IsStream:        true,
-		TraceID:         logging.TraceIDFromContext(ctx),
+		TraceID:         logger.TraceIDFromContext(ctx),
 		RoutingStrategy: strategyMode,
 	})
 	streamEnded := false
@@ -120,6 +120,16 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 		return responseStream(resp), nil
 	}
 
+	// Admission before the plugin stage, so a model no target can stream cannot
+	// spend a rate-limit token or a budget on the way to its 404. The on_error
+	// stage still runs, so the request is recorded. It stands down when a
+	// transform plugin may still rewrite the model. See admitModel.
+	if err := g.admitModel(ctx, plugins, req.Model, streamCapable); err != nil {
+		g.recordStreamStartFailure(ctx, span, obs, plugins, g.newPluginContext(ctx, plugins, span, &req), "", req.Model, err, start, hooksEnabled, obsEventsActive)
+		releasePluginManager()
+		return nil, err
+	}
+
 	// Run before-request plugins (word-filter, max-token, rate-limit, etc.).
 	pctx, early, err := g.runBeforePluginsStream(ctx, span, obs, plugins, releasePluginManager, &req, start, hooksEnabled, obsEventsActive)
 	if err != nil {
@@ -142,42 +152,18 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 	// timer, deferred here purely so a panic can't leak it.
 	startCtx, cancelStart := withRequestDeadline(ctx, requestTimeout)
 	defer cancelStart()
-	sp, providerName, rawCh, err := g.startStreamWithStrategy(startCtx, ctx, req)
+	providerName, rawCh, targetBreaker, err := g.startStreamWithStrategy(startCtx, ctx, req)
 	span.SetAttribute(observability.AttrGenAISystem, providerName)
 	// Stamp the resolved target key (virtual key = provider name in this routing layer).
 	if providerName != "" {
 		span.SetAttribute(observability.AttrFerroRoutingTargetKey, providerName)
 	}
-	if err == nil && logging.Enabled(ctx, slog.LevelDebug) {
-		logging.FromContext(ctx).Debug("stream request started", "model", req.Model, "provider", providerName)
+	if err == nil && g.log.Enabled(ctx, logger.LevelDebug) {
+		g.log.Ctx(ctx).Debug("stream request started", "model", req.Model, "provider", providerName)
 	}
 	if err != nil {
-		errType := "provider_error"
-		if errors.Is(err, circuitbreaker.ErrCircuitOpen) {
-			errType = "circuit_open"
-		}
-		if pctx != nil {
-			pctx.Error = err
-			plugins.RunOnError(ctx, pctx)
-			plugin.PutContext(pctx)
-			releasePluginManager()
-		}
-		// Providers that accept any model ID (openrouter, ollama, azure_openai, …)
-		// let a raw client model reach this counter, so bound it.
-		metrics.ForRequest(providerName, g.metricModel(req.Model)).Error.Inc()
-		metrics.ForProviderError(providerName, errType).Inc()
-		span.SetError(err)
-		if hooksEnabled || obsEventsActive {
-			he := failedEventData(
-				logging.TraceIDFromContext(ctx),
-				providerName,
-				req.Model,
-				err.Error(),
-				time.Since(start),
-				true,
-			)
-			g.dispatchRequestEvent(ctx, obs, hooksEnabled, obsEventsActive, he)
-		}
+		g.recordStreamStartFailure(ctx, span, obs, plugins, pctx, providerName, req.Model, err, start, hooksEnabled, obsEventsActive)
+		releasePluginManager()
 		return nil, err
 	}
 
@@ -195,7 +181,7 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 		// provider-reported model.
 		MetricModel:     g.metricModel(req.Model),
 		Catalog:         catalog,
-		TraceID:         logging.TraceIDFromContext(ctx),
+		TraceID:         logger.TraceIDFromContext(ctx),
 		LatencyRecorder: g.latencyTracker.Record,
 		// Usage is always requested upstream so metering, cost, and the budget
 		// plugin see real numbers; a caller that asked not to receive it just
@@ -205,16 +191,50 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 	if hooksEnabled {
 		meta.PublishFn = g.publishEvent
 	}
-	if wrapped, ok := sp.(*cbProvider); ok {
-		cb := wrapped.cb
-		cbName := wrapped.name
+	// The breaker's outcome is resolved when the STREAM ends, not when the start
+	// call returns — the pipeline was told as much (responseOutlivesCall), so it
+	// left the probe cbProvider admitted still held and nothing else will
+	// resolve it. targetBreaker is the INSTANCE that admitted the probe, handed
+	// back by the pipeline — a lookup by name here would race ReloadConfig,
+	// which can retire that instance and install a fresh one under the same key
+	// while the start is in flight.
+	if targetBreaker != nil {
 		meta.CircuitBreakerOutcome = func(err error) {
-			recordCircuitBreakerOutcome(ctx, cb, cbName, err)
+			recordCircuitBreakerOutcome(ctx, targetBreaker, providerName, err)
 		}
 	}
 	if pctx != nil {
-		meta.CompletionFn = func(ctx context.Context, resp *providers.Response) error {
+		meta.CompletionFn = func(ctx context.Context, resp *providers.Response, m streamwrap.Measurements) error {
+			// The after stage runs from the metering goroutine, which outlives
+			// the handler. By the time it runs the response has been delivered
+			// in full, so the client's connection is no longer a reason to
+			// abandon the bookkeeping it records — and a client that hangs up as
+			// the last chunk lands cancels the request context in exactly that
+			// window. The stage's durable success row is the only terminal row a
+			// completed stream ever writes, so losing it leaves the request
+			// visible in no operator-facing surface. Values and the trace context
+			// are preserved, so the row still carries the request's trace ID.
+			// Cancellation is replaced by streamAfterBudget rather than removed.
+			//
+			// The on_error stage does this for itself; this is the same
+			// reasoning for the stage that records a success. The non-streaming
+			// path is deliberately left alone: there RunAfter runs inside Route,
+			// before the handler has answered, so it is still the caller's
+			// request and its cancellation still applies.
+			ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), streamAfterBudget)
+			defer cancel()
+
 			pctx.Response = resp
+			pctx.Target = providerName
+			// Time to first token exists only on this path, and only until the
+			// channel has drained — an after_request plugin cannot derive it.
+			pctx.Measurements = plugin.Measurements{
+				DurationMs: m.DurationMs,
+				TTFTMs:     m.TTFTMs,
+				HasTTFT:    m.HasTTFT,
+				CostUSD:    m.CostUSD,
+				HasCost:    m.HasCost,
+			}
 			err := plugins.RunAfter(ctx, pctx)
 			if pctx.Response != nil {
 				*resp = *pctx.Response
@@ -228,11 +248,22 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 			releasePluginManager()
 			return err
 		}
-		meta.ErrorFn = func(ctx context.Context, err error) {
+		meta.ErrorFn = func(ctx context.Context, err error, m streamwrap.Measurements) {
 			if pctx == nil {
 				return
 			}
 			pctx.Error = err
+			// A stream that dies after its first chunk is the failure with the
+			// least evidence anywhere else, and naming the provider it died on is
+			// most of what the row is for.
+			pctx.Target = providerName
+			// No cost: the request was never billed, and no usage reached the
+			// catalog to price. The timings up to the failure are real.
+			pctx.Measurements = plugin.Measurements{
+				DurationMs: m.DurationMs,
+				TTFTMs:     m.TTFTMs,
+				HasTTFT:    m.HasTTFT,
+			}
 			plugins.RunOnError(ctx, pctx)
 			plugin.PutContext(pctx)
 			pctx = nil
@@ -249,8 +280,16 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 	// obsProvider and obsEventsActive are the snapshot locals captured at the
 	// top of RouteStream — they must not re-read g.obs / g.obsEventsActive here.
 	obsProvider := obs
-	traceID := logging.TraceIDFromContext(ctx)
+	traceID := logger.TraceIDFromContext(ctx)
 	meta.SpanFinisher = streamwrap.SpanFinisherFunc(func(o streamwrap.StreamOutcome) {
+		// The model the PROVIDER reported, which is only knowable once chunks
+		// have arrived — so it is stamped here rather than beside
+		// gen_ai.request.model above. Without it the streaming span was the one
+		// root span with no gen_ai.response.model, and a consumer comparing
+		// requested against served model simply had no answer for streams.
+		if o.Model != "" {
+			finishSpan.SetAttribute(observability.AttrGenAIResponseModel, o.Model)
+		}
 		finishSpan.SetTokens(o.TokensIn, o.TokensOut, o.ReasoningIn)
 		finishSpan.SetCost(observability.CostBreakdown{
 			TotalUSD:      o.Cost.TotalUSD,
@@ -275,7 +314,7 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 					traceID,
 					providerName,
 					req.Model,
-					o.ErrorMsg,
+					errors.New(o.ErrorMsg),
 					time.Duration(o.TTLTMs*float64(time.Millisecond)),
 					true,
 				)
@@ -303,6 +342,51 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 	return streamwrap.Meter(ctx, rawCh, start, meta), nil
 }
 
+// recordStreamStartFailure finalizes a streaming request that never produced a
+// channel: one refused before the plugin stage ran, and one whose start the
+// pipeline could not complete. It runs the on_error stage so the request is
+// recorded, counts the failure, stamps the span and dispatches the failed
+// event; the caller returns the error and releases the plugin manager.
+//
+// providerName is the last target attempted, and is empty when none was — a
+// plugin denial, or a model no configured target serves.
+//
+// pctx is nil when no plugins are configured; it is retired here, so the caller
+// must not use it afterwards.
+func (g *Gateway) recordStreamStartFailure(ctx context.Context, span observability.Span, obs observability.Provider, plugins *plugin.Manager, pctx *plugin.Context, providerName, model string, err error, start time.Time, hooksEnabled, obsEventsActive bool) {
+	if pctx != nil {
+		pctx.Error = err
+		pctx.Target = providerName
+		// The stream never started, so there is no first token and no cost —
+		// but the attempt still took time, and a provider that took ten
+		// seconds to refuse is a different fault from one that refused at once.
+		pctx.Measurements = plugin.Measurements{DurationMs: float64(time.Since(start).Microseconds()) / 1000.0}
+		plugins.RunOnError(ctx, pctx)
+		plugin.PutContext(pctx)
+	}
+	// Providers that accept any model ID (openrouter, ollama, azure_openai, …)
+	// let a raw client model reach this counter, so bound it.
+	requestMetrics := metrics.ForRequest(providerName, g.metricModel(model))
+	// A stream that never started still took time, and how long it took to
+	// fail belongs in the same histogram as how long a success took —
+	// otherwise the quantiles answer "how fast are the streams that worked".
+	requestMetrics.Duration.Observe(time.Since(start).Seconds())
+	requestMetrics.Error.Inc()
+	recordProviderErrorCtx(ctx, providerName, err)
+	span.SetError(err)
+	if hooksEnabled || obsEventsActive {
+		he := failedEventData(
+			logger.TraceIDFromContext(ctx),
+			providerName,
+			model,
+			err,
+			time.Since(start),
+			true,
+		)
+		g.dispatchRequestEvent(ctx, obs, hooksEnabled, obsEventsActive, he)
+	}
+}
+
 // runBeforePluginsStream runs before-request plugins for the streaming path
 // and finalizes bookkeeping on every path except "continue routing": a
 // non-nil err means the caller must return (nil, err) immediately (metrics,
@@ -317,250 +401,29 @@ func (g *Gateway) runBeforePluginsStream(ctx context.Context, span observability
 		return nil, nil, nil
 	}
 
-	pctx = plugin.NewContext(req)
-	pctx.Span = span // per-plugin child spans nest under the request span.
-	// Propagate the opaque key identifier so per-key plugins (rate-limit,
-	// budget) can scope limits to the authenticated caller. The raw bearer
-	// secret is never exposed here — only the stable APIKey.ID.
-	if keyID, ok := authctx.KeyID(ctx); ok {
-		pctx.Metadata["api_key"] = keyID
-	}
+	pctx = g.newPluginContext(ctx, plugins, span, req)
 	trace.WithRegion(ctx, "gateway.route_stream.plugins.before", func() {
-		early, err = g.runBeforePlugins(ctx, plugins, pctx, req)
+		early, err = g.runBeforePlugins(ctx, plugins, pctx, req, start)
 	})
 	if err != nil {
 		plugin.PutContext(pctx)
 		releasePluginManager()
-		recordPluginAbort(metrics.ForRequest("", g.metricModel(req.Model)), err)
+		// Same accounting the non-streaming path does for a rejected request:
+		// it took time too, and the histogram is meant to answer "how fast is
+		// the gateway", not "how fast are the requests that worked".
+		h := metrics.ForRequest("", g.metricModel(req.Model))
+		h.Duration.Observe(time.Since(start).Seconds())
+		recordPluginAbort(h, err)
 		return nil, nil, err
 	}
 	if early != nil {
 		if early.Created == 0 {
 			early.Created = time.Now().Unix()
 		}
-		g.recordSuccess(ctx, span, obs, early, time.Since(start), true, hooksEnabled, obsEventsActive)
+		g.recordCacheHit(ctx, span, obs, early, time.Since(start), true, hooksEnabled, obsEventsActive)
 		plugin.PutContext(pctx)
 		releasePluginManager()
 		return nil, early, nil
 	}
 	return pctx, nil, nil
-}
-
-// startStreamWithStrategy tries configured, model-compatible streaming
-// targets in strategy order. Fallback mode applies each target's retry policy
-// (runTargetAttempts) and advances to the next target on synchronous setup
-// failure; every other mode attempts only the first viable target, matching
-// the single-shot semantics Route's non-Fallback strategies already have. If
-// no configured target is even viable for the model (wrong model, not a
-// StreamProvider, not registered) it falls back to any registered
-// streaming-capable provider for the model — preserving v1.3.0's guarantee
-// that a provider registered outside the target list stays reachable for the
-// models it serves (see resolveFallbackStreamProviderLocked). A returned
-// channel is never replayed.
-//
-// startCtx bounds this whole selection/retry phase only — it is what
-// runTargetAttempts and strategies.WaitBeforeRetry check for expiry. streamCtx
-// is the context every CompleteStream call actually runs on and must stay
-// free of that deadline: a provider keeps reading its response body on
-// whatever context it was called with for as long as the returned channel is
-// alive, so a start-phase timeout attached to streamCtx would tear down an
-// already-successful stream the moment the clock ran out.
-func (g *Gateway) startStreamWithStrategy(startCtx, streamCtx context.Context, req providers.Request) (providers.StreamProvider, string, <-chan providers.StreamChunk, error) {
-	g.mu.Lock()
-	g.ensureCircuitBreakersLocked()
-	g.ensureProviderLimitersLocked()
-	g.mu.Unlock()
-
-	orderedKeys, err := g.streamingTargetOrder(req)
-	if err != nil {
-		return nil, "", nil, err
-	}
-	g.mu.RLock()
-	mode := g.config.Strategy.Mode
-	g.mu.RUnlock()
-
-	var (
-		lastErr      error
-		lastProvider string
-		anyViable    bool
-	)
-	for _, key := range orderedKeys {
-		g.mu.RLock()
-		sp, ok := g.streamingProviderForTargetLocked(key, req.Model)
-		g.mu.RUnlock()
-		if !ok {
-			continue
-		}
-		anyViable = true
-		providerName := sp.Name()
-
-		raw, attemptErr := g.attemptStreamStart(startCtx, streamCtx, key, sp, req)
-		if attemptErr == nil {
-			return sp, providerName, raw, nil
-		}
-		lastErr = fmt.Errorf("provider %s stream start: %w", key, attemptErr)
-		lastProvider = providerName
-		if mode != ModeFallback {
-			break
-		}
-	}
-
-	// No configured target even matches this model/streaming capability — try
-	// any registered streaming-capable provider for it (v1.3.0 behaviour). This
-	// runs regardless of strategy mode, exactly like the resolution-only
-	// fallback it replaces: it is never reached when at least one configured
-	// target was viable, so it never overrides a real fallback-mode failure
-	// above with an unconfigured provider.
-	if !anyViable {
-		g.mu.RLock()
-		name, sp, ok := g.resolveFallbackStreamProviderLocked(req.Model)
-		g.mu.RUnlock()
-		if ok {
-			raw, attemptErr := g.attemptStreamStart(startCtx, streamCtx, name, sp, req)
-			if attemptErr == nil {
-				return sp, sp.Name(), raw, nil
-			}
-			lastErr = fmt.Errorf("provider %s stream start: %w", name, attemptErr)
-			lastProvider = sp.Name()
-		}
-	}
-
-	if lastErr != nil {
-		return nil, lastProvider, nil, lastErr
-	}
-	return nil, "", nil, fmt.Errorf("%w: no streaming provider for %q", core.ErrNoCapableProvider, req.Model)
-}
-
-// attemptStreamStart runs the configured retry policy for one resolved
-// candidate (g.runTargetAttempts), racing each try's CompleteStream call
-// against startCtx via raceCompleteStream. Shared by the configured-target
-// loop and the registry-fallback candidate in startStreamWithStrategy so both
-// attempt a candidate identically.
-func (g *Gateway) attemptStreamStart(startCtx, streamCtx context.Context, key string, sp providers.StreamProvider, req providers.Request) (<-chan providers.StreamChunk, error) {
-	var raw <-chan providers.StreamChunk
-	err := g.runTargetAttempts(startCtx, key, func(attemptCtx context.Context) error {
-		var startErr error
-		trace.WithRegion(attemptCtx, "gateway.route_stream.provider.start", func() {
-			raw, startErr = raceCompleteStream(attemptCtx, streamCtx, sp, req)
-		})
-		if startErr == nil && raw == nil {
-			return fmt.Errorf("provider %s returned a nil stream", key)
-		}
-		return startErr
-	})
-	return raw, err
-}
-
-// raceCompleteStream bounds only the wait for sp.CompleteStream to return. The
-// call itself always runs on streamCtx; waitCtx is consulted solely to decide
-// how long to keep waiting for a result. If waitCtx expires first, the attempt
-// is abandoned and reported as a failure so runTargetAttempts can retry or
-// fall back, while the abandoned call keeps running on streamCtx and resolves
-// independently — its result, and any circuit-breaker bookkeeping
-// CompleteStream performs, land whenever the provider actually answers.
-//
-// An abandoned attempt that later succeeds hands back a live channel no caller
-// will ever read. Its producer would then block forever on the first send,
-// holding the provider connection until streamCtx is cancelled, so the
-// abandoning path drains that channel to completion instead of dropping it.
-func raceCompleteStream(waitCtx, streamCtx context.Context, sp providers.StreamProvider, req providers.Request) (<-chan providers.StreamChunk, error) {
-	type startResult struct {
-		ch  <-chan providers.StreamChunk
-		err error
-	}
-	done := make(chan startResult, 1)
-	go func() {
-		ch, err := sp.CompleteStream(streamCtx, req)
-		done <- startResult{ch, err}
-	}()
-	select {
-	case r := <-done:
-		return r.ch, r.err
-	case <-waitCtx.Done():
-		go func() {
-			if r := <-done; r.ch != nil {
-				for range r.ch { //nolint:revive // drain so the provider's producer can finish
-				}
-			}
-		}()
-		return nil, context.Cause(waitCtx)
-	}
-}
-
-// streamingTargetOrder resolves the strategy — the same object Route executes —
-// and asks it for the streaming target order, so both paths share one ordering
-// implementation. A getStrategy error surfaces identically on both paths; for
-// ValidateConfig-passing gateways getStrategy does not error here.
-func (g *Gateway) streamingTargetOrder(req providers.Request) ([]string, error) {
-	s, err := g.getStrategy()
-	if err != nil {
-		return nil, err
-	}
-	return s.SelectTargets(req)
-}
-
-func responseStream(resp *providers.Response) <-chan providers.StreamChunk {
-	ch := make(chan providers.StreamChunk, 1)
-	streamChoices := make([]providers.StreamChoice, len(resp.Choices))
-	for i, c := range resp.Choices {
-		streamChoices[i] = providers.StreamChoice{
-			Index: c.Index,
-			Delta: providers.MessageDelta{
-				Role:      c.Message.Role,
-				Content:   c.Message.Content,
-				ToolCalls: c.Message.ToolCalls,
-			},
-			FinishReason: c.FinishReason,
-		}
-	}
-	ch <- providers.StreamChunk{
-		ID:      resp.ID,
-		Object:  "chat.completion.chunk",
-		Created: resp.Created,
-		Model:   resp.Model,
-		Choices: streamChoices,
-		Usage:   &resp.Usage,
-	}
-	close(ch)
-	return ch
-}
-
-// resolveFallbackStreamProviderLocked returns any registered provider that
-// supports model via streaming, decorated with its own circuit breaker and
-// concurrency limiter, for use when no configured target matches. Preserving
-// this last-resort lookup is what keeps a model served by a
-// registered-but-unlisted provider streaming (v1.3.0 behaviour predating
-// per-target retry; see startStreamWithStrategy). Caller must hold g.mu (a
-// read lock is sufficient).
-func (g *Gateway) resolveFallbackStreamProviderLocked(model string) (string, providers.StreamProvider, bool) {
-	name, fallback, ok := g.findStreamingProviderMatchByModelLocked(model)
-	if !ok {
-		return "", nil, false
-	}
-	if decorated, dok := decorateProvider(name, g.providers[name], g.circuitBreakers[name], g.limiters[name]).(providers.StreamProvider); dok {
-		return name, decorated, true
-	}
-	return name, fallback, true
-}
-
-// streamingProviderForTargetLocked resolves the streaming-capable provider
-// for a single configured target key, applying its circuit breaker and
-// concurrency limiter decoration. Caller must hold g.mu (a read lock is
-// sufficient).
-func (g *Gateway) streamingProviderForTargetLocked(key, model string) (providers.StreamProvider, bool) {
-	p, ok := g.providers[key]
-	if !ok || !p.SupportsModel(model) {
-		return nil, false
-	}
-
-	sp, ok := p.(providers.StreamProvider)
-	if !ok {
-		return nil, false
-	}
-
-	// Apply the circuit breaker and concurrency limit configured for this target.
-	if decorated, ok := decorateProvider(key, p, g.circuitBreakers[key], g.limiters[key]).(providers.StreamProvider); ok {
-		return decorated, true
-	}
-	return sp, true
 }

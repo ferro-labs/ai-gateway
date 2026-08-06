@@ -6,7 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ferro-labs/ai-gateway/internal/circuitbreaker"
+	"github.com/ferro-labs/ai-gateway/config"
+	"github.com/ferro-labs/ai-gateway/pkg/circuitbreaker"
 	"github.com/ferro-labs/ai-gateway/providers"
 )
 
@@ -17,12 +18,12 @@ import (
 // forever, and /readyz — whose only provider signal is circuit state — keeps
 // reporting the pod ready while every request fails.
 func TestGateway_Route_RequestTimeoutTripsCircuitBreaker(t *testing.T) {
-	gw, err := newTestGateway(t, Config{
-		Strategy:       StrategyConfig{Mode: ModeSingle},
+	gw, err := newTestGateway(t, config.Config{
+		Strategy:       config.StrategyConfig{Mode: config.ModeSingle},
 		RequestTimeout: "30ms",
-		Targets: []Target{{
+		Targets: []config.Target{{
 			VirtualKey:     "hung",
-			CircuitBreaker: &CircuitBreakerConfig{FailureThreshold: 2, Timeout: "1m"},
+			CircuitBreaker: &config.CircuitBreakerConfig{FailureThreshold: 2, Timeout: "1m"},
 		}},
 	})
 
@@ -53,9 +54,9 @@ func TestGateway_Route_RequestTimeoutTripsCircuitBreaker(t *testing.T) {
 }
 
 func TestGateway_Route_RequestTimeoutBoundsTheRequest(t *testing.T) {
-	gw, err := newTestGateway(t, Config{
-		Strategy:       StrategyConfig{Mode: ModeSingle},
-		Targets:        []Target{{VirtualKey: "slow"}},
+	gw, err := newTestGateway(t, config.Config{
+		Strategy:       config.StrategyConfig{Mode: config.ModeSingle},
+		Targets:        []config.Target{{VirtualKey: "slow"}},
 		RequestTimeout: "50ms",
 	})
 
@@ -83,9 +84,9 @@ func TestGateway_Route_RequestTimeoutBoundsTheRequest(t *testing.T) {
 func TestGateway_Route_NoRequestTimeout_LeavesRequestUnbounded(t *testing.T) {
 	// With request_timeout omitted the gateway imposes no deadline of its own, so
 	// the slow provider runs to completion.
-	gw, err := newTestGateway(t, Config{
-		Strategy: StrategyConfig{Mode: ModeSingle},
-		Targets:  []Target{{VirtualKey: "slow"}},
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets:  []config.Target{{VirtualKey: "slow"}},
 	})
 
 	if err != nil {
@@ -119,11 +120,11 @@ func (p *slowCompleteProvider) Complete(ctx context.Context, _ providers.Request
 }
 
 func TestGateway_Route_ClientDeadlineDoesNotTripCircuit(t *testing.T) {
-	gw, err := newTestGateway(t, Config{
-		Strategy: StrategyConfig{Mode: ModeSingle},
-		Targets: []Target{{
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets: []config.Target{{
 			VirtualKey: "slow",
-			CircuitBreaker: &CircuitBreakerConfig{
+			CircuitBreaker: &config.CircuitBreakerConfig{
 				FailureThreshold: 2,
 			},
 		}},
@@ -164,11 +165,11 @@ func TestGateway_Route_ClientDeadlineDoesNotTripCircuit(t *testing.T) {
 }
 
 func TestGateway_RouteStream_ClientDeadlineDoesNotTripCircuit(t *testing.T) {
-	gw, err := newTestGateway(t, Config{
-		Strategy: StrategyConfig{Mode: ModeSingle},
-		Targets: []Target{{
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets: []config.Target{{
 			VirtualKey: "slow-stream",
-			CircuitBreaker: &CircuitBreakerConfig{
+			CircuitBreaker: &config.CircuitBreakerConfig{
 				FailureThreshold: 2,
 			},
 		}},
@@ -235,11 +236,11 @@ func TestGateway_RouteStream_ClientDeadlineDoesNotTripCircuit(t *testing.T) {
 
 func TestGateway_RouteStream_MidStreamFailureTripsCircuit(t *testing.T) {
 	streamErr := errors.New("mid-stream provider failure")
-	gw, err := newTestGateway(t, Config{
-		Strategy: StrategyConfig{Mode: ModeSingle},
-		Targets: []Target{{
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets: []config.Target{{
 			VirtualKey: "flaky-stream",
-			CircuitBreaker: &CircuitBreakerConfig{
+			CircuitBreaker: &config.CircuitBreakerConfig{
 				FailureThreshold: 2,
 			},
 		}},

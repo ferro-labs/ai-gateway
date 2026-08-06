@@ -110,13 +110,15 @@ func TestCustomPolicy(t *testing.T) {
 func TestPoliciesReturnsConfiguredList(t *testing.T) {
 	r := DefaultRedactor()
 	got := r.Policies()
-	if len(got) != 10 {
-		t.Fatalf("expected 10 default policies, got %d", len(got))
+	if len(got) != 16 {
+		t.Fatalf("expected 16 default policies, got %d", len(got))
 	}
 	wantNames := map[string]bool{
 		"email": true, "bearer_token": true, "jwt": true, "aws_access_key": true,
 		"anthropic_key": true, "openai_modern_key": true, "openai_key": true,
-		"gateway_key": true, "groq_key": true, "google_key": true,
+		"qwen_key": true, "perplexity_key": true, "gateway_key": true,
+		"groq_key": true, "google_key": true, "private_key_block": true,
+		"keyword_secret": true, "url_credential": true, "url_userinfo": true,
 	}
 	seen := make(map[string]bool, len(got))
 	for _, p := range got {

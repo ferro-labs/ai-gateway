@@ -8,17 +8,16 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/ferro-labs/ai-gateway/internal/discovery"
 	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
 	"github.com/ferro-labs/ai-gateway/providers/core"
-	"github.com/ferro-labs/ai-gateway/providers/internal/openaicompat"
+	"github.com/ferro-labs/ai-gateway/providers/core/openaicompat"
 )
 
 const (
 	// Name is the canonical identifier for the DeepSeek provider.
 	// Re-exported as providers.NameDeepSeek in providers/names.go.
 	Name           = "deepseek"
-	defaultBaseURL = "https://api.deepseek.com"
+	defaultBaseURL = "https://api.deepseek.com/v1"
 )
 
 // Provider implements the core.Provider interface for DeepSeek.
@@ -39,15 +38,8 @@ var (
 
 // New creates a new DeepSeek provider.
 func New(apiKey, baseURL string) (*Provider, error) {
-	baseURL = strings.TrimSpace(baseURL)
-	if baseURL == "" {
-		baseURL = defaultBaseURL
-	}
-	baseURL = strings.TrimRight(baseURL, "/")
-	// DeepSeek's chat and models paths already carry the /v1 prefix, so trim a
-	// trailing /v1 to avoid doubling it when callers pass ".../v1" as the base.
-	baseURL = strings.TrimSuffix(baseURL, "/v1")
-	if err := core.ValidateBaseURL(Name, baseURL); err != nil {
+	baseURL, err := core.ResolveAPIRoot(Name, baseURL, defaultBaseURL)
+	if err != nil {
 		return nil, err
 	}
 	return &Provider{
@@ -69,32 +61,41 @@ func (p *Provider) AuthHeaders() map[string]string {
 	return map[string]string{"Authorization": "Bearer " + p.apiKey}
 }
 
-// SupportedModels returns the static list of known DeepSeek models.
-func (p *Provider) SupportedModels() []string {
-	return []string{
-		"deepseek-chat",
-		"deepseek-reasoner",
-		"deepseek-v4-flash",
-		"deepseek-v4-pro",
-	}
-}
-
 // SupportsModel returns true if the model is supported by DeepSeek.
 func (p *Provider) SupportsModel(model string) bool {
 	return strings.HasPrefix(model, "deepseek-")
 }
 
-// Models returns structured model metadata.
-func (p *Provider) Models() []core.ModelInfo {
-	return core.ModelsFromList(p.name, p.SupportedModels())
-}
-
 // DiscoverModels fetches the live model list from the DeepSeek /v1/models endpoint.
 func (p *Provider) DiscoverModels(ctx context.Context) ([]core.ModelInfo, error) {
-	return discovery.DiscoverOpenAICompatibleModels(ctx, p.httpClient, p.baseURL+"/v1/models", p.apiKey, p.name)
+	return core.DiscoverOpenAICompatibleModels(ctx, p.httpClient, p.baseURL+"/models", p.apiKey, p.name)
 }
 
 // ------------------------------------------------------------------ types ---
+
+// deepseekChatBody reshapes the OpenAI-shaped chat body for DeepSeek, whose
+// documented end-user identifier is "user_id", not OpenAI's "user"
+// (https://api-docs.deepseek.com/api/create-chat-completion). The embedded
+// core.Request forwards every other field unchanged. The User field shadows the
+// promoted core.Request.User at a shallower depth and is left empty (omitempty)
+// so "user" is never emitted; UserID carries the value under DeepSeek's key.
+//
+// A json:"-" shadow does not work here: encoding/json drops "-" fields
+// entirely, so the promoted core.Request.User would still be emitted. A
+// same-named field that dominates by depth and is omitted via omitempty is what
+// actually suppresses it — the same shape providers/mistral uses for
+// seed→random_seed.
+type deepseekChatBody struct {
+	core.Request
+	User   string `json:"user,omitempty"`    // shadows core.Request.User; always empty so "user" is suppressed
+	UserID string `json:"user_id,omitempty"` // DeepSeek's end-user identifier field
+}
+
+// deepseekChatTransform maps core.Request onto DeepSeek's chat body, renaming
+// user → user_id.
+func deepseekChatTransform(req core.Request) any {
+	return deepseekChatBody{Request: req, UserID: req.User}
+}
 
 type response struct {
 	ID      string        `json:"id"`
@@ -131,13 +132,23 @@ func (u usage) toCore() core.Usage {
 
 // Complete sends a chat completion request to DeepSeek.
 func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
-	bodyReader, _, release, err := openaicompat.BuildBody(req, false)
+	// This path builds its own body rather than going through
+	// openaicompat.PostChat, so it has to apply the capability matrix itself —
+	// PostChat and PostStream do it for every other surface.
+	if err := openaicompat.EnforceParams(ctx, p.chatParams(), &req); err != nil {
+		return nil, err
+	}
+	// Not openaicompat.BuildBody: this surface has to apply the same
+	// user → user_id rename PostStream gets from chatParams().BodyTransform,
+	// or the two surfaces would send different keys for the same field.
+	req.Stream = false
+	bodyReader, _, release, err := core.JSONBodyReader(deepseekChatTransform(req))
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 	defer release()
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/v1/chat/completions", bodyReader) //nolint:gosec // baseURL validated in New()
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/chat/completions", bodyReader) //nolint:gosec // baseURL validated in New()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -179,16 +190,24 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 	}, nil
 }
 
-// CompleteStream sends a streaming chat completion request to DeepSeek.
-func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan core.StreamChunk, error) {
-	return openaicompat.PostStream(ctx, openaicompat.ChatParams{
+// chatParams is the shared upstream description of DeepSeek's chat endpoint,
+// used by CompleteStream and by Complete's capability-matrix enforcement so the
+// two surfaces cannot disagree about which provider they are.
+func (p *Provider) chatParams() openaicompat.ChatParams {
+	return openaicompat.ChatParams{
 		HTTPClient: p.httpClient,
-		URL:        p.baseURL + "/v1/chat/completions",
+		URL:        p.baseURL + "/chat/completions",
 		Provider:   p.name,
 		Label:      "deepseek",
 		Headers: map[string]string{
 			"Authorization": "Bearer " + p.apiKey,
 			"Content-Type":  "application/json",
 		},
-	}, req)
+		BodyTransform: deepseekChatTransform,
+	}
+}
+
+// CompleteStream sends a streaming chat completion request to DeepSeek.
+func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan core.StreamChunk, error) {
+	return openaicompat.PostStream(ctx, p.chatParams(), req)
 }

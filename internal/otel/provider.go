@@ -2,12 +2,14 @@ package otel
 
 import (
 	"context"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 
-	"github.com/ferro-labs/ai-gateway/internal/logging"
 	"github.com/ferro-labs/ai-gateway/internal/redact"
 	"github.com/ferro-labs/ai-gateway/observability"
+	"github.com/ferro-labs/ai-gateway/pkg/logger"
+	"github.com/ferro-labs/ai-gateway/pkg/metrics"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -44,10 +46,10 @@ type otelProvider struct {
 	startOnce  sync.Once
 
 	// dropCount tracks the total number of events dropped due to a full
-	// queue. Used for sampled logging: a warning is emitted every 64 drops
-	// to avoid flooding the log under sustained backpressure.
-	// TODO: if per-drop flood becomes an operational issue, replace with a
-	// metric counter or an exponential-backoff strategy.
+	// queue. It exists only to sample the log line — a warning every 64 drops,
+	// so sustained backpressure does not flood the log. The countable fact is
+	// published as metrics.ObservabilityEventsDroppedTotal, which is what a
+	// dashboard or alert should read.
 	dropCount atomic.Uint64
 }
 
@@ -113,9 +115,10 @@ func (p *otelProvider) RecordEvent(_ context.Context, evt observability.Event) {
 		// Log a sampled warning (every 64th drop) to avoid flooding the log
 		// under sustained backpressure. Exporters that ignore ctx can still
 		// outlive shutdown; that is on them.
+		metrics.ObservabilityEventsDroppedTotal.WithLabelValues(evt.Subject).Inc()
 		n := p.dropCount.Add(1)
 		if n == 1 || n%64 == 0 {
-			logging.Logger.Warn("otel: event queue full; dropping event(s)",
+			logger.Default().Warn("otel: event queue full; dropping event(s)",
 				"subject", evt.Subject,
 				"total_dropped", n,
 			)
@@ -211,8 +214,28 @@ func (p *otelProvider) runWorker(
 // passes the Shutdown context so slow exporters honour the deadline.
 func (p *otelProvider) dispatchEvent(ctx context.Context, exporters []observability.Exporter, evt observability.Event) {
 	for _, ex := range exporters {
-		_ = ex.Export(ctx, evt)
+		exportEvent(ctx, ex, evt)
 	}
+}
+
+// exportEvent delivers evt to one exporter, recovering from a panic. Exporters
+// are third-party plugin code running on the dispatch worker goroutine, so an
+// unrecovered panic there takes the whole process down over telemetry nobody
+// asked to be load-bearing. Recovering per exporter also keeps one broken
+// exporter from swallowing the event for the ones behind it.
+func exportEvent(ctx context.Context, ex observability.Exporter, evt observability.Event) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			logger.Default().Error("otel: exporter panicked",
+				"exporter", ex.Name(),
+				"subject", evt.Subject,
+				"panic", recovered,
+				"stack", string(debug.Stack()),
+			)
+		}
+	}()
+
+	_ = ex.Export(ctx, evt)
 }
 
 // Shutdown stops the async worker, drains buffered events within the ctx

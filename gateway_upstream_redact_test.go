@@ -4,11 +4,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"log/slog"
 	"strings"
 	"testing"
 
-	"github.com/ferro-labs/ai-gateway/internal/logging"
+	"github.com/ferro-labs/ai-gateway/config"
+	"github.com/ferro-labs/ai-gateway/pkg/logger"
 	"github.com/ferro-labs/ai-gateway/providers"
 )
 
@@ -29,9 +29,9 @@ func upstreamKeyError() error {
 func captureLogs(t *testing.T) *bytes.Buffer {
 	t.Helper()
 	var buf bytes.Buffer
-	previous := logging.Logger
-	logging.Logger = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	t.Cleanup(func() { logging.Logger = previous })
+	previous := logger.Default()
+	logger.SetDefault(logger.New(logger.Options{Level: "debug", Output: &buf}))
+	t.Cleanup(func() { logger.SetDefault(previous) })
 	return &buf
 }
 
@@ -40,9 +40,9 @@ func captureLogs(t *testing.T) *bytes.Buffer {
 func TestRoute_FailureLogRedactsUpstreamError(t *testing.T) {
 	logs := captureLogs(t)
 
-	gw, err := newTestGateway(t, Config{
-		Strategy: StrategyConfig{Mode: ModeSingle},
-		Targets:  []Target{{VirtualKey: mockProviderName}},
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets:  []config.Target{{VirtualKey: mockProviderName}},
 	})
 	if err != nil {
 		t.Fatalf("new gateway: %v", err)
@@ -74,9 +74,9 @@ func TestRoute_FailureLogRedactsUpstreamError(t *testing.T) {
 func TestEmbed_FailureLogRedactsUpstreamError(t *testing.T) {
 	logs := captureLogs(t)
 
-	gw, err := newTestGateway(t, Config{
-		Strategy: StrategyConfig{Mode: ModeSingle},
-		Targets:  []Target{{VirtualKey: mockProviderName}},
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets:  []config.Target{{VirtualKey: mockProviderName}},
 	})
 	if err != nil {
 		t.Fatalf("new gateway: %v", err)

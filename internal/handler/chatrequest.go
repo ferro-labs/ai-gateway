@@ -3,6 +3,7 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -13,23 +14,27 @@ import (
 )
 
 type routeChatCompletionRequest struct {
-	Model               string                    `json:"model"`
-	Messages            []routeChatMessage        `json:"messages"`
-	Temperature         *float64                  `json:"temperature,omitempty"`
-	TopP                *float64                  `json:"top_p,omitempty"`
-	N                   *int                      `json:"n,omitempty"`
-	Seed                *int64                    `json:"seed,omitempty"`
-	MaxTokens           *int                      `json:"max_tokens,omitempty"`
-	MaxCompletionTokens *int                      `json:"max_completion_tokens,omitempty"`
-	PresencePenalty     *float64                  `json:"presence_penalty,omitempty"`
-	FrequencyPenalty    *float64                  `json:"frequency_penalty,omitempty"`
-	Stop                []string                  `json:"stop,omitempty"`
-	Tools               []providers.Tool          `json:"tools,omitempty"`
-	ToolChoice          json.RawMessage           `json:"tool_choice,omitempty"`
-	ResponseFormat      *providers.ResponseFormat `json:"response_format,omitempty"`
-	LogProbs            bool                      `json:"logprobs,omitempty"`
-	TopLogProbs         *int                      `json:"top_logprobs,omitempty"`
-	Stream              bool                      `json:"stream,omitempty"`
+	Model               string             `json:"model"`
+	Messages            []routeChatMessage `json:"messages"`
+	Temperature         *float64           `json:"temperature,omitempty"`
+	TopP                *float64           `json:"top_p,omitempty"`
+	N                   *int               `json:"n,omitempty"`
+	Seed                *int64             `json:"seed,omitempty"`
+	MaxTokens           *int               `json:"max_tokens,omitempty"`
+	MaxCompletionTokens *int               `json:"max_completion_tokens,omitempty"`
+	PresencePenalty     *float64           `json:"presence_penalty,omitempty"`
+	FrequencyPenalty    *float64           `json:"frequency_penalty,omitempty"`
+	// Stop is a union OpenAI accepts in two shapes — a bare string or an
+	// array of strings — so it is decoded raw and normalized by shimStop,
+	// the same decoder /v1/completions uses. Typing it []string here made
+	// `"stop": "END"`, which OpenAI accepts, a 400 on this surface only.
+	Stop           json.RawMessage           `json:"stop,omitempty"`
+	Tools          []providers.Tool          `json:"tools,omitempty"`
+	ToolChoice     json.RawMessage           `json:"tool_choice,omitempty"`
+	ResponseFormat *providers.ResponseFormat `json:"response_format,omitempty"`
+	LogProbs       bool                      `json:"logprobs,omitempty"`
+	TopLogProbs    *int                      `json:"top_logprobs,omitempty"`
+	Stream         bool                      `json:"stream,omitempty"`
 	// StreamOptions is decoded here but deliberately mapped to
 	// providers.Request.ClientStreamOptions below, NOT to
 	// providers.Request.StreamOptions — see the field doc on
@@ -82,7 +87,7 @@ func (r *routeChatCompletionRequest) reset() {
 	r.MaxCompletionTokens = nil // field 8:  *int
 	r.PresencePenalty = nil     // field 9:  *float64
 	r.FrequencyPenalty = nil    // field 10: *float64
-	r.Stop = nil                // field 11: []string
+	r.Stop = nil                // field 11: json.RawMessage ([]byte)
 	r.Tools = nil               // field 12: []providers.Tool
 	r.ToolChoice = nil          // field 13: json.RawMessage ([]byte)
 	r.ResponseFormat = nil      // field 14: *providers.ResponseFormat
@@ -95,12 +100,20 @@ func (r *routeChatCompletionRequest) reset() {
 	r.ParallelToolCalls = nil   // field 21: *bool
 }
 
+// errInvalidStop reports a `stop` field in neither shape OpenAI accepts.
+var errInvalidStop = errors.New("stop must be a string or an array of strings")
+
 // DecodeChatCompletionRequest decodes the JSON body into a providers.Request.
 func DecodeChatCompletionRequest(r io.Reader) (providers.Request, error) {
 	wire := getRouteChatCompletionRequest()
 	defer putRouteChatCompletionRequest(wire)
-	if err := json.NewDecoder(r).Decode(wire); err != nil {
+	if err := decodeSingleJSON(r, wire); err != nil {
 		return providers.Request{}, err
+	}
+
+	stop, ok := shimStop(wire.Stop)
+	if !ok {
+		return providers.Request{}, errInvalidStop
 	}
 
 	messages := make([]providers.Message, len(wire.Messages))
@@ -130,7 +143,7 @@ func DecodeChatCompletionRequest(r io.Reader) (providers.Request, error) {
 		MaxCompletionTokens: wire.MaxCompletionTokens,
 		PresencePenalty:     wire.PresencePenalty,
 		FrequencyPenalty:    wire.FrequencyPenalty,
-		Stop:                wire.Stop,
+		Stop:                stop,
 		Tools:               wire.Tools,
 		ToolChoice:          toolChoice,
 		ResponseFormat:      wire.ResponseFormat,

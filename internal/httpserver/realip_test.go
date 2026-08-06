@@ -8,7 +8,7 @@ import (
 
 	"github.com/ferro-labs/ai-gateway/internal/httpserver"
 	"github.com/ferro-labs/ai-gateway/internal/middleware"
-	"github.com/ferro-labs/ai-gateway/internal/ratelimit"
+	"github.com/ferro-labs/ai-gateway/pkg/ratelimit"
 )
 
 // applyRealIP wraps a capture handler with the RealIPMiddleware using the
@@ -64,17 +64,17 @@ func TestRealIP_UntrustedPeer_IgnoresXRealIP(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestRealIP_TrustedPeer_HonorsXFF verifies that when the direct TCP peer is
-// within a trusted CIDR, the leftmost X-Forwarded-For entry is used as the
-// resolved client IP.
+// within a trusted CIDR, the X-Forwarded-For chain supplies the resolved
+// client IP.
 func TestRealIP_TrustedPeer_HonorsXFF(t *testing.T) {
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 	req.RemoteAddr = "127.0.0.1:56789"                           // trusted loopback peer
-	req.Header.Set("X-Forwarded-For", "203.0.113.42, 127.0.0.1") // leftmost = real client
+	req.Header.Set("X-Forwarded-For", "203.0.113.42, 127.0.0.1") // real client, then proxy hop
 
 	resolved := applyRealIP(t, "", req)
 
 	if resolved != "203.0.113.42" {
-		t.Errorf("trusted peer: expected leftmost XFF 203.0.113.42, got %q", resolved)
+		t.Errorf("trusted peer: expected XFF client 203.0.113.42, got %q", resolved)
 	}
 }
 
@@ -111,6 +111,62 @@ func TestRealIP_CustomTrustedCIDR_HonorsXFF(t *testing.T) {
 
 	if resolved != "203.0.113.99" {
 		t.Errorf("custom CIDR: expected 203.0.113.99, got %q", resolved)
+	}
+}
+
+// TestRealIP_TrustedPeer_XFFChainDirection verifies that the X-Forwarded-For
+// chain is read from the right, where a trusted proxy appended the address it
+// observed, and not from the left, where the original caller can write
+// anything it likes. Hops that are unparseable or belong to a trusted proxy
+// are stepped over; a chain that yields no untrusted hop falls through to
+// X-Real-IP and then to the peer.
+func TestRealIP_TrustedPeer_XFFChainDirection(t *testing.T) {
+	tests := []struct {
+		name   string
+		xff    string
+		realIP string
+		want   string
+	}{
+		{
+			// The caller sent "X-Forwarded-For: 9.9.9.9" and the proxy
+			// appended what it saw on the wire.
+			name: "forged leading entry ignored",
+			xff:  "9.9.9.9, 203.0.113.7",
+			want: "203.0.113.7",
+		},
+		{
+			name: "malformed hop stepped over",
+			xff:  "203.0.113.7, not-an-ip, 127.0.0.1",
+			want: "203.0.113.7",
+		},
+		{
+			name: "every hop trusted falls back to peer",
+			xff:  "127.0.0.1, 127.0.0.2",
+			want: "127.0.0.1",
+		},
+		{
+			name:   "every hop trusted falls back to X-Real-IP",
+			xff:    "127.0.0.1, 127.0.0.2",
+			realIP: "198.51.100.7",
+			want:   "198.51.100.7",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
+			req.RemoteAddr = "127.0.0.1:56789" // trusted loopback peer
+			req.Header.Set("X-Forwarded-For", tt.xff)
+			if tt.realIP != "" {
+				req.Header.Set("X-Real-IP", tt.realIP)
+			}
+
+			resolved := applyRealIP(t, "", req)
+
+			if resolved != tt.want {
+				t.Errorf("XFF %q: expected %q, got %q", tt.xff, tt.want, resolved)
+			}
+		})
 	}
 }
 

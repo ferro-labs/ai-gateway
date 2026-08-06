@@ -1,20 +1,8 @@
 package transport
 
 import (
-	"net/http"
 	"time"
 )
-
-// ProviderPool holds a per-provider HTTP client and its streaming counterpart.
-// Each pool is fully isolated — one provider's slow responses or connection
-// exhaustion cannot degrade other providers.
-type ProviderPool struct {
-	name         string
-	client       *http.Client
-	streamCli    *http.Client
-	rawTransport *http.Transport // raw http.Transport for inspection
-	cfg          Config
-}
 
 // ProviderPreset contains tuned transport settings for a known provider.
 // These are based on observed provider behaviour in production.
@@ -131,54 +119,4 @@ func (m *Manager) RegisterKnownProviders() {
 		cfg := applyPreset(m.cfg, preset)
 		m.RegisterProvider(name, cfg)
 	}
-}
-
-// Pool returns the ProviderPool for a named provider.
-// If the provider has no dedicated pool, returns a pool backed by the
-// default client. The returned pool is safe for concurrent use.
-func (m *Manager) Pool(provider string) *ProviderPool {
-	m.mu.RLock()
-	c, ok := m.providers[provider]
-	m.mu.RUnlock()
-
-	if !ok {
-		return &ProviderPool{
-			name:         provider,
-			client:       m.defaultClient,
-			streamCli:    m.streamClient,
-			rawTransport: m.defaultTransport,
-			cfg:          m.cfg,
-		}
-	}
-
-	return &ProviderPool{
-		name:         provider,
-		client:       c,
-		streamCli:    m.streamClient,
-		rawTransport: m.providerRawTransport(provider),
-		cfg:          m.cfg,
-	}
-}
-
-// Client returns the non-streaming HTTP client for this provider.
-func (pp *ProviderPool) Client() *http.Client {
-	return pp.client
-}
-
-// StreamClient returns the SSE-optimized HTTP client for this provider.
-func (pp *ProviderPool) StreamClient() *http.Client {
-	return pp.streamCli
-}
-
-// Name returns the provider name this pool is associated with.
-func (pp *ProviderPool) Name() string {
-	return pp.name
-}
-
-// Transport returns the raw underlying *http.Transport for inspection
-// (e.g. connection pool stats). The transport returned is the inner
-// http.Transport, not the OTel-wrapping RoundTripper on the client —
-// see Manager.DefaultTransport for the same convention.
-func (pp *ProviderPool) Transport() *http.Transport {
-	return pp.rawTransport
 }

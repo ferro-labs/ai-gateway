@@ -82,6 +82,18 @@ type messageWire struct {
 	ToolCalls        []ToolCall      `json:"tool_calls,omitempty"`
 	ToolCallID       string          `json:"tool_call_id,omitempty"`
 	ReasoningContent string          `json:"reasoning_content,omitempty"`
+	// Reasoning is the same field under the name Ollama's OpenAI-compatible
+	// endpoint uses. Decode-only: the gateway always emits reasoning_content.
+	Reasoning string `json:"reasoning,omitempty"`
+}
+
+// reasoningText picks whichever of the two spellings the upstream sent.
+// reasoning_content wins when both are present, since it is the canonical name.
+func (w messageWire) reasoningText() string {
+	if w.ReasoningContent != "" {
+		return w.ReasoningContent
+	}
+	return w.Reasoning
 }
 
 // MarshalJSON encodes a Message to JSON.  Content is written as a string unless
@@ -121,7 +133,7 @@ func (m *Message) UnmarshalJSON(b []byte) error {
 	m.Name = w.Name
 	m.ToolCalls = w.ToolCalls
 	m.ToolCallID = w.ToolCallID
-	m.ReasoningContent = w.ReasoningContent
+	m.ReasoningContent = w.reasoningText()
 
 	if len(w.Content) == 0 || string(w.Content) == "null" {
 		return nil
@@ -189,7 +201,7 @@ type Request struct {
 
 	// ClientStreamOptions is the client's stream_options exactly as sent on
 	// the incoming request, decoded by internal/handler. It is kept separate
-	// from StreamOptions above (which providers/internal/openaicompat
+	// from StreamOptions above (which providers/core/openaicompat
 	// forwards verbatim upstream for ~20 OpenAI-compatible providers) so that
 	// a client's explicit include_usage:false can never leak into that
 	// verbatim forward and silently disable a provider's usage reporting —
@@ -220,30 +232,76 @@ type StreamOptions struct {
 	IncludeUsage bool `json:"include_usage"`
 }
 
-// NormalizeCompletionTokenLimits fills max_tokens from max_completion_tokens
-// when only the OpenAI-compatible completion-token field is provided. The
-// original max_completion_tokens value is preserved for providers that support
-// it natively.
+// NormalizeCompletionTokenLimits resolves the two completion-length fields to
+// the one ceiling EffectiveMaxTokens reports, carried by both, so every
+// consumer downstream — guardrails, cache keys, every provider — reads the same
+// number.
+//
+// Reconciling matters because which field reaches the provider is a
+// per-provider decision: providers on the OpenAI API surface forward
+// max_completion_tokens and clear max_tokens (PreferCompletionTokens), while
+// others forward max_tokens. While the two could disagree, the ceiling a
+// request actually imposed depended on which provider it landed on, and a
+// guardrail reading one field could be handed the other — a request carrying
+// max_tokens 5 and max_completion_tokens 500000 passed a cap of 10 and then had
+// 500000 forwarded upstream.
+//
+// A caller who sets only max_tokens keeps it, and max_completion_tokens stays
+// absent rather than being invented on the wire.
 func (r *Request) NormalizeCompletionTokenLimits() {
-	if r.MaxTokens == nil && r.MaxCompletionTokens != nil {
-		// Copy the value rather than aliasing the pointer, so a plugin that
-		// clamps *MaxTokens in place cannot silently mutate MaxCompletionTokens.
-		v := *r.MaxCompletionTokens
-		r.MaxTokens = &v
+	if r.MaxCompletionTokens == nil {
+		return
+	}
+	limit, _ := r.EffectiveMaxTokens()
+	// Separate copies rather than one shared pointer, so a plugin that clamps
+	// one in place cannot silently move the other.
+	maxTokens, maxCompletionTokens := limit, limit
+	r.MaxTokens, r.MaxCompletionTokens = &maxTokens, &maxCompletionTokens
+}
+
+// EffectiveMaxTokens reports the completion length this request asks for, and
+// whether it asks for one at all.
+//
+// max_completion_tokens supersedes max_tokens when both are present. That is
+// the precedence the OpenAI API itself applies — max_tokens is deprecated in
+// its favour, and the o-series accepts only the newer field — so a request the
+// gateway forwards behaves the way the same request sent directly upstream
+// would. Taking the smaller of the two instead would silently hand a caller a
+// far shorter completion than the API they are coded against would return.
+//
+// It is the single definition of "how long may this answer be", used both to
+// reconcile the fields and by the max-token guardrail, so a value a guardrail
+// approves is exactly the value that travels.
+func (r Request) EffectiveMaxTokens() (int, bool) {
+	switch {
+	case r.MaxCompletionTokens != nil:
+		return *r.MaxCompletionTokens, true
+	case r.MaxTokens != nil:
+		return *r.MaxTokens, true
+	default:
+		return 0, false
 	}
 }
 
-// PreferCompletionTokens clears the legacy max_tokens when max_completion_tokens
-// is set. It is the counterpart to NormalizeCompletionTokenLimits, used by
-// providers on the OpenAI API surface (OpenAI, Azure OpenAI) whose o-series
-// reasoning models reject max_tokens with a 400. Because the gateway seam fills
-// max_tokens from max_completion_tokens, both fields are usually present by the
-// time a provider builds its body; forwarding both would break o-series, so
-// these providers keep only the modern field (accepted by every chat model).
+// PreferCompletionTokens makes a request carry only the modern
+// max_completion_tokens field. It is used by providers on the OpenAI API surface
+// (OpenAI, Azure OpenAI, Groq, Cerebras) whose o-series / GPT-5 reasoning models
+// reject max_tokens with a 400 — and max_completion_tokens is accepted by every
+// chat model on those surfaces, so promoting is safe for the non-reasoning
+// models too.
+//
+// A caller that sets only max_tokens (the field most OpenAI SDKs still default
+// to) is the case that matters: without promotion its request 400s the moment it
+// is routed to a reasoning model. The legacy value is moved onto
+// max_completion_tokens rather than dropped, so the ceiling the caller asked for
+// is preserved. When neither field is set, none is invented. This only rewrites
+// the provider's outbound body; the global request the guardrails and cache key
+// read is reconciled separately by NormalizeCompletionTokenLimits.
 func (r *Request) PreferCompletionTokens() {
-	if r.MaxCompletionTokens != nil {
-		r.MaxTokens = nil
+	if r.MaxCompletionTokens == nil {
+		r.MaxCompletionTokens = r.MaxTokens
 	}
+	r.MaxTokens = nil
 }
 
 // Validate returns an error if the request is missing required fields or
@@ -307,6 +365,18 @@ type Choice struct {
 }
 
 // Usage carries token consumption statistics.
+//
+// PromptTokens is INCLUSIVE of CacheReadTokens on every provider — the OpenAI
+// convention, which every provider must normalise to before returning a Usage.
+// Providers whose upstream reports the cache-read count exclusively fold it in
+// at their decode boundary (see providers/core/anthropicwire). One convention
+// is what lets a token count and a cost mean the same thing whichever provider
+// served the request: cost accounting prices the prompt on
+// PromptTokens - CacheReadTokens and the cached subset at its own rate, so a
+// provider that left the two disjoint would have its cached tokens billed twice.
+//
+// CacheWriteTokens is NOT part of PromptTokens: it bills at its own write rate
+// on top of the prompt, and the OpenAI schema has no equivalent field.
 type Usage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
@@ -317,6 +387,20 @@ type Usage struct {
 	CacheWriteTokens int `json:"cache_write_tokens,omitempty"`
 }
 
+// PromptTokensDetails is the OpenAI breakdown of the prompt token count.
+type PromptTokensDetails struct {
+	CachedTokens int `json:"cached_tokens"`
+}
+
+// CompletionTokensDetails is the OpenAI breakdown of the completion token count.
+type CompletionTokensDetails struct {
+	ReasoningTokens int `json:"reasoning_tokens"`
+}
+
+// usageAlias strips the JSON methods from Usage so the marshal/unmarshal
+// helpers below can embed it without recursing into themselves.
+type usageAlias Usage
+
 // UnmarshalJSON decodes the OpenAI usage object, folding the nested
 // prompt_tokens_details.cached_tokens and completion_tokens_details.reasoning_tokens,
 // and DeepSeek's flat prompt_cache_hit_tokens, into the flat
@@ -324,16 +408,11 @@ type Usage struct {
 // these alternate forms (OpenRouter, xAI, DeepSeek's streaming path, …)
 // surface it consistently. A nonzero flat field takes precedence.
 func (u *Usage) UnmarshalJSON(data []byte) error {
-	type usageAlias Usage // avoid recursing into this method
 	var raw struct {
 		usageAlias
-		PromptTokensDetails *struct {
-			CachedTokens int `json:"cached_tokens"`
-		} `json:"prompt_tokens_details"`
-		CompletionTokensDetails *struct {
-			ReasoningTokens int `json:"reasoning_tokens"`
-		} `json:"completion_tokens_details"`
-		PromptCacheHitTokens int `json:"prompt_cache_hit_tokens"`
+		PromptTokensDetails     *PromptTokensDetails     `json:"prompt_tokens_details"`
+		CompletionTokensDetails *CompletionTokensDetails `json:"completion_tokens_details"`
+		PromptCacheHitTokens    int                      `json:"prompt_cache_hit_tokens"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
@@ -349,4 +428,28 @@ func (u *Usage) UnmarshalJSON(data []byte) error {
 		u.ReasoningTokens = raw.CompletionTokensDetails.ReasoningTokens
 	}
 	return nil
+}
+
+// MarshalJSON re-emits the nested prompt_tokens_details and
+// completion_tokens_details objects that UnmarshalJSON folded into the flat
+// fields, so a client reading usage.completion_tokens_details.reasoning_tokens
+// — the name the OpenAI schema defines and its SDKs expose — finds it.
+//
+// The flat reasoning_tokens / cache_read_tokens / cache_write_tokens keys are
+// still written alongside them. They are the only place a cache *write* count
+// can go (the OpenAI schema has no field for it), and removing them would break
+// every client already reading them.
+func (u Usage) MarshalJSON() ([]byte, error) {
+	out := struct {
+		usageAlias
+		PromptTokensDetails     *PromptTokensDetails     `json:"prompt_tokens_details,omitempty"`
+		CompletionTokensDetails *CompletionTokensDetails `json:"completion_tokens_details,omitempty"`
+	}{usageAlias: usageAlias(u)}
+	if u.CacheReadTokens != 0 {
+		out.PromptTokensDetails = &PromptTokensDetails{CachedTokens: u.CacheReadTokens}
+	}
+	if u.ReasoningTokens != 0 {
+		out.CompletionTokensDetails = &CompletionTokensDetails{ReasoningTokens: u.ReasoningTokens}
+	}
+	return json.Marshal(out)
 }

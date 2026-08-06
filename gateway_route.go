@@ -4,41 +4,44 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"runtime/trace"
 	"time"
 
 	"github.com/ferro-labs/ai-gateway/internal/authctx"
-	"github.com/ferro-labs/ai-gateway/internal/circuitbreaker"
-	"github.com/ferro-labs/ai-gateway/internal/events"
-	"github.com/ferro-labs/ai-gateway/internal/logging"
-	"github.com/ferro-labs/ai-gateway/internal/mcp"
-	"github.com/ferro-labs/ai-gateway/internal/metrics"
-	"github.com/ferro-labs/ai-gateway/internal/redact"
 	"github.com/ferro-labs/ai-gateway/internal/strategies"
-	"github.com/ferro-labs/ai-gateway/models"
+	"github.com/ferro-labs/ai-gateway/mcp"
 	"github.com/ferro-labs/ai-gateway/observability"
+	"github.com/ferro-labs/ai-gateway/pkg/logger"
+	"github.com/ferro-labs/ai-gateway/pkg/metrics"
 	"github.com/ferro-labs/ai-gateway/plugin"
 	"github.com/ferro-labs/ai-gateway/providers"
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
-// This file holds the non-streaming request path for the Gateway: Route and its
-// before-plugin, lifecycle-event dispatch, and success-recording helpers. Split
-// out of gateway.go; still part of package aigateway (no behavior change).
-
-// runBeforePlugins runs before-request plugins and returns an early response
-// when a plugin (e.g. response-cache) sets Skip=true. It also propagates any
-// request mutations the plugins made. RunAfter is called before returning the
-// early response so logging/metrics plugins still fire.
-func (g *Gateway) runBeforePlugins(ctx context.Context, plugins *plugin.Manager, pctx *plugin.Context, req *providers.Request) (*providers.Response, error) {
+// runBeforePlugins runs before-request plugins and returns an early response when
+// a plugin (e.g. response-cache) set SkipProvider, meaning the provider must not be
+// called. Every other before-request plugin has still run by then — SkipProvider
+// suppresses the upstream call, not the chain — and RunAfter is called before the
+// early response is returned so the request is recorded like any other. It also
+// propagates any request mutations the plugins made.
+//
+// The early response is handed to the after_request stage with the measurements
+// that describe it: how long the gateway took, and a cost of zero. Handing it
+// none left the stage reading the zero value, so the request that skipped the
+// provider was recorded as having taken no time and having an UNKNOWN cost — the
+// one shape that makes a reader assume the gateway simply could not price it.
+//
+// The manager runs the on_error stage itself when RunBefore aborts, so a request
+// denied by a guardrail is on record before this returns.
+func (g *Gateway) runBeforePlugins(ctx context.Context, plugins *plugin.Manager, pctx *plugin.Context, req *providers.Request, start time.Time) (*providers.Response, error) {
 	if err := plugins.RunBefore(ctx, pctx); err != nil {
 		return nil, err
 	}
 	if pctx.Request != nil {
 		*req = *pctx.Request
 	}
-	if pctx.Skip && pctx.Response != nil {
+	if pctx.SkipProvider && pctx.Response != nil {
+		pctx.Measurements = cacheServedMeasurements(start)
 		if err := plugins.RunAfter(ctx, pctx); err != nil {
 			pctx.Error = err
 			plugins.RunOnError(ctx, pctx)
@@ -47,6 +50,30 @@ func (g *Gateway) runBeforePlugins(ctx context.Context, plugins *plugin.Manager,
 		return pctx.Response, nil
 	}
 	return nil, nil
+}
+
+// newPluginContext builds the plugin context for one request, or nil when this
+// gateway has no plugins configured — which is what every caller tests to decide
+// whether a plugin stage runs at all.
+//
+// It exists so the context is available BEFORE the before_request stage: a
+// request refused by admission never reaches that stage and still has to reach
+// on_error, and it can only do that through a context somebody built for it.
+//
+// span nests each plugin's child span under the request span, and the opaque key
+// identifier is propagated so per-key plugins (rate-limit, budget) can scope
+// limits to the authenticated caller. The raw bearer secret is never exposed
+// here — only the stable APIKey.ID.
+func (g *Gateway) newPluginContext(ctx context.Context, plugins *plugin.Manager, span observability.Span, req *providers.Request) *plugin.Context {
+	if !plugins.HasPlugins() {
+		return nil
+	}
+	pctx := plugin.NewContext(req)
+	pctx.Span = span
+	if keyID, ok := authctx.KeyID(ctx); ok {
+		pctx.Metadata["api_key"] = keyID
+	}
+	return pctx
 }
 
 // recordPluginAbort counts a request a plugin cut short, against the counter that
@@ -72,10 +99,34 @@ func recordPluginAbort(h *metrics.RequestMetricHandles, err error) {
 // load-bearing: when the gateway's deadline fires, the provider was too slow to
 // answer — a provider failure that must trip its circuit breaker. When the caller
 // walks away, the provider is not at fault and its breaker must be left alone.
-var ErrRequestTimeout = errors.New("gateway request timeout")
+//
+// It WRAPS context.DeadlineExceeded because it is one. net/http reports
+// context.Cause on a cancelled request, so this sentinel — not the stdlib
+// one — is what a provider's error actually carries out; a classifier asking
+// the ordinary question "did this time out" got "no" and answered 500. The
+// wrapping keeps the specific identity available to anything that needs it
+// (errors.Is against this value still matches, and nothing else wraps it, so
+// a caller-supplied deadline is still distinguishable) while making the
+// general question answerable by any package, including ones that cannot
+// import this one.
+var ErrRequestTimeout = fmt.Errorf("gateway request timeout: %w", context.DeadlineExceeded)
 
 // noopCancel is the CancelFunc returned when no per-request deadline applies. It
 // is a package-level func, not a closure, so the default path allocates nothing.
+// recordBeforePluginAbort records a request the before_request stage refused.
+//
+// A rejected request took time too, and the duration histogram is meant to
+// answer "how fast is the gateway", not "how fast are the requests that
+// worked". The root span has to carry the failure as well: a request a plugin
+// denied never reaches the provider call that would otherwise mark it, so
+// without this the trace shows a request that simply ended.
+func (g *Gateway) recordBeforePluginAbort(span observability.Span, model string, start time.Time, err error) {
+	h := metrics.ForRequest("", g.metricModel(model))
+	h.Duration.Observe(time.Since(start).Seconds())
+	recordPluginAbort(h, err)
+	span.SetError(err)
+}
+
 func noopCancel() {}
 
 // requestDeadline returns the configured per-request timeout, or 0 when none is
@@ -154,11 +205,17 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	defer cancelDeadline()
 
 	ctx = withUnsupportedParamMode(ctx, compatMode)
+	// Every entry point seeds its own trace ID, because this one is exported and
+	// an embedder calling it directly has no HTTP middleware above it. Without
+	// this the span, the request-log row and the lifecycle event below all
+	// carried an empty trace ID. A request that came through Middleware already
+	// carries a canonical one and this is a no-op.
+	ctx = logger.EnsureTraceID(ctx)
 	ctx, span := obs.StartRequestSpan(ctx, observability.RequestAttrs{
 		Operation:       "chat",
 		RequestModel:    req.Model,
 		IsStream:        req.Stream,
-		TraceID:         logging.TraceIDFromContext(ctx),
+		TraceID:         logger.TraceIDFromContext(ctx),
 		RoutingStrategy: strategyMode,
 	})
 	defer span.End()
@@ -188,23 +245,27 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	}
 
 	// Run before-request plugins (guardrails, transforms, rate-limit).
-	var pctx *plugin.Context
-	if plugins.HasPlugins() {
-		pctx = plugin.NewContext(&req)
-		pctx.Span = span // per-plugin child spans nest under the request span.
+	pctx := g.newPluginContext(ctx, plugins, span, &req)
+	if pctx != nil {
 		defer plugin.PutContext(pctx)
-		// Propagate the opaque key identifier so per-key plugins (rate-limit,
-		// budget) can scope limits to the authenticated caller. The raw bearer
-		// secret is never exposed here — only the stable APIKey.ID.
-		if keyID, ok := authctx.KeyID(ctx); ok {
-			pctx.Metadata["api_key"] = keyID
-		}
+	}
+
+	// Admission before the plugin stage, so a model no target serves cannot
+	// spend a rate-limit token or a budget on the way to its 404. routeError
+	// still runs the on_error stage, so the request is recorded. It stands down
+	// when a transform plugin may still rewrite the model. See admitModel.
+	if err := g.admitModel(ctx, plugins, req.Model, nil); err != nil {
+		g.routeError(ctx, span, obs, pctx, plugins, "", req.Model, err, time.Since(start), originalStream, hooksEnabled, obsEventsActive)
+		return nil, err
+	}
+
+	if pctx != nil {
 		var early *providers.Response
 		trace.WithRegion(ctx, "gateway.route.plugins.before", func() {
-			early, err = g.runBeforePlugins(ctx, plugins, pctx, &req)
+			early, err = g.runBeforePlugins(ctx, plugins, pctx, &req, start)
 		})
 		if err != nil {
-			recordPluginAbort(metrics.ForRequest("", g.metricModel(req.Model)), err)
+			g.recordBeforePluginAbort(span, req.Model, start, err)
 			return nil, err
 		}
 		if early != nil {
@@ -215,7 +276,7 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 				early.Created = time.Now().Unix()
 			}
 			earlyLatency := time.Since(start)
-			g.recordSuccess(ctx, span, obs, early, earlyLatency, originalStream, hooksEnabled, obsEventsActive)
+			g.recordCacheHit(ctx, span, obs, early, earlyLatency, originalStream, hooksEnabled, obsEventsActive)
 			early.OverheadMs = float64(earlyLatency.Microseconds()) / 1000.0
 			return early, nil
 		}
@@ -235,45 +296,31 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	// execute the MCP one (it never declared it and does not know the server
 	// exists). Answering only the gateway's half leaves an unmatched
 	// tool_call_id, which every OpenAI-compatible provider rejects — so the
-	// executor declines such turns outright (internal/mcp.Executor.ownsAll).
+	// executor declines such turns outright (mcp.Executor.ownsAll).
 	// Declining is the correct behaviour once the turn exists; not creating it
 	// is the correct fix. A caller that sent its own tools keeps the plain
 	// pass-through it asked for, streaming included.
 	mcpActive := len(mcpTools) > 0 && !callerSentTools
 
-	if mcpActive {
-		for _, t := range mcpTools {
-			req.Tools = append(req.Tools, core.Tool{
-				Type: "function",
-				Function: core.Function{
-					Name:        t.Name,
-					Description: t.Description,
-					Parameters:  t.InputSchema,
-				},
-			})
-		}
-	}
+	provReq := providerRequestFor(req, mcpTools, mcpActive)
 
-	// During the agentic loop intermediate calls must be non-streaming so the
-	// full response can be inspected for tool_calls. The client's original
-	// stream preference (captured above) is restored on the final response
-	// (Phase 1: always returns non-streaming for MCP requests).
-	if mcpActive {
-		req.Stream = false
-	}
-
-	// Execute the strategy (provider selection + actual call).
+	// Run the request through the pipeline: the strategy's target order, then
+	// per-target retry, breaker and concurrency limit around each provider call.
 	var resp *providers.Response
+	var target string
 	var providerDuration time.Duration
 	providerStart := time.Now()
 	trace.WithRegion(ctx, "gateway.route.provider.execute", func() {
-		resp, err = s.Execute(ctx, req)
+		resp, target, err = g.routeChat(ctx, s, provReq)
 	})
 	providerDuration += time.Since(providerStart)
 	latency := time.Since(start)
 
 	if err != nil {
-		g.routeError(ctx, span, obs, pctx, plugins, "", req.Model, err, latency, originalStream, hooksEnabled, obsEventsActive)
+		// target names the last target actually attempted. Reporting "" here
+		// left every non-streaming provider failure in one unlabelled bucket,
+		// which is the one thing per-provider alerting needs.
+		g.routeError(ctx, span, obs, pctx, plugins, target, req.Model, err, latency, originalStream, hooksEnabled, obsEventsActive)
 		return nil, err
 	}
 
@@ -285,10 +332,10 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 		resp.Created = time.Now().Unix()
 	}
 
-	// Record latency for the least-latency routing strategy.
-	if resp.Provider != "" {
-		g.latencyTracker.Record(resp.Provider, latency)
-	}
+	// Latency for the least-latency strategy is recorded inside the pipeline,
+	// against the target key and covering the provider call alone — the same
+	// measurement the streaming and non-chat surfaces already record, and the
+	// same key LeastLatency reads its samples back by.
 
 	// Agentic MCP tool-call loop. Runs only when MCP is active and the LLM
 	// returned tool_calls. Each iteration executes the tools and re-contacts
@@ -296,32 +343,49 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	if mcpExecutorSnapshot != nil && mcpActive {
 		var loopDuration time.Duration
 		var loopProvider string
-		resp, loopDuration, loopProvider, err = g.runMCPLoop(ctx, mcpExecutorSnapshot, s, &req, resp)
+		var loopUsage core.Usage
+		resp, loopUsage, loopDuration, loopProvider, err = g.runMCPLoop(ctx, mcpExecutorSnapshot, plugins, pctx, s, &provReq, resp)
 		providerDuration += loopDuration
 		if err != nil {
+			// The turns that completed before the failure spent real tokens, so
+			// they are billed. Reporting only the error charged nothing for
+			// them, which made a prompt that reliably fails late free.
+			if pctx != nil {
+				pctx.Response = &providers.Response{Model: req.Model, Provider: loopProvider, Usage: loopUsage}
+			}
 			g.routeError(ctx, span, obs, pctx, plugins, loopProvider, req.Model, err, time.Since(start), originalStream, hooksEnabled, obsEventsActive)
 			return nil, err
+		}
+		// The loop re-contacts the provider, so the target that answered LAST is
+		// the one this request finished on — the same rule the failure path
+		// already applies to loopProvider.
+		if loopProvider != "" {
+			target = loopProvider
 		}
 	}
 	// originalStream is included in the completed event so hook consumers
 	// can distinguish streaming vs non-streaming requests (Phase 1.5 note:
 	// when final-response streaming lands, remove the force-to-false above).
 
-	// Run after-request plugins (logging, caching).
-	if pctx != nil {
-		pctx.Response = resp
-		trace.WithRegion(ctx, "gateway.route.plugins.after", func() {
-			err = plugins.RunAfter(ctx, pctx)
-		})
-		if err != nil {
-			recordPluginAbort(metrics.ForRequest(resp.Provider, resp.Model), err)
-			pctx.Error = err
-			plugins.RunOnError(ctx, pctx)
-			return nil, err
-		}
-		if pctx.Response != nil {
-			resp = pctx.Response
-		}
+	// Cost is computed here rather than only in recordSuccess below, because
+	// the after-request plugins need it: the request logger persists it, and it
+	// cannot be recovered later. recordSuccess is handed the same result rather
+	// than repeating the calculation.
+	cost := g.calculateCost(resp)
+
+	// Measured before the stage runs, so the duration a logging plugin records
+	// does not include that plugin. Streaming requests take the other path, in
+	// RouteStream, where a time to first token also exists.
+	resp, err = g.runAfterPlugins(ctx, plugins, pctx, resp, target, plugin.Measurements{
+		DurationMs: float64(time.Since(start).Microseconds()) / 1000.0,
+		CostUSD:    cost.TotalUSD,
+		HasCost:    cost.Priced,
+	})
+	if err != nil {
+		// Set at the call site rather than inside runAfterPlugins, which holds
+		// no span. The provider call succeeded, so nothing below marks it.
+		span.SetError(err)
+		return nil, err
 	}
 
 	// Emit metrics + cost, stamp the span, and dispatch the completed event.
@@ -329,11 +393,58 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	// any MCP tool-call loop iterations — keeping it consistent with the
 	// accumulated providerDuration so OverheadMs stays non-negative.
 	latency = time.Since(start)
-	g.recordSuccess(ctx, span, obs, resp, latency, originalStream, hooksEnabled, obsEventsActive)
+	g.recordSuccess(ctx, span, obs, resp, cost, latency, originalStream, hooksEnabled, obsEventsActive)
 
 	resp.OverheadMs = float64((latency - providerDuration).Microseconds()) / 1000.0
 
 	return resp, nil
+}
+
+// providerRequestFor returns the request the provider call should carry, which
+// is NOT always the request the plugin stages observe.
+//
+// req is taken by value, so the tools land on a copy. That is the whole point:
+// MCP is the gateway's own way of serving the call rather than something the
+// caller asked for, and plugin.Context holds a POINTER to the caller's request.
+// Injecting in place made every plugin after the before_request stage read
+// gateway-injected tools as though the client had sent them.
+//
+// The response cache is where that was load-bearing. It keys on tools, quite
+// correctly, and computes that key twice — once to look up at before_request and
+// once to store at after_request. Mutating the request in between meant the two
+// keys could never match, so configuring ANY mcp_servers entry silently disabled
+// response caching for the whole deployment. No tool call was required; the
+// plugin reported itself configured and simply never hit.
+//
+// The copy is shallow, which is sound because injectMCPTools only assigns:
+// active requires that the caller sent no tools, so the append inside allocates
+// rather than writing through a backing array the original still shares.
+func providerRequestFor(req providers.Request, tools []mcp.Tool, active bool) providers.Request {
+	if active {
+		injectMCPTools(&req, tools)
+	}
+	return req
+}
+
+// injectMCPTools advertises the gateway's MCP tools on req and forces the call
+// non-streaming.
+//
+// The two go together. During the agentic loop an intermediate call must be
+// non-streaming so the whole response can be inspected for tool_calls; the
+// client's original stream preference is captured before this and restored on
+// the final response (Phase 1: an MCP request always returns non-streaming).
+func injectMCPTools(req *providers.Request, tools []mcp.Tool) {
+	for _, t := range tools {
+		req.Tools = append(req.Tools, core.Tool{
+			Type: "function",
+			Function: core.Function{
+				Name:        t.Name,
+				Description: t.Description,
+				Parameters:  t.InputSchema,
+			},
+		})
+	}
+	req.Stream = false
 }
 
 // metricModel bounds the Prometheus "model" label. Client-supplied model names
@@ -363,11 +474,36 @@ func (g *Gateway) metricModel(model string) string {
 // tool messages. Returns the final response, the accumulated provider-call
 // duration (for OverheadMs accounting), the provider name of the last
 // attempted call (for error reporting), and any error.
-func (g *Gateway) runMCPLoop(ctx context.Context, mcpExecutorSnapshot *mcp.Executor, s strategies.Strategy, req *providers.Request, resp *providers.Response) (*providers.Response, time.Duration, string, error) {
+func (g *Gateway) runMCPLoop(ctx context.Context, mcpExecutorSnapshot *mcp.Executor, plugins *plugin.Manager, pctx *plugin.Context, s strategies.Strategy, req *providers.Request, resp *providers.Response) (*providers.Response, core.Usage, time.Duration, string, error) {
 	var providerDuration time.Duration
 	var err error
 	depth := 0
 	loopProvider := resp.Provider
+	// What this request has spent so far, fed to the per-turn budget check.
+	var (
+		spentUSD    float64
+		spentPriced bool
+	)
+
+	// Token usage accumulates across turns, exactly as the provider duration
+	// above already does. Each turn is a real provider call spending real
+	// tokens, but resp is overwritten per turn, so only the FINAL turn's usage
+	// survived the loop — and calculateCost, recordSuccess, the request-log row
+	// and the budget guardrail all read resp.Usage. An eight-turn agentic
+	// request was therefore priced, metered and billed as one turn. Seeded with
+	// the turn the caller already made before entering the loop.
+	//
+	// summed here and priced once by the caller, at the final turn's
+	// provider rate. Under loadbalance or least-latency an intermediate turn can
+	// land on a differently-priced provider, so the total is approximate to that
+	// extent — a known ceiling, and a far smaller error than dropping the turn
+	// entirely. Per-turn pricing is not reachable from this file: the budget
+	// guardrail and the request-log row price from resp.Usage themselves, so a
+	// per-turn CostResult carried out of here would disagree with what those two
+	// bill. Upgrade path: carry a per-turn cost breakdown on plugin.Measurements
+	// and have budget read it, then price inside the loop.
+	total := resp.Usage
+
 	trace.WithRegion(ctx, "gateway.route.mcp.loop", func() {
 		for mcpExecutorSnapshot.ShouldContinueLoop(resp, depth) {
 			depth++
@@ -384,136 +520,75 @@ func (g *Gateway) runMCPLoop(ctx context.Context, mcpExecutorSnapshot *mcp.Execu
 			// Always non-streaming for intermediate calls.
 			req.Stream = false
 
+			// Every turn is a provider call, so every turn faces the plugins that
+			// bound one. Without this the messages appended just above — tool
+			// results from an EXTERNAL server — reached the provider, and came
+			// back to the client, with no configured guardrail having read them.
+			//
+			// The running cost goes with it so a budget can act on what this
+			// request has already spent: the store it reads is only written after
+			// the whole request, so a per-turn check without this term reads the
+			// same figure every turn and stops nothing.
+			if pctx != nil && plugins != nil {
+				// Point the context at the request the loop is BUILDING, not the
+				// one the caller sent. They are different objects: MCP tools and
+				// the tool results below land on a copy, so that the response
+				// cache and the after stage still see what the client actually
+				// asked for. A guardrail has the opposite need — it must read
+				// what is about to go on the wire — so the pointer is swapped for
+				// the duration of the check and restored immediately.
+				callerRequest := pctx.Request
+				pctx.Request = req
+				pctx.Measurements.CostUSD, pctx.Measurements.HasCost = spentUSD, spentPriced
+				turnErr := plugins.RunBeforeLoopTurn(ctx, pctx)
+				pctx.Request = callerRequest
+				if turnErr != nil {
+					err = turnErr
+					return
+				}
+				if pctx.Reject {
+					err = &plugin.RejectionError{Reason: pctx.Reason}
+					return
+				}
+			}
+
 			callStart := time.Now()
-			resp, err = s.Execute(ctx, *req)
+			var target string
+			resp, target, err = g.routeChat(ctx, s, *req)
 			providerDuration += time.Since(callStart)
+			if target != "" {
+				loopProvider = target
+			}
 			if err != nil {
 				return
 			}
-			loopProvider = resp.Provider
+			total.PromptTokens += resp.Usage.PromptTokens
+			total.CompletionTokens += resp.Usage.CompletionTokens
+			total.TotalTokens += resp.Usage.TotalTokens
+			total.ReasoningTokens += resp.Usage.ReasoningTokens
+			total.CacheReadTokens += resp.Usage.CacheReadTokens
+			total.CacheWriteTokens += resp.Usage.CacheWriteTokens
+
+			// Priced per turn rather than once at the end, because the budget
+			// check above needs it before the NEXT call is made. Under
+			// loadbalance or least-latency consecutive turns can land on
+			// differently-priced providers, and pricing each against the provider
+			// that served it is strictly better than pricing the total at the
+			// last one's rate.
+			if turnCost := g.calculateCost(resp); turnCost.Priced {
+				spentUSD += turnCost.TotalUSD
+				spentPriced = true
+			}
 		}
+		// Stamped on the response the caller returns, so every consumer that
+		// already reads resp.Usage gets the whole request's usage without a new
+		// field or a signature change.
+		resp.Usage = total
 	})
-	return resp, providerDuration, loopProvider, err
-}
-
-// dispatchRequestEvent fans a request lifecycle event out to the async hook
-// workers and/or the observability provider, depending on which sinks are
-// active. Centralising the branching keeps Route/RouteStream readable and
-// keeps the two delivery paths in sync.
-func (g *Gateway) dispatchRequestEvent(ctx context.Context, obs observability.Provider, hooksEnabled, obsEventsActive bool, he events.HookEvent) {
-	if hooksEnabled {
-		g.publishEvent(ctx, he)
-	}
-	if obsEventsActive {
-		obs.RecordEvent(ctx, obsEventFromHook(he))
-	}
-}
-
-// routeError finalizes a failed Route call: runs plugin error hooks, records
-// error metrics, stamps the span with the error, logs the failure, and
-// dispatches the failed lifecycle event. Shared by the initial provider call
-// and the MCP tool-call loop's follow-up provider calls so both error paths
-// stay in sync.
-func (g *Gateway) routeError(ctx context.Context, span observability.Span, obs observability.Provider, pctx *plugin.Context, plugins *plugin.Manager, provider, model string, err error, latency time.Duration, originalStream, hooksEnabled, obsEventsActive bool) {
-	if pctx != nil {
-		pctx.Error = err
-		plugins.RunOnError(ctx, pctx)
-	}
-
-	errType := "provider_error"
-	if errors.Is(err, circuitbreaker.ErrCircuitOpen) {
-		errType = "circuit_open"
-	}
-	// Bucket the label, not the log/span: model here is still the raw client
-	// value on the "no provider supports this model" path.
-	metrics.ForRequest(provider, g.metricModel(model)).Error.Inc()
-	metrics.ForProviderError(provider, errType).Inc()
-
-	span.SetError(err)
-
-	logging.FromContext(ctx).Error("request failed",
-		"model", model,
-		"latency_ms", latency.Milliseconds(),
-		"error", redact.ErrorMessage(err),
-	)
-
-	if hooksEnabled || obsEventsActive {
-		he := failedEventData(
-			logging.TraceIDFromContext(ctx),
-			provider,
-			model,
-			err.Error(),
-			latency,
-			originalStream,
-		)
-		g.dispatchRequestEvent(ctx, obs, hooksEnabled, obsEventsActive, he)
-	}
-}
-
-// recordSuccess emits Prometheus + cost metrics, stamps the root span with the
-// resolved provider/model/usage/cost, logs at debug level, and dispatches the
-// completed lifecycle event.
-func (g *Gateway) recordSuccess(ctx context.Context, span observability.Span, obs observability.Provider, resp *providers.Response, latency time.Duration, originalStream, hooksEnabled, obsEventsActive bool) {
-	requestMetrics := metrics.ForRequest(resp.Provider, resp.Model)
-	requestMetrics.Duration.Observe(latency.Seconds())
-	requestMetrics.Success.Inc()
-	requestMetrics.TokensIn.Add(float64(resp.Usage.PromptTokens))
-	requestMetrics.TokensOut.Add(float64(resp.Usage.CompletionTokens))
-
-	g.mu.RLock()
-	catalog := g.catalog
-	g.mu.RUnlock()
-	cost := models.Calculate(catalog, resp.Provider+"/"+resp.Model, models.Usage{
-		PromptTokens:     resp.Usage.PromptTokens,
-		CompletionTokens: resp.Usage.CompletionTokens,
-		ReasoningTokens:  resp.Usage.ReasoningTokens,
-		CacheReadTokens:  resp.Usage.CacheReadTokens,
-		CacheWriteTokens: resp.Usage.CacheWriteTokens,
-	})
-	if cost.TotalUSD > 0 {
-		requestMetrics.CostUSD.Add(cost.TotalUSD)
-	}
-
-	// Stamp final usage + cost + resolved provider/model on the root span.
-	span.SetAttribute(observability.AttrGenAISystem, resp.Provider)
-	span.SetAttribute(observability.AttrGenAIResponseModel, resp.Model)
-	// Stamp the resolved target key (virtual key = provider name in this routing layer).
-	if resp.Provider != "" {
-		span.SetAttribute(observability.AttrFerroRoutingTargetKey, resp.Provider)
-	}
-	span.SetTokens(resp.Usage.PromptTokens, resp.Usage.CompletionTokens, resp.Usage.ReasoningTokens)
-	span.SetCost(observability.CostBreakdown{
-		TotalUSD:      cost.TotalUSD,
-		InputUSD:      cost.InputUSD,
-		OutputUSD:     cost.OutputUSD,
-		CacheReadUSD:  cost.CacheReadUSD,
-		CacheWriteUSD: cost.CacheWriteUSD,
-		ReasoningUSD:  cost.ReasoningUSD,
-		ModelFound:    cost.ModelFound,
-	})
-
-	if logging.Enabled(ctx, slog.LevelDebug) {
-		logging.FromContext(ctx).Debug("request completed",
-			"model", resp.Model,
-			"provider", resp.Provider,
-			"latency_ms", latency.Milliseconds(),
-			"tokens_in", resp.Usage.PromptTokens,
-			"tokens_out", resp.Usage.CompletionTokens,
-			"cost_usd", cost.TotalUSD,
-		)
-	}
-
-	if hooksEnabled || obsEventsActive {
-		he := completedEventData(
-			logging.TraceIDFromContext(ctx),
-			resp.Provider,
-			resp.Model,
-			latency,
-			originalStream,
-			resp.Usage.PromptTokens,
-			resp.Usage.CompletionTokens,
-			cost,
-		)
-		g.dispatchRequestEvent(ctx, obs, hooksEnabled, obsEventsActive, he)
-	}
+	// total is returned separately as well, because the error paths above leave
+	// resp holding either the last good turn or nothing at all. A loop that
+	// failed on turn three still spent turns one and two, and returning only an
+	// error billed the caller nothing for them — free, and steerable by any
+	// prompt that reliably fails late.
+	return resp, total, providerDuration, loopProvider, err
 }

@@ -29,20 +29,57 @@ func TestNewDeepInfra(t *testing.T) {
 	}
 }
 
-func TestDeepInfraProvider_SupportedModels(t *testing.T) {
-	p, _ := New("test-key", "")
-	models := p.SupportedModels()
-	if len(models) == 0 {
-		t.Error("SupportedModels() returned empty")
+func TestNewDeepInfra_ResolvesBaseURLOnce(t *testing.T) {
+	tests := []struct {
+		name          string
+		baseURL       string
+		wantBase      string
+		wantInference string
+		wantErr       bool
+	}{
+		{
+			name:          "default carries the vendor's compat mount and its inference sibling",
+			baseURL:       "",
+			wantBase:      "https://api.deepinfra.com/v1/openai",
+			wantInference: "https://api.deepinfra.com/v1/inference",
+		},
+		{
+			name:          "path-carrying base is kept verbatim and its /openai suffix names the sibling",
+			baseURL:       "https://proxy.example.com/v1/openai/",
+			wantBase:      "https://proxy.example.com/v1/openai",
+			wantInference: "https://proxy.example.com/v1/inference",
+		},
+		{
+			name:          "base at its own mount point gets the operation path appended as written",
+			baseURL:       "https://proxy.example.com/deepinfra",
+			wantBase:      "https://proxy.example.com/deepinfra",
+			wantInference: "https://proxy.example.com/deepinfra/inference",
+		},
+		{
+			name:    "query string is refused at construction",
+			baseURL: "https://proxy.example.com/v1/openai?team=a",
+			wantErr: true,
+		},
 	}
-	found := false
-	for _, m := range models {
-		if m == "deepseek-ai/DeepSeek-R1" {
-			found = true
-		}
-	}
-	if !found {
-		t.Error("deepseek-ai/DeepSeek-R1 not found")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p, err := New("test-key", tt.baseURL)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("New(%q) succeeded, want error", tt.baseURL)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("New(%q) error: %v", tt.baseURL, err)
+			}
+			if p.BaseURL() != tt.wantBase {
+				t.Errorf("BaseURL() = %q, want %q", p.BaseURL(), tt.wantBase)
+			}
+			if p.inferenceBaseURL != tt.wantInference {
+				t.Errorf("inferenceBaseURL = %q, want %q", p.inferenceBaseURL, tt.wantInference)
+			}
+		})
 	}
 }
 
@@ -53,16 +90,6 @@ func TestDeepInfraProvider_SupportsModel(t *testing.T) {
 	}
 	if !p.SupportsModel("custom-model") {
 		t.Error("passthrough: expected all models to return true")
-	}
-}
-
-func TestDeepInfraProvider_Models(t *testing.T) {
-	p, _ := New("test-key", "")
-	models := p.Models()
-	for _, m := range models {
-		if m.OwnedBy != "deepinfra" {
-			t.Errorf("ModelInfo.OwnedBy = %q, want deepinfra", m.OwnedBy)
-		}
 	}
 }
 
