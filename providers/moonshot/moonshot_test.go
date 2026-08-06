@@ -26,23 +26,6 @@ func TestNewMoonshot(t *testing.T) {
 	}
 }
 
-func TestMoonshotProvider_SupportedModels(t *testing.T) {
-	p, _ := New("test-key", "")
-	models := p.SupportedModels()
-	if len(models) == 0 {
-		t.Error("SupportedModels() returned empty")
-	}
-	found := false
-	for _, m := range models {
-		if m == "kimi-latest" {
-			found = true
-		}
-	}
-	if !found {
-		t.Error("kimi-latest not found")
-	}
-}
-
 func TestMoonshotProvider_SupportsModel(t *testing.T) {
 	p, _ := New("test-key", "")
 	if !p.SupportsModel("kimi-latest") {
@@ -50,16 +33,6 @@ func TestMoonshotProvider_SupportsModel(t *testing.T) {
 	}
 	if !p.SupportsModel("custom-model") {
 		t.Error("passthrough: expected all models to return true")
-	}
-}
-
-func TestMoonshotProvider_Models(t *testing.T) {
-	p, _ := New("test-key", "")
-	models := p.Models()
-	for _, m := range models {
-		if m.OwnedBy != "moonshot" {
-			t.Errorf("ModelInfo.OwnedBy = %q, want moonshot", m.OwnedBy)
-		}
 	}
 }
 
@@ -171,8 +144,8 @@ func TestMoonshotProvider_Complete_ForwardsRequestBody(t *testing.T) {
 		if r.Method != http.MethodPost {
 			t.Errorf("method = %q, want POST", r.Method)
 		}
-		if r.URL.Path != "/chat/completions" {
-			t.Errorf("path = %q, want /chat/completions", r.URL.Path)
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Errorf("path = %q, want /v1/chat/completions", r.URL.Path)
 		}
 		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
 			t.Fatalf("failed to decode request body: %v", err)
@@ -242,8 +215,8 @@ func TestMoonshotProvider_DiscoverModels(t *testing.T) {
 		if r.Method != http.MethodGet {
 			t.Errorf("method = %q, want GET", r.Method)
 		}
-		if r.URL.Path != "/models" {
-			t.Errorf("path = %q, want /models", r.URL.Path)
+		if r.URL.Path != "/v1/models" {
+			t.Errorf("path = %q, want /v1/models", r.URL.Path)
 		}
 		if r.Header.Get("Authorization") != "Bearer test-key" {
 			t.Errorf("Authorization = %q, want Bearer test-key", r.Header.Get("Authorization"))
@@ -274,5 +247,24 @@ func TestMoonshotProvider_DiscoverModels(t *testing.T) {
 func TestNewMoonshot_RejectsInvalidBaseURL(t *testing.T) {
 	if _, err := New("k", "://bad"); err == nil {
 		t.Fatal("New accepted an invalid base URL")
+	}
+}
+
+// TestNewMoonshot_BaseURLIsTheAPIRoot pins the shape a base URL is written in: the
+// API root, used verbatim. The one net: a bare host is not an API root, so it
+// adopts the trailing version segment of the provider's default root.
+func TestNewMoonshot_BaseURLIsTheAPIRoot(t *testing.T) {
+	for base, want := range map[string]string{
+		"":                                      "https://api.moonshot.ai/v1",
+		"https://api.moonshot.ai":               "https://api.moonshot.ai/v1",
+		"https://proxy.example.com/moonshot/v1": "https://proxy.example.com/moonshot/v1",
+	} {
+		p, err := New("test-key", base)
+		if err != nil {
+			t.Fatalf("New(_, %q) error: %v", base, err)
+		}
+		if got := p.BaseURL(); got != want {
+			t.Errorf("New(_, %q).BaseURL() = %q, want %q", base, got, want)
+		}
 	}
 }

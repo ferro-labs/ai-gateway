@@ -17,7 +17,7 @@ const (
 	testBearerAPIKey   = "Bearer test-key"
 	testEmbeddingModel = "baai/bge-m3"
 	testChatModel      = "deepseek/deepseek-v3.2"
-	testChatPath       = "/chat/completions"
+	testChatPath       = "/v1/chat/completions"
 )
 
 func TestNewNovita(t *testing.T) {
@@ -30,23 +30,6 @@ func TestNewNovita(t *testing.T) {
 	}
 }
 
-func TestNovitaProvider_SupportedModels(t *testing.T) {
-	p, _ := New("test-key", "")
-	models := p.SupportedModels()
-	if len(models) == 0 {
-		t.Error("SupportedModels() returned empty")
-	}
-	found := false
-	for _, m := range models {
-		if m == "deepseek/deepseek-v3.2" {
-			found = true
-		}
-	}
-	if !found {
-		t.Error("deepseek/deepseek-v3.2 not found")
-	}
-}
-
 func TestNovitaProvider_SupportsModel(t *testing.T) {
 	p, _ := New("test-key", "")
 	if !p.SupportsModel("deepseek/deepseek-v3.2") {
@@ -54,16 +37,6 @@ func TestNovitaProvider_SupportsModel(t *testing.T) {
 	}
 	if !p.SupportsModel("custom-model") {
 		t.Error("passthrough: expected all models to return true")
-	}
-}
-
-func TestNovitaProvider_Models(t *testing.T) {
-	p, _ := New("test-key", "")
-	models := p.Models()
-	for _, m := range models {
-		if m.OwnedBy != "novita" {
-			t.Errorf("ModelInfo.OwnedBy = %q, want novita", m.OwnedBy)
-		}
 	}
 }
 
@@ -179,24 +152,6 @@ func TestNovitaProvider_Embed_Interface(_ *testing.T) {
 	var _ core.EmbeddingProvider = p
 }
 
-func TestNovitaProvider_SupportedModels_Embeddings(t *testing.T) {
-	p, _ := New("test-key", "")
-	models := p.SupportedModels()
-	found := false
-	for _, m := range models {
-		if m == testEmbeddingModel {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatalf("embedding model %q not found in SupportedModels()", testEmbeddingModel)
-	}
-	if !p.SupportsModel(testEmbeddingModel) {
-		t.Fatalf("SupportsModel(%q) = false, want true", testEmbeddingModel)
-	}
-}
-
 func TestNovitaProvider_Embed_StringInput_MockHTTP(t *testing.T) {
 	testNovitaEmbedSuccess(t, "hello world")
 }
@@ -242,8 +197,8 @@ func TestNovitaProvider_Embed_InvalidInput(t *testing.T) {
 
 func TestNovitaProvider_Embed_UpstreamError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/embeddings" {
-			t.Errorf("path = %q, want /embeddings", r.URL.Path)
+		if r.URL.Path != "/v1/embeddings" {
+			t.Errorf("path = %q, want /v1/embeddings", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusTooManyRequests)
@@ -271,8 +226,8 @@ func testNovitaEmbedSuccess(t *testing.T, input any) {
 		if r.Method != http.MethodPost {
 			t.Errorf("method = %s, want POST", r.Method)
 		}
-		if r.URL.Path != "/embeddings" {
-			t.Errorf("path = %q, want /embeddings", r.URL.Path)
+		if r.URL.Path != "/v1/embeddings" {
+			t.Errorf("path = %q, want /v1/embeddings", r.URL.Path)
 		}
 		if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
 			t.Errorf("Authorization = %q, want Bearer test-key", got)
@@ -444,8 +399,8 @@ func TestNovitaProvider_DiscoverModels(t *testing.T) {
 		if r.Method != http.MethodGet {
 			t.Errorf("method = %q, want GET", r.Method)
 		}
-		if r.URL.Path != "/models" {
-			t.Errorf("path = %q, want /models", r.URL.Path)
+		if r.URL.Path != "/v1/models" {
+			t.Errorf("path = %q, want /v1/models", r.URL.Path)
 		}
 		if got := r.Header.Get("Authorization"); got != testBearerAPIKey {
 			t.Errorf("Authorization = %q, want %s", got, testBearerAPIKey)
@@ -469,5 +424,24 @@ func TestNovitaProvider_DiscoverModels(t *testing.T) {
 	}
 	if models[0].OwnedBy != "novita" {
 		t.Errorf("model[0].OwnedBy = %q, want novita", models[0].OwnedBy)
+	}
+}
+
+// TestNewNovita_BaseURLIsTheAPIRoot pins the shape a base URL is written in: the
+// API root, used verbatim. The one net: a bare host is not an API root, so it
+// adopts the trailing version segment of the provider's default root.
+func TestNewNovita_BaseURLIsTheAPIRoot(t *testing.T) {
+	for base, want := range map[string]string{
+		"":                                    "https://api.novita.ai/openai/v1",
+		"https://api.novita.ai":               "https://api.novita.ai/v1",
+		"https://proxy.example.com/openai/v1": "https://proxy.example.com/openai/v1",
+	} {
+		p, err := New("test-key", base)
+		if err != nil {
+			t.Fatalf("New(_, %q) error: %v", base, err)
+		}
+		if got := p.BaseURL(); got != want {
+			t.Errorf("New(_, %q).BaseURL() = %q, want %q", base, got, want)
+		}
 	}
 }

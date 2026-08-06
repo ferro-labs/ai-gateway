@@ -2,9 +2,11 @@ package providers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	ai21pkg "github.com/ferro-labs/ai-gateway/providers/ai21"
@@ -143,27 +145,80 @@ func statusConformanceCases() []statusConformanceCase {
 	}
 }
 
+// statusStubLeakMarker is a value the stub puts in its error body OUTSIDE any
+// recognised error envelope. Nothing reads it; assertTypedStatus asserts it
+// never appears in the caller-facing message, which is how a provider that
+// starts copying a raw upstream body into its error is caught.
+const statusStubLeakMarker = "UNSTRUCTURED-BODY-MUST-NOT-LEAK"
+
 // newStatusStub starts a stub HTTP server that always responds with status
 // and an OpenAI-shaped {"error":{"message":…}} body, regardless of path.
 func newStatusStub(status int) *httptest.Server {
+	body := fmt.Sprintf(`{"error":{"message":"stub error"},"trace":%q}`, statusStubLeakMarker)
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
-		_, _ = w.Write([]byte(`{"error":{"message":"stub error"}}`))
+		_, _ = w.Write([]byte(body))
 	}))
 }
 
-// TestProviderStatusConformance verifies core.ParseStatusCode recovers the
-// upstream HTTP status from every provider's Complete() (and, where
-// implemented, CompleteStream()) error, for both a retryable (429) and a
-// non-retryable (500) canned upstream response. Status-code recoverability is
-// relied on by gateway_circuitbreaker.go's isRateLimitError and
-// internal/strategies/fallback.go's onStatusCodes retry gate, so a provider
-// that stops surfacing a parseable status breaks that gating silently. The
-// streaming assertions only check that an error with a recoverable status is
-// returned at all, not the message detail.
+// assertTypedStatus is the whole provider→gateway error contract, asserted in
+// one place. Every provider, on every surface, must satisfy it for an upstream
+// that answered with a non-success status.
+//
+// It checks the type, not the text. A message that merely reads like it carries
+// a status is what the deleted regex in core.ParseStatusCode used to accept, and
+// accepting it is what made an SDK-backed call — whose message has no such
+// shape — silently classify as a transport failure.
+func assertTypedStatus(t *testing.T, surface string, err error, wantStatus int) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("%s: no error for a %d upstream response", surface, wantStatus)
+	}
+	var statusErr *core.HTTPStatusError
+	if !errors.As(err, &statusErr) {
+		t.Fatalf("%s: errors.As found no *core.HTTPStatusError in %T: %v", surface, err, err)
+	}
+	if statusErr.StatusCode != wantStatus {
+		t.Errorf("%s: StatusCode = %d, want %d; err = %v", surface, statusErr.StatusCode, wantStatus, err)
+	}
+	if statusErr.Provider == "" {
+		t.Errorf("%s: Provider is empty; the operator-facing line cannot name the backend", surface)
+	}
+	if statusErr.Message == "" {
+		t.Errorf("%s: Message is empty; a caller-facing 400/422 would say nothing", surface)
+	}
+	// The upstream stub answers with a body containing this marker in no
+	// recognised error envelope. It must not reach the caller-facing message.
+	if strings.Contains(statusErr.Message, statusStubLeakMarker) {
+		t.Errorf("%s: Message = %q — an unrecognised upstream body reached the caller-facing text", surface, statusErr.Message)
+	}
+	// ParseStatusCode is the accessor everything downstream uses; it must agree.
+	if got := core.ParseStatusCode(err); got != wantStatus {
+		t.Errorf("%s: ParseStatusCode = %d, want %d", surface, got, wantStatus)
+	}
+}
+
+// TestProviderStatusConformance is the contract test for stream S1: every
+// provider returns a *core.HTTPStatusError (or an error wrapping one) at its
+// boundary, on every surface it implements, across the status classes an
+// upstream actually returns — client-auth (401), not-found (404), retryable
+// rate-limit (429) and non-retryable server fault (500).
+//
+// It is what a THIRTY-FIRST provider inherits without writing anything: add a
+// case to statusConformanceCases and the contract is enforced for chat,
+// streaming, embeddings and images at once. It is also what stops the contract
+// from rotting — internal/strategies.shouldRetry, gateway_circuitbreaker's
+// isRateLimitError and internal/apierror's classification all read the status
+// off this type, and all three fail open (retry it, blame the provider, answer
+// 500) when it is missing, which is silent in production and loud only here.
 func TestProviderStatusConformance(t *testing.T) {
-	for _, status := range []int{http.StatusTooManyRequests, http.StatusInternalServerError} {
+	for _, status := range []int{
+		http.StatusUnauthorized,        // 401 — bad key
+		http.StatusNotFound,            // 404 — unknown model / route
+		http.StatusTooManyRequests,     // 429 — retryable
+		http.StatusInternalServerError, // 500 — non-retryable fault
+	} {
 		for _, tc := range statusConformanceCases() {
 			t.Run(fmt.Sprintf("%s/%d", tc.name, status), func(t *testing.T) {
 				srv := newStatusStub(status)
@@ -180,30 +235,63 @@ func TestProviderStatusConformance(t *testing.T) {
 
 				p := tc.build(t, srv.URL)
 				_, err := p.Complete(context.Background(), req)
-				if err == nil {
-					t.Fatalf("Complete() returned no error for a %d upstream response", status)
-				}
-				if got := core.ParseStatusCode(err); got != status {
-					t.Errorf("Complete(): ParseStatusCode(err) = %d, want %d; err = %v", got, status, err)
+				assertTypedStatus(t, "Complete", err, status)
+
+				if sp, ok := p.(StreamProvider); ok {
+					ch, streamErr := sp.CompleteStream(context.Background(), req)
+					if streamErr == nil {
+						for range ch { //nolint:revive // drain to avoid a goroutine leak if a provider unexpectedly starts one
+						}
+						t.Fatalf("CompleteStream() returned no error for a %d upstream response", status)
+					}
+					if ch != nil {
+						t.Errorf("CompleteStream() channel = %v, want nil on a pre-stream error", ch)
+					}
+					assertTypedStatus(t, "CompleteStream", streamErr, status)
 				}
 
-				sp, ok := p.(StreamProvider)
-				if !ok {
-					return
+				// Embeddings and images are where the contract was broken: they
+				// are the surfaces reached through an SDK rather than raw HTTP,
+				// and an SDK's own error type carries its status in a field this
+				// gateway cannot see until a provider translates it.
+				if ep, ok := p.(EmbeddingProvider); ok {
+					_, embedErr := ep.Embed(context.Background(), core.EmbeddingRequest{
+						Model: embedModelFor(tc.name, model),
+						Input: "hi",
+					})
+					assertTypedStatus(t, "Embed", embedErr, status)
 				}
-				ch, err := sp.CompleteStream(context.Background(), req)
-				if err == nil {
-					for range ch { //nolint:revive // drain to avoid a goroutine leak if a provider unexpectedly starts one
-					}
-					t.Fatalf("CompleteStream() returned no error for a %d upstream response", status)
-				}
-				if ch != nil {
-					t.Errorf("CompleteStream() channel = %v, want nil on a pre-stream error", ch)
-				}
-				if got := core.ParseStatusCode(err); got != status {
-					t.Errorf("CompleteStream(): ParseStatusCode(err) = %d, want %d; err = %v", got, status, err)
+				if ip, ok := p.(ImageProvider); ok {
+					_, imageErr := ip.GenerateImage(context.Background(), core.ImageRequest{
+						Model:  imageModelFor(tc.name, model),
+						Prompt: "a cat",
+					})
+					assertTypedStatus(t, "GenerateImage", imageErr, status)
 				}
 			})
 		}
+	}
+}
+
+// embedModelFor and imageModelFor supply a model id for the providers that
+// route on it. The stub answers any path with the canned status, so the id only
+// has to survive the provider's own pre-flight validation.
+func embedModelFor(provider, fallback string) string {
+	switch provider {
+	case "cohere":
+		return "embed-english-v3.0"
+	case "openai":
+		return "text-embedding-3-small"
+	default:
+		return fallback
+	}
+}
+
+func imageModelFor(provider, fallback string) string {
+	switch provider {
+	case "openai":
+		return "dall-e-3"
+	default:
+		return fallback
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,33 +21,6 @@ func TestNewReplicate(t *testing.T) {
 	}
 	if p.Name() != "replicate" {
 		t.Errorf("Name() = %q, want replicate", p.Name())
-	}
-}
-
-func TestReplicateProvider_SupportedModels_Defaults(t *testing.T) {
-	p, _ := New("test-token", "", nil, nil)
-	models := p.SupportedModels()
-	if len(models) == 0 {
-		t.Error("SupportedModels() returned empty")
-	}
-	found := false
-	for _, m := range models {
-		if strings.Contains(m, "llama") {
-			found = true
-		}
-	}
-	if !found {
-		t.Error("no llama model found in default supported models")
-	}
-}
-
-func TestReplicateProvider_SupportedModels_Custom(t *testing.T) {
-	textModels := []string{"owner/text-model"}
-	imageModels := []string{"owner/image-model"}
-	p, _ := New("test-token", "", textModels, imageModels)
-	models := p.SupportedModels()
-	if len(models) != 2 {
-		t.Fatalf("SupportedModels() returned %d, want 2", len(models))
 	}
 }
 
@@ -109,8 +83,8 @@ func TestReplicateProvider_Complete_PinnedVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Complete() error: %v", err)
 	}
-	if gotPath != "/predictions" {
-		t.Errorf("request path = %q, want /predictions", gotPath)
+	if gotPath != "/v1/predictions" {
+		t.Errorf("request path = %q, want /v1/predictions", gotPath)
 	}
 	if gotBody["version"] != "abc123" {
 		t.Errorf("body[\"version\"] = %v, want abc123", gotBody["version"])
@@ -144,8 +118,8 @@ func TestReplicateProvider_GenerateImage_PinnedVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateImage() error: %v", err)
 	}
-	if gotPath != "/predictions" {
-		t.Errorf("request path = %q, want /predictions", gotPath)
+	if gotPath != "/v1/predictions" {
+		t.Errorf("request path = %q, want /v1/predictions", gotPath)
 	}
 	if gotBody["version"] != "deadbeef" {
 		t.Errorf("body[\"version\"] = %v, want deadbeef", gotBody["version"])
@@ -173,18 +147,8 @@ func TestReplicateProvider_Complete_NoVersion_UsesModelPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Complete() error: %v", err)
 	}
-	if gotPath != "/models/meta/llama/predictions" {
-		t.Errorf("request path = %q, want /models/meta/llama/predictions", gotPath)
-	}
-}
-
-func TestReplicateProvider_Models(t *testing.T) {
-	p, _ := New("test-token", "", nil, nil)
-	models := p.Models()
-	for _, m := range models {
-		if m.OwnedBy != "replicate" {
-			t.Errorf("ModelInfo.OwnedBy = %q, want replicate", m.OwnedBy)
-		}
+	if gotPath != "/v1/models/meta/llama/predictions" {
+		t.Errorf("request path = %q, want /v1/models/meta/llama/predictions", gotPath)
 	}
 }
 
@@ -246,7 +210,7 @@ func TestReplicateProvider_CompleteStream_MockSSE(t *testing.T) {
 	var srv *httptest.Server
 	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/models/test/model/predictions":
+		case "/v1/models/test/model/predictions":
 			gotPath = r.URL.Path
 			gotAuth = r.Header.Get("Authorization")
 			if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
@@ -266,8 +230,13 @@ func TestReplicateProvider_CompleteStream_MockSSE(t *testing.T) {
 			_, _ = w.Write([]byte("event: output\nid: 1\ndata: Hello\n\n" +
 				"event: output\nid: 2\ndata:  world\n\n" +
 				"event: done\ndata: {}\n\n"))
+		case "/v1/predictions/pred-stream":
+			// The post-stream metrics read. This model reports no token counts,
+			// so the terminal chunk must carry no usage rather than a zeroed one.
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"pred-stream","status":"succeeded"}`))
 		default:
-			t.Fatalf("unexpected path: %s", r.URL.Path)
+			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
 	}))
 	defer srv.Close()
@@ -289,8 +258,8 @@ func TestReplicateProvider_CompleteStream_MockSSE(t *testing.T) {
 		chunks = append(chunks, c)
 	}
 
-	if gotPath != "/models/test/model/predictions" {
-		t.Fatalf("request path = %q, want /models/test/model/predictions", gotPath)
+	if gotPath != "/v1/models/test/model/predictions" {
+		t.Fatalf("request path = %q, want /v1/models/test/model/predictions", gotPath)
 	}
 	if gotAuth != "Bearer test-token" {
 		t.Fatalf("authorization = %q, want Bearer test-token", gotAuth)
@@ -317,6 +286,9 @@ func TestReplicateProvider_CompleteStream_MockSSE(t *testing.T) {
 	}
 	if chunks[2].Choices[0].FinishReason != "stop" {
 		t.Fatalf("final finish_reason = %q, want stop", chunks[2].Choices[0].FinishReason)
+	}
+	if chunks[2].Usage != nil {
+		t.Errorf("terminal chunk usage = %+v, want nil when the prediction reports no metrics", chunks[2].Usage)
 	}
 }
 
@@ -551,7 +523,7 @@ func TestReplicateProvider_CompleteStream_SubmitError(t *testing.T) {
 func TestReplicateProvider_CompleteStream_StreamFetchErrorBodyExceedsCap(t *testing.T) {
 	var streamURL string
 	mux := http.NewServeMux()
-	mux.HandleFunc("/models/", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/v1/models/", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
 		_, _ = w.Write([]byte(`{"id":"pred-1","status":"starting","urls":{"stream":"` + streamURL + `"}}`))
@@ -614,7 +586,7 @@ func TestReplicateProvider_CompleteStream_ErrorEvent(t *testing.T) {
 	var srv *httptest.Server
 	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/models/test/model/predictions":
+		case "/v1/models/test/model/predictions":
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusCreated)
 			_, _ = w.Write([]byte(`{"id":"pred-err","status":"starting","urls":{"stream":"` + srv.URL + `/stream"}}`))
@@ -658,7 +630,7 @@ func TestReplicateProvider_CompleteStream_DoneReason(t *testing.T) {
 	var srv *httptest.Server
 	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/models/test/model/predictions":
+		case "/v1/models/test/model/predictions":
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusCreated)
 			_, _ = w.Write([]byte(`{"id":"pred-done","status":"starting","urls":{"stream":"` + srv.URL + `/stream"}}`))
@@ -667,8 +639,11 @@ func TestReplicateProvider_CompleteStream_DoneReason(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("event: output\ndata: hi\n\n" +
 				"event: done\ndata: {\"reason\":\"max_tokens\"}\n\n"))
+		case "/v1/predictions/pred-done":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"pred-done","status":"succeeded"}`))
 		default:
-			t.Fatalf("unexpected path: %s", r.URL.Path)
+			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
 	}))
 	defer srv.Close()
@@ -695,6 +670,136 @@ func TestReplicateProvider_CompleteStream_DoneReason(t *testing.T) {
 	last := chunks[len(chunks)-1]
 	if last.Choices[0].FinishReason != core.FinishReasonLength {
 		t.Errorf("terminal finish_reason = %q, want %q", last.Choices[0].FinishReason, core.FinishReasonLength)
+	}
+}
+
+// ── Streaming usage ────────────────────────────────────────────────────────────
+
+// newStreamUsageStub serves the three legs a streaming request takes — the
+// prediction submit, the SSE stream, and the post-stream metrics read — and
+// reports how many times the metrics leg was hit. metricsStatus/metricsBody
+// let a caller make that last leg fail.
+func newStreamUsageStub(t *testing.T, metricsStatus int, metricsBody string) (*httptest.Server, *atomic.Int32) {
+	t.Helper()
+	var metricsReads atomic.Int32
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/models/test/model/predictions":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"id":"pred-usage","status":"starting","urls":{"stream":"` + srv.URL + `/stream"}}`))
+		case "/stream":
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("event: output\ndata: Hello\n\n" +
+				"event: output\ndata:  world\n\n" +
+				"event: done\ndata: {}\n\n"))
+		case "/v1/predictions/pred-usage":
+			metricsReads.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(metricsStatus)
+			_, _ = w.Write([]byte(metricsBody))
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	return srv, &metricsReads
+}
+
+// collectStream drains ch, failing the test on any error chunk.
+func collectStream(t *testing.T, ch <-chan core.StreamChunk) []core.StreamChunk {
+	t.Helper()
+	var chunks []core.StreamChunk
+	for c := range ch {
+		if c.Error != nil {
+			t.Fatalf("stream chunk error: %v", c.Error)
+		}
+		chunks = append(chunks, c)
+	}
+	return chunks
+}
+
+// TestReplicateProvider_CompleteStream_ReportsUsage locks in that a streaming
+// completion reports the same token usage the polled Complete path reports.
+// Replicate's SSE stream carries no token counts, so the provider must read the
+// finished prediction once — and exactly once, at the end — or every streaming
+// request is billed and budgeted as zero tokens.
+func TestReplicateProvider_CompleteStream_ReportsUsage(t *testing.T) {
+	// Arrange: the same metrics shape TestReplicateProvider_Complete_UsageAndFinishReason
+	// asserts on the non-streaming path.
+	srv, metricsReads := newStreamUsageStub(t, http.StatusOK,
+		`{"id":"pred-usage","status":"succeeded","metrics":{"input_token_count":12,"output_token_count":7}}`)
+	defer srv.Close()
+
+	// Act.
+	p, _ := New("test-token", srv.URL, []string{"test/model"}, nil)
+	ch, err := p.CompleteStream(t.Context(), core.Request{
+		Model:    "test/model",
+		Messages: []core.Message{{Role: "user", Content: "Hi"}},
+	})
+	if err != nil {
+		t.Fatalf("CompleteStream() error: %v", err)
+	}
+	chunks := collectStream(t, ch)
+
+	// Assert: usage rides the terminal chunk, and only the terminal chunk.
+	if len(chunks) != 3 {
+		t.Fatalf("got %d chunks, want 3: %+v", len(chunks), chunks)
+	}
+	for i, chunk := range chunks[:len(chunks)-1] {
+		if chunk.Usage != nil {
+			t.Errorf("chunk %d carries usage %+v; usage must not precede the finish_reason chunk", i, chunk.Usage)
+		}
+	}
+	last := chunks[len(chunks)-1]
+	if last.Choices[0].FinishReason != core.FinishReasonStop {
+		t.Fatalf("terminal finish_reason = %q, want %q", last.Choices[0].FinishReason, core.FinishReasonStop)
+	}
+	if last.Usage == nil {
+		t.Fatal("terminal chunk carries no usage; a streaming request would bill zero tokens")
+	}
+	if last.Usage.PromptTokens != 12 || last.Usage.CompletionTokens != 7 || last.Usage.TotalTokens != 19 {
+		t.Errorf("usage = %+v, want prompt=12 completion=7 total=19", *last.Usage)
+	}
+	if got := metricsReads.Load(); got != 1 {
+		t.Errorf("prediction was read %d times, want exactly 1 (once, after the stream ends)", got)
+	}
+}
+
+// TestReplicateProvider_CompleteStream_UsageFetchFailureKeepsStream pins the
+// failure policy: the content is already delivered by the time the metrics read
+// happens, so a failing read costs the usage and nothing else. It must not turn
+// a served stream into an error.
+func TestReplicateProvider_CompleteStream_UsageFetchFailureKeepsStream(t *testing.T) {
+	srv, metricsReads := newStreamUsageStub(t, http.StatusInternalServerError, `{"detail":"boom"}`)
+	defer srv.Close()
+
+	p, _ := New("test-token", srv.URL, []string{"test/model"}, nil)
+	ch, err := p.CompleteStream(t.Context(), core.Request{
+		Model:    "test/model",
+		Messages: []core.Message{{Role: "user", Content: "Hi"}},
+	})
+	if err != nil {
+		t.Fatalf("CompleteStream() error: %v", err)
+	}
+	chunks := collectStream(t, ch)
+
+	if len(chunks) != 3 {
+		t.Fatalf("got %d chunks, want 3: %+v", len(chunks), chunks)
+	}
+	if chunks[0].Choices[0].Delta.Content != "Hello" || chunks[1].Choices[0].Delta.Content != " world" {
+		t.Errorf("content was lost: %+v", chunks)
+	}
+	last := chunks[len(chunks)-1]
+	if last.Choices[0].FinishReason != core.FinishReasonStop {
+		t.Errorf("terminal finish_reason = %q, want %q", last.Choices[0].FinishReason, core.FinishReasonStop)
+	}
+	if last.Usage != nil {
+		t.Errorf("usage = %+v, want nil when the metrics read failed", last.Usage)
+	}
+	if got := metricsReads.Load(); got != 1 {
+		t.Errorf("prediction was read %d times, want exactly 1 (no retry on a best-effort read)", got)
 	}
 }
 
@@ -763,7 +868,7 @@ func TestReplicateProvider_Stream_ContextCancel(t *testing.T) {
 	var srv *httptest.Server
 	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/models/test/model/predictions":
+		case "/v1/models/test/model/predictions":
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusCreated)
 			_, _ = w.Write([]byte(`{"id":"pred-stream-cancel","status":"starting","urls":{"stream":"` + srv.URL + `/stream"}}`))
@@ -862,6 +967,215 @@ func TestResolveModelURL_RejectsNonOwnerName(t *testing.T) {
 	for _, m := range []string{"solo", "owner/name/extra", "a/b/c/d"} {
 		if _, _, err := p.resolveModelURL(m); err == nil {
 			t.Errorf("resolveModelURL(%q) accepted a non owner/name path, want error", m)
+		}
+	}
+}
+
+// TestBuildTextInput_KeepsExplicitZeroSamplingValues verifies an explicitly
+// requested zero — a deterministic temperature, top_p or seed — reaches
+// Replicate instead of being dropped as an unset value, while a parameter the
+// caller never set stays absent.
+func TestBuildTextInput_KeepsExplicitZeroSamplingValues(t *testing.T) {
+	zero := 0.0
+	var zeroSeed int64
+	req := core.Request{
+		Messages:    []core.Message{{Role: core.RoleUser, Content: "hi"}},
+		Temperature: &zero,
+		TopP:        &zero,
+		Seed:        &zeroSeed,
+	}
+
+	input, err := buildTextInput(req)
+	if err != nil {
+		t.Fatalf("buildTextInput: %v", err)
+	}
+	body, err := json.Marshal(input)
+	if err != nil {
+		t.Fatalf("marshal input: %v", err)
+	}
+	for _, want := range []string{`"temperature":0`, `"top_p":0`, `"seed":0`} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("input = %s, want it to carry %s", body, want)
+		}
+	}
+	for _, absent := range []string{"presence_penalty", "frequency_penalty", "max_tokens"} {
+		if strings.Contains(string(body), absent) {
+			t.Errorf("input = %s, want %s omitted when unset", body, absent)
+		}
+	}
+}
+
+// Replicate routes operator-configured "owner/name" paths across two lists.
+// ConfiguredModels merges them because the gateway routes on one flat set,
+// and a version-pinned path is not something a catalog can enumerate.
+func TestConfiguredModelsMergesTextAndImageLists(t *testing.T) {
+	p, err := New("test-token", "",
+		[]string{"meta/meta-llama-3.1-70b-instruct"},
+		[]string{"stability-ai/sdxl"},
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	got := p.ConfiguredModels()
+	want := []string{"meta/meta-llama-3.1-70b-instruct", "stability-ai/sdxl"}
+	if len(got) != len(want) {
+		t.Fatalf("ConfiguredModels() = %v, want %v", got, want)
+	}
+	for i, model := range want {
+		if got[i] != model {
+			t.Fatalf("ConfiguredModels()[%d] = %q, want %q", i, got[i], model)
+		}
+	}
+}
+
+// TestReplicateProvider_GenerateImage_RejectsB64Format is the mirror image of
+// the b64-only providers: a Replicate prediction's output is a URL, so a caller
+// asking for b64_json was answered 200 with an empty data[0].b64_json.
+func TestReplicateProvider_GenerateImage_RejectsB64Format(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("upstream must not be called for a format the provider cannot produce")
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-token", srv.URL, nil, []string{"owner/model"})
+	_, err := p.GenerateImage(context.Background(), core.ImageRequest{
+		Model: "owner/model", Prompt: "a cat", ResponseFormat: "b64_json",
+	})
+	if err == nil {
+		t.Fatal("GenerateImage = nil error, want a refusal (predictions return URLs)")
+	}
+	if got := core.ParseStatusCode(err); got != 400 {
+		t.Errorf("status = %d, want 400", got)
+	}
+}
+
+// TestReplicateProvider_Complete_PromptCarriesEveryTurn asserts the prompt that
+// actually reaches Replicate. The join — one "<role>: <text>" line per turn plus
+// a trailing "assistant: " cue — is this provider's long-standing convention and
+// is now the shared one; the assertion is here because nothing previously read
+// the request body, which is how the sibling providers drifted.
+func TestReplicateProvider_Complete_PromptCarriesEveryTurn(t *testing.T) {
+	cases := []struct {
+		name     string
+		messages []core.Message
+		want     string
+	}{
+		{
+			name:     "single message",
+			messages: []core.Message{{Role: core.RoleUser, Content: "hi"}},
+			want:     "user: hi\nassistant: ",
+		},
+		{
+			name: "conversation",
+			messages: []core.Message{
+				{Role: core.RoleSystem, Content: "You are terse."},
+				{Role: core.RoleUser, Content: "first"},
+				{Role: core.RoleAssistant, Content: "reply"},
+				{Role: core.RoleUser, Content: "second"},
+			},
+			want: "system: You are terse.\nuser: first\nassistant: reply\nuser: second\nassistant: ",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var got string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body replicatePredictionRequest
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Errorf("decode forwarded body: %v", err)
+				}
+				got = body.Input.Prompt
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusCreated)
+				_, _ = w.Write([]byte(`{"id":"pred-1","status":"succeeded","output":"ok"}`))
+			}))
+			defer srv.Close()
+
+			p, _ := New("test-token", srv.URL, []string{"test/model"}, nil)
+			if _, err := p.Complete(context.Background(), core.Request{
+				Model:    "test/model",
+				Messages: tc.messages,
+			}); err != nil {
+				t.Fatalf("Complete() error: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("forwarded prompt = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestReplicateProvider_RefusesImageParts pins the replacement for a silent drop:
+// an image part has no field in a prediction's single "prompt" input, so it never
+// reached the model and the caller got a 200 over content it never saw. Both
+// surfaces that build the input refuse it, before the upstream is called.
+func TestReplicateProvider_RefusesImageParts(t *testing.T) {
+	req := core.Request{
+		Model: "test/model",
+		Messages: []core.Message{{
+			Role:    core.RoleUser,
+			Content: "describe",
+			ContentParts: []core.ContentPart{
+				{Type: core.ContentTypeText, Text: "describe"},
+				{Type: "image_url", ImageURL: &core.ImageURLPart{URL: "https://example.com/a.png"}},
+			},
+		}},
+	}
+
+	cases := []struct {
+		name string
+		call func(p *Provider) error
+	}{
+		{"Complete", func(p *Provider) error {
+			_, err := p.Complete(context.Background(), req)
+			return err
+		}},
+		{"CompleteStream", func(p *Provider) error {
+			_, err := p.CompleteStream(context.Background(), req)
+			return err
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var called atomic.Bool
+			srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				called.Store(true)
+			}))
+			defer srv.Close()
+
+			p, _ := New("test-token", srv.URL, []string{"test/model"}, nil)
+			err := tc.call(p)
+			if err == nil {
+				t.Fatal("call succeeded; an image part no prompt can carry must be refused, not dropped")
+			}
+			if got := core.ParseStatusCode(err); got != http.StatusBadRequest {
+				t.Errorf("ParseStatusCode = %d, want %d — the caller can fix this and no retry can", got, http.StatusBadRequest)
+			}
+			if called.Load() {
+				t.Error("a refused request still reached Replicate; it must be refused before the call")
+			}
+		})
+	}
+}
+
+// TestNewReplicate_BaseURLIsTheAPIRoot pins the shape a base URL is written in: the
+// API root, used verbatim. The one net: a bare host is not an API root, so it
+// adopts the trailing version segment of the provider's default root.
+func TestNewReplicate_BaseURLIsTheAPIRoot(t *testing.T) {
+	for base, want := range map[string]string{
+		"":                                       "https://api.replicate.com/v1",
+		"https://api.replicate.com":              "https://api.replicate.com/v1",
+		"https://proxy.example.com/replicate/v1": "https://proxy.example.com/replicate/v1",
+	} {
+		p, err := New("test-token", base, nil, nil)
+		if err != nil {
+			t.Fatalf("New(_, %q) error: %v", base, err)
+		}
+		if got := p.BaseURL(); got != want {
+			t.Errorf("New(_, %q).BaseURL() = %q, want %q", base, got, want)
 		}
 	}
 }

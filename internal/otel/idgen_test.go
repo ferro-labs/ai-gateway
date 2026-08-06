@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/ferro-labs/ai-gateway/internal/logging"
 	"github.com/ferro-labs/ai-gateway/observability"
+	"github.com/ferro-labs/ai-gateway/pkg/logger"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
@@ -30,7 +30,7 @@ func newTestProviderWithIDGen(t *testing.T) (*otelProvider, *tracetest.InMemoryE
 // --- Unit tests for loggingIDGen ---
 
 func TestIDGen_NewIDs_ValidLoggingTraceID(t *testing.T) {
-	ctx := logging.WithTraceID(context.Background(), knownTraceHex)
+	ctx := logger.WithTraceID(context.Background(), knownTraceHex)
 	gen := newLoggingIDGen()
 
 	gotTraceID, gotSpanID := gen.NewIDs(ctx)
@@ -48,7 +48,7 @@ func TestIDGen_NewIDs_UppercaseHex_Adopted(t *testing.T) {
 	// X-Request-ID headers may carry uppercase hex; the generator must
 	// lowercase-normalise and adopt the ID rather than fall back to random.
 	upperHex := "0AF7651916CD43DD8448EB211C80319C"
-	ctx := logging.WithTraceID(context.Background(), upperHex)
+	ctx := logger.WithTraceID(context.Background(), upperHex)
 	gen := newLoggingIDGen()
 
 	gotTraceID, gotSpanID := gen.NewIDs(ctx)
@@ -98,7 +98,7 @@ func TestIDGen_NewIDs_MalformedHex_FallsBackToRandom(t *testing.T) {
 	gen := newLoggingIDGen()
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			ctx := logging.WithTraceID(context.Background(), tc.id)
+			ctx := logger.WithTraceID(context.Background(), tc.id)
 			tid, sid := gen.NewIDs(ctx)
 
 			if !tid.IsValid() {
@@ -139,7 +139,7 @@ func TestIDGen_EndToEnd_TraceIDUnification(t *testing.T) {
 	prov, exp := newTestProviderWithIDGen(t)
 
 	// Seed a known logging trace ID into the context.
-	ctx := logging.WithTraceID(context.Background(), knownTraceHex)
+	ctx := logger.WithTraceID(context.Background(), knownTraceHex)
 
 	_, span := prov.StartRequestSpan(ctx, observability.RequestAttrs{
 		System:    "openai",

@@ -522,6 +522,78 @@ func TestProviderImageCapabilityMatchesInterface(t *testing.T) {
 	}
 }
 
+// TestProviderRerankCapabilityMatchesInterface keeps factory metadata aligned
+// with the optional RerankProvider interface used by /v1/rerank routing.
+func TestProviderRerankCapabilityMatchesInterface(t *testing.T) {
+	for _, tc := range providerNameStabilityCases() {
+		t.Run(tc.wantName, func(t *testing.T) {
+			p := tc.build(t)
+			_, implements := p.(RerankProvider)
+			declares := ProviderHasCapability(tc.wantName, CapabilityRerank)
+			if implements != declares {
+				t.Errorf("provider %q rerank capability mismatch: implements RerankProvider=%v, declares %q=%v", tc.wantName, implements, CapabilityRerank, declares)
+			}
+		})
+	}
+}
+
+// TestProviderModerationCapabilityMatchesInterface keeps factory metadata aligned
+// with the optional ModerationProvider interface used by /v1/moderations routing.
+func TestProviderModerationCapabilityMatchesInterface(t *testing.T) {
+	for _, tc := range providerNameStabilityCases() {
+		t.Run(tc.wantName, func(t *testing.T) {
+			p := tc.build(t)
+			_, implements := p.(ModerationProvider)
+			declares := ProviderHasCapability(tc.wantName, CapabilityModeration)
+			if implements != declares {
+				t.Errorf("provider %q moderation capability mismatch: implements ModerationProvider=%v, declares %q=%v", tc.wantName, implements, CapabilityModeration, declares)
+			}
+		})
+	}
+}
+
+// TestProviderTranscriptionCapabilityMatchesInterface keeps factory metadata
+// aligned with the optional TranscriptionProvider interface used by
+// /v1/audio/transcriptions routing.
+func TestProviderTranscriptionCapabilityMatchesInterface(t *testing.T) {
+	for _, tc := range providerNameStabilityCases() {
+		t.Run(tc.wantName, func(t *testing.T) {
+			p := tc.build(t)
+			_, implements := p.(TranscriptionProvider)
+			declares := ProviderHasCapability(tc.wantName, CapabilityTranscription)
+			if implements != declares {
+				t.Errorf("provider %q transcription capability mismatch: implements TranscriptionProvider=%v, declares %q=%v", tc.wantName, implements, CapabilityTranscription, declares)
+			}
+		})
+	}
+}
+
+func TestProviderSpeechCapabilityMatchesInterface(t *testing.T) {
+	for _, tc := range providerNameStabilityCases() {
+		t.Run(tc.wantName, func(t *testing.T) {
+			p := tc.build(t)
+			_, implements := p.(SpeechProvider)
+			declares := ProviderHasCapability(tc.wantName, CapabilitySpeech)
+			if implements != declares {
+				t.Errorf("provider %q speech capability mismatch: implements SpeechProvider=%v, declares %q=%v", tc.wantName, implements, CapabilitySpeech, declares)
+			}
+		})
+	}
+}
+
+func TestProviderBatchCapabilityMatchesInterface(t *testing.T) {
+	for _, tc := range providerNameStabilityCases() {
+		t.Run(tc.wantName, func(t *testing.T) {
+			p := tc.build(t)
+			_, implements := p.(BatchProvider)
+			declares := ProviderHasCapability(tc.wantName, CapabilityBatch)
+			if implements != declares {
+				t.Errorf("provider %q batch capability mismatch: implements BatchProvider=%v, declares %q=%v", tc.wantName, implements, CapabilityBatch, declares)
+			}
+		})
+	}
+}
+
 // TestProviderDiscoveryCapabilityMatchesInterface keeps factory metadata aligned
 // with the optional DiscoveryProvider interface used by auto-discovery refresh.
 func TestProviderDiscoveryCapabilityMatchesInterface(t *testing.T) {
@@ -552,28 +624,87 @@ func TestProviderProxyCapabilityMatchesInterface(t *testing.T) {
 	}
 }
 
-// TestProviderNonOpenAIWireSet pins the exact set of providers gated from
-// transparent OpenAI-wire proxy pass-through via core.NonOpenAIWireProvider.
-// OpenAI-wire is the ecosystem default, so a new OpenAI-compatible provider must
-// NOT be added here; only a genuinely native / non-directly-forwardable provider
-// both implements the marker AND appears in this set. If this test fails,
-// reconcile the provider's marker with this list — do not blindly edit one side.
+// proxyWireShape classifies every provider that declares CapabilityProxy by
+// whether its upstream can serve a transparently-forwarded OpenAI-shaped request
+// at its base URL:
+//
+//	true  — it can; the /v1/* pass-through forwards to it.
+//	false — it cannot; the provider declares core.NonOpenAIWireProvider and the
+//	        pass-through refuses it with 501.
+//
+// Every proxy-capable provider must appear here, and that is the point.
+// Forwarding is the default, so a provider that gains CapabilityProxy and says
+// nothing about its wire shape is forwarded silently — which is how replicate,
+// an asynchronous predictions API, came to accept OpenAI-shaped requests its
+// upstream cannot serve while exposing its own raw endpoints (/v1/predictions,
+// /v1/account) under the gateway's token. Nothing failed, because a missing
+// marker looks exactly like a deliberate OpenAI-wire provider.
+func proxyWireShape() map[string]bool {
+	return map[string]bool{
+		// Bespoke upstreams: refused by the pass-through with 501.
+		NameAnthropic:    false,
+		NameAzureFoundry: false,
+		NameAzureOpenAI:  false,
+		NameBedrock:      false,
+		NameCohere:       false,
+		NameGemini:       false,
+		NameReplicate:    false,
+		NameVertexAI:     false,
+
+		// OpenAI-wire upstreams: forwarded transparently.
+		NameAI21:        true,
+		NameCerebras:    true,
+		NameCloudflare:  true,
+		NameDatabricks:  true,
+		NameDeepInfra:   true,
+		NameDeepSeek:    true,
+		NameFireworks:   true,
+		NameGroq:        true,
+		NameHuggingFace: true,
+		NameMistral:     true,
+		NameMoonshot:    true,
+		NameNovita:      true,
+		NameNVIDIANIM:   true,
+		NameOllama:      true,
+		NameOpenAI:      true,
+		NameOpenRouter:  true,
+		NamePerplexity:  true,
+		NameQwen:        true,
+		NameSambaNova:   true,
+		NameTogether:    true,
+		NameXAI:         true,
+	}
+}
+
+// TestProviderNonOpenAIWireSet holds each provider's core.NonOpenAIWireProvider
+// marker in step with its proxyWireShape classification, and fails on a
+// proxy-capable provider that carries no classification at all. If this test
+// fails, reconcile the provider's marker with the classification — do not
+// blindly edit one side.
 func TestProviderNonOpenAIWireSet(t *testing.T) {
-	nativeOnly := map[string]bool{
-		NameAnthropic:    true,
-		NameGemini:       true,
-		NameBedrock:      true,
-		NameCohere:       true,
-		NameVertexAI:     true,
-		NameAzureOpenAI:  true,
-		NameAzureFoundry: true,
+	shape := proxyWireShape()
+	for name := range shape {
+		if !ProviderHasCapability(name, CapabilityProxy) {
+			t.Errorf("proxyWireShape classifies %q, which does not declare %q; remove the entry", name, CapabilityProxy)
+		}
 	}
 	for _, tc := range providerNameStabilityCases() {
 		t.Run(tc.wantName, func(t *testing.T) {
 			p := tc.build(t)
 			_, marked := p.(NonOpenAIWireProvider)
-			if marked != nativeOnly[tc.wantName] {
-				t.Errorf("provider %q implements NonOpenAIWireProvider = %v, want %v (reconcile the provider marker with the gated set)", tc.wantName, marked, nativeOnly[tc.wantName])
+			openAIWire, classified := shape[tc.wantName]
+
+			if !ProviderHasCapability(tc.wantName, CapabilityProxy) {
+				if marked {
+					t.Errorf("provider %q implements NonOpenAIWireProvider but is not proxy-capable, so the marker decides nothing; drop it", tc.wantName)
+				}
+				return
+			}
+			if !classified {
+				t.Fatalf("provider %q declares %q but is not classified in proxyWireShape: add it as true when its upstream serves the OpenAI wire at its base URL, or as false plus a NonOpenAIWire() marker on the provider", tc.wantName, CapabilityProxy)
+			}
+			if marked == openAIWire {
+				t.Errorf("provider %q implements NonOpenAIWireProvider = %v, but proxyWireShape says its upstream serves the OpenAI wire = %v; reconcile the marker with the classification", tc.wantName, marked, openAIWire)
 			}
 		})
 	}

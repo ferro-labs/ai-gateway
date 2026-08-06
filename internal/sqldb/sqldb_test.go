@@ -2,9 +2,11 @@ package sqldb
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -86,5 +88,95 @@ func TestOpen_UnsupportedDialect(t *testing.T) {
 	_, err := Open(context.Background(), Dialect("mysql"), "dsn", "")
 	if err == nil || !strings.Contains(err.Error(), "unsupported dialect") {
 		t.Fatalf("expected unsupported dialect error, got %v", err)
+	}
+}
+
+// TestWithBusyTimeout covers the DSN shapes an operator can supply: a bare
+// path, a path that already carries a query, and one that already sets the
+// timeout under either driver's spelling.
+func TestWithBusyTimeout(t *testing.T) {
+	cases := []struct {
+		name string
+		dsn  string
+		want string
+	}{
+		{"bare path gains the setting", "/data/ferrogw.db", "/data/ferrogw.db?_pragma=busy_timeout(5000)"},
+		{"existing query is preserved", "/data/ferrogw.db?_txlock=immediate", "/data/ferrogw.db?_txlock=immediate&_pragma=busy_timeout(5000)"},
+		{"file URI gains the setting", "file:/data/ferrogw.db", "file:/data/ferrogw.db?_pragma=busy_timeout(5000)"},
+		{"operator pragma wins", "/data/ferrogw.db?_pragma=busy_timeout(60000)", "/data/ferrogw.db?_pragma=busy_timeout(60000)"},
+		{"operator _busy_timeout spelling wins", "/data/ferrogw.db?_busy_timeout=60000", "/data/ferrogw.db?_busy_timeout=60000"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := withBusyTimeout(tc.dsn); got != tc.want {
+				t.Fatalf("withBusyTimeout(%q) = %q, want %q", tc.dsn, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestOpen_SQLiteSharedFileWritersWait is the regression for the topology the
+// separate migration ledgers exist to support: two stores in ONE process
+// pointed at one SQLite file. Each pool is capped at one connection, which
+// bounds the pool and not the file, so the two are two writers on one lock.
+//
+// Without a busy timeout a blocked writer fails instantly with SQLITE_BUSY —
+// measured at half of the writes below — rather than waiting the microseconds
+// the other transaction needs.
+func TestOpen_SQLiteSharedFileWritersWait(t *testing.T) {
+	dsn := filepath.Join(t.TempDir(), "shared.db")
+	ctx := context.Background()
+
+	first, err := Open(ctx, SQLite, dsn, "")
+	if err != nil {
+		t.Fatalf("open first: %v", err)
+	}
+	defer func() { _ = first.Close() }()
+	second, err := Open(ctx, SQLite, dsn, "")
+	if err != nil {
+		t.Fatalf("open second: %v", err)
+	}
+	defer func() { _ = second.Close() }()
+
+	if _, err := first.ExecContext(ctx, "CREATE TABLE t(id INTEGER PRIMARY KEY, v TEXT)"); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+
+	const writesPerStore = 50
+	var wg sync.WaitGroup
+	failures := make(chan error, 2*writesPerStore)
+	for _, db := range []*sql.DB{first, second} {
+		for range writesPerStore {
+			wg.Add(1)
+			go func(db *sql.DB) {
+				defer wg.Done()
+				tx, err := db.BeginTx(ctx, nil)
+				if err != nil {
+					failures <- err
+					return
+				}
+				if _, err := tx.ExecContext(ctx, "INSERT INTO t(v) VALUES('x')"); err != nil {
+					failures <- err
+					_ = tx.Rollback()
+					return
+				}
+				if err := tx.Commit(); err != nil {
+					failures <- err
+				}
+			}(db)
+		}
+	}
+	wg.Wait()
+	close(failures)
+
+	count := 0
+	for err := range failures {
+		if count == 0 {
+			t.Errorf("write against a shared SQLite file failed instead of waiting: %v", err)
+		}
+		count++
+	}
+	if count > 0 {
+		t.Fatalf("%d of %d writes failed", count, 2*writesPerStore)
 	}
 }

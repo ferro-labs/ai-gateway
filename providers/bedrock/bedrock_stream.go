@@ -3,13 +3,14 @@ package bedrock
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 	"github.com/ferro-labs/ai-gateway/providers/core"
-	"github.com/ferro-labs/ai-gateway/providers/internal/anthropicwire"
+	"github.com/ferro-labs/ai-gateway/providers/core/anthropicwire"
 )
 
 // CompleteStream sends a streaming request to AWS Bedrock via InvokeModelWithResponseStream.
@@ -22,7 +23,10 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 	// The family check precedes enforcement for the same reason it does in
 	// Complete: an unsupported model has no supported-params list to violate.
 	if !strings.HasPrefix(modelID, "anthropic.") {
-		return nil, fmt.Errorf("streaming on Bedrock is currently only supported for anthropic.claude-* models")
+		// 400, not the 500 a bare error classifies as: the caller named a model
+		// this provider cannot stream, which only the caller can fix.
+		return nil, core.StatusError(p.Name(), http.StatusBadRequest,
+			"streaming on Bedrock is currently only supported for anthropic.claude-* models")
 	}
 	if err := core.EnforceUnsupportedParamsList(ctx, p.Name(), modelID, req, bedrockSupportedParams(modelID)...); err != nil {
 		return nil, err

@@ -1,0 +1,5 @@
+CREATE TABLE IF NOT EXISTS gateway_config (
+	id INTEGER PRIMARY KEY,
+	config_json TEXT NOT NULL,
+	updated_at TIMESTAMP NOT NULL
+);

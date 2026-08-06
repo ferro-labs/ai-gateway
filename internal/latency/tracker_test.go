@@ -89,3 +89,31 @@ func TestTracker_MultiProvider(t *testing.T) {
 		t.Errorf("expected fast (%v) < slow (%v)", tr.P50("fast"), tr.P50("slow"))
 	}
 }
+
+func TestTracker_Retain(t *testing.T) {
+	tr := New(10)
+	tr.Record("keep", 10*time.Millisecond)
+	tr.Record("drop", 20*time.Millisecond)
+
+	tr.Retain([]string{"keep"})
+
+	if tr.HasSamples("drop") {
+		t.Error("dropped provider still has samples")
+	}
+	if p50 := tr.P50("drop"); p50 != 0 {
+		t.Errorf("dropped provider P50 = %v, want 0", p50)
+	}
+	if !tr.HasSamples("keep") {
+		t.Error("retained provider lost its samples")
+	}
+	if p50 := tr.P50("keep"); p50 != 10*time.Millisecond {
+		t.Errorf("retained provider P50 = %v, want 10ms", p50)
+	}
+
+	// A config with no targets clears the tracker rather than retaining
+	// everything, which is what an empty target list means.
+	tr.Retain(nil)
+	if tr.HasSamples("keep") {
+		t.Error("Retain(nil) kept samples")
+	}
+}

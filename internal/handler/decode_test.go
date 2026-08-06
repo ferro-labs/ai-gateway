@@ -68,6 +68,57 @@ func TestDecodeJSONBody(t *testing.T) {
 			wantType:   "invalid_request_error",
 			wantCode:   "request_too_large",
 		},
+		{
+			// json.Decoder reads a stream, so without an explicit guard it
+			// decodes the first document and silently discards the rest —
+			// including a caller's real request. OpenAI 400s this body.
+			name: "trailing JSON document returns 400",
+			buildReq: func(_ http.ResponseWriter) *http.Request {
+				return httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/", strings.NewReader(`{"model":"gpt-4o"}{"model":"attacker"}`))
+			},
+			wantOK:     false,
+			wantStatus: http.StatusBadRequest,
+			wantType:   "invalid_request_error",
+			wantCode:   "invalid_request",
+		},
+		{
+			name: "trailing garbage returns 400",
+			buildReq: func(_ http.ResponseWriter) *http.Request {
+				return httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/", strings.NewReader(`{"model":"gpt-4o"} oops`))
+			},
+			wantOK:     false,
+			wantStatus: http.StatusBadRequest,
+			wantType:   "invalid_request_error",
+			wantCode:   "invalid_request",
+		},
+		{
+			// Trailing whitespace is not a second document, so the body is
+			// accepted exactly as it was before the trailing-content guard.
+			name: "trailing whitespace still decodes successfully",
+			buildReq: func(_ http.ResponseWriter) *http.Request {
+				return httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/", strings.NewReader("{\"model\":\"gpt-4o\"}\n\t  \n"))
+			},
+			wantOK:    true,
+			wantModel: "gpt-4o",
+		},
+		{
+			// The 413 classification must survive the trailing-content guard.
+			// Here the first document is complete and within the limit, so the
+			// size cap is only reached by the read the guard itself performs —
+			// the one path where a MaxBytesError could have been reported as a
+			// plain 400 "trailing content".
+			name: "size limit reached after a complete document still returns 413",
+			buildReq: func(w http.ResponseWriter) *http.Request {
+				body := `{"model":"gpt-4o"}` + strings.Repeat(" ", 500)
+				r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/", strings.NewReader(body))
+				r.Body = http.MaxBytesReader(w, r.Body, 30)
+				return r
+			},
+			wantOK:     false,
+			wantStatus: http.StatusRequestEntityTooLarge,
+			wantType:   "invalid_request_error",
+			wantCode:   "request_too_large",
+		},
 	}
 
 	for _, tt := range tests {

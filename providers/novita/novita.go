@@ -4,12 +4,10 @@ package novita
 import (
 	"context"
 	"net/http"
-	"strings"
 
-	discov "github.com/ferro-labs/ai-gateway/internal/discovery"
 	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
 	"github.com/ferro-labs/ai-gateway/providers/core"
-	"github.com/ferro-labs/ai-gateway/providers/internal/openaicompat"
+	"github.com/ferro-labs/ai-gateway/providers/core/openaicompat"
 )
 
 const (
@@ -34,16 +32,13 @@ var (
 	_ core.EmbeddingProvider = (*Provider)(nil)
 	_ core.DiscoveryProvider = (*Provider)(nil)
 	_ core.ProxiableProvider = (*Provider)(nil)
+	_ core.BatchProvider     = (*Provider)(nil)
 )
 
 // New creates a new Novita provider.
 func New(apiKey, baseURL string) (*Provider, error) {
-	baseURL = strings.TrimSpace(baseURL)
-	if baseURL == "" {
-		baseURL = defaultBaseURL
-	}
-	baseURL = strings.TrimRight(baseURL, "/")
-	if err := core.ValidateBaseURL(Name, baseURL); err != nil {
+	baseURL, err := core.ResolveAPIRoot(Name, baseURL, defaultBaseURL)
+	if err != nil {
 		return nil, err
 	}
 	return &Provider{
@@ -65,31 +60,12 @@ func (p *Provider) AuthHeaders() map[string]string {
 	return map[string]string{"Authorization": "Bearer " + p.apiKey}
 }
 
-// SupportedModels returns a static list of known Novita models.
-func (p *Provider) SupportedModels() []string {
-	return []string{
-		"deepseek/deepseek-v3.2",
-		"moonshotai/kimi-k2-thinking",
-		"minimax/minimax-m2.1",
-		"qwen/qwen3-vl-235b-a22b-thinking",
-		"zai-org/glm-4.7",
-		"baai/bge-m3",
-		"qwen/qwen3-embedding-0.6b",
-		"qwen/qwen3-embedding-8b",
-	}
-}
-
 // SupportsModel returns true for any model name.
 func (p *Provider) SupportsModel(_ string) bool { return true }
 
-// Models returns structured model metadata.
-func (p *Provider) Models() []core.ModelInfo {
-	return core.ModelsFromList(p.name, p.SupportedModels())
-}
-
 // DiscoverModels fetches the live model list from the Novita /models endpoint.
 func (p *Provider) DiscoverModels(ctx context.Context) ([]core.ModelInfo, error) {
-	return discov.DiscoverOpenAICompatibleModels(ctx, p.httpClient, p.baseURL+"/models", p.apiKey, p.name)
+	return core.DiscoverOpenAICompatibleModels(ctx, p.httpClient, p.baseURL+"/models", p.apiKey, p.name)
 }
 
 // headers returns the auth + content-type headers for Novita requests.

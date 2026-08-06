@@ -25,6 +25,16 @@ type imageRequest struct {
 type imageResponse struct {
 	Created int64                 `json:"created"`
 	Data    []core.GeneratedImage `json:"data"`
+	// Usage is sent only by the gpt-image deployments, which Azure bills per
+	// token — the catalog carries no per-tile price for azure/gpt-image-*, so
+	// not reading this costs every such generation at zero. Azure spells it the
+	// way the OpenAI image schema does, not the way core.Usage marshals, hence
+	// the local shape.
+	Usage struct {
+		InputTokens  int `json:"input_tokens"`
+		OutputTokens int `json:"output_tokens"`
+		TotalTokens  int `json:"total_tokens"`
+	} `json:"usage"`
 }
 
 // GenerateImage sends an image generation request to Azure OpenAI. The request
@@ -32,6 +42,9 @@ type imageResponse struct {
 // deployment. Azure (api-version 2024-10-21) returns the result synchronously —
 // no async polling is required.
 func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*core.ImageResponse, error) {
+	if err := core.EnforceImageResponseFormat(Name, req); err != nil {
+		return nil, err
+	}
 	pReq := imageRequest{
 		Prompt:         req.Prompt,
 		N:              req.N,
@@ -47,7 +60,10 @@ func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*c
 	}
 	defer release()
 
-	url := p.opEndpoint(p.deploymentFor(req.Model), "images/generations")
+	url, err := p.opEndpoint(p.deploymentFor(req.Model), "images/generations")
+	if err != nil {
+		return nil, err
+	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bodyReader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
@@ -76,5 +92,10 @@ func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*c
 	return &core.ImageResponse{
 		Created: pResp.Created,
 		Data:    pResp.Data,
+		Usage: core.Usage{
+			PromptTokens:     pResp.Usage.InputTokens,
+			CompletionTokens: pResp.Usage.OutputTokens,
+			TotalTokens:      pResp.Usage.TotalTokens,
+		},
 	}, nil
 }

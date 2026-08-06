@@ -7,16 +7,15 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 
 	oai "github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
 
-	"github.com/ferro-labs/ai-gateway/internal/discovery"
 	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
@@ -24,7 +23,11 @@ import (
 // Name is the canonical provider identifier.
 const Name = "openai"
 
-const defaultBaseURL = "https://api.openai.com"
+// defaultBaseURL carries the /v1 segment because the base URL is the API ROOT,
+// not the host: every official OpenAI client defaults to exactly this string
+// (openai-python's and openai-node's default is "https://api.openai.com/v1"),
+// and both append only the operation path to it.
+const defaultBaseURL = "https://api.openai.com/v1"
 
 // Provider implements the OpenAI API client using the official Go SDK.
 type Provider struct {
@@ -37,38 +40,149 @@ type Provider struct {
 
 // Compile-time interface assertions.
 var (
-	_ core.Provider          = (*Provider)(nil)
-	_ core.StreamProvider    = (*Provider)(nil)
-	_ core.EmbeddingProvider = (*Provider)(nil)
-	_ core.ImageProvider     = (*Provider)(nil)
-	_ core.ProxiableProvider = (*Provider)(nil)
-	_ core.DiscoveryProvider = (*Provider)(nil)
+	_ core.Provider              = (*Provider)(nil)
+	_ core.StreamProvider        = (*Provider)(nil)
+	_ core.EmbeddingProvider     = (*Provider)(nil)
+	_ core.ImageProvider         = (*Provider)(nil)
+	_ core.ModerationProvider    = (*Provider)(nil)
+	_ core.TranscriptionProvider = (*Provider)(nil)
+	_ core.SpeechProvider        = (*Provider)(nil)
+	_ core.BatchProvider         = (*Provider)(nil)
+	_ core.ProxiableProvider     = (*Provider)(nil)
+	_ core.DiscoveryProvider     = (*Provider)(nil)
 )
 
 // New creates a new OpenAI provider.
 // The optional baseURL parameter allows overriding the API endpoint (pass "" for the default).
 func New(apiKey, baseURL string) (*Provider, error) {
-	opts := []option.RequestOption{
+	resolvedBase, err := core.ResolveAPIRoot(Name, baseURL, defaultBaseURL)
+	if err != nil {
+		return nil, err
+	}
+	client := oai.NewClient(
 		option.WithAPIKey(apiKey),
-		option.WithHTTPClient(providerhttp.ForProvider(Name)),
-	}
-	resolvedBase := defaultBaseURL
-	if baseURL != "" {
-		u, err := url.Parse(baseURL)
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-			return nil, fmt.Errorf("openai: invalid base URL %q: must be http or https with a host", baseURL)
-		}
-		opts = append(opts, option.WithBaseURL(baseURL))
-		resolvedBase = baseURL
-	}
-	client := oai.NewClient(opts...)
+		option.WithHTTPClient(sdkClient()),
+		// Retry is the gateway's, and only the gateway's. openai-go retries
+		// 408/409/429/5xx twice by default, which multiplies against the
+		// per-target attempts the operator configured: attempts:3 against a
+		// throttled upstream made nine calls, not three, and the operator has no
+		// way to see the extra six. The gateway also owns the circuit breaker
+		// and the concurrency limiter, both of which are bypassed by a retry the
+		// SDK performs inside a single Embed call. The chat path here is raw
+		// HTTP and never had a second retry authority; this makes embeddings and
+		// images match it.
+		option.WithMaxRetries(0),
+		// The SDK is handed the SAME resolved root the hand-built URLs use.
+		// Handing it the raw value instead is what made one variable mean two
+		// things: chat appended /v1 and the SDK did not, so a base without the
+		// suffix served chat and 404'd embeddings and images.
+		option.WithBaseURL(resolvedBase+"/"),
+	)
 	return &Provider{
 		name:       Name,
 		apiKey:     apiKey,
-		baseURL:    strings.TrimRight(resolvedBase, "/"),
+		baseURL:    resolvedBase,
 		httpClient: providerhttp.ForProvider(Name),
 		client:     client,
 	}, nil
+}
+
+// sdkClient returns the HTTP client handed to the openai-go SDK.
+//
+// It is the shared per-provider client with one addition: a 3xx is turned into
+// a classified error before the SDK sees it.
+//
+// The SDK's success/failure boundary is `>= 400` (requestconfig.go), so a 3xx
+// falls through to its SUCCESS decoder. Since the gateway's clients surface
+// redirects rather than following them (SEC-002), a 302 carrying a JSON body
+// decoded cleanly into an empty result: Embed returned no vectors and
+// GenerateImage no images, both with a nil error, and the gateway served that
+// as HTTP 200 costed at zero — silent wrong data (REG-003). A 3xx without a
+// JSON content type instead produced an opaque SDK decode message carrying no
+// status, so the gateway could not classify it either.
+//
+// Only the SDK client needs this. The direct-HTTP surfaces on this provider
+// (chat, streaming) already treat anything other than 200 as an error.
+func sdkClient() *http.Client {
+	shared := providerhttp.ForProvider(Name)
+	// A value copy — the shared client is pooled and must not be mutated, and
+	// copying it whole is what keeps every field the pool sets. A field-by-field
+	// struct literal would carry only the fields listed the day it was written
+	// and drop any added later, with no compiler error and no test failure.
+	c := *shared
+	c.Transport = redirectGuard{base: shared.Transport}
+	return &c
+}
+
+// redirectGuard converts a surfaced 3xx into a core.HTTPStatusError so the
+// gateway's normal error classification applies.
+//
+// It wraps the shared client's transport from the outside, which means the
+// otelhttp transport underneath it ends its CLIENT span before the 3xx becomes
+// an error: the span records http.status_code=302 with status Unset. That is
+// left alone deliberately. The HTTP semantic conventions make a client span an
+// error only for 4xx/5xx or a failed request, so a 3xx really is Unset there —
+// forcing it to Error would put this one provider at odds with every other
+// instrumented client. The refusal is not lost: it is returned as a classified
+// error and recorded on the gateway's own request span.
+type redirectGuard struct{ base http.RoundTripper }
+
+func (g redirectGuard) RoundTrip(req *http.Request) (*http.Response, error) {
+	base := g.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	resp, err := base.RoundTrip(req)
+	if err != nil || resp == nil {
+		return resp, err
+	}
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		// The body is never handed on, so it must be closed here. A real
+		// transport always supplies one, but a RoundTripper is an interface and
+		// a test double need not: closing a nil Body would panic inside the
+		// guard rather than report the redirect it was called to report.
+		if resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		return nil, core.StatusError(Name, resp.StatusCode,
+			"upstream returned a redirect; redirects are not followed because they would replay the provider credential to another host")
+	}
+	return resp, nil
+}
+
+// sdkError converts an openai-go failure into the gateway's typed provider
+// error, so an SDK-backed call (embeddings, images) classifies exactly like the
+// raw-HTTP chat path.
+//
+// It is the openai-go half of the adapter pattern bedrock uses for smithy
+// (providers/bedrock.bedrockInvokeError): only the package that imports an SDK
+// can name that SDK's error type, so each SDK gets a three-line adapter here and
+// they all build the same core.HTTPStatusError. Nothing about the shared
+// contract is re-decided per provider.
+//
+// Two deliberate omissions:
+//
+//   - The SDK error is NOT wrapped with %w. "Wrapping an error makes that error
+//     part of your API. Do not wrap an error when doing so would expose
+//     implementation details" (go.dev/blog/go1.13-errors). Exposing
+//     *openai.Error would commit the gateway to openai-go's error type
+//     permanently, and its Error() renders the full request URL plus the raw
+//     response JSON — text that would then ride out through every %v of the
+//     chain.
+//   - Only apiErr.Message is taken, never apiErr.RawJSON(). Message is the
+//     field the SDK decoded out of OpenAI's documented envelope; RawJSON is
+//     whatever the upstream sent.
+//
+// An error with no HTTP response — a dial failure, a cancelled context — is
+// returned untouched. It genuinely has no status, and inventing one would put
+// back exactly the guesswork this contract removes.
+func sdkError(err error) error {
+	var apiErr *oai.Error
+	if !errors.As(err, &apiErr) || apiErr.Response == nil {
+		return err
+	}
+	return core.StatusError(Name, apiErr.StatusCode, apiErr.Message).
+		WithRetryAfter(apiErr.Response.Header)
 }
 
 // Name implements core.Provider.
@@ -80,38 +194,6 @@ func (p *Provider) BaseURL() string { return p.baseURL }
 // AuthHeaders implements core.ProxiableProvider.
 func (p *Provider) AuthHeaders() map[string]string {
 	return map[string]string{"Authorization": "Bearer " + p.apiKey}
-}
-
-// SupportedModels returns the list of models supported by this provider.
-func (p *Provider) SupportedModels() []string {
-	return []string{
-		// GPT-4o family
-		"gpt-4o",
-		"gpt-4o-mini",
-		"gpt-4o-2024-11-20",
-		"gpt-4o-2024-08-06",
-		"gpt-4o-mini-2024-07-18",
-		// GPT-4.1 family
-		"gpt-4.1",
-		"gpt-4.1-mini",
-		"gpt-4.1-nano",
-		"gpt-4.1-2025-04-14",
-		// GPT-4 legacy
-		"gpt-4-turbo",
-		"gpt-4-turbo-2024-04-09",
-		"gpt-4",
-		// GPT-3.5
-		"gpt-3.5-turbo",
-		// o-series reasoning
-		"o1",
-		"o1-mini",
-		"o1-preview",
-		"o3",
-		"o3-mini",
-		"o4-mini",
-		// ChatGPT
-		"chatgpt-4o-latest",
-	}
 }
 
 // SupportsModel returns true if the model matches known OpenAI prefixes.
@@ -127,18 +209,9 @@ func (p *Provider) SupportsModel(model string) bool {
 	return false
 }
 
-// Models returns model information for all supported models.
-func (p *Provider) Models() []core.ModelInfo {
-	return core.ModelsFromList(p.name, p.SupportedModels())
-}
-
-// DiscoverModels fetches the live model list from the OpenAI /v1/models endpoint.
+// DiscoverModels fetches the live model list from the API root's models endpoint.
 func (p *Provider) DiscoverModels(ctx context.Context) ([]core.ModelInfo, error) {
-	url := p.baseURL + "/v1/models"
-	if strings.HasSuffix(p.baseURL, "/v1") {
-		url = p.baseURL + "/models"
-	}
-	return discovery.DiscoverOpenAICompatibleModels(ctx, p.httpClient, url, p.apiKey, p.name)
+	return core.DiscoverOpenAICompatibleModels(ctx, p.httpClient, p.baseURL+"/models", p.apiKey, p.name)
 }
 
 // Embed sends an embedding request to OpenAI.
@@ -158,14 +231,21 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 		params.Input = oai.EmbeddingNewParamsInputUnion{OfArrayOfStrings: v}
 	}
 
-	switch req.EncodingFormat {
-	case "", "float":
-		params.EncodingFormat = oai.EmbeddingNewParamsEncodingFormatFloat
-	case "base64":
-		params.EncodingFormat = oai.EmbeddingNewParamsEncodingFormatBase64
-	default:
-		return nil, fmt.Errorf("embed: unsupported encoding_format %q; valid values are \"float\" and \"base64\"", req.EncodingFormat)
+	// base64 is refused rather than forwarded, even though OpenAI accepts it.
+	// openai-go decodes the response into Embedding []float64 and its
+	// forward-compatible decoder marks a field it cannot read INVALID without
+	// erroring, so OpenAI's real base64 wire shape — a JSON string — returned
+	// err == nil with an empty vector, which the gateway served as HTTP 200 with
+	// "embedding": [] costed at zero. Nothing downstream could tell that apart
+	// from a genuine result.
+	//
+	// Decoding it here would preserve nothing either: core.Embedding.Embedding is
+	// []float64 and internal/handler/embeddings.go JSON-encodes it directly, so
+	// the saving base64 exists for cannot survive past this function.
+	if err := core.ValidateEmbeddingEncodingFormat(req.EncodingFormat); err != nil {
+		return nil, err
 	}
+	params.EncodingFormat = oai.EmbeddingNewParamsEncodingFormatFloat
 
 	if req.Dimensions != nil {
 		params.Dimensions = oai.Int(int64(*req.Dimensions))
@@ -176,7 +256,7 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 
 	result, err := p.client.Embeddings.New(ctx, params)
 	if err != nil {
-		return nil, err
+		return nil, sdkError(err)
 	}
 
 	embeddings := make([]core.Embedding, len(result.Data))
@@ -201,6 +281,17 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 
 // GenerateImage sends an image generation request to OpenAI (DALL-E).
 func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*core.ImageResponse, error) {
+	// OpenAI's answer is per-model, so the producible set is passed explicitly
+	// rather than read from the provider-level map: DALL·E honours both formats,
+	// gpt-image-* always returns base64 and rejects the field outright. Asking
+	// gpt-image-* for a URL used to be answered with base64 and a 200.
+	produced := []string{core.ImageResponseFormatURL, core.ImageResponseFormatB64JSON}
+	if !isDallEModel(req.Model) {
+		produced = []string{core.ImageResponseFormatB64JSON}
+	}
+	if err := core.EnforceImageResponseFormat(Name, req, produced...); err != nil {
+		return nil, err
+	}
 	params := oai.ImageGenerateParams{
 		Prompt: req.Prompt,
 		Model:  req.Model,
@@ -233,7 +324,7 @@ func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*c
 
 	result, err := p.client.Images.Generate(ctx, params)
 	if err != nil {
-		return nil, err
+		return nil, sdkError(err)
 	}
 
 	images := make([]core.GeneratedImage, len(result.Data))
@@ -248,6 +339,15 @@ func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*c
 	return &core.ImageResponse{
 		Created: result.Created,
 		Data:    images,
+		// Only the gpt-image family reports this, and it is the only thing that
+		// can price one: those models carry no per-tile catalog price and are
+		// billed per token. DALL·E reports nothing here and keeps being priced
+		// per image. Discarding it costed every gpt-image generation at zero.
+		Usage: core.Usage{
+			PromptTokens:     int(result.Usage.InputTokens),
+			CompletionTokens: int(result.Usage.OutputTokens),
+			TotalTokens:      int(result.Usage.TotalTokens),
+		},
 	}, nil
 }
 
@@ -397,10 +497,15 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 
 		scanner := core.NewSSEScanner(httpResp.Body)
 		for scanner.Scan() {
-			data, ok := strings.CutPrefix(scanner.Text(), "data: ")
+			data, ok := strings.CutPrefix(scanner.Text(), "data:")
 			if !ok {
 				continue
 			}
+			// The SSE spec strips a single optional space after the colon, so a
+			// server that writes "data:{...}" is as legal as one that writes
+			// "data: {...}". Requiring the space drops every frame of the first
+			// kind, which reads downstream as an empty but successful stream.
+			data = strings.TrimPrefix(data, " ")
 			if data == core.SSEDone {
 				return
 			}
@@ -408,7 +513,12 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 			if json.Unmarshal([]byte(data), &chunk) != nil {
 				continue
 			}
-			if !core.SendChunk(ctx, ch, chunk.toStreamChunk()) {
+			sc := chunk.toStreamChunk()
+			if !core.SendChunk(ctx, ch, sc) {
+				return
+			}
+			// A mid-stream error ends the stream; nothing valid follows it.
+			if sc.Error != nil {
 				return
 			}
 		}
@@ -446,10 +556,7 @@ type openAIChatCompletionResponse struct {
 }
 
 func (p *Provider) chatCompletionsEndpoint() string {
-	if strings.HasSuffix(p.baseURL, "/v1") {
-		return p.baseURL + "/chat/completions"
-	}
-	return p.baseURL + "/v1/chat/completions"
+	return p.baseURL + "/chat/completions"
 }
 
 // isDallEModel reports whether the image model is a DALL·E model — the only
@@ -475,6 +582,14 @@ type openAIStreamChunk struct {
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
 	Usage *openAIUsage `json:"usage"`
+	// Error is the envelope OpenAI emits when a request fails once the 200
+	// headers are already out. It arrives in place of choices, so decoding it
+	// alongside them is what keeps a truncated answer from being reported as a
+	// complete one.
+	Error *struct {
+		Type    string `json:"type"`
+		Message string `json:"message"`
+	} `json:"error"`
 }
 
 type openAIStreamToolCall struct {
@@ -517,7 +632,21 @@ func (c openAIStreamChunk) toStreamChunk() core.StreamChunk {
 		}
 		sc.Usage = usage
 	}
+	// Only a populated message counts as a failure: "error": null appears on
+	// healthy frames, and a frame can carry content alongside the field.
+	if c.Error != nil && c.Error.Message != "" {
+		sc.Error = streamError(c.Error.Type, c.Error.Message)
+	}
 	return sc
+}
+
+// streamError formats a mid-stream error envelope. The type is optional — it is
+// absent on some error shapes.
+func streamError(typ, msg string) error {
+	if typ == "" {
+		return fmt.Errorf("stream error: %s", msg)
+	}
+	return fmt.Errorf("stream error (%s): %s", typ, msg)
 }
 
 // mapStreamToolCalls maps SSE tool-call deltas to canonical tool calls,

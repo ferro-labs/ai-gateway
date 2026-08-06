@@ -136,3 +136,25 @@ func TestVertexAIProvider_GenerateImage_UpstreamError(t *testing.T) {
 		t.Fatalf("GenerateImage() error = %v, want upstream error", err)
 	}
 }
+
+// TestVertexAIProvider_GenerateImage_RejectsURLFormat — see the Gemini twin.
+// The two share imagenwire, so the refusal must hold on both or the same
+// request is answered differently depending on which endpoint served it.
+func TestVertexAIProvider_GenerateImage_RejectsURLFormat(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("upstream must not be called for a format the provider cannot produce")
+	}))
+	defer srv.Close()
+
+	p, _ := New(Options{ProjectID: "demo-project", Region: "us-central1", APIKey: testAPIKey})
+	p.SetBaseURL(srv.URL)
+	_, err := p.GenerateImage(context.Background(), core.ImageRequest{
+		Model: "imagen-4.0-generate-001", Prompt: "a cat", ResponseFormat: "url",
+	})
+	if err == nil {
+		t.Fatal("GenerateImage = nil error, want a refusal (Imagen returns base64 only)")
+	}
+	if got := core.ParseStatusCode(err); got != 400 {
+		t.Errorf("status = %d, want 400", got)
+	}
+}

@@ -28,7 +28,7 @@ func sanitizeRequestErr(err error) error {
 // Name is the canonical provider identifier.
 const Name = "gemini"
 
-const defaultBaseURL = "https://generativelanguage.googleapis.com"
+const defaultBaseURL = "https://generativelanguage.googleapis.com/v1beta"
 
 // Provider implements the Google Gemini API client.
 type Provider struct {
@@ -50,12 +50,10 @@ var (
 
 // New creates a new Google Gemini provider.
 func New(apiKey, baseURL string) (*Provider, error) {
-	if baseURL == "" {
-		baseURL = defaultBaseURL
-	} else if err := core.ValidateBaseURL(Name, baseURL); err != nil {
+	baseURL, err := core.ResolveAPIRoot(Name, baseURL, defaultBaseURL)
+	if err != nil {
 		return nil, err
 	}
-	baseURL = strings.TrimRight(baseURL, "/")
 	return &Provider{
 		name:       Name,
 		apiKey:     apiKey,
@@ -84,24 +82,6 @@ func (p *Provider) AuthHeaders() map[string]string {
 	return map[string]string{"x-goog-api-key": p.apiKey}
 }
 
-// SupportedModels returns the static list of known Gemini models.
-func (p *Provider) SupportedModels() []string {
-	return []string{
-		// Current GA tier
-		"gemini-2.5-pro",
-		"gemini-2.5-flash",
-		"gemini-2.5-flash-lite",
-		// Embeddings
-		"gemini-embedding-001",
-		"text-embedding-004",
-		"embedding-001",
-		// Image generation (Imagen)
-		"imagen-4.0-generate-001",
-		"imagen-4.0-ultra-generate-001",
-		"imagen-4.0-fast-generate-001",
-	}
-}
-
 // SupportsModel returns true if the model is a known Gemini chat, embedding, or image model.
 func (p *Provider) SupportsModel(model string) bool {
 	model = strings.TrimPrefix(model, "models/")
@@ -114,11 +94,6 @@ func (p *Provider) SupportsModel(model string) bool {
 	default:
 		return false
 	}
-}
-
-// Models returns structured model metadata.
-func (p *Provider) Models() []core.ModelInfo {
-	return core.ModelsFromList(p.name, p.SupportedModels())
 }
 
 type geminiPart struct {
@@ -170,6 +145,12 @@ type geminiGenerationConfig struct {
 	FrequencyPenalty *float64 `json:"frequencyPenalty,omitempty"`
 	StopSequences    []string `json:"stopSequences,omitempty"`
 	ResponseMimeType string   `json:"responseMimeType,omitempty"`
+	// ResponseSchema takes the same OpenAPI-3.0 Schema subset a function
+	// declaration's parameters do, and requires a compatible ResponseMimeType.
+	ResponseSchema json.RawMessage `json:"responseSchema,omitempty"`
+	// ResponseModalities selects the output kinds for the generateContent image
+	// models (["TEXT","IMAGE"]). Left absent by the chat path.
+	ResponseModalities []string `json:"responseModalities,omitempty"`
 }
 
 type geminiRequest struct {
@@ -210,6 +191,22 @@ type geminiUsageMetadata struct {
 	ThoughtsTokenCount      int `json:"thoughtsTokenCount"`
 }
 
+// toCoreUsage maps Gemini's token accounting onto the OpenAI-shaped usage the
+// gateway reports. Gemini keeps thinking tokens out of candidatesTokenCount but
+// inside totalTokenCount, whereas OpenAI counts reasoning tokens inside
+// completion_tokens and repeats them as a breakdown; folding them in keeps
+// prompt+completion == total and bills them at the output rate, which is how
+// Google charges for them.
+func (u geminiUsageMetadata) toCoreUsage() core.Usage {
+	return core.Usage{
+		PromptTokens:     u.PromptTokenCount,
+		CompletionTokens: u.CandidatesTokenCount + u.ThoughtsTokenCount,
+		TotalTokens:      u.TotalTokenCount,
+		ReasoningTokens:  u.ThoughtsTokenCount,
+		CacheReadTokens:  u.CachedContentTokenCount,
+	}
+}
+
 type geminiResponse struct {
 	ResponseID string `json:"responseId"`
 	Candidates []struct {
@@ -223,6 +220,7 @@ type geminiResponse struct {
 }
 
 type geminiStreamResponse struct {
+	ResponseID string `json:"responseId"`
 	Candidates []struct {
 		Content struct {
 			Parts []geminiPart `json:"parts"`
@@ -234,14 +232,15 @@ type geminiStreamResponse struct {
 }
 
 // convertToGemini converts gateway Messages to Gemini contents format. System
-// messages are collected separately and returned as systemText so the caller can
-// route them through Gemini's dedicated systemInstruction field (Gemini 1.5+)
-// rather than smuggling them into a user turn. Multiple system messages are
-// joined with newlines and preserved regardless of turn order (#144).
+// (and developer) messages are collected separately and returned as systemText
+// so the caller can route them through Gemini's dedicated systemInstruction
+// field (Gemini 1.5+) rather than smuggling them into a user turn. Multiple
+// system messages are joined with newlines and preserved regardless of turn
+// order (#144).
 func convertToGemini(messages []core.Message) (contents []geminiContent, systemText string) {
 	toolCallNames := make(map[string]string)
 	for _, msg := range messages {
-		if msg.Role == core.RoleSystem {
+		if core.IsSystemRole(msg.Role) {
 			if systemText != "" {
 				systemText += "\n"
 			}
@@ -358,11 +357,24 @@ func parseImageDataURI(uri string) (mimeType, data string, ok bool) {
 // OpenAI vocabulary. Gemini has no dedicated tool-call reason, so tool calls are
 // inferred from the decoded parts; everything else routes through the shared
 // normalizer (which covers Gemini's RECITATION/SAFETY-family reasons).
+//
+// The native reason decides, and the tool-call inference only refines a plain
+// STOP:
+//   - No native reason means the candidate has not terminated, so the reason
+//     stays empty even on a chunk carrying a functionCall. Gemini splits
+//     parallel tool calls across chunks, and a client that stops reading at the
+//     first non-null finish_reason would lose every later call.
+//   - MAX_TOKENS and the SAFETY-family reasons say the candidate was cut off or
+//     blocked; MALFORMED_FUNCTION_CALL and UNEXPECTED_TOOL_CALL say the call
+//     itself was rejected. Reporting tool_calls for any of them would make a
+//     truncated or blocked response look like a normal tool invocation, so they
+//     outrank the inference.
 func geminiFinishReason(reason string, toolCalls []core.ToolCall) string {
-	if len(toolCalls) > 0 {
+	normalized := core.NormalizeFinishReason(reason)
+	if normalized == core.FinishReasonStop && len(toolCalls) > 0 {
 		return core.FinishReasonToolCalls
 	}
-	return core.NormalizeFinishReason(reason)
+	return normalized
 }
 
 func buildRequest(req core.Request) geminiRequest {
@@ -385,15 +397,19 @@ func buildRequest(req core.Request) geminiRequest {
 		FrequencyPenalty: req.FrequencyPenalty,
 		StopSequences:    req.Stop,
 	}
-	// Map OpenAI response_format JSON modes to Gemini's responseMimeType. The
-	// schema itself is not forwarded (Gemini uses a restricted schema dialect),
-	// so structured-output enforcement degrades to plain JSON mode.
+	// Map OpenAI response_format JSON modes to Gemini's responseMimeType, and
+	// forward a json_schema's schema as responseSchema so the structure is
+	// actually enforced. json_object carries no schema and stays mime-type only.
 	if rf := req.ResponseFormat; rf != nil && (rf.Type == "json_object" || rf.Type == "json_schema") {
 		cfg.ResponseMimeType = "application/json"
+		if rf.Type == "json_schema" {
+			cfg.ResponseSchema = geminiResponseSchema(rf.JSONSchema)
+		}
 	}
 	hasConfig := cfg.Temperature != nil || cfg.TopP != nil || cfg.CandidateCount != nil ||
 		cfg.Seed != nil || cfg.MaxOutputTokens != nil || cfg.PresencePenalty != nil ||
-		cfg.FrequencyPenalty != nil || len(cfg.StopSequences) > 0 || cfg.ResponseMimeType != ""
+		cfg.FrequencyPenalty != nil || len(cfg.StopSequences) > 0 ||
+		cfg.ResponseMimeType != "" || len(cfg.ResponseSchema) > 0
 	if hasConfig {
 		r.GenerationConfig = &cfg
 	}
@@ -438,6 +454,35 @@ var geminiUnsupportedSchemaKeys = map[string]bool{
 	"$comment":             true,
 	"definitions":          true,
 	"additionalProperties": true,
+}
+
+// geminiResponseSchema pulls the schema out of an OpenAI json_schema
+// response_format wrapper — {"name":…,"strict":…,"schema":{…}} — and sanitizes
+// it for generationConfig.responseSchema, which takes the same OpenAPI-3.0
+// subset a function declaration's parameters do.
+//
+// A wrapper carrying no usable schema yields nothing, leaving the request in
+// plain JSON mode rather than sending Gemini a body it would reject.
+//
+// Known ceiling: $ref/$defs are stripped with the rest of the dialect
+// responseSchema does not accept, so a schema assembled from definitions
+// forwards those nodes unconstrained — the same ceiling tool schemas already
+// have. generationConfig.responseJsonSchema takes real JSON Schema and is the
+// upgrade path if that fidelity is needed.
+func geminiResponseSchema(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return nil
+	}
+	var wrapper struct {
+		Schema json.RawMessage `json:"schema"`
+	}
+	if err := json.Unmarshal(raw, &wrapper); err != nil {
+		return nil
+	}
+	if len(wrapper.Schema) == 0 || string(wrapper.Schema) == "null" {
+		return nil
+	}
+	return sanitizeGeminiSchema(wrapper.Schema)
 }
 
 // sanitizeGeminiSchema recursively strips JSON-schema keywords Gemini rejects.
@@ -583,7 +628,7 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 	geminiReq := buildRequest(req)
 
 	model := strings.TrimPrefix(req.Model, "models/")
-	url := fmt.Sprintf("%s/v1beta/models/%s:generateContent", p.baseURL, url.PathEscape(model))
+	url := fmt.Sprintf("%s/models/%s:generateContent", p.baseURL, url.PathEscape(model))
 	httpResp, release, err := p.doJSONRequest(ctx, url, "", geminiReq)
 	if err != nil {
 		return nil, err
@@ -628,13 +673,7 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 		Model:    req.Model,
 		Provider: p.name,
 		Choices:  choices,
-		Usage: core.Usage{
-			PromptTokens:     geminiResp.UsageMetadata.PromptTokenCount,
-			CompletionTokens: geminiResp.UsageMetadata.CandidatesTokenCount,
-			TotalTokens:      geminiResp.UsageMetadata.TotalTokenCount,
-			ReasoningTokens:  geminiResp.UsageMetadata.ThoughtsTokenCount,
-			CacheReadTokens:  geminiResp.UsageMetadata.CachedContentTokenCount,
-		},
+		Usage:    geminiResp.UsageMetadata.toCoreUsage(),
 	}, nil
 }
 
@@ -647,7 +686,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 	geminiReq := buildRequest(req)
 
 	model := strings.TrimPrefix(req.Model, "models/")
-	url := fmt.Sprintf("%s/v1beta/models/%s:streamGenerateContent?alt=sse", p.baseURL, url.PathEscape(model))
+	url := fmt.Sprintf("%s/models/%s:streamGenerateContent?alt=sse", p.baseURL, url.PathEscape(model))
 	httpResp, release, err := p.doJSONRequest(ctx, url, "", geminiReq)
 	if err != nil {
 		return nil, err
@@ -680,8 +719,12 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 				continue
 			}
 
+			// Gemini repeats responseId on every streamed chunk; it is the same
+			// id the non-streaming response carries, so both surfaces agree on
+			// what a response id means. It is absent only if the upstream stops
+			// sending it, and the stream normalizer carries the last one forward.
 			sc := core.StreamChunk{
-				ID:    req.Model,
+				ID:    chunk.ResponseID,
 				Model: req.Model,
 			}
 			for i, candidate := range chunk.Candidates {
@@ -700,13 +743,8 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 			}
 			// Gemini reports usage on the final streamed chunk.
 			if chunk.UsageMetadata.TotalTokenCount > 0 {
-				sc.Usage = &core.Usage{
-					PromptTokens:     chunk.UsageMetadata.PromptTokenCount,
-					CompletionTokens: chunk.UsageMetadata.CandidatesTokenCount,
-					TotalTokens:      chunk.UsageMetadata.TotalTokenCount,
-					ReasoningTokens:  chunk.UsageMetadata.ThoughtsTokenCount,
-					CacheReadTokens:  chunk.UsageMetadata.CachedContentTokenCount,
-				}
+				usage := chunk.UsageMetadata.toCoreUsage()
+				sc.Usage = &usage
 			}
 			if !core.SendChunk(ctx, ch, sc) {
 				return

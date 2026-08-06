@@ -80,12 +80,12 @@ ferrogw                 # 启动服务器
 $ ferrogw init
 
   主密钥（设置为 MASTER_KEY 环境变量）：
-  fgw_a3f2e1d4c5b6a7f8e9d0c1b2a3f4e5d6
+  fgw_PASTE_THE_KEY_FERROGW_INIT_PRINTED
 
   配置已写入：./config.yaml
 
   后续步骤：
-    export MASTER_KEY=fgw_a3f2e1d4c5b6a7f8e9d0c1b2a3f4e5d6
+    export MASTER_KEY=fgw_PASTE_THE_KEY_FERROGW_INIT_PRINTED
     export OPENAI_API_KEY=sk-...
     ferrogw
 ```
@@ -246,7 +246,7 @@ make setup && make bench
 - `/health` 端点提供深度健康检查，包含每个提供商的状态
 - 结构化 JSON 请求日志，支持 SQLite/PostgreSQL 持久化（trace ID 在日志、OTel span 与 `X-Request-ID` 响应头之间保持统一）
 - 管理 API，提供使用统计、请求日志和配置历史/回滚
-- `/dashboard` 内置仪表盘 UI
+- React 运维控制台由 `web/` 构建并编译进二进制文件，与 API 共用端口，服务于 `/`
 - HTTP 级连接追踪，包含 DNS、TLS 和首字节延迟
 
 ---
@@ -349,11 +349,12 @@ mcp_servers:
 |------|------|
 | `MASTER_KEY` | 所有认证的单一管理凭证（由 `ferrogw init` 生成） |
 | `GATEWAY_CONFIG` | 配置文件路径（YAML/JSON） |
-| `GATEWAY_ENV` | 设置为 `production` 以启用生产模式安全守卫 |
+| `GATEWAY_ENV` | 设置为 `production` 以启用生产模式安全守卫：当 `ALLOW_UNAUTHENTICATED_PROXY=true` 或 `CORS_ORIGINS` 含 `*` 条目时拒绝启动；当每 IP 限流关闭、挂载了 pprof 或 API 密钥存储为内存态时发出警告 |
 | `PORT` | 服务端口（默认：`8080`） |
 | `ALLOW_UNAUTHENTICATED_PROXY` | 设置为 `true` 以禁用代理路由认证（仅开发环境；当 `GATEWAY_ENV=production` 时被阻止） |
-| `CORS_ORIGINS` | 逗号分隔的允许 CORS 来源；未设置时拒绝跨域访问 |
+| `CORS_ORIGINS` | 逗号分隔的允许 CORS 来源；未设置时拒绝跨域访问。每一项都与请求的 `Origin` 头**逐字**比对，不支持通配符——`CORS_ORIGINS='*'` 不会放行任何浏览器实际会发出的来源，请逐个列出。含 `*` 的配置在启动时告警，在 `GATEWAY_ENV=production` 下拒绝启动 |
 | `TRUSTED_PROXIES` | 逗号分隔的可信反向代理 CIDR；仅来自这些地址的 `X-Forwarded-For`/`X-Real-IP` 会被信任（默认：回环地址） |
+| `<PROVIDER>_BASE_URL` | 将某个提供商指向代理、自建服务或区域端点（`OPENAI_BASE_URL`、`ANTHROPIC_BASE_URL` 等）。它就是 **API 根路径**，在所有提供商、所有接口上都原样使用——请完全按厂商文档填写，包含版本段（如 `https://api.groq.com/openai/v1`）。若填写的地址完全不带路径，则会自动补上该提供商自身的版本段，因此裸主机名同样可用。`COHERE_BASE_URL`、`OLLAMA_HOST` 以及各 `*_ENDPOINT` 变量填写的是服务器根路径——详见 [AGENTS.md](AGENTS.md) |
 
 完整环境变量参考（含提供商 API 密钥和 OTel 配置），请参阅 [AGENTS.md](AGENTS.md)。
 
@@ -378,10 +379,10 @@ ferrogw serve
 observability:
   tracing:
     enabled: true
-    endpoint: localhost:4317   # 留空则读取 OTEL_EXPORTER_OTLP_ENDPOINT
+    endpoint: localhost:4317   # URL 或 host:port；留空则读取 OTEL_EXPORTER_OTLP_*
     protocol: grpc             # grpc | http/protobuf
     service_name: ferrogw
-    sample_ratio: 1.0
+    sample_ratio: 1.0          # 头部采样率，外层包裹 ParentBased
     privacy_level: metadata    # none | metadata | full（见下文）
     shutdown_grace: 10s        # 每个 OTel 关闭阶段的等待时间；总耗时最多可达该值的 2 倍
     # headers:                          # 认证后端所需的 OTLP 导出请求头
@@ -395,7 +396,9 @@ observability:
   #       api_key: "${LANGSMITH_API_KEY}"
 ```
 
-标准 `OTEL_*` 环境变量（如 `OTEL_EXPORTER_OTLP_ENDPOINT`、`OTEL_TRACES_SAMPLER`）始终优先于配置文件——这符合 OTel SDK 约定，也是容器化部署可预测性的要求。
+`OTEL_EXPORTER_OTLP_ENDPOINT` 与 `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` 均优先于配置文件中的 endpoint——这符合 OTel SDK 约定，也是容器化部署可预测性的要求。任一变量被设置时，其值将原样交给 OTel SDK 解析，因此适用规范自身的路径规则：基础 endpoint 会被追加 `v1/traces`，而信号专用的那个则按原样使用。网关自身只读取这两个 `OTEL_*` 变量；采样率仅来自 `sample_ratio`，`OTEL_TRACES_SAMPLER` 不生效。单独设置其中任意一个变量都会开启链路追踪。
+
+`observability.tracing.endpoint` 是**基础** endpoint，其处理方式与规范对 `OTEL_EXPORTER_OTLP_ENDPOINT` 的规定一致：在 `protocol: http/protobuf` 下会被追加链路信号路径 `v1/traces`。直接粘贴采集器文档中的完整信号 URL 同样可用：如果配置值已经以 `v1/traces` 结尾，网关会按原样使用，而不会再次追加路径（以前会导出到 `.../v1/traces/v1/traces`，一条链路也存不下来）。启动日志会打印实际投递的完整 URL（含信号路径）。完全无法解析的值则在启动时直接报错，而不是静默地什么都不导出。采样器外层包裹 `ParentBased`，所以带着已采样 `traceparent` 到达的请求一定会被跟踪，无论 `sample_ratio` 取值如何——低于 1.0 的采样率不会把一条分布式链路从中截断。
 
 `observability.tracing.headers` 允许向已认证的托管后端（Datadog、New Relic、Honeycomb、Grafana Cloud）发送 OTLP 链路数据，只需配置对应的 vendor 请求头（如 API Key）。值支持 `${ENV_VAR}` 插值，因此密钥不会以明文形式存储在配置文件中。标准环境变量 `OTEL_EXPORTER_OTLP_HEADERS` 同样适用，符合 OTel 约定。
 
@@ -500,29 +503,38 @@ https://render.com/deploy?repo=https://github.com/ferro-labs/ai-gateway
 
 ### 方式 D — Docker Compose（开发和生产）
 
-仓库附带三个遵循标准覆盖模式的 Compose 文件：
+仓库在 `deploy/` 目录中附带三个遵循标准覆盖模式的 Compose 文件：
 
 | 文件 | 用途 |
 |---|---|
-| `docker-compose.yml` | 基础 — 共享镜像、端口映射、所有提供商环境变量存根 |
-| `docker-compose.dev.yml` | 开发 — 从源码构建、调试日志、实时配置挂载、Ollama 主机访问 |
-| `docker-compose.prod.yml` | 生产 — 固定镜像标签、重启策略、健康检查、资源限制、日志轮转 |
+| `deploy/compose.yaml` | 基础 — 共享镜像、端口映射、所有提供商环境变量存根 |
+| `deploy/compose.dev.yaml` | 开发 — 从源码构建、调试日志、实时配置挂载、Ollama 主机访问 |
+| `deploy/compose.prod.yaml` | 生产 — 固定镜像标签、重启策略、健康检查、资源限制、日志轮转 |
+
+所有命令均在仓库根目录下执行。
 
 **开发**（从源码构建）：
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+make up
 ```
 
 **生产**（固定发布标签——生产环境切勿使用 `latest`）：
 
 ```bash
 # 替换为最新发布标签
-IMAGE_TAG=v1.1.7 CORS_ORIGINS=https://your-domain.com \
-  docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+IMAGE_TAG=v1.1.7 CORS_ORIGINS=https://your-domain.com make up-prod
 ```
 
-提供商 API 密钥在 `docker-compose.yml` 中已注释。取消注释并设置所需的密钥，或通过同目录下的 `.env` 文件提供。
+`make down` 可停止上述任一环境。这些 Make 目标是「基础 + 覆盖」文件对的简写，也可以直接运行：
+
+```bash
+docker compose -f deploy/compose.yaml -f deploy/compose.dev.yaml up
+```
+
+提供商 API 密钥在 `deploy/compose.yaml` 中已注释。取消注释并设置所需的密钥，或通过仓库根目录下的 `.env` 文件提供——Compose 从执行命令的目录读取 `.env`，而不是 `deploy/`。
+
+`make up` 只启动一个容器，API 与控制台同在 <http://localhost:8080>：网关已将控制台编译进二进制文件，因此没有第二个镜像，也没有第二个来源；`CORS_ORIGINS` 仅在你自己的浏览器应用从别处调用网关时才需要。参见 [`deploy/README.md`](deploy/README.md)。
 
 ---
 

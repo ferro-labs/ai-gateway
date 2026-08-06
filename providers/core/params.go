@@ -4,7 +4,7 @@ import (
 	"context"
 	"slices"
 
-	"github.com/ferro-labs/ai-gateway/internal/logging"
+	"github.com/ferro-labs/ai-gateway/pkg/logger"
 	"github.com/ferro-labs/ai-gateway/providers/capabilities"
 )
 
@@ -22,6 +22,7 @@ var optionalParamOrder = []string{
 	"stop",
 	"tools",
 	"tool_choice",
+	"parallel_tool_calls",
 	"response_format",
 	"logprobs",
 	"top_logprobs",
@@ -56,6 +57,11 @@ func ParamPopulated(req Request, name string) bool {
 		return len(req.Tools) > 0
 	case "tool_choice":
 		return req.ToolChoice != nil
+	case "parallel_tool_calls":
+		// A pointer, so "populated" is "the caller stated a preference" —
+		// including the false that asks for serial tool calls, which is the only
+		// value a provider without the control cannot honour.
+		return req.ParallelToolCalls != nil
 	case "response_format":
 		return req.ResponseFormat != nil
 	case "logprobs":
@@ -73,13 +79,14 @@ func ParamPopulated(req Request, name string) bool {
 
 // maxCompletionTokensPopulated reports whether max_completion_tokens still
 // carries an unresolved caller value. Request.NormalizeCompletionTokenLimits
-// copies MaxCompletionTokens into MaxTokens when MaxTokens is nil, so a
-// caller who set only max_completion_tokens is already satisfiable through
+// reconciles the two completion-length fields to one value carried by both, so
+// a caller who set max_completion_tokens is already satisfiable through
 // max_tokens by the time enforcement runs, even on a provider that cannot
-// express max_completion_tokens natively — reporting it dropped there would
-// be misleading. A caller who sets both fields to different values still has
-// the max_completion_tokens value silently ignored (normalization never
-// overwrites an explicit max_tokens), so that case is still reported.
+// express max_completion_tokens natively — reporting it dropped there would be
+// misleading. The comparison, rather than an unconditional false, keeps this
+// honest for a request built programmatically and never normalized: there the
+// two fields can still disagree, and the max_completion_tokens value really is
+// ignored by a provider that reads only max_tokens.
 func maxCompletionTokensPopulated(req Request) bool {
 	if req.MaxCompletionTokens == nil {
 		return false
@@ -99,27 +106,6 @@ func DroppedParams(req Request, supported ...string) []string {
 		}
 	}
 	return dropped
-}
-
-// WarnUnsupportedParams emits a structured warn-level log for any optional
-// parameter the caller set that the target provider's native API cannot
-// express, so the drop is observable instead of silent (issue #140). It is a
-// no-op when nothing populated is unsupported.
-//
-// Deprecated: use EnforceUnsupportedParams (matrix-driven) or
-// EnforceUnsupportedParamsList (explicit per-model list) instead. Both honor the
-// configured compatibility mode (warn/drop/reject) rather than only warning.
-func WarnUnsupportedParams(ctx context.Context, provider, model string, req Request, supported ...string) {
-	dropped := DroppedParams(req, supported...)
-	if len(dropped) == 0 {
-		return
-	}
-	logging.FromContext(ctx).Warn(
-		"provider does not support request parameter(s); dropping",
-		"provider", provider,
-		"model", model,
-		"dropped_params", dropped,
-	)
 }
 
 // DroppedParamsForProvider returns, in stable order, the optional OpenAI
@@ -166,7 +152,7 @@ func enforceUnsupportedParams(ctx context.Context, provider, model string, dropp
 	if UnsupportedParamModeFromContext(ctx) == UnsupportedParamReject {
 		return NewUnsupportedParamError(provider, dropped)
 	}
-	logging.FromContext(ctx).Warn(
+	logger.Ctx(ctx).Warn(
 		"provider does not support request parameter(s); dropping",
 		"provider", provider,
 		"model", model,
@@ -183,6 +169,11 @@ type UnsupportedParamMode int
 const (
 	// UnsupportedParamWarn logs the unsupported parameter and forwards the
 	// request unchanged. It is the default (zero value).
+	//
+	// "Forwards" is only reachable where the parameter has somewhere to go: a
+	// provider addressed with an OpenAI-compatible body. On a provider with a
+	// native wire format this is indistinguishable from
+	// UnsupportedParamDrop — see EnforceUnsupportedParams.
 	UnsupportedParamWarn UnsupportedParamMode = iota
 	// UnsupportedParamDrop omits the unsupported parameter from the forwarded
 	// upstream request and logs a warning.

@@ -24,23 +24,6 @@ func TestNewGroq(t *testing.T) {
 	}
 }
 
-func TestGroqProvider_SupportedModels(t *testing.T) {
-	p, _ := New("test-key", "")
-	models := p.SupportedModels()
-	if len(models) == 0 {
-		t.Error("SupportedModels() returned empty")
-	}
-	found := false
-	for _, m := range models {
-		if m == "llama-3.3-70b-versatile" {
-			found = true
-		}
-	}
-	if !found {
-		t.Error("llama-3.3-70b-versatile not found")
-	}
-}
-
 func TestGroqProvider_SupportsModel(t *testing.T) {
 	p, _ := New("test-key", "")
 	if !p.SupportsModel("llama-3.3-70b-versatile") {
@@ -48,16 +31,6 @@ func TestGroqProvider_SupportsModel(t *testing.T) {
 	}
 	if !p.SupportsModel("gpt-4o") {
 		t.Error("passthrough: expected any model to return true")
-	}
-}
-
-func TestGroqProvider_Models(t *testing.T) {
-	p, _ := New("test-key", "")
-	models := p.Models()
-	for _, m := range models {
-		if m.OwnedBy != "groq" {
-			t.Errorf("ModelInfo.OwnedBy = %q, want groq", m.OwnedBy)
-		}
 	}
 }
 

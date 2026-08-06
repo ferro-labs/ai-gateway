@@ -41,7 +41,7 @@ func fetchModelIDs(t *testing.T, url string) map[string]bool {
 
 // TestDiscovery_OverridesModelsList verifies the #146 precedence at the HTTP
 // layer: once live discovery succeeds for a provider, /v1/models reflects the
-// discovered list instead of the provider's hardcoded SupportedModels().
+// discovered list instead of the provider's hardcoded ConfiguredModels().
 func TestDiscovery_OverridesModelsList(t *testing.T) {
 	env := newTestServer(t)
 

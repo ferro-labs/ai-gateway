@@ -4,12 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"reflect"
 	"runtime/debug"
 	"sync"
+	"time"
 
 	"github.com/ferro-labs/ai-gateway/observability"
+	"github.com/ferro-labs/ai-gateway/pkg/logger"
 )
 
 const defaultRejectionReason = "rejected"
@@ -41,7 +42,7 @@ func errorFailsOpen(pluginType PluginType) bool {
 // keeps two different events apart: a plugin that DENIED the request, and a plugin
 // that BROKE. The first is a RejectionError, the second a FailureError; the HTTP
 // layer maps them to a client error and a server error respectively.
-func handlePluginFailure(p Plugin, stage Stage, pctx *Context, err error) error {
+func (m *Manager) handlePluginFailure(p Plugin, stage Stage, pctx *Context, err error) error {
 	// A rejection outranks an error: the plugin reached a verdict, so report the
 	// verdict even if it also returned an error on its way out.
 	if pctx.Reject {
@@ -51,7 +52,7 @@ func handlePluginFailure(p Plugin, stage Stage, pctx *Context, err error) error 
 		return nil
 	}
 	if errorFailsOpen(p.Type()) {
-		slog.Default().Warn("fail-open plugin error ignored", "plugin", p.Name(), "type", p.Type(), "stage", stage, "error", err)
+		m.log.Warn("fail-open plugin error ignored", "plugin", p.Name(), "type", p.Type(), "stage", stage, "error", err)
 		return nil
 	}
 	return &FailureError{Plugin: p.Name(), PluginType: p.Type(), Stage: stage, Err: err}
@@ -73,6 +74,7 @@ func rejectionReason(pctx *Context, err error) string {
 
 // Manager manages plugin lifecycle and execution.
 type Manager struct {
+	log         *logger.Logger
 	before      []Plugin
 	after       []Plugin
 	onErr       []Plugin
@@ -83,9 +85,13 @@ type Manager struct {
 	closed      bool
 }
 
-// NewManager creates a new plugin manager.
-func NewManager() *Manager {
-	m := &Manager{}
+// NewManager creates a new plugin manager with the given logger. A nil logger
+// falls back to logger.Default().
+func NewManager(log *logger.Logger) *Manager {
+	if log == nil {
+		log = logger.Default()
+	}
+	m := &Manager{log: log}
 	m.lifecycle = sync.NewCond(&m.lifecycleMu)
 	return m
 }
@@ -130,23 +136,81 @@ func (m *Manager) Register(stage Stage, p Plugin) error {
 	default:
 		return fmt.Errorf("unknown plugin stage: %s", stage)
 	}
-	slog.Default().Info("plugin registered", "name", p.Name(), "type", p.Type(), "stage", stage)
+	m.log.Info("plugin registered", "name", p.Name(), "type", p.Type(), "stage", stage)
 	return nil
 }
 
 // RunBefore executes all before-request plugins. Fail-closed plugin errors or
 // rejections abort the request; fail-open plugin failures are logged and ignored.
+//
+// No plugin can shorten this chain. Context.SkipProvider says the provider must not
+// be called, not that the plugins behind it must not run — a cache that answered
+// the request has said nothing about the rate limiter or the budget listed after
+// it, and letting it speak for them is how a shipped config silently disabled every
+// guardrail on a cache hit.
+//
+// The chain ends only on a rejection or a failure, and it ends this stage alone:
+// the on_error stage runs before the abort is returned, so a request denied by
+// policy still reaches whatever records requests. That guarantee lives here rather
+// than at each call site because a caller that forgets it produces a request the
+// operator has no record of — the shape this stage exists to prevent.
 func (m *Manager) RunBefore(ctx context.Context, pctx *Context) error {
 	m.mu.RLock()
 	plugins := m.before
 	m.mu.RUnlock()
 	for _, p := range plugins {
-		err := m.executePlugin(ctx, p, pctx, string(StageBeforeRequest))
-		if failureErr := handlePluginFailure(p, StageBeforeRequest, pctx, err); failureErr != nil {
+		err := m.executePlugin(ctx, p, pctx, StageBeforeRequest)
+		if failureErr := m.handlePluginFailure(p, StageBeforeRequest, pctx, err); failureErr != nil {
+			pctx.Error = failureErr
+			m.RunOnError(ctx, pctx)
 			return failureErr
 		}
-		if pctx.Skip {
-			break
+	}
+	return nil
+}
+
+// RunBeforeLoopTurn runs the before-request plugins that must see EVERY provider
+// call, for one turn of an agentic tool loop.
+//
+// The loop's turns after the first used to reach the provider with no plugin
+// having seen them, because runMCPLoop calls the router directly and the
+// before stage had already run once. The messages those turns carry include
+// tool RESULTS returned by an external MCP server, so a configured content
+// guardrail was inspecting the caller's prompt and nothing else — the same
+// governance escape as an unguarded surface, one level in.
+//
+// Two types are deliberately excluded, and the exclusions are the whole reason
+// this is not simply RunBefore:
+//
+//   - TypeTransform rewrites the request. A transform re-run mid-loop would
+//     rewrite the model between turns, so the conversation would finish on a
+//     different model than it started on.
+//   - TypeLogging and TypeMetrics observe a REQUEST. Re-running them would
+//     write one request-log row and one metric sample per turn, turning a
+//     single request into N in every reporting surface.
+//
+// Everything else runs: a guardrail inspects what is about to be sent, and a
+// rate limiter or budget sees a call it is meant to be bounding.
+//
+// A rejection ends the loop and is returned to the caller. A plugin FAILURE is
+// handled exactly as it is at the ordinary stage, by the shared policy — this
+// runs the same executePlugin and handlePluginFailure, so a fail-open plugin
+// still fails open here.
+func (m *Manager) RunBeforeLoopTurn(ctx context.Context, pctx *Context) error {
+	m.mu.RLock()
+	plugins := m.before
+	m.mu.RUnlock()
+	for _, p := range plugins {
+		switch p.Type() {
+		case TypeTransform, TypeLogging, TypeMetrics:
+			continue
+		}
+		err := m.executePlugin(ctx, p, pctx, StageBeforeRequest)
+		if failureErr := m.handlePluginFailure(p, StageBeforeRequest, pctx, err); failureErr != nil {
+			return failureErr
+		}
+		if pctx.Reject {
+			return nil
 		}
 	}
 	return nil
@@ -154,30 +218,53 @@ func (m *Manager) RunBefore(ctx context.Context, pctx *Context) error {
 
 // RunAfter executes all after-request plugins. Fail-closed plugin errors or
 // rejections abort the response; fail-open plugin failures are logged and ignored.
+//
+// It runs whether or not a provider was contacted: a response served from cache is
+// still a served request, and suppressing the stage would lose it from every log,
+// metric and audit surface. Plugins that must not act on a request that never
+// reached a provider read Context.SkipProvider, which is still set here.
+//
+// Unlike RunBefore this does not run the on_error stage itself: its callers already
+// do, because only they hold the measurements that stage records.
 func (m *Manager) RunAfter(ctx context.Context, pctx *Context) error {
 	m.mu.RLock()
 	plugins := m.after
 	m.mu.RUnlock()
 	for _, p := range plugins {
-		err := m.executePlugin(ctx, p, pctx, string(StageAfterRequest))
-		if failureErr := handlePluginFailure(p, StageAfterRequest, pctx, err); failureErr != nil {
+		err := m.executePlugin(ctx, p, pctx, StageAfterRequest)
+		if failureErr := m.handlePluginFailure(p, StageAfterRequest, pctx, err); failureErr != nil {
 			return failureErr
-		}
-		if pctx.Skip {
-			break
 		}
 	}
 	return nil
 }
 
+// onErrorBudget bounds the detached on_error stage. Dropping the request's
+// cancellation also drops its deadline, and a stage that records what happened
+// must not be able to hold a goroutine open on an unresponsive store.
+const onErrorBudget = 10 * time.Second
+
 // RunOnError executes all on-error plugins.
+//
+// The stage runs on a context detached from the request's cancellation. It is
+// the last thing a failed request does, and on the streaming path the client's
+// connection is already gone by the time it runs — so the request context is
+// cancelled, and every ctx-aware plugin here is dead on arrival. That is how a
+// mid-stream failure came to write no on_error row at all: the request-logger's
+// insert returned "context canceled" and the failure existed in no operator-
+// facing surface, which is the exact shape this stage exists to prevent. Values
+// and the trace context are preserved, so the row still carries the request's
+// trace ID. Cancellation is replaced by onErrorBudget rather than removed.
 func (m *Manager) RunOnError(ctx context.Context, pctx *Context) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), onErrorBudget)
+	defer cancel()
+
 	m.mu.RLock()
 	plugins := m.onErr
 	m.mu.RUnlock()
 	for _, p := range plugins {
-		if err := m.executePlugin(ctx, p, pctx, string(StageOnError)); err != nil {
-			slog.Default().Warn("on-error plugin error", "plugin", p.Name(), "error", err)
+		if err := m.executePlugin(ctx, p, pctx, StageOnError); err != nil {
+			m.log.Warn("on-error plugin error", "plugin", p.Name(), "error", err)
 		}
 	}
 }
@@ -188,13 +275,17 @@ func (m *Manager) RunOnError(ctx context.Context, pctx *Context) {
 // outcome; error messages are redacted by the seam per the configured
 // privacy level. With the NoOp provider — or when no root span is set — the
 // child is a no-op and adds effectively zero overhead.
-func (m *Manager) executePlugin(ctx context.Context, p Plugin, pctx *Context, stage string) (err error) {
+func (m *Manager) executePlugin(ctx context.Context, p Plugin, pctx *Context, stage Stage) (err error) {
+	// The stage the plugin is running in is the framework's to state, not the
+	// plugin's to guess from which fields are populated.
+	pctx.Stage = stage
+
 	var span observability.Span
 	if pctx.Span != nil {
-		ctx, span = pctx.Span.StartChild(ctx, "plugin."+stage+"."+p.Name(), observability.SpanKindInternal)
+		ctx, span = pctx.Span.StartChild(ctx, "plugin."+string(stage)+"."+p.Name(), observability.SpanKindInternal)
 		span.SetAttribute(observability.AttrFerroPluginName, p.Name())
 		span.SetAttribute(observability.AttrFerroPluginKind, string(p.Type()))
-		span.SetAttribute(observability.AttrFerroPluginStage, stage)
+		span.SetAttribute(observability.AttrFerroPluginStage, string(stage))
 		defer span.End()
 	}
 
@@ -202,7 +293,7 @@ func (m *Manager) executePlugin(ctx context.Context, p Plugin, pctx *Context, st
 		if recovered := recover(); recovered != nil {
 			stack := debug.Stack()
 			err = fmt.Errorf("plugin %s panicked at %s", p.Name(), stage)
-			slog.Default().Error("plugin panicked",
+			m.log.Error("plugin panicked",
 				"plugin", p.Name(),
 				"stage", stage,
 				"panic", recovered,
@@ -264,7 +355,7 @@ func (m *Manager) closeWhenDrained() {
 	m.lifecycleMu.Unlock()
 
 	if err := m.closePlugins(); err != nil {
-		slog.Default().Warn("deferred plugin close failed", "error", err)
+		m.log.Warn("deferred plugin close failed", "error", err)
 	}
 }
 
@@ -323,4 +414,79 @@ func (m *Manager) HasPlugins() bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return len(m.before)+len(m.after)+len(m.onErr) > 0
+}
+
+// HasBeforeRequestTransform reports whether any before_request plugin is a
+// transform, and so whether the request the provider sees may differ from the
+// one the caller sent.
+//
+// Execute may mutate the request it is handed, and a transform is the plugin
+// type whose job that is — so a gateway that decides anything from the request
+// BEFORE this stage has to know whether the stage can still change the answer.
+//
+// The plugin's own Type() is the authority, the same one the fail-open policy
+// reads, rather than the type written in config: a plugin does not have to
+// agree with what an operator labelled it, and only one of the two is the code
+// that will run.
+// A transform that declares ModelPreserving does not count: it reports
+// TypeTransform because it rewrites the request or short-circuits the provider
+// call, not because it can change which model is routed. The response cache is
+// the case that forced this — enabling it used to turn the admission check off
+// for the whole process, so an unroutable model spent a rate limiter's tokens
+// and a budget's money on its way to a 404 it was always going to get.
+//
+// The declaration is an opt-OUT on purpose. A transform that says nothing keeps
+// the stand-down, so a plugin built outside this repository — which may well
+// rewrite the model, and cannot know to declare anything — is unaffected. An
+// opt-in would silently reintroduce the alias-404 the stand-down exists to
+// prevent.
+func (m *Manager) HasBeforeRequestTransform() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, p := range m.before {
+		if p.Type() != TypeTransform {
+			continue
+		}
+		if _, preserving := p.(ModelPreserving); !preserving {
+			return true
+		}
+	}
+	return false
+}
+
+// HasBeforeRequestGuardrail reports whether any before_request plugin is a
+// guardrail that READS REQUEST CONTENT, and so whether this deployment screens
+// request content before it reaches a provider.
+//
+// It is the question a surface has to ask when it cannot show a guardrail the
+// content it would screen — the /v1/* pass-through handed a multipart upload,
+// an audio payload, or anything else that does not project to text. A guardrail
+// with nothing to match on APPROVES, and that approval is indistinguishable
+// from one it actually made, so the surface must refuse before the stage rather
+// than read the empty pass as consent. See Gateway.RoutePassthrough.
+//
+// The plugin's own Type() is the authority, exactly as it is for
+// HasBeforeRequestTransform: reading plugins[].type from config would let a
+// mislabelled guardrail turn the refusal off, which is the one direction that
+// is not safe to be wrong in.
+//
+// A guardrail that declares ContentAgnostic does not count. TypeGuardrail names
+// a plugin's enforcement role, not what it reads, so it lumped `word-filter` in
+// with `max-token` — and a deployment running only the latter had uninspectable
+// bodies refused although nothing would have inspected them. The declaration is
+// an opt-OUT for the reason spelled out on ContentAgnostic: an undeclared
+// guardrail is assumed to read content and still triggers the refusal.
+func (m *Manager) HasBeforeRequestGuardrail() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, p := range m.before {
+		if p.Type() != TypeGuardrail {
+			continue
+		}
+		if agnostic, ok := p.(ContentAgnostic); ok && agnostic.IgnoresRequestContent() {
+			continue
+		}
+		return true
+	}
+	return false
 }

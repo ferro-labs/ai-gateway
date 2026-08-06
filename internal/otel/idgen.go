@@ -5,7 +5,7 @@ import (
 	"crypto/rand"
 	"strings"
 
-	"github.com/ferro-labs/ai-gateway/internal/logging"
+	"github.com/ferro-labs/ai-gateway/pkg/logger"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -14,7 +14,7 @@ import (
 // with the logging trace ID already present in the context.
 //
 // When logging middleware has already seeded a trace ID into the context
-// (via logging.WithTraceID), the generator parses that 32-hex-char string
+// (via logger.WithTraceID), the generator parses that 32-hex-char string
 // directly into an OTel trace.TraceID — ensuring that the OTel trace_id,
 // the ferro.gateway.trace_id span attribute, the X-Request-ID response
 // header, and the structured-log trace_id field are all byte-identical for
@@ -58,12 +58,12 @@ func (g *loggingIDGen) NewSpanID(_ context.Context, _ trace.TraceID) trace.SpanI
 // The raw ID is lowercased before parsing: X-Request-ID headers may arrive in
 // uppercase hex (e.g. "0AF7651916CD43DD8448EB211C80319C"), which
 // trace.TraceIDFromHex rejects. Lowercasing here keeps OTel and logging trace
-// IDs in sync without modifying logging.Middleware.
+// IDs in sync without modifying logger.Middleware.
 //
 // trace.TraceIDFromHex already returns an error for the all-zero ID, so no
 // additional IsValid() guard is needed after a successful parse.
 func traceIDFromLogging(ctx context.Context) trace.TraceID {
-	tid := logging.TraceIDFromContext(ctx)
+	tid := logger.TraceIDFromContext(ctx)
 	if len(tid) == 32 {
 		parsed, err := trace.TraceIDFromHex(strings.ToLower(tid))
 		if err == nil {

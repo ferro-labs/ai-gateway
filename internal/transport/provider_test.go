@@ -105,8 +105,8 @@ func TestRegisterKnownProviders_PoolIsolation(t *testing.T) {
 	m := NewDefault()
 	m.RegisterKnownProviders()
 
-	oaiTransport := m.Pool("openai").Transport()
-	antTransport := m.Pool("anthropic").Transport()
+	oaiTransport := m.providerRawTransport("openai")
+	antTransport := m.providerRawTransport("anthropic")
 
 	// Transports must be different instances.
 	if oaiTransport == antTransport {
@@ -125,50 +125,4 @@ func TestRegisterKnownProviders_PoolIsolation(t *testing.T) {
 		t.Errorf("anthropic MaxIdleConnsPerHost = %d, want %d",
 			antTransport.MaxIdleConnsPerHost, antPreset.MaxIdleConnsPerHost)
 	}
-}
-
-func TestPool(t *testing.T) {
-	m := NewDefault()
-	m.RegisterKnownProviders()
-
-	// Known provider pool.
-	pool := m.Pool("openai")
-	if pool.Name() != "openai" {
-		t.Errorf("pool name = %q, want %q", pool.Name(), "openai")
-	}
-	if pool.Client() == nil {
-		t.Error("pool client must not be nil")
-	}
-	if pool.StreamClient() == nil {
-		t.Error("pool stream client must not be nil")
-	}
-	if pool.Transport() == nil {
-		t.Error("pool transport must not be nil")
-	}
-	if pool.Client() == m.defaultClient {
-		t.Error("known provider pool must use dedicated client")
-	}
-
-	// Unknown provider pool should fallback to defaults.
-	unknownPool := m.Pool("mystery-ai")
-	if unknownPool.Client() != m.defaultClient {
-		t.Error("unknown provider pool should use defaultClient")
-	}
-}
-
-func BenchmarkForProvider_KnownProviders(b *testing.B) {
-	m := NewDefault()
-	m.RegisterKnownProviders()
-
-	providers := []string{"openai", "anthropic", "gemini", "groq", "unknown"}
-
-	b.ResetTimer()
-	b.ReportAllocs()
-	b.RunParallel(func(pb *testing.PB) {
-		i := 0
-		for pb.Next() {
-			_ = m.ForProvider(providers[i%len(providers)])
-			i++
-		}
-	})
 }

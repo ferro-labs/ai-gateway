@@ -3,16 +3,18 @@ package models
 import (
 	"bytes"
 	"context"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/ferro-labs/ai-gateway/pkg/logger"
 )
 
 // TestCatalogBackupParseable verifies the embedded catalog_backup.json is
@@ -196,9 +198,9 @@ func TestLoadWithInfoContext_HonorsCanceledContext(t *testing.T) {
 
 func TestLoadWithInfoFallsBackWhenRemoteFetchFails(t *testing.T) {
 	var buf bytes.Buffer
-	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
-	t.Cleanup(func() { slog.SetDefault(previous) })
+	previous := logger.Default()
+	logger.SetDefault(logger.New(logger.Options{Output: &buf}))
+	t.Cleanup(func() { logger.SetDefault(previous) })
 	const secret = "super-secret-token"
 	t.Setenv(CatalogURLEnv, "http://user:"+secret+"@127.0.0.1:1/catalog.json?api_key="+secret)
 
@@ -226,9 +228,9 @@ func TestLoadWithInfoFallsBackWhenRemoteFetchFails(t *testing.T) {
 
 func TestLoadWithInfoFallsBackWhenRemoteParseFails(t *testing.T) {
 	var buf bytes.Buffer
-	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
-	t.Cleanup(func() { slog.SetDefault(previous) })
+	previous := logger.Default()
+	logger.SetDefault(logger.New(logger.Options{Output: &buf}))
+	t.Cleanup(func() { logger.SetDefault(previous) })
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`not json`))
@@ -329,6 +331,26 @@ func TestCatalogGetProviderAlias(t *testing.T) {
 				InputPerMTokens: ptrF(0.165),
 			},
 		},
+		"hugging_face/meta-llama/Meta-Llama-3.1-8B-Instruct": {
+			Provider: "hugging_face",
+			ModelID:  "meta-llama/Meta-Llama-3.1-8B-Instruct",
+			Mode:     ModeChat,
+		},
+		"nvidia_nim/meta/llama-3.1-8b-instruct": {
+			Provider: "nvidia_nim",
+			ModelID:  "meta/llama-3.1-8b-instruct",
+			Mode:     ModeChat,
+		},
+		"ollama_cloud/gpt-oss:120b": {
+			Provider: "ollama_cloud",
+			ModelID:  "gpt-oss:120b",
+			Mode:     ModeChat,
+		},
+		"dashscope/qwen3-max": {
+			Provider: "dashscope",
+			ModelID:  "qwen3-max",
+			Mode:     ModeChat,
+		},
 	}
 
 	cases := []struct {
@@ -339,6 +361,10 @@ func TestCatalogGetProviderAlias(t *testing.T) {
 		{"azure-openai/gpt-4o-mini", "azure_openai", "gpt-4o-mini"},
 		{"azure-foundry/gpt-4o", "azure_foundry", "gpt-4o"},
 		{"vertex-ai/gemini-2.5-pro", "vertex_ai", "gemini-2.5-pro"},
+		{"hugging-face/meta-llama/Meta-Llama-3.1-8B-Instruct", "hugging_face", "meta-llama/Meta-Llama-3.1-8B-Instruct"},
+		{"nvidia-nim/meta/llama-3.1-8b-instruct", "nvidia_nim", "meta/llama-3.1-8b-instruct"},
+		{"ollama-cloud/gpt-oss:120b", "ollama_cloud", "gpt-oss:120b"},
+		{"qwen/qwen3-max", "dashscope", "qwen3-max"},
 	}
 	if len(cases) != len(catalogProviderAliases) {
 		t.Fatalf("test cases = %d, catalogProviderAliases = %d — add a case per alias",
@@ -644,23 +670,56 @@ func TestModelsForProvider(t *testing.T) {
 		t.Fatalf("parse bundled catalog: %v", err)
 	}
 
-	cases := []struct {
-		providerID string
-		wantLen    int
-	}{
-		{"anthropic", 26},
-		{"xai", 32},
-		{"does-not-exist", 0},
-	}
-	for _, tc := range cases {
-		t.Run(tc.providerID, func(t *testing.T) {
-			got := c.ModelsForProvider(tc.providerID)
-			if len(got) != tc.wantLen {
+	// Counts are derived from the parsed catalog, not hardcoded: these are
+	// identity providers, so the answer is by definition every row whose
+	// Provider is the gateway ID. Literals here would fail on every upstream
+	// catalog refresh without a gateway defect behind it.
+	for _, providerID := range []string{"anthropic", "xai", "does-not-exist"} {
+		t.Run(providerID, func(t *testing.T) {
+			want := make(map[string]struct{})
+			for _, m := range c {
+				if m.Provider == providerID {
+					want[m.ModelID] = struct{}{}
+				}
+			}
+			got := c.ModelsForProvider(providerID)
+			if len(got) != len(want) {
 				t.Fatalf("ModelsForProvider(%q) returned %d models, want %d",
-					tc.providerID, len(got), tc.wantLen)
+					providerID, len(got), len(want))
+			}
+			for _, id := range got {
+				if _, ok := want[id]; !ok {
+					t.Fatalf("ModelsForProvider(%q) returned %q, which no catalog row carries", providerID, id)
+				}
 			}
 			assertSortedDeduped(t, got)
 		})
+	}
+}
+
+// TestActiveModelCountForProvider verifies the non-deprecated per-provider count:
+// deprecated and legacy rows are excluded, bare model IDs are de-duplicated
+// across the alias chain, and an unknown provider yields 0.
+func TestActiveModelCountForProvider(t *testing.T) {
+	c := Catalog{
+		"groq/llama-3.3-70b":  {Provider: "groq", ModelID: "llama-3.3-70b"},
+		"groq/llama-3.1-8b":   {Provider: "groq", ModelID: "llama-3.1-8b"},
+		"groq/old-model":      {Provider: "groq", ModelID: "old-model", Lifecycle: Lifecycle{Status: "deprecated"}},
+		"groq/legacy-model":   {Provider: "groq", ModelID: "legacy-model", Lifecycle: Lifecycle{Status: "legacy"}},
+		"azure_openai/gpt-4o": {Provider: "azure_openai", ModelID: "gpt-4o"},
+		"azure/gpt-4o":        {Provider: "azure", ModelID: "gpt-4o"}, // same bare ID via the alias chain
+		"azure/gpt-4o-mini":   {Provider: "azure", ModelID: "gpt-4o-mini"},
+	}
+
+	if got := c.ActiveModelCountForProvider("groq"); got != 2 {
+		t.Errorf("groq: got %d, want 2 (deprecated + legacy excluded)", got)
+	}
+	// azure-openai's chain is azure_openai + azure; gpt-4o is one deduped id.
+	if got := c.ActiveModelCountForProvider("azure-openai"); got != 2 {
+		t.Errorf("azure-openai: got %d, want 2 (gpt-4o deduped across the alias chain)", got)
+	}
+	if got := c.ActiveModelCountForProvider("does-not-exist"); got != 0 {
+		t.Errorf("unknown provider: got %d, want 0", got)
 	}
 }
 
@@ -694,6 +753,59 @@ func TestModelsForProviderAliasUnion(t *testing.T) {
 	}
 }
 
+// TestCatalogReachesUnderscoreAndVendorBrandPrefixes covers the providers whose
+// catalog prefix is not their gateway ID. Before these alias entries existed the
+// rows below were unreachable from every entry point at once: ModelsForProvider
+// returned nothing (so /v1/models listed the provider empty) and GetForPricing
+// missed (so cost was recorded as zero). Deleting an entry from
+// catalogProviderAliases fails this test.
+func TestCatalogReachesUnderscoreAndVendorBrandPrefixes(t *testing.T) {
+	c, err := parse(bundledCatalog)
+	if err != nil {
+		t.Fatalf("parse bundled catalog: %v", err)
+	}
+
+	cases := []struct {
+		providerID  string
+		sampleModel string
+	}{
+		{"hugging-face", "Qwen/Qwen2.5-72B-Instruct"},
+		{"nvidia-nim", "meta/llama-3.1-8b-instruct"},
+		{"ollama-cloud", "gpt-oss:120b"},
+		// dashscope is Alibaba's own API — the one providers/qwen talks to —
+		// so its rows must answer for the gateway's qwen provider.
+		{"qwen", "qwen3-max"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.providerID, func(t *testing.T) {
+			ids := c.ModelsForProvider(tc.providerID)
+			if !slices.Contains(ids, tc.sampleModel) {
+				t.Fatalf("ModelsForProvider(%q) does not list %q (got %d ids)",
+					tc.providerID, tc.sampleModel, len(ids))
+			}
+			if _, ok := c.Get(tc.providerID + "/" + tc.sampleModel); !ok {
+				t.Fatalf("Get(%q) missed", tc.providerID+"/"+tc.sampleModel)
+			}
+		})
+	}
+
+	// The pricing half of the same fix: qwq-plus is priced only under
+	// dashscope/, so before the alias every request for it billed zero.
+	m, ok := c.GetForPricing("qwen/qwq-plus")
+	if !ok {
+		t.Fatal("GetForPricing(qwen/qwq-plus) missed")
+	}
+	if m.Pricing.InputPerMTokens == nil || *m.Pricing.InputPerMTokens <= 0 {
+		t.Fatalf("qwen/qwq-plus resolved with no input rate: %+v", m.Pricing)
+	}
+
+	// The qwen/ rows the catalog already carried must survive the chain gaining
+	// dashscope — an alias that replaced them would unlist five models.
+	if _, ok := c.Get("qwen/qwen2.5-72b-instruct"); !ok {
+		t.Fatal("Get(qwen/qwen2.5-72b-instruct) missed: native qwen/ rows were dropped")
+	}
+}
+
 // TestModelsForProviderIncludesDeprecated verifies deprecated entries are NOT
 // filtered out (the /v1/models response flags deprecation separately).
 func TestModelsForProviderIncludesDeprecated(t *testing.T) {
@@ -716,26 +828,6 @@ func TestModelsForProviderIncludesDeprecated(t *testing.T) {
 	want := []string{"active-model", "old-model"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("ModelsForProvider(toy) = %v, want %v (deprecated must be included)", got, want)
-	}
-}
-
-// BenchmarkGetBareModelID benchmarks the bare-model-ID lookup path, which
-// now uses the reverse index instead of a linear scan.
-func BenchmarkGetBareModelID(b *testing.B) {
-	c, err := parse(bundledCatalog)
-	if err != nil {
-		b.Fatalf("parse: %v", err)
-	}
-	// Pick a model ID that exists in the catalog.
-	m, ok := c.Get("openai/gpt-4o")
-	if !ok {
-		b.Fatal("gpt-4o not found in catalog")
-	}
-	bareID := m.ModelID
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		c.Get(bareID)
 	}
 }
 

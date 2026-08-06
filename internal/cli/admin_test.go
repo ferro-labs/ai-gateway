@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -28,6 +29,77 @@ func TestToSlice(t *testing.T) {
 				t.Errorf("toSlice length = %d, want %d", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestEnvelopeRows(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		in   any
+		want int
+	}{
+		{name: "data envelope yields its rows", in: map[string]any{
+			"data":    []any{map[string]any{"a": 1}, map[string]any{"b": 2}},
+			"summary": map[string]any{"total_entries": 2},
+		}, want: 2},
+		{name: "bare array passes through", in: []any{map[string]any{"a": 1}}, want: 1},
+		{name: "object without data is one row", in: map[string]any{"a": 1}, want: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := len(toSlice(envelopeRows(tt.in))); got != tt.want {
+				t.Errorf("row count = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestStrList(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		in   any
+		want string
+	}{
+		{name: "single element", in: []any{"read_only"}, want: "read_only"},
+		{name: "multiple elements join on comma", in: []any{"admin", "read_only"}, want: "admin,read_only"},
+		{name: "empty array", in: []any{}, want: ""},
+		{name: "absent field", in: nil, want: ""},
+		{name: "non-array field", in: "admin", want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := strList(map[string]any{"scopes": tt.in}, "scopes"); got != tt.want {
+				t.Errorf("strList = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFmtNum(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		in   any
+		want string
+	}{
+		{name: "number rounds to whole units", in: float64(42.6), want: "43"},
+		{name: "zero is a measurement", in: float64(0), want: "0"},
+		{name: "null renders a dash", in: nil, want: "-"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := fmtNum(map[string]any{"duration_ms": tt.in}, "duration_ms"); got != tt.want {
+				t.Errorf("fmtNum = %q, want %q", got, tt.want)
+			}
+		})
+	}
+	if got := fmtNum(map[string]any{}, "duration_ms"); got != "-" {
+		t.Errorf("fmtNum(absent) = %q, want -", got)
 	}
 }
 
@@ -116,16 +188,20 @@ func TestJSONSlice_Rendering(t *testing.T) {
 
 // ── Admin sub-command handlers (called directly on a fresh command) ─────────────
 
+// Payloads below mirror what the Admin API actually serializes: model.APIKey
+// carries `scopes` as an array, and the paginated endpoints wrap their rows in
+// a "data" envelope.
+
 func TestRunKeysList(t *testing.T) {
 	srv := stubGateway(t, map[string]http.HandlerFunc{
-		"/admin/keys": jsonHandler(http.StatusOK, `[{"id":"k1","name":"prod","scope":"admin","revoked":false}]`),
+		"/admin/keys": jsonHandler(http.StatusOK, `[{"id":"k1","name":"prod","scopes":["admin","read_only"],"revoked":false}]`),
 	})
 	cmd, out := newHandlerCmd(t, srv.URL, "table")
 
 	if err := runKeysList(cmd, nil); err != nil {
 		t.Fatalf("runKeysList: %v", err)
 	}
-	for _, want := range []string{"ID", "k1", "prod", "admin"} {
+	for _, want := range []string{"SCOPES", "k1", "prod", "admin,read_only"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("output missing %q:\n%s", want, out.String())
 		}
@@ -143,6 +219,51 @@ func TestRunKeysGet(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "k1") {
 		t.Errorf("want key detail, got:\n%s", out.String())
+	}
+}
+
+// TestRunKeysCreate_ScopesWireFormat pins the created key to the scope the
+// operator asked for. The Admin API grants admin to a create request that
+// carries no scope list, so a body whose scope never reaches `scopes` mints an
+// admin key for every invocation, including the default one.
+func TestRunKeysCreate_ScopesWireFormat(t *testing.T) {
+	scopeFlagDefault := keysCreateCmd.Flags().Lookup("scope").DefValue
+
+	tests := []struct {
+		name  string
+		scope string
+		want  []string
+	}{
+		{name: "read only", scope: "read_only", want: []string{"read_only"}},
+		{name: "admin", scope: "admin", want: []string{"admin"}},
+		{name: "flag default", scope: scopeFlagDefault, want: []string{"read_only"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var sent struct {
+				Name   string   `json:"name"`
+				Scopes []string `json:"scopes"`
+			}
+			srv := stubGateway(t, map[string]http.HandlerFunc{
+				"/admin/keys": func(w http.ResponseWriter, r *http.Request) {
+					if err := json.NewDecoder(r.Body).Decode(&sent); err != nil {
+						t.Errorf("decode request body: %v", err)
+					}
+					jsonHandler(http.StatusOK, `{"id":"new","key":"fgw_secret"}`)(w, r)
+				},
+			})
+			cmd, _ := newHandlerCmd(t, srv.URL, "table")
+			cmd.Flags().String("name", "ci", "")
+			cmd.Flags().String("scope", tt.scope, "")
+			cmd.Flags().String("expires-in", "", "")
+
+			if err := runKeysCreate(cmd, nil); err != nil {
+				t.Fatalf("runKeysCreate: %v", err)
+			}
+			if !slices.Equal(sent.Scopes, tt.want) {
+				t.Errorf("scopes = %v, want %v", sent.Scopes, tt.want)
+			}
+		})
 	}
 }
 
@@ -194,14 +315,15 @@ func TestRunKeysRevoke(t *testing.T) {
 
 func TestRunConfigHistory(t *testing.T) {
 	srv := stubGateway(t, map[string]http.HandlerFunc{
-		"/admin/config/history": jsonHandler(http.StatusOK, `[{"version":3,"updated_at":"2026-07-15T09:30:00Z","rolled_back_from":1}]`),
+		"/admin/config/history": jsonHandler(http.StatusOK,
+			`{"data":[{"version":3,"updated_at":"2026-07-15T09:30:00Z","rolled_back_from":1}],"summary":{"total_versions":1}}`),
 	})
 	cmd, out := newHandlerCmd(t, srv.URL, "table")
 
 	if err := runConfigHistory(cmd, nil); err != nil {
 		t.Fatalf("runConfigHistory: %v", err)
 	}
-	for _, want := range []string{"VERSION", "3", "1"} {
+	for _, want := range []string{"VERSION", "3", "2026-07-15 09:30 UTC", "1"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("output missing %q:\n%s", want, out.String())
 		}
@@ -256,32 +378,55 @@ func TestRunConfigSet(t *testing.T) {
 }
 
 func TestRunLogsList(t *testing.T) {
-	srv := stubGateway(t, map[string]http.HandlerFunc{
-		"/admin/logs": jsonHandler(http.StatusOK, `[{"trace_id":"t1","provider":"openai","model":"gpt-4","status":200,"latency_ms":42}]`),
-	})
-	cmd, out := newHandlerCmd(t, srv.URL, "table")
-	cmd.Flags().Int("limit", 50, "")
-
-	if err := runLogsList(cmd, nil); err != nil {
-		t.Fatalf("runLogsList: %v", err)
+	tests := []struct {
+		name string
+		body string
+		want []string
+	}{
+		{
+			name: "measured entry",
+			body: `{"data":[{"trace_id":"t1","provider":"openai","model":"gpt-4","stage":"after_request",` +
+				`"duration_ms":42,"created_at":"2026-07-15T09:30:00Z"}],"summary":{"total_entries":1,"returned_entries":1}}`,
+			want: []string{"TRACE_ID", "t1", "openai", "gpt-4", "after_request", "42", "2026-07-15 09:30 UTC"},
+		},
+		{
+			name: "unmeasured duration renders a dash",
+			body: `{"data":[{"trace_id":"t2","provider":"anthropic","model":"claude","stage":"on_error",` +
+				`"duration_ms":null,"created_at":"2026-07-15T09:31:00Z"}],"summary":{"total_entries":1,"returned_entries":1}}`,
+			want: []string{"t2", "anthropic", "on_error", "2026-07-15 09:31 UTC"},
+		},
 	}
-	for _, want := range []string{"TRACE_ID", "t1", "openai", "gpt-4"} {
-		if !strings.Contains(out.String(), want) {
-			t.Errorf("output missing %q:\n%s", want, out.String())
-		}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := stubGateway(t, map[string]http.HandlerFunc{
+				"/admin/logs": jsonHandler(http.StatusOK, tt.body),
+			})
+			cmd, out := newHandlerCmd(t, srv.URL, "table")
+			cmd.Flags().Int("limit", 50, "")
+
+			if err := runLogsList(cmd, nil); err != nil {
+				t.Fatalf("runLogsList: %v", err)
+			}
+			for _, want := range tt.want {
+				if !strings.Contains(out.String(), want) {
+					t.Errorf("output missing %q:\n%s", want, out.String())
+				}
+			}
+		})
 	}
 }
 
 func TestRunProvidersList(t *testing.T) {
 	srv := stubGateway(t, map[string]http.HandlerFunc{
-		"/admin/providers": jsonHandler(http.StatusOK, `[{"name":"openai","model_count":12}]`),
+		"/admin/providers": jsonHandler(http.StatusOK,
+			`[{"name":"openai","models":[{"id":"gpt-4"},{"id":"gpt-4o"}]},{"name":"groq","models":[]}]`),
 	})
 	cmd, out := newHandlerCmd(t, srv.URL, "table")
 
 	if err := runProvidersList(cmd, nil); err != nil {
 		t.Fatalf("runProvidersList: %v", err)
 	}
-	for _, want := range []string{"PROVIDER", "openai", "12"} {
+	for _, want := range []string{"PROVIDER", "openai", "2", "groq", "0"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("output missing %q:\n%s", want, out.String())
 		}

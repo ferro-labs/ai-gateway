@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/ferro-labs/ai-gateway/providers/core"
-	"github.com/ferro-labs/ai-gateway/providers/internal/openaicompat"
+	"github.com/ferro-labs/ai-gateway/providers/core/openaicompat"
 )
 
 // Embed sends an OpenAI-compatible embedding request to Together AI.
@@ -14,7 +14,7 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 	}
 	return openaicompat.PostEmbeddings(ctx, openaicompat.EmbeddingParams{
 		HTTPClient: p.httpClient,
-		URL:        p.baseURL + "/v1/embeddings",
+		URL:        p.baseURL + "/embeddings",
 		Headers:    p.headers(),
 		Label:      "together",
 	}, req)

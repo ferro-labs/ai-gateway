@@ -10,7 +10,7 @@ import (
 
 	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
 	"github.com/ferro-labs/ai-gateway/providers/core"
-	"github.com/ferro-labs/ai-gateway/providers/internal/openaicompat"
+	"github.com/ferro-labs/ai-gateway/providers/core/openaicompat"
 )
 
 // Name is the canonical provider identifier.
@@ -23,6 +23,7 @@ type Provider struct {
 	name           string
 	apiKey         string
 	baseURL        string
+	batchBaseURL   string
 	deploymentName string
 	apiVersion     string
 	httpClient     *http.Client
@@ -30,12 +31,16 @@ type Provider struct {
 
 // Compile-time interface assertions.
 var (
-	_ core.Provider              = (*Provider)(nil)
-	_ core.StreamProvider        = (*Provider)(nil)
-	_ core.ProxiableProvider     = (*Provider)(nil)
-	_ core.NonOpenAIWireProvider = (*Provider)(nil)
-	_ core.EmbeddingProvider     = (*Provider)(nil)
-	_ core.ImageProvider         = (*Provider)(nil)
+	_ core.Provider                = (*Provider)(nil)
+	_ core.StreamProvider          = (*Provider)(nil)
+	_ core.ProxiableProvider       = (*Provider)(nil)
+	_ core.NonOpenAIWireProvider   = (*Provider)(nil)
+	_ core.EmbeddingProvider       = (*Provider)(nil)
+	_ core.ImageProvider           = (*Provider)(nil)
+	_ core.ConfiguredModelProvider = (*Provider)(nil)
+	_ core.TranscriptionProvider   = (*Provider)(nil)
+	_ core.SpeechProvider          = (*Provider)(nil)
+	_ core.BatchProvider           = (*Provider)(nil)
 )
 
 // New creates a new Azure OpenAI provider.
@@ -52,6 +57,7 @@ func New(apiKey, baseURL, deploymentName, apiVersion string) (*Provider, error) 
 		name:           Name,
 		apiKey:         apiKey,
 		baseURL:        baseURL,
+		batchBaseURL:   baseURL + "/openai/v1",
 		deploymentName: deploymentName,
 		apiVersion:     apiVersion,
 		httpClient:     providerhttp.ForProvider(Name),
@@ -79,24 +85,13 @@ func (p *Provider) AuthHeaders() map[string]string {
 	return map[string]string{"api-key": p.apiKey}
 }
 
-// SupportedModels returns the deployment name as the only supported model.
-func (p *Provider) SupportedModels() []string {
+// ConfiguredModels returns the deployment name as the only supported model.
+func (p *Provider) ConfiguredModels() []string {
 	return []string{p.deploymentName}
 }
 
 // SupportsModel returns true for any model — the upstream provider validates model names.
 func (p *Provider) SupportsModel(_ string) bool { return true }
-
-// Models returns structured model metadata.
-func (p *Provider) Models() []core.ModelInfo {
-	return []core.ModelInfo{
-		{
-			ID:      p.deploymentName,
-			Object:  "model",
-			OwnedBy: p.name,
-		},
-	}
-}
 
 func (p *Provider) endpoint() string {
 	return fmt.Sprintf("%s/openai/deployments/%s/chat/completions?api-version=%s",
@@ -104,10 +99,17 @@ func (p *Provider) endpoint() string {
 }
 
 // opEndpoint builds an Azure OpenAI URL for an arbitrary deployment+operation,
-// e.g. op "embeddings" or "images/generations".
-func (p *Provider) opEndpoint(deployment, op string) string {
+// e.g. op "embeddings" or "images/generations". Because a request may choose the
+// deployment (see deploymentFor), the name has to survive as exactly one path
+// segment: empty, dot ("."/"..") and separator-bearing names are rejected —
+// url.PathEscape leaves those intact, so they would otherwise let a request
+// reach a different Azure route with the operator's api-key attached.
+func (p *Provider) opEndpoint(deployment, op string) (string, error) {
+	if deployment == "" || deployment == "." || deployment == ".." || strings.ContainsAny(deployment, `/\`) {
+		return "", fmt.Errorf("azure openai: invalid deployment %q", deployment)
+	}
 	return fmt.Sprintf("%s/openai/deployments/%s/%s?api-version=%s",
-		p.baseURL, url.PathEscape(deployment), op, p.apiVersion)
+		p.baseURL, url.PathEscape(deployment), op, p.apiVersion), nil
 }
 
 // deploymentFor selects the deployment to target for a request. Azure routes

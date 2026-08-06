@@ -5,14 +5,15 @@ import (
 	"testing"
 
 	aigateway "github.com/ferro-labs/ai-gateway"
-	"github.com/ferro-labs/ai-gateway/internal/testutil"
+	"github.com/ferro-labs/ai-gateway/config"
+	"github.com/ferro-labs/ai-gateway/test/testutil"
 )
 
 func TestMain(m *testing.M) {
 	os.Exit(testutil.RunWithEmbeddedCatalog(m.Run))
 }
 
-func newTestGateway(t *testing.T, cfg aigateway.Config) (*aigateway.Gateway, error) {
+func newTestGateway(t *testing.T, cfg config.Config) (*aigateway.Gateway, error) {
 	t.Helper()
 	gw, err := aigateway.New(cfg)
 	if err == nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/ferro-labs/ai-gateway/config"
 	"github.com/ferro-labs/ai-gateway/observability"
 	"github.com/ferro-labs/ai-gateway/providers"
 )
@@ -17,9 +18,9 @@ import (
 //
 //	go test -run=NONE -bench=BenchmarkRoute_TracingOff -benchmem
 func BenchmarkRoute_TracingOff(b *testing.B) {
-	gw, _ := newTestGateway(b, Config{
-		Strategy: StrategyConfig{Mode: ModeSingle},
-		Targets:  []Target{{VirtualKey: "mock"}},
+	gw, _ := newTestGateway(b, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets:  []config.Target{{VirtualKey: "mock"}},
 	})
 
 	gw.SetObservability(observability.NoOp())
@@ -74,9 +75,9 @@ func TestRoute_TracingOff_AllocBaseline(t *testing.T) {
 	ctx := context.Background()
 
 	// gwDefault uses the internal NoOp default — SetObservability never called.
-	gwDefault, _ := newTestGateway(t, Config{
-		Strategy: StrategyConfig{Mode: ModeSingle},
-		Targets:  []Target{{VirtualKey: "mock"}},
+	gwDefault, _ := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets:  []config.Target{{VirtualKey: "mock"}},
 	})
 
 	gwDefault.RegisterProvider(&mockProvider{
@@ -86,9 +87,9 @@ func TestRoute_TracingOff_AllocBaseline(t *testing.T) {
 	})
 
 	// gwNoOp installs NoOp explicitly via SetObservability.
-	gwNoOp, _ := newTestGateway(t, Config{
-		Strategy: StrategyConfig{Mode: ModeSingle},
-		Targets:  []Target{{VirtualKey: "mock"}},
+	gwNoOp, _ := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets:  []config.Target{{VirtualKey: "mock"}},
 	})
 
 	gwNoOp.SetObservability(observability.NoOp())

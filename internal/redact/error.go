@@ -7,14 +7,17 @@ import "sync"
 // error text.
 var shared = sync.OnceValue(DefaultRedactor)
 
-// String returns s with the default policies applied.
+// String returns s with every credential the gateway holds removed by value,
+// then the default policies applied.
 //
-// Redaction is best-effort mitigation, not a guarantee. The default policies
-// recognise a fixed set of credential shapes (see DefaultPolicies); a secret
-// whose format is not among them — for example a provider API key carrying no
-// distinguishing prefix, as issued by Mistral, Together, Cohere, Fireworks, and
-// DeepInfra — passes through unchanged. Treat the result as reduced exposure,
-// not as text proven free of secrets.
+// Value redaction covers the configured credentials exactly, whatever their
+// shape. What remains best-effort is a credential the gateway never saw — one
+// echoed back by an upstream that the operator never configured — which is left
+// to the shape-based policies and to keyword_secret. Every implementer of
+// value-based redaction documents the same residual: a secret that arrives
+// transformed (base64- or URL-encoded, or truncated) is not matched, because
+// only the original literal is known. Treat the result as reduced exposure, not
+// as text proven free of secrets.
 func String(s string) string {
 	return shared().Redact(s)
 }

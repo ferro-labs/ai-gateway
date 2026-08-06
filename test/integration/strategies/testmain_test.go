@@ -7,7 +7,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/ferro-labs/ai-gateway/internal/testutil"
+	"github.com/ferro-labs/ai-gateway/test/testutil"
 )
 
 func TestMain(m *testing.M) {

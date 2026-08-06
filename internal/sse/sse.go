@@ -9,9 +9,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/ferro-labs/ai-gateway/internal/logging"
 	"github.com/ferro-labs/ai-gateway/internal/redact"
 	"github.com/ferro-labs/ai-gateway/internal/streamio"
+	"github.com/ferro-labs/ai-gateway/pkg/logger"
 	"github.com/ferro-labs/ai-gateway/providers"
 )
 
@@ -28,7 +28,15 @@ func SetIdleTimeoutForTest(d time.Duration) func() {
 }
 
 // Write streams SSE chunks from ch to the response writer.
-func Write(ctx context.Context, w http.ResponseWriter, ch <-chan providers.StreamChunk) {
+//
+// cancelStream cancels the context the producer runs under. Write uses it to
+// report WHY it stopped when its own idle bound fires: the producer is torn down
+// either way — the handler returning cancels the request context — but an
+// anonymous cancellation is indistinguishable from the caller hanging up, and a
+// stalled upstream was recorded as the caller's doing because of it. A nil
+// cancelStream keeps that older behaviour for a caller that owns no producer
+// context.
+func Write(ctx context.Context, w http.ResponseWriter, ch <-chan providers.StreamChunk, cancelStream context.CancelCauseFunc) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -39,16 +47,20 @@ func Write(ctx context.Context, w http.ResponseWriter, ch <-chan providers.Strea
 	bw := bufio.NewWriterSize(w, 4096)
 	enc := json.NewEncoder(bw)
 	now := time.Now().Unix()
+	// One normalizer per stream: it holds the id and model seen so far and
+	// which choices have already been given a role delta. See its godoc for
+	// which parts of the OpenAI streaming contract it enforces.
+	var envelope providers.StreamNormalizer
 	idleTimer := time.NewTimer(idleTimeout)
 	defer idleTimer.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
-			logging.FromContext(ctx).Debug("stream response canceled", "error", ctx.Err())
+			logger.Ctx(ctx).Debug("stream response canceled", "error", ctx.Err())
 			return
 		case <-idleTimer.C:
-			logging.FromContext(ctx).Warn("stream response timed out waiting for next chunk", "idle_timeout_ms", idleTimeout.Milliseconds())
+			logger.Ctx(ctx).Warn("stream response timed out waiting for next chunk", "idle_timeout_ms", idleTimeout.Milliseconds())
 			_ = writeAndFlush(ctx, controller, bw, func() error {
 				return writeEvent(bw, enc, map[string]any{
 					"error": map[string]string{
@@ -58,6 +70,12 @@ func Write(ctx context.Context, w http.ResponseWriter, ch <-chan providers.Strea
 					},
 				})
 			})
+			// Strictly after the write: writeAndFlush refuses to write on a
+			// cancelled context, so naming the cause first would silence the one
+			// surface that already reported this correctly — the client's.
+			if cancelStream != nil {
+				cancelStream(streamio.ErrIdleTimeout)
+			}
 			return
 		case chunk, ok := <-ch:
 			if !ok {
@@ -88,6 +106,7 @@ func Write(ctx context.Context, w http.ResponseWriter, ch <-chan providers.Strea
 			if chunk.Created == 0 {
 				chunk.Created = now
 			}
+			envelope.Normalize(&chunk)
 			if !idleTimer.Stop() {
 				select {
 				case <-idleTimer.C:
@@ -100,7 +119,7 @@ func Write(ctx context.Context, w http.ResponseWriter, ch <-chan providers.Strea
 				return writeChunk(bw, enc, &chunk)
 			}); err != nil {
 				if !errors.Is(err, context.Canceled) {
-					logging.FromContext(ctx).Debug("stream response write failed", "error", err)
+					logger.Ctx(ctx).Debug("stream response write failed", "error", err)
 				}
 				return
 			}
@@ -117,6 +136,14 @@ func writeAndFlush(ctx context.Context, controller *http.ResponseController, bw 
 // (once per token delta); taking *providers.StreamChunk instead of the any
 // parameter of writeEvent avoids heap-boxing the chunk on every write.
 func writeChunk(bw *bufio.Writer, enc *json.Encoder, chunk *providers.StreamChunk) error {
+	if chunk.Choices == nil {
+		// choices is an array in the OpenAI schema, never null: a usage-only
+		// terminal frame still carries an empty one, and clients index it
+		// unconditionally. The chunk is borrowed, so normalise a copy.
+		normalized := *chunk
+		normalized.Choices = []providers.StreamChoice{}
+		chunk = &normalized
+	}
 	if _, err := bw.WriteString("data: "); err != nil {
 		return err
 	}

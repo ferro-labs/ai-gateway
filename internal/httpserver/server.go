@@ -33,7 +33,6 @@ func NewServer(addr string, handler http.Handler) *http.Server {
 	return &http.Server{
 		Addr:              addr,
 		Handler:           handler,
-		ConnContext:       tracker.ConnContext,
 		ConnState:         tracker.ConnState,
 		ReadTimeout:       ServerReadTimeout,
 		ReadHeaderTimeout: ServerReadHeaderTimeout,

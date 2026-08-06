@@ -5,8 +5,10 @@ import "fmt"
 // RejectionError indicates a plugin intentionally rejected a request/response:
 // the plugin ran, reached a decision, and that decision was "no". A blocked word,
 // an exhausted rate limit, and a failed auth check are rejections. The mapped
-// HTTP status depends on stage: 400 (429 for rate limiting) before the request,
-// 502 after it; see internal/apierror.RouteErrorDetails for the exact mapping.
+// HTTP status depends on stage and on what was denied: before the request, 400
+// by default, 429 for a rate limit — which a caller can resolve by waiting —
+// and 402 for an exhausted budget, which it cannot; 502 after it. See
+// internal/apierror.RouteErrorDetails for the exact mapping.
 //
 // A plugin that could not reach a decision — because it errored or panicked —
 // produces a FailureError instead. See that type for why the two are distinct.

@@ -1,0 +1,1 @@
+{"error":{"code":404,"message":"models/does-not-exist is not found for API version v1beta, or is not supported for generateContent.","status":"NOT_FOUND"}}

@@ -63,7 +63,15 @@ func TestMatrixParamsAreKnownParams(t *testing.T) {
 func TestAllParamsMatchesRequestParameters(t *testing.T) {
 	// model and messages are the request itself, not tunable parameters: every
 	// provider must express them, so they sit outside the compatibility matrix.
-	notParameters := map[string]bool{"model": true, "messages": true}
+	//
+	// stream and stream_options are transport controls the gateway resolves
+	// above the provider layer — internal/streamwrap applies the caller's
+	// include_usage on every routed stream, on every provider — so no provider
+	// answer about them exists to publish. See the AllParams doc comment.
+	notParameters := map[string]bool{
+		"model": true, "messages": true,
+		"stream": true, "stream_options": true,
+	}
 
 	requestParams := make(map[string]bool)
 	rt := reflect.TypeFor[core.Request]()

@@ -3,19 +3,15 @@ package aigateway
 import (
 	"fmt"
 	"maps"
-	"regexp"
 
+	"github.com/ferro-labs/ai-gateway/config"
+	"github.com/ferro-labs/ai-gateway/internal/latency"
 	"github.com/ferro-labs/ai-gateway/internal/strategies"
+	"github.com/ferro-labs/ai-gateway/models"
 	"github.com/ferro-labs/ai-gateway/providers"
 )
 
-// Strategy construction from Gateway config plus the content-condition helpers
-// used by conditional / content-based / A-B-test routing.
-
-type streamingContentCondition struct {
-	ContentCondition
-	re *regexp.Regexp
-}
+// Strategy construction from Gateway config.
 
 // getStrategy lazily builds the strategy from config and registered providers.
 // Circuit breakers are built once and applied in the provider lookup closure.
@@ -29,14 +25,25 @@ func (g *Gateway) getStrategy() (strategies.Strategy, error) {
 	g.ensureCircuitBreakersLocked()
 	g.ensureProviderLimitersLocked()
 
-	// Snapshot both maps under the write lock already held. The lookup closure
-	// runs inside Strategy.Execute with no lock held, so capturing local copies
-	// here is the only safe access pattern.
+	// Snapshot every map the lookup closure reads, under the write lock already
+	// held. The closure runs inside Strategy.SelectTargets with no lock held, so
+	// capturing local copies here is the only safe access pattern.
 	// maps.Clone is a shallow copy — safe because map values (Provider, *CB) are
 	// themselves immutable references; we never mutate through them in the closure.
-	providerSnap := maps.Clone(g.providers)
 	cbSnap := maps.Clone(g.circuitBreakers)
 	limSnap := maps.Clone(g.limiters)
+
+	// The provider snapshot holds each provider under the routing-index view of
+	// its model set: every strategy selects a target on SupportsModel, and that
+	// answer must cover the same models FindByModel admits and /v1/models
+	// advertises — a provider's own SupportsModel is often much narrower.
+	// Building the views here rather than per lookup keeps the request path
+	// allocation-free, and the snapshot is rebuilt whenever the index is,
+	// because both are replaced under the same lock that clears g.strategy.
+	providerSnap := make(map[string]providers.Provider, len(g.providers))
+	for name, p := range g.providers {
+		providerSnap[name] = withIndexedModels(name, p, g.modelIndex.exactProviders)
+	}
 
 	// Provider lookup with transparent circuit-breaker and concurrency-limit
 	// decoration.
@@ -60,128 +67,84 @@ func (g *Gateway) getStrategy() (strategies.Strategy, error) {
 		}
 	}
 
-	var s strategies.Strategy
-	switch g.config.Strategy.Mode {
-	case ModeSingle, "":
-		if len(targets) == 0 {
-			return nil, fmt.Errorf("no targets configured for single strategy")
-		}
-		s = strategies.NewSingle(targets[0], lookup)
-	case ModeFallback:
-		fb := strategies.NewFallback(targets, lookup)
-		for _, t := range g.config.Targets {
-			if t.Retry == nil {
-				continue
-			}
-			fb.WithTargetRetry(t.VirtualKey, t.Retry.Attempts, t.Retry.OnStatusCodes, t.Retry.InitialBackoffMs)
-		}
-		s = fb
-	case ModeLoadBalance:
-		s = strategies.NewLoadBalance(targets, lookup)
-	case ModeLatency:
-		if len(targets) == 0 {
-			return nil, fmt.Errorf("no targets configured for least-latency strategy")
-		}
-		s = strategies.NewLeastLatency(targets, lookup, g.latencyTracker)
-	case ModeCostOptimized:
-		if len(targets) == 0 {
-			return nil, fmt.Errorf("no targets configured for cost-optimized strategy")
-		}
-		s = strategies.NewCostOptimized(targets, lookup, g.catalog, g.config.Strategy.UnpricedStrategy)
-	case ModeConditional:
-		if len(g.config.Strategy.Conditions) == 0 {
-			return nil, fmt.Errorf("no conditions configured for conditional strategy")
-		}
-		if len(targets) == 0 {
-			return nil, fmt.Errorf("no targets configured for conditional strategy")
-		}
-		var rules []strategies.ConditionRule
-		for _, cond := range g.config.Strategy.Conditions {
+	s, err := buildStrategy(g.config.Strategy, targets, lookup, g.latencyTracker, g.catalog)
+	if err != nil {
+		return nil, err
+	}
+	g.strategy = s
+	return s, nil
+}
+
+// buildStrategy maps a validated StrategyConfig onto a strategy.
+//
+// Every error it can return is one config.ValidateConfig has already rejected,
+// which is the point: strategies are built LAZILY, on the first request that
+// needs one, so an error here would be a 500 on a request no provider was ever
+// asked to serve. Construction stays lazy because it must — the provider lookup
+// snapshots the registry, and providers are registered after New returns — so
+// what makes that safe is validation being total over these failures rather than
+// construction moving earlier. TestValidateConfigCoversStrategyConstruction
+// holds the two in step.
+func buildStrategy(
+	cfg config.StrategyConfig,
+	targets []strategies.Target,
+	lookup strategies.ProviderLookup,
+	tracker *latency.Tracker,
+	catalog models.Catalog,
+) (strategies.Strategy, error) {
+	if len(targets) == 0 {
+		return nil, fmt.Errorf("no targets configured for %s strategy", cfg.Mode)
+	}
+	switch cfg.Mode {
+	case config.ModeSingle, "":
+		return strategies.NewSingle(targets[0]), nil
+	case config.ModeFallback:
+		return strategies.NewFallback(targets), nil
+	case config.ModeLoadBalance:
+		return strategies.NewLoadBalance(targets, lookup), nil
+	case config.ModeLatency:
+		return strategies.NewLeastLatency(targets, lookup, tracker), nil
+	case config.ModeCostOptimized:
+		return strategies.NewCostOptimized(targets, lookup, catalog, cfg.UnpricedStrategy), nil
+	case config.ModeConditional:
+		rules := make([]strategies.ConditionRule, 0, len(cfg.Conditions))
+		for _, cond := range cfg.Conditions {
 			rules = append(rules, strategies.ConditionRule{
 				Key:    cond.Key,
 				Value:  cond.Value,
 				Target: strategies.Target{VirtualKey: cond.TargetKey},
 			})
 		}
-		s = strategies.NewConditional(rules, targets[0], lookup).WithRoutingTargets(targets)
-	case ModeContentBased:
-		cbs, err := g.buildContentBasedStrategy(targets, lookup)
+		return strategies.NewConditional(rules, targets[0]).WithRoutingTargets(targets), nil
+	case config.ModeContentBased:
+		rules := make([]strategies.ContentRule, 0, len(cfg.ContentConditions))
+		for _, cc := range cfg.ContentConditions {
+			rules = append(rules, strategies.ContentRule{
+				Type:   strategies.ContentConditionType(cc.Type),
+				Value:  cc.Value,
+				Target: strategies.Target{VirtualKey: cc.TargetKey},
+			})
+		}
+		cb, err := strategies.NewContentBased(rules, targets[0])
 		if err != nil {
 			return nil, err
 		}
-		s = cbs
-	case ModeABTest:
-		abt, err := g.buildABTestStrategy(targets, lookup)
+		return cb.WithRoutingTargets(targets), nil
+	case config.ModeABTest:
+		variants := make([]strategies.ABTestVariant, 0, len(cfg.ABVariants))
+		for _, v := range cfg.ABVariants {
+			variants = append(variants, strategies.ABTestVariant{
+				Target: strategies.Target{VirtualKey: v.TargetKey},
+				Weight: v.Weight,
+				Label:  v.Label,
+			})
+		}
+		abt, err := strategies.NewABTest(variants, lookup)
 		if err != nil {
 			return nil, err
 		}
-		s = abt
+		return abt.WithRoutingTargets(targets), nil
 	default:
-		return nil, fmt.Errorf("unknown strategy mode: %s", g.config.Strategy.Mode)
+		return nil, fmt.Errorf("unknown strategy mode: %s", cfg.Mode)
 	}
-
-	g.strategy = s
-	return s, nil
-}
-
-// buildContentBasedStrategy constructs a ContentBased strategy from the gateway config.
-func (g *Gateway) buildContentBasedStrategy(targets []strategies.Target, lookup strategies.ProviderLookup) (strategies.Strategy, error) {
-	if len(g.config.Strategy.ContentConditions) == 0 {
-		return nil, fmt.Errorf("no content_conditions configured for content-based strategy")
-	}
-	if len(targets) == 0 {
-		return nil, fmt.Errorf("no targets configured for content-based strategy")
-	}
-	var rules []strategies.ContentRule
-	for _, cc := range g.config.Strategy.ContentConditions {
-		rules = append(rules, strategies.ContentRule{
-			Type:   strategies.ContentConditionType(cc.Type),
-			Value:  cc.Value,
-			Target: strategies.Target{VirtualKey: cc.TargetKey},
-		})
-	}
-	cb, err := strategies.NewContentBased(rules, targets[0], lookup)
-	if err != nil {
-		return nil, err
-	}
-	return cb.WithRoutingTargets(targets), nil
-}
-
-// buildABTestStrategy constructs an ABTest strategy from the gateway config.
-func (g *Gateway) buildABTestStrategy(targets []strategies.Target, lookup strategies.ProviderLookup) (strategies.Strategy, error) {
-	if len(g.config.Strategy.ABVariants) == 0 {
-		return nil, fmt.Errorf("no ab_variants configured for ab-test strategy")
-	}
-	var variants []strategies.ABTestVariant
-	for _, v := range g.config.Strategy.ABVariants {
-		variants = append(variants, strategies.ABTestVariant{
-			Target: strategies.Target{VirtualKey: v.TargetKey},
-			Weight: v.Weight,
-			Label:  v.Label,
-		})
-	}
-	abt, err := strategies.NewABTest(variants, lookup)
-	if err != nil {
-		return nil, err
-	}
-	return abt.WithRoutingTargets(targets), nil
-}
-
-func compileStreamingContentConditions(mode StrategyMode, conditions []ContentCondition) ([]streamingContentCondition, error) {
-	if mode != ModeContentBased {
-		return nil, nil
-	}
-	compiled := make([]streamingContentCondition, len(conditions))
-	for i, cond := range conditions {
-		compiled[i].ContentCondition = cond
-		if cond.Type != "prompt_regex" {
-			continue
-		}
-		re, err := regexp.Compile(cond.Value)
-		if err != nil {
-			return nil, fmt.Errorf("streaming content-based routing: invalid regex %q in rule %d: %w", cond.Value, i, err)
-		}
-		compiled[i].re = re
-	}
-	return compiled, nil
 }

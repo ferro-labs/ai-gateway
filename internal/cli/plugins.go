@@ -10,6 +10,7 @@ import (
 var PluginsCmd = &cobra.Command{
 	Use:   "plugins",
 	Short: "List plugins registered in a running gateway instance",
+	Args:  cobra.NoArgs,
 	RunE:  runPlugins,
 }
 

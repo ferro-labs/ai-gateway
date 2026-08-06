@@ -1,0 +1,26 @@
+# Prometheus scrape config for the fullstack observability demo.
+#
+# The gateway's /metrics endpoint requires a bearer token carrying the read_only
+# or admin scope. The demo MASTER_KEY (an admin credential) is used here — a
+# throwaway sentinel defined in compose.fullstack.yaml, not a real secret. In a
+# real deployment, mint a dedicated read_only key with POST /admin/keys and use
+# that instead.
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: ferro-ai-gateway
+    metrics_path: /metrics
+    scheme: http
+    authorization:
+      type: Bearer
+      credentials: fgw_fullstack_demo_master_key
+    static_configs:
+      - targets: ['gateway:8080']
+        labels:
+          service: ferro-ai-gateway
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']

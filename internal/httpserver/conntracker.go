@@ -1,27 +1,14 @@
 package httpserver
 
 import (
-	"context"
 	"net"
 	"net/http"
 	"sync"
-	"sync/atomic"
 
-	"github.com/ferro-labs/ai-gateway/internal/metrics"
+	"github.com/ferro-labs/ai-gateway/pkg/metrics"
 )
 
-type connContextKey struct{}
-
-// ConnMetadata holds per-connection observability data stored in the request context.
-type ConnMetadata struct {
-	ID         uint64
-	LocalAddr  string
-	RemoteAddr string
-}
-
 type connTracker struct {
-	nextID atomic.Uint64
-
 	mu     sync.Mutex
 	states map[net.Conn]http.ConnState
 }
@@ -30,16 +17,6 @@ func newConnTracker() *connTracker {
 	return &connTracker{
 		states: make(map[net.Conn]http.ConnState),
 	}
-}
-
-// ConnContext attaches a ConnMetadata to the context for each new connection.
-func (t *connTracker) ConnContext(ctx context.Context, conn net.Conn) context.Context {
-	meta := ConnMetadata{
-		ID:         t.nextID.Add(1),
-		LocalAddr:  conn.LocalAddr().String(),
-		RemoteAddr: conn.RemoteAddr().String(),
-	}
-	return context.WithValue(ctx, connContextKey{}, meta)
 }
 
 // ConnState records state transitions and updates Prometheus gauges/counters.
@@ -67,12 +44,6 @@ func (t *connTracker) observe(conn net.Conn, state http.ConnState) {
 		metrics.ServerConnectionTransitionsTotal.WithLabelValues(connStateLabel(state)).Inc()
 		t.states[conn] = state
 	}
-}
-
-// ConnMetadataFromContext extracts connection metadata stored by ConnContext.
-func ConnMetadataFromContext(ctx context.Context) (ConnMetadata, bool) {
-	meta, ok := ctx.Value(connContextKey{}).(ConnMetadata)
-	return meta, ok
 }
 
 func incrementConnectionGauge(state http.ConnState) {

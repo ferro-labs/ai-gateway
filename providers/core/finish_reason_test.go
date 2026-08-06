@@ -17,6 +17,8 @@ func TestNormalizeFinishReason(t *testing.T) {
 
 		// Bedrock Titan (uppercase completionReason)
 		{"titan FINISH", "FINISH", "stop"},
+		{"titan FINISHED", "FINISHED", "stop"},
+		{"titan STOP_CRITERIA_MET", "STOP_CRITERIA_MET", "stop"},
 		{"titan LENGTH", "LENGTH", "length"},
 		{"titan CONTENT_FILTERED", "CONTENT_FILTERED", "content_filter"},
 

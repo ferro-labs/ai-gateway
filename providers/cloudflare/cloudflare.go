@@ -9,7 +9,7 @@ import (
 
 	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
 	"github.com/ferro-labs/ai-gateway/providers/core"
-	"github.com/ferro-labs/ai-gateway/providers/internal/openaicompat"
+	"github.com/ferro-labs/ai-gateway/providers/core/openaicompat"
 )
 
 const (
@@ -33,6 +33,7 @@ var (
 	_ core.StreamProvider    = (*Provider)(nil)
 	_ core.EmbeddingProvider = (*Provider)(nil)
 	_ core.ProxiableProvider = (*Provider)(nil)
+	_ core.AnyModelProvider  = (*Provider)(nil)
 )
 
 // New creates a new Cloudflare Workers AI provider.
@@ -40,12 +41,11 @@ func New(apiKey, accountID, baseURL string) (*Provider, error) {
 	if strings.TrimSpace(accountID) == "" && strings.TrimSpace(baseURL) == "" {
 		return nil, fmt.Errorf("cloudflare: accountID or baseURL is required")
 	}
-	baseURL = strings.TrimSpace(baseURL)
-	if baseURL == "" {
-		baseURL = fmt.Sprintf(defaultBaseURL, strings.TrimSpace(accountID))
-	}
-	baseURL = strings.TrimRight(baseURL, "/")
-	if err := core.ValidateBaseURL(Name, baseURL); err != nil {
+	// When baseURL is set, defaultRoot is consulted only for its trailing
+	// version segment, so an empty account slot in it is harmless.
+	defaultRoot := fmt.Sprintf(defaultBaseURL, strings.TrimSpace(accountID))
+	baseURL, err := core.ResolveAPIRoot(Name, baseURL, defaultRoot)
+	if err != nil {
 		return nil, err
 	}
 	return &Provider{
@@ -67,24 +67,16 @@ func (p *Provider) AuthHeaders() map[string]string {
 	return map[string]string{"Authorization": "Bearer " + p.apiKey}
 }
 
-// SupportedModels returns a static list of known Cloudflare Workers AI models.
-func (p *Provider) SupportedModels() []string {
-	return []string{
-		"@cf/meta/llama-3.1-8b-instruct",
-		"@cf/openai/gpt-oss-120b",
-		"@cf/baai/bge-large-en-v1.5",
-		"@cf/meta/llama-3.2-3b-instruct",
-		"@cf/meta/llama-4-scout-17b-16e-instruct",
-	}
-}
-
 // SupportsModel returns true for any Cloudflare model identifier.
+// Advisory only; see core.Provider.
 func (p *Provider) SupportsModel(_ string) bool { return true }
 
-// Models returns structured model metadata.
-func (p *Provider) Models() []core.ModelInfo {
-	return core.ModelsFromList(p.name, p.SupportedModels())
-}
+// ServesAnyModel declares core.AnyModelProvider. Workers AI model ids (@cf/…)
+// turn over faster than a catalog release and the provider enumerates none of
+// them, so the index would otherwise serve only the handful the catalog carries.
+// Narrowing this to the @cf/ namespace is the upgrade path if the declaration
+// ever proves too wide.
+func (p *Provider) ServesAnyModel() {}
 
 // headers returns the auth + content-type headers for direct API calls.
 func (p *Provider) headers() map[string]string {
@@ -116,6 +108,9 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 
 // Embed sends an OpenAI-compatible embedding request to Cloudflare Workers AI.
 func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.EmbeddingResponse, error) {
+	if err := core.ValidateEmbeddingEncodingFormat(req.EncodingFormat); err != nil {
+		return nil, err
+	}
 	return openaicompat.PostEmbeddings(ctx, openaicompat.EmbeddingParams{
 		HTTPClient: p.httpClient,
 		URL:        p.baseURL + "/embeddings",

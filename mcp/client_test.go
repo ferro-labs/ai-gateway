@@ -1,0 +1,307 @@
+package mcp
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"sync"
+	"testing"
+	"time"
+
+	mcpgo "github.com/mark3labs/mcp-go/mcp"
+
+	"github.com/ferro-labs/ai-gateway/internal/httpclient"
+)
+
+// buildMockMCPServer creates an httptest.Server that speaks a minimal MCP
+// Streamable HTTP protocol. It handles:
+//   - POST / with method "initialize"    → returns ServerInfo
+//   - POST / with method "tools/list"    → returns two tools
+//   - POST / with method "tools/call"    → returns a text ContentBlock
+func buildMockMCPServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	var sessionMu sync.Mutex
+	sessionIDs := map[string]bool{}
+
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req JSONRPCRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+
+		switch req.Method {
+		case "initialize":
+			sid := "test-session-123"
+			sessionMu.Lock()
+			sessionIDs[sid] = true
+			sessionMu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Mcp-Session-Id", sid)
+			resp := JSONRPCResponse{
+				JSONRPC: "2.0",
+				ID:      req.ID,
+				Result:  initializeResult("mock", "0.1"),
+			}
+			_ = json.NewEncoder(w).Encode(resp)
+
+		case "tools/list":
+			tools := []Tool{
+				{Name: "read_file", Description: "Read a file"},
+				{Name: "write_file", Description: "Write a file"},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(JSONRPCResponse{
+				JSONRPC: "2.0",
+				ID:      req.ID,
+				Result:  mustMarshal(map[string]any{"tools": tools}),
+			})
+
+		case "tools/call":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(JSONRPCResponse{
+				JSONRPC: "2.0",
+				ID:      req.ID,
+				Result:  mustMarshal(ToolCallResult{Content: []ContentBlock{{Type: "text", Text: "hello"}}}),
+			})
+
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+}
+
+func mustMarshal(v any) json.RawMessage {
+	b, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	return b
+}
+
+// initializeResult builds an initialize result shaped the way a server sends
+// one: the server's identity nested under serverInfo, with protocolVersion and
+// capabilities beside it rather than inside it.
+//
+// Every stub in this package answers the handshake through here. Marshalling
+// the gateway's own flattened ServerInfo instead put name and version at the top
+// level, which is a shape no server produces — so a stub could agree with a
+// decoder that read the wrong level and neither would say so.
+func initializeResult(name, version string) json.RawMessage {
+	return mustMarshal(map[string]any{
+		"protocolVersion": mcpgo.LATEST_PROTOCOL_VERSION,
+		"capabilities":    map[string]any{"tools": map[string]any{}},
+		"serverInfo":      map[string]string{"name": name, "version": version},
+	})
+}
+
+// ---------------------------------------------------------------------------
+
+func TestClientInitialize(t *testing.T) {
+	srv := buildMockMCPServer(t)
+	defer srv.Close()
+
+	c := NewClient(srv.URL, nil, 5*time.Second)
+	info, err := c.Initialize(context.Background())
+	if err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if info.Name != "mock" {
+		t.Errorf("unexpected server name: %q", info.Name)
+	}
+	if c.getSessionID() == "" {
+		t.Error("expected session ID to be set after initialize")
+	}
+}
+
+// TestClientInitialize_ReadsNestedServerInfo pins the decode against a literal
+// initialize result rather than one this package fabricates, so the two
+// transports report a server's identity the same way: the HTTP client used to
+// read name and version from the top level of the result, where no server puts
+// them, and reported every HTTP server as nameless while stdio servers reported
+// theirs.
+func TestClientInitialize_ReadsNestedServerInfo(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req JSONRPCRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%v,"result":{
+			"protocolVersion":%q,
+			"capabilities":{"tools":{"listChanged":true}},
+			"serverInfo":{"name":"everything","version":"1.2.3"}
+		}}`, req.ID, mcpgo.LATEST_PROTOCOL_VERSION)
+	}))
+	defer srv.Close()
+
+	info, err := NewClient(srv.URL, nil, 5*time.Second).Initialize(context.Background())
+	if err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if info.Name != "everything" || info.Version != "1.2.3" {
+		t.Errorf("ServerInfo name/version = %q/%q, want the nested serverInfo object's %q/%q",
+			info.Name, info.Version, "everything", "1.2.3")
+	}
+	// The fields that really are top-level must keep coming from the top level.
+	if info.ProtocolVersion != mcpgo.LATEST_PROTOCOL_VERSION {
+		t.Errorf("ProtocolVersion = %q, want %q", info.ProtocolVersion, mcpgo.LATEST_PROTOCOL_VERSION)
+	}
+	if info.Capabilities.Tools == nil || !info.Capabilities.Tools.ListChanged {
+		t.Errorf("Capabilities = %+v, want the server's advertised tools capability", info.Capabilities)
+	}
+}
+
+func TestClientListTools(t *testing.T) {
+	srv := buildMockMCPServer(t)
+	defer srv.Close()
+
+	c := NewClient(srv.URL, nil, 5*time.Second)
+	if _, err := c.Initialize(context.Background()); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	tools, err := c.ListTools(context.Background())
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	if len(tools) != 2 {
+		t.Fatalf("expected 2 tools, got %d", len(tools))
+	}
+	if tools[0].Name != "read_file" {
+		t.Errorf("unexpected tool name: %q", tools[0].Name)
+	}
+}
+
+func TestClientCallTool(t *testing.T) {
+	srv := buildMockMCPServer(t)
+	defer srv.Close()
+
+	c := NewClient(srv.URL, nil, 5*time.Second)
+	if _, err := c.Initialize(context.Background()); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	result, err := c.CallTool(context.Background(), "read_file", json.RawMessage(`{"path":"/tmp/x"}`))
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if len(result.Content) == 0 || result.Content[0].Text != "hello" {
+		t.Errorf("unexpected result: %+v", result)
+	}
+}
+
+// The client advertises Accept: text/event-stream, so a Streamable HTTP server
+// that takes it at its word and answers with SSE must not leave the handshake
+// stuck on a body the client cannot read.
+func TestClientReadsSSEResponse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req JSONRPCRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+		w.Header().Set("Mcp-Session-Id", "sse-session")
+
+		// A keep-alive comment and a server-initiated notification ahead of the
+		// answer: neither responds to anything the gateway asked, so neither may
+		// be mistaken for the response.
+		_, _ = io.WriteString(w, ": keep-alive\n\n")
+		_, _ = io.WriteString(w, "event: message\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\"}\n\n")
+		_, _ = fmt.Fprintf(w, "event: message\ndata: %s\n\n", mustMarshal(JSONRPCResponse{
+			JSONRPC: "2.0",
+			ID:      req.ID,
+			Result:  initializeResult("sse-mock", "1"),
+		}))
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, nil, 5*time.Second)
+	info, err := c.Initialize(context.Background())
+	if err != nil {
+		t.Fatalf("Initialize against a server answering with SSE: %v", err)
+	}
+	if info.Name != "sse-mock" {
+		t.Errorf("unexpected server name: %q", info.Name)
+	}
+	if c.getSessionID() != "sse-session" {
+		t.Errorf("session ID = %q, want it taken from the SSE response headers", c.getSessionID())
+	}
+}
+
+func TestClientHTTPError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, nil, 5*time.Second)
+	_, err := c.Initialize(context.Background())
+	if err == nil {
+		t.Fatal("expected error for HTTP 503, got nil")
+	}
+}
+
+func TestClientSessionIDPropagation(t *testing.T) {
+	var receivedSID string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedSID = r.Header.Get("Mcp-Session-Id")
+		var req JSONRPCRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "application/json")
+		if req.Method == "initialize" {
+			w.Header().Set("Mcp-Session-Id", "propagated-sid")
+			_ = json.NewEncoder(w).Encode(JSONRPCResponse{
+				JSONRPC: "2.0",
+				ID:      req.ID,
+				Result:  initializeResult("x", "1"),
+			})
+			return
+		}
+		// second request
+		_ = json.NewEncoder(w).Encode(JSONRPCResponse{
+			JSONRPC: "2.0",
+			ID:      req.ID,
+			Result:  mustMarshal(map[string]any{"tools": []Tool{}}),
+		})
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, nil, 5*time.Second)
+	if _, err := c.Initialize(context.Background()); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	receivedSID = "" // reset before second request
+	_, _ = c.ListTools(context.Background())
+	if receivedSID != "propagated-sid" {
+		t.Errorf("expected session ID to be sent on subsequent calls, got %q", receivedSID)
+	}
+}
+
+func TestClientConcurrentSafety(t *testing.T) {
+	srv := buildMockMCPServer(t)
+	defer srv.Close()
+
+	c := NewClient(srv.URL, nil, 5*time.Second)
+	if _, err := c.Initialize(context.Background()); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = c.ListTools(context.Background())
+		}()
+	}
+	wg.Wait()
+}
+
+func TestNewClient_UsesSharedTransport(t *testing.T) {
+	c := NewClient("http://example.com", nil, 5*time.Second)
+	if !httpclient.UsesSharedTransport(c.httpClient.Transport) {
+		t.Fatalf("transport %T does not use shared transport", c.httpClient.Transport)
+	}
+	if c.httpClient.Timeout != 5*time.Second {
+		t.Fatalf("timeout = %v, want %v", c.httpClient.Timeout, 5*time.Second)
+	}
+}

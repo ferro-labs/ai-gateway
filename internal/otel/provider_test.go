@@ -7,6 +7,9 @@ import (
 	"testing"
 
 	"github.com/ferro-labs/ai-gateway/observability"
+	"github.com/ferro-labs/ai-gateway/pkg/metrics"
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -406,4 +409,41 @@ func assertAttrs(t *testing.T, got []attribute.KeyValue, want map[string]attribu
 			t.Errorf("attribute %q = %q, want %q", k, gv.String(), v.String())
 		}
 	}
+}
+
+// TestRecordEvent_IncrementsDropMetricWhenQueueFull pins OBS-009: a dropped
+// exporter event is countable, not merely logged at every 64th occurrence.
+//
+// The queue is sized 1 and no worker is started, so the second event has
+// nowhere to go — deterministic, unlike filling the real 1024-slot queue
+// against a draining worker.
+func TestRecordEvent_IncrementsDropMetricWhenQueueFull(t *testing.T) {
+	const subject = "gateway.request.completed"
+	counter := metrics.ObservabilityEventsDroppedTotal.WithLabelValues(subject)
+	before := counterValue(t, counter)
+
+	p := &otelProvider{}
+	p.mu.Lock()
+	p.eventQ = make(chan observability.Event, 1)
+	p.mu.Unlock()
+
+	evt := observability.Event{Subject: subject}
+	p.RecordEvent(context.Background(), evt) // fills the queue
+	p.RecordEvent(context.Background(), evt) // dropped
+
+	if delta := counterValue(t, counter) - before; delta != 1 {
+		t.Fatalf("dropped observability event metric delta = %v, want 1", delta)
+	}
+	if n := p.dropCount.Load(); n != 1 {
+		t.Fatalf("dropCount = %d, want 1", n)
+	}
+}
+
+func counterValue(t *testing.T, c prometheus.Counter) float64 {
+	t.Helper()
+	m := &dto.Metric{}
+	if err := c.Write(m); err != nil {
+		t.Fatalf("failed to read counter value: %v", err)
+	}
+	return m.GetCounter().GetValue()
 }

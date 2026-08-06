@@ -1,0 +1,193 @@
+{
+  "uid": "ferro-ai-gateway",
+  "id": null,
+  "title": "Ferro AI Gateway — Overview",
+  "tags": ["ferro", "ai-gateway", "llm"],
+  "timezone": "browser",
+  "style": "dark",
+  "schemaVersion": 39,
+  "version": 2,
+  "refresh": "5s",
+  "time": { "from": "now-15m", "to": "now" },
+  "links": [
+    { "title": "Jaeger traces", "type": "link", "icon": "external link", "url": "http://localhost:16686/search?service=ferrogw", "targetBlank": true }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "provider", "label": "Provider", "type": "query",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "definition": "label_values(gateway_requests_total, provider)",
+        "query": { "qryType": 1, "query": "label_values(gateway_requests_total, provider)", "refId": "PrometheusVariableQueryEditor-VariableQuery" },
+        "includeAll": true, "allValue": ".*", "multi": true,
+        "current": { "text": "All", "value": "$__all", "selected": true },
+        "refresh": 2, "sort": 1, "options": [], "hide": 0
+      },
+      {
+        "name": "model", "label": "Model", "type": "query",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "definition": "label_values(gateway_requests_total, model)",
+        "query": { "qryType": 1, "query": "label_values(gateway_requests_total, model)", "refId": "PrometheusVariableQueryEditor-VariableQuery" },
+        "includeAll": true, "allValue": ".*", "multi": true,
+        "current": { "text": "All", "value": "$__all", "selected": true },
+        "refresh": 2, "sort": 1, "options": [], "hide": 0
+      }
+    ]
+  },
+  "annotations": { "list": [] },
+  "panels": [
+    { "type": "row", "id": 1, "title": "Golden signals", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 } },
+    {
+      "type": "stat", "id": 2, "title": "Request rate", "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "reqps", "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "blue", "value": null } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "" }, "colorMode": "value", "graphMode": "area", "textMode": "auto" },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(rate(gateway_requests_total{provider=~\"$provider\",model=~\"$model\"}[1m]))" } ]
+    },
+    {
+      "type": "stat", "id": 3, "title": "Success rate", "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "percent", "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "orange", "value": 90 }, { "color": "green", "value": 98 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "" }, "colorMode": "background", "graphMode": "area", "textMode": "auto" },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "100 * sum(rate(gateway_requests_total{status=\"success\",provider=~\"$provider\",model=~\"$model\"}[5m])) / sum(rate(gateway_requests_total{provider=~\"$provider\",model=~\"$model\"}[5m]))" } ]
+    },
+    {
+      "type": "stat", "id": 4, "title": "Error rate", "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "percent", "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "orange", "value": 2 }, { "color": "red", "value": 10 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "" }, "colorMode": "background", "graphMode": "area", "textMode": "auto" },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "100 * sum(rate(gateway_requests_total{status=~\"error|rejected\",provider=~\"$provider\",model=~\"$model\"}[5m])) / sum(rate(gateway_requests_total{provider=~\"$provider\",model=~\"$model\"}[5m]))" } ]
+    },
+    {
+      "type": "stat", "id": 5, "title": "Total cost", "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "currencyUSD", "decimals": 4, "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "purple", "value": null } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "" }, "colorMode": "value", "graphMode": "area", "textMode": "auto" },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(gateway_request_cost_usd_total{provider=~\"$provider\",model=~\"$model\"})" } ]
+    },
+
+    { "type": "row", "id": 6, "title": "Providers", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 } },
+    {
+      "type": "timeseries", "id": 7, "title": "Request calls by provider", "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 10 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum by (provider) (rate(gateway_requests_total{provider=~\"$provider\",model=~\"$model\"}[1m]))", "legendFormat": "{{provider}}" } ]
+    },
+    {
+      "type": "timeseries", "id": 8, "title": "p95 latency by provider", "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "drawStyle": "line", "fillOpacity": 0 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "histogram_quantile(0.95, sum by (le, provider) (rate(gateway_request_duration_seconds_bucket{provider=~\"$provider\",model=~\"$model\"}[5m])))", "legendFormat": "{{provider}}" } ]
+    },
+    {
+      "type": "timeseries", "id": 9, "title": "Cost rate by provider", "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
+      "fieldConfig": { "defaults": { "unit": "currencyUSD", "decimals": 6, "custom": { "drawStyle": "line", "fillOpacity": 10 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum by (provider) (rate(gateway_request_cost_usd_total{provider=~\"$provider\",model=~\"$model\"}[5m]))", "legendFormat": "{{provider}}" } ]
+    },
+    {
+      "type": "timeseries", "id": 10, "title": "Errors by provider", "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "bars", "fillOpacity": 60, "stacking": { "mode": "normal", "group": "A" } } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum by (provider) (rate(gateway_provider_errors_total{provider=~\"$provider\"}[5m]))", "legendFormat": "{{provider}}" } ]
+    },
+
+    { "type": "row", "id": 11, "title": "Traffic", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 22 } },
+    {
+      "type": "timeseries", "id": 12, "title": "Request rate by status", "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 23 },
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 25, "stacking": { "mode": "normal", "group": "A" } } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum by (status) (rate(gateway_requests_total{provider=~\"$provider\",model=~\"$model\"}[1m]))", "legendFormat": "{{status}}" } ]
+    },
+    {
+      "type": "timeseries", "id": 13, "title": "Request rate by model", "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 23 },
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 15 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum by (model) (rate(gateway_requests_total{status=\"success\",provider=~\"$provider\",model=~\"$model\"}[1m]))", "legendFormat": "{{model}}" } ]
+    },
+
+    { "type": "row", "id": 14, "title": "Latency", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 31 } },
+    {
+      "type": "timeseries", "id": 15, "title": "Latency percentiles", "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 32 },
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "drawStyle": "line", "fillOpacity": 10 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "histogram_quantile(0.50, sum by (le) (rate(gateway_request_duration_seconds_bucket{provider=~\"$provider\",model=~\"$model\"}[5m])))", "legendFormat": "p50" },
+        { "refId": "B", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "histogram_quantile(0.95, sum by (le) (rate(gateway_request_duration_seconds_bucket{provider=~\"$provider\",model=~\"$model\"}[5m])))", "legendFormat": "p95" },
+        { "refId": "C", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "histogram_quantile(0.99, sum by (le) (rate(gateway_request_duration_seconds_bucket{provider=~\"$provider\",model=~\"$model\"}[5m])))", "legendFormat": "p99" }
+      ]
+    },
+    {
+      "type": "timeseries", "id": 16, "title": "Average latency by model", "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 32 },
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "drawStyle": "line", "fillOpacity": 10 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum by (model) (rate(gateway_request_duration_seconds_sum{provider=~\"$provider\",model=~\"$model\"}[5m])) / sum by (model) (rate(gateway_request_duration_seconds_count{provider=~\"$provider\",model=~\"$model\"}[5m]))", "legendFormat": "{{model}}" } ]
+    },
+
+    { "type": "row", "id": 17, "title": "Tokens & cost", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 40 } },
+    {
+      "type": "timeseries", "id": 18, "title": "Token throughput", "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 41 },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 20 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(rate(gateway_tokens_input_total{provider=~\"$provider\",model=~\"$model\"}[1m]))", "legendFormat": "input tokens/s" },
+        { "refId": "B", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(rate(gateway_tokens_output_total{provider=~\"$provider\",model=~\"$model\"}[1m]))", "legendFormat": "output tokens/s" }
+      ]
+    },
+    {
+      "type": "timeseries", "id": 19, "title": "Cost rate by model", "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 41 },
+      "fieldConfig": { "defaults": { "unit": "currencyUSD", "decimals": 6, "custom": { "drawStyle": "line", "fillOpacity": 20, "stacking": { "mode": "normal", "group": "A" } } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum by (model) (rate(gateway_request_cost_usd_total{provider=~\"$provider\",model=~\"$model\"}[5m]))", "legendFormat": "{{model}}" } ]
+    },
+
+    { "type": "row", "id": 20, "title": "Reliability", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 49 } },
+    {
+      "type": "stat", "id": 21, "title": "Circuit breaker state", "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 50 },
+      "fieldConfig": { "defaults": { "unit": "short", "color": { "mode": "thresholds" }, "displayName": "${__field.labels.provider}", "mappings": [ { "type": "value", "options": { "0": { "text": "Closed", "color": "green", "index": 0 }, "1": { "text": "Open", "color": "red", "index": 1 }, "2": { "text": "Half-open", "color": "orange", "index": 2 } } } ], "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "" }, "colorMode": "background", "graphMode": "none", "textMode": "value_and_name" },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "gateway_circuit_breaker_state{provider=~\"$provider\"}", "legendFormat": "{{provider}}" } ]
+    },
+    {
+      "type": "timeseries", "id": 22, "title": "Provider errors by type", "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 9, "x": 6, "y": 50 },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "bars", "fillOpacity": 60, "stacking": { "mode": "normal", "group": "A" } } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum by (error_type) (rate(gateway_provider_errors_total{provider=~\"$provider\"}[5m]))", "legendFormat": "{{error_type}}" } ]
+    },
+    {
+      "type": "timeseries", "id": 23, "title": "Rate-limit rejections", "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 9, "x": 15, "y": 50 },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "bars", "fillOpacity": 60 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum by (key_type) (rate(gateway_rate_limit_rejections_total[1m]))", "legendFormat": "{{key_type}}" } ]
+    },
+
+    { "type": "row", "id": 24, "title": "Connections", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 58 } },
+    {
+      "type": "timeseries", "id": 25, "title": "Server connections by state", "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 59 },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 25, "stacking": { "mode": "normal", "group": "A" } } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "gateway_server_connections_current", "legendFormat": "{{state}}" } ]
+    },
+    {
+      "type": "timeseries", "id": 26, "title": "Connection transitions", "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 59 },
+      "fieldConfig": { "defaults": { "unit": "cps", "custom": { "drawStyle": "line", "fillOpacity": 15 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum by (state) (rate(gateway_server_connection_transitions_total[1m]))", "legendFormat": "{{state}}" } ]
+    }
+  ]
+}

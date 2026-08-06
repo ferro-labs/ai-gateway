@@ -108,7 +108,7 @@ type bootstrapProvider struct {
 }
 
 func (p bootstrapProvider) Name() string                  { return p.name }
-func (p bootstrapProvider) SupportedModels() []string     { return p.models }
+func (p bootstrapProvider) ConfiguredModels() []string    { return p.models }
 func (p bootstrapProvider) Models() []providers.ModelInfo { return nil }
 func (p bootstrapProvider) SupportsModel(model string) bool {
 	for _, m := range p.models {

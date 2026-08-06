@@ -4,7 +4,28 @@
 set -e
 
 echo "── fmt ──────────────────────────────────────"
-go fmt ./...
+# Check the staged files; do not rewrite them.
+#
+# `go fmt ./...` reformats the working tree but cannot re-stage what it
+# rewrote, so a file staged unformatted stayed unformatted in the commit while
+# the working copy silently changed underneath it — the hook reported success
+# and the badly formatted blob landed anyway. It also rewrote files unrelated
+# to the commit, which is not this hook's business.
+#
+# Verifying instead of mutating keeps the check honest: what is inspected is
+# exactly what is about to be recorded.
+staged_go=$(git diff --cached --name-only --diff-filter=ACM | grep '\.go$' || true)
+if [ -n "$staged_go" ]; then
+	unformatted=$(printf '%s\n' "$staged_go" | xargs gofmt -l)
+	if [ -n "$unformatted" ]; then
+		echo "These staged files are not gofmt'd:"
+		printf '  %s\n' $unformatted
+		echo
+		echo "Fix and re-stage:"
+		echo "  gofmt -w $unformatted && git add $unformatted"
+		exit 1
+	fi
+fi
 
 echo "── vet ──────────────────────────────────────"
 go vet ./...

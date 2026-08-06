@@ -1,13 +1,8 @@
 package transport
 
 import (
-	"fmt"
-	"io"
-	"net/http"
-	"net/http/httptest"
-	"strings"
-	"sync"
 	"testing"
+	"time"
 )
 
 func TestDefaultConfig(t *testing.T) {
@@ -76,22 +71,6 @@ func TestForProvider_Isolation(t *testing.T) {
 	_ = antClient
 }
 
-func TestForStreaming(t *testing.T) {
-	m := NewDefault()
-	sc := m.ForStreaming("any-provider")
-
-	// Client.Transport is the OTel wrapper; read the raw transport
-	// from the Manager for assertions.
-	transport := m.streamTransport
-	if transport.ResponseHeaderTimeout != 0 {
-		t.Errorf("streaming ResponseHeaderTimeout = %v, want 0", transport.ResponseHeaderTimeout)
-	}
-	if !transport.ForceAttemptHTTP2 {
-		t.Error("streaming ForceAttemptHTTP2 = false, want true")
-	}
-	_ = sc
-}
-
 func TestBufferPool(t *testing.T) {
 	buf := BufferPool.Get()
 	if buf.Len() != 0 {
@@ -149,104 +128,20 @@ func TestDefaultClient(t *testing.T) {
 	}
 }
 
-func BenchmarkBufferPool(b *testing.B) {
-	b.Run("pool", func(b *testing.B) {
-		b.ReportAllocs()
-		b.RunParallel(func(pb *testing.PB) {
-			for pb.Next() {
-				buf := BufferPool.Get()
-				buf.WriteString("benchmark payload data for testing pool performance")
-				BufferPool.Put(buf)
-			}
-		})
-	})
+// The default header timeout bounds how long a provider may take to say
+// anything, which for an LLM is a whole generation or a first token rather than
+// the round trip of an ordinary HTTP service. A provider with no preset gets
+// this value, so it has to cover a reasoning model on a long prompt.
+func TestDefaultConfig_ResponseHeaderTimeoutCoversModelLatency(t *testing.T) {
+	const slowestPlausibleFirstToken = 90 * time.Second
 
-	b.Run("bare_alloc", func(b *testing.B) {
-		b.ReportAllocs()
-		b.RunParallel(func(pb *testing.PB) {
-			for pb.Next() {
-				buf := make([]byte, 0, 32*1024)
-				_ = append(buf, "benchmark payload data for testing pool performance"...)
-			}
-		})
-	})
-}
-
-func BenchmarkTransportConcurrent(b *testing.B) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.Copy(io.Discard, r.Body)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, `{"id":"test","object":"chat.completion","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop","index":0}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`)
-	}))
-	defer srv.Close()
-
-	m := NewDefault()
-	client := m.ForProvider("bench")
-	body := `{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}`
-
-	postJSON := func() (*http.Response, error) {
-		req, err := http.NewRequestWithContext(b.Context(), http.MethodPost, srv.URL, strings.NewReader(body))
-		if err != nil {
-			return nil, err
-		}
-		req.Header.Set("Content-Type", "application/json")
-		return client.Do(req)
+	got := DefaultConfig().ResponseHeaderTimeout
+	if got < slowestPlausibleFirstToken {
+		t.Errorf("default ResponseHeaderTimeout = %v, want at least %v: a provider without a preset "+
+			"aborts a slow first token at this bound", got, slowestPlausibleFirstToken)
 	}
-
-	// Warm up connections.
-	for i := 0; i < 20; i++ {
-		resp, err := postJSON()
-		if err != nil {
-			b.Fatal(err)
-		}
-		_, _ = io.Copy(io.Discard, resp.Body)
-		_ = resp.Body.Close()
+	if got == 0 {
+		t.Error("default ResponseHeaderTimeout must stay finite: it is the only bound on a provider " +
+			"that accepts a connection and never answers when request_timeout is unset")
 	}
-
-	b.ResetTimer()
-	b.ReportAllocs()
-	b.RunParallel(func(pb *testing.PB) {
-		for pb.Next() {
-			resp, err := postJSON()
-			if err != nil {
-				b.Fatal(err)
-			}
-			_, _ = io.Copy(io.Discard, resp.Body)
-			_ = resp.Body.Close()
-		}
-	})
-}
-
-func BenchmarkForProvider(b *testing.B) {
-	m := NewDefault()
-	m.RegisterProvider("openai", DefaultConfig())
-	m.RegisterProvider("anthropic", DefaultConfig())
-
-	b.ResetTimer()
-	b.ReportAllocs()
-	b.RunParallel(func(pb *testing.PB) {
-		providers := []string{"openai", "anthropic", "unknown"}
-		i := 0
-		for pb.Next() {
-			_ = m.ForProvider(providers[i%3])
-			i++
-		}
-	})
-}
-
-func BenchmarkBufferPoolContention(b *testing.B) {
-	b.ReportAllocs()
-	var wg sync.WaitGroup
-	for g := 0; g < 8; g++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for i := 0; i < b.N; i++ {
-				buf := BufferPool.Get()
-				buf.WriteString(`{"model":"gpt-4o","messages":[{"role":"user","content":"test"}]}`)
-				BufferPool.Put(buf)
-			}
-		}()
-	}
-	wg.Wait()
 }

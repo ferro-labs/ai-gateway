@@ -6,14 +6,22 @@ import (
 
 	aigateway "github.com/ferro-labs/ai-gateway"
 	"github.com/ferro-labs/ai-gateway/models"
+	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
 // EnrichedModelInfo extends the minimal OpenAI ModelInfo schema with catalog
 // metadata. The extra fields are omitempty so the response stays
 // backward-compatible for clients that only read id/object/owned_by.
 type EnrichedModelInfo struct {
-	ID              string   `json:"id"`
-	Object          string   `json:"object"` // always "model"
+	ID     string `json:"id"`
+	Object string `json:"object"` // always "model"
+	// Created is the model's creation time as the provider reports it, in Unix
+	// seconds. It is part of the OpenAI Model object and typed as a plain
+	// integer by the official SDKs, so it is always written, never omitted: a
+	// missing key fails a strict client's deserialization of the whole list.
+	// Zero means the provider did not report one — only live model discovery
+	// carries it, and the gateway does not invent a date for the rest.
+	Created         int64    `json:"created"`
 	OwnedBy         string   `json:"owned_by"`
 	Mode            string   `json:"mode,omitempty"`
 	ContextWindow   int      `json:"context_window,omitempty"`
@@ -23,16 +31,17 @@ type EnrichedModelInfo struct {
 	Deprecated      bool     `json:"deprecated,omitempty"`
 }
 
-// enrichFromCatalog builds an EnrichedModelInfo for provider/modelID by
-// looking up the model catalog. Returns a minimal struct if no entry is found.
-func enrichFromCatalog(catalog models.Catalog, provider, modelID string) EnrichedModelInfo {
+// enrichFromCatalog builds an EnrichedModelInfo for one model by looking up the
+// model catalog. Returns the plain OpenAI fields if no entry is found.
+func enrichFromCatalog(catalog models.Catalog, info core.ModelInfo) EnrichedModelInfo {
 	base := EnrichedModelInfo{
-		ID:      modelID,
+		ID:      info.ID,
 		Object:  "model",
-		OwnedBy: provider,
+		Created: info.Created,
+		OwnedBy: info.OwnedBy,
 	}
 
-	m, ok := catalog.Get(provider + "/" + modelID)
+	m, ok := catalog.Get(info.OwnedBy + "/" + info.ID)
 	if !ok {
 		return base
 	}
@@ -94,7 +103,7 @@ func Models(gw *aigateway.Gateway) http.HandlerFunc {
 		raw := gw.AllModels()
 		enriched := make([]EnrichedModelInfo, 0, len(raw))
 		for _, m := range raw {
-			enriched = append(enriched, enrichFromCatalog(catalog, m.OwnedBy, m.ID))
+			enriched = append(enriched, enrichFromCatalog(catalog, m))
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{

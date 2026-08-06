@@ -53,13 +53,18 @@ func TestComplete_ForwardsSamplingParams(t *testing.T) {
 	}
 
 	for _, k := range []string{
-		"temperature", "top_p", "n", "seed", "max_tokens",
+		// max_tokens travels as max_completion_tokens: groq is an OpenAI-surface
+		// provider, so PreferCompletionTokens promotes the legacy field.
+		"temperature", "top_p", "n", "seed", "max_completion_tokens",
 		"presence_penalty", "frequency_penalty", "stop",
 		"response_format", "user", "logit_bias",
 	} {
 		if _, ok := captured[k]; !ok {
 			t.Errorf("param %q not forwarded to upstream; captured keys=%v", k, keys(captured))
 		}
+	}
+	if _, ok := captured["max_tokens"]; ok {
+		t.Errorf("max_tokens must be promoted to max_completion_tokens, not forwarded; keys=%v", keys(captured))
 	}
 }
 

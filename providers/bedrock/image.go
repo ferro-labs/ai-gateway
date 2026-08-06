@@ -72,6 +72,9 @@ func isBedrockImageModel(model string) bool {
 // routing prefix. The original req.Model is passed to InvokeModel so cross-region
 // inference-profile IDs (us./eu./apac./global./region/) are preserved upstream.
 func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*core.ImageResponse, error) {
+	if err := core.EnforceImageResponseFormat(Name, req); err != nil {
+		return nil, err
+	}
 	id := bedrockModelRoutingID(req.Model)
 	switch {
 	case strings.HasPrefix(id, "amazon.nova-canvas"), strings.HasPrefix(id, "amazon.titan-image-"):
@@ -83,8 +86,21 @@ func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*c
 	}
 }
 
+// bedrockImageQuality maps the OpenAI image quality vocabulary onto Bedrock's
+// own. Bedrock's Titan/Nova imageGenerationConfig accepts "standard" |
+// "premium"; OpenAI's DALL·E 3 spells the high setting "hd", which was
+// previously forwarded verbatim into a field that has no such value. Anything
+// else is passed through unchanged so Bedrock reports it rather than the
+// gateway silently discarding the caller's request.
+func bedrockImageQuality(quality string) string {
+	if quality == "hd" {
+		return "premium"
+	}
+	return quality
+}
+
 func (p *Provider) generateImageTitanNova(ctx context.Context, req core.ImageRequest) (*core.ImageResponse, error) {
-	config := bedrockImageGenerationConfig{Quality: req.Quality}
+	config := bedrockImageGenerationConfig{Quality: bedrockImageQuality(req.Quality)}
 	if req.N != nil {
 		config.NumberOfImages = *req.N
 	}

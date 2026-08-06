@@ -72,7 +72,7 @@ const (
 	// AttrFerroForwardedParams carries the sanitized NAMES (never values) of the
 	// request parameters forwarded to the provider, for debug visibility of the
 	// capability matrix. Planned: emission is deferred — the shared request
-	// builder has no span in scope (see providers/internal/openaicompat).
+	// builder has no span in scope (see providers/core/openaicompat).
 	AttrFerroForwardedParams = "ferro.forwarded_params"
 )
 

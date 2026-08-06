@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
@@ -31,15 +30,15 @@ type bedrockTitanResponse struct {
 }
 
 func (p *Provider) completeTitan(ctx context.Context, req core.Request) (*core.Response, error) {
-	warnDroppedImageParts(ctx, p.name, req.Model, req.Messages)
-
-	var sb strings.Builder
-	for _, msg := range req.Messages {
-		sb.WriteString(msg.Content)
-		sb.WriteString("\n")
+	// Titan's InvokeModel body carries one inputText field, so the conversation is
+	// flattened into it by the shared join: roles survive as text and the trailing
+	// cue keeps the model answering the last turn instead of continuing it.
+	prompt, err := core.JoinMessagesAsPrompt(p.name, req.Model, req.Messages)
+	if err != nil {
+		return nil, err
 	}
 
-	titanReq := bedrockTitanRequest{InputText: sb.String()}
+	titanReq := bedrockTitanRequest{InputText: prompt}
 	if req.MaxTokens != nil {
 		titanReq.TextGenerationConfig.MaxTokenCount = *req.MaxTokens
 	}

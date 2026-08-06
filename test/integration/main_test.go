@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ferro-labs/ai-gateway/internal/testutil"
+	"github.com/ferro-labs/ai-gateway/test/testutil"
 )
 
 var testDSN string

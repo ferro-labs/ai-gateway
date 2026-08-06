@@ -40,7 +40,9 @@ func TestMiddlewareRateLimit_ExceedLimit_Returns429(t *testing.T) {
 			if err != nil {
 				return
 			}
-			resp.Body.Close()
+			// This goroutine already swallows a request error — a reset under a
+			// limiter is expected — and a close error is the same family.
+			_ = resp.Body.Close()
 			switch resp.StatusCode {
 			case http.StatusTooManyRequests:
 				count429.Add(1)
@@ -70,7 +72,9 @@ func TestMiddlewareRateLimit_NotEnabled_NoRejection(t *testing.T) {
 		if err != nil {
 			t.Fatalf("request %d: %v", i, err)
 		}
-		resp.Body.Close()
+		// Closed directly rather than via closeTestBody: bodyclose only sees a
+		// literal Body.Close() when the call is not deferred.
+		_ = resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("request %d: expected 200, got %d", i, resp.StatusCode)
 		}

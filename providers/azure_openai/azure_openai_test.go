@@ -3,6 +3,7 @@ package azureopenai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -42,17 +43,6 @@ func TestAzureOpenAIProvider_CustomApiVersion(t *testing.T) {
 	}
 }
 
-func TestAzureOpenAIProvider_SupportedModels(t *testing.T) {
-	p, _ := New("test-key", "https://myresource.openai.azure.com", "gpt-4o", "")
-	models := p.SupportedModels()
-	if len(models) != 1 {
-		t.Fatalf("SupportedModels() returned %d models, want 1", len(models))
-	}
-	if models[0] != "gpt-4o" {
-		t.Errorf("SupportedModels()[0] = %q, want gpt-4o", models[0])
-	}
-}
-
 func TestAzureOpenAIProvider_SupportsModel(t *testing.T) {
 	p, _ := New("test-key", "https://myresource.openai.azure.com", "gpt-4o", "")
 	if !p.SupportsModel("gpt-4o") {
@@ -60,17 +50,6 @@ func TestAzureOpenAIProvider_SupportsModel(t *testing.T) {
 	}
 	if !p.SupportsModel("gpt-3.5-turbo") {
 		t.Error("passthrough: expected any model to return true")
-	}
-}
-
-func TestAzureOpenAIProvider_Models(t *testing.T) {
-	p, _ := New("test-key", "https://myresource.openai.azure.com", "gpt-4o", "")
-	models := p.Models()
-	if len(models) != 1 {
-		t.Fatalf("Models() returned %d, want 1", len(models))
-	}
-	if models[0].OwnedBy != "azure-openai" {
-		t.Errorf("ModelInfo.OwnedBy = %q, want azure-openai", models[0].OwnedBy)
 	}
 }
 
@@ -190,26 +169,41 @@ func TestAzureOpenAIProvider_CompleteStream_Endpoint(t *testing.T) {
 	}
 }
 
+// TestAzureOpenAIProvider_OpEndpointPathEscapesDeployment covers the deployment
+// name a request may choose (Embed/GenerateImage route by req.Model): a usable
+// name is escaped into exactly one path segment, and a name that would reach
+// past that segment is refused rather than escaped.
 func TestAzureOpenAIProvider_OpEndpointPathEscapesDeployment(t *testing.T) {
 	p, _ := New("test-key", "https://myresource.openai.azure.com", "gpt-4o", "2024-10-21")
 
 	cases := []struct {
 		name       string
 		deployment string
-		wantSeg    string
+		wantSeg    string // empty means the deployment must be rejected
 	}{
+		{"plain", "gpt-4o", "/deployments/gpt-4o/"},
 		{"space", "my deploy", "/deployments/my%20deploy/"},
-		{"slash", "a/b", "/deployments/a%2Fb/"},
+		{"slash", "a/b", ""},
+		{"backslash", `a\b`, ""},
+		{"parent traversal", "../../v1/keys", ""},
+		{"single dot", ".", ""},
+		{"double dot", "..", ""},
+		{"empty", "", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := p.opEndpoint(tc.deployment, "embeddings")
+			got, err := p.opEndpoint(tc.deployment, "embeddings")
+			if tc.wantSeg == "" {
+				if err == nil {
+					t.Fatalf("opEndpoint(%q) = %q, want rejection", tc.deployment, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("opEndpoint(%q) error: %v", tc.deployment, err)
+			}
 			if !strings.Contains(got, tc.wantSeg) {
 				t.Errorf("opEndpoint(%q) = %q, want it to contain %q", tc.deployment, got, tc.wantSeg)
-			}
-			// The raw (unescaped) deployment must not leak into the URL path.
-			if strings.Contains(got, "/deployments/"+tc.deployment+"/") {
-				t.Errorf("opEndpoint(%q) = %q, deployment was not escaped", tc.deployment, got)
 			}
 		})
 	}
@@ -253,6 +247,30 @@ func TestAzureOpenAIProvider_Embed(t *testing.T) {
 	}
 	if resp.Usage.TotalTokens != 4 {
 		t.Errorf("usage.TotalTokens = %d, want 4", resp.Usage.TotalTokens)
+	}
+}
+
+// TestAzureOpenAIProvider_Embed_RejectsTraversalModel verifies a request that
+// picks its deployment through req.Model cannot walk out of the deployment path
+// segment: nothing carrying the operator's api-key reaches the Azure resource.
+func TestAzureOpenAIProvider_Embed_RejectsTraversalModel(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"object":"list","data":[],"usage":{}}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL, "gpt-4o", "2024-10-21")
+	if _, err := p.Embed(context.Background(), core.EmbeddingRequest{
+		Model: "../../v1/keys",
+		Input: "x",
+	}); err == nil {
+		t.Fatal("Embed accepted a traversal deployment")
+	}
+	if gotPath != "" {
+		t.Errorf("request reached the Azure resource at %q", gotPath)
 	}
 }
 
@@ -306,16 +324,36 @@ func TestAzureOpenAIProvider_Embed_InputValidation(t *testing.T) {
 	}
 }
 
-func TestAzureOpenAIProvider_Embed_Base64EncodingAllowed(t *testing.T) {
+// TestAzureOpenAIProvider_Embed_Base64RefusedAs400 replaces a test that asserted
+// base64 was accepted. It only ever passed because its stub answered with an
+// EMPTY data array: core.Embedding.Embedding is []float64, so a real base64
+// reply died at the unmarshal as a bare error — an untyped 500 blaming the
+// gateway for a value the caller chose, and retried as a transport failure until
+// the budget was gone. The value is unservable, so it is refused up front.
+func TestAzureOpenAIProvider_Embed_Base64RefusedAs400(t *testing.T) {
+	called := false
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"object":"list","data":[],"usage":{}}`))
 	}))
 	defer srv.Close()
 	p, _ := New("test-key", srv.URL, "gpt-4o", "2024-10-21")
-	if _, err := p.Embed(context.Background(), core.EmbeddingRequest{Input: "x", EncodingFormat: "base64"}); err != nil {
-		t.Fatalf("Embed() with base64 error: %v", err)
+
+	_, err := p.Embed(context.Background(), core.EmbeddingRequest{Input: "x", EncodingFormat: "base64"})
+	if err == nil {
+		t.Fatal("Embed() accepted encoding_format=base64")
+	}
+	var statusErr *core.HTTPStatusError
+	if !errors.As(err, &statusErr) {
+		t.Fatalf("errors.As found no *core.HTTPStatusError in %T: %v", err, err)
+	}
+	if statusErr.StatusCode != http.StatusBadRequest {
+		t.Errorf("StatusCode = %d, want 400", statusErr.StatusCode)
+	}
+	if called {
+		t.Error("the upstream was called for a value no reply could satisfy")
 	}
 }
 
@@ -481,5 +519,63 @@ func TestComplete_ErrorPathReturnsAPIError(t *testing.T) {
 func TestNew_RejectsInvalidBaseURL(t *testing.T) {
 	if _, err := New("k", "://bad", "dep", ""); err == nil {
 		t.Fatal("New accepted an invalid base URL")
+	}
+}
+
+// An Azure deployment name is chosen by the operator and appears in no public
+// catalog, so the provider is the only thing that can report it. That is the
+// whole reason ConfiguredModels still exists after the hardcoded model lists
+// were removed.
+func TestConfiguredModelsIsTheDeployment(t *testing.T) {
+	p, err := New("test-key", "https://example.openai.azure.com", "my-gpt4o-deployment", "2024-10-21")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	got := p.ConfiguredModels()
+	if len(got) != 1 || got[0] != "my-gpt4o-deployment" {
+		t.Fatalf("ConfiguredModels() = %v, want [my-gpt4o-deployment]", got)
+	}
+}
+
+// TestAzureOpenAIProvider_GenerateImage_ReportsTokenUsage pins the Azure half of
+// the gpt-image billing shape. azure/gpt-image-* carries no per-tile catalog
+// price and is billed per token, and this response struct did not parse the
+// usage object at all — so every such generation was costed at nothing.
+func TestAzureOpenAIProvider_GenerateImage_ReportsTokenUsage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"created":1,"data":[{"b64_json":"aGVsbG8="}],
+			"usage":{"input_tokens":1500,"output_tokens":4200,"total_tokens":5700}}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL, "gpt-4o", "2024-10-21")
+	resp, err := p.GenerateImage(context.Background(), core.ImageRequest{Model: "gpt-image-1", Prompt: "a cat"})
+	if err != nil {
+		t.Fatalf("GenerateImage() error: %v", err)
+	}
+	if resp.Usage.PromptTokens != 1500 || resp.Usage.CompletionTokens != 4200 || resp.Usage.TotalTokens != 5700 {
+		t.Errorf("Usage = %+v, want 1500 prompt / 4200 completion / 5700 total", resp.Usage)
+	}
+}
+
+// TestAzureOpenAIProvider_GenerateImage_NoUsageStaysZero covers a deployment
+// that reports none — a DALL·E deployment. Zero is what keeps such a request
+// unpriced rather than billed at $0.00.
+func TestAzureOpenAIProvider_GenerateImage_NoUsageStaysZero(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"created":1,"data":[{"b64_json":"aGVsbG8="}]}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL, "gpt-4o", "2024-10-21")
+	resp, err := p.GenerateImage(context.Background(), core.ImageRequest{Model: "dall-e-3", Prompt: "a cat"})
+	if err != nil {
+		t.Fatalf("GenerateImage() error: %v", err)
+	}
+	if resp.Usage != (core.Usage{}) {
+		t.Errorf("Usage = %+v, want zero", resp.Usage)
 	}
 }

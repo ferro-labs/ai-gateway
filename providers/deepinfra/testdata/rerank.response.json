@@ -1,0 +1,13 @@
+{
+  "scores": [0.9812, 0.0154, 0.4471, 0.3129],
+  "input_tokens": 52,
+  "request_id": "0f9c2b7a-3e1d-4a2f-9b88-6f4c2d1e7a55",
+  "inference_status": {
+    "status": "succeeded",
+    "runtime_ms": 87,
+    "cost": 0.0000021,
+    "tokens_generated": 0,
+    "tokens_input": 52,
+    "output_length": 0
+  }
+}

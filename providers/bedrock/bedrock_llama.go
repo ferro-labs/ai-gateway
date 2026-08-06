@@ -25,34 +25,18 @@ type bedrockLlamaResponse struct {
 	StopReason           string `json:"stop_reason"`
 }
 
-// bedrockLlamaMessageText returns the text content for a message's prompt
-// turn. It falls back to extracting text from ContentParts when Content is
-// empty (multi-part content arrays), mirroring bedrockNovaMessageTextContent
-// in bedrock_nova.go.
-func bedrockLlamaMessageText(msg core.Message) string {
-	if len(msg.ContentParts) == 0 {
-		return msg.Content
-	}
-
-	var sb strings.Builder
-	for _, part := range msg.ContentParts {
-		if part.Type == core.ContentTypeText {
-			sb.WriteString(part.Text)
-		}
-	}
-	if sb.Len() == 0 {
-		return msg.Content
-	}
-	return sb.String()
-}
-
 func (p *Provider) completeLlama(ctx context.Context, req core.Request) (*core.Response, error) {
-	warnDroppedImageParts(ctx, p.name, req.Model, req.Messages)
-
+	// Llama 3 was instruction-tuned on these tokenizer markers, so the turn format
+	// stays the model's own; only the guard is shared — a content part no single
+	// prompt can carry is refused rather than dropped under a 200.
 	var sb strings.Builder
 	sb.WriteString("<|begin_of_text|>")
 	for _, msg := range req.Messages {
-		fmt.Fprintf(&sb, "<|start_header_id|>%s<|end_header_id|>\n\n%s<|eot_id|>\n", msg.Role, bedrockLlamaMessageText(msg))
+		text, err := core.SinglePromptText(p.name, req.Model, msg)
+		if err != nil {
+			return nil, err
+		}
+		fmt.Fprintf(&sb, "<|start_header_id|>%s<|end_header_id|>\n\n%s<|eot_id|>\n", msg.Role, text)
 	}
 	sb.WriteString("<|start_header_id|>assistant<|end_header_id|>\n\n")
 

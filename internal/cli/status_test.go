@@ -45,15 +45,48 @@ func TestRunStatus(t *testing.T) {
 		}
 	})
 
-	t.Run("unreachable gateway is reported without an error", func(t *testing.T) {
+	// OPS-006. This subtest previously asserted the opposite — that an
+	// unreachable gateway is reported and exits 0 — which made `ferrogw status
+	// || alert` blind to a down gateway and put the failure text on stdout,
+	// where a caller piping to jq reads it. The contract is deliberately
+	// reversed: unreachable is an error, degraded-but-answering is not.
+	t.Run("unreachable gateway is an error and writes nothing to stdout", func(t *testing.T) {
 		// Port 1 refuses connections immediately.
 		cmd, out := newHandlerCmd(t, "http://127.0.0.1:1", "table")
 
-		if err := runStatus(cmd, nil); err != nil {
-			t.Fatalf("runStatus should not error for an unreachable gateway: %v", err)
+		err := runStatus(cmd, nil)
+		if err == nil {
+			t.Fatal("runStatus must error for an unreachable gateway so a caller's exit code sees it")
 		}
-		if !strings.Contains(out.String(), "unreachable") {
-			t.Errorf("want 'unreachable', got:\n%s", out.String())
+		if !strings.Contains(err.Error(), "unreachable") {
+			t.Errorf("error = %v, want it to say the gateway is unreachable", err)
+		}
+		// The diagnostic belongs on stderr, which cobra writes the returned
+		// error to. stdout is the machine channel.
+		if out.String() != "" {
+			t.Errorf("want no stdout output for an unreachable gateway, got:\n%s", out.String())
+		}
+	})
+
+	// --format is a root persistent flag, so cobra advertises it here too, and
+	// it was silently ignored: `ferrogw status --format json | jq` received
+	// ANSI-decorated prose. There is no useful JSON encoding of a health
+	// narrative, so the flag is refused rather than faked.
+	t.Run("a non-table --format is refused rather than ignored", func(t *testing.T) {
+		srv := stubGateway(t, map[string]http.HandlerFunc{
+			"/health": jsonHandler(http.StatusOK, `{"status":"ok"}`),
+		})
+		cmd, out := newHandlerCmd(t, srv.URL, "json")
+
+		err := runStatus(cmd, nil)
+		if err == nil {
+			t.Fatal("runStatus must refuse --format json rather than emit human text")
+		}
+		if !strings.Contains(err.Error(), "--format json") {
+			t.Errorf("error = %v, want it to name the rejected format", err)
+		}
+		if out.String() != "" {
+			t.Errorf("want no output when the format is refused, got:\n%s", out.String())
 		}
 	})
 }

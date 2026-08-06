@@ -5,1237 +5,1330 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.3.2] — 2026-07-21
+## [Unreleased]
 
-Disclosure and durability. Upstream error text is filtered before it leaves the
-process, a crashed MCP subprocess is now noticed instead of being advertised as
-healthy, admin config changes and their audit entries are recorded atomically,
-and MCP gains the metrics needed to alert on a server that never came up.
+_Nothing yet._
 
-Default behaviour is unchanged. No request that was accepted is now refused, no
-response shape changes, no status code changes, and no configuration becomes
-required. The one opt-in is `mcp_servers[].required`, which defaults to `false`.
+## [1.4.0] — 2026-08-07
 
-### Fixed
+This release consolidates routing. Chat, streaming, embeddings and image
+generation had each grown their own copy of target ordering, retry, circuit
+breaking, error classification, metrics and request logging, and the copies had
+drifted: retry applied under one routing mode, a rate limit opened a circuit on
+one surface but not another, and a failure was reported as a gateway fault on
+two of the four. They now share one path, so a behaviour is either true of every
+surface or of none.
 
-- **Provider error text could carry a credential to clients, logs, streams, and
-  observability backends.** A provider controls the body of its own error
-  responses, and some echo the value of the `Authorization` or `api-key` header
-  they were sent. That text became the error message the gateway reported, so
-  the gateway's own credential could reach an end user, a log aggregator, an SSE
-  frame, or an exporter. Error messages are now filtered at the points every
-  caller passes through — the OpenAI-compatible error writer, the admin error
-  writer, the streaming error frame, the request-failure event, and the failure
-  log lines. Only the message text changes; status, `type`, and `code` are
-  written exactly as before. Filtering is best-effort pattern matching and
-  covers the key formats that carry a recognisable prefix; a provider whose keys
-  have no distinguishing shape cannot be matched, so it reduces exposure rather
-  than eliminating it.
-- **A crashed MCP stdio subprocess was never noticed.** A server was marked ready
-  once and nothing ever cleared it, so after its subprocess died the gateway kept
-  advertising that server's tools to the model, kept resolving them to a dead
-  transport, and failed every call. Child exit is now detected two ways — the
-  subprocess closing its error stream, and a tool call failing with a closed
-  transport or a broken pipe — and the server's tools are withdrawn from the
-  model until it comes back. A server closing its error stream is confirmed with
-  a ping before anything is withdrawn, so one that does so while still running
-  keeps serving, and a server that closes it at startup is still covered later.
-  Detection applies to stdio servers; an HTTP server that becomes unreachable
-  after a successful handshake is not currently detected. Recovery on the next
-  configuration reload is unchanged.
-- **An MCP server that could not be built was missing from readiness.** A server
-  whose `headers` or `env` referenced an undefined variable was resolved before
-  its transport existed, so it never reached the registry that readiness reports
-  from. It was absent from `mcp_servers` rather than listed as down, and one
-  marked `required` left `/readyz` answering ready while the server it depends on
-  had never been attempted. Such a server is now reported unready with its
-  `required` flag intact, and reads 0 on `gateway_mcp_server_up` rather than
-  being absent from `/metrics`.
-- **A configuration reload could leave `gateway_mcp_server_up` reading down for a
-  server that was up.** The gauge is labelled by server name, so the retiring
-  registry and its replacement wrote the same series; a reload with a request
-  still in flight let the old one publish 0 after the new one had already
-  reported the server ready, and nothing wrote 1 again. Teardown now writes only
-  for servers the retiring registry still owns, and drops the series for a server
-  that has left the configuration instead of pinning it at 0 forever.
-- **An MCP tool that reported failure was recorded as a success.** Servers signal
-  a failed call by returning an error result rather than a transport error. That
-  signal was not read, so a failing tool incremented the success counter, was
-  audited as successful, and produced a successful span. It is now recorded as an
-  error in all three. What the model and the client receive is unchanged.
-- **Admin config changes and their audit entries could disagree.** Applying a
-  config and recording its history entry were separate steps under separate
-  locks, so two concurrent admin writes could interleave and leave the newest
-  history entry describing a config that was not the active one — with a rollback
-  then targeting the wrong version. The same gap existed one level lower, between
-  persisting a config and applying it, where the disagreement survived a restart.
-  Each admin config mutation is now applied and recorded as one serialized
-  operation. History reads are unaffected and never wait on a config apply.
-- **An unknown MCP tool name became an unbounded metric label.** The tool name on
-  the unknown-tool counter came from the model's output, so an invented name
-  minted a new time series. Names that do not resolve to a registered tool now
-  collapse to a single bounded label, matching how unroutable model names are
-  already handled.
+It also widens the API surface: rerank, moderations, speech-to-text,
+text-to-speech, Files, Batches and the Responses API are now served natively
+rather than depending on the generic pass-through — see the Added entries below.
+
+Read the breaking changes below before upgrading. The one most likely to be
+noticed is retry: `targets[].retry` was honoured only under `fallback`, and is
+now honoured everywhere, so a target that always fails will make `attempts`
+upstream calls under modes that previously made one.
+
+### Added — rerank, moderations and audio are routed surfaces
+
+Four surfaces join the natively served API, each carrying the full gateway
+lifecycle — targets, routing strategy, plugins, circuit breaker, per-target
+concurrency, metrics and request logging — where the pass-through carried none
+of it:
+
+- `POST /v1/rerank` (Cohere v2 contract): cohere, together, deepinfra,
+  nvidia-nim, bedrock. `top_n` follows one contract on every provider — `0`
+  caps to no results, a negative value is refused.
+- `POST /v1/moderations` (OpenAI contract): openai, mistral.
+- `POST /v1/audio/transcriptions` and `/v1/audio/translations` (multipart
+  upload, 25 MiB cap): openai, azure-openai, groq, together, sambanova,
+  deepinfra, mistral, fireworks.
+- `POST /v1/audio/speech` (JSON in, binary audio out; `input` capped at 4096
+  characters): openai, azure-openai, groq, together, deepinfra, mistral —
+  mistral through a base64-in-JSON adapter for its native response shape.
+
+### Added — Files and Batches pass through one configured backend
+
+`/v1/files*` and `/v1/batches*` forward transparently to `batch_target`, a
+configured target whose provider serves the OpenAI batch contract: openai,
+azure-openai, groq, novita, qwen. These routes carry no model — a batch
+references an uploaded file id, and the model lives per line inside the JSONL —
+so one backend serves the whole flow and ids stay native, meaning a follow-up
+call resolves with no gateway state. Uploads stream through outside the shared
+body limit; the gateway credential replaces the client's. With no
+`batch_target`, every route answers 501.
+
+### Added — `/v1/responses` is governed and priced
+
+The Responses API routes like chat — plugins, guardrails, circuit breaker,
+concurrency, request log — and, unlike the generic pass-through, is priced: the
+`usage` object is teed out of the response body or the terminal SSE event as it
+streams through, unaltered, so catalog pricing, the request-log cost column and
+the span cost all light up. The body is otherwise forwarded verbatim. The
+stateful id sub-routes (retrieve, delete, cancel, input items) pin to
+`responses_target` and answer 501 when it is unset.
+
+### Added — a target declares the models it serves
+
+`targets[].models` names models a target serves that neither the catalog nor
+live discovery can see — an id newer than the catalog, a regional or preview
+name, a self-hosted deployment. Declared models join the routing index and
+`/v1/models` alongside the automatic sources. The field is additive only:
+declaring one model never hides the others a target serves, and a wildcard is
+rejected at load. The same id on two targets is how a model gets a fallback.
+
+### Added — more providers serve more surfaces
+
+Image generation on gemini (through `generateContent`, covering the
+image-capable Gemini models), deepinfra and together; embeddings on
+azure-foundry.
+
+### Added — a Tracing page and a fullstack observability demo
+
+The dashboard gains a Tracing page over the gateway's OpenTelemetry output, and
+`deploy/` gains a compose stack that runs the gateway, a collector, a tracing
+backend and a mock upstream together, so the whole pipeline can be seen working
+without a provider key.
+
+### Breaking — an agentic tool loop runs its guardrails on every turn
+
+Only the first call of an MCP tool loop passed the `before_request` plugins. The
+turns after it went straight to the provider, carrying tool **results** returned
+by an external MCP server — content the caller never wrote and the operator has
+least reason to trust — with no configured guardrail having read them.
+
+Every turn now runs the plugins that bound a provider call. Two types are
+deliberately excluded: a `transform` would rewrite the model mid-conversation,
+and `logging`/`metrics` observe a request and would otherwise emit one row and
+one sample per turn.
+
+**What changes for a running deployment:** a guardrail can now reject a request
+part-way through a loop, and a rate limiter sees each turn as the provider call
+it is. A loop that previously completed may now be refused — which is the point,
+but it is a behaviour change rather than a pure fix.
+
+### Fixed — a budget can stop a tool loop that is overspending
+
+The budget store is written once, after a request completes, so a per-turn check
+against it read the same figure every time. A key at 99% of its cap got a whole
+loop however many turns it ran and however large the context grew.
+
+Each turn is now priced as it completes and the running total is carried into
+the next turn's check, so the cap closes mid-request. Pricing per turn is also
+more accurate under `loadbalance` and `least-latency`, where consecutive turns
+can land on differently-priced providers.
+
+### Fixed — a tool loop that fails part-way is still billed for what it spent
+
+Usage accumulated across turns was discarded on the error path, so a loop that
+failed on its third turn recorded nothing for the first two — which had spent
+real tokens. A prompt that reliably failed late was free.
+
+### Fixed — MCP subprocesses are reaped within the shutdown budget
+
+`Close` returns immediately when requests still hold the registry and finishes
+teardown in the background. That goroutine was untracked, so the gateway's
+bounded drain had nothing to wait on and the process could exit with a stdio
+subprocess still running. It is now waited on, inside the same budget.
+
+### Fixed — the official SDKs' default embeddings call works again
+
+`encoding_format: "base64"` was refused with a `400`. openai-python sets that
+value **by default** — a bandwidth optimisation the caller never asked for and
+mostly cannot see — so every default `client.embeddings.create(...)` failed
+against every provider.
+
+It is now accepted and served as `float`. That is not a substitution the caller
+cannot use: openai-python base64-decodes only a value that arrives as a string,
+so a float array passes through its parser untouched and reaches the caller as
+the floats it wanted either way. What is lost is the bandwidth saving, which
+this gateway could never have delivered — the embedding type is `[]float64` and
+the response is JSON-encoded from it directly.
+
+The value is resolved once at the entry point, so no provider receives a format
+its response cannot hold. Any other value is still refused.
+
+### Fixed — an admin command no longer reports success on an empty response
+
+A `2xx` carrying no body skipped the decode and returned no error, so
+`ferrogw admin keys create` printed `null` and exited `0` — which a script reads
+as a key it never received. A response with no payload is now a failure when one
+was expected. Commands that ask for nothing back are unaffected:
+`keys revoke` answers `204` by design and still succeeds.
+
+
+### Breaking — an existing Render deployment may refuse to start
+
+`render.yaml` now sets `GATEWAY_ENV=production`, which turns on the production
+startup checks. Those checks **refuse to boot** on two settings:
+`ALLOW_UNAUTHENTICATED_PROXY=true`, and a `CORS_ORIGINS` list containing `*`.
+
+A Render service carrying either has been starting until now and will stop on
+its next deploy. Remove the setting, or drop `GATEWAY_ENV` from the blueprint if
+the deployment is not production.
+
+### Breaking — outbound requests surface a redirect instead of following it
+
+The gateway's own HTTP clients followed upstream redirects, which carried the
+credential injected for the original host to whatever host the redirect named.
+A 3xx is now returned to the caller as the upstream sent it.
+
+This affects a provider or proxy that answers with a redirect on a normal path —
+the request fails where it previously succeeded, and the fix is to point the
+provider's base URL at the location the redirect names.
+
+### Fixed — an agentic tool loop bills every turn, not just the last
+
+Each turn of an MCP tool loop is a separate provider call with a growing
+context, but only the final turn's usage was read. Cost, the Prometheus token
+counters, the request-log row, the OTel span and the per-key budget guardrail
+all under-reported a multi-turn request — the budget by enough to overshoot a
+cap several times over.
+
+All six usage counters are now summed across the turns, and every one of those
+five consumers reads the summed total.
+
+
+### Breaking — withheld config values no longer round-trip through `GET /admin/config`
+
+A free-form map the gateway hands to something else — `mcp_servers[].env` and
+`.headers`, `observability.exporters[].config`, `observability.tracing.headers`,
+and any plugin setting a plugin does not declare — withheld its values and
+served its **keys** verbatim. A credential can be inlined in either position, so
+`{"sk-…": 60}` came back intact to any caller holding a `read_only` key while
+the string beside it was correctly `[REDACTED]` — which is what made the response
+look safe. Env and header *names* were disclosed the same way, though the
+documented contract for those maps was to show nothing at all. A value that was
+not a string was also copied through untouched.
+
+Withholding now covers the whole entry. Each comes back as
+`[REDACTED_KEY_<n>]`, indexed over the sorted original names so the response is
+stable across calls; the number of withheld settings survives, none of their
+names does.
+
+**What breaks:** a withheld map cannot be edited from a `GET` body and sent
+back, because the keys are no longer there. `PUT` refuses such a body rather
+than writing the placeholder as a real setting name. Edit those maps in the
+config file. A map whose keys are shown — `aliases`, and a plugin's declared
+settings — round-trips exactly as before.
+
+`${VAR}` references still appear in a withheld entry's value: they name a value
+rather than carrying one, and the stored-literal warning keys off exactly that.
+
+
+### Fixed — a stalled or trickling upstream can no longer park a pass-through request
+
+A non-2xx pass-through body is buffered so it can be scanned for a credential
+the gateway itself injected. That buffer was bounded in size but not in time, so
+an upstream that answered and then trickled kept the read going one keepalive at
+a time until 256 KiB had arrived — indefinitely, in practice.
+
+The stream idle bound did not cover it. It is armed only after the scan
+finishes, and a trickle returns from every read promptly, so an idle timer is
+re-armed each time and never fires. A provider answering `429` on a streaming
+endpoint while holding the connection open is exactly this shape, so it took no
+hostile upstream to reach.
+
+The scan now runs under its own time budget and the upstream is cancelled if it
+elapses. Streaming success responses are unaffected — they were never buffered.
+
+
+### Fixed — configuring an MCP server no longer disables the response cache
+
+The gateway advertises its MCP tools by adding them to the request, and the
+plugin context holds a pointer to that request. The response cache keys on
+tools, correctly, and computes that key twice: once to look up before the
+provider call and once to store after it. The tools arrived between those two
+points, so the two keys could never match.
+
+The effect was total and silent. Any `mcp_servers` entry disabled response
+caching for the whole deployment — no tool call involved — while the plugin
+reported itself configured and simply never hit.
+
+The tools now go onto a copy used for the provider call, so every plugin stage
+observes the request the caller actually sent.
+
+
+### Fixed — a dead target no longer black-holes its share of the traffic
+
+Only `mode: fallback` moved a request past a target that failed. Every other
+multi-target mode picked one candidate and stopped there, so an outage on that
+target failed its whole selection share while a healthy sibling served the same
+model. Under `cost-optimized`, which ranks deterministically, that was every
+request.
+
+`fallback`, `loadbalance`, `least-latency`, `cost-optimized` and `ab-test` now
+advance to the next candidate. `single`, `conditional` and `content-based` do
+not: those name one target on purpose, and answering from another would make the
+rule a suggestion.
+
+A circuit breaker was previously the only thing that moved traffic off a bad
+target, and breakers are opt-in — the shipped examples configure one across
+thirty targets. It is still worth configuring, for a different reason: without
+one the walk pays the dead target's connection timeout on every request before
+advancing. The breaker makes failover cheap; the routing mode is what makes it
+happen.
+
+
+### Breaking - pass-through paths cannot traverse outside the provider API root
+
+The `/v1/*` pass-through previously forwarded dot segments without resolving
+or rejecting them. An upstream that normalised the path could interpret
+`/v1/../control` outside its configured AI API root after the gateway had
+installed the operator's provider credential.
+
+Traversal-shaped paths are now rejected before provider resolution with
+`400 invalid_proxy_path`. This includes encoded, repeatedly encoded,
+backslash-separated, and matrix-parameter forms. Ordinary escaped resource IDs,
+literal percent characters, semicolon parameters, and query strings are
+forwarded unchanged.
+
+### Breaking — content a model cannot express is refused, not dropped
+
+Five providers take text only. Four of them — Bedrock's Titan, Llama and Nova
+families, and Replicate — accepted a request carrying an image, dropped it, and
+answered `200` describing content the model never received. Three logged a
+warning the caller never sees; Replicate logged nothing at all.
+
+They now refuse it with a `400` naming the part they cannot carry, and the
+upstream is not called. A caller sending vision content to those providers sees
+a failure where it previously saw a plausible answer to a question that was
+never asked.
+
+### Breaking — single-prompt models receive the whole conversation, in one shape
+
+Providers whose upstream takes one prompt string rather than a message list had
+each invented their own way to flatten a conversation, and two of them lost
+information doing it. AI21's Jurassic route overwrote one variable per message,
+so only the last one was ever sent. Bedrock's Titan concatenated the contents
+with no indication of who said what and no cue for the model to answer rather
+than continue.
+
+All of them now use one shape — a line per turn, `role: content`, ending with a
+bare `assistant:` — so a conversation reads the same whichever of them serves
+it. Every message reaches the model.
+
+This changes the prompt those providers receive, including for a single-message
+request: Titan and AI21 previously sent the bare content and now send it with
+its role and the closing cue.
+
+Bedrock's Llama family keeps the instruction template it was tuned on, and Nova
+keeps its native message list and system channel. Neither is a single-prompt
+API; both only needed the guard above.
+
+### Breaking — container images are published as one multi-platform manifest
+
+Images were built per architecture and stitched together afterwards, which is
+why `:<version>-amd64` and `:<version>-arm64` existed alongside the plain tag.
+They are no longer published. `:<version>` and `:latest` are unchanged in name
+and are now multi-platform manifests directly.
+
+The version tag is what carries the signature, and images now also carry an
+SPDX SBOM as a build attestation, readable with `cosign download attestation`.
+Verification instructions that named an architecture tag need updating to the
+plain one.
+
+### Added — a budget can price cached tokens
+
+A spend cap billed cached input at the full input rate, and billed cache writes
+— which are not part of the prompt count — at nothing. It now accepts optional
+`cache_read_per_m_tokens` and `cache_write_per_m_tokens`.
+
+Without them behaviour is unchanged: cached tokens keep billing at the input
+rate, because an unconfigured rate must not silently bill as zero.
+
+### Fixed — streaming Replicate requests report their token usage
+
+They reported none, so they were billed nothing while the non-streaming path
+reported correctly. Usage is read once after the stream completes and carried on
+its final chunk. The read is best-effort — the content has already been
+delivered — so a failure leaves usage absent rather than failing the request.
+
+### Breaking — cached tokens are no longer billed twice
+
+Providers disagree on whether the prompt token count already contains the
+cached ones. The gateway priced the whole count at the input rate and then
+added the cached portion again at its own rate, so a cached request on an
+OpenAI-compatible provider paid for those tokens twice.
+
+Both conventions now normalise where the response is decoded, and input is
+priced on the non-cached remainder alone.
+
+**Reported cost falls** for cached workloads on OpenAI-compatible providers — a
+request of 10,000 prompt tokens of which 8,000 were cached drops from $0.035 to
+$0.015 on `gpt-4o`. Dashboards and totals built on `cost_usd`,
+`gateway_request_cost_usd_total` and `/admin/logs/stats` all step down.
+
+**Anthropic-shaped providers now report a prompt token count that includes the
+cached tokens**, as OpenAI-compatible providers already did. Their cost does not
+change — it was already correct — but a client reading `usage.prompt_tokens`
+sees a larger number, and `total_tokens` moves with it.
+
+Where the catalog carries no cache rate for a model, the cached portion stays on
+the input rate rather than becoming free.
+
+### Breaking — an exhausted budget returns 402, not 429
+
+A spend cap that had been reached returned `429` with `Retry-After: 1`,
+inherited from the rate limiter. Waiting does not restore a budget, so clients
+retried through their whole backoff and failed anyway. It now returns `402
+Payment Required` with an `insufficient_quota` error, which the OpenAI SDKs do
+not retry.
+
+Rate limiting and concurrency backpressure still return `429` with a retry hint.
+A client switching on `429` to detect budget denial must add `402`.
+
+### Breaking — `/v1/completions` honours `echo`
+
+A request setting `echo` received the completion alone. Each choice now returns
+the prompt followed by the completion. The request sent upstream is unchanged
+and usage still counts only generated tokens.
+
+`best_of`, `logprobs` and `suffix` remain accepted and ignored. `suffix`
+constrains what the model generates rather than what is returned — the text it
+produces is the passage bridging prompt and suffix, and the suffix itself is
+never part of it — so a chat call cannot honour it, and appending it would
+return text the model never wrote.
+
+### Breaking — a provider missing a required credential is refused
+
+A provider built from a supplied configuration map rather than from the
+environment was never checked for the credentials it declares as required, so
+one could be constructed carrying none — while the documented contract said
+otherwise. Twenty-eight of the thirty-four declared requirements were
+unenforced. The check the environment path already applied now runs for both.
+
+Deployments that inject credentials programmatically and were relying on a
+provider constructing without one will now see it refused at construction.
+
+### Breaking — Replicate is refused by the pass-through
+
+Replicate's upstream is an asynchronous predictions API that cannot answer an
+OpenAI-shaped request, so forwarding one only failed slowly. It is now refused,
+which also removes `/v1/predictions` and `/v1/account` from reach under the
+gateway's own Replicate token. Chat, streaming and image generation are
+unaffected.
+
+Hugging Face embeddings likewise refuse an unsupported `encoding_format` rather
+than silently returning float vectors to a caller that asked for base64.
+
+### Added — third-party licence notices ship with every release artifact
+
+Release archives and container images carry the licences and notices of every
+module linked into the binary, generated from the module graph at release time
+rather than committed — so the inventory cannot drift from `go.mod` — and
+placed at `/licenses` in the images.
+
+### Added — image models priced by token report a cost
+
+Image generation reported no token usage, so a model the catalog prices per
+token rather than per tile was billed nothing and appeared free in the request
+log, the usage statistics and the cost metric. Usage now travels from the
+provider through to pricing. Per-tile pricing wins wherever the catalog has it,
+and a response reporting no usage stays unpriced rather than being recorded as
+costing nothing.
+
+A configured budget begins accounting for these requests.
+
+### Added — MCP failure reasons are readable by an operator
+
+A server that will not start reported its reason only to the server log. It is
+now served, redacted, on the authenticated admin health endpoint. The public
+readiness endpoint still withholds it, because the reason can quote a server
+URL, an authorization header or a subprocess command line.
+
+The dashboard read its MCP list from the public endpoint, which omits that list
+entirely when the gateway reports itself unready — so the panel went blank in
+exactly the situation it exists for. It now reads the authenticated one.
+
+### Fixed — a configuration reports every unknown key
+
+A JSON configuration reported one unknown key per attempt, so three typos cost
+three edit-and-restart cycles, while the same file written as YAML named all
+three at once with line numbers. Both formats now report them together, and the
+admin configuration endpoint — documented as rejecting exactly what validation
+rejects — shares the same decoder.
+
+### Fixed — Gemini enforces a requested JSON schema
+
+A request asking for a response matching a JSON schema was translated to a plain
+request-JSON instruction, so the model returned free-form JSON and the caller
+was never told their schema had been dropped. The schema now travels. A schema
+built from definitions and references still forwards those nodes unconstrained,
+which the provider's schema dialect does not accept.
+
+### Fixed — the pass-through no longer inserts a version segment
+
+Pass-through requests inferred whether a configured base URL was an API root
+from its last path segment, so a provider whose root carries a different path
+had the gateway's version segment inserted mid-path. The inbound segment is now
+removed and the configured root used as written.
+
+A root carrying no path is no exception to that, which fixes Perplexity: its API
+root is the bare host, so pass-through requests were sent to `/v1/responses` on
+a host that mounts `/responses`. A provider configured with a *server* root
+rather than an API root — Ollama, whose server mounts the OpenAI-compatible API
+at `/v1` and the native one at `/api` — now resolves the difference itself and
+reports the API root, so one rule covers both. Nothing reading only the URL
+could tell them apart; both are a scheme and a host.
+
+### Fixed — an unreadable pass-through body is refused only when it would have been read
+
+The pass-through refuses a body no guardrail can inspect, but it counted every
+guardrail — including ones that reach their verdict without reading request
+content. A guardrail can now declare that it ignores request content, and the
+answer is per instance: the token guardrail does read content once a length
+limit is configured. A guardrail that declares nothing still triggers the
+refusal, so one written elsewhere is never quietly reclassified.
+
+### Fixed — credential lookups follow the outbound redirect policy
+
+The AWS credential providers are built during configuration loading, before the
+gateway's own HTTP client is installed, so they kept the SDK's client — which
+follows redirects and carries the instance-metadata and single-sign-on tokens
+across the hop. They now receive the gateway's client.
+
+One deployment shape cannot have both: supplying a client makes the SDK refuse
+to apply a custom certificate bundle. Those deployments keep the bundle and the
+SDK's client, and the gateway says so at startup rather than choosing silently.
+
+A refused redirect now names the scheme and host it pointed at, and whether that
+was the same host — the difference between a path normalisation and an attempt
+to move a credential elsewhere. Only the host is reported, so nothing carried in
+a redirect's userinfo or query is echoed.
+
+### Breaking — content guardrails apply to embeddings and image generation
+
+A configured content guardrail refused blocked content on chat and forwarded
+the same content on `/v1/embeddings` and `/v1/images/generations`, which
+answered 200 and called the provider. Those two surfaces handed plugins a
+request carrying only the model, so a guardrail had nothing to match on,
+approved, and its approval was indistinguishable from one it had actually made.
+
+Both surfaces now project their content for inspection, so a guardrail that
+refuses a phrase on chat refuses it everywhere.
+
+An embedding input the guardrail cannot read — a token-id array — is refused
+when a content guardrail is configured. Token ids encode the same text the
+policy covers, so forwarding them unread leaves a blocklist anyone can step
+around by encoding client-side. A deployment with no content guardrail is
+unaffected and continues to serve token-id input.
+
+A message-count limit no longer applies to these surfaces: a batch of documents
+is not a batch of conversation turns.
+
+### Breaking — the `/v1/*` pass-through runs the gateway lifecycle
+
+Endpoints served by pass-through — `/v1/responses`, `/v1/audio/*`, `/v1/files`,
+`/v1/batches` and the rest — applied authentication, the target allowlist and
+credential replacement, and nothing else. A guardrail that refused content on a
+native route forwarded it here, upstream, under the gateway's own provider
+credential; no request-log row was written and no cost was attributed.
+
+They now run the plugin stages, the circuit breaker, per-target concurrency and
+the request timeout, and record a request-log row. Where a guardrail is
+configured and the body cannot be read as text, the request is refused rather
+than forwarded.
+
+Retry and model admission remain off, deliberately: the body is already streamed
+and these endpoints are not idempotent, and the target is resolved before the
+handler runs. Pass-through cost is recorded as unpriced rather than as zero.
+
+### Breaking — `ADMIN_BOOTSTRAP_KEY` and its companions are removed
+
+`ADMIN_BOOTSTRAP_KEY`, `ADMIN_BOOTSTRAP_READ_ONLY_KEY` and
+`ADMIN_BOOTSTRAP_ENABLED` are gone. The path they opened was a function of
+current state — it became live again whenever the number of usable admin keys
+returned to zero — so a credential an operator believed retired came back when
+the last key was deleted or expired. Deprecated since v1.0.3.
+
+Set `MASTER_KEY` instead; `ferrogw init` generates one. There is no direct
+replacement for the read-only bootstrap credential: authenticate with
+`MASTER_KEY` and create a key with the `read_only` scope.
+
+### Breaking — `OLLAMA_MODELS` is renamed `FERRO_OLLAMA_MODELS`
+
+`OLLAMA_MODELS` is Ollama's own variable for the directory its models are stored
+in. On any host running Ollama the gateway read a filesystem path and published
+it as a model name.
+
+The old name is still read this release and warns at startup; it is removed in
+the next. When both are set the new name wins. A value that is a directory path
+is ignored rather than registered as a model.
+
+### Breaking — cached responses are scoped to the credential that fetched them
+
+The response cache keyed entries on request content alone in one shared store,
+so a response fetched for one API key could be served to another. Rate limiting
+and budgeting already scope on the credential; the cache now does too. Requests
+carrying no credential share one bucket, as they do in the request log.
+
+Cache hit rate falls for any deployment using more than one data-plane key.
+There is no switch to restore the previous behaviour, because it was the defect.
+
+### Breaking — every routing mode skips a target whose circuit is open
+
+Only `fallback` advanced past a failing target. Every other mode committed to
+one target and retried it, so a dead backend failed every request while a
+healthy sibling sat idle. Under `least-latency` this was self-sustaining: a
+failure records no timing, so a target that died while it was fastest kept its
+ranking.
+
+Selection now skips open circuits under every mode. When every candidate is
+open the gateway answers `503`, not `404` — the model exists and cannot be
+served, which is a different statement from not being served at all. A matched
+`conditional` or `content-based` rule becomes preferred rather than exclusive:
+it is still honoured when it is the only target left.
+
+`GET /v1/models` is deliberately unchanged by circuit state.
+
+### Breaking — parameter support is reported honestly
+
+`GET /v1/capabilities` reported `parallel_tool_calls` as forwarded by every
+provider. Five cannot express it. It is now reported as unsupported on Cohere,
+Gemini and Replicate, and translated on Anthropic and Bedrock Claude to the
+field those APIs actually define — so a request that set it to `false` and saw
+no effect will now see one.
+
+Under `on_unsupported_param: reject` a request setting it against a provider
+that cannot express it is refused; under the default it is logged.
+
+`stream` and `stream_options` no longer appear in the listing at all. Usage
+reporting is applied to every provider before the response leaves the gateway,
+so it was never a provider capability.
+
+### Breaking — an image request for a representation the provider cannot produce is refused
+
+`response_format` was accepted and ignored by providers that emit only one
+representation, so a caller asking for `url` received a 200 with a base64 field
+populated and the field they asked for empty. Such a request is now refused with
+400. Only an explicitly set value is checked; leaving it unset is unchanged.
+
+`GET /v1/capabilities` publishes the representations each provider can produce.
+
+### Breaking — the CLI has one argument, output and exit-code contract
+
+`ferrogw status` exits non-zero when the gateway cannot be reached, and writes
+its diagnostics to standard error. A gateway that answers — including one
+reporting itself degraded — still exits zero. A script relying on `status`
+always succeeding will now fail when the gateway is down, which is the point.
+
+`--format` is refused by the commands that cannot honour it rather than silently
+ignored. Every command rejects stray positional arguments instead of discarding
+them. Colour is suppressed when output is not a terminal. A failing command no
+longer prints its usage block. `ferrogw init` no longer prints a master key when
+it leaves an existing configuration in place.
+
+### Breaking — `X-Request-ID` is echoed only when it is a valid trace id
+
+The header was adopted verbatim while the tracing pipeline requires 32
+hexadecimal characters, so a client-supplied identifier could split the trace id
+from the log id and from the one reported in spans. A value that is not 32 hex
+characters is no longer echoed; an uppercase one is echoed lowercased. Requests
+originating inside an embedded gateway now carry a trace id where they
+previously carried none.
+
+### Fixed — configuration rollback survives a restart
+
+A rollback recorded through a configured config store was indistinguishable from
+an ordinary update once the process restarted: the provenance existed only in
+memory. It is now stored, added by migration and preserved across upgrade.
+
+### Fixed — a request whose after-stage failed is counted once
+
+Such a request wrote two terminal log rows, so it appeared twice in the log
+listing and counted twice in usage statistics. The failure is now recorded on
+the row that already exists. Totals on `/admin/logs/stats` fall accordingly for
+affected deployments.
+
+### Fixed — a stream whose client disconnects last still records
+
+When a client hung up as the final chunk was delivered, the after-request stage
+was abandoned with the connection and its durable log row was lost — and no
+error row replaced it, because nothing had failed. That stage now runs on a
+detached, time-bounded context, as the error stage already did.
+
+### Fixed — two stores sharing one SQLite file wait for each other
+
+No busy timeout was set, so concurrent writes failed immediately rather than
+waiting — including two stores sharing one database file within a single
+process, which is a supported arrangement. Connections now carry a default
+timeout, and an operator-supplied one is honoured. Multi-instance deployments
+belong on PostgreSQL.
+
+### Fixed — admin listings have a stable order
+
+`GET /admin/keys` and `GET /admin/sessions` returned rows in no defined order,
+and the count guarding the last usable admin key included revoked keys. Both
+listings are now newest-first with a stable tiebreak.
+
+### Fixed — the gateway advertises only what it will serve
+
+`GET /v1/capabilities` described every provider a credential registered rather
+than the providers a configured target names, so an instance running
+`targets: [deepseek]` reported nine and answered 404 from every routed surface
+for eight of them. It now answers from the same set `/v1/models` does.
+
+`/v1/models` published a duplicate `id` when more than one target served one
+model — a declared id colliding with another target's catalog entry, or the same
+id declared twice. The listing is keyed by `id` in the OpenAI contract, so a
+client that indexed by it silently kept whichever arrived last. One entry per id
+now, owned by the first configured target that serves it.
+
+Under `mode: cost-optimized` with `unpriced_strategy: skip`, every declared
+model was advertised and then refused: a declared model exists because no
+catalog knows it, so it can never carry a catalog price. The listing now asks
+the strategy that will route the request, so what it advertises is what the next
+request can reach.
+
+### Added — `plugin.Context.Target` and `api_key_id` on request-log rows
+
+`plugin.Context.Target` names the routing target a request used: the virtual key
+of the target that served it, or on a failure the last one attempted. It is
+empty when no target was ever attempted — a request a plugin denied, a model no
+configured target serves, or a response served from cache. Set before the
+`after_request` and `on_error` stages on every routed surface. Under retry and
+fallback it names the last target attempted, matching the per-provider error
+counter, the span's target key, the failed lifecycle event, and the target
+quoted in the error.
+
+`api_key_id` on a request-log row is the opaque identifier of the credential a
+request was served under, never the credential itself. Recorded on every stage
+and returned by `GET /admin/logs`. Rows written before the column existed keep a
+null, which is distinct from the empty value an unauthenticated request records.
+Added by request-log schema migration 5; no operator action is required.
+
+`GET /admin/logs` filters on it: `api_key_id=<id>` returns one credential's
+rows, and `api_key_id=none` returns the rows naming no credential — both the
+unauthenticated ones and those written before the column existed. The id is
+matched exactly and is not checked against the key store, so a revoked or
+deleted credential's traffic is still selectable. An empty value is read as
+absent, as it is for the other filters.
+
+The dashboard's Request Logs page shows which key served each request, by name
+rather than by id, and filters by it. A key revoked or expired since is marked
+as such; an id the key store can no longer name is shown as recorded.
+
+`plugin.Context` gains a field. Out-of-tree plugins receive a `*plugin.Context`
+and are unaffected; only code constructing one with an unkeyed composite literal
+would need updating, which no supported usage does.
+
+### Fixed — a failed request records which provider failed
+
+The `on_error` request-log row carried no provider at all: the only place one
+could be read from was the response, which a failure does not have. A stream
+that died mid-response left a row saying something had failed and never what.
+
+### Fixed — a request served from cache is recorded as costing nothing
+
+It was priced as though the provider had been called, so its full estimated cost
+was added to `gateway_request_cost_usd_total` and one prompt repeated a hundred
+times reported a hundred times the spend actually incurred. The row meanwhile
+recorded no cost at all, which reads as "could not be priced" rather than "cost
+nothing". Both now report a known zero, and the row records how long the request
+actually took rather than a duration of zero. Token counts are unchanged — usage
+happened and cost did not — and the row is attributed to the credential that
+consumed it, which for a shared cache entry is not the credential that primed
+it. The budget plugin already declined to bill these requests and still does.
+
+### Breaking — `targets[].retry` applies under every routing mode
+
+Retry was wired only into `fallback`; the other seven modes made a single
+attempt and logged nothing about it, while `config.example.yaml` documented
+`retry` with no caveat. Retry is how many times **one target** is asked and the
+strategy decides whether a **second target** is asked at all — two orthogonal
+knobs, which is how the configuration already reads.
+
+If you carry a `retry` block on a target under `single`, `loadbalance`,
+`least-latency`, `cost-optimized`, `conditional`, `content-based` or `ab-test`,
+that target will now be retried. Set `attempts: 1` to keep the old behaviour.
+
+### Breaking — `Context.Skip` is removed from the plugin API
+
+A plugin that answered a request used to end the whole `before_request` chain,
+so a `response-cache` hit disabled every guardrail listed behind it — the order
+the example config shipped — and a guardrail denial stopped the request logger
+before it recorded anything.
+
+`Skip` is replaced by `SkipProvider`, which declines the **provider call** and
+nothing else: every remaining plugin still runs, `after_request` still runs, and
+a denial still reaches `on_error`. `Context` also gains `Stage`, set by the
+framework, so a plugin no longer has to infer its stage from a nil response.
+
+`Skip` was removed rather than redefined: a plugin written against the old
+meaning fails to compile instead of silently changing behaviour. Third-party
+plugins that set or read it need updating.
+
+A plugin listed at more than one stage is one plugin, so its entries must now
+carry identical configuration; the gateway refuses to start and names the plugin
+otherwise, rather than building two instances that share no state.
+
+### Breaking — the routing index decides which provider owns a model
+
+Most providers answered "yes" to every model, so a request for a model no target
+owned was offered to several providers in turn — prompt included — before being
+refused. Ownership now comes from the routing index: the union of a provider's
+configured, catalog and discovered models.
+
+A provider whose model set is named by whoever deploys it opts in explicitly by
+implementing `core.AnyModelProvider`, and is consulted only when no target owns
+the model. `SupportsModel` remains on the interface but no longer gates routing.
+
+**A model that routed only because a provider claimed everything will stop
+routing.** If a provider serves models the catalog does not list, set
+`FERRO_MODEL_DISCOVERY_INTERVAL` (for example `6h`) so live discovery adds them,
+or name them in that provider's own configuration. Note that `gemini`, `cohere`
+and `perplexity` do not implement live discovery and are catalog-only.
+
+### Breaking — strategy configuration is validated at load
+
+An invalid strategy used to start cleanly and fail at request time: a negative
+`ab_variants[].weight` returned 500 for every request with the reason in no log
+line, and a typo in `conditions[].key` or `content_conditions[].type` silently
+routed all of that rule's traffic to the first target.
+
+These are now `ferrogw validate` and startup errors. Unknown condition keys and
+content-condition types are rejected, a `target_key` must name a declared
+target, and **`weight: 0` means zero traffic** — which is how a target is
+drained before its credential is revoked. A negative weight and an all-zero
+weight set are both errors; previously an all-zero set was an equal split.
+
+### Breaking — `GET /admin/logs` returns one row per request
+
+The endpoint returned one row per plugin **stage**, so a list of requests showed
+each request twice — once complete, once as a started-but-empty row — and
+`summary.total_entries` counted roughly double. The default is now the terminal
+stages. Pass `stage=all` for the previous behaviour, or a named stage to select
+one.
+
+### Breaking — trace sampling follows the parent
+
+The sampler is now `ParentBased`, the OpenTelemetry default. A request arriving
+with a sampled `traceparent` is recorded whatever `sample_ratio` says, so a
+ratio below 1.0 no longer punches holes in a distributed trace. The converse
+also holds: a request whose parent is explicitly **not** sampled is no longer
+recorded, even at `sample_ratio: 1.0`.
+
+### Breaking — `metrics.CircuitBreakerState` is removed
+
+Circuit-breaker state is now read from the breakers at scrape time rather than
+written when a request resolves, so a breaker that recovered while idle no
+longer reports open forever — and an alert on it can clear. Embedders using the
+removed gauge should use `metrics.SetCircuitBreakerStateSource` with the
+`CircuitClosed` / `CircuitOpen` / `CircuitHalfOpen` constants.
+
+### Breaking — `<PROVIDER>_BASE_URL` is the API root on every provider
+
+**Action required only if you set one of the variables below to a value that
+carries a path.** With the variable unset, nothing changes: every provider sends
+byte-identical requests to the same URLs as before, on every surface.
+
+`<PROVIDER>_BASE_URL` used to mean one of two things depending on which provider
+you were configuring. On most it was the API root, used verbatim, so you wrote
+the `/v1` yourself. On eight it was the host root, and the provider appended its
+own version segment — so writing the `/v1` produced `/v1/v1/chat/completions`
+and a 404 that named no cause. An operator could not learn one rule and apply
+it.
+
+There is now one rule, and it is the one every official OpenAI client uses:
+**the value is the API root, taken verbatim, and each surface appends only its
+operation path.** Write it exactly as the vendor documents it, version segment
+included. A base carrying no path at all still resolves to the provider's own
+version segment, so a bare host keeps working.
+
+Eight providers changed. If you set one of these to a value **with a path**, add
+the version segment the provider used to supply:
+
+| Variable | Before | Now |
+|----------|--------|-----|
+| `ANTHROPIC_BASE_URL` | `https://proxy.example.com/anthropic` | `https://proxy.example.com/anthropic/v1` |
+| `DEEPSEEK_BASE_URL` | `https://proxy.example.com/deepseek` | `https://proxy.example.com/deepseek/v1` |
+| `FIREWORKS_BASE_URL` | `https://proxy.example.com/fireworks` | `https://proxy.example.com/fireworks/v1` |
+| `GEMINI_BASE_URL` | `https://proxy.example.com/gemini` | `https://proxy.example.com/gemini/v1beta` |
+| `GROQ_BASE_URL` | `https://proxy.example.com/groq` | `https://proxy.example.com/groq/v1` |
+| `MISTRAL_BASE_URL` | `https://proxy.example.com/mistral` | `https://proxy.example.com/mistral/v1` |
+| `OLLAMA_CLOUD_BASE_URL` | `https://proxy.example.com/ollama` | `https://proxy.example.com/ollama/v1` |
+| `TOGETHER_BASE_URL` | `https://proxy.example.com/together` | `https://proxy.example.com/together/v1` |
+
+If you were working around the old behaviour by **omitting** a `/v1` these
+providers rejected, that suffix is now what you write. `TOGETHER_BASE_URL=https://host/v1`
+reached `/v1/v1/models` before and reaches `/v1/models` now.
+
+Ollama Cloud's native embeddings root follows the configured one, so
+`https://proxy.example.com/ollama/v1` reaches `/ollama/api/embed`.
+
+Two providers are deliberately unchanged, because their vendor publishes no
+single API root: `COHERE_BASE_URL` stays the host (Cohere serves `/v2/chat` and
+`/v1/embed` from it), and `OLLAMA_HOST` stays the Ollama server URL (one server
+mounts both `/v1` and `/api`). `DATABRICKS_HOST` and the `*_ENDPOINT` variables
+are resource hosts and are unchanged too.
+
+The `/v1/*` pass-through proxy reaches the same upstream URLs as before.
+
+### Changed — `targets` is an allowlist on every surface
+
+**Action may be required.** A provider that is registered but not listed under
+`targets` no longer serves requests. Until now embeddings, image generation and
+streaming each fell back to any registered provider when no configured target
+could serve the model, so a provider the operator never listed could answer —
+and bill — a request. Non-streaming chat never did this, which meant the same
+model could resolve to a different provider depending only on which endpoint it
+arrived on.
+
+All four surfaces now agree: a model is served by a configured target or the
+request is refused with 404 `model_not_found`.
+
+If you relied on a provider being reachable without listing it, add it to
+`targets`. `GET /v1/models` continues to advertise every model the gateway can
+route, so a model listed there that now 404s is one whose provider is missing
+from your `targets`.
+
+Relatedly, streaming, embeddings and image generation resolve a target's model
+support the same way the routing strategies always have — against the routing
+index, the union of a provider's configured, catalog and discovered models —
+rather than against the provider's own narrower `SupportsModel`. Previously
+those three surfaces reached a catalog-only model only via the registry
+fallback, so removing it without this would have made them refuse models the
+gateway advertises.
+
+### Changed — `/metrics` and `/debug/*` now require a scope, not just a credential
+
+**Action may be required.** Those routes authenticated but never authorized, so
+any valid credential reached them — including one whose scope authorizes nothing
+else. A read-only key could retrieve a heap dump and the process command line.
+
+They are now split into two tiers, matching where comparable systems draw the
+line: `/metrics` accepts `read_only` or `admin`; everything under `/debug`
+requires `admin`. A monitoring scraper's bearer sits unattended in a config file
+on every node, which is the reason not to make it admin-tier; a profile is a
+memory image that can hold request bodies, keys and prompts, and
+`/debug/pprof/profile` stops the world.
+
+If a Prometheus scrape breaks, its credential needs `read_only` or `admin`.
+`ENABLE_PPROF` still decides whether the pprof routes exist; it never decided
+who may call them.
+
+### Changed — `/readyz` reports not ready when no configured target can serve
+
+An instance whose `targets` name no registered provider previously reported 200
+ready while failing every request with a routing error, so nothing took it out
+of rotation. Readiness now gates on target routability:
+
+| Targets routable | Startup | `/readyz` |
+|---|---|---|
+| all | silent | `200 ready` |
+| some | `WARN` naming the unroutable ones | `200 ready`; `targets[]` marks them `routable: false` |
+| none | `ERROR` naming them | `503`, reason `no routable targets` |
+
+Startup warns rather than exiting: a provider registers only when its credential
+is present, so a target whose key has not rolled out yet is a legitimate config
+that starts serving the moment the secret lands. Readiness gates only on the
+total case — one unroutable target among several is degraded, and pulling an
+instance that still answers most requests out of rotation makes the outage
+worse.
+
+The 503 reason string changed from `no ready providers` to `no routable
+targets`; update anything matching the old literal. `/readyz` ready responses
+now also carry a `targets` array.
+
+### Changed — `POST`/`PATCH /admin/keys` reject an unrecognized scope
+
+Any scope string was accepted, so a typo minted a credential that
+authenticated, looked valid in `GET /admin/keys`, and authorized nothing. The
+valid set is now enforced at the write boundary, returning 400 `invalid_scope`
+naming the offending value and the accepted scopes. Omitting the field still
+applies the least-privilege default. Existing keys are not revalidated.
+
+### Fixed — a config applied over the admin API is decoded as strictly as a file
+
+`PUT`/`POST /admin/config` discarded any key not in the schema and answered
+`{"status":"updated"}`, so a config `ferrogw validate` rejected was accepted
+here and silently applied without the setting that had just been written. The
+two paths now decode identically: an unknown key is a 400 naming it, as is data
+trailing the top-level object.
+
+The field this cost most is `targets[].models`. It is hand-written, nothing else
+supplies it, and a `model:` typo left a config that reported success and then
+routed as though no model had been declared. The same held for `virtual_key`
+and every key under `strategy`.
+
+### Fixed — a base URL keeps the credentials written into it
+
+A `<PROVIDER>_BASE_URL` carrying userinfo — `https://user:pass@proxy.example.com`,
+how a corporate egress proxy is addressed — lost it when the base carried no
+path, and the provider then reached the proxy anonymously. Affected the
+providers that set no `Authorization` header of their own, since HTTP Basic is
+only injected into a request that has none. A base carrying a path was never
+affected.
+
+A base carrying a query string or fragment is now refused at startup rather than
+resolved. An operation path is appended to whatever the root resolves to, so
+`https://host/v1?a=b` asked for `/v1` with the operation buried in a query value
+— a request no configuration could have meant, and one that failed upstream with
+nothing pointing at the cause.
+
+### Fixed — an unroutable model returns 404 rather than 500
+
+A model no configured target could serve produced `500 routing_error`, which
+instructs an OpenAI SDK to retry a request that can never succeed. The two
+conditions are now distinguished: "no configured target serves this model" is
+404 `model_not_found`, while a capable target that was actually called and
+failed keeps its upstream-derived, retryable status.
+
+Routing errors also no longer echo internal state. `all providers failed:
+provider not found: anthropic` disclosed a configured target's name to the
+caller; the response now carries a message describing the class of failure and
+the detail goes to the log. A plugin's rejection reason and an upstream 400/422's
+own message are still passed through, because both are written for the caller.
+
+### Fixed — the gateway's own 429 responses carry `Retry-After`
+
+The per-IP limiter, the per-target concurrency limiter (`provider_saturated`)
+and the rate-limit plugin all returned 429 without the header, so SDKs fell back
+to their own backoff and the gateway's own limiter was the one producing retry
+storms. All three now send `Retry-After: 1` — the honest floor at any rate of
+1 rps or more. An upstream's own hint still takes precedence.
+
+### Fixed — `ferrogw validate` catches what `serve` would reject
+
+`validate` accepted configs that made `serve` exit 1: an unknown plugin name, an
+unknown plugin stage, and a target naming a provider that does not exist. Since
+`validate` is what a deployment pipeline runs as its pre-flight gate, it gave
+false confidence exactly where it is relied on. It now resolves every
+`virtual_key` and every enabled plugin's name and stage against what the binary
+knows, and names the valid values on failure. It deliberately does not check
+credentials — a pipeline runs `validate` without secrets, so a target naming a
+real provider whose key exists only in production is valid.
+
+### Breaking — `max_completion_tokens` supersedes `max_tokens` on every provider
+
+A request naming a small `max_tokens` alongside a large `max_completion_tokens`
+passed a `max-token` cap and then had the large value forwarded upstream:
+providers on the OpenAI API surface forward `max_completion_tokens` and clear
+`max_tokens`, while the guardrail read `max_tokens`. Either field alone was
+correctly rejected. Every entry point — chat, streaming, and the legacy
+completions surface that routes through chat — now resolves the pair to one
+value carried by both fields before any plugin runs, with
+`max_completion_tokens` superseding the deprecated `max_tokens` as the OpenAI
+API itself does, so the ceiling a guardrail approves is the ceiling that
+travels.
+
+**What changes for you.** A request that sets both fields to *different* values
+now gets the `max_completion_tokens` value on **every** provider, including
+those that previously read only `max_tokens` and therefore honoured the smaller
+legacy field. A caller relying on that — sending a large
+`max_completion_tokens` for OpenAI-style models and a small `max_tokens` as the
+effective limit elsewhere — will see longer completions and higher spend on
+those providers.
+
+This is the precedence the OpenAI API itself applies, and the alternative
+considered — clamping to the smaller of the two — was rejected because it
+silently truncates a completion relative to what the identical request returns
+sent directly upstream. Send one field, or set both to the same value.
+
+### Fixed — a rate-limit plugin rate of zero is refused instead of blackholing traffic
+
+`requests_per_second: 0` started a gateway that reported healthy and answered
+429 to every request for the rest of its life; `-1` did the same. Its siblings
+`key_rpm` and `user_rpm` already refused to start on the same value. All four
+fields are rates and all four must now be positive, rejected at load with the
+same message whether it is `ferrogw validate`, `ferrogw doctor`, or startup that
+asks. Turn the plugin off with `enabled: false`. The separate per-IP limiter
+configured by `RATE_LIMIT_RPS` still reads `0` as "no limiting" — there the
+variable is the whole switch — and that difference is now documented on both
+sides.
+
+Plugins can publish deployment-independent config rules through the new
+`plugin.ConfigValidator` interface; `validate` and `doctor` read them without
+constructing the plugin, so no `${VAR}` is resolved and the check still runs on
+a machine with no secrets.
+
+### Fixed — production mode guards more than one setting
+
+`GATEWAY_ENV=production` affected exactly one check. It now refuses to start on
+`ALLOW_UNAUTHENTICATED_PROXY=true` (as before) and on a `*` entry in
+`CORS_ORIGINS`, which is matched literally and therefore permits no
+cross-origin request while reading as though it permits all of them; both
+refusals are reported together. It warns, without blocking startup, when per-IP
+rate limiting is disabled, when `ENABLE_PPROF` has mounted the profiling
+routes, and when the API key store is in-memory — each a defensible deployment
+choice that was previously an INFO line or nothing at all. Outside production a
+`*` CORS entry now warns rather than passing silently.
+
+### Fixed — `ferrogw init` scaffolds only providers this environment can serve
+
+`init` wrote `openai` and `anthropic` targets unconditionally, so an operator
+without an Anthropic key got a starter config naming a provider they could not
+use. It now scaffolds the providers whose credentials are actually present,
+using the same check auto-registration applies at startup. With no credentials
+present it writes a single target labelled in the file as a placeholder, since
+an empty target list would not pass `ferrogw validate`.
+
+### Fixed — provider credentials no longer reach telemetry
+
+An upstream error quoting the credential it rejected was written verbatim into
+spans, structured logs, the request-log store and exported events, at the
+default `privacy_level: metadata`. Redaction matched credential *shapes*, so
+keys without a distinguishing prefix passed through.
+
+The gateway holds the credentials it was configured with, so it now redacts
+them by **value** at every point text leaves the process, naming the variable in
+their place (`[REDACTED:MISTRAL_API_KEY]`) so a rejected key is still
+identifiable. Shape rules remain as a backstop for credentials the gateway never
+saw. Adding a provider requires no redaction change: a test asserts every
+credential-carrying environment mapping is enrolled.
+
+An upstream body that is not one of the recognised error envelopes is no longer
+echoed to the caller at all — a proxy or WAF returning HTML could otherwise put
+an internal hostname, an account identifier and a credential into a client
+response. `mcp_servers[].url` and `observability.tracing.endpoint` are now
+scrubbed from `GET /admin/config`, and an MCP tool failure returns a fixed
+message rather than the transport error.
+
+### Fixed — two instances starting against one fresh database no longer deadlock
+
+Migrations took a global advisory lock and then built an index concurrently on a
+pooled connection. A concurrent build waits for every open snapshot, and a
+second instance blocked on the lock **is** an open snapshot, so neither could
+proceed and neither ever bound its listener. Waiting for the lock no longer
+holds a snapshot, the create-time index build is not concurrent on an empty
+table, and a blocked migration reports itself and gives up rather than hanging.
+
+Expired sessions are also reclaimed rather than only filtered out on read, and
+the idle-activity write is throttled instead of firing on every authenticated
+request.
+
+### Fixed — the configuration in force is the one reported
+
+A persisted configuration takes precedence over the file, which is what makes
+rollback work — but nothing said so, and the startup log described the file it
+had discarded, including plugins that were not running. Startup now names the
+source it resolved and warns when a file was superseded, listing what differs.
+
+Values that can change at runtime are read per request rather than captured at
+startup, so `max_request_bytes` takes effect when it is changed instead of only
+after a restart. `observability` is boot-only and now says so when changed.
+
+### Fixed — the surfaces report failures the same way
+
+An upstream status was recovered by parsing the error text, which worked for
+chat and never for the SDK-backed surfaces. The status is now a field on a typed
+error, which fixes three consequences at once: a deterministic 400 is no longer
+retried (`attempts: 3` had meant nine upstream calls on embeddings), an upstream
+429 no longer opens the circuit breaker and takes the instance out of rotation,
+and a failure is classified rather than reported as an opaque 500.
+
+Alongside that: the gateway's own request timeout returns 504, an open circuit
+returns 503, request duration is observed for failures as well as successes,
+provider errors carry the provider's name, and a plugin rejection on embeddings
+or images is counted as a rejection rather than an error. Embeddings and image
+requests are recorded in the request log, which had only ever recorded chat.
+
+### Fixed — tracing exports where it is pointed
+
+An OTLP endpoint carrying a path — the form collector documentation prints —
+folded the path into the host and exported nothing, reporting the failure below
+the level most deployments log at. Endpoint handling now follows the OTLP
+specification, a malformed endpoint fails at startup rather than silently
+disabling tracing, and either standard endpoint variable activates the pipeline.
+
+Configuration changes are audited, the rate-limit plugin's rejections reach the
+metric named for them, and MCP startup spans are exported — they were created
+before the tracer provider was installed.
+
+### Fixed — the dashboard's plugin catalog matches the gateway
+
+The list of built-in plugins and their settings was maintained separately in the
+web application and had drifted: four of six entries named settings that do not
+exist, in the panel that invites copying them into a configuration. Unknown
+plugin settings are accepted silently, so an operator following it got the
+default rate limit rather than the one they wrote. The gateway now serves its
+own catalog, and a test asserts it against the plugin packages themselves.
+
+### Fixed — the pass-through resolves a model the same way every other surface does
+
+`/v1/*` picked a provider with each provider's advisory `SupportsModel`, i.e.
+whichever registered first and answered yes. A model no configured target served
+was forwarded anyway — body included — and a model an owner *did* serve could
+still reach a different provider. It now resolves through the routing index: an
+unowned model is refused `model_not_found` and nothing is forwarded. The
+`X-Provider` header is unchanged and remains the way to reach an endpoint whose
+model ids no index can enumerate.
+
+### Fixed — `ferrogw validate` and `doctor` reject a disagreeing multi-stage plugin
+
+A plugin listed at several stages must carry identical configuration or the
+gateway refuses to start; both commands reported such a config as valid. The
+rule moved into config validation, which `serve` already reaches, so neither
+command has its own copy. `doctor` also resolves provider and plugin names now —
+it reported a target naming no known provider as healthy.
+
+### Changed — a provider's base URL is the API root, used verbatim
+
+`<PROVIDER>_BASE_URL` was rewritten conditionally on the chat path and passed
+through unmodified on the others, so a base without a `/v1` suffix left chat
+working and sent embeddings and images to the wrong path. The value is now used
+as written, matching what `base_url` means in openai-python, openai-node,
+LiteLLM and Portkey. A base carrying no path at all still resolves to `/v1`,
+since a bare host is not an API root.
+
+One deployment shape changes: a base with a non-`/v1` path such as
+`https://host/openai` previously sent chat to `/openai/v1/chat/completions` and
+now sends it to `/openai/chat/completions` — the same path its embeddings
+already used.
+
+### Fixed — a wrong HTTP method on a native route is refused, not proxied
+
+`/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`,
+`/v1/images/generations`, `/v1/models` and `/v1/capabilities` were registered
+for a single method each, so any other method fell through to the `/v1/*`
+pass-through and was forwarded upstream with the operator's credential — past
+every guardrail, budget, circuit breaker, per-target concurrency limit and the
+`targets` allowlist, and without a log entry. A wrong method on a route the
+gateway serves itself now returns 405 with an `Allow` header. Paths the gateway
+does not serve still reach the pass-through unchanged.
+
+---
+
+The dashboard is rebuilt as a React single-page application. The gateway still
+serves it, from the same binary and the same port as the API.
+
+**No action required to upgrade.** The dashboard moves from `/dashboard` to the
+site root, so `https://your-gateway/` is now the console; the old paths are
+gone. Everything else behaves exactly as it did in 1.3.2 — the Admin API under
+`/admin`, the OpenAI-compatible API under `/v1`, configuration, and every
+environment variable — and the binary is still one file with no external
+services.
+
+```text
+https://gateway.example.com/         -> dashboard
+https://gateway.example.com/admin/*  -> Admin API
+https://gateway.example.com/v1/*     -> gateway API
+```
+
+Because the page and the API share an origin, the dashboard needs no
+`CORS_ORIGINS` entry, no second container, and no separate version to keep in
+step. `CORS_ORIGINS` is still there for browser applications of your own that
+call the gateway from elsewhere.
 
 ### Added
 
-- **`mcp_servers[].required`** — marks an MCP server whose availability gates
-  `/readyz`. Defaults to `false`, so an existing configuration behaves exactly as
-  before. See **Upgrade notes**.
-- **MCP server state on `/readyz`.** The readiness body now reports each
-  configured MCP server's name, readiness, and whether it is required, so MCP
-  health is observable without gating on it. The failure reason is deliberately
-  omitted — the endpoint is unauthenticated and a failure can quote a server URL,
-  an authorization header, or a subprocess command line. It is logged instead.
-- **`gateway_mcp_server_up`** — per-server gauge, `1` when a server completed its
-  handshake and its transport is alive, `0` otherwise.
-- **`gateway_mcp_server_init_failures_total`** — per-server counter incremented
-  when a server fails to initialize. Initialization failures were previously only
-  logged, which left a fully dead MCP fleet indistinguishable from an idle one.
-  Alert on any non-zero value.
-- **Tracing for MCP startup.** Server initialization and tool discovery now emit
-  spans, so the phase where MCP most often fails is visible in a trace rather
-  than only in logs.
-
-### Changed
-
-- The stored config history query now reads a bounded number of the most recent
-  entries instead of the whole table. This is a read bound only; no history row
-  is ever deleted.
-
-### Upgrade notes
-
-- **`/readyz` behaviour is unchanged unless you opt in.** Setting
-  `required: true` on an MCP server means that if the server is unavailable the
-  instance reports not-ready and an orchestrator will take it out of rotation —
-  stopping all traffic through it, including requests that use no tools. Set it
-  only for a server the deployment genuinely cannot serve without.
-- Deployments that already configure `mcp_servers` will see a new `mcp_servers`
-  array in the `/readyz` response body. It is additive; existing fields are
-  unchanged.
-- Error messages returned to clients, written to logs, and sent to observability
-  exporters are now filtered. Text that matches a credential pattern is masked,
-  so tooling that matches on exact upstream error strings may need adjusting.
-- MCP tool calls that return an error result now increment
-  `ferrogw_mcp_tool_calls_total` with `status="error"` rather than `status="ok"`.
-  Dashboards that treated the MCP success rate as near-100% will show the real
-  rate. Label sets on existing metrics are unchanged.
-
-## [1.3.1] — 2026-07-21
-
-Seven defects reported against `v1.3.0`, spanning request handling, routing, and
-runtime reliability. Every one is reachable from ordinary YAML or JSON
-configuration. Nothing that worked before stops working: no request the gateway
-accepted is now refused, no response shape changes, and authentication is
-untouched. Requests that were wrongly refused now succeed.
-
-Much of this is configuration that was quietly not applied. A `retry` block
-worked on chat and was ignored on streaming. A `strategy.mode` of `fallback`
-fell back on `/v1/chat/completions` and did not on `/v1/embeddings`. If you have
-been running with settings that looked correct, some of them are now actually in
-effect — see **Upgrade notes**. The rest are plain defects: a request format the
-endpoint documented but rejected, a discarded `stream_options` value, an API-key
-update applied after it had been refused, and a panicking provider call that
-disabled its target until restart.
+- A standalone React and TypeScript operations application for overview, key management, request logs, provider status, configuration history, analytics, and streaming playground workflows.
+- Component health details on `GET /admin/health` for the API, key store, config store, and request-log backend.
+- A dedicated frontend container with runtime gateway-origin configuration and independent CI and browser checks.
+- Dashboard sign-in exchanges a gateway key for a short-lived session. The session expires after 24 hours or an hour of inactivity, signing out revokes it server-side, and `DELETE /admin/sessions` signs every operator out at once. The key itself is no longer kept in the browser.
+- Configuration history records who applied each version. A dashboard session is attributed to the credential it was minted from, since the session identifies a browser and the credential identifies the operator. Versions written before this release keep no actor rather than being backfilled with a guess.
+- Credential changes are recorded. Creating, updating, deleting, revoking or rotating a key, and signing every operator out, each emit a structured log entry naming the actor and the target. Previously only failures were logged, so a successful deletion of the last admin key left no record at all. These are log entries, so log retention is what bounds how far back the question can be answered.
+- `GET /admin/logs/stats` reports a time series, an input/output token split, and the most frequent failure messages. `buckets=N` asks for a series over the requested range; each dimension group now carries its error and token totals alongside its event count. The aggregation query already computed those totals per group and discarded all but the count, so the gateway could say which model was called most often but not which one consumed the tokens — usually a different model, and the more useful question.
+- Analytics answers what an AI gateway is asked about: traffic and failures over time, token throughput split by direction, which models consume the token budget, and which errors recur. Token direction is reported separately because output tokens bill at a multiple of input tokens, so a single total hides what moves the bill.
+- Request logs record per-request latency, time to first token, and estimated cost. The gateway already measured all three and sent them only to Prometheus and OpenTelemetry, where they cannot be queried by time range — so none of it reached the dashboard, and none of it survived a restart. `GET /admin/logs/stats` now reports latency and time-to-first-token percentiles (p50/p95/p99/max/mean) and attributes spend per provider and per model.
+- Analytics shows request latency, time to first token, and estimated cost per model. Latency is reported as percentiles rather than an average, because a mean hides the tail an operator is paged about: one request in twenty taking ten seconds barely moves it.
+- `plugin.Context` carries a `Measurements` field, so a plugin can read the duration, time to first token and cost of the request it is observing. Additive: an existing plugin compiles and behaves unchanged.
 
 ### Fixed
 
-- **`/v1/completions` rejected documented request shapes.** A `prompt` sent as
-  an array — the batch and token-id forms — and a `stop` sent as a bare string
-  both failed to decode, returning `400`. They failed before the handler chose
-  between pass-through and the chat shim, so they were refused even when the
-  request was being forwarded verbatim to an upstream that accepts them.
-  `gpt-3.5-turbo-instruct` is exactly where batch prompts are used.
-- **Streaming ignored its retry and fallback configuration.** `RouteStream`
-  resolved one provider, called it once, and gave up, so a target returning
-  `503` failed the request outright while the same configuration retried and
-  fell back for non-streaming. Only the start of a stream is retried, and only
-  before any data reaches the caller, so a stream that has begun is never
-  replayed. The start phase is bounded by the configured request timeout; a
-  stream that starts successfully is not.
-- **Retry backoff was zero on non-chat surfaces.** Chat applied a default delay
-  between attempts where streaming, embeddings and image generation fell through
-  to no delay at all, turning three configured attempts into three immediate
-  retries against a provider that had just asked for a pause. Backoff now comes
-  from one place for every surface.
-- **Embeddings and image generation ignored the configured strategy.** Both
-  resolved to the first capable provider, with no fallback, no retry and no
-  request timeout. They now follow the configured target order with the same
-  behaviour as chat. A model served by a registered provider that is not listed
-  under `targets` remains reachable, as before.
-- **A content rule matched every promptless request.** With
-  `strategy.mode: content-based`, a `prompt_not_contains` rule treated the
-  absence of messages as a match, so one such rule captured every embedding and
-  image request regardless of its configured value.
-- **Provider lookup was not stable between calls.** Registration order was not
-  retained, so which provider served a model available from several, the default
-  target order, and the order of `GET /v1/models` could all differ from one
-  request to the next within a single process.
-- **A panicking provider call disabled its target permanently.** Circuit-breaker
-  bookkeeping was not panic-safe: the half-open probe was left held, nothing
-  releases it, and the breaker then rejected every later request for that target
-  until the process restarted.
-- **`stream_options.include_usage` was ignored.** The caller's value was
-  discarded and a usage chunk always requested. A caller asking not to receive
-  one now does not receive one. Usage is still requested upstream and still
-  recorded, so cost accounting, metrics and spend limits are unaffected by what
-  the caller asks for.
-- **Updating an API key applied changes it had rejected.** The new name and
-  scopes were written before the expiration timestamp was validated, leaving the
-  key modified by a request that returned `400`.
-- **Errors raised while starting a stream were not redacted** before reaching
-  observability exporters and event hooks, unlike every other error path.
-- **A misconfigured provider base URL was returned to the caller.** It can carry
-  a credential in its query string; it is now logged server-side only.
-
-- **The model catalog was never actually downloaded.** The fetch was bounded at
-  one second, which is below the real cost of retrieving a multi-megabyte asset
-  through a redirecting CDN, so the gateway fell back to the snapshot embedded
-  at build time on essentially every start — silently, and with pricing that
-  goes stale between releases. The budget is now ten seconds.
-
-### Added
-
-- **Request metrics, cost, tracing spans and lifecycle events for
-  `/v1/embeddings` and `/v1/images/generations`.** These surfaces previously
-  reported nothing, so they showed no traffic and no cost regardless of spend.
-- **`FERRO_MODEL_CATALOG_TIMEOUT`** bounds the catalog fetch (default `10s`).
-  The fetch runs during startup, before the listener binds, so a deployment with
-  blocked or filtered egress would otherwise wait the full budget on every start
-  before falling back. Set it to `0` to skip the remote fetch entirely and use
-  the embedded catalog immediately.
+- A provider call is bounded by how long a model can take to answer rather than how long an HTTP service can take to respond. The default header timeout was 30 seconds, but a provider sends no header until it has something to say — the whole generation for a non-streaming call, the first token for a streaming one — so a reasoning model or a long prompt aborted with a transport error. Seven providers already carried their own longer value for exactly this reason; the 17 streaming providers still on the default, among them DeepSeek, OpenRouter, Mistral, Qwen, Moonshot, Together and Fireworks, now get 120 seconds. Any provider with its own preset still overrides it, and the bound stays finite: with no `request_timeout` configured it is the only thing stopping a provider that accepts a connection and never answers.
+- `GET /admin/config/history` serves the durable trail and `POST /admin/config/rollback` can reach it. The trail was written and never read, so the endpoint served an in-memory list that reset on restart and a rollback could not target a version recorded before it. Version numbers came from two independent counters, so after a restart the version a client saw and the version stored named different configs. A config reset is now recorded too, and a config is applied to the gateway before being persisted, so one the gateway rejects is no longer left in the store.
+- `GET /admin/health` probes the request-log store instead of reporting it healthy unconditionally — it was the only component in that list never asked.
+- The last-admin guard counts only keys that can authenticate today. An expired admin key satisfied the guard while failing authentication, so with one expired and one live admin key, deleting the live one was permitted and locked the operator out immediately.
+- With `n > 1` and MCP tools configured, a tool is executed once rather than once per alternative completion. Each returned choice's tool calls were executed, so a tool that sends mail or writes a row ran once per alternative and the results were flattened across them.
+- A tool name exposed by two MCP servers stays reachable when one dies; the withdrawn server previously kept the name pointed at itself. Reaching the tool-call depth limit is reported rather than handing the model's unexecuted tool calls back to the client, naming gateway-injected tools the caller never declared.
+- Streaming tool-call fragments are merged by index rather than appended, so the response handed to after-request plugins, the request log and cost accounting holds whole tool calls instead of fragmented, duplicated ones.
+- A stalled client on `/v1/*` is cut off: the proxy cleared its write deadline before the flush that reaches the socket, leaving the write that can actually block unbounded.
+- A provider that writes `data:{...}` without the optional space is read correctly. Requiring the space dropped every frame of such a stream, which read as an empty but successful response.
+- Gemini reports completion tokens including thinking tokens, so prompt plus completion equals the total it reports and thinking output is costed at the right rate. The OpenAI `developer` role is mapped to the system role on providers that reject it. Replicate no longer drops an explicit `temperature`, `top_p` or `seed` of `0`. Model lists read from the environment are trimmed, so a space after a comma no longer produces a model name that can never match.
+- Request-log column migrations are idempotent, and the timing and cost columns store the same precision on both backends — they were declared `REAL`, which Postgres stores with about seven significant digits, enough to visibly round a per-request cost.
+- A target is no longer taken out of rotation permanently by a stream start that was abandoned at the request deadline and then succeeded. Its half-open circuit-breaker probe was never resolved, and nothing repairs a half-open circuit stuck at its probe cap, so every later request to that target — streaming and non-streaming — failed with "circuit breaker open" until the process restarted.
+- A request shed while queued on a target's concurrency limiter no longer counts against that target's circuit breaker. It returned a bare context error, which reads as the gateway's own deadline firing against the provider, so a burst of load opened the breaker of a target that was answering everything it was given. It now reports `429 provider_saturated`, as the queue-full shed already did.
+- A configuration reload preserves circuit-breaker and concurrency-limiter state for targets whose settings did not change. Reloading previously rebuilt both, so an open circuit closed and re-admitted traffic to a provider that was still failing, and a second full-capacity limiter briefly joined the in-flight requests. Targets that are new, changed or removed are rebuilt as before.
+- A malformed `targets[].circuit_breaker.timeout` is reported instead of silently becoming the 30-second default.
+- Per-IP rate limiting no longer stalls once its key store fills. At the shipped 100,000-key cap, every request from an unseen address walked the whole store to evict one entry while holding the lock that fronts the rate-limit check on every route — 15ms per insert with all concurrent traffic queued behind it. Eviction is now amortised over the oldest one percent: 52µs per insert on the same benchmark.
+- An observability exporter that panics no longer takes the gateway down. Exporters are third-party code and were dispatched without recovery; the panic is now logged with the exporter's name and the remaining exporters still receive the event.
+- `gateway_requests_total` no longer grows a new time series per request on the non-streaming success and after-request-abort paths, where the provider-reported model was used as a label directly while every other path bucketed it first.
+- A configured alias routes on `/v1/chat/completions`. Aliases resolved inside routing, but the request was tested against the raw model name first and rejected with `400 model_not_found` before it got there — so an alias worked on `/v1/embeddings` and `/v1/images/generations`, which have no such check, and failed on chat.
+- The gateway routes the models it advertises. `GET /v1/models` and the admission check answer from a model index built from a provider's declared models, the catalog and live discovery, but routing selected on the provider's declared models alone. A catalog model returned `500` on non-streaming chat while the same model streamed correctly — affecting Mistral, Vertex AI, Bedrock, Replicate and Gemini models on a default configuration.
+- An unknown model answers `404 model_not_found` rather than `500 server_error`, matching what `/v1/embeddings` already returned for the same condition.
+- A target that sheds a request under its own concurrency limit is no longer retried against that same target. Saturation carries no status code, so it read as a transport failure and the request backed off and returned to the target that had just declined it.
+- The conditional strategy selects the same target on both surfaces. A request matching no rule resolved to the configured fallback when routed and to the first configured target when selecting a streaming target; these differ whenever the two are not the same target.
+- `ferrogw init` tells you to point the gateway at the config it wrote. A config file is read only when `GATEWAY_CONFIG` names it, so following the Quick Start produced a gateway running on the auto-derived default with the new file ignored — no targets, plugins, budgets, retry policy or aliases, and no warning. The Quick Start also now exports provider keys before starting the server: providers are registered at startup, so exports that followed it did nothing for the running process.
+- The built-in plugins that work across the request lifecycle now do both halves of their job. `response-cache`, `budget` and `request-logger` each check or read before the request and store or record after it, but a plugin was built fresh per configuration entry and registered under a single stage, so each ran only its first half: the cache never stored and so never served a hit, `spend_limit_usd` measured spend that nothing accumulated, and the request logger — enabled by default — never wrote the completion row carrying latency, time to first token and cost. Listing a plugin twice did not help, because the two entries did not share state. One instance is now registered at every stage its configuration names, and the example configurations list all three at both stages.
+- The response cache distinguishes requests that differ only in an image or a tool call. Its key covered the plain text of each message, and multipart content collapses only its text, so two vision requests sharing a prompt but referencing different images produced the same key and the second caller received the first caller's answer. Tool calls, tool call ids and reasoning content were likewise absent. Upgrading invalidates existing entries, which for the in-memory store means the first request after a restart.
+- `max_messages: 0` and `max_tokens: 0` disable their limits, as `max_input_length: 0` in the same configuration block always did. `max_messages: 0` previously rejected every request. The input length limit also counts multipart payloads, so an image no longer passes a limit measured only against text.
+- Request log write failures are reported. A store that was down or full dropped the persisted trail with no log line, and the plugin ships enabled.
+- Keys created with `ferrogw admin keys create` carry the scope that was asked for. The command sent the permission under a field name the API does not read, and a key arriving with no scopes was given the admin scope — so `--scope read_only`, and the default, both produced a working admin credential. **Audit keys created through the CLI: any of them may hold admin scope that was never requested.** Existing keys are unchanged.
+- `POST /admin/keys` without a `scopes` field creates a read-only key rather than an admin one. Callers that want admin send `{"scopes":["admin"]}`. The bootstrap credential now stays valid until a stored key can authenticate an admin request, rather than being withdrawn as soon as any key exists — on a deployment with no master key, a read-only first key would otherwise have left no way to create the admin key it still needed.
+- Rotating or removing `MASTER_KEY` invalidates the dashboard sessions minted from it. Such a session previously kept full admin access for the rest of its lifetime, so an emergency rotation cut off the key without cutting off what had been minted from it. Affects persistent session backends; the default in-memory sessions did not survive a restart in any case.
+- Credentials passed to an MCP server as command-line arguments are redacted by `GET /admin/config`, as its headers and environment already were.
+- The client address is resolved from the far end of the proxy chain. `X-Forwarded-For` was read leftmost and the trusted-proxy check applied only to the immediate peer, so behind any appending reverse proxy a caller could choose its own address — taking a fresh rate-limit bucket and a fresh sign-in throttle per request, and writing a forged address into the audit trail. Resolved addresses will change for deployments whose clients send the header.
+- A caller-chosen model can no longer address a path of its choosing on a provider host. AI21's Jurassic route interpolated the model into the request URL unescaped, and Azure OpenAI left dot segments in its deployment, so a caller holding only an inference key could direct a request carrying the operator's provider credential. Every provider was reviewed.
+- Upstream provider failures report what the provider said instead of a blanket `500`. A `429` stays a `429` and carries the provider's `Retry-After`; a `400`, `422` or `404` is reported as the caller's to fix; an upstream `401` or `403` surfaces as `502 upstream_auth_error`, because the rejected credential is the operator's provider key and not the caller's gateway key; other failures surface as `502`, and a timeout as `504`. Alerting keyed on gateway `500`s will see upstream failures move to `502` and `504`.
+- A streaming request that fails partway reports the failure instead of ending as a success. A provider that fails after its headers are out sends an error frame, which decoded into an empty chunk: the caller received a truncated answer with nothing marking it as incomplete, and the failure reached no counter, span or log. Covers the shared OpenAI-compatible reader and the OpenAI provider's own path, which carried the same gap.
+- Stream chunks carrying no choices serialize `"choices": []` rather than `null`. The terminal usage frame, which the gateway requests on every OpenAI stream, previously broke the documented client loop that indexes the first choice on each frame, and the usage totals were lost with it.
+- Gemini reports why the model actually stopped. A response containing tool calls reported `tool_calls` even when Gemini ended it at a token limit or on a safety filter, so truncated and blocked answers were indistinguishable from complete ones; and streaming chunks carrying a tool call reported a finish reason before the stream ended, so a client that stops at the first one lost the later tool calls.
+- `ferrogw admin` renders the records the API returns. The key list read a scope string where an array is sent, the provider list read a model count that is not sent, and the log and configuration-history tables read the response envelope rather than the rows inside it — printing a single empty row in place of every record. The log table reports the persisted stage; there is no HTTP status on that row.
+- Request totals and failure rates count completed requests rather than log rows. The request logger writes one row per plugin stage, so the dashboard previously reported roughly twice the real traffic and half the real failure rate — a gateway failing every request displayed 50%.
+- The playground reports a failed stream instead of presenting it as a finished answer. A mid-stream provider failure or idle timeout arrives as an ordinary frame on an already-successful response, and was discarded, leaving a truncated reply committed as though the model had finished.
+- A newly created key can no longer be lost to a stray click. The dialog that shows it once now requires an explicit dismissal.
+- Failures from revoking, deleting or rotating a key appear inside the confirmation that triggered them. They were rendered behind its backdrop, so the gateway declining to revoke the credential the request came from looked like the button doing nothing.
+- Rotation is refused on an expired key, which previously produced a working-looking secret that could not authenticate.
+- The request-log purge states what it deletes. It ignores the filters on screen, so confirming it while filtered to one provider destroyed every provider's history.
+- A search that matches nothing on the current page no longer hides pagination, and the count no longer divides a filtered numerator by an unfiltered total.
+- Request logging being disabled reads as a disabled feature rather than a failure, on both the logs and analytics pages.
+- Editing configuration is protected. Refreshing no longer discards an edit in progress, and saving is blocked while the buffer still holds the redaction placeholder that the read path substitutes for plugin configuration.
+- The getting-started checklist derives from gateway state rather than browser storage. Visiting a page that returned an error previously ticked its step and announced the gateway was ready.
+- Providers reports registration rather than availability, which is what the status means: a provider with a revoked credential resolved in the registry and showed as healthy.
+- The traffic chart no longer implies an outage when the newest rows span minutes inside a window of hours.
+- Traffic charts cover the selected range rather than one page of the request log. They were bucketed in the browser from at most two hundred rows, which on a busy gateway is a few seconds of traffic drawn as if it were the whole window; the gateway now aggregates the series and says so when a range holds more events than one query returns.
+- A request-log timestamp is stored in UTC regardless of the zone it arrives in. Range filters compare the stored rendering of the timestamp, which is chronological only while every row carries the same offset, so a caller passing a local time wrote rows that sorted into the wrong window.
+- Analytics no longer ranks unattributed events as the busiest provider. Only an answered request carries one — a request is logged before a provider is chosen, and a failure without ever reaching one — so those rows aggregated under "unknown" and took first place.
+- A failed request records how long it took to fail. A provider timing out after thirty seconds and one refusing immediately are different incidents, and the duration is the only record of which it was.
+- A gateway path that climbed above the root resolved to a protocol-relative URL and left the configured origin, carrying the session token with it. No call site could reach it, and the Content-Security-Policy bounded the request, but the guard checked the wrong value.
+- Authenticated responses are no longer written to the browser cache, where several admin bodies could outlive signing out.
+- `POST /admin/session` is throttled independently of `RATE_LIMIT_RPS`. It is the only unauthenticated write path on the gateway, and its only bound was the general per-IP limiter — which shares a bucket with `/v1` traffic and is removed entirely by `RATE_LIMIT_RPS=0`, a setting reached for while tuning inference throughput with no indication it also unbounds sign-in. The allowance is sized for a whole team behind one shared egress address, and its rejections are counted under their own metrics label so a burst of failed sign-ins is distinguishable from a busy gateway.
 
 ### Changed
 
-- **Target ranking no longer holds the gateway lock.** Latency and cost lookups,
-  and the random draw used for weighted load balancing, previously blocked every
-  other request for their duration.
+- **One `deploy/Dockerfile` builds the one image.** The Docker files were spread across the root and `web/`; they are now `deploy/Dockerfile`, `deploy/gateway.release.Dockerfile`, and `deploy/compose{,.dev,.prod}.yaml`. A node stage inside it produces the dashboard bundle that the Go stage embeds, so `make docker-build` yields a single container serving both.
 
-### Upgrade notes
+  The Go stage lists its inputs rather than copying the tree, and the bundle arrives from the node stage rather than the build context, so a dashboard edit costs one inter-stage copy instead of a full Go rebuild.
 
-No migration runs and no configuration change is required. Three things will
-look different, though, all of them the result of configuration now being
-applied where it previously was not — each is worth an operational review before
-upgrading.
+  `gateway` is deliberately the last stage. Render's blueprint spec has no build-target field, so it builds whichever stage comes last, and `render.yaml` deploys the gateway. `gateway.release.Dockerfile` stays separate because GoReleaser builds it against a temporary directory holding only the cross-compiled binary.
 
-- **Which provider serves a request may change.** If `strategy.mode` is anything
-  other than `single` and more than one target can serve a model, embeddings and
-  image generation now follow that strategy instead of always using the first
-  capable provider. This has cost, latency and data-residency implications worth
-  checking before upgrading.
-- **Requests that used to fail may now succeed**, on streaming and on the
-  non-chat surfaces, because retry and fallback now apply there.
-- **Dashboards will show new traffic and cost.** Metrics that aggregate across
-  providers now include embedding and image requests for the first time, which
-  can look like a step change at the upgrade with no change in actual usage.
-  Volume- and cost-based alert thresholds are worth reviewing.
-- **Reported costs may change**, because the gateway now reaches the current
-  catalog instead of the one embedded at build time. Prices are more accurate;
-  models added since the embedded snapshot stop being costed at zero.
-- **Startup can take up to ten seconds longer where egress to the catalog host
-  is blocked or slow**, since the fetch precedes the listener binding. If
-  readiness probes are tight, either widen them or set
-  `FERRO_MODEL_CATALOG_TIMEOUT` to a shorter value — or to `0` on air-gapped
-  deployments, which skips the fetch entirely.
+  Sharing a context means sharing one `.dockerignore`, which Docker reads only from the context root. `web/.dockerignore` is therefore removed and its rules moved into the root file under `web/` prefixes. Patterns there are anchored at the root and a single `*` does not cross `/`, so `web/.env` is spelled out separately from `.env` — without it, an operator's local file would reach the Vite build, which inlines every `VITE_`-prefixed value into the published bundle.
 
-## [1.3.0] — 2026-07-20
+  `make up` starts one container. The dashboard is at the gateway's own address, so there is no second service, no second port, and no second image to publish.
 
-MCP servers can now be launched as local subprocesses, so any `npx`, `uvx`, or binary MCP server can be used without standing up an HTTP endpoint for it. Alongside the new transport, two long-standing defects in the existing MCP path are fixed — both of which affected the gateway whether or not you used MCP deliberately.
+  `make up`, `make up-prod`, `make down`, and `make docker-build` wrap the base-plus-override file pair, so the paths do not have to be typed. Anyone invoking Compose directly needs the new ones: `docker compose -f deploy/compose.yaml -f deploy/compose.dev.yaml up`. Two paths that resolve against the Compose file's own directory changed with it — the dev config mount and the prod `config.yaml` mount are now `../`, keeping both files at the repository root where they were. The Compose project name is pinned to `ai-gateway`, the value it previously derived from the directory; without that, moving the files would have renamed the project to `deploy` and left an existing stack's containers, volumes, and networks orphaned beside a new one.
 
-Thanks to [@gr3enarr0w](https://github.com/gr3enarr0w) for contributing the stdio transport (#121).
+  `.dockerignore` and `render.yaml` deliberately stayed at the root: Docker resolves `.dockerignore` from the build context root rather than from beside the Dockerfile, so a copy moved into `deploy/` would have stopped applying without any error, and Render only reads `render.yaml` from the root. Both now point into `deploy/`.
 
-### Added
+- **Dependabot tracks the dashboard's build base.** The `docker` ecosystem entry scanned `/` only, and that ecosystem does not recurse, so the dashboard image's bases went untracked while it lived in `web/` — with no error and no pull requests to notice the absence of. The `node`, `golang`, and `alpine` bases now all sit in `deploy/Dockerfile`, which the entry points at.
 
-- **MCP stdio transport.** An `mcp_servers` entry may now set `command` (with optional `args`) instead of `url`, and the gateway launches that process and speaks MCP over its stdin/stdout for the gateway's lifetime. Exactly one of `url` or `command` must be set; both or neither is a config error naming the server. The existing Streamable HTTP transport is unchanged, and the two are interchangeable everywhere tools are consumed (#121).
-- **Subprocess environment isolation.** An MCP subprocess does **not** inherit the gateway's environment. It receives `PATH`, `HOME`, `LANG`, and `TMPDIR` when set, plus exactly the keys under that server's `env` — so no gateway credential such as `OPENAI_API_KEY` or `MASTER_KEY` reaches an MCP server implicitly. Isolation is from *implicit* inheritance, not a prohibition: anything a server needs must be listed in its `env`, and a credential placed there deliberately is passed through as configured. The same applies to `HTTPS_PROXY`, `NODE_PATH`, or `SSL_CERT_FILE`.
-- **`${VAR}` references in a stdio server's `env`.** Resolved when the MCP client is constructed, the same treatment `headers` already received, so the config keeps the reference and never stores the secret. Since the gateway environment is not inherited, this is the only channel by which a credential reaches an MCP subprocess. `GET /admin/config` redacts `env` alongside `headers`.
-- **Subprocess diagnostics.** A stdio server's `stderr` is drained into the gateway log at debug level, one record per line. A server that dies on a missing API key or a permission error now says so in the log instead of surfacing as an opaque timeout.
+- **Breaking: `POST /v1/completions` is served through the gateway rather than forwarded to the provider.** The route was answered straight from the provider registry while every sibling route was answered by the gateway, so it applied none of it — a prompt a guardrail blocked on `/v1/chat/completions` was served here unfiltered and unbilled, and a provider whose credential was configured but which was deliberately left out of `targets` was reachable through it. Configured targets, aliases, the routing strategy, plugins, the circuit breaker, per-target concurrency limits, metrics and request logging now all apply, and upstream failures are classified as they are on the other routed surfaces.
 
-### Fixed
+  The verbatim upstream forward is removed rather than kept alongside, because the two cannot coexist: running the pipeline around a verbatim forward would inspect the translated request and send the raw one, so a transform plugin's rewrite would be silently discarded, and keeping the forward only for request shapes the chat translation cannot express would let a caller opt out of the guardrails by sending one of those shapes.
 
-- **A misconfigured MCP server no longer disables streaming.** The agentic-loop redirect keyed off whether any MCP server was *registered*, which is true before the handshake runs and stays true after one fails. A single unreachable endpoint or typo'd command therefore turned every `stream: true` request on the gateway into one buffered chunk — for every caller, including those making no use of MCP — with no error and no way to notice beyond the missing token-by-token delivery. Activation now keys off tools actually discovered, matching the non-streaming path.
-- **Caller-supplied tool calls are no longer intercepted.** With MCP active, every tool call in a model response was executed as if the gateway owned it. A client that sent its own `tools` array — the ordinary OpenAI function-calling pattern, where the client executes the call and posts the result back — had its call swallowed and answered with a fabricated *"tool not found in any registered MCP server"*, never receiving `finish_reason: "tool_calls"`. Tool calls the gateway does not own are now passed through untouched, so enabling MCP no longer breaks existing client-side tool integrations.
-- **A single model response can no longer trigger unbounded tool execution.** `max_call_depth` bounded how many turns the agentic loop ran but nothing bounded the calls within one turn, so a response carrying thousands of `tool_calls` produced that many executions and conversation messages, re-sent to the provider on every subsequent turn. Tool calls are capped per turn.
-- **Stdio servers launched via `npx` no longer leak processes.** `npx` and `uvx` exec the real server as a separate process, and terminating the launcher does not terminate what it started, so every gateway shutdown and config reload left a live server behind holding its pipes. Subprocesses are now started in their own process group and the group is swept after the polite shutdown sequence completes. On Windows the previous single-process teardown is retained.
-- **A stdio server writing heavily to `stderr` no longer wedges.** Its output went to a pipe nobody read, so once the operating system's pipe buffer filled, the server blocked mid-write and stopped answering requests entirely while still appearing to be running.
-
-### Changed
-
-- **MCP tools are advertised only when the request carries no tools of its own.** Previously every MCP tool definition was injected into every chat completion, alongside whatever the caller sent. That let the model answer with one MCP call and one caller call in the same turn — which neither side can complete: the gateway has no implementation for the caller's tool, and the caller never declared the MCP one. Requests that send their own `tools` array now pass through untouched, streaming included, and are unaffected by MCP entirely. Requests that send none behave exactly as before.
-- **`mcp_servers[].env` documentation corrected.** The published field documentation described `env` as merged with the gateway's environment. It is not, and was not: the values listed are combined with a minimal base only. The godoc, README, and example config now describe the actual behavior.
-- **Environment-reference documentation corrected across the config surface.** Several field docs and example comments described `$VAR` as a usable reference and attributed substitution to `LoadConfig`. Only the braced `${VAR}` form is a reference, a bare `$` is literal data, an undefined variable is an error, and resolution happens when the component is constructed — never at config load, which is what keeps secrets out of the config-history store. The behavior is unchanged since v1.2.0; only the documentation was wrong.
-
-## [1.2.0] — 2026-07-14
-
-The capability release. The gateway now has a single, declarative record of what each provider can actually express, and enforces it — so a parameter a provider cannot honor is no longer silently dropped on the wire. Alongside it: per-request deadlines, per-target concurrency limits, split liveness/readiness probes, and a cross-provider conformance suite.
-
-This release contains behavior changes for plugin authors, for retry configuration, and for `${VAR}` substitution. Read **Changed** before upgrading.
-
-### Added
-
-- **Provider capability matrix and `GET /v1/capabilities`.** `providers/capabilities` declares, from one source, which OpenAI chat parameters each provider forwards, translates, or cannot express. It is served over the API and consumed by enforcement, so what the gateway advertises and what it does are the same thing (#207, #275).
-- **`compatibility.on_unsupported_param`.** Choose what happens when a request carries a parameter the target provider cannot express: `warn` (default — log and forward), `drop` (strip it), or `reject` (fail with 400 `unsupported_parameter`). Previously such a parameter was quietly discarded by the adapter with no signal at all.
-- **`request_timeout`.** Bounds a single non-streaming request end to end — plugin stages, the provider call, and every retry and fallback attempt combined. Omitted means no gateway-imposed deadline; the provider clients' own timeouts still apply. Streaming is exempt, except the MCP agentic path, which returns one complete response and is bounded like any other non-streaming request (#277).
-- **Per-target concurrency limits.** `targets[].concurrency` bounds in-flight requests to a provider (`max_concurrency`) with a bounded wait queue (`queue_size`). A saturated target sheds with 429 `provider_saturated` rather than piling up. A streaming request holds its slot until the stream ends (#248).
-- **`/livez` and `/readyz`.** Liveness and readiness are now separate signals for orchestrator rollout gating: `/livez` reports process liveness only, `/readyz` reports whether the gateway can actually serve traffic. `/health` is retained (#279).
-- **Cross-provider conformance suite.** `test/conformance/` builds every provider through its `ProviderEntry` — the same seam the gateway uses — points it at a stub returning that provider's *native* payload, and asserts the translated OpenAI-shaped response. It needs no network, Docker, or credentials, and runs with `make test`. A new provider must add a fixture or declare why it cannot have one (#276).
-
-### Changed
-
-- **Plugins deny by verdict, not by error (breaking for plugin authors).** A plugin that *denies* a request and a plugin that *breaks* were reported the same way. They are now distinct: set `Context.Reject` to deny (unchanged status codes), and return an error only when the plugin itself failed — which now yields 500 `plugin_error`. The sharpest case this fixes: a rate-limit plugin whose backend was down returned **429 rate_limit_exceeded**, which every OpenAI SDK reads as "back off and retry", turning an outage into a retry storm against a gateway that was not busy, just broken. Plugin failures are also counted as errors rather than rejections, so a plugin outage no longer looks like a wave of blocked prompts (#288).
-- **`Context.Reject` is honored for every plugin type.** It was silently discarded for logging, metrics, and transform plugins, contradicting its documented contract.
-- **Transform plugins fail closed.** They were grouped with logging and metrics as fail-open, so a transform that could not sanitize a payload let it through. Only plugins that observe the request rather than gate it — logging and metrics — fail open.
-- **Retries are limited to retryable statuses by default.** The default retryable set is now 408, 429, and 5xx. A 400 or 401 is a client error that will fail identically on every attempt; retrying it only multiplied the latency. Retry delays use exponential backoff with full jitter, honor a provider's `Retry-After` (capped at 30s), and stop at the request deadline (#278).
-- **`${VAR}` substitution is stricter and happens later.** Only the braced `${VAR}` form is a reference; every other dollar sign is data. The previous shell-style expansion consumed bare dollars, so a word-filter blocked word `$100` became `00` — silently weakening a guardrail — and a password like `pa$$w0rd` was mangled. An undefined variable is now an error rather than a silently empty secret. Substitution also moved from config load to component construction, so the config never carries a materialized secret into the config-history store or a rollback, and references pushed through the admin/GitOps config API — which never passed through the file loader — are now resolved too (#283).
-- **`observability.tracing.enabled` is a tri-state (source-breaking for Go API users).** `TracingConfig.Enabled` changed from `bool` to `*bool`, so an explicit `enabled: false` is a hard kill switch even when an endpoint is configured. Omitted infers activation from a configured endpoint or exporter, as before (#284).
-
-### Fixed
-
-- **A hung provider now trips its circuit breaker.** The gateway's own request deadline was indistinguishable from a caller cancelling, so it was excused: a provider that stopped responding never tripped its breaker, stayed in rotation indefinitely, and `/readyz` — whose only provider signal is circuit state — kept reporting the pod ready. The deadline now carries an explicit cause, so a slow provider is attributed to the provider. Errors the gateway raises itself, such as shedding under its own concurrency limit, never blame the provider.
-- **AI21 no longer has parameters stripped from Jamba requests.** AI21 is dual-path: its advertised Jamba models speak the OpenAI-compatible API, while only the deprecated Jurassic endpoint is parameter-limited. Support is now declared where the Jurassic request is built, so `drop` mode no longer strips tools and `response_format` from every Jamba request (#207).
-- **The concurrency limiter no longer misrepresents a provider's capabilities.** Wrapping a provider had forced the wrapper to re-declare every optional interface, which made a chat-only provider look like it supported embeddings, images, and discovery. The limiter now decorates at the call site and exposes only the base interface, so capability detection always sees the real provider.
-- **The capability drift guard can now fail.** It asserted a property that held by construction for any input, including a provider ID the matrix had never heard of — precisely the drift it existed to catch.
-
-## [1.1.22] — 2026-07-11
-
-The closeout of the v1.1.x hardening release line — streaming lifecycle, configuration validation, persistence consolidation, and provider fixes. One behavior change to note: configuration files are now rejected when they contain unrecognized keys (see **Changed**). The public Go API is otherwise unchanged.
-
-### Added
-
-- **Config `apiVersion` field.** An optional, advisory `apiVersion` (currently `v1`) can be set at the top of a config file. It is informational: an omitted value defaults to the current version, and an unrecognized value is accepted with a warning for forward compatibility.
-- **Qwen live model discovery.** The Qwen provider can now refresh its model list from the provider's `/models` endpoint, opt-in via `FERRO_MODEL_DISCOVERY_INTERVAL`, like the other OpenAI-compatible providers.
-
-### Changed
-
-- **Configuration is now strictly validated: an unrecognized key fails the load** instead of being silently ignored, so a typo like `strategy:` is reported at startup rather than dropping a whole block. Free-form plugin and exporter `config` maps still accept any key. JSON configs can no longer carry `_`-prefixed pseudo-comment keys; the field documentation lives in the YAML example instead.
-- **All persistent stores share one schema-migration path.** The API-key, config, and request-log stores now open, bind placeholders, and migrate through a single internal SQL layer, and each store's schema is versioned through the migration runner (baseline-adopted on databases from earlier releases). Behavior is unchanged; the consolidation removes the per-store SQL variations that previously drifted.
-
-### Fixed
-
-- **Streaming responses no longer leak a goroutine when a client disconnects mid-stream.** Every provider's streaming producer now abandons a pending send once the request context is cancelled, so the producer returns and its upstream HTTP body is closed instead of blocking forever.
-- **Streaming requests probe a recovering provider's circuit breaker exactly once.** The streaming path previously consumed the single half-open probe permit at provider-selection time and again at send time, so a recovering provider could never be retried by a streaming request.
-- **Streaming target selection now matches non-streaming.** The load-balance, conditional, and content-based strategies select the same candidate targets on both paths, so a streaming request can no longer be weighted toward or routed to a target that does not serve the requested model.
-- **Gemini** requests no longer emit a doubled `models/` prefix in `generateContent` URLs when a model id already carries it.
-- **Bedrock** Cohere embedding requests now forward the `input_type` parameter, so embed calls that depend on it are handled correctly upstream.
-- **Config history is persisted atomically with the active config.** A save now writes the active config and its history record in one transaction, so a crash can no longer leave the stored config ahead of its audit trail (#292).
-- **A concurrent index build that fails transiently is retried on the next start** rather than being recorded as applied and skipped permanently.
-- **Key-store file permissions are applied to the real file even for `file:` URI DSNs.** The SQLite path resolver now decodes percent-escapes and query suffixes the way SQLite opens the file, so the owner-only restriction always targets the actual database file. The API-key schema also migrates through its own dedicated ledger, keeping its version sequence independent of the other stores that may share a database.
-
-### Internal
-
-- Consolidated gateway internals: extracted the plugin hook bus, added a shared target-selection seam between the streaming and non-streaming routers, routed plugin and tool spans through the observability seam, and removed redundant locking around `math/rand`.
-- Enabled a stricter linter set and cleared the findings; added fuzz targets and goroutine-leak coverage for the streaming and parser paths; the release build now gates on the test suite and signs its artifacts.
-
-## [1.1.21] — 2026-07-10
-
-Key hashing and storage hardening — the fourth phase of the v1.1.x hardening release line. The Go API is unchanged; two admin endpoints change their response values (see **Changed**).
-
-### Security
-
-- **API keys are now stored hashed at rest.** The gateway persists `sha256(key)` plus a display form, and looks a key up by its hash. The full secret is returned exactly once, from `POST /admin/keys` and `POST /admin/keys/{id}/rotate`, and cannot be recovered afterwards. Existing databases are migrated in place on first start.
-- The migration **rebuilds the key table** rather than dropping the plaintext column, so the secrets are removed from the database file itself. Dropping the column would leave them readable on disk: SQLite retains freed pages until `VACUUM`, and Postgres `DROP COLUMN` only updates the catalog. On SQLite the migration additionally vacuums and truncates the write-ahead log.
-- Operators who need a hard guarantee that no earlier copy of a key survives — in backups, WAL archives, replicas, or unlinked filesystem blocks — should **rotate their keys after upgrading**. No schema migration can reach those copies.
-- **Bootstrap credentials now fail closed.** `ADMIN_BOOTSTRAP_KEY` and `ADMIN_BOOTSTRAP_READ_ONLY_KEY` are accepted only against a key store that is confirmed empty. Previously a key store that could not be read reported zero keys, which re-opened the bootstrap credentials during a database outage.
-- **SQLite database files are restricted to owner-only access before any data is written to them**, rather than after the schema is initialized. SQLite creates files honoring the process umask, so a database could previously be world-readable for the duration of startup.
-- An `Authorization: Bearer` header with an empty value is no longer matched against the key store.
-- **The request-logger plugin no longer opens its own database from plugin config.** It records through the shared request-log store the gateway builds from `REQUEST_LOG_STORE_BACKEND` / `REQUEST_LOG_STORE_DSN`, so no request-supplied value reaches the filesystem. This removes a path where a config submitted over `POST/PUT /admin/config` could create a file at an arbitrary location.
-
-### Added
-
-- **Versioned schema migrations.** Schema changes now run through a `schema_migrations` ledger, replacing repeated `ALTER TABLE` statements whose failures were classified by matching the error message text. Databases created by earlier releases are adopted at the baseline version rather than re-initialized. On Postgres the runner holds an advisory lock for its duration, so several gateway instances sharing one database can start at the same time.
-
-### Changed
-
-- `GET /admin/keys`, `/admin/keys/{id}` and `/admin/keys/usage` return the `key` field as `fgw_ab12...cd34`, keeping both ends of the secret so an operator can match a key they hold against a listed record. It was previously truncated to a leading fragment.
-- `GET /admin/logs/stats` computes its aggregates in the database instead of scanning up to 5,000 rows into memory, so its counts are now exact for any number of matching entries. The `truncated`, `scan_limit`, and `available_entries` summary fields described the old scan cap and have been removed.
-- **The request-logger plugin's `backend` and `dsn` options are obsolete and ignored** (with a startup warning). Persistence now targets the shared request-log store; configure it with `REQUEST_LOG_STORE_BACKEND` and `REQUEST_LOG_STORE_DSN`. A deployment that previously set only the plugin's `dsn` should move that value to `REQUEST_LOG_STORE_DSN`. This also fixes a case where the admin log views read a different database than the plugin wrote to.
-
-### Fixed
-
-- The admin dashboard's key table showed every key as `fgw_...` because it truncated a value the server had already truncated. Keys are now distinguishable from one another.
-- `request_logs` gains an index on `created_at`, which serves the log listing's ordering, the retention delete, and the stats time filter. On Postgres it is built with `CREATE INDEX CONCURRENTLY` so an existing table's writers are not blocked during a rolling restart.
-- The bootstrap-key check no longer loads every API key on unauthenticated admin requests.
-
----
-
-## [1.1.20] — 2026-07-09
-
-Streaming deadlines and serving robustness — the third phase of the v1.1.x hardening release line. All changes are additive/behavior-preserving for the public API.
-
-### Security
-
-- **Long-lived streaming responses** on pass-through proxy routes and legacy completions streaming are no longer truncated after 120 seconds. Each client-facing write now carries its own short deadline, and a slow client that stops reading is disconnected instead of blocking a request goroutine.
-- **Upstream idle bound.** Because per-write deadlines take the server's overall write timeout out of play, both streaming paths now cancel the upstream request when it produces no data for 5 minutes. A stalled or trickling provider can no longer hold a connection open indefinitely.
-- **Browser-facing responses** now include Content-Security-Policy and Permissions-Policy headers in addition to the existing baseline security headers. The policy sets `script-src 'self'`, so the admin dashboard no longer relies on inline scripts or inline event handlers.
-- **Build toolchain pinned to Go 1.25.12**, picking up the fix for [GO-2026-5856](https://pkg.go.dev/vuln/GO-2026-5856) — an Encrypted Client Hello privacy leak in `crypto/tls`.
-
-### Changed
-
-- **Provider auto-registration** now warns and skips a single configured provider when its factory fails, allowing the gateway to continue serving with other valid providers. Fatal startup behavior is unchanged for invalid config, store initialization, plugin loading, and other process-level failures. Each skip increments the new `gateway_provider_init_failures_total{provider}` counter — alert on it, since the gateway stays healthy with the provider missing.
-- **`/health`** now returns HTTP 503 for degraded or no-provider states while preserving its JSON response body, so load balancer and Kubernetes probes can act on it. `/admin/health` is bearer-authenticated rather than a probe target and continues to return 200, reporting state in the body.
-- **`ferrogw status` and `ferrogw doctor`** distinguish a degraded gateway from an unreachable one and print the reported status.
-
-### Fixed
-
-- **Panic recovery** now returns the gateway's JSON error envelope from the outermost HTTP middleware layer, so panics raised inside the tracing and logging middleware are recovered too. Recovered panics are logged with a stack trace and the request's trace ID.
-- **Request metrics** now bucket unknown or arbitrary model names under the bounded `unknown` model label on both the rejected and error paths. Previously any request naming an unroutable model minted a new Prometheus series and a permanent metric-handle cache entry.
-
----
-
-## [1.1.19] — 2026-07-09
-
-Provider read bounds and typed errors — the second phase of a multi-phase hardening release line. All changes are additive/behavior-preserving.
-
-### Security
-
-- **Upstream provider responses** are now capped at 50 MiB when read into memory, across every provider, closing a gap where a single oversized upstream response could exhaust gateway memory.
-
-### Fixed
-
-- **DeepSeek streaming responses** now report cache-hit token counts (`cache_read_tokens`) consistently with non-streaming responses; the streaming path was previously dropping this field.
-
-### Internal
-
-- Provider HTTP errors now carry their status code as a typed field, recoverable via `errors.As`, in addition to the existing formatted message, so retry and circuit-breaker classification no longer depends solely on parsing the status out of the error string. Added a cross-provider conformance test covering upstream error-status recovery.
-
----
-
-## [1.1.18] — 2026-07-08
-
-Critical fixes and security hardening — the first of a multi-phase hardening release line. All changes are additive/behavior-preserving: no public config key or Go signature is removed or renamed.
-
-### Security
-
-- **Response cache** no longer shares a single cached response object across concurrent requests hitting the same cache key. Each cache hit, and each response being newly cached, now gets its own independent copy, closing a data race that could occur under concurrent load.
-- **SQLite-backed stores** (API keys, config snapshots, request logs) now restrict their on-disk database file to owner-only read/write (0600) instead of the default umask-derived permissions, which could leave the file group- or world-readable.
-- **Rate limiting** is now enabled by default for every deployment: 20 requests/sec with a burst of 40 per client IP, capped at 100,000 tracked IPs. Set `RATE_LIMIT_RPS=0` to opt out; `RATE_LIMIT_RPS`/`RATE_LIMIT_BURST` override the defaults. Deployments that already set a custom `RATE_LIMIT_RPS` without `RATE_LIMIT_BURST` will now get the default burst (40) rather than a burst equal to their custom rate — set `RATE_LIMIT_BURST` explicitly to preserve the old behavior. Rate limiting keys on the resolved client IP, so `TRUSTED_PROXIES` must correctly list any reverse proxy in front of the gateway, or all traffic behind that proxy is limited as a single client.
-
-### Internal
-
-- The build toolchain is now pinned to Go 1.25.11 (previously 1.25.0), matching the version already used by CI and the published Docker image, closing a gap where a plain source build could pick up an older, unpinned patch version.
-
----
-
-## [1.1.17] — 2026-07-06
-
-Provider readiness closeout — the eighth and final phase of the provider-readiness remediation. A hygiene and quality release: shared validators, dead-code removal, broad test coverage, and one security hardening. It contains a single behavior change (the Ollama Cloud chat surface), noted under Changed.
-
-### Security
-
-- **Gemini** now authenticates native calls with the `x-goog-api-key` header instead of the `?key=` query parameter. The key was previously part of the request URL, where it could be recorded in request-URL span attributes and proxy access logs. Authentication is otherwise unchanged and the key no longer appears in any request URL.
-
-### Changed
-
-- **Ollama Cloud chat** now uses the OpenAI-compatible `/v1/chat/completions` and `/v1/models` endpoints instead of the native `/api/chat` and `/api/tags`, recovering full sampling-parameter coverage, normalized finish reasons, and real upstream tool-call IDs. Embeddings remain on the native `/api/embed` endpoint; the base URL (`https://ollama.com`) and the `OLLAMA_API_KEY` environment variable are unchanged. Direction credited to community PR #243.
-- **Transport presets** added for Azure AI Foundry, Ollama Cloud, and Perplexity so large-model and long-running first responses are not aborted by the default 30-second header timeout.
-
-### Fixed
-
-- **Gemini and Vertex AI** image generation now surface the returned safety-filter reason when every prediction is filtered, instead of a generic "no images" error.
-
-### Internal
-
-- Shared `core.NormalizeEmbeddingInput` and `core.ValidateEmbeddingEncodingFormat` replace duplicated per-provider embedding validators (Azure OpenAI and Databricks keep their stricter local validators by design). Extracted `chatParams()`/`headers()` helpers (xAI, Moonshot, OpenRouter, Novita) and a Vertex AI `doPredict()` helper; OpenAI chat request bodies now use the pooled buffer path. Removed dead code (Bedrock section banners and unused image fields, AI21 Jurassic token detail, a Cloudflare field, a duplicate Together model id) and split the Gemini embedding path into its own file to stay under the file-size limit. Added request-shape, error-path, and shared streaming error-path tests across many providers.
-
----
-
-## [1.1.16] — 2026-07-06
-
-Local & prediction-API provider fidelity release. The seventh provider-readiness remediation phase aligns the Hugging Face, Ollama, Ollama Cloud, and Replicate providers — which use task-specific, prediction, and native (non-OpenAI-wire) APIs — on request/response correctness. No breaking API changes relative to v1.1.15.
-
-### Fixed
-
-- **Hugging Face default endpoint**: the default base URL now targets `https://router.huggingface.co/v1`; the previous `api-inference.huggingface.co` host is retired and returns HTTP 410.
-- **Hugging Face embeddings and image generation**: both now use Hugging Face's task-specific routes and schemas (feature extraction returns a bare vector array; text-to-image returns raw image bytes) instead of OpenAI-shaped requests that hit the wrong endpoints.
-- **Replicate token usage & finish reasons**: chat responses now populate token usage from prediction metrics and normalize finish reasons instead of hardcoding them.
-- **Ollama Cloud sampling parameters**: `stop`/`seed`/presence/frequency penalties are now forwarded, remaining unsupported parameters are reported rather than dropped silently, finish reasons are normalized, and tool-call IDs are populated.
-- **Ollama embedding dimensions**: the `dimensions` parameter is now forwarded to Ollama's native embeddings endpoint.
-
-### Changed
-
-- **Replicate authentication** (operator-visible): the provider now sends the documented `Bearer` authorization scheme instead of the deprecated `Token` scheme (Replicate still accepts both).
-- **Replicate request timeout**: a tuned transport preset raises the response-header timeout so `Prefer: wait` predictions (held up to ~60s) are not aborted by the default 30s timeout.
-- **Ollama Cloud embeddings**: Ollama Cloud now supports an embeddings endpoint.
-- **Base-URL validation** is now enforced at construction for Hugging Face, Ollama, and Replicate.
-
----
-
-## [1.1.15] — 2026-07-05
-
-OpenAI-compatible provider fidelity release (part three) and Cloudflare. The sixth provider-readiness remediation phase aligns the AI21, Cloudflare, DeepInfra, Qwen, and SambaNova providers on request/response correctness. No breaking API changes relative to v1.1.14.
-
-### Fixed
-
-- **AI21 Jamba errors and usage**: the Jamba chat and streaming paths now route through the shared OpenAI-compatible path, so errors, finish reasons, and streaming token usage are handled consistently.
-- **Error message extraction**: a gateway-level error returned as a `{"detail":"…"}` body (e.g. AI21 authentication errors) now surfaces the extracted message instead of the raw JSON body.
-- **AI21 model list**: refreshed to the current Jamba 1.7 generation; the deprecated Jurassic `/complete` path is retained but marked legacy.
-- **Cloudflare embeddings**: now route through the shared embeddings path, so errors surface consistently and input is normalized.
-
-### Changed
-
-- **Live model discovery** added for DeepInfra and SambaNova (self-updating model lists).
-- **SambaNova embeddings**: SambaNova now supports the embeddings endpoint via the shared helper.
-- **Base-URL validation** is now enforced at construction for AI21, Cloudflare, DeepInfra, Qwen, and SambaNova.
-
----
-
-## [1.1.14] — 2026-07-05
-
-OpenAI-compatible provider fidelity release (part two). The fifth provider-readiness remediation phase aligns the xAI, OpenRouter, Moonshot, NVIDIA NIM, Perplexity, and Novita providers on request/response correctness, and adds shared improvements that benefit every OpenAI-compatible provider. No breaking API changes relative to v1.1.13.
-
-### Fixed
-
-- **Reasoning & cache token usage** (xAI, OpenRouter, and every OpenAI-compatible provider): usage reported in the nested OpenAI form (`prompt_tokens_details.cached_tokens`, `completion_tokens_details.reasoning_tokens`) is now decoded into the reported token counts on both the chat and streaming paths instead of being dropped.
-- **Perplexity Sonar metadata**: citations, search results, images, and related questions are now surfaced (under a `provider_metadata` response field) instead of being discarded.
-- **Perplexity model discovery**: the always-failing discovery call (it targeted a nonexistent endpoint and returned the wrong model family) is removed; the static Sonar model list is authoritative.
-- **Perplexity model list**: the retired `sonar-reasoning` model is removed (`sonar-reasoning-pro` replaces it).
-- **NVIDIA NIM embeddings**: now route through the shared embeddings path, so errors surface consistently and `input_type` is forwarded.
-- **xAI image responses**: decode into the canonical image response type and route errors through the shared error envelope; the `user` field is now forwarded, and `size`/`quality`/`style` are reported as dropped when a Grok image model ignores them.
-- **parallel_tool_calls**: a client-supplied `parallel_tool_calls` is now forwarded to the provider instead of being dropped at the HTTP boundary.
-
-### Changed
-
-- **Live model discovery** added for Moonshot and NVIDIA NIM (self-updating model lists); the Moonshot and xAI static fallback lists were refreshed.
-- **Base-URL validation** is now enforced at construction for xAI, OpenRouter, Moonshot, NVIDIA NIM, Perplexity, and Novita.
-- **OpenRouter embeddings**: OpenRouter now supports the embeddings endpoint via the shared helper.
-
----
-
-## [1.1.13] — 2026-07-04
-
-OpenAI-compatible provider fidelity release (part one). The fourth provider-readiness remediation phase aligns the Mistral, DeepSeek, Together, Fireworks, Cerebras, and Groq providers on request/response correctness, and adds two shared improvements that benefit every OpenAI-compatible provider. No breaking API changes relative to v1.1.12.
-
-### Fixed
-
-- **Mistral sampling seed**: the `seed` parameter is now sent as Mistral's `random_seed` field (Mistral ignores the standard `seed`), so a requested seed actually takes effect.
-- **Mistral embedding dimensions**: the embeddings `dimensions` parameter is now sent as Mistral's `output_dimension` field.
-- **DeepSeek model list**: `deepseek-v4-flash` and `deepseek-v4-pro` are now advertised, ahead of the retirement of `deepseek-chat`/`deepseek-reasoner`.
-- **Groq model catalog**: the two decommissioned models (`mixtral-8x7b-32768`, `gemma2-9b-it`) are removed and current production models (`openai/gpt-oss-120b`, `openai/gpt-oss-20b`) added.
-- **DeepSeek error and finish_reason handling**: chat errors now use the shared error envelope, and finish reasons are normalized to the canonical OpenAI vocabulary on both the streaming and non-streaming paths.
-
-### Changed
-
-- **Streaming token usage** (all OpenAI-compatible providers): streaming requests now set `stream_options.include_usage`, so providers that gate the terminal usage chunk on that flag report streaming token usage.
-- **finish_reason normalization** (all OpenAI-compatible providers): the shared chat and stream decoders normalize provider-specific finish reasons (e.g. Mistral's `model_length` → `length`) to the canonical OpenAI vocabulary.
-- **Together default API domain** (operator-visible): the default base URL is now `https://api.together.ai` (the current documented host) instead of the legacy `https://api.together.xyz`; deployments pinned to the old domain can still override it via `TOGETHER_BASE_URL`.
-- **DeepSeek model discovery**: DeepSeek now supports live `/models` discovery, so its advertised model list can self-update.
-- **Shared base-URL validation**: Mistral, DeepSeek, Together, Fireworks, Cerebras, and Groq now validate the configured base URL at construction, and Cerebras and Groq forward only the modern `max_completion_tokens` field.
-
----
-
-## [1.1.12] — 2026-07-04
-
-Enterprise-endpoint & Cohere fidelity release. The third provider-readiness remediation phase aligns the Vertex AI, Azure OpenAI, Azure AI Foundry, Databricks, and Cohere providers on request/response correctness and consolidates their hand-rolled HTTP onto the shared OpenAI-compatible helpers. No breaking API changes relative to v1.1.11.
-
-### Fixed
-
-- **Vertex AI model publisher prefix**: chat and streaming requests now send first-party models with the required `google/` publisher prefix (an existing publisher prefix — e.g. a Model Garden `meta/` model — is left intact), fixing requests the OpenAI-compatible endpoint rejected.
-- **Cohere vision**: multimodal `image_url` content is now forwarded to Cohere as content blocks instead of being silently dropped.
-- **Cohere streaming usage**: the message-end token counts are now surfaced on a stream chunk (previously parsed and discarded).
-- **Azure OpenAI response provider**: chat responses now carry the provider name, which the hand-rolled decoder dropped.
-- **Databricks retired model**: `databricks-claude-3-7-sonnet` is removed from the advertised model list (Databricks retired it).
-
-### Changed
-
-- **Azure AI Foundry endpoint** (operator-visible): the provider now targets the GA `{endpoint}/openai/v1/chat/completions` route (OpenAI-shaped, no `api-version`) instead of the Model Inference `/models` route the vendor is retiring, and sends `extra-parameters: drop` so a non-schema field is ignored rather than rejected.
-- **Vertex AI credentials** (operator-visible): when neither an API key nor service-account JSON is configured, the provider now falls back to Application Default Credentials (`GOOGLE_APPLICATION_CREDENTIALS`, `gcloud`, workload identity, or the GCE/GKE metadata server), so managed environments authenticate without an explicit key.
-- **Shared OpenAI-compatible request path**: Vertex AI, Azure OpenAI, Azure AI Foundry, and Databricks now route chat/embeddings through the shared `openaicompat` helpers, so their error handling (via `core.APIError`) and request/response shape stay consistent. Base-URL validation is enforced at construction for all five providers, and a tuned HTTP transport preset was added for Databricks serving-endpoint cold starts.
-- **Model catalog refresh**: the Vertex AI static fallback drops the retired `gemini-2.0-flash`; a recognized image size now maps to the Imagen aspect ratio.
-
----
-
-## [1.1.11] — 2026-07-03
-
-Native tier-1 provider fidelity release. <!-- drift-ok: release name, not a provider count --> Aligns the OpenAI, Anthropic, Google Gemini, and AWS Bedrock providers on request/response correctness: forwards multimodal image content and sampling parameters that the streaming paths previously dropped, surfaces token usage the Bedrock and Gemini streaming paths discarded, refreshes stale model catalogs, and consolidates the duplicated Anthropic Messages decoding shared by the native Anthropic and Anthropic-on-Bedrock paths. No breaking API changes relative to v1.1.10. Closes [#265](https://github.com/ferro-labs/ai-gateway/issues/265); advances [#264](https://github.com/ferro-labs/ai-gateway/issues/264) and [#286](https://github.com/ferro-labs/ai-gateway/issues/286).
-
-### Fixed
-
-- **OpenAI streaming field parity** ([#265](https://github.com/ferro-labs/ai-gateway/issues/265)): a `stream: true` request now forwards the same `logit_bias` and multimodal `image_url` content as an identical `stream: false` request. The streaming path previously rebuilt the request through typed SDK params and silently dropped both; both paths now marshal the same request body, and streaming preserves nested reasoning/cache token usage.
-- **OpenAI image `response_format`**: the `response_format` parameter is no longer sent for `gpt-image-*` models, which reject it and always return base64. It is still sent for the DALL·E models.
-- **Bedrock streaming token usage**: Anthropic-on-Bedrock streaming now reports prompt and completion tokens (from `message_start`/`message_delta`) instead of reporting none.
-- **Gemini vision**: multimodal `image_url` content is now forwarded to Gemini (inline base64 for data URIs, a file URI for remote images) instead of being dropped.
-- **Gemini streaming and detailed usage**: streaming responses now surface token usage, and both paths capture cached-content and thinking (reasoning) token counts. Gemini responses also carry the provider name and upstream response ID.
-- **finish_reason normalization** ([#264](https://github.com/ferro-labs/ai-gateway/issues/264)): Gemini's content-blocking reasons (`RECITATION`, `SAFETY`, `BLOCKLIST`, …) now normalize to the canonical `content_filter` value, and Gemini routes through the shared normalizer.
-- **Anthropic user metadata**: the OpenAI `user` field is forwarded as Anthropic `metadata.user_id` instead of being dropped.
-- **Anthropic non-base64 data URIs**: a non-base64 image data URI is re-encoded to a base64 image source instead of being sent as an invalid URL source Anthropic would reject.
-- **Bedrock token accounting**: Titan responses now report total tokens, Anthropic-on-Bedrock responses capture prompt-cache tokens, and the Nova/Titan/Llama families now carry a response ID.
-
-### Changed
-
-- **Anthropic temperature range** (operator-visible): a temperature above Anthropic's supported maximum (`1`) is now clamped to `1` with a warning instead of being forwarded to an upstream 400. Applies to the native Anthropic and Anthropic-on-Bedrock paths; the gateway's accepted request range (0–2) is unchanged.
-- **Model catalog refresh** (operator-visible): the static model fallback lists for Google Gemini and Anthropic now advertise current-generation models and drop retired ones (Gemini 2.0/1.5). Live discovery, where enabled, continues to surface newer model IDs.
-- **Bedrock text-only image handling** (operator-visible): the Nova, Titan, and Llama families now log a warning when a request carries image content their text-only invocation path cannot forward, instead of dropping it silently.
-- **Bedrock transport**: the tuned per-provider HTTP client (higher cold-start dial/header timeouts) is now used for AWS Bedrock SDK calls.
-- **Internal consolidation**: the Anthropic Messages response and streaming decoders shared by the native Anthropic and Anthropic-on-Bedrock paths are consolidated into one internal package, removing the duplicated response structs and stream event handling. Behaviour-preserving for the native Anthropic path.
-
----
-
-## [1.1.10] — 2026-07-03
-
-Proxy & governance hardening release. Corrects the `/v1/*` pass-through proxy so it no longer doubles the `/v1` path segment and no longer forwards OpenAI-shaped requests to providers whose upstream API is not OpenAI-compatible, and extends per-key budget governance to the embeddings and image-generation endpoints. Adds an optional provider request-signing hook and a shared base-URL validator. No breaking API changes relative to v1.1.9 — the `Provider`, `ProxiableProvider`, and plugin contracts are unchanged.
-
-### Fixed
-
-- **Pass-through proxy path doubling**: the `/v1/*` pass-through no longer duplicates the `/v1` segment for providers whose configured base URL already ends in `/v1` (e.g. `https://api.x.ai/v1`), which previously produced a `/v1/v1/...` upstream path and a 404. Both base-URL conventions now forward correctly.
-
-### Changed
-
-- **Pass-through proxy scope** (operator-visible): the `/v1/*` pass-through now returns HTTP 501 for providers whose upstream API is not OpenAI-wire-compatible — Anthropic, Google Gemini, AWS Bedrock, Cohere, Vertex AI, and Azure OpenAI/Foundry — instead of forwarding an OpenAI-shaped request their API cannot process (which failed upstream, and for AWS Bedrock under SigV4 was sent unauthenticated). These providers remain fully available through their translated `chat/completions`, `embeddings`, and `images/generations` endpoints.
-- **Per-key budget on embeddings and images** (operator-visible): per-key budget limits now apply to `/v1/embeddings` and `/v1/images/generations`, not only chat. Embedding requests are gated and their spend recorded; image generation is gated (it reports no token usage). Per-IP rate limiting, authentication, and the request body-size limit already applied to every endpoint.
-
-### Added
-
-- **Provider request-signing hook**: an optional `RequestSigner` provider interface lets a provider sign each outbound pass-through request (e.g. AWS SigV4); the proxy invokes it when a provider implements it. No in-tree provider signs yet — this is the seam for future signed pass-through.
-- **Shared base-URL validation**: a shared `core.ValidateBaseURL` helper validates that a provider base URL is an `http(s)` URL with a host, adopted by the Anthropic provider. Remaining providers migrate to it in subsequent releases.
-
----
-
-## [1.1.9] — 2026-07-02
-
-Quality & maintainability release. Scopes per-key rate-limit and budget enforcement to the authenticated key, hardens the budget soft cap against concurrent lost updates, fixes a set of gateway routing/observability and provider streaming correctness issues, and lands a large behaviour-preserving internal refactor plus CI supply-chain hardening. No public API breaks relative to v1.1.8. Closes [#261](https://github.com/ferro-labs/ai-gateway/issues/261).
-
-### Fixed
-
-- **Per-key rate-limit and budget scoping**: the authenticated key's stable identifier is now propagated from the auth layer into the plugin pipeline, so `key_rpm` and per-key budget limits apply per caller instead of sharing a single empty-key bucket. The raw bearer secret is never exposed — only the opaque `APIKey.ID` is used as the limit bucket. Both the non-streaming and streaming paths are covered.
-- **Budget soft-cap atomicity**: per-key spend is now recorded through a single atomic read-modify-write under the store lock, so concurrent completions for the same key can no longer lose an increment. The before-request check is a documented **soft** cap — a bounded number of in-flight requests may collectively overshoot by their actual costs, with no reservation and therefore no leak on error/cancel/circuit-open.
-- **MCP response size bound**: successful MCP JSON-RPC responses are now capped at 10 MiB. An MCP server is an untrusted-content boundary; without a limit a buggy, compromised, or MITM'd server could return an unbounded body and drive gateway memory exhaustion.
-- **Admin key error status**: a genuine not-found still returns HTTP 404, but a transient or internal key-store failure (e.g. a database outage) now returns 500 instead of being masked as 404, so callers can distinguish "no such key" from "store is down."
-- **Gateway success accounting for short-circuited responses**: cached and before-plugin short-circuit responses (both non-streaming and streaming) now emit gateway metrics, lifecycle hooks, and observability events consistently with normally-executed responses.
-- **Circuit-breaker state metric**: now reports the breaker's actual state after a success (closed, open, or half-open) instead of always publishing "closed".
-- **Live-discovered model routing**: a model returned by live discovery is now routable immediately, and is included in the provider's routable candidate set alongside catalog and hardcoded models.
-- **MCP tool-call loop error accounting**: failures inside the agentic tool-call loop now go through the same error accounting (metrics, logging, span, lifecycle hooks) as the initial provider call, instead of failing silently to observability.
-- **Gateway overhead accounting**: provider time spent across multi-turn MCP tool-call loops is now counted as provider time, not gateway overhead.
-- **Anthropic streaming error propagation**: mid-stream API error events are now surfaced to the caller instead of truncating the stream silently.
-- **Bedrock multimodal content**: Anthropic- and Llama-family Bedrock requests now forward multi-part message content (including images) instead of silently dropping it.
-- **Bedrock streaming correctness**: streamed choices use a consistent index, and tool calls with no arguments now report an empty argument object instead of omitting arguments.
-- **Bedrock Titan temperature**: an explicit temperature of `0` is now preserved instead of being dropped and falling back to the model default.
-- **Gemini streaming tool-call indices**: stay consistent across an entire streamed response instead of resetting on each chunk, so parallel tool calls no longer collide.
-- **Plugin configuration**: numeric plugin settings (e.g. `key_rpm`, `spend_limit_usd`) now accept large integer values as decoded from YAML.
-- **Admin config-history growth**: history is now capped to prevent unbounded memory growth on long-running gateways with frequent config reloads.
-
-### Security
-
-- **Redacted child-span errors**: error text on MCP and plugin child spans now passes through the configured `privacy_level` redaction (matching root-span behaviour) instead of being recorded raw, keeping credential-shaped material out of traces.
-- **Admin response caching**: the dashboard, health-check, and request-log endpoints now send `Cache-Control: no-store`, consistent with other admin endpoints that return sensitive data.
-- **CI credential exposure**: workflow checkout steps that don't push to the repository no longer persist git credentials for the rest of the job.
-
-### Changed
-
-- **Internal package restructuring**: several oversized files were decomposed into cohesive units and cross-provider duplication was consolidated into shared helpers, with tightened lint configuration. Behaviour-preserving — no public API, config, CLI, or HTTP contract changes.
-- **CI supply-chain hardening**: all GitHub Actions are pinned to commit SHAs (kept current by Dependabot), and CI now runs once per change — pushes trigger only on `main`, every other branch is covered by its pull request, and a concurrency group cancels superseded runs.
-- **Dependency hygiene**: dropped the stale `replace google.golang.org/grpc => v1.79.3` pin (added in v1.0.10 for CVE-2026-33186). The module graph already selects grpc **v1.81.1**, which retains that fix and picks up later patches; the pin was silently shipping the older v1.79.3 despite the manifest. No known vulnerabilities are introduced.
-- **Tracing initialization**: no longer resets a newer tracer provider when an older initialization's shutdown runs after it, and exporter resources are released correctly when tracing setup fails partway through.
-- **Observability package scope**: tracing privacy-level validation moved out of the public `observability` package into an internal helper. The public package now exposes only the stable Provider/Span/Exporter/Event seam.
-- **Bedrock Titan embeddings**: multi-input embedding requests now run concurrently instead of sequentially.
-
-### Documentation
-
-- **Docs sync** ([#261](https://github.com/ferro-labs/ai-gateway/issues/261)): ROADMAP marks v1.1.4–v1.1.8 as shipped; the routing-strategy list is now complete and consistent across the `strategies` package GoDoc and AGENTS.md (all 8 strategies); README links the documentation site; and the inaccurate "zero dependencies" phrasing was corrected.
-
----
-
-## [1.1.8] — 2026-06-30
-
-Security-hardening release. Adds baseline HTTP security headers, a configurable request body-size limit, trusted-proxy client-IP resolution, and expanded secret redaction. Strengthens config validation and admin key safety. No public API breaks. Closes [#252](https://github.com/ferro-labs/ai-gateway/issues/252)–[#257](https://github.com/ferro-labs/ai-gateway/issues/257).
-
-### Security
-
-- **CORS deny-by-default** ([#254](https://github.com/ferro-labs/ai-gateway/issues/254)): when `CORS_ORIGINS` is unset the gateway now emits **no** `Access-Control-Allow-Origin` header, blocking cross-origin access by default. Operators serving a dashboard or UI from a different origin must set `CORS_ORIGINS` explicitly (e.g. `CORS_ORIGINS=https://dashboard.example.com`). When `CORS_ORIGINS` is configured, behaviour is unchanged.
-- **Baseline HTTP security headers** ([#255](https://github.com/ferro-labs/ai-gateway/issues/255)): all gateway responses now include `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, and `Strict-Transport-Security (HSTS, only on TLS connections)` headers to reduce exposure to common web-layer risks.
-- **Request body-size limit** ([#253](https://github.com/ferro-labs/ai-gateway/issues/253)): `/v1/*` and admin write endpoints reject payloads larger than `Config.max_request_bytes` (default 10 MiB) with HTTP 413 before any LLM call is attempted. Operators can lower or raise the cap in `config.yaml`.
-- **Trusted-proxy client-IP resolution**: the deprecated chi `RealIP` middleware has been replaced by an explicit `TRUSTED_PROXIES` allowlist. `X-Forwarded-For` / `X-Real-IP` headers are honored only when the immediate peer IP falls within a configured CIDR (default: loopback). Unrecognized peers use the raw connection IP.
-- **Expanded secret redaction**: redaction now covers provider-specific and gateway key formats (in addition to the existing email / JWT / AWS key patterns) in structured-log fields and error messages, keeping credential material out of logs.
-- **Admin config secret masking**: `/admin/config` responses now replace secret-valued fields with a masked placeholder so credential material is not readable via the admin API.
-- **Production safety guard**: the gateway refuses to start when `GATEWAY_ENV=production` and `ALLOW_UNAUTHENTICATED_PROXY=true` are set together, preventing accidental unauthenticated exposure in production deployments.
-- **Admin key `Cache-Control: no-store`**: responses from admin key-management endpoints now include `Cache-Control: no-store` to prevent credential caching by intermediaries.
-
-### Changed
-
-- **`New()` validates config** ([#256](https://github.com/ferro-labs/ai-gateway/issues/256)): the `Gateway` constructor now runs full config validation (including embedder checks) and returns an error for invalid configuration rather than deferring the failure to request time.
-- **Resilient authentication on counter write failure**: a transient failure writing the usage counter no longer causes the gateway to return 401 to an otherwise-valid authenticated key; the error is logged and the request proceeds.
-- **Word-filter rejection reason**: content rejected by the word-filter plugin now returns a generic reason string rather than echoing the matched term.
-
-### Fixed
-
-- **Proxy error responses**: the pass-through proxy no longer includes raw internal error text in HTTP response bodies on base-URL handler failures; callers receive a clean, non-leaking error message.
-- **CI gates on `release/*` branches** ([#252](https://github.com/ferro-labs/ai-gateway/issues/252)): the `Test`, `Lint`, `CodeQL`, and `govulncheck` CI jobs now trigger on `release/*` pushes in addition to `main`, so release branches are validated before tagging.
-
-### Documentation
-
-- **SECURITY.md, example config, and quickstart** ([#257](https://github.com/ferro-labs/ai-gateway/issues/257)): corrected the supported-versions table in `SECURITY.md`; removed non-OSS example plugins from `config.example.json`; fixed the quickstart binary download URL (previously returned 404) to track the latest release; corrected the agent and contributor map.
-
----
-
-## [1.1.7] — 2026-06-29
-
-Small-enhancements release: context propagation, concurrency safety, and hot-path performance. No public API breaks. Closes [#48](https://github.com/ferro-labs/ai-gateway/issues/48), [#180](https://github.com/ferro-labs/ai-gateway/issues/180), [#182](https://github.com/ferro-labs/ai-gateway/issues/182), [#184](https://github.com/ferro-labs/ai-gateway/issues/184), [#186](https://github.com/ferro-labs/ai-gateway/issues/186), [#187](https://github.com/ferro-labs/ai-gateway/issues/187), and [#203](https://github.com/ferro-labs/ai-gateway/issues/203).
-
-### Added
-
-- **Ollama model discovery** ([#203](https://github.com/ferro-labs/ai-gateway/issues/203)): `ollama` now implements live discovery via `/api/tags` and advertises the `discovery` capability.
-- **`make lint-fix` target** ([#48](https://github.com/ferro-labs/ai-gateway/issues/48)): runs `golangci-lint run --fix` to auto-apply fixable lint issues locally.
-
-### Changed
-
-- **`context.Context` propagation** ([#180](https://github.com/ferro-labs/ai-gateway/issues/180), [#182](https://github.com/ferro-labs/ai-gateway/issues/182)): threaded request context through the admin key/config stores and the CLI HTTP client so cancellation and timeouts flow end-to-end. Config writes now honor request context too, fully resolving the earlier key-store-only limitation.
-- **Plugin registry concurrency** ([#184](https://github.com/ferro-labs/ai-gateway/issues/184)): the plugin factory registry is now guarded by a mutex, matching the observability registry.
-- **Hot-path allocations** ([#186](https://github.com/ferro-labs/ai-gateway/issues/186), [#187](https://github.com/ferro-labs/ai-gateway/issues/187)): memoized least-latency P50 reads, concrete-typed SSE chunk writes, streaming JSON decode on the Anthropic success path, a shared streaming transport in the proxy, and removal of dead transport code.
-- **Local test timeout aligned with CI** ([#48](https://github.com/ferro-labs/ai-gateway/issues/48)): the `make test` target and the `.husky/pre-push` hook now run `go test` with `-timeout 180s` (raised from `30s`) to match the CI `Test` job — the root package's `-race` suite runs ~120s, so the old 30s budget timed out.
-
-### Fixed
-
-- **Git hooks did not gate commits/pushes** ([#48](https://github.com/ferro-labs/ai-gateway/issues/48)): `.husky/pre-commit` and `.husky/pre-push` lacked `set -e`, so a non-zero exit from `go vet`, `golangci-lint`, or `go test` was silently ignored — the hook still printed its "passed" line and exited 0, letting a broken commit or push through (false gate assurance). Both hooks now set `set -e` so any failed check aborts the commit/push.
-
-### Documentation
-
-- **Contributing guide** ([#48](https://github.com/ferro-labs/ai-gateway/issues/48)): added a Local Development section (Make targets, git hooks) and switched the branching model from `develop` to `release/*`.
-
----
-
-## [1.1.6] — 2026-06-26
-
-Correctness & robustness release. Hardens the plugin pipeline lifecycle, fixes OpenTelemetry span loss on shutdown, corrects response-cache and circuit-breaker behavior, and adds AWS Bedrock API-key (bearer) authentication. No public API breaks. Fixes [#150](https://github.com/ferro-labs/ai-gateway/issues/150), [#151](https://github.com/ferro-labs/ai-gateway/issues/151), [#152](https://github.com/ferro-labs/ai-gateway/issues/152), and [#204](https://github.com/ferro-labs/ai-gateway/issues/204).
-
-### Fixed
-
-- **Plugin pipeline robustness** (issue [#150](https://github.com/ferro-labs/ai-gateway/issues/150), PR [#234](https://github.com/ferro-labs/ai-gateway/pull/234)): a panicking plugin is now recovered and isolated (the request returns a clean error and the panic stack is logged, not leaked into the response), `RunOnError` fires when a plugin *rejects* a request, and `Close()` was added to the `Plugin` interface and is called on every plugin instance (deduped) at config reload so resources like the request-logger's writer are released. A reference-counted `Acquire`/`Close` lifecycle ensures a reload never frees plugins out from under an in-flight request.
-- **OTel span loss on shutdown** (issue [#151](https://github.com/ferro-labs/ai-gateway/issues/151), PR [#233](https://github.com/ferro-labs/ai-gateway/pull/233)): the span-exporter drain and the `TracerProvider` flush shared a single shutdown deadline, so a slow exporter handed the provider an already-expired context and spans were silently dropped. Each stage now gets its own deadline (`shutdown_grace` per stage), and both errors are surfaced via `errors.Join`.
-- **Response-cache & circuit-breaker correctness** (issue [#152](https://github.com/ferro-labs/ai-gateway/issues/152), PR [#169](https://github.com/ferro-labs/ai-gateway/pull/169)): the cache key now includes `logprobs` / `top_logprobs` (so requests that differ only in those no longer cross-serve), in-memory eviction is now proper LRU (recency-based) instead of earliest-expiry, and the circuit-breaker half-open probe cap releases its slot on non-recorded outcomes (rate-limit / client cancellation) so a single ignored failure can no longer wedge the breaker open.
-
-### Added
-
-- **AWS Bedrock API-key (bearer) authentication** (issue [#204](https://github.com/ferro-labs/ai-gateway/issues/204), PR [#235](https://github.com/ferro-labs/ai-gateway/pull/235)): Bedrock can now authenticate with a short-term API key via `AWS_BEARER_TOKEN_BEDROCK`, using the AWS SDK's native `httpBearerAuth` scheme. SigV4 (static credentials and the default credential chain) remains the default; bearer takes precedence when set. A `bearer_token` redaction policy keeps the key out of logs and error messages.
-
----
-
-## [1.1.5] — 2026-06-23
-
-### Added
-
-- **Capability parity with upstream provider APIs** (issue [#148](https://github.com/ferro-labs/ai-gateway/issues/148)): implemented missing optional interfaces — embeddings on `deepinfra`, `qwen`, `nvidia-nim`, and `ollama`; live model discovery (`/v1/models`) on `anthropic`, `mistral`, `groq`, and `together`; `azure-openai` embeddings and image generation; and image generation on `bedrock` (Nova Canvas / Titan Image / SDXL), `gemini` and `vertex-ai` (Imagen), and `xai` (grok image). The shared discovery helper now supports custom auth headers (for Anthropic's `x-api-key`) and tolerates both wrapped and bare-array `/models` responses. (AI21 embeddings were excluded — AI21 exposes no embeddings endpoint.)
-
-### Changed
-
-- **`/v1/models` and model routing now derive from the model catalog** (issue [#146](https://github.com/ferro-labs/ai-gateway/issues/146)): the model list reported per provider is sourced from the model catalog instead of hand-maintained `SupportedModels()` slices, eliminating drift. Precedence is live discovery > catalog > hardcoded fallback. Opt-in periodic live refresh from providers exposing a `/models` endpoint is enabled by setting `FERRO_MODEL_DISCOVERY_INTERVAL` to a positive Go duration (e.g. `6h`); unset or `0` disables it (default).
-
----
-
-## [1.1.4] — 2026-06-19
-
-Provider-translation correctness release. Tool/function calling, sampling parameters, completion-token limits, finish-reason normalization, multimodal input, and streaming fidelity are now correctly translated across native and OpenAI-compatible providers. Bundles an 11-bump dependency sweep and an internal shared-helper refactor (~1,800 lines of duplication removed) with no public API breaks. Fixes every issue labelled [`release-1.1.4`](https://github.com/ferro-labs/ai-gateway/issues?q=label%3Arelease-1.1.4): [#139](https://github.com/ferro-labs/ai-gateway/issues/139), [#140](https://github.com/ferro-labs/ai-gateway/issues/140), [#141](https://github.com/ferro-labs/ai-gateway/issues/141), [#142](https://github.com/ferro-labs/ai-gateway/issues/142), [#143](https://github.com/ferro-labs/ai-gateway/issues/143), [#144](https://github.com/ferro-labs/ai-gateway/issues/144), and [#145](https://github.com/ferro-labs/ai-gateway/issues/145).
-
-### Fixed
-
-- **Tool / function calling dropped on native non-OpenAI providers** (issue [#139](https://github.com/ferro-labs/ai-gateway/issues/139), PR [#214](https://github.com/ferro-labs/ai-gateway/pull/214)): Anthropic, Gemini, Bedrock (Claude), and Cohere now forward `tools` / `tool_choice` in each provider's native shape, parse `tool_use` / `tool_calls` responses (JSON-object arguments → JSON string), assemble streaming tool-call deltas with index remapping, and handle multi-turn tool round-trips. OpenAI-compatible providers preserve streamed `tool_calls` deltas via a shared decoder.
-- **Sampling / output params silently dropped** (issue [#140](https://github.com/ferro-labs/ai-gateway/issues/140)): a shared `internal/openaicompat` request builder forwards the full OpenAI-shaped body (`top_p`, `stop`, `seed`, penalties, `response_format`, `n`, …); native providers translate to upstream field names and warn-and-drop only what an API cannot express.
-- **`max_completion_tokens` ignored by non-OpenAI providers** (issue [#141](https://github.com/ferro-labs/ai-gateway/issues/141), PR [#213](https://github.com/ferro-labs/ai-gateway/pull/213)): the limit is normalized at the gateway seam so every provider honors it, and OpenAI / Azure o-series reasoning models receive `max_completion_tokens` instead of the rejected `max_tokens`.
-- **`finish_reason` not normalized to OpenAI values** (issue [#142](https://github.com/ferro-labs/ai-gateway/issues/142)): Anthropic / Bedrock / Cohere native stop reasons now map to `stop | length | tool_calls | content_filter`, so clients can detect truncation and tool use.
-- **Anthropic multimodal images dropped and tool-role messages malformed** (issue [#143](https://github.com/ferro-labs/ai-gateway/issues/143)): image content maps to Anthropic content blocks (vision no longer degrades to text-only) and tool results emit `tool_result` blocks inside a user turn instead of a bare `{"role":"tool"}` object the API rejects.
-- **Gemini system prompt prepended to the user message** (issue [#144](https://github.com/ferro-labs/ai-gateway/issues/144)): routed through the dedicated top-level `systemInstruction` field (Gemini 1.5+) instead of being smuggled into the first user turn, and no longer lost when a system message has no following user turn.
-- **Streaming and per-provider translation fidelity** (issue [#145](https://github.com/ferro-labs/ai-gateway/issues/145)): Anthropic streaming usage is parsed (non-zero token / cost metrics); DeepSeek `reasoning_content` and prompt-cache tokens are surfaced; Cohere embeddings `input_type` is configurable (defaults to `search_document`).
-
-### Changed
-
-- **Dependency sweep (11 bumps):** aws-sdk-go-v2 (config / credentials / bedrockruntime), OpenTelemetry (otel + otlptracegrpc), go-chi/chi v5, modernc.org/sqlite, lib/pq, codecov-action, and upload-artifact, plus SA1019 deprecation fixes surfaced by the bumps.
-- **Internal shared-helper refactor:** `openaicompat.StreamSSE` / `PostChat` / `PostStream` collapse ~23 OpenAI-compatible providers' duplicated request and stream plumbing; new `core.NormalizeToolChoice` / `NormalizeFinishReason` / `Ptr` helpers and a shared `anthropicwire` tool mapper; `interface{}` → `any` modernization. ~1,800 net lines removed with no behavior change beyond unifying SSE decode-error handling.
-
----
-
-## [1.1.3] — 2026-06-15
-
-Streaming-correctness release. Brings the streaming routing path (`RouteStream`) to parity with non-streaming `Route`: the post-request plugin pipeline, the per-provider circuit breaker, and least-latency / cost-optimized ordering now all apply to `stream: true` traffic. Also tightens fallback retry semantics and async-context propagation. No public API breaks. Fixes every issue labelled [`release-1.1.3`](https://github.com/ferro-labs/ai-gateway/issues?q=label%3Arelease-1.1.3): [#135](https://github.com/ferro-labs/ai-gateway/issues/135), [#136](https://github.com/ferro-labs/ai-gateway/issues/136), [#137](https://github.com/ferro-labs/ai-gateway/issues/137), and [#138](https://github.com/ferro-labs/ai-gateway/issues/138), plus enhancement [#181](https://github.com/ferro-labs/ai-gateway/issues/181).
-
-### Fixed
-
-- **Streaming requests skipped the post-request plugin pipeline** (issue [#135](https://github.com/ferro-labs/ai-gateway/issues/135), PR [#201](https://github.com/ferro-labs/ai-gateway/pull/201)): `RouteStream` ran only `before_request` plugins, so `after_request` (response-cache store, request-logger) and `on_error` plugins never fired for streaming traffic and a cache `Skip` hit was discarded with the provider called anyway. The full plugin lifecycle now runs for streams: `RunAfter` fires once the stream drains — with the response reconstructed from streamed chunks so the response-cache can store it — `RunOnError` fires on resolution / provider / stream / after-plugin failures, and a cache hit short-circuits the provider into a single streamed chunk.
-- **Circuit breaker was a no-op for streaming-first traffic** (issue [#136](https://github.com/ferro-labs/ai-gateway/issues/136), PR [#199](https://github.com/ferro-labs/ai-gateway/pull/199)): the streaming path never recorded breaker outcomes, so mid-stream provider failures did not count and the breaker never opened. Stream success is now recorded at stream completion and failures (both at startup and mid-stream) count toward the breaker; open-circuit streaming targets are skipped during resolution so fallback advances instead of returning circuit-open.
-- **Fallback strategy retried cancellations and open circuits** (issue [#137](https://github.com/ferro-labs/ai-gateway/issues/137), PR [#198](https://github.com/ferro-labs/ai-gateway/pull/198)): `shouldRetry` returned true for any error without a parseable HTTP status code, so `context.Canceled` / `context.DeadlineExceeded` and `circuitbreaker.ErrCircuitOpen` re-attempted already-cancelled requests and burned the whole retry budget against an open circuit. These sentinels are now non-retryable, and the retry loop checks `ctx.Err()` before each attempt.
-- **Streaming ignored least-latency / cost-optimized ordering** (issue [#138](https://github.com/ferro-labs/ai-gateway/issues/138), PR [#198](https://github.com/ferro-labs/ai-gateway/pull/198)): `streamingTargetOrderLocked` had no case for these modes and silently fell through to declaration order. Streaming now orders targets by observed p50 latency (exploring unsampled targets first) and by catalog model cost, mirroring the non-streaming path, and records successful stream latency samples so least-latency converges for streaming-only traffic.
-
-### Changed
-
-- **Circuit-breaker failure accounting** (issue [#136](https://github.com/ferro-labs/ai-gateway/issues/136), PR [#199](https://github.com/ferro-labs/ai-gateway/pull/199)): caller-side cancellation and client deadlines no longer trip the breaker, while provider-side timeouts that surface as `context.DeadlineExceeded` while the request context is still live are counted as failures. Applies to both `Route` and `RouteStream`.
-- **Detached background goroutines preserve trace context** (issue [#181](https://github.com/ferro-labs/ai-gateway/issues/181), PR [#202](https://github.com/ferro-labs/ai-gateway/pull/202)): async event hooks and the streaming observability completion event now run under `context.WithoutCancel(ctx)` instead of the already-cancelled request context / `context.Background()`, so fire-and-forget work (DB writes, outbound calls) is no longer dead-on-arrival and recorded events stay linked to the originating trace. MCP background initialization parents its 60s timeout on the gateway shutdown context so `Close()` cancels in-flight handshakes instead of letting them linger.
-
-### Notes
-
-- Under `cost-optimized` routing with `unpriced_strategy: skip`, the streaming path keeps unpriced providers as a last-resort fallback (and errors only when *no* candidate is priced), whereas the non-streaming path never selects an unpriced provider. This is intentional for the streaming fallback chain.
-- All public `release-1.1.3` issues — [#135](https://github.com/ferro-labs/ai-gateway/issues/135), [#136](https://github.com/ferro-labs/ai-gateway/issues/136), [#137](https://github.com/ferro-labs/ai-gateway/issues/137), [#138](https://github.com/ferro-labs/ai-gateway/issues/138) — and enhancement [#181](https://github.com/ferro-labs/ai-gateway/issues/181) are closed by this release.
-
----
-
-## [1.1.2] — 2026-06-06
-
-Release hardening patch for the external model catalog cutover, catalog pricing correctness, and response-body lifecycle fixes. No public API breaks. Fixes every issue labelled [`release-1.1.2`](https://github.com/ferro-labs/ai-gateway/issues?q=label%3Arelease-1.1.2): [#132](https://github.com/ferro-labs/ai-gateway/issues/132), [#133](https://github.com/ferro-labs/ai-gateway/issues/133), [#134](https://github.com/ferro-labs/ai-gateway/issues/134), and [#185](https://github.com/ferro-labs/ai-gateway/issues/185).
-
-### Fixed
-
-- **Azure OpenAI, Azure Foundry, and Vertex AI catalog pricing aliases** (issue [#132](https://github.com/ferro-labs/ai-gateway/issues/132)): gateway provider IDs such as `azure-openai`, `azure-foundry`, and `vertex-ai` now resolve against the catalog's canonical provider prefixes (`azure_openai`, `azure_foundry`, `azure`, and `vertex_ai`). Cost calculation walks the provider-specific fallback chain, skips unpriced preferred chat entries when a priced fallback exists, and includes explicit regression coverage for Azure and Vertex pricing.
-- **OpenAI response-body lifecycle** (issue [#185](https://github.com/ferro-labs/ai-gateway/issues/185)): non-streaming OpenAI-compatible responses now drain the HTTP body after decoding so transports can reuse connections, and streaming responses close the OpenAI stream when the gateway stream goroutine exits.
-- **Provider and circuit-breaker lookup race** (PR [#170](https://github.com/ferro-labs/ai-gateway/pull/170)): routing strategy provider lookup now snapshots the provider and circuit-breaker maps under the gateway lock before dispatch, avoiding concurrent map access during runtime discovery or config reload.
-- **Admin API key mutation leak** (PR [#190](https://github.com/ferro-labs/ai-gateway/pull/190)): key-management APIs now return copied in-memory key records so callers cannot mutate the store's internal state through returned pointers.
-- **Shutdown hook regression coverage** (PR [#171](https://github.com/ferro-labs/ai-gateway/pull/171)): added unit-level tests around hook shutdown behavior so future edits keep close/drain semantics intact.
-
-### Changed
-
-- **Model catalog loading now consumes the external release artifact** (issue [#133](https://github.com/ferro-labs/ai-gateway/issues/133)): the default catalog source is the latest `ferro-labs/model-catalog` release artifact. Gateway startup and refresh use remote-first loading with the embedded `catalog_backup.json` as fallback, preserving offline startup while allowing catalog updates without an ai-gateway release.
-- **Catalog lookup uses a reverse model-ID index** (issue [#134](https://github.com/ferro-labs/ai-gateway/issues/134)): bare model-ID lookups avoid scanning the full catalog, while preserving the previous behavior for arbitrary caller-constructed `Catalog` values through validation and fallback scanning.
-- **Streaming content matching precompiles regular expressions** (PR [#189](https://github.com/ferro-labs/ai-gateway/pull/189)): repeated streaming content checks no longer compile regexes on the hot path, and config validation fails fast on invalid patterns.
-- **CI and release workflows use Go `1.25.11`**: vulnerability scanning now runs against the patched Go 1.25 toolchain so standard-library `govulncheck` findings match the release environment rather than a stale host toolchain.
-
-### Added
-
-- **Catalog coverage guardrail**: added a provider/catalog coverage test that verifies registered providers either have priced catalog entries for representative models or are explicitly documented as dynamic/no-prefix exclusions.
-- **Catalog backup refresh guardrails**: added the `scripts/refresh_catalog_backup.sh` helper and release workflow checks to keep the embedded fallback catalog aligned with the external catalog artifact.
-- **Catalog load observability**: added `gateway_catalog_loads_total{source,result}` metrics and structured remote/fallback logging with catalog URLs sanitized for credentials and query strings.
-
-### Notes
-
-- `models/catalog.json` was removed from the repository. Runtime catalog loading now uses the remote release artifact plus the embedded `models/catalog_backup.json` fallback.
-- The release notes generator reads this `1.1.2` section directly when publishing the `v1.1.2` GitHub release.
-
----
-
-## [1.1.1] — 2026-05-31
-
-Stability hotfix. No new features, no API breaks. Fixes every issue labelled [`release-1.1.1`](https://github.com/ferro-labs/ai-gateway/issues?q=label%3Arelease-1.1.1) plus three additional CRITICAL bugs found in the post-v1.1.0 engine audit (shutdown panic, runtime-discovery data race, streaming goroutine/body leak). Adds a `goleak` + `-race` concurrency stress harness so these regressions can't recur silently.
-
-### Fixed
-
-- **Send on closed channel panic during shutdown** (issue [#127](https://github.com/ferro-labs/ai-gateway/issues/127)): `Gateway.Close()` previously called `close(g.hookDispatchQ)` while `publishEvent` could still be enqueuing dispatches; the producer's `select`/`default` arm guards a *full* channel but not a *closed* one, so production crashed under shutdown-under-load. `Close()` now cancels a shutdown context instead; producers select on it before sending; workers drain any queued events before exiting; `Close()` waits up to 5s for workers via a `WaitGroup` (never blocks indefinitely so a panicking hook can't wedge shutdown). Stress-tested with 50 concurrent `Route()` callers racing `Close()` under `-race`.
-- **Data race in provider lookup vs runtime discovery / config reload** (issue [#128](https://github.com/ferro-labs/ai-gateway/issues/128)): the lookup closure built in `getStrategy` read `g.providers` and `g.circuitBreakers` without holding `g.mu`, racing `RegisterProvider` and `ReloadConfig` (which reassigns `circuitBreakers` wholesale). Closure now takes `g.mu.RLock` for its body; verified `Route` (`gateway.go:330`) and `RouteStream` (`gateway.go:1108`) release the gateway lock before strategy execution so the lock-in-closure cannot recursively deadlock against a writer. Stress-tested with 20 concurrent `Route()` callers racing a mutator goroutine that reassigns both maps under `-race`.
-- **Streaming goroutine and HTTP body leak on client disconnect**: `streamwrap.Meter` previously blocked forever on `out <- chunk` when the consumer (typically the HTTP handler) stopped reading because the client disconnected. The `Meter` goroutine, the upstream provider goroutine (blocked on its next send to `src`), and the provider's HTTP response body all leaked. `Meter` now selects on `ctx.Done()` for every send and every read from `src`; on cancel it drains `src` so the upstream goroutine can finish its in-flight write and exit. Emits a single `gateway.request.failed` event with a new `client_canceled` `provider_errors` metric label so budgets and observability still see the request and dashboards can separate client disconnects from real provider errors.
-- **MCP registry/executor and plugin-manager races** (issue [#131](https://github.com/ferro-labs/ai-gateway/issues/131), PR [#172](https://github.com/ferro-labs/ai-gateway/pull/172)): `Route`/`RouteStream` now snapshot `g.mcpRegistry` / `g.mcpExecutor` under `g.mu.RLock` instead of reading the fields after the lock is released, eliminating a race against `ReloadConfig`. `plugin.Manager` gets its own `sync.RWMutex` around the `before`/`after`/`onErr` slices so registrations during reload are safe vs concurrent execution.
-- **Streaming aborts on SSE lines larger than 64 KB** (issue [#129](https://github.com/ferro-labs/ai-gateway/issues/129), PR [#153](https://github.com/ferro-labs/ai-gateway/pull/153)): added shared `providers/core/sse_scanner.go` with a `Buffer(_, 1 MiB)` helper and applied it to the 9 stream-capable providers that were missing it. Tools, long reasoning blocks, and large embedded payloads no longer truncate the stream.
-- **Nil-pointer panic in `least-latency` / `cost-optimized` / `loadbalance` when a target is unresolvable at dispatch** (issue [#130](https://github.com/ferro-labs/ai-gateway/issues/130), PR [#156](https://github.com/ferro-labs/ai-gateway/pull/156)): all three strategies now return a routing error when the selected target can no longer be resolved between candidate-building and dispatch, instead of dereferencing a nil provider.
-- **`cost-optimized` routing treated `null`-priced catalog entries as $0** (issue [#126](https://github.com/ferro-labs/ai-gateway/issues/126), PR [#155](https://github.com/ferro-labs/ai-gateway/pull/155); originally scoped for v1.1.2, pulled forward because the fix was ready). Unpriced candidates no longer silently win cheapest-provider selection in a mixed pool. Behavior is governed by the new `strategy.unpriced_strategy` knob (see *Added*); the default preserves the historical fallback ranking for pools where every candidate is priced.
-
-### Added
-
-- **`strategy.unpriced_strategy` config knob** for `cost-optimized` routing: `fallback` (default — prefer priced candidates, then first compatible unpriced target), `skip` (reject unpriced candidates), or `allow` (legacy behavior — treat missing prices as zero cost). Validated at config load.
-- **`providers/core/sse_scanner.go`**: shared `NewSSEScanner(r)` helper returning a `*bufio.Scanner` pre-configured with a 1 MiB line buffer. New stream providers should call it instead of repeating the buffer setup.
-- **`provider_errors{err="client_canceled"}` metric label**: distinguishes streaming requests cancelled by the client from real provider errors. Existing `provider_error` and `circuit_open` labels are unchanged.
-- **Stress / leak test harness**: `internal/streamwrap/wrap_leak_test.go` (goroutine-leak check + client-disconnect + natural-end-of-stream cases) and `gateway_stress_test.go` (`TestStress_ShutdownUnderLoad_NoPanic`, `TestStress_ReloadUnderLoad_NoRace`). Both use `go.uber.org/goleak` and run under `-race`.
-
-### Changed
-
-- **`Gateway.Close()`** now drains the hook-dispatch queue and waits up to 5 seconds for hook workers to finish in-flight dispatches before returning. The hook channel is no longer closed by `Close()` — workers exit via the new shutdown context. Calling `Close()` more than once remains safe (idempotent).
-- **`go.uber.org/goleak`** promoted from an indirect to a direct dependency, used by the new stress and leak tests.
-
-### Documentation
-
-- `README.md` and the YAML/JSON example configs document the new `strategy.unpriced_strategy` knob under the *Routing strategies* section.
-
-### Notes
-
-- All public `release-1.1.1` issues — [#126](https://github.com/ferro-labs/ai-gateway/issues/126), [#127](https://github.com/ferro-labs/ai-gateway/issues/127), [#128](https://github.com/ferro-labs/ai-gateway/issues/128), [#129](https://github.com/ferro-labs/ai-gateway/issues/129), [#130](https://github.com/ferro-labs/ai-gateway/issues/130), [#131](https://github.com/ferro-labs/ai-gateway/issues/131) — are closed by this release.
-- A separate GitHub Security Advisory accompanies this tag for the streaming-disconnect fix; check the Security tab for the GHSA ID and CVSS scoring.
-
----
-
-## [1.1.0] — 2026-05-24
-
-Adds opt-in OpenTelemetry tracing. Off by default — a zero-allocation no-op until an OTLP endpoint or exporter is configured.
-
-### Added
-
-- **OpenTelemetry tracing** (issue [#49](https://github.com/ferro-labs/ai-gateway/issues/49)): new public `observability` package (stable `Provider`/`Span`/`Exporter`/`Event` seam + `gen_ai.*`/`ferro.*` attribute constants) backed by an `internal/otel` OTLP pipeline (gRPC + HTTP/protobuf, W3C propagation). Each `Route()`/`RouteStream()` emits a `gateway.request` span carrying model, token-usage, cost, and routing attributes; plugins and MCP tool calls emit child spans; outbound provider calls are `otelhttp`-instrumented.
-- **Unified trace ID**: the OTel `trace_id`, log trace ID, `X-Request-ID` header, and `ferro.gateway.trace_id` attribute are identical per request (custom `IDGenerator` adopting the logging trace ID). Holds for self-originated requests too; embedders bypassing `logging.Middleware` get a consistent independent ID.
-- **Privacy levels**: `observability.tracing.privacy_level` — `none` (records only `"redacted"`), `metadata` (default; redacts email/JWT/AWS keys via `internal/redact`), or `full` (raw error text). Validated at config load.
-- **Exporter event pathway**: registered exporters receive `gateway.request.completed`/`failed` events, configured via the new `observability.exporters` block (non-fatal on unknown/failing exporters). Contract + wiring only — no built-in exporters ship here; vendor bridges live in the forthcoming `ai-gateway-plugins` repo.
-- **Config**: `ObservabilityConfig`/`TracingConfig`/`ExporterConfig` (endpoint, protocol, sample_ratio, privacy_level, shutdown_grace) in `gateway.Config`; `OTEL_*` env vars take precedence. New `Gateway.SetObservability`/`Observability` accessors.
-- **OTLP exporter headers**: `observability.tracing.headers` (values support `${ENV}` interpolation) enables authenticated OTLP export to managed backends (Datadog, New Relic, Honeycomb, …). The standard `OTEL_EXPORTER_OTLP_HEADERS` env var also applies. The endpoint scheme selects transport security — `https://` uses TLS, while `http://` or a bare `host:port` connects in plaintext.
-
-### Changed
-
-- `internal/logging.Middleware` trace-ID precedence: existing context ID → inbound `X-Request-ID` → freshly generated.
-- `internal/transport.Manager.DefaultTransport` and `ProviderPool.Transport` now return the raw `*http.Transport` (the client `RoundTripper` is the `otelhttp` wrapper) — inspect via these accessors.
-
-### Documentation
-
-- New **Observability** section in both [README.md](README.md) and [README.zh-CN.md](README.zh-CN.md) (Jaeger quickstart, config, OTLP headers, endpoint TLS, privacy levels, plugin exporters); `config.example.{yaml,json}` and ROADMAP updated for the OTel scope.
-
----
-
-## [1.0.10] — 2026-05-16
-
-Security maintenance release addressing GitHub Dependabot alerts and adding CI coverage for reachable Go vulnerabilities.
-
-### Security
-
-- **gRPC-Go authorization bypass**: Overrode transitive `google.golang.org/grpc` resolution to `v1.79.3` to address `GHSA-p77j-4mvh-x3m3` / `CVE-2026-33186`.
-- **golang.org/x/crypto SSH vulnerabilities**: Upgraded `golang.org/x/crypto` from `v0.35.0` to `v0.51.0`, addressing `GHSA-f6x5-jh6r-wrfv` / `CVE-2025-47914` and `GHSA-j5w8-q4qc-rx2x` / `CVE-2025-58181`.
-- **Moby/Docker advisory cleanup**: Upgraded the `testcontainers-go` dependency chain and removed the vulnerable `github.com/docker/docker` module from the final Go module graph, addressing `GHSA-x744-4wpc-v9h2` / `CVE-2026-34040`, `GHSA-pxq6-2prw-chj9` / `CVE-2026-33997`, and `GHSA-4vq8-7jfc-9cvp` / `CVE-2025-54410`.
-- **containerd advisory cleanup**: Upgraded the `testcontainers-go` dependency chain and removed the vulnerable `github.com/containerd/containerd` module from the final Go module graph, addressing `GHSA-pwhc-rpq9-4c8w` / `CVE-2024-25621`, `GHSA-265r-hfxg-fhmg` / `CVE-2024-40635`, and `GHSA-m6hq-p25p-ffr2` / `CVE-2025-64329`.
-- **Go standard library scan coverage**: Added CI `govulncheck` scanning and configured CI/CodeQL workflows to use the latest Go 1.25 patch release, covering reachable standard-library findings such as `GO-2026-4982`, `GO-2026-4980`, `GO-2026-4976`, `GO-2026-4971`, and `GO-2026-4918`.
-- **Repository security settings**: Enabled Dependabot security updates, secret scanning, and secret scanning push protection for the GitHub repository.
-
-### Changed
-
-- Upgraded `github.com/testcontainers/testcontainers-go/modules/postgres` from `v0.34.0` to `v0.42.0`.
-- Upgraded `golang.org/x/oauth2` from `v0.30.0` to `v0.34.0` as part of the dependency refresh.
-- Added a dedicated `Vulnerability Scan` job to CI using `govulncheck`.
-
----
-
-## [1.0.9] — 2026-05-14
-
-Maintenance release updating the project baseline from Go 1.24 to Go 1.25. No public API or behaviour changes.
-
-### Changed
-
-- **Go toolchain baseline**: Updated `go.mod` to require Go 1.25.
-- **Container builds**: Updated the source-build Docker image from `golang:1.24-alpine` to `golang:1.25-alpine`.
-- **CI and releases**: Updated GitHub Actions test, integration, lint, and release jobs to use Go 1.25.x.
-- **Lint tooling**: Updated the CI `golangci-lint` version from `v2.1.0` to `v2.4.0` for Go 1.25 support.
-- **Documentation**: Updated README badges and contributor/internal docs to advertise Go 1.25+.
-
----
-
-## [1.0.8] — 2026-05-12
-
-Internal quality release completing the integration-test harness. No public API or behaviour changes.
-
-### Added
-
-- **`test/integration/http/`** — HTTP-layer integration tests (build tag: `integration`):
-  - `TestChatCompletion_*`: non-streaming and streaming chat completions through the in-process gateway with stub providers.
-  - `TestModels_*`: model listing, provider filtering, and empty-registry edge cases.
-  - `TestProxy_PassThrough`, `TestProxy_AuthHeadersInjected`, `TestProxy_NoProvider`: pass-through proxy tests against a live `httptest.Server` upstream.
-- **`test/integration/plugins/`** — Plugin-chain integration tests (build tag: `integration`):
-  - `TestPluginChain_WordFilter_BlockedWord` / `_CleanRequest`: word-filter blocks/passes requests at `before_request`.
-  - `TestPluginChain_ResponseCache_Hit`: cache short-circuits the provider on the second identical request (same plugin instance registered at both `before_request` and `after_request`).
-  - `TestPluginChain_OnError_Fires`: verifies `on_error` stage fires when the provider returns an error.
-- **`test/integration/strategies/`** — Strategy integration tests (build tag: `integration`):
-  - `TestStrategy_Fallback_PrimaryFails_SecondarySucceeds`, `_AllFail`: fallback routing behaviour.
-  - `TestStrategy_LoadBalance_DistributesRequests`: 40 requests, each provider must receive ≥20%.
-  - `TestStrategy_LeastLatency_LocksOntoFastestSeen`: seeds both providers, then asserts the faster one handles ≥80% of post-seed requests.
-
-### Fixed
-
-- **`gateway.go`**: `pctx.Skip = true` set by a `before_request` plugin (e.g. `response-cache`) was silently ignored — the gateway now short-circuits provider dispatch and returns the cached response directly. `after_request` plugins (logging, metrics) still fire.
-- **`internal/strategies/leastlatency.go`**: Cold-start bug where the strategy locked onto the first-ever provider and never explored others. Unseen providers are now sampled before falling back to the lowest-p50 selection.
-- **`.github/workflows/ci.yml`**: Integration job now runs `make test-integration` (which includes `-tags=integration`) instead of a bare `go test` that silently skipped all integration tests.
-
-### Changed
-
-- **`AGENTS.md`**: Updated Testing Conventions section to document unit and integration test suites with build tags, Make targets, and Postgres requirements.
-- **`CONTRIBUTING.md`**: Replaced outdated "Integration tests require real provider API keys" section with a step-by-step "How to add an integration test" guide.
-
----
-
-## [1.0.7] — 2026-05-11
-
-Internal architecture release completing the `cmd/ferrogw` refactor. No public API or behaviour changes.
-
-### Changed
-
-- **`cmd/ferrogw` refactor — Phases 2–6**: Moved all remaining business logic out of `cmd/ferrogw/` into dedicated `internal/` packages. `main.go` is now 59 lines of Cobra wiring + plugin imports.
-  - `internal/httpserver/` — HTTP server constructor (`server.go`) and Prometheus connection tracker (`conntracker.go`)
-  - `internal/proxy/` — Pass-through reverse proxy and model scanner (benchmarks preserved)
-  - `internal/handler/` — All `/v1/*` HTTP handlers: chat completions, completions, embeddings, images, models
-  - `internal/middleware/` — Rate-limit middleware and proxy-auth middleware (joined existing CORS)
-  - `internal/dashboard/` — Template rendering, pprof wiring, and startup logo
-  - `internal/httpserver/router.go` — Full Chi router wiring
-  - `internal/bootstrap/bootstrap.go` — Gateway construction, provider registration, config loading, startup banner, and `Serve()` entry point
-
----
-
-## [1.0.6] — 2026-05-06
-
-Feature release adding official Python and TypeScript SDKs, Helm chart distribution via ArtifactHub, and Replicate streaming support.
-
-### Added
-
-- **Official TypeScript SDK** ([ferro-labs/ferrolabs-typescript-sdk](https://github.com/ferro-labs/ferrolabs-typescript-sdk)): First-party TypeScript/JavaScript client library for the Ferro Labs AI Gateway — supports chat, streaming, embeddings, and image generation across 30+ providers.
-- **Official Python SDK** ([ferro-labs/ferrolabs-python-sdk](https://github.com/ferro-labs/ferrolabs-python-sdk)): First-party Python client library for the Ferro Labs AI Gateway — works with any LLM or framework.
-- **Helm charts on ArtifactHub** ([ferro-labs on ArtifactHub](https://artifacthub.io/packages/search?org=ferro-labs)): Ferro Labs Helm charts are now discoverable and installable via ArtifactHub, the standard Kubernetes package registry.
-- **Replicate streaming** ([#108](https://github.com/ferro-labs/ai-gateway/pull/108), relates to [#46](https://github.com/ferro-labs/ai-gateway/issues/46)): The Replicate provider now implements `core.StreamProvider`. Streaming requests send `stream: true` to the Replicate prediction API, follow the returned stream URL, and parse Replicate SSE events (`output`, `done`, `error`) into the gateway's normalized `StreamChunk` format. Includes mock SSE test coverage.
-- **Postgres integration tests**: 15 integration tests in `test/integration/` using testcontainers-go to spin up a real Postgres 16 container. Covers key store CRUD, config store persistence, request log write/list/paginate/delete, and bootstrap factory functions. Runs in CI after unit tests pass.
-
-### Changed
-
-- **README**: Added SDK links, ArtifactHub badge, and updated provider/SDK documentation for both English and Chinese READMEs.
-- **Internal refactor**: Extracted CORS middleware, SSE streaming, error helpers, and store factories from `cmd/ferrogw/` into `internal/middleware`, `internal/sse`, `internal/apierror`, and `internal/bootstrap` with full test coverage — no public API changes.
-
----
-
-## [1.0.5] — 2026-04-28
-
-Feature release adding first-class Ollama Cloud support and broader embedding coverage while keeping the gateway's public API OpenAI-compatible for end users.
-
-### Added
-
-- **Ollama Cloud provider** ([#94](https://github.com/ferro-labs/ai-gateway/issues/94)): Added `ollama-cloud` as a separate provider from local `ollama`, using Ollama Cloud's documented `https://ollama.com/api` endpoints with Bearer token authentication via `OLLAMA_API_KEY`.
-- **OpenAI-compatible gateway surface for Ollama Cloud**: Users can call the existing `/v1/chat/completions` endpoint with normal OpenAI-style payloads while the provider internally adapts requests to Ollama Cloud's native `/api/chat` API.
-- **Streaming and model discovery**: Added native NDJSON streaming support and live model discovery from `/api/tags`, exposed through the gateway's normalized streaming and model-list interfaces.
-- **Ollama Cloud model catalog entries**: Added `ollama-cloud/*` catalog entries for initial direct Cloud model IDs, including `gpt-oss:120b`, `gpt-oss:20b`, `qwen3-coder:480b`, and `deepseek-v3.1:671b`, in both the primary and embedded backup catalogs.
-- **Expanded embeddings**: Bedrock, Cohere, Databricks, Fireworks, Gemini, Mistral, Novita, Together, and Vertex AI now implement the gateway's `EmbeddingProvider` interface, advertise the `embed` capability, and route `/v1/embeddings` requests through provider-native or OpenAI-compatible embedding APIs with normalized vectors and token-usage responses.
-- **Embedding provider tests and registry guardrails**: Added package-local embedding tests for success, invalid input, upstream errors, auth/path mapping, and usage mapping, plus a registry consistency test that keeps `CapabilityEmbed` aligned with actual `EmbeddingProvider` implementations.
-- **Implementation plan documentation**: Added `docs/ollama-cloud-implementation-plan.md` documenting provider identity, API mapping, catalog policy, testing scope, and known open questions.
-
-### Changed
-
-- **Provider registry and examples**: Updated provider registration, stability tests, config examples, Docker environment comments, and README provider counts for the new 30th provider.
-- **Catalog pricing policy for Ollama Cloud**: Ollama Cloud catalog entries use `null` token pricing because Ollama currently documents plan/GPU-usage-based limits rather than fixed per-token rates.
-- **Proxy scope**: Ollama Cloud intentionally does not advertise pass-through proxy support yet because Ollama Cloud's documented direct API is `/api/*`, not `/v1/*`.
-
----
-
-## [1.0.4] — 2026-04-09
-
-Patch release focused on security maintenance, cache correctness, and refreshed project messaging. This release keeps the `v1.0.x` line stable while improving the published release notes for GitHub releases.
-
-### Security
-
-- **Dependabot: AWS SDK EventStream decoder DoS**: Upgraded `github.com/aws/aws-sdk-go-v2/service/bedrockruntime` from `v1.50.1` to `v1.50.4` and `github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream` from `v1.7.6` to `v1.7.8` to address GitHub advisory `GHSA-xmrv-pmrh-hhx2`. The patched versions prevent malformed EventStream frames from triggering a panic in affected AWS SDK decoder paths.
-
-### Fixed
-
-- **Cache eviction at capacity** ([#83](https://github.com/ferro-labs/ai-gateway/pull/83), fixes [#43](https://github.com/ferro-labs/ai-gateway/issues/43)): When the response cache reached `max_entries`, new responses were dropped instead of replacing stale entries, which effectively disabled caching once the store filled up. The cache now evicts the earliest-expiring entry first, stores the incoming response, and includes regression coverage for deterministic eviction order.
-
-### Improved
-
-- **README polish**: Refined the README content and release documentation for the `v1.0.4` maintenance release so the project overview, positioning, and upgrade story are clearer for users landing on the repository or release page.
-- **GitHub release notes**: Tag-driven releases now use the matching `CHANGELOG.md` section as the source for the GitHub release body, then append a full changelog link at the bottom. This keeps release pages richer, more descriptive, and aligned with the repository changelog.
-
----
-
-## [1.0.3] — 2026-04-01
-
-### Security
-
-- **Dockerfile runs as non-root user**: Added `ferro` user/group in `Dockerfile.release`. Container no longer runs as root.
-- **Constant-time auth comparison**: Admin middleware now uses `subtle.ConstantTimeCompare` consistently for all key comparisons, preventing timing side-channels.
-
-### Improved
-
-- **Template caching**: Dashboard page templates are parsed once at startup instead of on every request — eliminates per-request `template.ParseFS` overhead.
-- **Dashboard redesign**: Improved layout, navigation, and styling across all dashboard pages.
-- **CLI polish**: Consistent color helpers, cleaner output formatting, ASCII-safe log messages (replaced unicode dashes/arrows).
-
-### Added
-
-- **`MASTER_KEY` environment variable**: Single credential that authenticates at gateway startup — no stored keys required. Checked first in the auth chain using `subtle.ConstantTimeCompare`. Grants full admin scope.
-- **`ferrogw init`**: First-run setup command — generates a `fgw_`+32-hex master key with 128-bit entropy, writes a minimal `config.yaml`. Never writes secrets to disk.
-- **Dashboard login page** (`/dashboard/login`): Validates key via `/admin/health`, stores in `localStorage`, shows Admin / Read Only badge, and hides write actions for read-only sessions.
-- **`/admin/health` returns scopes**: The health endpoint now includes the authenticated key's scopes so clients can determine permission level without a separate request.
-- **`.env.example`**: Full reference file documenting `MASTER_KEY`, all 29 provider API keys, storage backends, rate limiting, and CORS origins. Bootstrap env vars marked deprecated. <!-- drift-ok: historical v1.0.3 count -->
-
-### Changed
-
-- **Single binary**: `ferrogw-cli` has been merged into `ferrogw` as Cobra subcommands (`doctor`, `status`, `admin`, `validate`, `plugins`, `version`). Running `ferrogw` with no subcommand still starts the server (backward compatible).
-- **`proxyAuth`**: `/v1/*` routes now enforce `AuthMiddleware` by default and are only open when `ALLOW_UNAUTHENTICATED_PROXY=true` is set for local development. Operational endpoints such as `/metrics`, `/debug/vars`, and `/debug/pprof/*` continue to require auth.
-- **Enhanced startup banner**: Shows top-5 provider status, masked master key, key store / config store backends, and a warning when deprecated bootstrap keys are in use. <!-- drift-ok: "top-5" is a display limit, not a provider count -->
-- **Bootstrap keys deprecated**: `ADMIN_BOOTSTRAP_KEY` and `ADMIN_BOOTSTRAP_READ_ONLY_KEY` still work but are superseded by `MASTER_KEY`. They only activate when the key store is empty.
+  What this removes on this route: `stream: true` is refused with `400 streaming_not_supported`; batch prompts (`"prompt": ["a","b"]`) and token-id prompts are refused with `400 unsupported_parameter`; `best_of`, `logprobs` and `suffix` are accepted and ignored (`echo` is honoured — see the entry above); and a model that exists only behind the legacy completions API and rejects chat requests — `gpt-3.5-turbo-instruct` is the real one — will now fail. Use `/v1/chat/completions` with a chat model instead. Anthropic, Gemini, Cohere, Bedrock, Vertex AI and Azure models are better served than before: they were previously sent an OpenAI-shaped legacy body to an upstream with no such route and returned that upstream's raw 404.
+- `request_logs` gains nullable `duration_ms`, `ttft_ms` and `cost_usd` columns, applied automatically on start. Existing rows keep NULL rather than being backfilled with zero: a request the catalog cannot price has an unknown cost, not a free one, and a non-streaming request has no time to first token at all. The distinction is preserved through the API and the dashboard, which report "unpriced" separately from "$0".
+- The dashboard is built on Tailwind and a component library rather than a hand-written stylesheet, on the palette it already used. The light theme's accent is one step darker to meet WCAG AA contrast, which it previously failed both as link text and as a button fill.
+- Every route is reachable by keyboard without traversing the navigation first.
+- Active dashboard sessions are visible from the API keys page, and a key's expiry can be extended or cleared instead of requiring the key to be recreated.
+- The web application now owns its client routes and consumes the existing Admin and OpenAI-compatible APIs without being served by the gateway process.
+- Dashboard sessions live only in `sessionStorage` and do not survive closing the tab; read-only scopes hide mutation controls.
+- The standalone web server applies the dashboard Content Security Policy and immutable asset caching independently from gateway API headers.
+- `GET /admin/sessions` lists active dashboard sessions; sessions persist across restarts when a SQLite or PostgreSQL key-store backend is configured, and are held in memory otherwise.
 
 ### Removed
 
-- **`cmd/ferrogw-cli/` directory**: Deleted. All CLI commands live in `internal/cli/` and are wired as Cobra subcommands of `ferrogw`.
-- **`make build-cli` Makefile target**: Removed. `make build` produces the single `ferrogw` binary.
+- **Breaking:** the `/dashboard`, `/dashboard/*`, and `/logo.png` paths. The dashboard is served from the site root instead; update any bookmark or ingress rule that names the old paths.
+- The legacy Go template renderer, page-specific browser scripts, vendored chart runtime, and dashboard-owned HTTP helper package.
+- The `GATEWAY_BASE_URL` variable, the nginx configuration, and the container entrypoint hook that wrote `config.json` from it. The dashboard is same-origin, so there is no gateway address for it to be told.
+- Node from `go build` and `go test`, which compile against a committed placeholder. The paths that ship a binary — `make build`, the image, and GoReleaser — build the bundle first.
 
----
+## Past releases
 
-## [1.0.2] — 2026-03-30
+Release notes for shipped versions are archived by minor series:
 
-### Added
-
-- **`X-Gateway-Overhead-Ms` response header**: Every response now includes gateway processing overhead in milliseconds, letting clients isolate gateway latency from provider latency.
-- **Live upstream benchmark in README**: Measured overhead against live OpenAI API — **0.002 ms** bare proxy, **0.025 ms** with plugins enabled.
-- **Docker Compose dev/prod split**: New `docker-compose.dev.yml` (build from source, debug logging, Ollama host access) and `docker-compose.prod.yml` (pinned image, restart policy, health check, resource limits, log rotation).
-
-### Changed
-
-- **Config examples**: Added all 29 providers as targets, conditional routing examples, retry/circuit-breaker config, and previously undocumented plugin fields (`max_input_length`, `burst`, `max_keys`). <!-- drift-ok: historical v1.0.2 count -->
-- **`docker-compose.yml`**: Refactored to shared base config with commented env var stubs for all 29 providers. <!-- drift-ok: historical v1.0.2 count -->
-- **AGENTS.md / CONTRIBUTING.md**: Updated "Adding a New Provider" checklist with config example and docker-compose steps; removed duplicate sections.
-
----
-
-## [1.0.1] — 2026-03-27
-
-### Security
-
-- **SQL injection (gosec G701)**: Replaced ad-hoc `db.Exec(query, ...)` calls with pre-compiled prepared statements (`*sql.Stmt`) in `SQLStore`. All six write operations (`Revoke`, `Update`, `SetExpiration`, `Delete`, `ValidateKey`, `RotateKey`) and both SELECT queries (`Get`, `ValidateKey`) now use `stmt.Exec` / `stmt.QueryRow`, eliminating any query-string taint path.
-- **SSRF (gosec G704)**: Added `url.Parse` + scheme/host validation in the `New()` constructor of every provider that accepts a configurable base URL (Anthropic, DeepSeek, Groq, OpenAI, Together AI). The catalog remote-fetch helper (`models/catalog.go`) validates the URL before making the HTTP request.
-
-### Changed
-
-- **`SQLStore.scanOne`**: Signature changed from `scanOne(query string, arg interface{})` to `scanOne(stmt *sql.Stmt, arg any)` — callers pass a prepared statement instead of a raw query string.
-- **`SQLStore.Close`**: Now closes all prepared statements before closing the database connection.
-
-### Quality
-
-- **staticcheck QF1012**: Replaced `WriteString(fmt.Sprintf(...))` with `fmt.Fprintf` in `internal/admin/sql_store.go`, `internal/requestlog/store.go`, and `providers/bedrock/bedrock.go`.
-- **revive unused-parameter**: Renamed unused `cmd` parameter to `_` in `internal/cli/doctor.go`.
-
-### Improved
-
-- **CLI overhaul**:
-  - **New banner**: Replaced the block-art ASCII logo with a Figlet "doom" font rendering of `FERRO LABS` — orange bold + dim white side-by-side with proper column alignment.
-  - **`version` command**: Expanded output to include `commit`, `built`, `go` runtime version, and `os/arch` alongside the version string. JSON/YAML output formats include all fields.
-  - **Custom help template**: Grouped help output into `Commands` and `Admin API` sections for a cleaner overview.
-  - **`--no-color` flag**: New persistent flag on the root command; also respects the `NO_COLOR` environment variable (https://no-color.org/).
-  - **ANSI colour system**: Centralised `clr(code, s string)` helper in `output.go` with `colorOrange`, `colorBold`, `colorDim`, `colorGreen`, `colorRed`, and `colorYellow` constants. `printSuccess` now renders with a green `✓` prefix.
-  - **`status` and `doctor` commands**: Registered in the command tree.
-
-### Developer Experience
-
-- **Git hooks (`.husky/`)**: Added `pre-commit` (runs `go fmt`, `go vet`, `golangci-lint`) and `pre-push` (runs `go test`) hooks. Scripts use direct `go` commands — no `make` dependency, works on Linux, macOS, and Windows (Git Bash).
-- **`make vet`**: New Makefile target for `go vet ./...`.
-
----
-
-## [1.0.0] - 2026-03-24
-
-The first stable release of Ferro Labs AI Gateway — a production-grade, OpenAI-compatible AI gateway written in Go.
-
-### What's in v1.0.0
-
-- **29 built-in providers** — OpenAI, Anthropic, Gemini, Groq, Bedrock, Vertex AI, Hugging Face, OpenRouter, Cloudflare, Azure OpenAI, Azure Foundry, DeepSeek, Mistral, xAI, Cohere, Together AI, Fireworks, Replicate, Ollama, Databricks, DeepInfra, Moonshot, Novita, NVIDIA NIM, Cerebras, Perplexity, Qwen, SambaNova, and AI21.
-- **8 routing strategies** — single, fallback, load balance, least latency, cost-optimized, content-based, A/B test, and conditional.
-- **6 built-in OSS plugins** — word-filter, max-token, response-cache, request-logger, rate-limit, and budget.
-- **MCP tool server integration** — agentic tool-call loops with Streamable HTTP transport, tool filtering, and bounded call depth.
-- **Admin API and dashboard** — API key management, usage stats, request logs, config history with rollback, and a built-in dashboard UI.
-- **Persistence backends** — memory, SQLite, and PostgreSQL for runtime config, API keys, and request logs.
-- **Performance** — 13,925 RPS at 1,000 concurrent users, 32 MB base memory, per-provider HTTP connection pools, sync.Pool for request structs and JSON buffers, zero-allocation stream detection.
-
-### Upgrading from rc.3
-
-No breaking changes from `1.0.0-rc.3`. Updated README and CONTRIBUTING docs for stable release.
-
----
-
-<details>
-<summary><strong>1.0.0-rc.3</strong> — 2026-03-23</summary>
-
-### Highlights
-
-- Gateway hot path overhead reduced from 1,269µs to ~200µs (6.3x faster).
-- Throughput at c=50 improved from 2,444 to 25,846 RPS (10.6x faster).
-- New `internal/transport` package with per-provider isolated HTTP pools.
-- Fixed response-cache bug that collapsed message ordering (#44).
-
-### Bug Fixes
-
-- **response-cache: preserve message order in cache key** (#44): The
-  `cacheKey` function sorted messages before hashing, causing two requests
-  with identical messages in different order to produce the same cache key.
-  Removed `sort.Strings` — cache keys now preserve conversation order using
-  incremental `sha256.New()` writes. ([2cd281a])
-
-### Performance
-
-- **`internal/transport/` package**: Per-provider isolated HTTP client pools
-  with production-tuned settings. Separate streaming transport with no
-  `ResponseHeaderTimeout` for SSE. Known provider presets for OpenAI,
-  Anthropic, Gemini, Bedrock, Vertex AI, Groq, Ollama, and Azure OpenAI.
-  Prometheus metrics for connection pool observability.
-- **Per-provider HTTP clients**: All 28 providers now use <!-- drift-ok: historical rc.3 count -->
-  `httpclient.ForProvider(Name)` for isolated connection pools instead of a
-  single shared client. Legacy completions handler switched from
-  `http.DefaultClient`.
-- **sync.Pool for request structs**: `routeChatCompletionRequest` (19-field
-  reset) and `plugin.Context` (metadata map capacity preserved) are now
-  pooled. All fields explicitly reset before pool return for multi-tenant
-  safety.
-- **Pooled JSON marshaling buffers**: Added `core.MarshalJSON` and
-  `core.JSONBodyReader` backed by `sync.Pool`. All 28 provider subpackages <!-- drift-ok: historical rc.3 count -->
-  updated to use pooled buffers for request body serialization.
-- **getStrategy() lock contention fix**: Changed from exclusive `Mutex.Lock`
-  to double-checked locking with `RLock` fast path. Eliminates write-lock
-  serialization on every request under concurrent load.
-- **Cached target key slices**: Pre-computed target key ordering for
-  single/fallback strategy modes avoids `[]string` allocation on every
-  streaming request.
-- **Batched RLock in RouteStream**: Merged two separate `g.mu.RLock()`
-  acquisitions (provider resolution + catalog snapshot) into one.
-- **SSE-optimized buffer pools**: Pooled `bufio.Reader` (64KB) and
-  `bufio.Writer` (4KB) for streaming request/response handling.
-- **Zero-alloc `IsStreamingRequest`**: Byte-scanning `"stream":true`
-  detection with no JSON parsing and 0 allocations.
-
-</details>
-
-<details>
-<summary><strong>1.0.0-rc.2</strong> — 2026-03-18</summary>
-
-### Highlights
-
-- Hardened the `rc` line for performance-focused validation ahead of `v1.0.0`.
-- Reduced gateway hot-path overhead and tightened streaming control behavior.
-- Continued the `cmd/ferrogw` split so startup, routing, and HTTP helpers are
-  easier to reason about and maintain.
-- Added contribution guidance to keep the gateway architecture and package
-  boundaries consistent as the OSS surface stabilizes.
-
-### Performance And Runtime
-
-- Reduced request-path overhead in the core gateway flow.
-- Improved SSE streaming timeout and control-path handling.
-- Fixed OpenAI completion request decoding behavior used on the
-  OpenAI-compatible path.
-
-### Internal Structure
-
-- Split `cmd/ferrogw` startup and HTTP helpers by responsibility.
-- Completed the Phase 4 package-shaping work for the `ferrogw` command surface.
-- Carried forward the architecture hardening and observability work from the
-  post-`rc.1` stabilization phases.
-
-### Release Notes
-
-- `rc.2` is the performance-validation release candidate.
-- Benchmarking remains focused on normalized gateway-overhead comparisons before
-  the final `v1.0.0` release.
-
-</details>
-
-<details>
-<summary><strong>1.0.0-rc.1</strong> — 2026-03-14</summary>
-
-### Highlights
-
-- First `v1` release candidate for Ferro Labs AI Gateway.
-- OpenAI-compatible gateway surface for chat, model discovery, embeddings,
-  image generation, and transparent provider proxying.
-- 29 built-in providers behind one canonical provider registry.
-- 8 routing strategies:
-  `single`, `fallback`, `loadbalance`, `conditional`, `least-latency`,
-  `cost-optimized`, `content-based`, and `ab-test`.
-- 6 built-in OSS plugins:
-  `word-filter`, `max-token`, `response-cache`, `request-logger`,
-  `rate-limit`, and `budget`.
-- First-class MCP tool server support for agentic tool-call loops.
-- Built-in operational surface including `/health`, `/metrics`, admin APIs, and
-  the dashboard UI.
-
-### Provider Coverage
-
-- Added first-class support for:
-  `cerebras`, `cloudflare`, `databricks`, `deepinfra`, `moonshot`, `novita`,
-  `nvidia-nim`, `openrouter`, `qwen`, and `sambanova`.
-- Hardened provider registration with canonical names, ordered factory
-  registration, and provider-name stability coverage.
-
-### Platform Capabilities
-
-- OpenAI-compatible request and response flow across providers.
-- Chat streaming support across the supported streaming adapters.
-- Persistent runtime config, API keys, and request logs with `memory`,
-  `sqlite`, and `postgres` backends.
-- MCP 2025-11-25 Streamable HTTP integration with tool discovery, allowlists,
-  and bounded call depth.
-- Cost-aware and latency-aware routing powered by the model catalog and runtime
-  latency tracking.
-
-### Release Notes
-
-- This release candidate is the public stabilization point for the current OSS
-  gateway surface ahead of `v1.0.0`.
-- README, roadmap, and release docs were refreshed together so the project
-  presents a consistent first-release story.
-- Runnable examples now live in the dedicated
-  `ferro-labs/ai-gateway-examples` repository.
-
-</details>
+- [1.3.x](docs/changelog/v1.3.md)
+- [1.2.x](docs/changelog/v1.2.md)
+- [1.1.x](docs/changelog/v1.1.md)
+- [1.0.x](docs/changelog/v1.0.md) — including the 1.0.0 release candidates

@@ -7,6 +7,7 @@ linters:
   enable:
     - bodyclose
     - copyloopvar
+    - depguard
     - dupl
     - errcheck
     - errorlint
@@ -29,6 +30,26 @@ linters:
     - maintidx
 
   settings:
+    depguard:
+      rules:
+        # All logging goes through pkg/logger so output stays uniform and
+        # structured. pkg/logger itself is the one place allowed to wrap slog.
+        no-direct-logging:
+          files:
+            - "!**/pkg/logger/**"
+          deny:
+            - pkg: log/slog
+              desc: use github.com/ferro-labs/ai-gateway/pkg/logger instead of importing log/slog directly
+            - pkg: github.com/ferro-labs/ai-gateway/internal/logging
+              desc: internal/logging was removed; use github.com/ferro-labs/ai-gateway/pkg/logger
+        # gopkg.in/yaml.v3 is unmaintained upstream. go.yaml.in/yaml/v3 is the
+        # YAML org's maintained fork and a drop-in (same package name, same API).
+        # It remains in the module graph indirectly via test dependencies; this
+        # rule only stops it being imported directly again.
+        no-archived-yaml:
+          deny:
+            - pkg: gopkg.in/yaml.v3
+              desc: gopkg.in/yaml.v3 is unmaintained; use go.yaml.in/yaml/v3
     gocyclo:
       min-complexity: 30
     dupl:
@@ -39,6 +60,8 @@ linters:
       allow-unused: false
 
   exclusions:
+    paths:
+      - web
     rules:
       # dupl on tests is noise — table fixtures and mock setups legitimately
       # repeat structure across cases. Enforce it on production code only.

@@ -29,8 +29,7 @@ func Images(gw *aigateway.Gateway) http.HandlerFunc {
 
 		resp, err := gw.GenerateImage(r.Context(), req)
 		if err != nil {
-			status, errType, code := apierror.RouteErrorDetails(err)
-			apierror.WriteOpenAI(w, status, err.Error(), errType, code)
+			apierror.WriteRouteError(w, err)
 			return
 		}
 

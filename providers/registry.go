@@ -1,6 +1,6 @@
 package providers
 
-import "fmt"
+import "github.com/ferro-labs/ai-gateway/providers/core"
 
 // Registry manages a collection of providers for lookup by name.
 type Registry struct {
@@ -29,15 +29,6 @@ func (r *Registry) Get(name string) (Provider, bool) {
 	return p, ok
 }
 
-// MustGet returns a provider by name or panics if not found.
-func (r *Registry) MustGet(name string) Provider {
-	p, ok := r.providers[name]
-	if !ok {
-		panic(fmt.Sprintf("provider not found: %s", name))
-	}
-	return p
-}
-
 // List returns the names of all registered providers.
 func (r *Registry) List() []string {
 	names := make([]string, len(r.order))
@@ -45,19 +36,52 @@ func (r *Registry) List() []string {
 	return names
 }
 
-// AllModels returns ModelInfo from all registered providers.
+// ModelsFor reports the models the named provider was configured with.
+//
+// A bare Registry holds no catalog and runs no discovery, so this is only the
+// config-derived set — an Azure deployment name, an OLLAMA_MODELS entry — and
+// is empty for the providers whose inventory lives in the catalog. The Gateway
+// composes all three sources; a Registry can only answer for the one it has.
+func (r *Registry) ModelsFor(name string) []ModelInfo {
+	p, ok := r.providers[name]
+	if !ok {
+		return nil
+	}
+	cm, ok := p.(ConfiguredModelProvider)
+	if !ok {
+		return nil
+	}
+	return core.ModelsFromList(name, cm.ConfiguredModels())
+}
+
+// AllModels returns the configured models of every registered provider. See
+// ModelsFor for why a Registry's answer is narrower than the Gateway's.
 func (r *Registry) AllModels() []ModelInfo {
-	var models []ModelInfo
+	models := make([]ModelInfo, 0, len(r.order))
 	for _, name := range r.order {
-		p := r.providers[name]
-		models = append(models, p.Models()...)
+		models = append(models, r.ModelsFor(name)...)
 	}
 	return models
 }
 
-// FindByModel returns the first registered provider that supports the given
-// model. Registration order is retained explicitly so overlapping/wildcard
-// providers resolve deterministically rather than following Go map iteration.
+// FindByModel returns the first registered provider whose advisory
+// SupportsModel accepts the given model. Registration order is retained
+// explicitly so overlapping/wildcard providers resolve deterministically rather
+// than following Go map iteration.
+//
+// This is a claim, not ownership. Several providers answer SupportsModel
+// `return true` because their upstream's inventory is not theirs to enumerate,
+// so an unrecognised name resolves here to whichever of them registers first —
+// and so does a name another provider genuinely owns. Only the Gateway can
+// decide ownership: it holds the routing index built from the catalog, live
+// discovery and the models this instance's config named, and its own
+// FindByModel answers from that. A bare Registry has none of those, which is
+// why this method is left as it is rather than redefined to something the type
+// cannot compute.
+//
+// Callers deciding where to send a request body should hold a ProviderSource
+// and be given the Gateway. This remains for callers that want exactly what it
+// says: any provider that claims the name.
 func (r *Registry) FindByModel(model string) (Provider, bool) {
 	for _, name := range r.order {
 		p := r.providers[name]

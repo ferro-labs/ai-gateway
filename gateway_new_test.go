@@ -1,22 +1,26 @@
 package aigateway
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/ferro-labs/ai-gateway/config"
+)
 
 // TestNew_ValidatesConfig verifies that New() runs the same fail-fast validation
 // that ReloadConfig already applies, so callers get a clear error at construction
 // time rather than a confusing failure at request time.
 func TestNew_ValidatesConfig(t *testing.T) {
 	t.Run("empty config (no targets) returns error", func(t *testing.T) {
-		_, err := newTestGateway(t, Config{})
+		_, err := newTestGateway(t, config.Config{})
 		if err == nil {
 			t.Fatal("expected New(Config{}) to return an error, got nil")
 		}
 	})
 
 	t.Run("minimal valid config constructs without error", func(t *testing.T) {
-		gw, err := newTestGateway(t, Config{
-			Strategy: StrategyConfig{Mode: ModeSingle},
-			Targets:  []Target{{VirtualKey: "any"}},
+		gw, err := newTestGateway(t, config.Config{
+			Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+			Targets:  []config.Target{{VirtualKey: "any"}},
 		})
 
 		if err != nil {

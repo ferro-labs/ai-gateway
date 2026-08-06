@@ -4,12 +4,10 @@ package qwen
 import (
 	"context"
 	"net/http"
-	"strings"
 
-	"github.com/ferro-labs/ai-gateway/internal/discovery"
 	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
 	"github.com/ferro-labs/ai-gateway/providers/core"
-	"github.com/ferro-labs/ai-gateway/providers/internal/openaicompat"
+	"github.com/ferro-labs/ai-gateway/providers/core/openaicompat"
 )
 
 const (
@@ -33,16 +31,13 @@ var (
 	_ core.ProxiableProvider = (*Provider)(nil)
 	_ core.EmbeddingProvider = (*Provider)(nil)
 	_ core.DiscoveryProvider = (*Provider)(nil)
+	_ core.BatchProvider     = (*Provider)(nil)
 )
 
 // New creates a new Qwen provider.
 func New(apiKey, baseURL string) (*Provider, error) {
-	baseURL = strings.TrimSpace(baseURL)
-	if baseURL == "" {
-		baseURL = defaultBaseURL
-	}
-	baseURL = strings.TrimRight(baseURL, "/")
-	if err := core.ValidateBaseURL(Name, baseURL); err != nil {
+	baseURL, err := core.ResolveAPIRoot(Name, baseURL, defaultBaseURL)
+	if err != nil {
 		return nil, err
 	}
 	return &Provider{
@@ -71,28 +66,12 @@ func (p *Provider) AuthHeaders() map[string]string {
 	return map[string]string{"Authorization": "Bearer " + p.apiKey}
 }
 
-// SupportedModels returns a static list of known Qwen models.
-func (p *Provider) SupportedModels() []string {
-	return []string{
-		"qwen-turbo",
-		"qwen-plus",
-		"qwen-max",
-		"qwen3-32b",
-		"qwen2.5-72b-instruct",
-	}
-}
-
 // SupportsModel returns true for any model name.
 func (p *Provider) SupportsModel(_ string) bool { return true }
 
-// Models returns structured model metadata.
-func (p *Provider) Models() []core.ModelInfo {
-	return core.ModelsFromList(p.name, p.SupportedModels())
-}
-
 // DiscoverModels fetches the live model list from the Qwen /models endpoint.
 func (p *Provider) DiscoverModels(ctx context.Context) ([]core.ModelInfo, error) {
-	return discovery.DiscoverOpenAICompatibleModels(ctx, p.httpClient, p.baseURL+"/models", p.apiKey, p.name)
+	return core.DiscoverOpenAICompatibleModels(ctx, p.httpClient, p.baseURL+"/models", p.apiKey, p.name)
 }
 
 // Complete sends a chat completion request to Qwen.

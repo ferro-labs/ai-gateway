@@ -4,11 +4,10 @@ package perplexity
 import (
 	"context"
 	"net/http"
-	"strings"
 
 	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
 	"github.com/ferro-labs/ai-gateway/providers/core"
-	"github.com/ferro-labs/ai-gateway/providers/internal/openaicompat"
+	"github.com/ferro-labs/ai-gateway/providers/core/openaicompat"
 )
 
 const (
@@ -35,14 +34,10 @@ var (
 
 // New creates a new Perplexity provider.
 func New(apiKey, baseURL string) (*Provider, error) {
-	baseURL = strings.TrimSpace(baseURL)
-	if baseURL == "" {
-		baseURL = defaultBaseURL
-	}
-	if err := core.ValidateBaseURL(Name, baseURL); err != nil {
+	baseURL, err := core.ResolveAPIRoot(Name, baseURL, defaultBaseURL)
+	if err != nil {
 		return nil, err
 	}
-	baseURL = strings.TrimRight(baseURL, "/")
 	return &Provider{
 		name:       Name,
 		apiKey:     apiKey,
@@ -62,24 +57,9 @@ func (p *Provider) AuthHeaders() map[string]string {
 	return map[string]string{"Authorization": "Bearer " + p.apiKey}
 }
 
-// SupportedModels returns the static list of known Perplexity models.
-func (p *Provider) SupportedModels() []string {
-	return []string{
-		"sonar",
-		"sonar-pro",
-		"sonar-reasoning-pro",
-		"sonar-deep-research",
-	}
-}
-
 // SupportsModel returns true if the model is supported by Perplexity.
 func (p *Provider) SupportsModel(_ string) bool {
 	return true
-}
-
-// Models returns structured model metadata.
-func (p *Provider) Models() []core.ModelInfo {
-	return core.ModelsFromList(p.name, p.SupportedModels())
 }
 
 // Complete sends a chat completion request to Perplexity.

@@ -3,6 +3,7 @@
 package latency
 
 import (
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -51,6 +52,28 @@ func (t *Tracker) Record(provider string, d time.Duration) {
 		t.samples[provider] = window
 	}
 	t.medians[provider] = computeMedian(window)
+}
+
+// Retain drops every provider not named in keep.
+//
+// Samples are keyed by routing target, and a config reload can remove a target.
+// Without this its window outlived it: the tracker grew for the life of the
+// process, and — worse — a target removed and later re-added resumed against a
+// stale median measured before the change, which is precisely the ranking the
+// least-latency strategy reads.
+//
+// Passing an empty slice clears the tracker, which is what a config with no
+// targets means.
+func (t *Tracker) Retain(keep []string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for provider := range t.samples {
+		if slices.Contains(keep, provider) {
+			continue
+		}
+		delete(t.samples, provider)
+		delete(t.medians, provider)
+	}
 }
 
 // computeMedian returns the median of src without mutating it. The result

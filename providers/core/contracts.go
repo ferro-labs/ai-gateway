@@ -16,12 +16,66 @@ import (
 )
 
 // Provider defines the interface that all LLM providers must implement.
+//
+// A provider does not report a model list. Which models it serves is answered
+// by the model catalog and, for providers implementing DiscoveryProvider, by
+// live enumeration of the upstream /models endpoint — both of which stay
+// current without a gateway release. A hardcoded list inside the provider went
+// stale the day it was written and shadowed the two sources that did not.
 type Provider interface {
 	Name() string
 	Complete(ctx context.Context, req Request) (*Response, error)
-	SupportedModels() []string
+
+	// SupportsModel is ADVISORY. It does not decide whether the gateway routes
+	// a model here — the routing index does, from the catalog, live discovery
+	// and whatever this instance's config named. Returning true for everything
+	// buys a provider no traffic; it only answers callers that have no index of
+	// their own, such as the pass-through proxy resolving a raw /v1/* body.
+	//
+	// To serve model ids no index can enumerate, implement AnyModelProvider.
+	// That is a separate, deliberate declaration precisely so it cannot be
+	// acquired by writing `return true` here.
 	SupportsModel(model string) bool
-	Models() []ModelInfo
+}
+
+// AnyModelProvider is the opt-in declaration that a provider's upstream accepts
+// model ids nothing can enumerate in advance — a deployment name chosen at
+// deploy time, a serving endpoint named by a workspace, a model pulled onto the
+// operator's own machine. Neither a public catalog nor a /models call can be
+// complete for these, so the routing index alone would refuse every one.
+//
+// It is deliberately a second method rather than a value SupportsModel returns.
+// Twelve providers answered SupportsModel with `return true` because it was the
+// shortest thing that compiled, and the result was that an unknown model name
+// sent the prompt body to three of them before returning 404. A declaration a
+// new provider's author has to write on purpose cannot be inherited by accident.
+//
+// It does NOT outrank the index. A model the index has an owner for is routed to
+// that owner and never offered here, so declaring this cannot take traffic away
+// from the provider that actually serves a model — it only extends the reach of
+// a target to names nobody claims. That is the same specificity ordering LiteLLM
+// applies when an exact model_list entry and a wildcard entry both match.
+//
+// Declaring it means: every request for a model no target owns is offered to
+// this provider, in configured target order, prompt body included. Do not
+// declare it for an upstream whose models a catalog entry or DiscoveryProvider
+// could cover instead.
+type AnyModelProvider interface {
+	Provider
+	// ServesAnyModel is a compile-time marker with no behavior.
+	ServesAnyModel()
+}
+
+// ConfiguredModelProvider is the optional interface for a provider whose
+// routable models come from this instance's own configuration rather than from
+// the catalog: an Azure OpenAI deployment name, the OLLAMA_MODELS list pointing
+// at a local server. No public catalog can know these, so they are the one kind
+// of model list a provider is still the authority on.
+//
+// Returning nil is the normal case and means "ask the catalog".
+type ConfiguredModelProvider interface {
+	Provider
+	ConfiguredModels() []string
 }
 
 // StreamProvider is an optional interface for providers that support streaming.
@@ -89,6 +143,52 @@ type ImageProvider interface {
 	GenerateImage(ctx context.Context, req ImageRequest) (*ImageResponse, error)
 }
 
+// RerankProvider is an optional interface for providers that support the
+// /v1/rerank endpoint (Cohere-lineage reranking). The gateway-facing shape is
+// the Cohere v2 rerank contract; adapters translate their native shape onto it.
+type RerankProvider interface {
+	Provider
+	Rerank(ctx context.Context, req RerankRequest) (*RerankResponse, error)
+}
+
+// ModerationProvider is an optional interface for providers that support the
+// /v1/moderations endpoint. The gateway-facing shape is the OpenAI moderations
+// contract.
+type ModerationProvider interface {
+	Provider
+	Moderate(ctx context.Context, req ModerationRequest) (*ModerationResponse, error)
+}
+
+// TranscriptionProvider is an optional interface for providers that support the
+// /v1/audio/transcriptions and /v1/audio/translations endpoints (speech-to-text).
+// The gateway-facing shape is the OpenAI audio contract.
+type TranscriptionProvider interface {
+	Provider
+	Transcribe(ctx context.Context, req TranscriptionRequest) (*TranscriptionResponse, error)
+}
+
+// SpeechProvider is an optional interface for providers that support the
+// /v1/audio/speech endpoint (text-to-speech). The gateway-facing shape is the
+// OpenAI speech contract; an adapter returns decoded audio bytes regardless of
+// whether the upstream streams raw audio or wraps it in base64-in-JSON.
+type SpeechProvider interface {
+	Provider
+	Speech(ctx context.Context, req SpeechRequest) (*SpeechResponse, error)
+}
+
+// BatchProvider is an optional interface for providers that expose the OpenAI
+// Files (/v1/files) and Batch (/v1/batches) APIs for transparent pass-through.
+// These endpoints carry no model and reference opaque provider-scoped ids, so
+// the gateway forwards them to a single configured batch target rather than
+// routing by model — BatchBaseURL is the root the operation path hangs beneath
+// (usually the OpenAI-compatible base, but Azure serves batch at a different
+// root than its chat surface), and BatchAuthHeaders authenticates the forward.
+type BatchProvider interface {
+	Provider
+	BatchBaseURL() string
+	BatchAuthHeaders() map[string]string
+}
+
 // DiscoveryProvider is an optional interface for providers that can
 // enumerate their available models live from the provider API.
 type DiscoveryProvider interface {
@@ -103,6 +203,11 @@ type DiscoveryProvider interface {
 type ProviderSource interface {
 	Get(name string) (Provider, bool)
 	List() []string
+	// ModelsFor reports the models one provider serves, composed from every
+	// source that knows: the catalog, live discovery, and whatever the
+	// instance's own config named. Callers must not ask the Provider — it no
+	// longer keeps a list, and the composition is what /v1/models answers with.
+	ModelsFor(name string) []ModelInfo
 	AllModels() []ModelInfo
 	FindByModel(model string) (Provider, bool)
 }

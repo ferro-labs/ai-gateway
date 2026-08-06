@@ -197,9 +197,50 @@ func TestWrapResponseWriter_DeadlineFailureAbortsWrite(t *testing.T) {
 	}
 }
 
+// A small chunk only fills http.Server's response buffer on Write; the bytes
+// reach the socket in the flush. A deadline that ends with Write therefore never
+// bounds the call a stalled client blocks, and the proxy stream would hold the
+// connection open indefinitely.
+func TestWrapResponseWriter_DeadlineCoversFlush(t *testing.T) {
+	rw := newDeadlineRecorder()
+	w := WrapResponseWriter(rw)
+
+	if _, err := w.Write([]byte("chunk")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := http.NewResponseController(w).Flush(); err != nil {
+		t.Fatalf("Flush through ResponseController: %v", err)
+	}
+
+	if len(rw.flushDeadlines) != 1 {
+		t.Fatalf("flushes = %d, want 1", len(rw.flushDeadlines))
+	}
+	if rw.flushDeadlines[0].IsZero() {
+		t.Fatal("flush ran with no write deadline armed; a stalled client is never cut off")
+	}
+	if last := rw.deadlines[len(rw.deadlines)-1]; !last.IsZero() {
+		t.Fatalf("deadline still armed after the flush: %v", last)
+	}
+}
+
+func TestWrapResponseWriter_FlushDeadlineFailureAbortsFlush(t *testing.T) {
+	wantErr := errors.New("deadline failed")
+	rw := newDeadlineRecorder()
+	rw.deadlineErr = wantErr
+	w := WrapResponseWriter(rw)
+
+	if err := http.NewResponseController(w).Flush(); !errors.Is(err, wantErr) {
+		t.Fatalf("error = %v, want %v", err, wantErr)
+	}
+	if rw.flushes != 0 {
+		t.Fatalf("flushes = %d, want 0", rw.flushes)
+	}
+}
+
 // The wrapper embeds the http.ResponseWriter interface, so it does not itself
-// satisfy http.Flusher. ReverseProxy reaches Flush through ResponseController,
-// which walks Unwrap — this pins that contract.
+// satisfy http.Flusher: nothing can reach a bare Flush and bypass the deadline.
+// ReverseProxy flushes through ResponseController, and that must still reach the
+// underlying writer — this pins both halves of that contract.
 func TestWrapResponseWriter_UnwrapExposesFlusher(t *testing.T) {
 	rw := newDeadlineRecorder()
 	w := WrapResponseWriter(rw)
@@ -226,6 +267,9 @@ type deadlineRecorder struct {
 	deadlines   []time.Time
 	deadlineErr error
 	flushes     int
+	// flushDeadlines records the deadline in force as each flush ran, which is
+	// what bounds the write that actually reaches the socket.
+	flushDeadlines []time.Time
 }
 
 func newDeadlineRecorder() *deadlineRecorder {
@@ -234,6 +278,11 @@ func newDeadlineRecorder() *deadlineRecorder {
 
 func (r *deadlineRecorder) Flush() {
 	r.flushes++
+	var active time.Time
+	if len(r.deadlines) > 0 {
+		active = r.deadlines[len(r.deadlines)-1]
+	}
+	r.flushDeadlines = append(r.flushDeadlines, active)
 	r.ResponseRecorder.Flush()
 }
 

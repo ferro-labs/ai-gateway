@@ -1,0 +1,10 @@
+CREATE TABLE IF NOT EXISTS sessions (
+	id TEXT PRIMARY KEY,
+	token_hash TEXT UNIQUE NOT NULL,
+	subject TEXT NOT NULL,
+	credential_id TEXT NOT NULL,
+	scopes TEXT NOT NULL,
+	created_at TIMESTAMPTZ NOT NULL,
+	last_seen_at TIMESTAMPTZ NULL,
+	expires_at TIMESTAMPTZ NOT NULL
+);

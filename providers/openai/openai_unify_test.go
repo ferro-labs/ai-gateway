@@ -166,13 +166,44 @@ func captureImageBody(t *testing.T, req core.ImageRequest, respBody string) map[
 }
 
 // TestOpenAIProvider_GenerateImage_GptImageOmitsResponseFormat verifies the
-// response_format parameter is not sent for gpt-image-* models (which reject it).
+// response_format parameter is not sent for gpt-image-* models (which reject
+// it). The caller may still ask for b64_json — that is what gpt-image-* returns
+// — it simply does not travel on the wire.
 func TestOpenAIProvider_GenerateImage_GptImageOmitsResponseFormat(t *testing.T) {
 	body := captureImageBody(t,
-		core.ImageRequest{Model: "gpt-image-1", Prompt: "a cat", ResponseFormat: "url"},
+		core.ImageRequest{Model: "gpt-image-1", Prompt: "a cat", ResponseFormat: "b64_json"},
 		`{"created":1,"data":[{"b64_json":"QUJD"}]}`)
 	if raw, ok := body["response_format"]; ok {
 		t.Errorf("response_format must be omitted for gpt-image-*, got %s", raw)
+	}
+}
+
+// TestOpenAIProvider_GenerateImage_GptImageRejectsURLFormat covers the case
+// gpt-image-* cannot serve at all. It always returns base64, so a request that
+// explicitly asked for a URL used to be answered 200 with an empty data[0].url
+// and no error — OpenAI's own API answers 400 here. The refusal is scoped to an
+// explicitly set format: an unset one keeps working, because OpenAI defaults it
+// to "url" and enforcing the default would refuse every existing caller.
+func TestOpenAIProvider_GenerateImage_GptImageRejectsURLFormat(t *testing.T) {
+	p, _ := New("sk-test", "http://127.0.0.1:1")
+
+	_, err := p.GenerateImage(context.Background(),
+		core.ImageRequest{Model: "gpt-image-1", Prompt: "a cat", ResponseFormat: "url"})
+	if err == nil {
+		t.Fatal("GenerateImage = nil error, want a refusal: gpt-image-* cannot return a URL")
+	}
+	if got := core.ParseStatusCode(err); got != 400 {
+		t.Errorf("status = %d, want 400 (the caller's request to fix, not an upstream fault)", got)
+	}
+	if !strings.Contains(err.Error(), "response_format=url") {
+		t.Errorf("error = %q, want it to name the requested format", err)
+	}
+
+	// DALL·E, on the same provider, still serves both.
+	if err := core.EnforceImageResponseFormat(Name,
+		core.ImageRequest{Model: "dall-e-3", Prompt: "a cat", ResponseFormat: "url"},
+		core.ImageResponseFormatURL, core.ImageResponseFormatB64JSON); err != nil {
+		t.Errorf("dall-e-3 url = %v, want nil", err)
 	}
 }
 
@@ -192,5 +223,56 @@ func TestOpenAIProvider_GenerateImage_DallESetsResponseFormat(t *testing.T) {
 	}
 	if rf != "url" {
 		t.Errorf("response_format = %q, want url (default)", rf)
+	}
+}
+
+// TestOpenAIProvider_GenerateImage_ReportsTokenUsage pins the one thing that can
+// price a gpt-image generation. That family carries no per-tile price in the
+// model catalog and is billed per token, so the usage the API returns is the
+// whole bill — and it was being decoded by the SDK and then dropped on the floor
+// here, which costed every such request at nothing.
+func TestOpenAIProvider_GenerateImage_ReportsTokenUsage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"created":1,"data":[{"b64_json":"QUJD"}],
+			"usage":{"input_tokens":1500,"output_tokens":4200,"total_tokens":5700,
+			"input_tokens_details":{"image_tokens":1200,"text_tokens":300}}}`)
+	}))
+	defer srv.Close()
+
+	p, _ := New("sk-test", srv.URL)
+	resp, err := p.GenerateImage(context.Background(), core.ImageRequest{Model: "gpt-image-1", Prompt: "a cat"})
+	if err != nil {
+		t.Fatalf("GenerateImage: %v", err)
+	}
+	if resp.Usage.PromptTokens != 1500 {
+		t.Errorf("PromptTokens = %d, want 1500 (the API's input_tokens)", resp.Usage.PromptTokens)
+	}
+	if resp.Usage.CompletionTokens != 4200 {
+		t.Errorf("CompletionTokens = %d, want 4200 (the API's output_tokens)", resp.Usage.CompletionTokens)
+	}
+	if resp.Usage.TotalTokens != 5700 {
+		t.Errorf("TotalTokens = %d, want 5700", resp.Usage.TotalTokens)
+	}
+}
+
+// TestOpenAIProvider_GenerateImage_NoUsageStaysZero covers DALL·E, which reports
+// no usage at all and is priced per image. Zero here is what keeps such a
+// request unpriced rather than billed at $0.00 — see models.Calculate's
+// ModeImage arm.
+func TestOpenAIProvider_GenerateImage_NoUsageStaysZero(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"created":1,"data":[{"url":"https://example.invalid/i.png"}]}`)
+	}))
+	defer srv.Close()
+
+	p, _ := New("sk-test", srv.URL)
+	resp, err := p.GenerateImage(context.Background(), core.ImageRequest{Model: "dall-e-3", Prompt: "a cat"})
+	if err != nil {
+		t.Fatalf("GenerateImage: %v", err)
+	}
+	if resp.Usage != (core.Usage{}) {
+		t.Errorf("Usage = %+v, want zero: DALL·E reports none and is priced per image", resp.Usage)
 	}
 }

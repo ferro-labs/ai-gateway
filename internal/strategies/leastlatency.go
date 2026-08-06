@@ -1,8 +1,6 @@
 package strategies
 
 import (
-	"context"
-	"fmt"
 	"math/rand"
 	"sort"
 	"time"
@@ -14,6 +12,19 @@ import (
 // LeastLatency routes to whichever compatible provider has the lowest observed
 // p50 latency. Providers without recorded samples are candidates only when all
 // compatible providers are unseen; in that case one is selected at random.
+//
+// The sample is total wall-clock for the request, so it measures how long a
+// completion took, not how fast the provider was. Generation time dominates it:
+// a provider that answers the same prompt at length reads as slower than a terse
+// one on identical hardware, and a model whose replies are simply longer will
+// lose to a model whose replies are shorter regardless of service speed.
+//
+// That is the intended trade. Wall-clock is what a caller waits, so ranking on
+// it optimises the number the caller actually experiences. Isolating service
+// speed would mean ranking on time-to-first-token, which says nothing about
+// when the response finishes. Choose this strategy when total response time is
+// the objective; do not read its ordering as a claim about provider health —
+// /health, /readyz and the circuit-breaker metric answer that.
 type LeastLatency struct {
 	targets []Target
 	lookup  ProviderLookup
@@ -25,81 +36,27 @@ func NewLeastLatency(targets []Target, lookup ProviderLookup, tracker *latency.T
 	return &LeastLatency{targets: targets, lookup: lookup, tracker: tracker}
 }
 
-// Execute selects the compatible provider with the lowest p50 latency and
-// forwards the request to it.
-func (l *LeastLatency) Execute(ctx context.Context, req providers.Request) (*providers.Response, error) {
-	if len(l.targets) == 0 {
-		return nil, fmt.Errorf("no targets configured for least-latency strategy")
-	}
-
-	type candidate struct {
-		target  Target
-		p50     time.Duration
-		hasSeen bool
-	}
-
-	var candidates []candidate
-	for _, t := range l.targets {
-		p, ok := l.lookup(t.VirtualKey)
-		if !ok || !p.SupportsModel(req.Model) {
-			continue
-		}
-		p50, hasSeen := l.tracker.Stats(t.VirtualKey)
-		candidates = append(candidates, candidate{
-			target:  t,
-			p50:     p50,
-			hasSeen: hasSeen,
-		})
-	}
-
-	if len(candidates) == 0 {
-		return nil, fmt.Errorf("no provider supports model %s", req.Model)
-	}
-
-	// Collect unseen providers so they get sampled before we commit to a best-known.
-	// This ensures all providers are profiled during cold-start, not just the first
-	// one that happened to be picked at random.
-	var unseen []*candidate
-	for i := range candidates {
-		if !candidates[i].hasSeen {
-			unseen = append(unseen, &candidates[i])
-		}
-	}
-	if len(unseen) > 0 {
-		// Round-robin through unseen providers to gather latency samples for each
-		// before settling on the best-known option.
-		pick := unseen[rand.Intn(len(unseen))] //nolint:gosec // G404: math/rand is fine for cold-start provider sampling, not security-sensitive
-		return dispatch(ctx, l.lookup, pick.target, req, "least latency based routing: provider not found")
-	}
-
-	// All providers have been sampled — pick the one with the lowest p50.
-	var best *candidate
-	for i := range candidates {
-		c := &candidates[i]
-		if best == nil || c.p50 < best.p50 {
-			best = c
-		}
-	}
-
-	return dispatch(ctx, l.lookup, best.target, req, "least latency based routing: provider not found")
-}
-
-// latencyOrderCandidate holds a streaming-capable target with its observed p50.
+// latencyOrderCandidate holds a candidate target with its observed p50.
 type latencyOrderCandidate struct {
 	key        string
 	p50        time.Duration
 	hasSamples bool
 }
 
-// SelectTargets orders streaming-capable targets by observed p50 latency:
+// SelectTargets orders model-compatible targets by observed p50 latency:
 // unseen providers (no samples yet) are shuffled to the front so cold-start
 // traffic profiles each of them, followed by sampled providers ascending by
-// p50. Remaining targets are appended as fallbacks. When no target is a
-// streaming candidate the declared target order is returned unchanged.
+// p50. Remaining targets follow in declared order; this mode does not advance
+// past a failing target, so they stand in only when a preferred one is skipped
+// (see Strategy.SelectTargets).
+//
+// When no target serves the model it returns nil rather than the declared
+// order, so the caller reports "nothing here can serve this" instead of
+// attempting a target the strategy already ruled out.
 func (l *LeastLatency) SelectTargets(req providers.Request) ([]string, error) {
 	var unseen, sampled []latencyOrderCandidate
 	for _, t := range l.targets {
-		if !streamCandidate(l.lookup, t.VirtualKey, req.Model) {
+		if !routableCandidate(l.lookup, t.VirtualKey, req.Model) {
 			continue
 		}
 		p50, hasSamples := l.tracker.Stats(t.VirtualKey)
@@ -112,7 +69,7 @@ func (l *LeastLatency) SelectTargets(req providers.Request) ([]string, error) {
 	}
 
 	if len(unseen) == 0 && len(sampled) == 0 {
-		return targetKeys(l.targets), nil
+		return nil, nil
 	}
 
 	if len(unseen) > 1 {

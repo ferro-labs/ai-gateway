@@ -9,24 +9,139 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
-// apiErrorEnvelope covers the OpenAI {"error":{"message":…}} error body shape and
+// apiErrorEnvelope covers the OpenAI {"error":{"message":…}} error body shape,
 // the FastAPI-style {"detail":"…"} envelope some providers (e.g. AI21) return for
-// gateway-level errors.
+// gateway-level errors, and the flat {"message":…} shape.
+//
+// It is deliberately an allow-list of KNOWN envelopes, not a general body
+// reader: anything it cannot decode is discarded rather than surfaced. See
+// upstreamMessage.
 type apiErrorEnvelope struct {
-	Error struct {
-		Message string `json:"message"`
-	} `json:"error"`
-	Detail string `json:"detail"`
+	// Error is raw because it is not one shape. OpenAI, Anthropic and Gemini nest
+	// the text in an object ({"error":{"message":…}}); xAI and Hugging Face send a
+	// plain string ({"error":"…"}). Decoding it into a struct made the string form
+	// fail the whole unmarshal, so the upstream's own words were dropped and the
+	// caller got a bare status phrase. See errorMessage.
+	Error json.RawMessage `json:"error"`
+	// Detail is raw because the field is not one shape. FastAPI-backed providers
+	// send a plain string for a gateway-level error and an ARRAY of validation
+	// objects for a malformed request (Mistral does both); some (DeepInfra) send
+	// an object carrying the reason under "error"/"message". Decoding it into a
+	// string made the other kinds fail the whole unmarshal, so a 422 that named
+	// the offending field was discarded and reported as bare "Unprocessable
+	// Entity" — the one status whose upstream text reaches the caller.
+	Detail  json.RawMessage `json:"detail"`
+	Message string          `json:"message"`
 }
 
+// errorMessage renders an "error" field that is either a plain string — xAI and
+// Hugging Face send {"error":"…"} — or an object nesting the text under
+// "message" ({"error":{"message":…}}, the OpenAI/Anthropic/Gemini shape) or
+// "error". Any other shape contributes nothing, keeping the allow-list rule.
+func errorMessage(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s
+	}
+	return objectMessage(raw)
+}
+
+// objectMessage reads a single reason string from an object-shaped error field,
+// preferring "message" and falling back to "error" — the two keys providers nest
+// a plain-string reason under. It returns "" for any other shape, so an
+// unrecognised body still contributes nothing.
+func objectMessage(raw json.RawMessage) string {
+	var obj struct {
+		Message string `json:"message"`
+		Error   string `json:"error"`
+	}
+	if json.Unmarshal(raw, &obj) != nil {
+		return ""
+	}
+	if obj.Message != "" {
+		return obj.Message
+	}
+	return obj.Error
+}
+
+// detailMessage renders a "detail" field that is either a plain string or an
+// array of FastAPI validation objects, joining the objects' own "msg" values.
+//
+// Only "msg" is read, never the element verbatim: the surrounding rule (see
+// upstreamMessage) is that an unrecognised body contributes nothing, and an
+// array element also carries "input", which echoes back the request value that
+// failed validation.
+func detailMessage(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s
+	}
+	var items []struct {
+		Msg string `json:"msg"`
+	}
+	if json.Unmarshal(raw, &items) == nil {
+		msgs := make([]string, 0, len(items))
+		for _, it := range items {
+			if it.Msg != "" {
+				msgs = append(msgs, it.Msg)
+			}
+		}
+		return strings.Join(msgs, "; ")
+	}
+	// An object-shaped detail, e.g. DeepInfra's {"error":"…"} on a 404 or a
+	// {"message":"…"} reason. An unrecognised object still contributes nothing.
+	return objectMessage(raw)
+}
+
+// MaxUpstreamMessageRunes bounds the upstream text an HTTPStatusError may
+// carry. An upstream error body is written by someone else and is not
+// length-checked by anyone: a stack trace, an HTML error page, or a
+// multi-megabyte diagnostic all arrive through the same field, and that field
+// reaches the caller on a 400/422 and every log line in between. Kubernetes'
+// client-go bounds the same thing at 2048 bytes
+// (rest/request.go maxUnstructuredResponseTextBytes); this follows it.
+const MaxUpstreamMessageRunes = 2048
+
 // HTTPStatusError is a provider error carrying the upstream HTTP status code
-// as a typed field, so callers can classify errors via errors.As instead of
-// parsing the code back out of the formatted message.
+// as a typed field, so callers classify errors via errors.As instead of parsing
+// the code back out of a formatted message.
+//
+// It is the gateway's whole provider→gateway error contract. Every provider
+// returns one of these (or an error wrapping one) whenever an upstream answered
+// with a non-success status, and nothing downstream — retry, the circuit
+// breaker, HTTP classification — infers a status any other way.
+//
+// Message and Error() are two different audiences and the split is load-bearing:
+//
+//   - Message is the UPSTREAM's own account of the failure, bounded and taken
+//     only from a recognised error envelope. It is the one piece of upstream
+//     text that reaches the caller (on a 400/422, see internal/apierror), so it
+//     names no provider and never carries an unrecognised response body.
+//   - Error() is the OPERATOR's line. It prefixes the provider and status, so a
+//     log or a span says which backend failed and how.
+//
+// Anything further — which call failed, which attempt, which target — belongs in
+// a %w wrapper around this error, not inside Message. errors.As reaches through.
 type HTTPStatusError struct {
+	// StatusCode is the status the upstream returned. Never 0: an error with no
+	// HTTP response is not one of these.
 	StatusCode int
-	Message    string // fully formatted message, e.g. "groq API error (429): rate limited"
+	// Provider is the backend that produced the failure. Operator-facing only —
+	// it is never written into Message, so naming the caller's chosen model does
+	// not also disclose which vendor served it.
+	Provider string
+	// Message is the upstream's bounded, structured account of the failure. It
+	// is NOT the raw response body: see StatusError.
+	Message string
 	// RetryAfter carries the upstream Retry-After hint, or 0 when the response
 	// did not supply a usable one. The fallback strategy honors it in preference
 	// to its own computed backoff, so a 429/503 is retried when the provider says
@@ -34,8 +149,113 @@ type HTTPStatusError struct {
 	RetryAfter time.Duration
 }
 
-// Error implements error.
-func (e *HTTPStatusError) Error() string { return e.Message }
+// Error implements error. It is the operator-facing rendering; the caller-facing
+// text is Message.
+func (e *HTTPStatusError) Error() string {
+	if e.Provider == "" {
+		return fmt.Sprintf("API error (%d): %s", e.StatusCode, e.Message)
+	}
+	return fmt.Sprintf("%s API error (%d): %s", e.Provider, e.StatusCode, e.Message)
+}
+
+// HTTPStatus reports the upstream status, satisfying the same accessor
+// UnsupportedParamError offers.
+func (e *HTTPStatusError) HTTPStatus() int { return e.StatusCode }
+
+// StatusError builds the gateway's typed provider error from an
+// already-extracted upstream message. It is the single constructor every other
+// one funnels through, so the bounding rule below cannot be bypassed by
+// building the struct by hand.
+//
+// message must be the upstream's own words, pulled out of an error shape that
+// provider actually documents — never a raw response body. A body the provider
+// did not write is not the provider talking: a WAF or a load balancer in front
+// of an upstream answers with its own HTML, and that HTML has been observed
+// carrying an internal hostname, an internal IP, an account id, a live
+// credential and a filesystem path. Passing "" here is the correct answer for
+// any body that did not parse; a generic status phrase stands in.
+//
+// The result is bounded to MaxUpstreamMessageRunes. CWE-209 and OWASP's
+// error-handling guidance are the general form of both rules: a generic message
+// to the caller, the detail to the operator's log.
+func StatusError(provider string, status int, message string) *HTTPStatusError {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		message = http.StatusText(status)
+	}
+	if message == "" {
+		message = "unexpected response"
+	}
+	return &HTTPStatusError{
+		StatusCode: status,
+		Provider:   provider,
+		Message:    truncateRunes(message, MaxUpstreamMessageRunes),
+	}
+}
+
+// maxRateLimitReset bounds the X-RateLimit-Reset fallback below. That header
+// carries the seconds remaining in the current rate-limit window, for which a
+// day is already generous; a larger value is an absolute Unix timestamp, which
+// other APIs publish under the same name. Honouring one as a delay would put
+// Retry-After decades out. Out-of-range means "no usable hint", exactly as it
+// does in ParseRetryAfter.
+const maxRateLimitReset = 24 * time.Hour
+
+// WithRetryAfter applies the Retry-After hint carried by h and returns e, so a
+// provider constructs and annotates in one expression.
+//
+// X-RateLimit-Reset is read when Retry-After is absent. Several providers
+// (Mistral among them) throttle with only the rate-limit header set, and
+// without it a 429 that stated its own wait was retried on the fallback
+// strategy's guess instead. It is read for every provider rather than an
+// allow-listed few: it is a numeric delta-seconds header with one meaning, and
+// a per-provider list is a thing to keep up to date for no gain.
+func (e *HTTPStatusError) WithRetryAfter(h http.Header) *HTTPStatusError {
+	e.RetryAfter = ParseRetryAfter(h.Get("Retry-After"))
+	if e.RetryAfter == 0 {
+		if d := ParseRetryAfter(h.Get("X-RateLimit-Reset")); d > 0 && d <= maxRateLimitReset {
+			e.RetryAfter = d
+		}
+	}
+	return e
+}
+
+// truncateRunes bounds s to n runes, appending an ellipsis when it cuts. It
+// counts runes rather than bytes so a cut never splits a multi-byte character
+// into invalid UTF-8, which JSON encoding would then render as U+FFFD.
+func truncateRunes(s string, n int) string {
+	if utf8.RuneCountInString(s) <= n {
+		return s
+	}
+	count := 0
+	for i := range s {
+		if count == n {
+			return s[:i] + "…"
+		}
+		count++
+	}
+	return s
+}
+
+// upstreamMessage extracts the provider's own error text from body, or returns
+// "" when body is not one of the envelopes apiErrorEnvelope recognises.
+//
+// Returning "" for an unrecognised body is the point: the alternative — using
+// the body itself — is what let an intermediary's HTML error page reach a
+// caller verbatim.
+func upstreamMessage(body []byte) string {
+	var e apiErrorEnvelope
+	if json.Unmarshal(body, &e) != nil {
+		return ""
+	}
+	if m := errorMessage(e.Error); m != "" {
+		return m
+	}
+	if d := detailMessage(e.Detail); d != "" {
+		return d
+	}
+	return e.Message
+}
 
 // maxRetryAfterSeconds is the largest delta-seconds value a time.Duration can
 // hold. Beyond it the multiply by time.Second wraps past MaxInt64 into a
@@ -80,34 +300,16 @@ func RetryAfterFrom(err error) time.Duration {
 // APIError wherever the *http.Response is in hand, so throttling responses can
 // drive retry backoff instead of being guessed at.
 func APIErrorFromResponse(label string, resp *http.Response, body []byte) error {
-	err := APIError(label, resp.StatusCode, body)
-	var statusErr *HTTPStatusError
-	if errors.As(err, &statusErr) {
-		statusErr.RetryAfter = ParseRetryAfter(resp.Header.Get("Retry-After"))
-	}
-	return err
+	return StatusError(label, resp.StatusCode, upstreamMessage(body)).WithRetryAfter(resp.Header)
 }
 
-// APIError builds a provider error from a non-success HTTP response body. It
-// extracts the message from the OpenAI {"error":{"message":…}} envelope, then the
-// {"detail":"…"} envelope, and otherwise falls back to the raw body. label is the
-// human-facing provider name (e.g. "groq"). The returned error is a
-// *HTTPStatusError: status is both embedded in the message in parentheses (for
-// display/logging) and available as a typed field via errors.As.
+// APIError builds a provider error from a non-success HTTP response body,
+// reading the message out of a recognised error envelope. label is the
+// provider's name (e.g. "groq"). A body in no recognised shape contributes
+// nothing — see StatusError for why. Prefer APIErrorFromResponse when the
+// *http.Response is in hand.
 func APIError(label string, status int, body []byte) error {
-	msg := string(body)
-	var e apiErrorEnvelope
-	if json.Unmarshal(body, &e) == nil {
-		if e.Error.Message != "" {
-			msg = e.Error.Message
-		} else if e.Detail != "" {
-			msg = e.Detail
-		}
-	}
-	return &HTTPStatusError{
-		StatusCode: status,
-		Message:    fmt.Sprintf("%s API error (%d): %s", label, status, msg),
-	}
+	return StatusError(label, status, upstreamMessage(body))
 }
 
 // UnsupportedParamError is returned by the reject compatibility mode when a

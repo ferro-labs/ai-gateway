@@ -10,16 +10,15 @@ import (
 	"strings"
 	"sync"
 
-	discov "github.com/ferro-labs/ai-gateway/internal/discovery"
 	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
 	"github.com/ferro-labs/ai-gateway/providers/core"
-	"github.com/ferro-labs/ai-gateway/providers/internal/openaicompat"
+	"github.com/ferro-labs/ai-gateway/providers/core/openaicompat"
 )
 
 const (
 	// Name is the canonical provider identifier.
 	Name           = "ollama-cloud"
-	defaultBaseURL = "https://ollama.com"
+	defaultBaseURL = "https://ollama.com/v1"
 )
 
 var defaultModels = []string{
@@ -31,9 +30,15 @@ var defaultModels = []string{
 
 // Provider implements the Ollama Cloud API client.
 type Provider struct {
-	name       string
-	apiKey     string
-	baseURL    string
+	name    string
+	apiKey  string
+	baseURL string
+	// nativeURL is the root of Ollama's own API, the sibling of baseURL that
+	// embeddings hang off. One Ollama host mounts two roots — the
+	// OpenAI-compatible one the operator configures and the native one — so the
+	// second is derived from the first ONCE, here, rather than assembled per
+	// request. See New.
+	nativeURL  string
 	httpClient *http.Client
 
 	mu         sync.RWMutex
@@ -43,10 +48,11 @@ type Provider struct {
 
 // Compile-time interface assertions.
 var (
-	_ core.Provider          = (*Provider)(nil)
-	_ core.StreamProvider    = (*Provider)(nil)
-	_ core.EmbeddingProvider = (*Provider)(nil)
-	_ core.DiscoveryProvider = (*Provider)(nil)
+	_ core.Provider                = (*Provider)(nil)
+	_ core.StreamProvider          = (*Provider)(nil)
+	_ core.EmbeddingProvider       = (*Provider)(nil)
+	_ core.DiscoveryProvider       = (*Provider)(nil)
+	_ core.ConfiguredModelProvider = (*Provider)(nil)
 )
 
 // New creates a new Ollama Cloud provider.
@@ -56,12 +62,8 @@ func New(apiKey, baseURL string, models []string) (*Provider, error) {
 		return nil, fmt.Errorf("ollama-cloud: api key is required")
 	}
 
-	baseURL = strings.TrimSpace(baseURL)
-	if baseURL == "" {
-		baseURL = defaultBaseURL
-	}
-	baseURL = strings.TrimRight(baseURL, "/")
-	if err := core.ValidateBaseURL(Name, baseURL); err != nil {
+	baseURL, err := core.ResolveAPIRoot(Name, baseURL, defaultBaseURL)
+	if err != nil {
 		return nil, err
 	}
 
@@ -74,16 +76,26 @@ func New(apiKey, baseURL string, models []string) (*Provider, error) {
 		name:       Name,
 		apiKey:     apiKey,
 		baseURL:    baseURL,
+		nativeURL:  nativeRoot(baseURL),
 		httpClient: providerhttp.ForProvider(Name),
 		models:     models,
 	}, nil
 }
 
+// nativeRoot derives the root of Ollama's own API from the OpenAI-compatible
+// root the operator configured: https://ollama.com/v1 -> https://ollama.com/api.
+// The mapping is unconditional, so one configured base can only ever produce one
+// pair of roots — a base mounted behind a proxy at /ollama/v1 yields
+// /ollama/api, and one at /ollama yields /ollama/api too.
+func nativeRoot(apiRoot string) string {
+	return strings.TrimSuffix(apiRoot, "/v1") + "/api"
+}
+
 // Name implements core.Provider.
 func (p *Provider) Name() string { return p.name }
 
-// SupportedModels returns the configured and discovered models.
-func (p *Provider) SupportedModels() []string {
+// ConfiguredModels returns the configured and discovered models.
+func (p *Provider) ConfiguredModels() []string {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return combineModels(p.models, p.discovered)
@@ -107,11 +119,6 @@ func (p *Provider) SupportsModel(model string) bool {
 	return false
 }
 
-// Models returns structured model metadata.
-func (p *Provider) Models() []core.ModelInfo {
-	return core.ModelsFromList(p.name, p.SupportedModels())
-}
-
 // chatParams builds the shared OpenAI-compatible chat endpoint configuration.
 // Ollama Cloud exposes an OpenAI-compatible surface at https://ollama.com/v1,
 // so chat and streaming route through the shared openaicompat helpers (which
@@ -120,7 +127,7 @@ func (p *Provider) Models() []core.ModelInfo {
 func (p *Provider) chatParams() openaicompat.ChatParams {
 	return openaicompat.ChatParams{
 		HTTPClient: p.httpClient,
-		URL:        p.baseURL + "/v1/chat/completions",
+		URL:        p.baseURL + "/chat/completions",
 		Provider:   p.name,
 		Label:      "ollama cloud",
 		Headers: map[string]string{
@@ -146,7 +153,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 // OpenAI-compatible /v1/models endpoint and caches the discovered IDs so
 // SupportsModel recognizes them.
 func (p *Provider) DiscoverModels(ctx context.Context) ([]core.ModelInfo, error) {
-	models, err := discov.DiscoverOpenAICompatibleModels(ctx, p.httpClient, p.baseURL+"/v1/models", p.apiKey, p.name)
+	models, err := core.DiscoverOpenAICompatibleModels(ctx, p.httpClient, p.baseURL+"/models", p.apiKey, p.name)
 	if err != nil {
 		return nil, err
 	}
@@ -183,21 +190,10 @@ func (p *Provider) setHeaders(req *http.Request) {
 
 // apiError builds a provider error from a non-2xx response, preserving resp's
 // Retry-After hint so the fallback strategy can honor it instead of guessing
-// a backoff.
+// a backoff. parseErrorMessage knows this upstream's several error shapes;
+// core.StatusError owns everything shared past that.
 func apiError(resp *http.Response, body []byte) error {
-	statusCode := resp.StatusCode
-	msg := parseErrorMessage(body)
-	if msg == "" {
-		msg = http.StatusText(statusCode)
-	}
-	if msg == "" {
-		msg = "unexpected response"
-	}
-	return &core.HTTPStatusError{
-		StatusCode: statusCode,
-		Message:    fmt.Sprintf("ollama-cloud API error (%d): %s", statusCode, msg),
-		RetryAfter: core.ParseRetryAfter(resp.Header.Get("Retry-After")),
-	}
+	return core.StatusError(Name, resp.StatusCode, parseErrorMessage(body)).WithRetryAfter(resp.Header)
 }
 
 func parseErrorMessage(body []byte) string {
@@ -238,11 +234,10 @@ func parseErrorMessage(body []byte) string {
 		}
 	}
 
-	msg := string(body)
-	if len(msg) > 4096 {
-		msg = msg[:4096]
-	}
-	return msg
+	// Body in none of the shapes above. It is not this provider talking — an
+	// intermediary answering with its own error page reaches here too — so it
+	// contributes nothing and core.StatusError substitutes a status phrase.
+	return ""
 }
 
 func normalizeModels(models []string) []string {

@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,15 +9,18 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/ferro-labs/ai-gateway/internal/streamio"
 	"github.com/ferro-labs/ai-gateway/providers"
+	azurefoundrypkg "github.com/ferro-labs/ai-gateway/providers/azure_foundry"
+	coherepkg "github.com/ferro-labs/ai-gateway/providers/cohere"
 	geminipkg "github.com/ferro-labs/ai-gateway/providers/gemini"
+	ollamapkg "github.com/ferro-labs/ai-gateway/providers/ollama"
 	openaipkg "github.com/ferro-labs/ai-gateway/providers/openai"
+	perplexitypkg "github.com/ferro-labs/ai-gateway/providers/perplexity"
 )
 
 const providerOpenAI = "openai"
@@ -41,7 +43,7 @@ func TestResolveProvider_XProviderHeader(t *testing.T) {
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/files", nil)
 	req.Header.Set("X-Provider", providerOpenAI)
 
-	p, ok := ResolveProvider(req, reg)
+	p, _, ok := ResolveProvider(req, reg)
 	if !ok {
 		t.Fatal("ResolveProvider() returned false, want true")
 	}
@@ -58,7 +60,7 @@ func TestResolveProvider_ModelInBody(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	req.ContentLength = int64(len(body))
 
-	p, ok := ResolveProvider(req, reg)
+	p, _, ok := ResolveProvider(req, reg)
 	if !ok {
 		t.Fatal("ResolveProvider() returned false, want true")
 	}
@@ -73,7 +75,7 @@ func TestResolveProvider_UnknownProvider(t *testing.T) {
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/files", nil)
 	req.Header.Set("X-Provider", "nonexistent")
 
-	_, ok := ResolveProvider(req, reg)
+	_, _, ok := ResolveProvider(req, reg)
 	if ok {
 		t.Error("ResolveProvider() returned true for unknown provider, want false")
 	}
@@ -84,7 +86,7 @@ func TestResolveProvider_NoProviderInfo(t *testing.T) {
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/files", nil)
 
-	_, ok := ResolveProvider(req, reg)
+	_, _, ok := ResolveProvider(req, reg)
 	if ok {
 		t.Error("ResolveProvider() returned true with no provider info, want false")
 	}
@@ -117,7 +119,7 @@ func TestResolveProvider_ModelAfterLargeNestedField(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	req.ContentLength = int64(len(body))
 
-	p, ok := ResolveProvider(req, reg)
+	p, _, ok := ResolveProvider(req, reg)
 	if !ok {
 		t.Fatal("ResolveProvider() returned false, want true")
 	}
@@ -142,7 +144,7 @@ func TestResolveProvider_IgnoresNestedModelField(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	req.ContentLength = int64(len(body))
 
-	_, ok := ResolveProvider(req, reg)
+	_, _, ok := ResolveProvider(req, reg)
 	if ok {
 		t.Fatal("ResolveProvider() returned true for nested model field, want false")
 	}
@@ -374,6 +376,226 @@ func TestProxyHandler_PreservesV1PrefixForRootBase(t *testing.T) {
 	}
 }
 
+// rootShapeProvider is a ProxiableProvider whose BaseURL is exactly the string
+// the test hands it, so the table below reads one root shape per row rather than
+// whatever a real provider's constructor normalises its input into.
+type rootShapeProvider struct {
+	name    string
+	baseURL string
+}
+
+func (p rootShapeProvider) Name() string            { return p.name }
+func (rootShapeProvider) SupportsModel(string) bool { return true }
+func (rootShapeProvider) Complete(context.Context, providers.Request) (*providers.Response, error) {
+	return nil, nil
+}
+func (p rootShapeProvider) BaseURL() string              { return p.baseURL }
+func (rootShapeProvider) AuthHeaders() map[string]string { return nil }
+
+// TestPassThroughPathAssemblyAcrossRootShapes pins where the pass-through puts
+// an operation for every base-URL shape in the tree.
+//
+// The rule under test: `<PROVIDER>_BASE_URL` is the API ROOT, used verbatim, so
+// the operation hangs directly beneath it. The gateway is mounted at /v1/*, so
+// the /v1 to remove is the gateway's own, on the INBOUND path — not a suffix
+// guessed off the end of the root. Reading it off the root only worked for a
+// root whose version segment came last, and inserted /v1 mid-path for every
+// other shape.
+//
+// A root carrying no path is no exception. It is still an API root, so the
+// operation still hangs directly beneath it — perplexity's really is the bare
+// host, and its own chat surface builds /chat/completions from exactly that.
+// A provider configured with a SERVER root instead resolves the difference in
+// its constructor and reports the API root, which is what BaseURL asks for;
+// the two cases are indistinguishable from the URL string alone, so nothing
+// here tries to tell them apart.
+func TestPassThroughPathAssemblyAcrossRootShapes(t *testing.T) {
+	tests := []struct {
+		name string
+		root string
+		want string
+	}{
+		{name: "trailing-v1", root: "/v1", want: "/v1/responses"},
+		{name: "mounted-api-root", root: "/custom/api", want: "/custom/api/responses"},
+		{name: "deepinfra-shape", root: "/v1/openai", want: "/v1/openai/responses"},
+		{name: "databricks-shape", root: "/serving-endpoints", want: "/serving-endpoints/responses"},
+		{name: "groq-shape", root: "/openai/v1", want: "/openai/v1/responses"},
+		{name: "perplexity-host-shape", root: "", want: "/responses"},
+		{name: "host-root-trailing-slash", root: "/", want: "/responses"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			observed := make(chan string, 1)
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				observed <- r.URL.Path
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			t.Cleanup(upstream.Close)
+
+			const name = "root-shape-probe"
+			reg := providers.NewRegistry()
+			reg.Register(rootShapeProvider{name: name, baseURL: upstream.URL + tt.root})
+
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/responses", strings.NewReader(`{}`))
+			req.Header.Set("X-Provider", name)
+			req.ContentLength = 2
+			rec := httptest.NewRecorder()
+			Handler(reg)(rec, req)
+
+			if rec.Code != http.StatusNoContent {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+			}
+			if got := <-observed; got != tt.want {
+				t.Errorf("root %q: upstream path = %q, want %q", tt.root, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestPassThroughHonoursHostRootProviders pins what the three documented
+// host-root providers — the ones whose configured base is deliberately NOT an
+// API root, listed in providers.hostRootProviders() — get from the rule above,
+// built through their own constructors rather than through a stub.
+//
+// Two of them never reach path assembly: cohere and azure-foundry are
+// NonOpenAIWireProvider and are refused 501 first. Ollama is the one that does,
+// and it is the case the rule above delegates to the provider: OLLAMA_HOST is a
+// server root, so ollama resolves the OpenAI-compatible surface in New and
+// reports that as its API root.
+//
+// Perplexity is here as the other half of the same rule. Its base is host-shaped
+// too, and reads identically, but it really is an API root — so it must get the
+// opposite answer from the same code. Preserving the gateway's /v1 for any
+// pathless root sent its traffic to /v1/responses on a host that mounts
+// /responses, which is what the two built-through-their-constructors cases below
+// exist to keep apart.
+func TestPassThroughHonoursHostRootProviders(t *testing.T) {
+	t.Run("perplexity-forwards-at-the-host", func(t *testing.T) {
+		observed := make(chan string, 1)
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			observed <- r.URL.Path
+			w.WriteHeader(http.StatusNoContent)
+		}))
+		t.Cleanup(upstream.Close)
+
+		// Perplexity's operations hang at the host: p.baseURL + "/chat/completions".
+		p, err := perplexitypkg.New("test-key", upstream.URL)
+		if err != nil {
+			t.Fatalf("perplexity.New: %v", err)
+		}
+		reg := providers.NewRegistry()
+		reg.Register(p)
+
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/responses", strings.NewReader(`{}`))
+		req.Header.Set("X-Provider", "perplexity")
+		req.ContentLength = 2
+		rec := httptest.NewRecorder()
+		Handler(reg)(rec, req)
+
+		if got := <-observed; got != "/responses" {
+			t.Errorf("upstream path = %q, want /responses (Perplexity mounts its operations at the host)", got)
+		}
+	})
+
+	t.Run("ollama-forwards-under-the-v1-surface", func(t *testing.T) {
+		observed := make(chan string, 1)
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			observed <- r.URL.Path
+			w.WriteHeader(http.StatusNoContent)
+		}))
+		t.Cleanup(upstream.Close)
+
+		// OLLAMA_HOST is the server root; one server mounts /v1 and /api.
+		p, err := ollamapkg.New(upstream.URL, nil)
+		if err != nil {
+			t.Fatalf("ollama.New: %v", err)
+		}
+		reg := providers.NewRegistry()
+		reg.Register(p)
+
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/responses", strings.NewReader(`{}`))
+		req.Header.Set("X-Provider", "ollama")
+		req.ContentLength = 2
+		rec := httptest.NewRecorder()
+		Handler(reg)(rec, req)
+
+		if got := <-observed; got != "/v1/responses" {
+			t.Errorf("upstream path = %q, want /v1/responses (Ollama's OpenAI-compatible surface)", got)
+		}
+	})
+
+	for _, tc := range []struct {
+		name string
+		p    providers.Provider
+	}{
+		{name: "cohere", p: mustCohere(t)},
+		{name: "azure-foundry", p: mustAzureFoundry(t)},
+	} {
+		t.Run(tc.name+"-never-reaches-path-assembly", func(t *testing.T) {
+			reg := providers.NewRegistry()
+			reg.Register(tc.p)
+
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/responses", strings.NewReader(`{}`))
+			req.Header.Set("X-Provider", tc.name)
+			req.ContentLength = 2
+			rec := httptest.NewRecorder()
+			Handler(reg)(rec, req)
+
+			if rec.Code != http.StatusNotImplemented {
+				t.Errorf("status = %d, want 501 (non-OpenAI-wire providers are refused before the path is built)", rec.Code)
+			}
+		})
+	}
+}
+
+func mustCohere(t *testing.T) providers.Provider {
+	t.Helper()
+	p, err := coherepkg.New("test-key", "")
+	if err != nil {
+		t.Fatalf("cohere.New: %v", err)
+	}
+	return p
+}
+
+func mustAzureFoundry(t *testing.T) providers.Provider {
+	t.Helper()
+	p, err := azurefoundrypkg.New("test-key", "https://probe.services.ai.azure.com", "")
+	if err != nil {
+		t.Fatalf("azure_foundry.New: %v", err)
+	}
+	return p
+}
+
+// TestPassThroughPreservesEscapedOperationPath guards the RawPath half of the
+// strip: a path segment carrying an escaped character keeps its escaping through
+// the join, rather than being silently decoded into a different resource id.
+func TestPassThroughPreservesEscapedOperationPath(t *testing.T) {
+	observed := make(chan string, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		observed <- r.URL.EscapedPath()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(upstream.Close)
+
+	const name = "escaped-path-probe"
+	reg := providers.NewRegistry()
+	reg.Register(rootShapeProvider{name: name, baseURL: upstream.URL + "/custom/api"})
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/models/ft%3Amine", strings.NewReader(`{}`))
+	req.Header.Set("X-Provider", name)
+	req.ContentLength = 2
+	rec := httptest.NewRecorder()
+	Handler(reg)(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+	if got := <-observed; got != "/custom/api/models/ft%3Amine" {
+		t.Errorf("upstream escaped path = %q, want /custom/api/models/ft%%3Amine", got)
+	}
+}
+
 // TestProxyHandler_GatesNonOpenAIWireProvider verifies a non-OpenAI-wire
 // provider (Gemini) is refused with 501 rather than transparently forwarded —
 // its upstream is not OpenAI-shaped, so an OpenAI-wire pass-through would fail.
@@ -416,7 +638,7 @@ func (stubSigningProvider) Name() string { return "stub-signer" }
 func (stubSigningProvider) Complete(context.Context, providers.Request) (*providers.Response, error) {
 	return nil, nil
 }
-func (stubSigningProvider) SupportedModels() []string      { return nil }
+func (stubSigningProvider) ConfiguredModels() []string     { return nil }
 func (stubSigningProvider) SupportsModel(string) bool      { return true }
 func (stubSigningProvider) Models() []providers.ModelInfo  { return nil }
 func (s stubSigningProvider) BaseURL() string              { return s.baseURL }
@@ -487,76 +709,6 @@ func TestProxyHandler_RequestSignerFailure_Returns502(t *testing.T) {
 	}
 	if reached {
 		t.Error("upstream must not be reached when signing fails")
-	}
-}
-
-func BenchmarkExtractTopLevelModel(b *testing.B) {
-	body := []byte(`{
-		"messages":[
-			{"role":"system","content":"You are a routing benchmark."},
-			{"role":"user","content":"Find the best provider for this request."}
-		],
-		"metadata":{
-			"tenant":"bench",
-			"tags":["proxy","model-scan"],
-			"nested":{"a":[1,2,3],"b":{"c":"d","e":["x","y","z"]}}
-		},
-		"tools":[
-			{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}
-		],
-		"model":"gpt-4o",
-		"stream":true
-	}`)
-
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		req := &http.Request{
-			Method:        http.MethodPost,
-			URL:           &url.URL{Path: "/v1/chat/completions"},
-			Header:        make(http.Header),
-			Body:          io.NopCloser(bytes.NewReader(body)),
-			ContentLength: int64(len(body)),
-		}
-		model, err := ExtractTopLevelModel(req)
-		if err != nil {
-			b.Fatal(err)
-		}
-		if model != "gpt-4o" {
-			b.Fatalf("model = %q, want gpt-4o", model)
-		}
-	}
-}
-
-func BenchmarkResolveProvider_ModelInBody(b *testing.B) {
-	reg := buildTestRegistry(b, "http://localhost")
-	body := []byte(`{
-		"messages":[
-			{"role":"user","content":"hello"},
-			{"role":"assistant","content":"world"}
-		],
-		"metadata":{"tenant":"bench","trace_id":"trace-123"},
-		"model":"gpt-4o",
-		"stream":false
-	}`)
-
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		req := &http.Request{
-			Method:        http.MethodPost,
-			URL:           &url.URL{Path: "/v1/files"},
-			Header:        make(http.Header),
-			Body:          io.NopCloser(bytes.NewReader(body)),
-			ContentLength: int64(len(body)),
-		}
-		p, ok := ResolveProvider(req, reg)
-		if !ok {
-			b.Fatal("ResolveProvider() returned false")
-		}
-		if p.Name() != providerOpenAI {
-			b.Fatalf("provider = %q, want %q", p.Name(), providerOpenAI)
-		}
 	}
 }
 

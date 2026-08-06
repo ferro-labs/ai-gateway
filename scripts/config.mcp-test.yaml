@@ -1,0 +1,49 @@
+# config.mcp-test.yaml — MCP agentic tool-calling playground.
+#
+# Wires real MCP tool servers to a chat target so the gateway injects their tools
+# into completions and runs the tool-calling loop. Used by scripts/mcp_smoke.sh
+# and safe to run by hand (needs node/npx on PATH):
+#
+#   GATEWAY_CONFIG=scripts/config.mcp-test.yaml \
+#   GROQ_API_KEY=... ALLOW_UNAUTHENTICATED_PROXY=true ./bin/ferrogw serve
+#   # then ask a question that needs a tool, e.g. "read secret.txt and tell me
+#   # the magic word", or "use the tool to add 17 and 25".
+#
+# The target is openai (send model gpt-4.1-nano). A tool-calling loop re-sends
+# every server's tool schema on each turn, which is token-heavy — a free tier
+# (e.g. groq) tends to 429 on its per-minute token limit before it can call a
+# tool. gpt-4.1-nano is a few hundredths of a cent for a run and does not
+# rate-limit. Change virtual_key + the model you send to use another provider.
+strategy:
+  mode: single
+targets:
+  - virtual_key: openai
+
+# Two stdio MCP servers of different kinds, launched as subprocesses. A third
+# (Streamable HTTP) transport is shown commented — the gateway connects to it
+# rather than launching it. The subprocess inherits no gateway environment beyond
+# PATH/HOME/LANG/TMPDIR and the keys listed under `env`.
+mcp_servers:
+  # Reference server with simple tools (echo, get-sum, get-env, …).
+  - name: everything
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-everything"]
+    timeout_seconds: 60
+
+  # Filesystem tools, sandboxed to one directory. MCPFS_DIR is a placeholder the
+  # smoke script rewrites to a temp dir; set it to a real path for manual use.
+  - name: filesystem
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "MCPFS_DIR"]
+    timeout_seconds: 60
+    # allowed_tools narrows which of a server's tools are offered to the model.
+    # Omitted here = all tools. Example: only listing, no reading:
+    # allowed_tools: ["list_directory", "list_allowed_directories"]
+
+  # Streamable HTTP transport (the gateway connects; it does not launch this).
+  # Start one with:  npx -y @modelcontextprotocol/server-everything streamableHttp
+  # - name: remote
+  #   url: http://localhost:3001/mcp
+  #   timeout_seconds: 30
+  #   headers:
+  #     Authorization: "Bearer ${MCP_TOKEN}"

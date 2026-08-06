@@ -5,7 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/ferro-labs/ai-gateway/internal/logging"
+	"github.com/ferro-labs/ai-gateway/pkg/logger"
 )
 
 // TestMiddlewareExtractsTraceparent verifies that a valid inbound W3C
@@ -22,7 +22,7 @@ func TestMiddlewareExtractsTraceparent(t *testing.T) {
 
 	var seen string
 	h := Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		seen = logging.TraceIDFromContext(r.Context())
+		seen = logger.TraceIDFromContext(r.Context())
 		w.WriteHeader(http.StatusNoContent)
 	}))
 
@@ -37,14 +37,14 @@ func TestMiddlewareExtractsTraceparent(t *testing.T) {
 }
 
 // TestMiddlewareNoTraceparentLeavesContextEmpty confirms that absent
-// inbound traceparent we do not invent a trace ID — logging.Middleware
+// inbound traceparent we do not invent a trace ID — logger.Middleware
 // handles generation downstream.
 func TestMiddlewareNoTraceparentLeavesContextEmpty(t *testing.T) {
 	installPropagator()
 
 	var seen string
 	h := Middleware(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-		seen = logging.TraceIDFromContext(r.Context())
+		seen = logger.TraceIDFromContext(r.Context())
 	}))
 
 	rr := httptest.NewRecorder()

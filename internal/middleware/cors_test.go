@@ -60,25 +60,97 @@ func TestCORS_NoCORSHeaders_OnAdminPath(t *testing.T) {
 	}
 }
 
-// TestCORS_NoOriginsConfigured_OptionsPassesThrough verifies that an OPTIONS
-// preflight is passed through to the next handler (not short-circuited with 204)
-// when no origins are configured.
-func TestCORS_NoOriginsConfigured_OptionsPassesThrough(t *testing.T) {
-	called := false
-	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		called = true
-		w.WriteHeader(http.StatusOK)
-	})
-	mw := CORS()
-	handler := mw(next)
+// TestCORS_Preflight_AnsweredHere_DeniedByHeader pins where a cross-origin
+// request is denied and how.
+//
+// A preflight is answered by this middleware whether or not the origin is
+// allowed, and a denial is the absence of Access-Control-Allow-Origin — the
+// only part of the response a browser enforces. Letting a denied preflight fall
+// through instead handed it to layers that answer a different question: it
+// carries no credentials, so authentication called it 401, and the route's
+// method guard serves POST, so it called it 405 "Allow: POST" — on a route that
+// answers OPTIONS with 204 as soon as the origin is listed.
+func TestCORS_Preflight_AnsweredHere_DeniedByHeader(t *testing.T) {
+	tests := []struct {
+		name        string
+		origins     []string
+		origin      string
+		wantStatus  int
+		wantAllowed string // expected Access-Control-Allow-Origin ("" = absent)
+		wantNext    bool
+	}{
+		{
+			name:       "no allowlist configured",
+			origins:    nil,
+			origin:     "https://app.example.com",
+			wantStatus: http.StatusNoContent,
+		},
+		{
+			name:       "allowlist configured, origin not on it",
+			origins:    []string{"https://allowed.example.com"},
+			origin:     "https://attacker.example.com",
+			wantStatus: http.StatusNoContent,
+		},
+		{
+			name:        "allowlist configured, origin on it",
+			origins:     []string{"https://allowed.example.com"},
+			origin:      "https://allowed.example.com",
+			wantStatus:  http.StatusNoContent,
+			wantAllowed: "https://allowed.example.com",
+		},
+	}
 
-	r := httptest.NewRequestWithContext(t.Context(), http.MethodOptions, "/v1/chat/completions", nil)
-	r.Header.Set("Origin", "https://attacker.example.com")
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, r)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			called := false
+			next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				called = true
+				w.WriteHeader(http.StatusOK)
+			})
+			handler := CORS(tt.origins...)(next)
 
-	if !called {
-		t.Fatal("next handler should be called for OPTIONS when no origins configured (pass-through)")
+			r := httptest.NewRequestWithContext(t.Context(), http.MethodOptions, "/v1/chat/completions", nil)
+			r.Header.Set("Origin", tt.origin)
+			r.Header.Set("Access-Control-Request-Method", http.MethodPost)
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, r)
+
+			if w.Code != tt.wantStatus {
+				t.Errorf("status %d, want %d — a preflight must not be refused by status", w.Code, tt.wantStatus)
+			}
+			if got := w.Header().Get("Access-Control-Allow-Origin"); got != tt.wantAllowed {
+				t.Errorf("Access-Control-Allow-Origin %q, want %q — this header is the whole denial", got, tt.wantAllowed)
+			}
+			if called != tt.wantNext {
+				t.Errorf("next handler called = %v, want %v", called, tt.wantNext)
+			}
+			if got := w.Header().Get("Vary"); got != "Origin" {
+				t.Errorf("Vary %q, want Origin — the response depends on Origin either way", got)
+			}
+		})
+	}
+}
+
+// TestCORS_OptionsWithoutOrigin_PassesThrough guards the narrow edge of the rule
+// above. Only OPTIONS carrying an Origin is a preflight; a bare OPTIONS is a
+// genuine question about the resource's methods, so it must still reach the
+// route and get that route's own answer.
+func TestCORS_OptionsWithoutOrigin_PassesThrough(t *testing.T) {
+	for _, origins := range [][]string{nil, {"https://allowed.example.com"}} {
+		called := false
+		next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			called = true
+			w.WriteHeader(http.StatusOK)
+		})
+		handler := CORS(origins...)(next)
+
+		r := httptest.NewRequestWithContext(t.Context(), http.MethodOptions, "/v1/chat/completions", nil)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+
+		if !called {
+			t.Errorf("origins=%v: OPTIONS without an Origin is not a preflight and must reach the route", origins)
+		}
 	}
 }
 

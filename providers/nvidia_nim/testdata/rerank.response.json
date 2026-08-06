@@ -1,0 +1,9 @@
+{
+  "rankings": [
+    { "index": 2, "logit": 8.34375 },
+    { "index": 0, "logit": 1.7060547 },
+    { "index": 3, "logit": -4.12109375 },
+    { "index": 1, "logit": -9.7734375 }
+  ],
+  "usage": { "prompt_tokens": 187, "total_tokens": 187 }
+}

@@ -26,24 +26,6 @@ func TestNewCohere(t *testing.T) {
 	}
 }
 
-func TestCohereProvider_SupportedModels(t *testing.T) {
-	p, _ := New("test-key", "")
-	models := p.SupportedModels()
-	if len(models) == 0 {
-		t.Error("SupportedModels() returned empty")
-	}
-	wantModels := []string{"command-r-plus", "embed-v4.0", "embed-english-v3.0", "embed-multilingual-v3.0"}
-	found := map[string]bool{}
-	for _, m := range models {
-		found[m] = true
-	}
-	for _, want := range wantModels {
-		if !found[want] {
-			t.Errorf("%s not found", want)
-		}
-	}
-}
-
 func TestCohereProvider_SupportsModel(t *testing.T) {
 	p, _ := New("test-key", "")
 	if !p.SupportsModel("command-r-plus") {
@@ -54,16 +36,6 @@ func TestCohereProvider_SupportsModel(t *testing.T) {
 	}
 	if p.SupportsModel("gpt-4o") {
 		t.Error("cohere should not support gpt-4o")
-	}
-}
-
-func TestCohereProvider_Models(t *testing.T) {
-	p, _ := New("test-key", "")
-	models := p.Models()
-	for _, m := range models {
-		if m.OwnedBy != "cohere" {
-			t.Errorf("ModelInfo.OwnedBy = %q, want cohere", m.OwnedBy)
-		}
 	}
 }
 
@@ -599,8 +571,8 @@ func TestCohereProvider_Embed_UpstreamNon2xxError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected upstream error, got nil")
 	}
-	if !strings.Contains(err.Error(), "cohere embed API error (429): rate limited") {
-		t.Errorf("error = %q, want cohere embed API error (429): rate limited", err.Error())
+	if !strings.Contains(err.Error(), "cohere API error (429): rate limited") {
+		t.Errorf("error = %q, want cohere API error (429): rate limited", err.Error())
 	}
 }
 

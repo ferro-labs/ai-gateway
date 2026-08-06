@@ -1,0 +1,47 @@
+# config.strategy-test.yaml — routing-strategy playground.
+#
+# Two cheap providers that BOTH serve the same model (openai/gpt-oss-20b), so the
+# strategy's routing decision is observable in each response's "provider" field.
+# Used by scripts/strategy_smoke.sh (loadbalance phase) and safe to run by hand:
+#
+#   GATEWAY_CONFIG=scripts/config.strategy-test.yaml \
+#   GROQ_API_KEY=... TOGETHER_API_KEY=... ALLOW_UNAUTHENTICATED_PROXY=true \
+#   ./bin/ferrogw serve
+#
+# The active mode below is loadbalance. To try another mode by hand, swap
+# strategy.mode and add the block it needs — every mode is sketched underneath.
+strategy:
+  mode: loadbalance
+
+targets:
+  - virtual_key: groq
+    weight: 1.0
+  - virtual_key: together
+    weight: 1.0
+
+# ── The eight modes, and what each does with these two targets ──────────────────
+# Send a request for openai/gpt-oss-20b and read the "provider" in the response.
+#
+# single          → always the FIRST target (groq). A model the first target does
+#                   not serve is model_not_found; it never tries the second.
+# fallback        → first target, and on FAILURE the next one (the only mode that
+#                   retries a request on a different target). Point GROQ_BASE_URL
+#                   at a dead host and watch traffic land on together.
+# loadbalance     → splits across targets by weight (active above).
+# least-latency   → the target with the lower observed latency.
+# cost-optimized  → the cheapest priced target (deterministic). unpriced_strategy
+#                   (fallback | skip | allow) decides what happens with no price.
+# conditional     → by a request field; no rule matches → the fallback target:
+#     mode: conditional
+#     conditions:
+#       - { key: model, value: llama-3.1-8b-instant, target_key: groq }
+#       - { key: model, value: meta-llama/Llama-3.3-70B-Instruct-Turbo, target_key: together }
+# content-based   → by prompt content; no rule matches → the fallback (first) target:
+#     mode: content-based
+#     content_conditions:
+#       - { type: prompt_contains, value: "code", target_key: groq }
+# ab-test         → weighted variants with labels:
+#     mode: ab-test
+#     ab_variants:
+#       - { target_key: groq, weight: 50, label: control }
+#       - { target_key: together, weight: 50, label: challenger }

@@ -8,10 +8,10 @@ import (
 	"time"
 
 	"github.com/ferro-labs/ai-gateway/internal/events"
-	"github.com/ferro-labs/ai-gateway/internal/logging"
-	"github.com/ferro-labs/ai-gateway/internal/metrics"
 	"github.com/ferro-labs/ai-gateway/models"
 	"github.com/ferro-labs/ai-gateway/observability"
+	"github.com/ferro-labs/ai-gateway/pkg/logger"
+	"github.com/ferro-labs/ai-gateway/pkg/metrics"
 )
 
 // maxHookWorkers caps the size of the shared async hook-dispatch worker pool.
@@ -188,7 +188,7 @@ func runHookDispatch(dispatch hookDispatch) {
 	data := dispatch.event.Map()
 	defer func() {
 		if r := recover(); r != nil {
-			logging.Logger.Error("event hook panicked",
+			logger.Default().Error("event hook panicked",
 				"subject", dispatch.event.Subject,
 				"panic", r,
 			)
@@ -197,8 +197,8 @@ func runHookDispatch(dispatch hookDispatch) {
 	dispatch.hook(dispatch.ctx, dispatch.event.Subject, data)
 }
 
-func failedEventData(traceID, provider, model, errMsg string, latency time.Duration, stream bool) events.HookEvent {
-	return events.FailedRequest(traceID, provider, model, errMsg, latency, stream)
+func failedEventData(traceID, provider, model string, err error, latency time.Duration, stream bool) events.HookEvent {
+	return events.FailedRequest(traceID, provider, model, err, latency, stream)
 }
 
 func completedEventData(traceID, provider, model string, latency time.Duration, stream bool, tokensIn, tokensOut int, cost models.CostResult) events.HookEvent {

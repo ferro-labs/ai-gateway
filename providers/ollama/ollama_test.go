@@ -23,22 +23,6 @@ func TestNewOllama(t *testing.T) {
 	}
 }
 
-func TestNewOllama_DefaultModels(t *testing.T) {
-	p, _ := New("", nil)
-	models := p.SupportedModels()
-	if len(models) != 1 || models[0] != "llama3.2" {
-		t.Errorf("default SupportedModels() = %v, want [llama3.2]", models)
-	}
-}
-
-func TestNewOllama_CustomModels(t *testing.T) {
-	p, _ := New("", []string{"llama3.2", "mistral", "phi3"})
-	models := p.SupportedModels()
-	if len(models) != 3 {
-		t.Errorf("SupportedModels() returned %d models, want 3", len(models))
-	}
-}
-
 func TestOllamaProvider_SupportsModel(t *testing.T) {
 	p, _ := New("", []string{"llama3.2", "mistral"})
 	if !p.SupportsModel("llama3.2") {
@@ -49,16 +33,6 @@ func TestOllamaProvider_SupportsModel(t *testing.T) {
 	}
 	if !p.SupportsModel("gpt-4o") {
 		t.Error("passthrough: expected any model to return true")
-	}
-}
-
-func TestOllamaProvider_Models(t *testing.T) {
-	p, _ := New("", []string{"llama3.2"})
-	models := p.Models()
-	for _, m := range models {
-		if m.OwnedBy != "ollama" {
-			t.Errorf("ModelInfo.OwnedBy = %q, want ollama", m.OwnedBy)
-		}
 	}
 }
 
@@ -448,5 +422,20 @@ func TestOllamaProvider_Embed_RejectsNonFloatEncoding(t *testing.T) {
 func TestNewOllama_RejectsInvalidBaseURL(t *testing.T) {
 	if _, err := New("://nope", nil); err == nil {
 		t.Fatal("New accepted an invalid base URL")
+	}
+}
+
+// Ollama serves whatever the local server has pulled, named by OLLAMA_MODELS.
+// No catalog can enumerate another machine's models, so this list is the only
+// source the gateway has for routing to them.
+func TestConfiguredModelsAreTheConfiguredList(t *testing.T) {
+	p, err := New("http://localhost:11434", []string{"llama3.2", "mistral-nemo"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	got := p.ConfiguredModels()
+	if len(got) != 2 || got[0] != "llama3.2" || got[1] != "mistral-nemo" {
+		t.Fatalf("ConfiguredModels() = %v, want [llama3.2 mistral-nemo]", got)
 	}
 }

@@ -1,0 +1,4 @@
+data: {"responseId":"gemini-stream-conformance","candidates":[{"content":{"role":"model","parts":[{"text":"conformance"}]},"finishReason":""}]}
+
+data: {"responseId":"gemini-stream-conformance","candidates":[{"content":{"role":"model","parts":[{"text":" ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":11,"candidatesTokenCount":7,"totalTokenCount":18}}
+

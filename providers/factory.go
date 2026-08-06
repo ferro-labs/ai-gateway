@@ -1,6 +1,9 @@
 package providers
 
-import "os"
+import (
+	"fmt"
+	"os"
+)
 
 // ProviderConfigFromEnv reads environment variables for the given ProviderEntry
 // and returns a populated ProviderConfig, or nil if the provider is not configured.
@@ -79,12 +82,17 @@ const (
 
 // Capability names for capability-based registry filtering.
 const (
-	CapabilityChat      = "chat"      // Provider.Complete  — always present
-	CapabilityStream    = "stream"    // StreamProvider
-	CapabilityEmbed     = "embed"     // EmbeddingProvider
-	CapabilityImage     = "image"     // ImageProvider
-	CapabilityDiscovery = "discovery" // DiscoveryProvider
-	CapabilityProxy     = "proxy"     // ProxiableProvider
+	CapabilityChat          = "chat"          // Provider.Complete  — always present
+	CapabilityStream        = "stream"        // StreamProvider
+	CapabilityEmbed         = "embed"         // EmbeddingProvider
+	CapabilityImage         = "image"         // ImageProvider
+	CapabilityDiscovery     = "discovery"     // DiscoveryProvider
+	CapabilityProxy         = "proxy"         // ProxiableProvider
+	CapabilityRerank        = "rerank"        // RerankProvider
+	CapabilityModeration    = "moderation"    // ModerationProvider
+	CapabilityTranscription = "transcription" // TranscriptionProvider
+	CapabilitySpeech        = "speech"        // SpeechProvider
+	CapabilityBatch         = "batch"         // BatchProvider (Files + Batch pass-through)
 )
 
 // EnvMapping maps a single ProviderConfig key to its environment variable.
@@ -119,6 +127,12 @@ type ProviderEntry struct {
 	// Build constructs the provider from an explicit ProviderConfig.
 	// Returns an error if required config keys are absent or invalid.
 	// Never reads environment variables directly — callers supply all inputs.
+	//
+	// The "required config keys are absent" half is enforced by AllProviders()
+	// and GetProviderEntry(), which return entries whose Build applies
+	// requireConfigured first. The closure written here therefore only has to
+	// validate what the declared mappings cannot express — a value's shape, or
+	// a constraint between two keys.
 	Build func(cfg ProviderConfig) (Provider, error)
 
 	// ConfiguredFn is an optional custom "configured?" gate used by
@@ -135,11 +149,58 @@ type ProviderEntry struct {
 	ConfiguredFn func(cfg ProviderConfig) bool
 }
 
+// requireConfigured reports whether cfg satisfies the entry's own declared
+// "configured?" gate — the Required EnvMappings, plus ConfiguredFn when the
+// entry sets one.
+//
+// It is deliberately the same gate, in the same order, that
+// ProviderConfigFromEnv applies to the environment. The environment path runs
+// it before building and skips the provider silently; the programmatic path had
+// no equivalent, so a ProviderConfig assembled from a credential store could
+// construct a provider with no credential at all and fail later as an empty
+// Authorization header. Required metadata that only one of the two callers
+// honours is not a contract.
+//
+// ConfiguredFn already expresses the OR across alternative credential sets that
+// bedrock (bearer token OR region OR access key) and vertex-ai (explicit key OR
+// service account OR ADC) need, so nothing new has to describe them.
+func (e ProviderEntry) requireConfigured(cfg ProviderConfig) error {
+	for _, m := range e.EnvMappings {
+		if m.Required && cfg[m.ConfigKey] == "" {
+			return fmt.Errorf("%s: missing required config key %q (%s)", e.ID, m.ConfigKey, m.EnvVar)
+		}
+	}
+	if e.ConfiguredFn != nil && !e.ConfiguredFn(cfg) {
+		return fmt.Errorf("%s: config satisfies none of the accepted credential sets", e.ID)
+	}
+	return nil
+}
+
+// gateRequiredKeys returns e with Build wrapped in requireConfigured.
+//
+// Wrapping here rather than at each call site is what makes the gate hold: Build
+// is an exported field, so every caller reaches it directly and a gate that had
+// to be invoked separately would be enforced only where someone remembered. The
+// two accessors below already hand out copies, so the wrap costs no per-entry
+// edit and cannot be bypassed by anything outside this package.
+func gateRequiredKeys(e ProviderEntry) ProviderEntry {
+	gate, inner := e, e.Build
+	e.Build = func(cfg ProviderConfig) (Provider, error) {
+		if err := gate.requireConfigured(cfg); err != nil {
+			return nil, err
+		}
+		return inner(cfg)
+	}
+	return e
+}
+
 // AllProviders returns the complete ordered list of built-in ProviderEntry records.
 // The slice is a copy — mutations do not affect the internal registry.
 func AllProviders() []ProviderEntry {
 	out := make([]ProviderEntry, len(allProviders))
-	copy(out, allProviders)
+	for i, e := range allProviders {
+		out[i] = gateRequiredKeys(e)
+	}
 	return out
 }
 
@@ -148,7 +209,7 @@ func AllProviders() []ProviderEntry {
 func GetProviderEntry(id string) (ProviderEntry, bool) {
 	for _, e := range allProviders {
 		if e.ID == id {
-			return e, true
+			return gateRequiredKeys(e), true
 		}
 	}
 	return ProviderEntry{}, false

@@ -6,6 +6,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/ferro-labs/ai-gateway/config"
 	"github.com/ferro-labs/ai-gateway/providers"
 )
 
@@ -17,7 +18,7 @@ type freshProvider struct {
 }
 
 func (f *freshProvider) Name() string                  { return f.name }
-func (f *freshProvider) SupportedModels() []string     { return f.models }
+func (f *freshProvider) ConfiguredModels() []string    { return f.models }
 func (f *freshProvider) Models() []providers.ModelInfo { return nil }
 func (f *freshProvider) SupportsModel(model string) bool {
 	for _, m := range f.models {
@@ -40,9 +41,9 @@ func (f *freshProvider) Complete(_ context.Context, req providers.Request) (*pro
 //
 // Run with -race to verify: go test -race -run TestGateway_RouteProviderLookupNoDataRace
 func TestGateway_RouteProviderLookupNoDataRace(t *testing.T) {
-	gw, err := newTestGateway(t, Config{
-		Strategy: StrategyConfig{Mode: ModeFallback},
-		Targets: []Target{
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeFallback},
+		Targets: []config.Target{
 			{VirtualKey: "p1"},
 			{VirtualKey: "p2"},
 		},

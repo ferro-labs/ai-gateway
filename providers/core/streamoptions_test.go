@@ -10,7 +10,7 @@ import (
 // whole A11/B1 fix depends on: ClientStreamOptions (the client's raw
 // stream_options) must never appear on any wire body built by marshaling a
 // core.Request directly — that is exactly how the ~20 OpenAI-compatible
-// providers in providers/internal/openaicompat build their upstream request,
+// providers in providers/core/openaicompat build their upstream request,
 // and forwarding a client's explicit include_usage:false there would disable
 // their usage reporting silently. Only providers/openai builds its own
 // separate wire type that always forces include_usage:true.

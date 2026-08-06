@@ -1,0 +1,8 @@
+data: {"id":"deepseek-conformance","model":"deepseek-chat","choices":[{"index":0,"delta":{"role":"assistant","content":"conformance"},"finish_reason":null}]}
+
+data: {"id":"deepseek-conformance","model":"deepseek-chat","choices":[{"index":0,"delta":{"content":" ok"},"finish_reason":null}]}
+
+data: {"id":"deepseek-conformance","model":"deepseek-chat","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":7,"total_tokens":18,"prompt_cache_hit_tokens":4,"completion_tokens_details":{"reasoning_tokens":3}}}
+
+data: [DONE]
+

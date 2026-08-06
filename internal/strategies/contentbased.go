@@ -1,7 +1,6 @@
 package strategies
 
 import (
-	"context"
 	"fmt"
 	"regexp"
 	"strings"
@@ -48,15 +47,14 @@ type ContentBased struct {
 	rules    []ContentRule
 	fallback Target
 	targets  []Target
-	lookup   ProviderLookup
 }
 
 // NewContentBased creates a ContentBased strategy.
 //
 // Regex patterns in PromptRegex rules are compiled at construction time.
-// Returns an error if any pattern is invalid so that misconfigured gateways
-// fail loudly at startup rather than silently misrouting traffic.
-func NewContentBased(rules []ContentRule, fallback Target, lookup ProviderLookup) (*ContentBased, error) {
+// Returns an error if any pattern is invalid. config.ValidateConfig compiles the
+// same patterns at load, so for a validated config this cannot fail.
+func NewContentBased(rules []ContentRule, fallback Target) (*ContentBased, error) {
 	compiled := make([]ContentRule, len(rules))
 	copy(compiled, rules)
 	for i, r := range compiled {
@@ -72,24 +70,29 @@ func NewContentBased(rules []ContentRule, fallback Target, lookup ProviderLookup
 		rules:    compiled,
 		fallback: fallback,
 		// Seed with the fallback so, absent WithRoutingTargets, SelectTargets
-		// still returns the same fallback Execute routes to on no match.
-		// WithRoutingTargets replaces it with the full ordered target list.
+		// still returns the documented no-match target. WithRoutingTargets
+		// replaces it with the full ordered target list.
 		targets: []Target{fallback},
-		lookup:  lookup,
 	}, nil
 }
 
 // WithRoutingTargets records the full ordered target list. SelectTargets appends
-// these as fallbacks after the matched content target. Returns the receiver so
-// callers can chain it after the constructor.
+// these after the matched content target. Returns the receiver so callers can
+// chain it after the constructor.
 func (c *ContentBased) WithRoutingTargets(targets []Target) *ContentBased {
 	c.targets = targets
 	return c
 }
 
 // SelectTargets returns the first matching rule's target followed by every
-// configured target as a fallback. With no match it returns the targets in
-// declared order (targets[0] is the fallback used by Execute).
+// configured target. With no match it returns the targets in declared order
+// (targets[0] is the no-match fallback).
+//
+// The rest of the list is not tried on failure: this mode commits to the target
+// the matched rule named, with the same two consequences Conditional.SelectTargets
+// describes — a model the named target does not serve is model_not_found even
+// when another configured target serves it, while a named target whose circuit
+// is open is passed over for a healthy one.
 func (c *ContentBased) SelectTargets(req providers.Request) ([]string, error) {
 	for _, rule := range c.rules {
 		if c.matches(rule, req) {
@@ -101,33 +104,6 @@ func (c *ContentBased) SelectTargets(req providers.Request) ([]string, error) {
 	return targetKeys(c.targets), nil
 }
 
-// Execute evaluates content rules in order and dispatches the request to the
-// first matching target. Falls back to the fallback target if no rule matches.
-func (c *ContentBased) Execute(ctx context.Context, req providers.Request) (*providers.Response, error) {
-	target := c.matchTarget(req)
-	p, ok := c.lookup(target.VirtualKey)
-	if !ok {
-		return nil, fmt.Errorf("content-based routing: provider not found: %s", target.VirtualKey)
-	}
-	if !p.SupportsModel(req.Model) {
-		return nil, fmt.Errorf("content-based routing: provider %s does not support model %q", target.VirtualKey, req.Model)
-	}
-	resp, err := p.Complete(ctx, req)
-	if err != nil {
-		return nil, err
-	}
-	return responseWithProvider(resp, target.VirtualKey), nil
-}
-
-func (c *ContentBased) matchTarget(req providers.Request) Target {
-	for _, rule := range c.rules {
-		if c.matches(rule, req) {
-			return rule.Target
-		}
-	}
-	return c.fallback
-}
-
 func (c *ContentBased) matches(rule ContentRule, req providers.Request) bool {
 	switch rule.Type {
 	case PromptContains:
@@ -137,6 +113,7 @@ func (c *ContentBased) matches(rule ContentRule, req providers.Request) bool {
 	case PromptRegex:
 		return anyUserMessageMatchesRegex(req, rule.re)
 	default:
+		// Unreachable for a validated config — see Conditional.matches.
 		return false
 	}
 }

@@ -54,8 +54,8 @@ func TestXAIProvider_Complete_MockHTTP(t *testing.T) {
 	respBody := `{"id":"chatcmpl-1","model":"grok-2-latest","choices":[{"index":0,"message":{"role":"assistant","content":"Hello!"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}`
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/chat/completions" {
-			t.Errorf("request path = %q, want /chat/completions", r.URL.Path)
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Errorf("request path = %q, want /v1/chat/completions", r.URL.Path)
 		}
 		if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
 			t.Errorf("Authorization = %q, want Bearer test-key", got)
@@ -94,8 +94,8 @@ func TestXAIProvider_GenerateImage_MockHTTP(t *testing.T) {
 	respBody := `{"created":1700000000,"data":[{"b64_json":"aGVsbG8=","revised_prompt":"x"}]}`
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/images/generations" {
-			t.Errorf("request path = %q, want /images/generations", r.URL.Path)
+		if r.URL.Path != "/v1/images/generations" {
+			t.Errorf("request path = %q, want /v1/images/generations", r.URL.Path)
 		}
 		if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
 			t.Errorf("Authorization = %q, want Bearer test-key", got)
@@ -200,8 +200,8 @@ func TestXAIProvider_Complete_NestedUsage(t *testing.T) {
 	respBody := `{"id":"chatcmpl-1","model":"grok-4","choices":[{"index":0,"message":{"role":"assistant","content":"Hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":20,"completion_tokens":8,"total_tokens":28,"completion_tokens_details":{"reasoning_tokens":5},"prompt_tokens_details":{"cached_tokens":12}}}`
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/chat/completions" {
-			t.Errorf("request path = %q, want /chat/completions", r.URL.Path)
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Errorf("request path = %q, want /v1/chat/completions", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -283,8 +283,8 @@ func TestXAIProvider_DiscoverModels(t *testing.T) {
 	respBody := `{"object":"list","data":[{"id":"grok-4","object":"model","owned_by":"xai"},{"id":"grok-3","object":"model","owned_by":"xai"}]}`
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/models" {
-			t.Errorf("request path = %q, want /models", r.URL.Path)
+		if r.URL.Path != "/v1/models" {
+			t.Errorf("request path = %q, want /v1/models", r.URL.Path)
 		}
 		if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
 			t.Errorf("Authorization = %q, want Bearer test-key", got)
@@ -348,5 +348,24 @@ func TestDroppedImageParams(t *testing.T) {
 func TestNewXAI_RejectsInvalidBaseURL(t *testing.T) {
 	if _, err := New("k", "://bad"); err == nil {
 		t.Fatal("New accepted an invalid base URL")
+	}
+}
+
+// TestNewXAI_BaseURLIsTheAPIRoot pins the shape a base URL is written in: the
+// API root, used verbatim. The one net: a bare host is not an API root, so it
+// adopts the trailing version segment of the provider's default root.
+func TestNewXAI_BaseURLIsTheAPIRoot(t *testing.T) {
+	for base, want := range map[string]string{
+		"":                                 "https://api.x.ai/v1",
+		"https://api.x.ai":                 "https://api.x.ai/v1",
+		"https://proxy.example.com/xai/v1": "https://proxy.example.com/xai/v1",
+	} {
+		p, err := New("test-key", base)
+		if err != nil {
+			t.Fatalf("New(_, %q) error: %v", base, err)
+		}
+		if got := p.BaseURL(); got != want {
+			t.Errorf("New(_, %q).BaseURL() = %q, want %q", base, got, want)
+		}
 	}
 }

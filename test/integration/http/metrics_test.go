@@ -70,7 +70,7 @@ func TestMetrics_ExposeGatewayCounters(t *testing.T) {
 func TestMetrics_RequiresAuth(t *testing.T) {
 	env := newTestServer(t)
 
-	resp, err := http.Get(env.Server.URL + "/metrics")
+	resp, err := http.DefaultClient.Do(newTestRequest(t, http.MethodGet, env.Server.URL+"/metrics", nil))
 	if err != nil {
 		t.Fatalf("GET /metrics: %v", err)
 	}

@@ -24,23 +24,6 @@ func TestNewCerebras(t *testing.T) {
 	}
 }
 
-func TestCerebrasProvider_SupportedModels(t *testing.T) {
-	p, _ := New("test-key", "")
-	models := p.SupportedModels()
-	if len(models) == 0 {
-		t.Error("SupportedModels() returned empty")
-	}
-	found := false
-	for _, m := range models {
-		if m == "llama-3.3-70b" {
-			found = true
-		}
-	}
-	if !found {
-		t.Error("llama-3.3-70b not found")
-	}
-}
-
 func TestCerebrasProvider_SupportsModel(t *testing.T) {
 	p, _ := New("test-key", "")
 	if !p.SupportsModel("llama-3.3-70b") {
@@ -48,16 +31,6 @@ func TestCerebrasProvider_SupportsModel(t *testing.T) {
 	}
 	if !p.SupportsModel("custom-model") {
 		t.Error("passthrough: expected all models to return true")
-	}
-}
-
-func TestCerebrasProvider_Models(t *testing.T) {
-	p, _ := New("test-key", "")
-	models := p.Models()
-	for _, m := range models {
-		if m.OwnedBy != "cerebras" {
-			t.Errorf("ModelInfo.OwnedBy = %q, want cerebras", m.OwnedBy)
-		}
 	}
 }
 
@@ -152,8 +125,8 @@ func captureCerebrasChatBody(t *testing.T, req core.Request) map[string]json.Raw
 		if r.Method != http.MethodPost {
 			t.Errorf("method = %s, want POST", r.Method)
 		}
-		if r.URL.Path != "/chat/completions" {
-			t.Errorf("path = %q, want /chat/completions", r.URL.Path)
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Errorf("path = %q, want /v1/chat/completions", r.URL.Path)
 		}
 		if got := r.Header.Get("Authorization"); got != testBearerAPIKey {
 			t.Errorf("Authorization = %q, want %s", got, testBearerAPIKey)
@@ -207,20 +180,21 @@ func TestCerebrasProvider_Complete_PrefersMaxCompletionTokens(t *testing.T) {
 	}
 }
 
-// TestCerebrasProvider_Complete_ForwardsMaxTokensWhenAlone verifies a legacy
-// request that sets only max_tokens still forwards it (PreferCompletionTokens is
-// a no-op when max_completion_tokens is absent).
-func TestCerebrasProvider_Complete_ForwardsMaxTokensWhenAlone(t *testing.T) {
+// TestCerebrasProvider_Complete_PromotesLoneMaxTokens verifies a legacy request
+// that sets only max_tokens is promoted to max_completion_tokens — Cerebras
+// validates the modern field, so a max_tokens-only request must not forward the
+// legacy one.
+func TestCerebrasProvider_Complete_PromotesLoneMaxTokens(t *testing.T) {
 	body := captureCerebrasChatBody(t, core.Request{
 		Model:     "llama-3.3-70b",
 		Messages:  []core.Message{{Role: "user", Content: "Hi"}},
 		MaxTokens: intPtr(256),
 	})
-	if got := string(body["max_tokens"]); got != "256" {
-		t.Errorf("max_tokens = %s, want 256 (a max_tokens-only request must still forward it)", got)
+	if _, ok := body["max_tokens"]; ok {
+		t.Errorf("max_tokens must not be forwarded (Cerebras validates max_completion_tokens), body=%v", body)
 	}
-	if _, ok := body["max_completion_tokens"]; ok {
-		t.Errorf("max_completion_tokens must not appear for a max_tokens-only request, body=%v", body)
+	if got := string(body["max_completion_tokens"]); got != "256" {
+		t.Errorf("max_completion_tokens = %s, want 256 (promoted from max_tokens)", got)
 	}
 }
 
@@ -274,8 +248,8 @@ func TestCerebrasProvider_DiscoverModels(t *testing.T) {
 		if r.Method != http.MethodGet {
 			t.Errorf("method = %q, want GET", r.Method)
 		}
-		if r.URL.Path != "/models" {
-			t.Errorf("path = %q, want /models", r.URL.Path)
+		if r.URL.Path != "/v1/models" {
+			t.Errorf("path = %q, want /v1/models", r.URL.Path)
 		}
 		if got := r.Header.Get("Authorization"); got != testBearerAPIKey {
 			t.Errorf("Authorization = %q, want %s", got, testBearerAPIKey)
@@ -299,5 +273,24 @@ func TestCerebrasProvider_DiscoverModels(t *testing.T) {
 	}
 	if models[1].OwnedBy != "cerebras" {
 		t.Errorf("model[1] owned_by fallback = %q, want cerebras", models[1].OwnedBy)
+	}
+}
+
+// TestNewCerebras_BaseURLIsTheAPIRoot pins the shape a base URL is written in: the
+// API root, used verbatim. The one net: a bare host is not an API root, so it
+// adopts the trailing version segment of the provider's default root.
+func TestNewCerebras_BaseURLIsTheAPIRoot(t *testing.T) {
+	for base, want := range map[string]string{
+		"":                                      "https://api.cerebras.ai/v1",
+		"https://api.cerebras.ai":               "https://api.cerebras.ai/v1",
+		"https://proxy.example.com/cerebras/v1": "https://proxy.example.com/cerebras/v1",
+	} {
+		p, err := New("test-key", base)
+		if err != nil {
+			t.Fatalf("New(_, %q) error: %v", base, err)
+		}
+		if got := p.BaseURL(); got != want {
+			t.Errorf("New(_, %q).BaseURL() = %q, want %q", base, got, want)
+		}
 	}
 }

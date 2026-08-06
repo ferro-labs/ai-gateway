@@ -26,7 +26,7 @@ func TestWrite_RedactsErrorChunkMessage(t *testing.T) {
 	close(ch)
 
 	w := httptest.NewRecorder()
-	Write(context.Background(), w, ch)
+	Write(context.Background(), w, ch, nil)
 
 	body := w.Body.String()
 	if strings.Contains(body, fakeUpstreamKey) {
@@ -48,7 +48,7 @@ func TestWrite_LeavesCleanErrorChunkIntact(t *testing.T) {
 	close(ch)
 
 	w := httptest.NewRecorder()
-	Write(context.Background(), w, ch)
+	Write(context.Background(), w, ch, nil)
 
 	if !strings.Contains(w.Body.String(), "upstream is unavailable") {
 		t.Errorf("clean error message did not survive: %s", w.Body.String())

@@ -29,8 +29,35 @@
 // it cannot unsend it — a guardrail that must withhold content has to run at
 // before_request, or the caller must not stream.
 //
-// Built-in plugins live in the internal/plugins/* packages and are registered
-// by importing them with a blank import (e.g. _ "github.com/ferro-labs/ai-gateway/internal/plugins/wordfilter").
+// # Stages and short-circuiting
+//
+// Skipping the provider and skipping the rest of the chain are different acts, and
+// a plugin can only do the first:
+//
+//   - Context.SkipProvider says "do not call the provider; serve Context.Response
+//     instead". Every remaining before_request plugin still runs, and so does
+//     after_request. A cache hit therefore no longer disables the rate limiter or
+//     the budget registered behind it.
+//   - Only a rejection or a failure ends the before_request chain, and it ends that
+//     stage alone: the on_error stage still runs, so a request denied by policy is
+//     still recorded by whatever observes requests.
+//
+// SkipProvider stays set through after_request, where it is a fact rather than a
+// control signal: it is how a plugin tells a request served from cache from one that
+// reached a provider. Cost recording keys off it; logging deliberately does not.
+//
+// Context.Stage names the stage currently executing. Branch on it. Do not infer the
+// stage from which fields happen to be nil — a before_request plugin can now observe
+// a Response an earlier plugin put there.
+//
+// # Removed in v1.4.0
+//
+// Context.Skip is gone. It meant "abandon every plugin after me", which let a cache
+// hit bypass every guardrail behind it. Code that sets or reads it no longer
+// compiles; the replacement is SkipProvider, whose contract is above.
+//
+// Built-in plugins live in the plugin/* subpackages and are registered
+// by importing them with a blank import (e.g. _ "github.com/ferro-labs/ai-gateway/plugin/wordfilter").
 package plugin
 
 import (
@@ -50,8 +77,8 @@ type Plugin interface {
 	// Init configures the plugin from its config map before first use.
 	Init(config map[string]any) error
 	// Execute runs the plugin for the current stage against the request and
-	// response carried by pctx. It may mutate them or set pctx.Reject / pctx.Skip
-	// to influence the pipeline (see Context).
+	// response carried by pctx. It may mutate them or set pctx.Reject /
+	// pctx.SkipProvider to influence the pipeline (see Context).
 	//
 	// Return an error only when the plugin could not do its job. To deny a request,
 	// set pctx.Reject — that is a verdict, and the gateway reports it as one. An
@@ -88,21 +115,151 @@ const (
 	StageOnError       Stage = "on_error"
 )
 
+// Metadata keys the gateway itself sets on Context.Metadata. A plugin reads one
+// to learn something about the request that Request cannot express; the gateway
+// never reads them back, so writing one alters no control flow.
+const (
+	// MetadataSurface names the OpenAI surface a request arrived on —
+	// "embeddings" or "images". It is absent on chat and on streaming chat.
+	//
+	// Those surfaces carry content Context cannot hold natively, so the gateway
+	// PROJECTS it into Request.Messages: an embeddings input and an image prompt
+	// become user messages, which is what lets a content guardrail screen them
+	// at all. A plugin that keys on the request — a cache above all — must treat
+	// this as part of the request's identity, because the projection is
+	// byte-identical to the chat request asking the same question while the
+	// response it produces is not a chat response.
+	MetadataSurface = "surface"
+
+	// MetadataUninspectableContent is set true when such a surface carried
+	// content the gateway could not project as text: an embeddings input given
+	// as token IDs, which is a lossless encoding of the exact text a content
+	// policy screens.
+	//
+	// A content guardrail must read it as content it was REQUIRED to inspect and
+	// could not, and deny the request — Reject, which is a verdict, never an
+	// error, which would report the gateway as broken. Serving it instead leaves
+	// the blocklist evadable by a one-line client-side transform.
+	//
+	// It is absent whenever the content was projected, and absent on every chat
+	// request, so a deployment running no content guardrail keeps serving
+	// token-id inputs exactly as before.
+	MetadataUninspectableContent = "content_uninspectable"
+)
+
+// ModelPreserving is implemented by a transform plugin that never changes which
+// MODEL a request routes to.
+//
+// The gateway refuses a model no configured target serves BEFORE the
+// before_request stage, so an unroutable model cannot spend a rate limiter's
+// tokens or a budget's money on its way to its 404. That check must stand down
+// when the stage can still rewrite the model — and "reports TypeTransform" was
+// the only signal available, which handed the stand-down to every transform
+// including the ones that rewrite nothing. Enabling the response cache silently
+// gave up the protection, process-wide, on all four surfaces.
+//
+// Declaring this narrows the signal to the question actually being asked: not
+// "is this a transform" but "may this plugin change the routed model". Declaring
+// it while mutating Request.Model is a bug — the gateway will then answer 404
+// for a model this plugin was about to make routable.
+//
+// It is an opt-OUT, not an opt-in: a transform that says nothing keeps the
+// stand-down, so an out-of-tree plugin that does rewrite the model behaves
+// exactly as it does today.
+type ModelPreserving interface {
+	Plugin
+	// PreservesModel is a marker; its presence is the whole declaration.
+	PreservesModel()
+}
+
+// ContentAgnostic is implemented by a before_request guardrail that reaches the
+// same verdict whether or not it can READ the request's content.
+//
+// A surface that cannot show a guardrail the content it would screen has to
+// refuse rather than read the guardrail's empty pass as consent — see
+// Manager.HasBeforeRequestGuardrail. TypeGuardrail was the only signal
+// available, and it names a plugin's ENFORCEMENT ROLE, not what it reads, so a
+// deployment running only `max-token` had uninspectable pass-through bodies
+// refused although nothing would have inspected them.
+//
+// Declaring this narrows the signal to the question actually being asked: not
+// "is this a guardrail" but "would this guardrail's approval be vacuous if the
+// content could not be read".
+//
+// It is an opt-OUT, and the polarity is the whole point. A guardrail that says
+// nothing is assumed to read content and still triggers the refusal, so an
+// out-of-tree content guardrail — which cannot know to declare anything — is
+// never silently reclassified into forwarding an unscreened body upstream under
+// the gateway's own credential. Over-refusal is recoverable; that is not.
+//
+// Unlike ModelPreserving this is a QUESTION rather than a bare marker, because
+// the honest answer can depend on configuration: max-token reads no content
+// until `max_input_length` is set, at which point its verdict is a measurement
+// of the content and an unreadable body would satisfy it at length zero.
+type ContentAgnostic interface {
+	Plugin
+	// IgnoresRequestContent reports whether this plugin, AS CONFIGURED, reaches
+	// its verdict without reading the request's content. Answering true while
+	// deriving a verdict from Request.Messages is a bug: the gateway will then
+	// serve a request this plugin never actually screened.
+	IgnoresRequestContent() bool
+}
+
 // Context provides access to request/response data for plugins.
 type Context struct {
 	Request  *providers.Request
 	Response *providers.Response
 	// Metadata carries key/value data shared between plugins and stages (for
 	// example "api_key" or "cache_hit"). Writing Metadata never alters pipeline
-	// control flow; it only passes information along.
+	// control flow; it only passes information along. The keys the gateway
+	// itself sets are documented as MetadataSurface and friends.
+	//
+	// The map is valid for THIS request only. Contexts are pooled, and the map
+	// object is reused across requests with its entries cleared, so a plugin
+	// that keeps the map itself past its Execute call will be reading another
+	// caller's data — including that caller's "api_key". Copy what you need to
+	// keep; never retain the map.
 	Metadata map[string]any
 	// Error holds the provider or pipeline error surfaced to the after_request
 	// and on_error stages so plugins can observe it. Setting it does not by
 	// itself abort the request.
 	Error error
-	// Skip, when set true by a plugin, stops the remaining plugins in the current
-	// stage from running. The request itself continues normally.
-	Skip bool
+	// Stage is the lifecycle stage currently executing, set by the framework
+	// before every Execute call. Branch on it rather than inferring the stage
+	// from which fields are nil: a before_request plugin can observe a Response
+	// an earlier plugin in the same stage supplied.
+	Stage Stage
+	// Target is the routing target the gateway used: the virtual key of the
+	// target that served the request or, when the request failed, the last one
+	// attempted. Set by the gateway before the after_request and on_error
+	// stages; empty at before_request, and empty afterwards only when no target
+	// was ever attempted — a request a plugin denied, a model no configured
+	// target serves, or a response served from cache (see SkipProvider).
+	//
+	// It names the TARGET, not the provider's opinion of itself. A target's
+	// virtual key is the name its provider is registered under, so on a success
+	// it is the same string Response.Provider carries; on a failure there is no
+	// response to read a provider from, which is why this exists. A record of a
+	// failed request that cannot say which provider failed is missing most of
+	// its diagnostic value.
+	//
+	// Under retry and fallback one request may touch several targets. This is
+	// the LAST one attempted, which is what every other record of the same
+	// failure already names — the per-provider error counter, the span's target
+	// key, the failed lifecycle event, and the target quoted in the error
+	// itself. One request produces one outcome and one row; a list here would be
+	// the single field that disagreed with all of them.
+	Target string
+	// SkipProvider, when set true by a before_request plugin, means the provider
+	// must not be called and Response is served in its place. It never stops
+	// another plugin from running — every remaining before_request plugin and
+	// the whole after_request stage still execute, so a cache hit cannot bypass
+	// a guardrail, a rate limit or a budget listed behind it.
+	//
+	// It survives into after_request as a fact about the request: true means no
+	// provider was contacted. A plugin that bills for provider work must check
+	// it; a plugin that records that the request happened must not.
+	SkipProvider bool
 	// Reject, when set true, aborts the request and returns a rejection error to
 	// the client. Reason supplies the human-readable cause.
 	//
@@ -119,6 +276,35 @@ type Context struct {
 	// observability seam); when nil no plugin spans are emitted. Setting it
 	// never alters pipeline control flow.
 	Span observability.Span
+	// Measurements carries what the gateway has measured about this request.
+	// Populated before the after_request stage; zero at before_request, where
+	// there is nothing to have measured yet. Setting it never alters pipeline
+	// control flow.
+	Measurements Measurements
+}
+
+// Measurements are the per-request numbers the gateway computes and hands to
+// the after_request stage.
+//
+// Each optional value is paired with a flag rather than leaning on zero,
+// because zero is a legitimate reading for all of them and "not applicable" is
+// a different fact: a non-streaming request has no time to first token at all,
+// and a model the catalog does not price has an unknown cost rather than a free
+// one. A plugin that persists these should keep the distinction.
+type Measurements struct {
+	// DurationMs is the end-to-end time spent on the request, measured just
+	// before this stage runs — so it excludes the after_request plugins
+	// themselves. A latency that included the plugin recording it would be
+	// measuring the observer.
+	DurationMs float64
+	// TTFTMs is the time to first token, in milliseconds. HasTTFT is false for
+	// non-streaming requests.
+	TTFTMs  float64
+	HasTTFT bool
+	// CostUSD is the catalog's estimate for this request. HasCost is false when
+	// the catalog does not price the model.
+	CostUSD float64
+	HasCost bool
 }
 
 // pluginContextPool recycles Context objects to reduce GC pressure.
@@ -149,17 +335,20 @@ func PutContext(c *Context) {
 	pluginContextPool.Put(c)
 }
 
-// reset clears all 8 fields before returning to the pool.
+// reset clears all 11 fields before returning to the pool.
 // Metadata map entries are deleted but the map itself is kept
 // to preserve its bucket array capacity for the next request.
 // SECURITY: every field must be listed explicitly.
 func (c *Context) reset() {
-	c.Request = nil   // field 1: *providers.Request
-	c.Response = nil  // field 2: *providers.Response
-	clear(c.Metadata) // field 3: map[string]interface{} — clear entries, keep capacity
-	c.Error = nil     // field 4: error
-	c.Skip = false    // field 5: bool
-	c.Reject = false  // field 6: bool
-	c.Reason = ""     // field 7: string
-	c.Span = nil      // field 8: observability.Span
+	c.Request = nil                 // field 1: *providers.Request
+	c.Response = nil                // field 2: *providers.Response
+	clear(c.Metadata)               // field 3: map[string]interface{} — clear entries, keep capacity
+	c.Error = nil                   // field 4: error
+	c.Stage = ""                    // field 5: Stage
+	c.Target = ""                   // field 6: string
+	c.SkipProvider = false          // field 7: bool
+	c.Reject = false                // field 8: bool
+	c.Reason = ""                   // field 9: string
+	c.Span = nil                    // field 10: observability.Span
+	c.Measurements = Measurements{} // field 11: Measurements
 }

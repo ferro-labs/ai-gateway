@@ -5,12 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/ferro-labs/ai-gateway/internal/envref"
-	"github.com/ferro-labs/ai-gateway/internal/logging"
+	"github.com/ferro-labs/ai-gateway/internal/httpclient"
 	"github.com/ferro-labs/ai-gateway/observability"
+	"github.com/ferro-labs/ai-gateway/pkg/logger"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
@@ -28,6 +28,23 @@ type ShutdownFunc func(ctx context.Context) error
 
 // defaultShutdownGrace bounds each shutdown stage when ShutdownGrace is unset.
 const defaultShutdownGrace = 10 * time.Second
+
+// otlpExportTimeout bounds a single OTLP export over http/protobuf.
+//
+// It matches otlpconfig.DefaultTimeout, the bound the SDK would have applied
+// itself. Supplying a custom http.Client is what makes restating it necessary:
+// otlptracehttp.NewClient reads cfg.Traces.Timeout only when no client was
+// handed in, so both that default and any otlptracehttp.WithTimeout are
+// discarded here, and whatever this constant says becomes the only per-export
+// bound. It is deliberately not larger than the SDK's: the export is retried
+// under a 60s MaxElapsedTime, so widening one attempt buys fewer attempts.
+//
+// It must also stay POSITIVE. httpclient.New(0) returns the shared default
+// client, whose transport is otelhttp-wrapped — the exporter would then trace
+// its own exports, each generating further spans to export. Measured: 1
+// collector request on the raw transport versus 59 and climbing on the wrapped
+// one. A positive timeout takes the raw-transport path.
+const otlpExportTimeout = 10 * time.Second
 
 // Init constructs an observability.Provider. Returns observability.NoOp()
 // (zero-allocation fast-path) when:
@@ -101,6 +118,10 @@ func buildOTLPProvider(ctx context.Context, cfg Config, hasEndpoint bool) (*otel
 		return newProvider(trace.TracerProvider(noopTP), cfg), noopShutdown, nil, nil
 	}
 
+	// Before the exporter exists, so a failure building it is already reported
+	// at error level rather than through the standard log package.
+	installErrorHandler()
+
 	// Full OTLP pipeline: real TracerProvider + span exporter.
 	exporter, err := newSpanExporter(ctx, cfg)
 	if err != nil {
@@ -124,7 +145,7 @@ func buildOTLPProvider(ctx context.Context, cfg Config, hasEndpoint bool) (*otel
 		// failure mask the primary resource.New error.
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), defaultShutdownGrace)
 		if shutdownErr := exporter.Shutdown(shutdownCtx); shutdownErr != nil {
-			logging.Logger.Warn("otel: span exporter shutdown after resource build failure",
+			logger.Default().Warn("otel: span exporter shutdown after resource build failure",
 				"error", shutdownErr,
 			)
 		}
@@ -143,7 +164,7 @@ func buildOTLPProvider(ctx context.Context, cfg Config, hasEndpoint bool) (*otel
 
 	// Register tp as the global TracerProvider so instrumentation that
 	// uses the global otel.Tracer(...) API — plugin-stage spans
-	// (plugin/manager.go) and MCP tool spans (internal/mcp/executor.go) —
+	// (plugin/manager.go) and MCP tool spans (mcp/executor.go) —
 	// records and exports child spans. Without this they silently no-op
 	// and only the gateway root span (which holds tp directly) is emitted.
 	otel.SetTracerProvider(tp)
@@ -212,7 +233,7 @@ func resolveExporters(ctx context.Context, cfgs []ExporterConfig) []observabilit
 		}
 		factory, ok := observability.LookupExporter(ec.Name)
 		if !ok {
-			logging.Logger.Warn("otel: exporter not registered; skipping",
+			logger.Default().Warn("otel: exporter not registered; skipping",
 				"name", ec.Name,
 			)
 			continue
@@ -223,14 +244,14 @@ func resolveExporters(ctx context.Context, cfgs []ExporterConfig) []observabilit
 		// config store nor served by GET /admin/config.
 		exCfg, err := envref.AnyMap(ec.Config)
 		if err != nil {
-			logging.Logger.Warn("otel: exporter config has undefined environment references; skipping",
+			logger.Default().Warn("otel: exporter config has undefined environment references; skipping",
 				"name", ec.Name,
 				"error", err,
 			)
 			continue
 		}
 		if err := ex.Init(ctx, exCfg); err != nil {
-			logging.Logger.Warn("otel: exporter Init failed; skipping",
+			logger.Default().Warn("otel: exporter Init failed; skipping",
 				"name", ec.Name,
 				"error", err,
 			)
@@ -244,37 +265,55 @@ func resolveExporters(ctx context.Context, cfgs []ExporterConfig) []observabilit
 // newSpanExporter constructs the OTLP span exporter for the configured
 // protocol. Defaults to gRPC.
 //
-// Transport security is derived from the endpoint scheme:
-//   - https:// → TLS (WithInsecure omitted; the exporter defaults to secure)
-//   - http://  → plaintext (WithInsecure applied)
-//   - bare host:port → plaintext for backward compatibility (WithInsecure applied)
+// The endpoint is resolved by resolveExportTarget, which follows the OTLP
+// exporter specification. Transport security comes from the endpoint's scheme —
+// https:// is TLS, http:// is plaintext — and a bare host:port keeps its
+// historical plaintext meaning.
 func newSpanExporter(ctx context.Context, cfg Config) (sdktrace.SpanExporter, error) {
-	raw := cfg.effectiveEndpoint(os.Getenv)
-	insecure := !endpointIsSecure(raw)
-	host := stripScheme(raw)
+	httpProtocol := isHTTPProtocol(cfg.Protocol)
+	target, err := resolveExportTarget(cfg, os.Getenv, httpProtocol)
+	if err != nil {
+		return nil, err
+	}
+	target.log()
 
 	h := resolveHeaders(cfg.Headers)
 
-	switch cfg.Protocol {
-	case "http/protobuf", "http":
-		opts := []otlptracehttp.Option{otlptracehttp.WithEndpoint(host)}
-		if insecure {
-			opts = append(opts, otlptracehttp.WithInsecure())
+	if httpProtocol {
+		var opts []otlptracehttp.Option
+		switch {
+		case target.url != "":
+			opts = append(opts, otlptracehttp.WithEndpointURL(target.url))
+		case target.hostPort != "":
+			opts = append(opts, otlptracehttp.WithEndpoint(target.hostPort), otlptracehttp.WithInsecure())
 		}
 		if len(h) > 0 {
 			opts = append(opts, otlptracehttp.WithHeaders(h))
 		}
+		// The SDK builds its own http.Client with no CheckRedirect, so it would
+		// follow up to ten hops and replay the exporter headers — which the
+		// config documents as holding ${ENV_VAR} secrets — to a host the
+		// operator never configured (SEC-007). Hand it the gateway's shared
+		// no-redirect client instead.
+		//
+		// Supplying a client makes otlpExportTimeout the only per-export bound
+		// the SDK will honour — see its godoc for why the value is what it is
+		// and why it must stay positive.
+		opts = append(opts, otlptracehttp.WithHTTPClient(httpclient.New(otlpExportTimeout)))
 		return otlptrace.New(ctx, otlptracehttp.NewClient(opts...))
-	default:
-		opts := []otlptracegrpc.Option{otlptracegrpc.WithEndpoint(host)}
-		if insecure {
-			opts = append(opts, otlptracegrpc.WithInsecure())
-		}
-		if len(h) > 0 {
-			opts = append(opts, otlptracegrpc.WithHeaders(h))
-		}
-		return otlptrace.New(ctx, otlptracegrpc.NewClient(opts...))
 	}
+
+	var opts []otlptracegrpc.Option
+	switch {
+	case target.url != "":
+		opts = append(opts, otlptracegrpc.WithEndpointURL(target.url))
+	case target.hostPort != "":
+		opts = append(opts, otlptracegrpc.WithEndpoint(target.hostPort), otlptracegrpc.WithInsecure())
+	}
+	if len(h) > 0 {
+		opts = append(opts, otlptracegrpc.WithHeaders(h))
+	}
+	return otlptrace.New(ctx, otlptracegrpc.NewClient(opts...))
 }
 
 // resolveHeaders materialises OTLP export headers from the configuration map.
@@ -296,11 +335,11 @@ func resolveHeaders(raw map[string]string) map[string]string {
 	for k, v := range raw {
 		resolved, err := envref.Expand(v)
 		if err != nil {
-			logging.Logger.Warn("otel: tracing header has an undefined environment reference; dropping it", "header", k, "error", err)
+			logger.Default().Warn("otel: tracing header has an undefined environment reference; dropping it", "header", k, "error", err)
 			continue
 		}
 		if resolved == "" {
-			logging.Logger.Warn("otel: tracing header resolved to an empty value; dropping it", "header", k)
+			logger.Default().Warn("otel: tracing header resolved to an empty value; dropping it", "header", k)
 			continue
 		}
 		out[k] = resolved
@@ -311,22 +350,36 @@ func resolveHeaders(raw map[string]string) map[string]string {
 	return out
 }
 
-// endpointIsSecure reports whether the endpoint explicitly uses the https://
-// scheme. Both http:// and bare host:port are treated as insecure.
-func endpointIsSecure(endpoint string) bool {
-	return strings.HasPrefix(endpoint, "https://")
-}
-
-// sampler returns a head sampler matching cfg.SampleRatio. 1.0
-// (default) becomes AlwaysSample for a small allocation win.
+// sampler returns the head sampler for cfg.SampleRatio, wrapped in ParentBased
+// so a sampling decision made upstream is honoured rather than retaken.
+//
+// ParentBased is the specification's default sampler — "The default sampler is
+// ParentBased(root=AlwaysOn)"
+// (https://opentelemetry.io/docs/specs/otel/trace/sdk/#built-in-samplers) — and
+// the three cases below are exactly its parentbased_always_on,
+// parentbased_always_off and parentbased_traceidratio configurations.
+//
+// The reason is trace completeness. A bare ratio sampler ignores the inbound
+// SampledFlag and re-decides for every service, so a trace the caller sampled is
+// dropped here and the caller is left holding a span whose children do not
+// exist. The specification says as much of TraceIdRatioBased: "The
+// TraceIdRatioBased MUST ignore the parent SampledFlag. To respect the parent
+// SampledFlag, the TraceIdRatioBased should be used as a delegate of the
+// ParentBased sampler."
+//
+// So sample_ratio now governs *root* spans — traces this gateway starts — while
+// a request arriving with a traceparent follows the decision already made
+// upstream, in both directions: sampled upstream is recorded here even at
+// ratio 0, and unsampled upstream is dropped here even at ratio 1.
 func sampler(cfg Config) sdktrace.Sampler {
-	if cfg.SampleRatio >= 1.0 {
-		return sdktrace.AlwaysSample()
+	switch {
+	case cfg.SampleRatio >= 1.0:
+		return sdktrace.ParentBased(sdktrace.AlwaysSample())
+	case cfg.SampleRatio <= 0:
+		return sdktrace.ParentBased(sdktrace.NeverSample())
+	default:
+		return sdktrace.ParentBased(sdktrace.TraceIDRatioBased(cfg.SampleRatio))
 	}
-	if cfg.SampleRatio <= 0 {
-		return sdktrace.NeverSample()
-	}
-	return sdktrace.TraceIDRatioBased(cfg.SampleRatio)
 }
 
 // serviceName returns the configured service.name, defaulting to
@@ -338,15 +391,18 @@ func serviceName(cfg Config) string {
 	return "ferrogw"
 }
 
-// stripScheme removes a leading http:// or https:// from an endpoint
-// since the OTLP exporters expect host:port form.
-func stripScheme(endpoint string) string {
-	for _, prefix := range []string{"https://", "http://"} {
-		if len(endpoint) > len(prefix) && endpoint[:len(prefix)] == prefix {
-			return endpoint[len(prefix):]
-		}
-	}
-	return endpoint
+// installErrorHandler routes the OTel SDK's own errors — a failed export above
+// all — through the gateway's logger at error level.
+//
+// Without it they reach the default handler, which prints through the standard
+// log package; slog.SetDefault redirects that to the gateway's handler at INFO.
+// An export that never leaves the process is not information, and INFO is below
+// the level most deployments ship at, so tracing could be entirely broken and
+// say so only in a line nobody was going to read.
+func installErrorHandler() {
+	otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) {
+		logger.Default().Error("otel: sdk error", "error", err)
+	}))
 }
 
 // noopShutdown is the placeholder Shutdown function returned alongside

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
 func TestRequest_Validate(t *testing.T) {
@@ -327,11 +329,13 @@ func TestParseStatusCode(t *testing.T) {
 		want int
 	}{
 		{"nil error", nil, 0},
-		{"standard 429", fmt.Errorf("provider error (429): rate limited"), 429},
-		{"standard 503", fmt.Errorf("cohere API error (503): service unavailable"), 503},
-		{"standard 400", fmt.Errorf("mistral API error (400): bad request"), 400},
+		{"typed 429", core.APIError("provider", 429, []byte(`{"error":{"message":"rate limited"}}`)), 429},
+		{"typed 503", core.APIError("cohere", 503, []byte(`{"error":{"message":"unavailable"}}`)), 503},
+		{"typed 400 through a wrapper", fmt.Errorf("provider mistral attempt 2: %w",
+			core.APIError("mistral", 400, []byte(`{"error":{"message":"bad request"}}`))), 400},
 		{"no status code", fmt.Errorf("network timeout"), 0},
-		{"partial number", fmt.Errorf("attempt 3 failed"), 0},
+		// The status is a field, never a substring: text alone yields nothing.
+		{"status only in the text", fmt.Errorf("provider error (429): rate limited"), 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -340,24 +344,6 @@ func TestParseStatusCode(t *testing.T) {
 				t.Errorf("ParseStatusCode(%v) = %d, want %d", tt.err, got, tt.want)
 			}
 		})
-	}
-}
-
-func BenchmarkMessageUnmarshalStringContent(b *testing.B) {
-	payload := []byte(`{
-		"role":"user",
-		"content":"Summarize the latest deployment status.",
-		"name":"alice",
-		"metadata":{"tenant":"bench","request_id":"req-123"}
-	}`)
-
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		var msg Message
-		if err := json.Unmarshal(payload, &msg); err != nil {
-			b.Fatal(err)
-		}
 	}
 }
 

@@ -5,6 +5,7 @@ package events
 import (
 	"time"
 
+	"github.com/ferro-labs/ai-gateway/internal/apierror"
 	"github.com/ferro-labs/ai-gateway/internal/redact"
 	"github.com/ferro-labs/ai-gateway/models"
 )
@@ -30,17 +31,24 @@ type HookEvent struct {
 
 // FailedRequest builds the internal hook payload for a failed request.
 //
-// errMsg is redacted here, at the single point every failed-request event is
+// err is redacted here, at the single point every failed-request event is
 // built, so no observability exporter or hook consumer receives raw upstream
-// error text. Callers pass the message through unfiltered.
-func FailedRequest(traceID, provider, model, errMsg string, latency time.Duration, stream bool) HookEvent {
+// error text. Callers pass the error through unfiltered.
+//
+// The status is the one the caller was given, read from the same classifier the
+// HTTP surface answers with, rather than a fixed 500. A policy denial is not a
+// server error: a rate-limited request the client saw as 429 was being shipped
+// off-box as a 500, so an exporter's error rate disagreed with both the wire and
+// the gateway's own metrics, which have always counted it as a rejection.
+func FailedRequest(traceID, provider, model string, err error, latency time.Duration, stream bool) HookEvent {
+	status, _, _ := apierror.RouteErrorDetails(err)
 	return HookEvent{
 		Subject:   "gateway.request.failed",
 		TraceID:   traceID,
 		Provider:  provider,
 		Model:     model,
-		Error:     redact.String(errMsg),
-		Status:    500,
+		Error:     redact.String(err.Error()),
+		Status:    status,
 		LatencyMs: latency.Milliseconds(),
 		Stream:    stream,
 		Timestamp: time.Now(),

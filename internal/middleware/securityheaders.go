@@ -3,26 +3,32 @@ package middleware
 
 import "net/http"
 
-// ContentSecurityPolicy is the policy served with every response.
+// ContentSecurityPolicy is the policy served with every response, API and
+// dashboard alike.
 //
-// script-src is strict: the admin token lives in localStorage, so blocking
-// injected and inline script is the one directive that matters here. The
-// dashboard therefore carries no inline <script> and no on*= attributes —
-// handlers are registered against data-action in web/static/dashboard.js, and
-// TestTemplatesCarryNoInlineScript keeps it that way.
+// Gateway responses do not rely on inline scripts, remote fonts, or
+// third-party runtime assets, so browser execution stays restricted to
+// same-origin resources.
 //
-// style-src keeps 'unsafe-inline': the templates still use style="…" attributes
-// and login.html an inline <style> block. Inline style is a far weaker vector
-// than inline script, and tightening it would buy little for a large diff.
-// cdn.jsdelivr.net serves the Geist font stylesheet imported by style.css.
+// The one hash in style-src allowlists a single fixed stylesheet the component
+// library injects to hide the native scrollbar inside an open dropdown. It is a
+// constant string, so the digest is reproducible, and allowing it by digest
+// keeps 'unsafe-inline' out — which would otherwise disable every digest in the
+// same directive and permit any inline style on a page that manages
+// credentials. If the library is upgraded and that string changes, the dropdown
+// shows a scrollbar and the console reports a violation; web/src/lib/csp.test.ts
+// recomputes the digest from the installed library and fails on a mismatch.
+//
+// connect-src needs no origin beyond 'self' because the dashboard is served by
+// the gateway it calls, so its API requests are same-origin.
 const ContentSecurityPolicy = "default-src 'self'; " +
 	"base-uri 'self'; " +
 	"form-action 'self'; " +
 	"frame-ancestors 'none'; " +
 	"object-src 'none'; " +
 	"script-src 'self'; " +
-	"style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; " +
-	"font-src 'self' https://cdn.jsdelivr.net; " +
+	"style-src 'self' 'sha256-kLmvWqfziFavKtqHqRsb90f006UAK2Dmd0It5Iz2KFA='; " +
+	"font-src 'self'; " +
 	"img-src 'self' data:; " +
 	"connect-src 'self'"
 
@@ -30,9 +36,12 @@ const ContentSecurityPolicy = "default-src 'self'; " +
 const PermissionsPolicy = "camera=(), microphone=(), geolocation=()"
 
 // SecurityHeaders returns middleware that sets baseline browser-hardening
-// headers on every response. These headers are unconditional except for
+// headers on every response — both the API's JSON and the dashboard HTML the
+// gateway serves. These headers are unconditional except for
 // Strict-Transport-Security, which is only emitted when the connection is TLS
-// (i.e. r.TLS != nil) to avoid breaking plain-HTTP deployments.
+// (i.e. r.TLS != nil) to avoid breaking plain-HTTP deployments. "preload" is
+// deliberately omitted: it is an irreversible commitment for the whole domain
+// and is the operator's decision, not the gateway's.
 //
 // Headers applied:
 //   - Content-Security-Policy: see ContentSecurityPolicy

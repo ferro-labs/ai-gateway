@@ -23,24 +23,12 @@ func initManager() *transport.Manager {
 	return m
 }
 
-// Shared returns the process-wide HTTP client used by providers so they reuse
-// connection pools consistently under load.
-func Shared() *http.Client {
-	return manager.DefaultClient()
-}
-
 // ForProvider returns the per-provider HTTP client with tuned pool settings.
 // Known providers (openai, anthropic, etc.) get isolated pools registered at
 // init time via RegisterKnownProviders. Unknown providers fall back to the
 // shared default client.
 func ForProvider(name string) *http.Client {
 	return manager.ForProvider(name)
-}
-
-// SharedStreaming returns the SSE-optimized client with no ResponseHeaderTimeout.
-// Use for streaming requests where first LLM token can take 10-30s.
-func SharedStreaming() *http.Client {
-	return manager.ForStreaming("")
 }
 
 // New returns a client that reuses the shared transport policy with an
@@ -52,13 +40,13 @@ func New(timeout time.Duration) *http.Client {
 	return &http.Client{
 		Transport: manager.DefaultTransport(),
 		Timeout:   timeout,
+		// Redirects are surfaced, not followed: this client carries MCP and
+		// discovery credentials, and Go replays custom auth headers on a
+		// cross-host hop. Same policy as the shared transport clients.
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
 	}
-}
-
-// SharedTransport exposes the shared transport so other HTTP adapters can
-// reuse the same pooling and timeout policy.
-func SharedTransport() *http.Transport {
-	return manager.DefaultTransport()
 }
 
 // SharedStreamingTransport exposes the raw SSE-tuned transport (no
@@ -68,12 +56,6 @@ func SharedTransport() *http.Transport {
 // want OTel propagation should use SharedStreaming instead.
 func SharedStreamingTransport() *http.Transport {
 	return manager.StreamTransport()
-}
-
-// Manager returns the underlying transport.Manager for direct access
-// (e.g. per-provider client registration, metrics).
-func Manager() *transport.Manager {
-	return manager
 }
 
 // CloseIdleConnections closes any idle pooled connections held by the shared

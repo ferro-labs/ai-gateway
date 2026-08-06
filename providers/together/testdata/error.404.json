@@ -1,0 +1,1 @@
+{"error":{"message":"Unable to access model unknown/model. Please visit https://api.together.ai/models to view the list of supported models.","type":"invalid_request_error","code":"model_not_available"}}

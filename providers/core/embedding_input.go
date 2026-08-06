@@ -3,6 +3,7 @@ package core
 import (
 	"errors"
 	"fmt"
+	"net/http"
 )
 
 // errEmptyEmbeddingInput is returned when an embeddings "input" array is empty.
@@ -63,13 +64,35 @@ func NormalizeEmbeddingInput(input any) (any, error) {
 	}
 }
 
-// ValidateEmbeddingEncodingFormat rejects an embeddings encoding_format that a
-// float-only provider cannot honor. Empty (unset) and "float" are accepted; any
-// other value returns an error. Providers that also support "base64" (openai,
-// azure_openai) validate their own wider set and do not use this helper.
+// ValidateEmbeddingEncodingFormat rejects an embeddings encoding_format the
+// gateway cannot serve. Empty (unset) and "float" are accepted; any other
+// value — "base64" included — is refused.
+//
+// It returns a 400-carrying *HTTPStatusError rather than a bare error, which is
+// what every one of its callers used to return. A bare error carries no status,
+// so internal/apierror classified it as a 500 — telling a caller who sent an
+// unsupported VALUE that the gateway was broken — and strategies.shouldRetry
+// reads a status-less error as a transport failure and retried it, spending the
+// whole retry budget on a request whose outcome could not change.
+//
+// The provider name is empty because this refusal is the gateway's, not any
+// upstream's; HTTPStatusError.Error() renders that case without one. The
+// caller-facing text is the Message field, and it names the rejected value: for
+// a value error that is the only actionable thing in the response, which is why
+// this is not an UnsupportedParamError (that type carries parameter NAMES and
+// would answer "encoding_format is unsupported" for a parameter that is in fact
+// supported, just not at that value).
+//
+// "base64" is refused rather than decoded because it cannot survive this
+// gateway: core.Embedding.Embedding is []float64 and internal/handler/embeddings.go
+// JSON-encodes it directly, so the response leaves as a float array whatever the
+// upstream sent. Decoding base64 back to floats preserves none of the bandwidth
+// saving base64 exists for, while forwarding it upstream returns a vector no
+// float-typed decoder can read.
 func ValidateEmbeddingEncodingFormat(format string) error {
 	if format != "" && format != "float" {
-		return fmt.Errorf("embed: unsupported encoding_format %q; valid value is \"float\"", format)
+		return StatusError("", http.StatusBadRequest,
+			fmt.Sprintf("embed: unsupported encoding_format %q; valid value is %q", format, "float"))
 	}
 	return nil
 }

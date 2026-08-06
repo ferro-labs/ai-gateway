@@ -12,10 +12,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/ferro-labs/ai-gateway/internal/discovery"
 	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
 	"github.com/ferro-labs/ai-gateway/providers/core"
-	"github.com/ferro-labs/ai-gateway/providers/internal/openaicompat"
+	"github.com/ferro-labs/ai-gateway/providers/core/openaicompat"
 )
 
 // Name is the canonical provider identifier.
@@ -42,6 +41,7 @@ var (
 	_ core.ImageProvider     = (*Provider)(nil)
 	_ core.DiscoveryProvider = (*Provider)(nil)
 	_ core.ProxiableProvider = (*Provider)(nil)
+	_ core.AnyModelProvider  = (*Provider)(nil)
 )
 
 // New creates a new Hugging Face provider.
@@ -96,26 +96,18 @@ func (p *Provider) AuthHeaders() map[string]string {
 	return map[string]string{"Authorization": "Bearer " + p.apiKey}
 }
 
-// SupportedModels returns known Hugging Face model examples.
-func (p *Provider) SupportedModels() []string {
-	return []string{
-		"meta-llama/Meta-Llama-3.1-8B-Instruct",
-		"mistralai/Mistral-7B-Instruct-v0.3",
-		"Qwen/Qwen2.5-72B-Instruct",
-	}
-}
-
 // SupportsModel returns true for any model — Hugging Face validates model IDs.
+// Advisory only; see core.Provider.
 func (p *Provider) SupportsModel(_ string) bool { return true }
 
-// Models returns structured model metadata.
-func (p *Provider) Models() []core.ModelInfo {
-	return core.ModelsFromList(p.name, p.SupportedModels())
-}
+// ServesAnyModel declares core.AnyModelProvider: a model id here is any repo on
+// the Hub, of which there are millions. DiscoverModels reports the warm
+// inference set, which is a fraction of what a router request can name.
+func (p *Provider) ServesAnyModel() {}
 
 // DiscoverModels fetches the live model list from the Hugging Face /models endpoint.
 func (p *Provider) DiscoverModels(ctx context.Context) ([]core.ModelInfo, error) {
-	return discovery.DiscoverOpenAICompatibleModels(ctx, p.httpClient, p.baseURL+"/models", p.apiKey, p.name)
+	return core.DiscoverOpenAICompatibleModels(ctx, p.httpClient, p.baseURL+"/models", p.apiKey, p.name)
 }
 
 // Complete sends a chat completion request to Hugging Face.
@@ -173,6 +165,12 @@ func (p *Provider) postTask(ctx context.Context, url string, body io.Reader) ([]
 // batch). Hugging Face does not report token usage, so Usage stays zero;
 // req.EncodingFormat and req.Dimensions have no task-API equivalent and are ignored.
 func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.EmbeddingResponse, error) {
+	// The feature-extraction task API has no encoding_format concept and always
+	// answers with float vectors, so an unservable value has to be refused here
+	// or the caller is answered in a format it did not ask for and never told.
+	if err := core.ValidateEmbeddingEncodingFormat(req.EncodingFormat); err != nil {
+		return nil, err
+	}
 	escaped, err := escapeModelPath(req.Model)
 	if err != nil {
 		return nil, err
@@ -239,6 +237,9 @@ func parseFeatureExtraction(body []byte) ([][]float64, error) {
 // returns the generated image as raw bytes, which are base64-encoded into the
 // OpenAI-style b64_json field.
 func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*core.ImageResponse, error) {
+	if err := core.EnforceImageResponseFormat(Name, req); err != nil {
+		return nil, err
+	}
 	if req.N != nil && *req.N != 1 {
 		return nil, fmt.Errorf("hugging face: text-to-image returns one image per request; only n=1 is supported (got %d)", *req.N)
 	}

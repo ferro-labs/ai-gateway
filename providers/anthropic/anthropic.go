@@ -11,16 +11,15 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/ferro-labs/ai-gateway/internal/discovery"
 	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
 	"github.com/ferro-labs/ai-gateway/providers/core"
-	"github.com/ferro-labs/ai-gateway/providers/internal/anthropicwire"
+	"github.com/ferro-labs/ai-gateway/providers/core/anthropicwire"
 )
 
 // Name is the canonical provider identifier.
 const Name = "anthropic"
 
-const defaultBaseURL = "https://api.anthropic.com"
+const defaultBaseURL = "https://api.anthropic.com/v1"
 
 // anthropicVersion is the API version sent on every request via the
 // anthropic-version header.
@@ -48,11 +47,8 @@ var (
 
 // New creates a new Anthropic provider.
 func New(apiKey, baseURL string) (*Provider, error) {
-	if baseURL == "" {
-		baseURL = defaultBaseURL
-	}
-	baseURL = strings.TrimRight(baseURL, "/")
-	if err := core.ValidateBaseURL(Name, baseURL); err != nil {
+	baseURL, err := core.ResolveAPIRoot(Name, baseURL, defaultBaseURL)
+	if err != nil {
 		return nil, err
 	}
 	return &Provider{
@@ -85,28 +81,20 @@ func (p *Provider) AuthHeaders() map[string]string {
 
 // DiscoverModels fetches the live model list from the Anthropic /v1/models
 // endpoint, which uses x-api-key + anthropic-version headers rather than Bearer.
+//
+// Anthropic paginates this endpoint and defaults to 20 items, so the default
+// page silently truncated the catalog. limit=1000 is the documented maximum and
+// is far above the number of models Anthropic has ever offered at once, so one
+// page is the whole list. Following has_more/last_id instead would put a
+// pagination loop in the shared helper 19 providers call so that one of them can
+// reach a second page it does not have.
 func (p *Provider) DiscoverModels(ctx context.Context) ([]core.ModelInfo, error) {
-	return discovery.DiscoverModelsWithHeaders(ctx, p.httpClient, p.baseURL+"/v1/models", p.AuthHeaders(), p.name)
-}
-
-// SupportedModels returns the list of models supported by this provider.
-func (p *Provider) SupportedModels() []string {
-	return []string{
-		"claude-opus-4-7",
-		"claude-opus-4-6",
-		"claude-sonnet-4-6",
-		"claude-haiku-4-5-20251001",
-	}
+	return core.DiscoverModelsWithHeaders(ctx, p.httpClient, p.baseURL+"/models?limit=1000", p.AuthHeaders(), p.name)
 }
 
 // SupportsModel returns true if the model matches the Anthropic prefix.
 func (p *Provider) SupportsModel(model string) bool {
 	return strings.HasPrefix(model, "claude-")
-}
-
-// Models returns model information for all supported models.
-func (p *Provider) Models() []core.ModelInfo {
-	return core.ModelsFromList(p.name, p.SupportedModels())
 }
 
 type anthropicRequest struct {
@@ -246,7 +234,7 @@ func buildAnthropicRequest(ctx context.Context, req core.Request, stream bool) a
 		StopSequences: req.Stop,
 		System:        system,
 		Tools:         anthropicwire.MapTools(req.Tools),
-		ToolChoice:    anthropicwire.MapToolChoice(req.ToolChoice, req.Tools),
+		ToolChoice:    anthropicwire.MapToolChoice(req),
 		Metadata:      metadata,
 		Stream:        stream,
 	}
@@ -261,7 +249,7 @@ func (p *Provider) newMessagesRequest(ctx context.Context, aReq anthropicRequest
 		return nil, nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/v1/messages", bodyReader) //nolint:gosec // baseURL validated in New()
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/messages", bodyReader) //nolint:gosec // baseURL validated in New()
 	if err != nil {
 		release()
 		return nil, nil, fmt.Errorf("failed to create request: %w", err)

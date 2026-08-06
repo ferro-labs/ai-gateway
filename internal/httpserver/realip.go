@@ -59,11 +59,19 @@ func isTrustedProxy(host string, trusted []*net.IPNet) bool {
 // the peer is not trusted, RemoteAddr is used unconditionally — a caller
 // cannot forge their source IP by supplying these headers.
 //
-// XFF selection strategy: when the direct peer is trusted, the leftmost
-// entry in the X-Forwarded-For chain is selected. A well-behaved reverse
-// proxy prepends the true client IP before appending its own address, so the
-// leftmost entry represents the original caller. X-Real-IP is used as a
-// fallback when no XFF header is present but the peer is trusted.
+// XFF selection strategy: when the direct peer is trusted, the chain is
+// walked right-to-left and the first entry that parses as an IP outside every
+// trusted-proxy CIDR is selected. Proxies append, so the rightmost entry is
+// the one written by the hop closest to us and each step leftwards is one
+// step further from anything we can vouch for — the leftmost entry is
+// whatever the original caller chose to send. Walking from the right
+// therefore stops at the address a trusted proxy actually observed; walking
+// from the left would return a value the caller supplied in its own
+// X-Forwarded-For header.
+//
+// X-Real-IP holds a single address with no chain to corroborate it, so it is
+// consulted only after the XFF walk yields no untrusted hop, and — like XFF —
+// only when the direct peer is trusted.
 func resolveClientIP(r *http.Request, trusted []*net.IPNet) string {
 	// Extract host from "host:port" remote address; tolerate a plain IP.
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
@@ -77,15 +85,18 @@ func resolveClientIP(r *http.Request, trusted []*net.IPNet) string {
 		return host
 	}
 
-	// Direct peer is trusted; honor X-Forwarded-For (leftmost entry).
+	// Direct peer is trusted; honor X-Forwarded-For, reading the chain from
+	// the right so the caller cannot pick the answer by prepending entries.
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		// XFF may be a comma-separated list; take only the first token.
-		if idx := strings.IndexByte(xff, ','); idx >= 0 {
-			xff = xff[:idx]
-		}
-		client := strings.TrimSpace(xff)
-		if net.ParseIP(client) != nil {
-			return client
+		hops := strings.Split(xff, ",")
+		for i := len(hops) - 1; i >= 0; i-- {
+			hop := strings.TrimSpace(hops[i])
+			// A hop that is unparseable, or that is one of our own proxies,
+			// tells us nothing about the caller; keep walking outward.
+			if net.ParseIP(hop) == nil || isTrustedProxy(hop, trusted) {
+				continue
+			}
+			return hop
 		}
 	}
 

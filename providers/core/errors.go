@@ -1,10 +1,6 @@
 package core
 
-import (
-	"errors"
-	"regexp"
-	"strconv"
-)
+import "errors"
 
 // ErrNoCapableProvider signals that no registered provider supports the
 // requested model for a given capability (embeddings, image generation, etc.).
@@ -21,16 +17,21 @@ var ErrNoCapableProvider = errors.New("no capable provider for model")
 // surfaces it as 429 so callers back off instead of retrying immediately.
 var ErrProviderSaturated = errors.New("provider concurrency queue is full")
 
-// statusCodePattern matches HTTP status codes formatted as "(NNN)" inside
-// provider error messages (e.g. "provider API error (429): ...").
-var statusCodePattern = regexp.MustCompile(`\((\d{3})\)`)
-
-// ParseStatusCode recovers the HTTP status code from a provider error. It
-// first tries errors.As for a typed *HTTPStatusError (as returned by
-// APIError), unwrapping through any %w wrapping; if the error was never
-// constructed via APIError, it falls back to regexing a 3-digit parenthesised
-// code out of the message (e.g. "... API error (NNN): message"). Returns 0 if
-// neither recovers a code.
+// ParseStatusCode recovers the HTTP status code from a provider error via
+// errors.As, unwrapping through any %w wrapping. It returns 0 only when the
+// error carries no status at all — a transport failure, a cancellation, a
+// credential that could not be built — which is a different claim from "the
+// upstream answered and we could not tell how".
+//
+// It used to fall back to regexing a parenthesised 3-digit code out of the
+// message when errors.As found nothing. That fallback is gone. It read as a
+// safety net and behaved as a trapdoor: every SDK-backed call returns an error
+// whose message has no parentheses, so the regex silently yielded 0, and 0
+// means "transport error" to everything downstream — retry retried a
+// deterministic 400, the circuit breaker counted a rate limit as a fault, and
+// the HTTP layer answered 500 for a failure it could have classified. A missing
+// status now has exactly one cause, and providers/status_conformance_test.go
+// fails any provider on any surface that stops supplying one.
 func ParseStatusCode(err error) int {
 	if err == nil {
 		return 0
@@ -43,10 +44,5 @@ func ParseStatusCode(err error) int {
 	if errors.As(err, &statusErr) {
 		return statusErr.StatusCode
 	}
-	m := statusCodePattern.FindStringSubmatch(err.Error())
-	if len(m) < 2 {
-		return 0
-	}
-	code, _ := strconv.Atoi(m[1])
-	return code
+	return 0
 }

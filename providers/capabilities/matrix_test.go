@@ -70,9 +70,22 @@ func TestSupportOf_DerivedMatrix(t *testing.T) {
 		{"ai21 forwards seed (Jamba supports it)", "ai21", "seed", Forward},
 		{"ai21 forwards response_format (Jamba supports it)", "ai21", "response_format", Forward},
 
-		// Streaming-control params are outside the warn mechanism ⇒ always Forward.
-		{"anthropic forwards stream", "anthropic", "stream", Forward},
-		{"gemini forwards parallel_tool_calls", "gemini", "parallel_tool_calls", Forward},
+		// stream / stream_options are not provider parameters at all: they are
+		// resolved above the provider layer and are absent from AllParams, so
+		// SupportOf answers them with its unknown-param default rather than a
+		// claim about the provider. (TestAllParamsExcludesTransportControls is
+		// the guard that they stay out.)
+		{"stream is not a matrix param", "anthropic", "stream", Forward},
+		{"stream_options is not a matrix param", "openai", "stream_options", Forward},
+
+		// parallel_tool_calls: translated where a native equivalent exists,
+		// Unsupported where the caller's intent cannot travel at all.
+		{"anthropic translates parallel_tool_calls", "anthropic", "parallel_tool_calls", Translate},
+		{"bedrock translates parallel_tool_calls", "bedrock", "parallel_tool_calls", Translate},
+		{"gemini drops parallel_tool_calls", "gemini", "parallel_tool_calls", Unsupported},
+		{"cohere drops parallel_tool_calls", "cohere", "parallel_tool_calls", Unsupported},
+		{"replicate drops parallel_tool_calls", "replicate", "parallel_tool_calls", Unsupported},
+		{"openai forwards parallel_tool_calls", "openai", "parallel_tool_calls", Forward},
 
 		// Unknown provider / unknown param default to Forward.
 		{"unknown provider defaults forward", "does-not-exist", "seed", Forward},
@@ -122,6 +135,35 @@ func TestProfileOf_UnknownProviderAllForward(t *testing.T) {
 	for _, param := range AllParams {
 		if profile[param] != Forward {
 			t.Errorf("ProfileOf(fireworks)[%q] = %v, want Forward", param, profile[param])
+		}
+	}
+}
+
+// TestAllParamsExcludesTransportControls fails if stream or stream_options is
+// reintroduced into the matrix.
+//
+// Neither is a provider parameter. stream_options.include_usage is honoured by
+// the gateway for every provider — internal/streamwrap drains every routed
+// stream and strips the usage chunk when the caller opted out, while usage is
+// requested upstream unconditionally so a client cannot zero cost accounting.
+// So whichever Support value the matrix carried for them, /v1/capabilities
+// would be answering a question about the provider with a fact about the
+// gateway: "unsupported" denies a feature that works on every provider, and
+// "forward" credits the provider with a decision it never makes.
+func TestAllParamsExcludesTransportControls(t *testing.T) {
+	for _, transport := range []string{"stream", "stream_options"} {
+		for _, param := range AllParams {
+			if param == transport {
+				t.Errorf("AllParams lists %q: it is a gateway-level transport control, "+
+					"not a provider parameter, and /v1/capabilities must not publish a "+
+					"provider claim about it", transport)
+			}
+		}
+		for id, profile := range Matrix {
+			if _, ok := profile[transport]; ok {
+				t.Errorf("provider %q declares %q in the matrix; it is enforced by nobody "+
+					"and published as a provider capability it is not", id, transport)
+			}
 		}
 	}
 }

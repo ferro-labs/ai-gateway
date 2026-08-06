@@ -1,0 +1,13 @@
+CREATE TABLE IF NOT EXISTS api_keys (
+	id TEXT PRIMARY KEY,
+	key TEXT UNIQUE NOT NULL,
+	name TEXT NOT NULL,
+	scopes TEXT NOT NULL,
+	created_at DATETIME NOT NULL,
+	revoked_at DATETIME NULL,
+	expires_at DATETIME NULL,
+	rotated_at DATETIME NULL,
+	active BOOLEAN NOT NULL,
+	usage_count INTEGER NOT NULL DEFAULT 0,
+	last_used_at DATETIME NULL
+)

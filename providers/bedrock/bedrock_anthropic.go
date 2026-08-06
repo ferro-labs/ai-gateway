@@ -8,7 +8,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	"github.com/ferro-labs/ai-gateway/providers/core"
-	"github.com/ferro-labs/ai-gateway/providers/internal/anthropicwire"
+	"github.com/ferro-labs/ai-gateway/providers/core/anthropicwire"
 )
 
 type bedrockAnthropicRequest struct {
@@ -58,7 +58,7 @@ func buildBedrockAnthropicRequest(ctx context.Context, req core.Request) (bedroc
 		MaxTokens:        maxTokens,
 		Messages:         messages,
 		Tools:            anthropicwire.MapTools(req.Tools),
-		ToolChoice:       anthropicwire.MapToolChoice(req.ToolChoice, req.Tools),
+		ToolChoice:       anthropicwire.MapToolChoice(req),
 		Temperature:      anthropicwire.ClampTemperature(ctx, Name, req.Model, req.Temperature),
 		TopP:             req.TopP,
 		StopSequences:    req.Stop,

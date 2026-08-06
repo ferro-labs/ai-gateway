@@ -9,15 +9,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ferro-labs/ai-gateway/config"
 	"github.com/ferro-labs/ai-gateway/internal/events"
 	"github.com/ferro-labs/ai-gateway/models"
 	"github.com/ferro-labs/ai-gateway/providers"
 )
 
 func TestGateway_CloseIsIdempotent(t *testing.T) {
-	gw, err := newTestGateway(t, Config{
-		Strategy: StrategyConfig{Mode: ModeSingle},
-		Targets:  []Target{{VirtualKey: "unused"}},
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets:  []config.Target{{VirtualKey: "unused"}},
 	})
 
 	if err != nil {
@@ -157,9 +158,9 @@ func completedHookEvent(traceID string) events.HookEvent {
 // request's cancellation (they fire after the HTTP handler returns) yet still
 // carry the request's trace context / values via context.WithoutCancel.
 func TestGateway_PublishEvent_DetachesCancellationButPreservesValues(t *testing.T) {
-	gw, err := newTestGateway(t, Config{
-		Strategy: StrategyConfig{Mode: ModeSingle},
-		Targets:  []Target{{VirtualKey: "unused"}},
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets:  []config.Target{{VirtualKey: "unused"}},
 	})
 
 	if err != nil {
@@ -218,9 +219,9 @@ func runWithPanicCapture(t *testing.T, fn func()) any {
 
 func newHookedGateway(t *testing.T, provider providers.Provider) (*Gateway, *gateMockProvider) {
 	t.Helper()
-	gw, err := newTestGateway(t, Config{
-		Strategy: StrategyConfig{Mode: ModeSingle},
-		Targets:  []Target{{VirtualKey: provider.Name()}},
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets:  []config.Target{{VirtualKey: provider.Name()}},
 	})
 
 	if err != nil {
@@ -270,9 +271,9 @@ func TestGateway_Close_DuringInFlightRouteDoesNotPanic(t *testing.T) {
 }
 
 func TestGateway_Close_DuringInFlightRouteStreamDoesNotPanic(t *testing.T) {
-	gw, err := newTestGateway(t, Config{
-		Strategy: StrategyConfig{Mode: ModeSingle},
-		Targets:  []Target{{VirtualKey: "gate-stream"}},
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets:  []config.Target{{VirtualKey: "gate-stream"}},
 	})
 
 	if err != nil {
@@ -363,9 +364,9 @@ func TestGateway_Close_DuringFailedRouteDoesNotPanic(t *testing.T) {
 }
 
 func TestGateway_PublishEvent_AfterCloseDoesNotPanic(t *testing.T) {
-	gw, err := newTestGateway(t, Config{
-		Strategy: StrategyConfig{Mode: ModeSingle},
-		Targets:  []Target{{VirtualKey: "unused"}},
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets:  []config.Target{{VirtualKey: "unused"}},
 	})
 
 	if err != nil {
@@ -439,9 +440,9 @@ func TestGateway_Close_ConcurrentPublishEventStress(t *testing.T) {
 		t.Skip("skipping concurrent hook shutdown stress in -short")
 	}
 
-	gw, err := newTestGateway(t, Config{
-		Strategy: StrategyConfig{Mode: ModeSingle},
-		Targets:  []Target{{VirtualKey: "unused"}},
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets:  []config.Target{{VirtualKey: "unused"}},
 	})
 
 	if err != nil {
@@ -507,9 +508,9 @@ func TestGateway_Close_DuringConcurrentRoutesDoesNotPanic(t *testing.T) {
 		t.Skip("skipping concurrent route shutdown stress in -short")
 	}
 
-	gw, err := newTestGateway(t, Config{
-		Strategy: StrategyConfig{Mode: ModeSingle},
-		Targets:  []Target{{VirtualKey: "gate"}},
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets:  []config.Target{{VirtualKey: "gate"}},
 	})
 
 	if err != nil {
@@ -559,9 +560,9 @@ func TestGateway_Close_DuringConcurrentRoutesDoesNotPanic(t *testing.T) {
 
 func TestGateway_Close_MultipleHooksDuringRouteDoesNotPanic(t *testing.T) {
 	provider := newGateMockProvider(t, &providers.Response{ID: "ok", Model: "gpt-4o"}, nil)
-	gw, err := newTestGateway(t, Config{
-		Strategy: StrategyConfig{Mode: ModeSingle},
-		Targets:  []Target{{VirtualKey: "gate"}},
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets:  []config.Target{{VirtualKey: "gate"}},
 	})
 
 	if err != nil {

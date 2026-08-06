@@ -23,7 +23,7 @@ type RequestAttrs struct {
 	// TargetKey is ferro.routing.target_key (provider virtual key).
 	TargetKey string
 	// TraceID is the gateway's request trace ID (equal to the OTel
-	// trace_id when OTel is active; equal to logging.TraceIDFromContext
+	// trace_id when OTel is active; equal to logger.TraceIDFromContext
 	// in all cases).
 	TraceID string
 }

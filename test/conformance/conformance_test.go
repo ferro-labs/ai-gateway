@@ -14,14 +14,17 @@ package conformance
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/ferro-labs/ai-gateway/providers"
+	"github.com/ferro-labs/ai-gateway/providers/capabilities"
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
@@ -118,15 +121,18 @@ func buildProvider(t *testing.T, id string, extraCfg providers.ProviderConfig, b
 func TestProviderResponseConformance(t *testing.T) {
 	for id, fx := range fixtures() {
 		t.Run(id, func(t *testing.T) {
-			srv := newNativeStub(fx.body)
+			srv := newNativeStub(loadTestdata(t, id, "chat.response.json"))
 			defer srv.Close()
 
 			p := buildProvider(t, id, fx.extraCfg, fx.baseURLKey, srv.URL)
 
-			// The canonical request must use a model the provider advertises,
+			// The canonical request must use a model the provider will accept,
 			// so the suite exercises a supported path rather than a lucky one.
-			if !slices.Contains(p.SupportedModels(), fx.model) {
-				t.Fatalf("fixture model %q is not in %s SupportedModels() = %v", fx.model, id, p.SupportedModels())
+			// SupportsModel is the check that survived the provider-held model
+			// lists: what a provider serves is the catalog's answer now, but
+			// whether it accepts a given id is still the provider's own rule.
+			if !p.SupportsModel(fx.model) {
+				t.Fatalf("%s does not support fixture model %q", id, fx.model)
 			}
 
 			resp, err := p.Complete(context.Background(), canonicalRequest(fx.model))
@@ -212,6 +218,32 @@ func collectStream(t *testing.T, ch <-chan core.StreamChunk) []core.StreamChunk 
 	}
 }
 
+// assertStreamIdentity checks that every chunk carrying a choice carries the
+// response id and the model. An OpenAI client correlates a stream by id and
+// reads the model off the chunk, so a translation that reports either only on
+// an opening frame — or not at all — breaks both, and neither shows up in a
+// content assertion. When the fixture declares the id its native stream
+// reported, the value is checked too: stamping the request model into the id
+// field is populated and still wrong.
+func assertStreamIdentity(t *testing.T, chunks []core.StreamChunk, wantID string) {
+	t.Helper()
+
+	for i, c := range chunks {
+		if len(c.Choices) == 0 {
+			continue
+		}
+		switch {
+		case c.ID == "":
+			t.Errorf("chunk %d carries a choice but no id", i)
+		case wantID != "" && c.ID != wantID:
+			t.Errorf("chunk %d id = %q, want %q (the id the upstream stream reported)", i, c.ID, wantID)
+		}
+		if c.Model == "" {
+			t.Errorf("chunk %d carries a choice but no model", i)
+		}
+	}
+}
+
 // TestProviderStreamConformance is TestProviderResponseConformance's streaming
 // counterpart: it drives each fixtured provider's CompleteStream against a
 // stub serving that provider's NATIVE SSE event stream and asserts the
@@ -226,7 +258,7 @@ func TestProviderStreamConformance(t *testing.T) {
 			if fx.newStub != nil {
 				srv = fx.newStub(t)
 			} else {
-				srv = newNativeStub(fx.sseBody)
+				srv = newNativeStub(loadTestdata(t, id, "chat.stream.sse"))
 			}
 			defer srv.Close()
 
@@ -236,8 +268,8 @@ func TestProviderStreamConformance(t *testing.T) {
 				t.Fatalf("provider %q is in streamFixtures() but does not implement core.StreamProvider", id)
 			}
 
-			if !slices.Contains(sp.SupportedModels(), fx.model) {
-				t.Fatalf("fixture model %q is not in %s SupportedModels() = %v", fx.model, id, sp.SupportedModels())
+			if !sp.SupportsModel(fx.model) {
+				t.Fatalf("%s does not support fixture model %q", id, fx.model)
 			}
 
 			// streamCtx bounds the producer goroutine to this subtest: canceling it
@@ -281,6 +313,9 @@ func TestProviderStreamConformance(t *testing.T) {
 			if got := content.String(); got != wantContent {
 				t.Errorf("concatenated content = %q, want %q", got, wantContent)
 			}
+
+			// 1b. The streaming envelope identifies the stream on every chunk.
+			assertStreamIdentity(t, chunks, fx.wantID)
 
 			// 2. finish_reason is canonical OpenAI (not a raw provider token —
 			// Anthropic's end_turn, Gemini's STOP, Cohere's COMPLETE) and terminal.
@@ -408,5 +443,74 @@ func TestConformanceCoverage(t *testing.T) {
 		if strings.TrimSpace(reason) == "" {
 			t.Errorf("uncoveredStreamProviders()[%q] has no reason", id)
 		}
+	}
+}
+
+// paramLoadedRequest is canonicalRequest with every parameter the capability
+// matrix governs populated. One request covers every fixtured provider that has
+// a matrix entry, since each declares at least one of these Unsupported.
+func paramLoadedRequest(model string) core.Request {
+	req := canonicalRequest(model)
+	n := 1
+	seed := int64(7)
+	maxCompletion := reqMaxTokens
+	penalty := 0.5
+	topLogprobs := 2
+	req.N = &n
+	req.Seed = &seed
+	req.MaxCompletionTokens = &maxCompletion
+	req.PresencePenalty = &penalty
+	req.FrequencyPenalty = &penalty
+	req.Stop = []string{"\n"}
+	req.ResponseFormat = &core.ResponseFormat{Type: "json_object"}
+	req.LogProbs = true
+	req.TopLogProbs = &topLogprobs
+	req.User = "conformance"
+	req.LogitBias = map[string]float64{"1": 1}
+	req.Tools = []core.Tool{{
+		Type:     "function",
+		Function: core.Function{Name: "noop", Description: "does nothing"},
+	}}
+	req.ToolChoice = "auto"
+	return req
+}
+
+// A matrix entry only means something if the provider consults it. Enforcement
+// lives at the seam each adapter sends its request through, so a provider that
+// builds its own body and forgets to call it declares parameters it cannot
+// express and forwards them anyway — the entry reads as protection that is not
+// there, in every mode, with nothing in the response to say so.
+//
+// Under reject the request must fail before the upstream is contacted, so the
+// stub records no call at all.
+func TestProviderRejectsUnsupportedParams(t *testing.T) {
+	for id, fx := range fixtures() {
+		if !capabilities.HasProfile(id) {
+			continue
+		}
+		t.Run(id, func(t *testing.T) {
+			body := loadTestdata(t, id, "chat.response.json")
+			var calls atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				calls.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(body))
+			}))
+			defer srv.Close()
+
+			p := buildProvider(t, id, fx.extraCfg, fx.baseURLKey, srv.URL)
+			ctx := core.WithUnsupportedParamMode(context.Background(), core.UnsupportedParamReject)
+
+			_, err := p.Complete(ctx, paramLoadedRequest(fx.model))
+
+			var unsupported *core.UnsupportedParamError
+			if !errors.As(err, &unsupported) {
+				t.Fatalf("Complete() error = %v, want *core.UnsupportedParamError; "+
+					"this provider declares parameters it cannot express but does not consult the matrix", err)
+			}
+			if got := calls.Load(); got != 0 {
+				t.Errorf("upstream received %d call(s); a rejected request must not reach the provider", got)
+			}
+		})
 	}
 }

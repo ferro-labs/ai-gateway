@@ -4,11 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"testing"
 	"time"
 
-	"github.com/ferro-labs/ai-gateway/internal/circuitbreaker"
+	"github.com/ferro-labs/ai-gateway/pkg/circuitbreaker"
 	"github.com/ferro-labs/ai-gateway/providers"
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
@@ -80,8 +79,16 @@ func TestWaitBeforeRetry_ContextCancelled(t *testing.T) {
 	}
 }
 
+// upstream builds the typed provider error a real provider returns for an
+// upstream status. Every retry decision reads the status through errors.As, so a
+// test that hand-formats "provider error (503)" into a plain error is testing
+// nothing: it carries no status at all.
+func upstream(status int) error {
+	return core.APIError("provider", status, []byte(`{"error":{"message":"upstream said no"}}`))
+}
+
 func TestShouldRetry_ExportedMatchesInternal(t *testing.T) {
-	if !ShouldRetry(errors.New("provider error (503): unavailable"), nil) {
+	if !ShouldRetry(upstream(503), nil) {
 		t.Error("ShouldRetry(503, nil) = false, want true")
 	}
 	if ShouldRetry(circuitbreaker.ErrCircuitOpen, nil) {
@@ -95,18 +102,23 @@ func TestShouldRetry_DefaultPolicy(t *testing.T) {
 		err  error
 		want bool
 	}{
-		{"408 request timeout is retryable", errors.New("provider error (408): timeout"), true},
-		{"429 throttling is retryable", errors.New("provider error (429): rate limited"), true},
-		{"500 is retryable", errors.New("provider error (500): boom"), true},
-		{"503 is retryable", errors.New("provider error (503): unavailable"), true},
-		{"400 client error is not retryable", errors.New("provider error (400): bad request"), false},
-		{"401 is not retryable", errors.New("provider error (401): unauthorized"), false},
-		{"404 is not retryable", errors.New("provider error (404): not found"), false},
-		{"422 is not retryable", errors.New("provider error (422): unprocessable"), false},
+		{"408 request timeout is retryable", upstream(408), true},
+		{"429 throttling is retryable", upstream(429), true},
+		{"500 is retryable", upstream(500), true},
+		{"503 is retryable", upstream(503), true},
+		{"400 client error is not retryable", upstream(400), false},
+		{"401 is not retryable", upstream(401), false},
+		{"404 is not retryable", upstream(404), false},
+		{"422 is not retryable", upstream(422), false},
 		{"transport error carrying no status is retryable", errors.New("connection reset by peer"), true},
+		// A status that only ever appeared in the text is not a status. Before the
+		// typed contract this scraped to 400 and stopped retrying; the same shape
+		// arriving from an SDK scraped to 0 and retried a deterministic failure.
+		{"a status in the message alone is not a status", errors.New("provider error (400): bad request"), true},
 		{"cancellation is never retryable", context.Canceled, false},
 		{"deadline expiry is never retryable", context.DeadlineExceeded, false},
 		{"open circuit is never retryable", circuitbreaker.ErrCircuitOpen, false},
+		{"saturation is never retryable", core.ErrProviderSaturated, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -114,23 +126,6 @@ func TestShouldRetry_DefaultPolicy(t *testing.T) {
 				t.Errorf("shouldRetry = %v, want %v", got, tt.want)
 			}
 		})
-	}
-}
-
-func TestFallback_DefaultPolicy_DoesNotRetryClientError(t *testing.T) {
-	ep := &errProvider{
-		name:   "openai",
-		models: []string{"gpt-4o"},
-		errMsg: "provider error (400): bad request",
-	}
-	// nil onStatusCodes selects the default policy, which must not retry a 400.
-	fb := NewFallback([]Target{{VirtualKey: "openai"}}, newLookup(ep)).
-		WithTargetRetry("openai", 3, nil, 0)
-
-	fb.Execute(context.Background(), providers.Request{Model: "gpt-4o"}) //nolint:errcheck,gosec // test asserts on attempt count, not the returned response or error
-
-	if ep.calls != 1 {
-		t.Errorf("a deterministic 400 must not be retried under the default policy: got %d attempts, want 1", ep.calls)
 	}
 }
 
@@ -167,160 +162,52 @@ func TestRetryDelay_FullJitterStaysWithinExponentialAndVaries(t *testing.T) {
 	}
 }
 
-// ── Retry policy tests ────────────────────────────────────────────────────────
-
-// errProvider returns an error on every call with the given formatted message.
-type errProvider struct {
-	name   string
-	models []string
-	errMsg string
-	err    error
-	calls  int
-}
-
-func (e *errProvider) Name() string                  { return e.name }
-func (e *errProvider) SupportedModels() []string     { return e.models }
-func (e *errProvider) Models() []providers.ModelInfo { return nil }
-func (e *errProvider) SupportsModel(m string) bool {
-	for _, mm := range e.models {
-		if mm == m {
-			return true
-		}
-	}
-	return false
-}
-func (e *errProvider) Complete(_ context.Context, _ providers.Request) (*providers.Response, error) {
-	e.calls++
-	if e.err != nil {
-		return nil, e.err
-	}
-	return nil, fmt.Errorf("%s", e.errMsg)
-}
-
-func TestFallback_PerTargetRetry_Attempts(t *testing.T) {
-	ep := &errProvider{
-		name:   "openai",
-		models: []string{"gpt-4o"},
-		errMsg: "provider error (429): rate limited",
-	}
-	targets := []Target{{VirtualKey: "openai"}}
-	fb := NewFallback(targets, newLookup(ep)).
-		WithTargetRetry("openai", 3, nil, 0)
-
-	fb.Execute(context.Background(), providers.Request{Model: "gpt-4o"}) //nolint:errcheck,gosec // test asserts on attempt count, not the returned response or error
-
-	if ep.calls != 3 {
-		t.Errorf("expected 3 attempts, got %d", ep.calls)
-	}
-}
-
-func TestFallback_StatusCodeFilter_RetriesOnAllowedCode(t *testing.T) {
-	ep := &errProvider{
-		name:   "openai",
-		models: []string{"gpt-4o"},
-		errMsg: "provider error (429): rate limited",
-	}
-	targets := []Target{{VirtualKey: "openai"}}
-	fb := NewFallback(targets, newLookup(ep)).
-		WithTargetRetry("openai", 3, []int{429}, 0)
-
-	fb.Execute(context.Background(), providers.Request{Model: "gpt-4o"}) //nolint:errcheck,gosec // test asserts on attempt count, not the returned response or error
-
-	if ep.calls != 3 {
-		t.Errorf("expected 3 attempts for allowed 429, got %d", ep.calls)
-	}
-}
-
-func TestFallback_StatusCodeFilter_StopsOnDisallowedCode(t *testing.T) {
-	ep := &errProvider{
-		name:   "openai",
-		models: []string{"gpt-4o"},
-		errMsg: "provider error (400): bad request",
-	}
-	targets := []Target{{VirtualKey: "openai"}}
-	// Only retry on 429 — 400 should stop immediately.
-	fb := NewFallback(targets, newLookup(ep)).
-		WithTargetRetry("openai", 3, []int{429}, 0)
-
-	fb.Execute(context.Background(), providers.Request{Model: "gpt-4o"}) //nolint:errcheck,gosec // test asserts on attempt count, not the returned response or error
-
-	if ep.calls != 1 {
-		t.Errorf("expected 1 attempt for disallowed 400, got %d", ep.calls)
-	}
-}
-
-func TestFallback_CircuitOpenMovesToNextTargetWithoutRetry(t *testing.T) {
-	open := &errProvider{
-		name:   "open",
-		models: []string{"gpt-4o"},
-		err:    circuitbreaker.ErrCircuitOpen,
-	}
-	good := &mockProvider{name: "good", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "ok"}}
-
-	fb := NewFallback(
-		[]Target{{VirtualKey: "open"}, {VirtualKey: "good"}},
-		newLookup(open, good),
-	).WithTargetRetry("open", 3, nil, 0)
-
-	resp, err := fb.Execute(context.Background(), providers.Request{Model: "gpt-4o"})
+// TestFallback_SelectTargets_DeclaredOrder pins the whole of what Fallback now
+// decides: the declared order, unfiltered. Retry, skipping an unregistered
+// target, advancing past a failure and cancellation all moved to the request
+// pipeline, where gateway_pipeline_test.go exercises them once for every mode
+// instead of once for this one.
+func TestFallback_SelectTargets_DeclaredOrder(t *testing.T) {
+	fb := NewFallback([]Target{{VirtualKey: "a"}, {VirtualKey: "b"}, {VirtualKey: "c"}})
+	keys, err := fb.SelectTargets(providers.Request{Model: "gpt-4o"})
 	if err != nil {
-		t.Fatalf("expected success from fallback target, got error: %v", err)
+		t.Fatal(err)
 	}
-	if resp.ID != "ok" {
-		t.Fatalf("got response ID %q, want ok", resp.ID)
-	}
-	if open.calls != 1 {
-		t.Fatalf("open circuit target calls = %d, want 1", open.calls)
-	}
-	if good.calls != 1 {
-		t.Fatalf("fallback target calls = %d, want 1", good.calls)
-	}
+	assertKeys(t, keys, "a", "b", "c")
 }
 
-func TestFallback_NoProviderSupportsModel_ReturnsClearError(t *testing.T) {
-	ep := &errProvider{
-		name:   "openai",
-		models: []string{"gpt-4o"},
-		errMsg: "provider error (500): oops",
+func TestFallback_SelectTargets_NoTargets(t *testing.T) {
+	keys, err := NewFallback(nil).SelectTargets(providers.Request{Model: "gpt-4o"})
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	fb := NewFallback([]Target{{VirtualKey: "openai"}}, newLookup(ep))
-	_, err := fb.Execute(context.Background(), providers.Request{Model: "gpt-5"})
-	if err == nil {
-		t.Fatal("expected unsupported-model error")
-	}
-	if !strings.Contains(err.Error(), "no provider supports model gpt-5") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if strings.Contains(err.Error(), "%!w(<nil>)") {
-		t.Fatalf("malformed wrapped error should not be returned: %v", err)
-	}
-	if ep.calls != 0 {
-		t.Fatalf("provider should not be called when model is unsupported, got %d calls", ep.calls)
+	if len(keys) != 0 {
+		t.Errorf("got %v, want no keys", keys)
 	}
 }
 
 func TestShouldRetry(t *testing.T) {
 	tests := []struct {
 		name          string
-		errMsg        string
+		err           error
 		onStatusCodes []int
 		want          bool
 	}{
-		{"empty codes — always retry", "error (500): oops", nil, true},
-		{"matching code", "provider error (429): limit", []int{429, 503}, true},
-		{"non-matching code", "provider error (400): bad", []int{429, 503}, false},
-		{"no parseable code — treat as retryable", "network timeout", []int{429}, true},
+		{"empty codes — always retry", upstream(500), nil, true},
+		{"matching code", upstream(429), []int{429, 503}, true},
+		{"non-matching code", upstream(400), []int{429, 503}, false},
+		{"status survives a wrapper", fmt.Errorf("provider openai attempt 2: %w", upstream(400)), []int{429, 503}, false},
+		{"no status at all — treat as retryable", errors.New("network timeout"), []int{429}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := shouldRetry(fmt.Errorf("%s", tt.errMsg), tt.onStatusCodes)
+			got := shouldRetry(tt.err, tt.onStatusCodes)
 			if got != tt.want {
 				t.Errorf("shouldRetry = %v, want %v", got, tt.want)
 			}
 		})
 	}
-	nonRetryable := []error{context.Canceled, context.DeadlineExceeded, circuitbreaker.ErrCircuitOpen}
+	nonRetryable := []error{context.Canceled, context.DeadlineExceeded, circuitbreaker.ErrCircuitOpen, core.ErrProviderSaturated}
 	for _, err := range nonRetryable {
 		if shouldRetry(err, nil) {
 			t.Fatalf("shouldRetry(%v, nil) = true, want false", err)

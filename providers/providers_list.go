@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/ferro-labs/ai-gateway/pkg/logger"
 	ai21pkg "github.com/ferro-labs/ai-gateway/providers/ai21"
 	anthropicpkg "github.com/ferro-labs/ai-gateway/providers/anthropic"
 	azurefoundrypkg "github.com/ferro-labs/ai-gateway/providers/azure_foundry"
@@ -36,6 +37,63 @@ import (
 	xaipkg "github.com/ferro-labs/ai-gateway/providers/xai"
 )
 
+// splitModels parses a comma-separated model list from configuration, dropping
+// surrounding whitespace and empty entries so "a, b" yields two usable model
+// names rather than one that no request can ever match.
+func splitModels(list string) []string {
+	var models []string
+	for _, m := range strings.Split(list, ",") {
+		if m = strings.TrimSpace(m); m != "" {
+			models = append(models, m)
+		}
+	}
+	return models
+}
+
+// ollamaModels parses the ollama model list, dropping a value that is really a
+// filesystem path.
+//
+// OLLAMA_MODELS is Ollama's own variable for its models *directory*
+// ($HOME/.ollama/models); this gateway read it as a comma-separated model list,
+// so on any host that also runs Ollama the one variable meant two things and
+// the directory path registered as a single bogus model id that /v1/models then
+// advertised. FERRO_OLLAMA_MODELS is the replacement and wins when both are set
+// (ProviderConfigFromEnv is last-non-empty-wins); this guard is what keeps the
+// collision from corrupting the model list until the old name is removed.
+//
+// A path has no comma and begins like a path. A model id — "llama3.2",
+// "gpt-oss:20b", "library/mistral" — does neither.
+func ollamaModels(list string) []string {
+	if trimmed := strings.TrimSpace(list); isDirectoryPath(trimmed) {
+		logger.Default().Warn("ignoring model list that is a filesystem path -- OLLAMA_MODELS is Ollama's own models directory; set FERRO_OLLAMA_MODELS to a comma-separated model list instead",
+			"provider", NameOllama, "value", trimmed)
+		return nil
+	}
+	return splitModels(list)
+}
+
+// isDirectoryPath reports whether v is a filesystem path rather than a model id.
+//
+// prefix test only. A relative path with no leading "./" ("models",
+// "var/lib/ollama") is indistinguishable from a model id and is not caught —
+// but Ollama's own default is absolute ($HOME/.ollama/models), which is the
+// value that actually collides.
+func isDirectoryPath(v string) bool {
+	if v == "" || strings.Contains(v, ",") {
+		return false
+	}
+	if strings.HasPrefix(v, "/") || strings.HasPrefix(v, "~") ||
+		strings.HasPrefix(v, "./") || strings.HasPrefix(v, "../") ||
+		strings.HasPrefix(v, `.\`) || strings.HasPrefix(v, `..\`) {
+		return true
+	}
+	// Windows drive letter: "C:\models", "C:/models". Not "gpt-oss:20b", whose
+	// colon is not at index 1 and is not followed by a separator.
+	return len(v) >= 3 && v[1] == ':' &&
+		(v[2] == '\\' || v[2] == '/') &&
+		((v[0] >= 'A' && v[0] <= 'Z') || (v[0] >= 'a' && v[0] <= 'z'))
+}
+
 // allProviders is the canonical ordered registry of all built-in providers.
 // Order is alphabetical by ID. Add new providers here and nowhere else.
 var allProviders = []ProviderEntry{
@@ -64,7 +122,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameAzureFoundry,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityProxy},
 		EnvMappings: []EnvMapping{
 			{CfgKeyAPIKey, "AZURE_FOUNDRY_API_KEY", true},
 			{CfgKeyBaseURL, "AZURE_FOUNDRY_ENDPOINT", true},
@@ -79,7 +137,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameAzureOpenAI,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityImage, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityImage, CapabilityProxy, CapabilityTranscription, CapabilitySpeech, CapabilityBatch},
 		EnvMappings: []EnvMapping{
 			{CfgKeyAPIKey, "AZURE_OPENAI_API_KEY", true},
 			{CfgKeyBaseURL, "AZURE_OPENAI_ENDPOINT", true},
@@ -98,7 +156,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameBedrock,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityImage, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityImage, CapabilityProxy, CapabilityRerank},
 		// All Bedrock env mappings are optional because the provider can be
 		// configured in two different ways:
 		//   1. Instance-role / credential-chain auth: only AWS_REGION is set.
@@ -154,7 +212,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameCohere,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityProxy, CapabilityEmbed},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityProxy, CapabilityEmbed, CapabilityRerank},
 		EnvMappings: []EnvMapping{
 			{CfgKeyAPIKey, "COHERE_API_KEY", true},
 			{CfgKeyBaseURL, "COHERE_BASE_URL", false},
@@ -176,7 +234,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameDeepInfra,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityDiscovery, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityImage, CapabilityDiscovery, CapabilityProxy, CapabilityRerank, CapabilityTranscription, CapabilitySpeech},
 		EnvMappings: []EnvMapping{
 			{CfgKeyAPIKey, "DEEPINFRA_API_KEY", true},
 			{CfgKeyBaseURL, "DEEPINFRA_BASE_URL", false},
@@ -198,7 +256,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameFireworks,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityDiscovery, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityDiscovery, CapabilityProxy, CapabilityTranscription},
 		EnvMappings: []EnvMapping{
 			{CfgKeyAPIKey, "FIREWORKS_API_KEY", true},
 			{CfgKeyBaseURL, "FIREWORKS_BASE_URL", false},
@@ -220,7 +278,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameGroq,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityDiscovery, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityDiscovery, CapabilityProxy, CapabilityTranscription, CapabilitySpeech, CapabilityBatch},
 		EnvMappings: []EnvMapping{
 			{CfgKeyAPIKey, "GROQ_API_KEY", true},
 			{CfgKeyBaseURL, "GROQ_BASE_URL", false},
@@ -242,7 +300,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameMistral,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityDiscovery, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityDiscovery, CapabilityProxy, CapabilityModeration, CapabilityTranscription, CapabilitySpeech},
 		EnvMappings: []EnvMapping{
 			{CfgKeyAPIKey, "MISTRAL_API_KEY", true},
 			{CfgKeyBaseURL, "MISTRAL_BASE_URL", false},
@@ -264,7 +322,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameNovita,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityDiscovery, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityDiscovery, CapabilityProxy, CapabilityBatch},
 		EnvMappings: []EnvMapping{
 			{CfgKeyAPIKey, "NOVITA_API_KEY", true},
 			{CfgKeyBaseURL, "NOVITA_BASE_URL", false},
@@ -275,7 +333,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameNVIDIANIM,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityDiscovery, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityDiscovery, CapabilityProxy, CapabilityRerank},
 		EnvMappings: []EnvMapping{
 			{CfgKeyAPIKey, "NVIDIA_NIM_API_KEY", true},
 			{CfgKeyBaseURL, "NVIDIA_NIM_BASE_URL", false},
@@ -288,16 +346,19 @@ var allProviders = []ProviderEntry{
 		ID:           NameOllama,
 		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityProxy, CapabilityDiscovery},
 		// Ollama has no API key; CfgKeyHost acts as the "configured?" gate.
+		//
+		// Two variables name the same CfgKeyModels: ProviderConfigFromEnv only
+		// writes non-empty values, so the later entry wins when both are set.
+		// FERRO_OLLAMA_MODELS is therefore listed second — OLLAMA_MODELS is
+		// Ollama's own variable for its models directory and is read here for
+		// one more release only (see ollamaModels).
 		EnvMappings: []EnvMapping{
 			{CfgKeyHost, "OLLAMA_HOST", true},
 			{CfgKeyModels, "OLLAMA_MODELS", false},
+			{CfgKeyModels, "FERRO_OLLAMA_MODELS", false},
 		},
 		Build: func(cfg ProviderConfig) (Provider, error) {
-			var models []string
-			if m := cfg[CfgKeyModels]; m != "" {
-				models = strings.Split(m, ",")
-			}
-			return ollamapkg.New(cfg[CfgKeyHost], models)
+			return ollamapkg.New(cfg[CfgKeyHost], ollamaModels(cfg[CfgKeyModels]))
 		},
 	},
 	{
@@ -309,16 +370,12 @@ var allProviders = []ProviderEntry{
 			{CfgKeyModels, "OLLAMA_CLOUD_MODELS", false},
 		},
 		Build: func(cfg ProviderConfig) (Provider, error) {
-			var models []string
-			if m := cfg[CfgKeyModels]; m != "" {
-				models = strings.Split(m, ",")
-			}
-			return ollamacloudpkg.New(cfg[CfgKeyAPIKey], cfg[CfgKeyBaseURL], models)
+			return ollamacloudpkg.New(cfg[CfgKeyAPIKey], cfg[CfgKeyBaseURL], splitModels(cfg[CfgKeyModels]))
 		},
 	},
 	{
 		ID:           NameOpenAI,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityImage, CapabilityProxy, CapabilityDiscovery},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityImage, CapabilityProxy, CapabilityDiscovery, CapabilityModeration, CapabilityTranscription, CapabilitySpeech, CapabilityBatch},
 		EnvMappings: []EnvMapping{
 			{CfgKeyAPIKey, "OPENAI_API_KEY", true},
 			{CfgKeyBaseURL, "OPENAI_BASE_URL", false},
@@ -351,7 +408,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameQwen,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityDiscovery, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityDiscovery, CapabilityProxy, CapabilityBatch},
 		EnvMappings: []EnvMapping{
 			{CfgKeyAPIKey, "QWEN_API_KEY", true},
 			{CfgKeyBaseURL, "QWEN_BASE_URL", false},
@@ -371,19 +428,17 @@ var allProviders = []ProviderEntry{
 			{CfgKeyImageModels, "REPLICATE_IMAGE_MODELS", false},
 		},
 		Build: func(cfg ProviderConfig) (Provider, error) {
-			var textModels, imageModels []string
-			if m := cfg[CfgKeyTextModels]; m != "" {
-				textModels = strings.Split(m, ",")
-			}
-			if m := cfg[CfgKeyImageModels]; m != "" {
-				imageModels = strings.Split(m, ",")
-			}
-			return replicatepkg.New(cfg[CfgKeyAPIToken], cfg[CfgKeyBaseURL], textModels, imageModels)
+			return replicatepkg.New(
+				cfg[CfgKeyAPIToken],
+				cfg[CfgKeyBaseURL],
+				splitModels(cfg[CfgKeyTextModels]),
+				splitModels(cfg[CfgKeyImageModels]),
+			)
 		},
 	},
 	{
 		ID:           NameSambaNova,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityDiscovery, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityDiscovery, CapabilityProxy, CapabilityTranscription},
 		EnvMappings: []EnvMapping{
 			{CfgKeyAPIKey, "SAMBANOVA_API_KEY", true},
 			{CfgKeyBaseURL, "SAMBANOVA_BASE_URL", false},
@@ -394,7 +449,7 @@ var allProviders = []ProviderEntry{
 	},
 	{
 		ID:           NameTogether,
-		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityDiscovery, CapabilityProxy},
+		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityImage, CapabilityDiscovery, CapabilityProxy, CapabilityRerank, CapabilityTranscription, CapabilitySpeech},
 		EnvMappings: []EnvMapping{
 			{CfgKeyAPIKey, "TOGETHER_API_KEY", true},
 			{CfgKeyBaseURL, "TOGETHER_BASE_URL", false},

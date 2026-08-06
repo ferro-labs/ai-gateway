@@ -5,9 +5,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ferro-labs/ai-gateway/config"
 	"github.com/ferro-labs/ai-gateway/internal/events"
-	"github.com/ferro-labs/ai-gateway/internal/metrics"
 	"github.com/ferro-labs/ai-gateway/models"
+	"github.com/ferro-labs/ai-gateway/pkg/metrics"
 	"github.com/ferro-labs/ai-gateway/providers"
 )
 
@@ -20,9 +21,9 @@ func TestGateway_PublishEvent_NoHooks(_ *testing.T) {
 }
 
 func TestGateway_Route_ProviderNotFound(t *testing.T) {
-	gw, _ := newTestGateway(t, Config{
-		Strategy: StrategyConfig{Mode: ModeSingle},
-		Targets:  []Target{{VirtualKey: "missing"}},
+	gw, _ := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets:  []config.Target{{VirtualKey: "missing"}},
 	})
 
 	_, err := gw.Route(context.Background(), providers.Request{
@@ -35,9 +36,9 @@ func TestGateway_Route_ProviderNotFound(t *testing.T) {
 }
 
 func TestGateway_Route_HookPanicIsRecovered(t *testing.T) {
-	gw, _ := newTestGateway(t, Config{
-		Strategy: StrategyConfig{Mode: ModeSingle},
-		Targets:  []Target{{VirtualKey: mockProviderName}},
+	gw, _ := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets:  []config.Target{{VirtualKey: mockProviderName}},
 	})
 
 	gw.RegisterProvider(&mockProvider{
@@ -68,9 +69,9 @@ func TestGateway_Route_HookPanicIsRecovered(t *testing.T) {
 }
 
 func TestGateway_PublishEvent_CallsAllHooks(t *testing.T) {
-	gw, err := newTestGateway(t, Config{
-		Strategy: StrategyConfig{Mode: ModeSingle},
-		Targets:  []Target{{VirtualKey: "unused"}},
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets:  []config.Target{{VirtualKey: "unused"}},
 	})
 
 	if err != nil {

@@ -4,6 +4,7 @@ package streamio
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"time"
@@ -15,6 +16,25 @@ const (
 
 	copyBufferSize = 32 * 1024
 )
+
+// ErrIdleTimeout is the cause attached to a stream context cancelled because the
+// gateway's own idle bound elapsed with no chunk from the upstream. Retrieve it
+// with context.Cause(ctx).
+//
+// It exists so a bound the GATEWAY imposed can be told apart from the caller
+// hanging up, and the distinction is the whole point: both end the stream by
+// cancelling the same context, so without a cause the two are one event. A
+// provider that accepted the request and then sent nothing was recorded as
+// "client_canceled" with an error of "context canceled" — the label an operator
+// uses to dismiss an error as somebody else's problem, on the one failure that
+// is squarely the provider's.
+//
+// It WRAPS context.DeadlineExceeded because it is one: nothing answered in time.
+// That lets any package ask the general question without importing this one,
+// while errors.Is against this value still identifies the specific bound — which
+// is what keeps a caller-supplied deadline, carrying only the stdlib sentinel,
+// from being mistaken for a gateway-imposed one.
+var ErrIdleTimeout = fmt.Errorf("gateway stream idle timeout: %w", context.DeadlineExceeded)
 
 // idleTimeout bounds the gap between two upstream reads. Clearing the write
 // deadline after every write also clears http.Server's WriteTimeout for the
@@ -65,7 +85,8 @@ func (r *idleReadCloser) Close() error {
 }
 
 // WrapResponseWriter returns a ResponseWriter that sets a short write deadline
-// around every Write call. Unsupported deadline operations are ignored.
+// around every Write and every flush. Unsupported deadline operations are
+// ignored.
 func WrapResponseWriter(w http.ResponseWriter) http.ResponseWriter {
 	return &deadlineResponseWriter{
 		ResponseWriter: w,
@@ -94,6 +115,24 @@ func (w *deadlineResponseWriter) Write(p []byte) (int, error) {
 	// by http.Server's WriteTimeout — the idle bound is the reader's job.
 	_ = ClearWriteDeadline(w.controller)
 	return n, err
+}
+
+// FlushError bounds the flush the way Write bounds the write. A streaming chunk
+// usually only fills http.Server's response buffer on Write; the bytes reach
+// the socket in the flush that follows, so a deadline that ends with Write
+// leaves the call that actually blocks on a stalled client unbounded. The
+// deadline is cleared again afterwards for the same reason it is in Write: the
+// gap until the next write must not be bounded by http.Server's WriteTimeout.
+//
+// http.ResponseController prefers this method over walking Unwrap to the
+// underlying flusher, so every flusher — ReverseProxy's included — arrives here.
+func (w *deadlineResponseWriter) FlushError() error {
+	if err := SetWriteDeadline(w.controller, time.Now().Add(w.timeout)); err != nil {
+		return err
+	}
+	err := Flush(w.controller)
+	_ = ClearWriteDeadline(w.controller)
+	return err
 }
 
 // Copy streams src to w, applying the default write deadline to each write and

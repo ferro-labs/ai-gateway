@@ -17,10 +17,29 @@ updates:
       - "dependencies"
       - "ci"
 
+  # The dashboard bundle is compiled into the binary with go:embed, so these
+  # are not "just frontend" dependencies: they ship inside the released gateway
+  # and inside the container image, and gomod updates say nothing about them.
+  # The npm ecosystem does not recurse either, so the manifest's own directory
+  # has to be named — /web, not /.
+  - package-ecosystem: "npm"
+    directory: "/web"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+
   # Track base-image patches for the Dockerfiles. The shipped binary is safe
   # only while the runtime base stays current with its own security fixes.
+  #
+  # Every directory holding a Dockerfile must be listed: the docker ecosystem
+  # does not recurse, and an unlisted one produces no error and no pull
+  # requests — which is how the dashboard's node base went untracked while this
+  # read `directory: "/"`. It now sits in deploy/Dockerfile alongside the
+  # gateway's golang and alpine bases, so one entry covers all three.
   - package-ecosystem: "docker"
-    directory: "/"
+    directory: "/deploy"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10

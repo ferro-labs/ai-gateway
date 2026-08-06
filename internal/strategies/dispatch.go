@@ -1,47 +1,40 @@
 package strategies
 
 import (
-	"context"
-	"fmt"
 	"math/rand"
-
-	"github.com/ferro-labs/ai-gateway/providers"
 )
-
-// dispatch resolves target via lookup, forwards the request to the provider's
-// Complete, and stamps the response provider. notFoundPrefix is prefixed to the
-// target key when the provider cannot be resolved.
-func dispatch(ctx context.Context, lookup ProviderLookup, target Target, req providers.Request, notFoundPrefix string) (*providers.Response, error) {
-	p, ok := lookup(target.VirtualKey)
-	if !ok {
-		return nil, fmt.Errorf("%s: %s", notFoundPrefix, target.VirtualKey)
-	}
-	resp, err := p.Complete(ctx, req)
-	if err != nil {
-		return nil, err
-	}
-	return responseWithProvider(resp, target.VirtualKey), nil
-}
 
 // weightedPick selects an element by weighted random sampling using weight for
 // each element's share. Returns false when the total weight is zero.
+//
+// A zero-weight element is skipped outright rather than being allowed to win a
+// boundary comparison: with weight 0 its cumulative contribution is nothing, so
+// an element that follows a drained one must never be attributed to it.
 func weightedPick[T any](items []T, weight func(T) float64) (T, bool) {
 	total := 0.0
 	for _, it := range items {
 		total += weight(it)
 	}
-	if total == 0 {
+	if total <= 0 {
 		var zero T
 		return zero, false
 	}
 
 	r := rand.Float64() * total //nolint:gosec // G404: math/rand is fine for load-balancing weight selection, not security-sensitive
 	cumulative := 0.0
+	var last T
 	for _, it := range items {
-		cumulative += weight(it)
+		w := weight(it)
+		if w <= 0 {
+			continue
+		}
+		last = it
+		cumulative += w
 		if r < cumulative {
 			return it, true
 		}
 	}
-	return items[len(items)-1], true
+	// Only reachable if floating-point summation left r at or past the total.
+	// Return the last POSITIVELY weighted element, never merely the last one.
+	return last, true
 }

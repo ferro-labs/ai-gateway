@@ -29,35 +29,6 @@ func TestNewDatabricks(t *testing.T) {
 	}
 }
 
-func TestDatabricksProvider_SupportedModels(t *testing.T) {
-	p, _ := New("test-key", "https://dbc.example.com")
-	models := p.SupportedModels()
-	if len(models) == 0 {
-		t.Error("SupportedModels() returned empty")
-	}
-	found := false
-	for _, m := range models {
-		if m == "databricks-claude-sonnet-4-5" {
-			found = true
-		}
-	}
-	if !found {
-		t.Error("databricks-claude-sonnet-4-5 not found")
-	}
-	for _, want := range []string{"databricks-bge-large-en", "databricks-gte-large-en"} {
-		foundEmbedding := false
-		for _, m := range models {
-			if m == want {
-				foundEmbedding = true
-				break
-			}
-		}
-		if !foundEmbedding {
-			t.Errorf("%s not found", want)
-		}
-	}
-}
-
 func TestDatabricksProvider_SupportsModel(t *testing.T) {
 	p, _ := New("test-key", "https://dbc.example.com")
 	if !p.SupportsModel("databricks-claude-sonnet-4-5") {
@@ -74,16 +45,6 @@ func TestDatabricksProvider_SupportsModel(t *testing.T) {
 	}
 	if !p.SupportsModel("databricks-bge-large-en") {
 		t.Error("expected databricks-bge-large-en to be supported")
-	}
-}
-
-func TestDatabricksProvider_Models(t *testing.T) {
-	p, _ := New("test-key", "https://dbc.example.com")
-	models := p.Models()
-	for _, m := range models {
-		if m.OwnedBy != "databricks" {
-			t.Errorf("ModelInfo.OwnedBy = %q, want databricks", m.OwnedBy)
-		}
 	}
 }
 

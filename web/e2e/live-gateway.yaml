@@ -1,0 +1,48 @@
+# Bounded live-provider configuration for the opt-in browser journey.
+
+strategy:
+  mode: single
+
+targets:
+  - virtual_key: openai
+    models:
+      - gpt-4o-mini
+    retry:
+      attempts: 1
+
+plugins:
+  - name: word-filter
+    type: guardrail
+    stage: before_request
+    enabled: true
+    config:
+      blocked_words: ['goal21-blocked']
+      case_sensitive: false
+
+  - name: max-token
+    type: guardrail
+    stage: before_request
+    enabled: true
+    config:
+      max_tokens: 16
+      max_messages: 10
+
+  - name: request-logger
+    type: logging
+    stage: before_request
+    enabled: true
+    config: &request_logger
+      level: info
+      persist: true
+
+  - name: request-logger
+    type: logging
+    stage: after_request
+    enabled: true
+    config: *request_logger
+
+  - name: request-logger
+    type: logging
+    stage: on_error
+    enabled: true
+    config: *request_logger

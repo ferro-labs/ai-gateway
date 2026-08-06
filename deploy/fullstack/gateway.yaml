@@ -1,0 +1,272 @@
+# Gateway configuration for the fullstack observability demo.
+#
+# MOCK MODE: every target below is an OpenAI-compatible provider pointed at the
+# in-compose mock upstream via its <PROVIDER>_BASE_URL (set in
+# compose.fullstack.yaml). Load-balancing across all of them fills the
+# per-provider dashboard panels with data — with no real provider key and
+# nothing billed. To go live, see the "MOCK MODE" block in compose.fullstack.yaml.
+#
+# Only OpenAI-wire providers are listed: anthropic, gemini, bedrock, cohere,
+# ai21 and replicate use native request/response formats an OpenAI-shaped mock
+# cannot serve, so they are intentionally omitted here.
+
+strategy:
+  mode: loadbalance
+
+targets:
+
+  - virtual_key: openai
+    weight: 1
+    models:
+      - gpt-4o-mini
+      - gpt-4o
+      - gpt-3.5-turbo
+      - text-embedding-3-small
+    retry:
+      attempts: 2
+      initial_backoff_ms: 100
+    circuit_breaker:
+      failure_threshold: 5
+      timeout: 10s
+  - virtual_key: groq
+    weight: 1
+    models:
+      - gpt-4o-mini
+      - gpt-4o
+      - gpt-3.5-turbo
+    retry:
+      attempts: 2
+      initial_backoff_ms: 100
+    circuit_breaker:
+      failure_threshold: 5
+      timeout: 10s
+  - virtual_key: mistral
+    weight: 1
+    models:
+      - gpt-4o-mini
+      - gpt-4o
+      - gpt-3.5-turbo
+    retry:
+      attempts: 2
+      initial_backoff_ms: 100
+    circuit_breaker:
+      failure_threshold: 5
+      timeout: 10s
+  - virtual_key: deepseek
+    weight: 1
+    models:
+      - gpt-4o-mini
+      - gpt-4o
+      - gpt-3.5-turbo
+    retry:
+      attempts: 2
+      initial_backoff_ms: 100
+    circuit_breaker:
+      failure_threshold: 5
+      timeout: 10s
+  - virtual_key: together
+    weight: 1
+    models:
+      - gpt-4o-mini
+      - gpt-4o
+      - gpt-3.5-turbo
+    retry:
+      attempts: 2
+      initial_backoff_ms: 100
+    circuit_breaker:
+      failure_threshold: 5
+      timeout: 10s
+  - virtual_key: fireworks
+    weight: 1
+    models:
+      - gpt-4o-mini
+      - gpt-4o
+      - gpt-3.5-turbo
+    retry:
+      attempts: 2
+      initial_backoff_ms: 100
+    circuit_breaker:
+      failure_threshold: 5
+      timeout: 10s
+  - virtual_key: xai
+    weight: 1
+    models:
+      - gpt-4o-mini
+      - gpt-4o
+      - gpt-3.5-turbo
+    retry:
+      attempts: 2
+      initial_backoff_ms: 100
+    circuit_breaker:
+      failure_threshold: 5
+      timeout: 10s
+  - virtual_key: moonshot
+    weight: 1
+    models:
+      - gpt-4o-mini
+      - gpt-4o
+      - gpt-3.5-turbo
+    retry:
+      attempts: 2
+      initial_backoff_ms: 100
+    circuit_breaker:
+      failure_threshold: 5
+      timeout: 10s
+  - virtual_key: novita
+    weight: 1
+    models:
+      - gpt-4o-mini
+      - gpt-4o
+      - gpt-3.5-turbo
+    retry:
+      attempts: 2
+      initial_backoff_ms: 100
+    circuit_breaker:
+      failure_threshold: 5
+      timeout: 10s
+  - virtual_key: nvidia-nim
+    weight: 1
+    models:
+      - gpt-4o-mini
+      - gpt-4o
+      - gpt-3.5-turbo
+    retry:
+      attempts: 2
+      initial_backoff_ms: 100
+    circuit_breaker:
+      failure_threshold: 5
+      timeout: 10s
+  - virtual_key: sambanova
+    weight: 1
+    models:
+      - gpt-4o-mini
+      - gpt-4o
+      - gpt-3.5-turbo
+    retry:
+      attempts: 2
+      initial_backoff_ms: 100
+    circuit_breaker:
+      failure_threshold: 5
+      timeout: 10s
+  - virtual_key: cerebras
+    weight: 1
+    models:
+      - gpt-4o-mini
+      - gpt-4o
+      - gpt-3.5-turbo
+    retry:
+      attempts: 2
+      initial_backoff_ms: 100
+    circuit_breaker:
+      failure_threshold: 5
+      timeout: 10s
+  - virtual_key: perplexity
+    weight: 1
+    models:
+      - gpt-4o-mini
+      - gpt-4o
+      - gpt-3.5-turbo
+    retry:
+      attempts: 2
+      initial_backoff_ms: 100
+    circuit_breaker:
+      failure_threshold: 5
+      timeout: 10s
+  - virtual_key: openrouter
+    weight: 1
+    models:
+      - gpt-4o-mini
+      - gpt-4o
+      - gpt-3.5-turbo
+    retry:
+      attempts: 2
+      initial_backoff_ms: 100
+    circuit_breaker:
+      failure_threshold: 5
+      timeout: 10s
+  - virtual_key: deepinfra
+    weight: 1
+    models:
+      - gpt-4o-mini
+      - gpt-4o
+      - gpt-3.5-turbo
+    retry:
+      attempts: 2
+      initial_backoff_ms: 100
+    circuit_breaker:
+      failure_threshold: 5
+      timeout: 10s
+  - virtual_key: qwen
+    weight: 1
+    models:
+      - gpt-4o-mini
+      - gpt-4o
+      - gpt-3.5-turbo
+    retry:
+      attempts: 2
+      initial_backoff_ms: 100
+    circuit_breaker:
+      failure_threshold: 5
+      timeout: 10s
+
+plugins:
+  # Trips on a prompt containing one of these words, so the request-log and error
+  # panels include guardrail rejections alongside upstream errors.
+  - name: word-filter
+    type: guardrail
+    stage: before_request
+    enabled: true
+    config:
+      blocked_words: ['forbidden-word']
+      case_sensitive: false
+
+  - name: max-token
+    type: guardrail
+    stage: before_request
+    enabled: true
+    config:
+      max_tokens: 8192
+      max_messages: 50
+
+  # A modest global rate so a burst from the load generator produces
+  # gateway_rate_limit_rejections_total for the rate-limit panel.
+  - name: rate-limit
+    type: guardrail
+    stage: before_request
+    enabled: true
+    config:
+      requests_per_second: 80
+      burst: 80
+
+  # persist: true writes rows the dashboard's Request Logs page reads. Listed at
+  # all three stages so a failed request still produces a terminal row.
+  - name: request-logger
+    type: logging
+    stage: before_request
+    enabled: true
+    config:
+      level: info
+      persist: true
+  - name: request-logger
+    type: logging
+    stage: after_request
+    enabled: true
+    config:
+      level: info
+      persist: true
+  - name: request-logger
+    type: logging
+    stage: on_error
+    enabled: true
+    config:
+      level: info
+      persist: true
+
+observability:
+  tracing:
+    enabled: true
+    endpoint: jaeger:4317
+    protocol: grpc
+    service_name: ferrogw
+    sample_ratio: 1.0
+    privacy_level: metadata

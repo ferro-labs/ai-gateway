@@ -33,12 +33,19 @@ func DefaultRedactor() *Redactor {
 	return New(DefaultPolicies()...)
 }
 
-// Redact returns s with every policy applied in order. A nil
-// *Redactor returns s unchanged.
+// Redact returns s with the gateway's own credential values replaced first,
+// then every policy applied in order. A nil *Redactor returns s unchanged.
+//
+// Value replacement runs first because it is exact: a credential the gateway
+// holds is removed whatever its shape, including the prefix-less formats no
+// pattern can safely match. The policies then act as a backstop for credentials
+// the gateway never saw — one echoed by an upstream that the operator never
+// configured.
 func (r *Redactor) Redact(s string) string {
 	if r == nil {
 		return s
 	}
+	s = active().redact(s)
 	for _, p := range r.policies {
 		s = p.Pattern.ReplaceAllString(s, p.Replacement)
 	}

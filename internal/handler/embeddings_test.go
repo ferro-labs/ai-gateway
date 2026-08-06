@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	aigateway "github.com/ferro-labs/ai-gateway"
+	"github.com/ferro-labs/ai-gateway/config"
 )
 
 // TestEmbeddings_NoCapableProvider_Returns404 verifies that a request whose
@@ -15,9 +15,9 @@ import (
 // invalid_request_error/model_not_found body rather than 500/routing_error.
 // Regression test for the capability-miss-as-server-error bug.
 func TestEmbeddings_NoCapableProvider_Returns404(t *testing.T) {
-	gw, err := newTestGateway(t, aigateway.Config{
-		Strategy: aigateway.StrategyConfig{Mode: aigateway.ModeSingle},
-		Targets:  []aigateway.Target{{VirtualKey: "unused"}},
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets:  []config.Target{{VirtualKey: "unused"}},
 	})
 
 	if err != nil {

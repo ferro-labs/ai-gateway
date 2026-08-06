@@ -1,7 +1,6 @@
 package strategies
 
 import (
-	"context"
 	"testing"
 
 	"github.com/ferro-labs/ai-gateway/providers"
@@ -14,189 +13,98 @@ func req(content string) providers.Request {
 	}
 }
 
+// newContentBased builds a ContentBased or fails the test — every case here
+// uses patterns that compile.
+func newContentBased(t *testing.T, rules []ContentRule, fallback string) *ContentBased {
+	t.Helper()
+	s, err := NewContentBased(rules, Target{VirtualKey: fallback})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
 func TestContentBased_PromptContains(t *testing.T) {
-	provA := &mockProvider{name: "code-model", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "code"}}
-	provB := &mockProvider{name: "general-model", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "general"}}
-	lookup := newLookup(provA, provB)
-
-	rules := []ContentRule{
+	s := newContentBased(t, []ContentRule{
 		{Type: PromptContains, Value: "python", Target: Target{VirtualKey: "code-model"}},
-	}
-	s, err := NewContentBased(rules, Target{VirtualKey: "general-model"}, lookup)
-	if err != nil {
-		t.Fatal(err)
-	}
+	}, "general-model")
 
-	resp, err := s.Execute(context.Background(), req("write a python function"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resp.ID != "code" {
-		t.Errorf("expected code-model, got %q", resp.ID)
-	}
+	assertLeadsWith(t, s, req("write a python function"), "code-model")
 }
 
 func TestContentBased_FallbackWhenNoMatch(t *testing.T) {
-	provA := &mockProvider{name: "code-model", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "code"}}
-	provB := &mockProvider{name: "general-model", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "general"}}
-	lookup := newLookup(provA, provB)
-
-	rules := []ContentRule{
+	s := newContentBased(t, []ContentRule{
 		{Type: PromptContains, Value: "python", Target: Target{VirtualKey: "code-model"}},
-	}
-	s, err := NewContentBased(rules, Target{VirtualKey: "general-model"}, lookup)
-	if err != nil {
-		t.Fatal(err)
-	}
+	}, "general-model")
 
-	resp, err := s.Execute(context.Background(), req("what is the weather today?"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resp.ID != "general" {
-		t.Errorf("expected general-model (fallback), got %q", resp.ID)
-	}
+	assertLeadsWith(t, s, req("what is the weather today?"), "general-model")
 }
 
 func TestContentBased_PromptCaseInsensitive(t *testing.T) {
-	provA := &mockProvider{name: "code-model", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "code"}}
-	provB := &mockProvider{name: "general-model", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "general"}}
-	lookup := newLookup(provA, provB)
-
-	rules := []ContentRule{
+	s := newContentBased(t, []ContentRule{
 		{Type: PromptContains, Value: "Python", Target: Target{VirtualKey: "code-model"}},
-	}
-	s, err := NewContentBased(rules, Target{VirtualKey: "general-model"}, lookup)
-	if err != nil {
-		t.Fatal(err)
-	}
+	}, "general-model")
 
-	// "PYTHON" should match "Python" rule (case-insensitive)
-	resp, err := s.Execute(context.Background(), req("help me with PYTHON scripting"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resp.ID != "code" {
-		t.Errorf("expected code-model (case-insensitive match), got %q", resp.ID)
-	}
+	assertLeadsWith(t, s, req("help me with PYTHON scripting"), "code-model")
 }
 
 func TestContentBased_PromptNotContains(t *testing.T) {
-	provA := &mockProvider{name: "cheap-model", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "cheap"}}
-	provB := &mockProvider{name: "smart-model", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "smart"}}
-	lookup := newLookup(provA, provB)
-
 	// Route everything that is NOT code-related to cheap-model.
-	rules := []ContentRule{
+	s := newContentBased(t, []ContentRule{
 		{Type: PromptNotContains, Value: "code", Target: Target{VirtualKey: "cheap-model"}},
-	}
-	s, err := NewContentBased(rules, Target{VirtualKey: "smart-model"}, lookup)
-	if err != nil {
-		t.Fatal(err)
-	}
+	}, "smart-model")
 
-	// No "code" → matches PromptNotContains → cheap-model
-	resp, err := s.Execute(context.Background(), req("tell me a joke"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resp.ID != "cheap" {
-		t.Errorf("expected cheap-model, got %q", resp.ID)
-	}
-
-	// Contains "code" → PromptNotContains is false → no match → fallback smart-model
-	resp, err = s.Execute(context.Background(), req("review my code"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resp.ID != "smart" {
-		t.Errorf("expected smart-model (fallback), got %q", resp.ID)
-	}
+	// No "code" → matches PromptNotContains → cheap-model.
+	assertLeadsWith(t, s, req("tell me a joke"), "cheap-model")
+	// Contains "code" → PromptNotContains is false → no match → fallback.
+	assertLeadsWith(t, s, req("review my code"), "smart-model")
 }
 
 func TestContentBased_PromptRegex(t *testing.T) {
-	provA := &mockProvider{name: "code-model", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "code"}}
-	provB := &mockProvider{name: "general-model", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "general"}}
-	lookup := newLookup(provA, provB)
-
-	rules := []ContentRule{
+	s := newContentBased(t, []ContentRule{
 		{Type: PromptRegex, Value: `(?i)(python|golang|typescript)`, Target: Target{VirtualKey: "code-model"}},
-	}
-	s, err := NewContentBased(rules, Target{VirtualKey: "general-model"}, lookup)
-	if err != nil {
-		t.Fatal(err)
-	}
+	}, "general-model")
 
 	tests := []struct {
-		prompt   string
-		wantResp string
+		prompt string
+		want   string
 	}{
-		{"How do I write a Golang HTTP server?", "code"},
-		{"Explain TypeScript generics", "code"},
-		{"What is the capital of France?", "general"},
+		{"How do I write a Golang HTTP server?", "code-model"},
+		{"Explain TypeScript generics", "code-model"},
+		{"What is the capital of France?", "general-model"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.prompt, func(t *testing.T) {
-			resp, err := s.Execute(context.Background(), req(tt.prompt))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if resp.ID != tt.wantResp {
-				t.Errorf("prompt %q: got %q, want %q", tt.prompt, resp.ID, tt.wantResp)
-			}
+			assertLeadsWith(t, s, req(tt.prompt), tt.want)
 		})
 	}
 }
 
 func TestContentBased_InvalidRegex(t *testing.T) {
-	lookup := newLookup()
 	rules := []ContentRule{
 		{Type: PromptRegex, Value: `[invalid`, Target: Target{VirtualKey: "any"}},
 	}
-	_, err := NewContentBased(rules, Target{VirtualKey: "any"}, lookup)
-	if err == nil {
+	if _, err := NewContentBased(rules, Target{VirtualKey: "any"}); err == nil {
 		t.Fatal("expected error for invalid regex pattern")
 	}
 }
 
 func TestContentBased_FirstRuleWins(t *testing.T) {
-	provA := &mockProvider{name: "model-a", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "a"}}
-	provB := &mockProvider{name: "model-b", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "b"}}
-	lookup := newLookup(provA, provB)
-
 	// Both rules match — first rule should win.
-	rules := []ContentRule{
+	s := newContentBased(t, []ContentRule{
 		{Type: PromptContains, Value: "python", Target: Target{VirtualKey: "model-a"}},
 		{Type: PromptContains, Value: "code", Target: Target{VirtualKey: "model-b"}},
-	}
-	s, err := NewContentBased(rules, Target{VirtualKey: "model-a"}, lookup)
-	if err != nil {
-		t.Fatal(err)
-	}
+	}, "model-a")
 
-	resp, err := s.Execute(context.Background(), req("write python code"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resp.ID != "a" {
-		t.Errorf("first matching rule should win, got %q", resp.ID)
-	}
+	assertLeadsWith(t, s, req("write python code"), "model-a")
 }
 
 func TestContentBased_OnlyUserRoleMessagesChecked(t *testing.T) {
-	provA := &mockProvider{name: "code-model", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "code"}}
-	provB := &mockProvider{name: "general-model", models: []string{"gpt-4o"}, resp: &providers.Response{ID: "general"}}
-	lookup := newLookup(provA, provB)
-
-	rules := []ContentRule{
+	s := newContentBased(t, []ContentRule{
 		{Type: PromptContains, Value: "python", Target: Target{VirtualKey: "code-model"}},
-	}
-	s, err := NewContentBased(rules, Target{VirtualKey: "general-model"}, lookup)
-	if err != nil {
-		t.Fatal(err)
-	}
+	}, "general-model")
 
-	// "python" only appears in a system message, not a user message → no match → fallback
+	// "python" appears only in a system message → no match → fallback.
 	sysReq := providers.Request{
 		Model: "gpt-4o",
 		Messages: []providers.Message{
@@ -204,39 +112,26 @@ func TestContentBased_OnlyUserRoleMessagesChecked(t *testing.T) {
 			{Role: "user", Content: "explain recursion"},
 		},
 	}
-	resp, err := s.Execute(context.Background(), sysReq)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resp.ID != "general" {
-		t.Errorf("only user messages should be checked, got %q instead of fallback", resp.ID)
-	}
+	assertLeadsWith(t, s, sysReq, "general-model")
 }
 
-func TestContentBased_ProviderNotFound(t *testing.T) {
-	s, err := NewContentBased(nil, Target{VirtualKey: "missing"}, newLookup())
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = s.Execute(context.Background(), req("hello"))
-	if err == nil {
-		t.Fatal("expected error when provider not found")
-	}
+// TestContentBased_UnknownTypeNeverMatches is F16's content-based half — see
+// TestConditional_UnknownKeyNeverMatches.
+func TestContentBased_UnknownTypeNeverMatches(t *testing.T) {
+	s := newContentBased(t, []ContentRule{
+		{Type: "prompt_contain", Value: "python", Target: Target{VirtualKey: "code-model"}},
+	}, "general-model")
+
+	assertLeadsWith(t, s, req("write python code"), "general-model")
 }
 
 // TestContentBased_SelectTargets_FallbackWithoutRoutingTargets asserts that a
-// ContentBased built without WithRoutingTargets still surfaces the fallback that
-// Execute routes to on no match, rather than an empty streaming list.
+// ContentBased built without WithRoutingTargets still surfaces its no-match
+// fallback rather than an empty list.
 func TestContentBased_SelectTargets_FallbackWithoutRoutingTargets(t *testing.T) {
-	provA := &mockProvider{name: "code-model", models: []string{"gpt-4o"}}
-	provB := &mockProvider{name: "general-model", models: []string{"gpt-4o"}}
-	rules := []ContentRule{
+	s := newContentBased(t, []ContentRule{
 		{Type: PromptContains, Value: "python", Target: Target{VirtualKey: "code-model"}},
-	}
-	s, err := NewContentBased(rules, Target{VirtualKey: "general-model"}, newLookup(provA, provB))
-	if err != nil {
-		t.Fatal(err)
-	}
+	}, "general-model")
 
 	keys, err := s.SelectTargets(req("what is the weather?"))
 	if err != nil {
@@ -248,15 +143,9 @@ func TestContentBased_SelectTargets_FallbackWithoutRoutingTargets(t *testing.T) 
 // TestContentBased_SelectTargets_MatchThenFallback asserts a matched rule leads,
 // with the fallback appended, even without WithRoutingTargets.
 func TestContentBased_SelectTargets_MatchThenFallback(t *testing.T) {
-	provA := &mockProvider{name: "code-model", models: []string{"gpt-4o"}}
-	provB := &mockProvider{name: "general-model", models: []string{"gpt-4o"}}
-	rules := []ContentRule{
+	s := newContentBased(t, []ContentRule{
 		{Type: PromptContains, Value: "python", Target: Target{VirtualKey: "code-model"}},
-	}
-	s, err := NewContentBased(rules, Target{VirtualKey: "general-model"}, newLookup(provA, provB))
-	if err != nil {
-		t.Fatal(err)
-	}
+	}, "general-model")
 
 	keys, err := s.SelectTargets(req("write python code"))
 	if err != nil {

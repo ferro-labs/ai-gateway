@@ -3,60 +3,61 @@ package middleware
 import (
 	"bytes"
 	"encoding/json"
-	"log/slog"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
-	"github.com/ferro-labs/ai-gateway/internal/logging"
+	"github.com/ferro-labs/ai-gateway/pkg/logger"
 )
 
-// captureLogs redirects the package logger for the duration of a test.
-func captureLogs(t *testing.T) *bytes.Buffer {
-	t.Helper()
-	var buf bytes.Buffer
-	prev := logging.Logger
-	logging.Logger = slog.New(slog.NewTextHandler(&buf, nil))
-	t.Cleanup(func() { logging.Logger = prev })
-	return &buf
+// discardLogger returns a logger whose output is thrown away, for tests that
+// exercise HTTP behavior rather than log contents.
+func discardLogger() *logger.Logger {
+	return logger.New(logger.Options{Output: io.Discard})
 }
 
 func panicsAt(http.ResponseWriter, *http.Request) { panic("boom") }
 
 func TestRecoverJSONLogsStackAndTraceID(t *testing.T) {
-	logs := captureLogs(t)
+	var buf bytes.Buffer
+	lg := logger.New(logger.Options{Output: &buf})
 
-	// logging.Middleware sets X-Request-ID on the shared ResponseWriter; that is
+	// logger.Middleware sets X-Request-ID on the shared ResponseWriter; that is
 	// the only way the outermost recover can correlate the panic to the request.
-	handler := RecoverJSON(logging.Middleware(http.HandlerFunc(panicsAt)))
+	handler := RecoverJSON(lg)(logger.Middleware(http.HandlerFunc(panicsAt)))
+
+	// A trace-ID-shaped header, because logger.Middleware only adopts an inbound
+	// X-Request-ID it can hand to OTel as a trace_id and mints a fresh one
+	// otherwise. What this test is about is that the panic log names whatever
+	// trace the request ran under, not which inbound strings are adopted.
+	const traceID = "0af7651916cd43dd8448eb211c80319c"
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/panic", nil)
-	req.Header.Set("X-Request-ID", "trace-abc123")
+	req.Header.Set("X-Request-ID", traceID)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500", w.Code)
 	}
-	out := logs.String()
-	if !strings.Contains(out, "trace_id=trace-abc123") {
+	out := buf.String()
+	if !strings.Contains(out, `"trace_id":"`+traceID+`"`) {
 		t.Fatalf("panic log is missing the request trace_id: %s", out)
 	}
 	if !strings.Contains(out, "panicsAt") {
 		t.Fatalf("panic log is missing a stack trace through the panicking frame: %s", out)
 	}
-	if got := w.Header().Get("X-Request-ID"); got != "trace-abc123" {
-		t.Fatalf("X-Request-ID = %q, want trace-abc123", got)
+	if got := w.Header().Get("X-Request-ID"); got != traceID {
+		t.Fatalf("X-Request-ID = %q, want %q", got, traceID)
 	}
 }
 
 // A panic partway through a streamed response must not append an error envelope
 // to bytes the client has already received.
 func TestRecoverJSONDoesNotCorruptCommittedResponse(t *testing.T) {
-	captureLogs(t)
-
-	handler := RecoverJSON(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	handler := RecoverJSON(discardLogger())(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("data: {\"id\":\"chunk-1\"}\n\n"))
@@ -101,9 +102,7 @@ func TestCommittedWriterIgnoresInformationalStatus(t *testing.T) {
 // httptest.ResponseRecorder latches Code on the first WriteHeader and cannot
 // model 1xx, so this runs against a real server.
 func TestRecoverJSONWritesEnvelopeAfterInformationalResponse(t *testing.T) {
-	captureLogs(t)
-
-	server := httptest.NewServer(RecoverJSON(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	server := httptest.NewServer(RecoverJSON(discardLogger())(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Link", "</style.css>; rel=preload; as=style")
 		w.WriteHeader(http.StatusEarlyHints) // 103, informational only
 		panic("exploded after early hints")
@@ -139,15 +138,13 @@ func TestRecoverJSONWritesEnvelopeAfterInformationalResponse(t *testing.T) {
 // The ordering contract: RecoverJSON sits above logging (and tracing), so a
 // panic raised inside those layers still produces the JSON envelope.
 func TestRecoverJSONRecoversPanicRaisedInsideLoggingLayer(t *testing.T) {
-	captureLogs(t)
-
 	panicInLoggingLayer := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 			_ = next
 			panic("middleware exploded")
 		})
 	}
-	handler := RecoverJSON(panicInLoggingLayer(logging.Middleware(http.HandlerFunc(panicsAt))))
+	handler := RecoverJSON(discardLogger())(panicInLoggingLayer(logger.Middleware(http.HandlerFunc(panicsAt))))
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/panic", nil)
 	w := httptest.NewRecorder()
@@ -162,7 +159,7 @@ func TestRecoverJSONRecoversPanicRaisedInsideLoggingLayer(t *testing.T) {
 }
 
 func TestRecoverJSONReturnsErrorEnvelope(t *testing.T) {
-	handler := RecoverJSON(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+	handler := RecoverJSON(discardLogger())(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		panic("boom")
 	}))
 
@@ -195,7 +192,7 @@ func TestRecoverJSONReturnsErrorEnvelope(t *testing.T) {
 }
 
 func TestRecoverJSONRepanicsAbortHandler(t *testing.T) {
-	handler := RecoverJSON(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+	handler := RecoverJSON(discardLogger())(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		panic(http.ErrAbortHandler)
 	}))
 

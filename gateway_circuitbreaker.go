@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ferro-labs/ai-gateway/internal/circuitbreaker"
-	"github.com/ferro-labs/ai-gateway/internal/metrics"
+	"github.com/ferro-labs/ai-gateway/pkg/circuitbreaker"
+	"github.com/ferro-labs/ai-gateway/pkg/metrics"
 	"github.com/ferro-labs/ai-gateway/providers"
 )
 
@@ -23,7 +23,6 @@ type cbProvider struct {
 
 func (p *cbProvider) Complete(ctx context.Context, req providers.Request) (resp *providers.Response, err error) {
 	if !p.cb.Allow() {
-		metrics.CircuitBreakerState.WithLabelValues(p.name).Set(1) // open
 		return nil, circuitbreaker.ErrCircuitOpen
 	}
 	// Deferred so a panic from p.Provider.Complete still releases the
@@ -36,7 +35,6 @@ func (p *cbProvider) Complete(ctx context.Context, req providers.Request) (resp 
 	defer func() {
 		if r := recover(); r != nil {
 			p.cb.RecordFailure()
-			metrics.CircuitBreakerState.WithLabelValues(p.name).Set(float64(p.cb.State()))
 			panic(r)
 		}
 		recordCircuitBreakerOutcome(ctx, p.cb, p.name, err)
@@ -47,7 +45,6 @@ func (p *cbProvider) Complete(ctx context.Context, req providers.Request) (resp 
 
 func (p *cbProvider) CompleteStream(ctx context.Context, req providers.Request) (<-chan providers.StreamChunk, error) {
 	if !p.cb.Allow() {
-		metrics.CircuitBreakerState.WithLabelValues(p.name).Set(1) // open
 		return nil, circuitbreaker.ErrCircuitOpen
 	}
 	// Deferred for the same reason as Complete: a panic out of CompleteStream
@@ -59,7 +56,6 @@ func (p *cbProvider) CompleteStream(ctx context.Context, req providers.Request) 
 	defer func() {
 		if r := recover(); r != nil {
 			p.cb.RecordFailure()
-			metrics.CircuitBreakerState.WithLabelValues(p.name).Set(float64(p.cb.State()))
 			panic(r)
 		}
 	}()
@@ -72,7 +68,6 @@ func (p *cbProvider) CompleteStream(ctx context.Context, req providers.Request) 
 	if err != nil {
 		if shouldRecordCircuitBreakerFailure(ctx, err) {
 			p.cb.RecordFailure()
-			metrics.CircuitBreakerState.WithLabelValues(p.name).Set(float64(p.cb.State()))
 		} else {
 			p.cb.ReleaseProbe()
 		}
@@ -84,40 +79,38 @@ func (p *cbProvider) CompleteStream(ctx context.Context, req providers.Request) 
 // shouldRecordCircuitBreakerFailure reports whether an error should count toward
 // opening the circuit.
 //
-// The distinction that matters is WHOSE fault the failure is:
+// The distinction that matters is WHOSE fault the failure is — the same question
+// the error_type metric label answers, which is why both are decided by the one
+// classifier (metrics.ProviderErrorType) rather than by two switches that drift:
 //
-//   - The gateway's own request deadline (Config.RequestTimeout) firing means the
-//     provider was too slow to answer. That is a provider failure and MUST trip the
-//     breaker. Treating it as caller cancellation would leave a hung provider in
-//     rotation forever while /readyz — whose only provider signal is circuit state —
-//     kept reporting the pod ready.
-//   - A caller-side cancellation or a caller-supplied deadline is not the provider's
-//     fault and is excluded, so transient client behavior cannot block healthy traffic.
+//   - The gateway's own request deadline (Config.RequestTimeout) firing, and the
+//     streaming idle bound (streamio.ErrIdleTimeout), both mean the provider was
+//     too slow to answer. Those classify as ErrTypeTimeout, are the provider's
+//     fault, and MUST trip the breaker. Treating either as caller cancellation
+//     would leave a hung provider in rotation forever while /readyz — whose only
+//     provider signal is circuit state — kept reporting the pod ready.
+//   - A caller-side cancellation or a caller-supplied deadline classifies as
+//     ErrTypeClientCanceled and is excluded, so transient client behavior cannot
+//     block healthy traffic.
+//   - Shedding under our own per-target concurrency limit classifies as
+//     ErrTypeBackpressure: a 429 the provider never saw.
 //   - A rejection the gateway raised itself before ever reaching the provider (an
 //     unsupported parameter under compatibility.on_unsupported_param=reject) is a
-//     client error that never touched the network, and must never blame the provider.
+//     client error that never touched the network, and must never blame the
+//     provider. It has no error_type of its own, so it is named here.
 //   - Rate limits are expected and temporary, and stay excluded.
 func shouldRecordCircuitBreakerFailure(ctx context.Context, err error) bool {
 	if err == nil {
 		return false
 	}
 
-	// Errors the gateway produced itself, without ever calling the provider: an
-	// unsupported-parameter rejection, and shedding under our own concurrency
-	// limit. Neither is evidence that the upstream is unhealthy.
 	var unsupportedParam *providers.UnsupportedParamError
-	if errors.As(err, &unsupportedParam) || errors.Is(err, providers.ErrProviderSaturated) {
+	if errors.As(err, &unsupportedParam) {
 		return false
 	}
 
-	// The gateway's own deadline fired: the provider was too slow. context.Cause
-	// carries ErrRequestTimeout only for a deadline this gateway installed; a
-	// caller-supplied deadline or cancellation carries the stdlib sentinels.
-	if errors.Is(context.Cause(ctx), ErrRequestTimeout) {
-		return !isRateLimitError(err)
-	}
-
-	if ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+	switch metrics.ProviderErrorType(ctx, err) {
+	case metrics.ErrTypeBackpressure, metrics.ErrTypeClientCanceled:
 		return false
 	}
 	return !isRateLimitError(err)
@@ -129,18 +122,23 @@ func shouldRecordCircuitBreakerFailure(ctx context.Context, err error) bool {
 // closes it. Used by the stream path once a stream finishes (its startup
 // failures are recorded in cbProvider.CompleteStream) and by withTargetBreaker
 // for the surfaces that cannot be wrapped.
-func recordCircuitBreakerOutcome(ctx context.Context, cb *circuitbreaker.CircuitBreaker, name string, err error) {
+//
+// It records the outcome and nothing else. The gateway_circuit_breaker_state
+// gauge is not written here — it is resolved from the live breakers on each
+// scrape (see Gateway.CircuitBreakerStates), because a breaker also changes
+// state on a timer that no request outcome observes. The target name that used
+// to label that write is now unused; the parameter stays so the call sites on
+// the streaming and pipeline paths are untouched by this change.
+func recordCircuitBreakerOutcome(ctx context.Context, cb *circuitbreaker.CircuitBreaker, _ string, err error) {
 	if err != nil {
 		if !shouldRecordCircuitBreakerFailure(ctx, err) {
 			cb.ReleaseProbe()
 			return
 		}
 		cb.RecordFailure()
-		metrics.CircuitBreakerState.WithLabelValues(name).Set(float64(cb.State()))
 		return
 	}
 	cb.RecordSuccess()
-	metrics.CircuitBreakerState.WithLabelValues(name).Set(float64(cb.State()))
 }
 
 // withTargetBreaker runs fn under the target's circuit breaker, for the surfaces
@@ -162,7 +160,6 @@ func (g *Gateway) withTargetBreaker(ctx context.Context, target string, fn func(
 		return fn(ctx)
 	}
 	if !cb.Allow() {
-		metrics.CircuitBreakerState.WithLabelValues(target).Set(1) // open
 		return circuitbreaker.ErrCircuitOpen
 	}
 	// Deferred for the same reason as cbProvider.Complete: fn panicking must
@@ -172,7 +169,6 @@ func (g *Gateway) withTargetBreaker(ctx context.Context, target string, fn func(
 	defer func() {
 		if r := recover(); r != nil {
 			cb.RecordFailure()
-			metrics.CircuitBreakerState.WithLabelValues(target).Set(float64(cb.State()))
 			panic(r)
 		}
 	}()
@@ -191,7 +187,14 @@ func (g *Gateway) ensureCircuitBreakersLocked() {
 		if _, exists := g.circuitBreakers[t.VirtualKey]; exists {
 			continue
 		}
-		timeout, _ := time.ParseDuration(t.CircuitBreaker.Timeout)
+		// circuitbreaker.New reads an unparseable duration as zero and applies its
+		// 30s default, so without this the target reopens on a schedule nobody
+		// configured and nothing ever says why.
+		timeout, err := time.ParseDuration(t.CircuitBreaker.Timeout)
+		if err != nil && t.CircuitBreaker.Timeout != "" {
+			g.log.Warn("target circuit_breaker.timeout is not a duration; applying the default",
+				"target", t.VirtualKey, "timeout", t.CircuitBreaker.Timeout)
+		}
 		g.circuitBreakers[t.VirtualKey] = circuitbreaker.New(
 			t.CircuitBreaker.FailureThreshold,
 			t.CircuitBreaker.SuccessThreshold,

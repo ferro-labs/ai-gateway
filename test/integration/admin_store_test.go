@@ -8,17 +8,18 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ferro-labs/ai-gateway/internal/admin"
+	"github.com/ferro-labs/ai-gateway/internal/admin/model"
+	"github.com/ferro-labs/ai-gateway/internal/admin/repository"
 )
 
 func TestPostgresStore_CRUD(t *testing.T) {
-	store, err := admin.NewPostgresStore(t.Context(), testDSN)
+	store, err := repository.NewPostgresStore(t.Context(), testDSN)
 	if err != nil {
 		t.Fatalf("new postgres store: %v", err)
 	}
 	resetTablesAndClose(t, store, "api_keys")
 
-	created, err := store.Create(t.Context(), "integration-key", []string{admin.ScopeAdmin}, nil)
+	created, err := store.Create(t.Context(), "integration-key", []string{model.ScopeAdmin}, nil)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -34,7 +35,7 @@ func TestPostgresStore_CRUD(t *testing.T) {
 		t.Fatalf("get: got %s want %s", fetched.ID, created.ID)
 	}
 
-	updated, err := store.Update(t.Context(), created.ID, "updated-name", []string{admin.ScopeReadOnly})
+	updated, err := store.Update(t.Context(), created.ID, "updated-name", []string{model.ScopeReadOnly})
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
@@ -51,13 +52,13 @@ func TestPostgresStore_CRUD(t *testing.T) {
 }
 
 func TestPostgresStore_ValidateAndUsage(t *testing.T) {
-	store, err := admin.NewPostgresStore(t.Context(), testDSN)
+	store, err := repository.NewPostgresStore(t.Context(), testDSN)
 	if err != nil {
 		t.Fatalf("new postgres store: %v", err)
 	}
 	resetTablesAndClose(t, store, "api_keys")
 
-	created, err := store.Create(t.Context(), "validate-key", []string{admin.ScopeAdmin}, nil)
+	created, err := store.Create(t.Context(), "validate-key", []string{model.ScopeAdmin}, nil)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -75,14 +76,14 @@ func TestPostgresStore_ValidateAndUsage(t *testing.T) {
 }
 
 func TestPostgresStore_Expiration(t *testing.T) {
-	store, err := admin.NewPostgresStore(t.Context(), testDSN)
+	store, err := repository.NewPostgresStore(t.Context(), testDSN)
 	if err != nil {
 		t.Fatalf("new postgres store: %v", err)
 	}
 	resetTablesAndClose(t, store, "api_keys")
 
 	expired := time.Now().Add(-2 * time.Minute)
-	created, err := store.Create(t.Context(), "expired-key", []string{admin.ScopeAdmin}, &expired)
+	created, err := store.Create(t.Context(), "expired-key", []string{model.ScopeAdmin}, &expired)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -99,13 +100,13 @@ func TestPostgresStore_Expiration(t *testing.T) {
 }
 
 func TestPostgresStore_RevokeAndRotate(t *testing.T) {
-	store, err := admin.NewPostgresStore(t.Context(), testDSN)
+	store, err := repository.NewPostgresStore(t.Context(), testDSN)
 	if err != nil {
 		t.Fatalf("new postgres store: %v", err)
 	}
 	resetTablesAndClose(t, store, "api_keys")
 
-	created, err := store.Create(t.Context(), "rotate-key", []string{admin.ScopeAdmin}, nil)
+	created, err := store.Create(t.Context(), "rotate-key", []string{model.ScopeAdmin}, nil)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -133,7 +134,7 @@ func TestPostgresStore_RevokeAndRotate(t *testing.T) {
 }
 
 func TestPostgresStore_ListMasked(t *testing.T) {
-	store, err := admin.NewPostgresStore(t.Context(), testDSN)
+	store, err := repository.NewPostgresStore(t.Context(), testDSN)
 	if err != nil {
 		t.Fatalf("new postgres store: %v", err)
 	}
@@ -141,7 +142,7 @@ func TestPostgresStore_ListMasked(t *testing.T) {
 
 	for i := range 3 {
 		name := "list-key-" + string(rune('a'+i))
-		if _, err := store.Create(t.Context(), name, []string{admin.ScopeAdmin}, nil); err != nil {
+		if _, err := store.Create(t.Context(), name, []string{model.ScopeAdmin}, nil); err != nil {
 			t.Fatalf("create %s: %v", name, err)
 		}
 	}

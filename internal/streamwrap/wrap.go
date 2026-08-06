@@ -26,13 +26,11 @@ package streamwrap
 
 import (
 	"context"
-	"errors"
 	"time"
 
-	"github.com/ferro-labs/ai-gateway/internal/circuitbreaker"
 	"github.com/ferro-labs/ai-gateway/internal/events"
-	"github.com/ferro-labs/ai-gateway/internal/metrics"
 	"github.com/ferro-labs/ai-gateway/models"
+	"github.com/ferro-labs/ai-gateway/pkg/metrics"
 	"github.com/ferro-labs/ai-gateway/providers"
 )
 
@@ -73,10 +71,18 @@ type MeterMeta struct {
 	SpanFinisher SpanFinisher
 	// CompletionFn, if non-nil, is invoked once after the upstream stream closes
 	// successfully and before success metrics/events are emitted.
-	CompletionFn func(ctx context.Context, resp *providers.Response) error
+	//
+	// It receives the request's measurements because the after_request stage it
+	// drives runs here and nowhere else: time to first token exists only on this
+	// path, and it cannot be recovered once the channel has drained.
+	CompletionFn func(ctx context.Context, resp *providers.Response, m Measurements) error
 	// ErrorFn, if non-nil, is invoked once when the upstream stream fails or
 	// the downstream client cancels before the stream completes.
-	ErrorFn func(ctx context.Context, err error)
+	//
+	// It receives the measurements taken up to the failure. A stream that failed
+	// after eight seconds and one that failed instantly are different incidents,
+	// and the on_error stage is the only place that can record which it was.
+	ErrorFn func(ctx context.Context, err error, m Measurements)
 	// CircuitBreakerOutcome, if non-nil, is invoked once when the stream
 	// finishes. err is nil on success; non-nil on provider/stream failure.
 	CircuitBreakerOutcome func(err error)
@@ -108,6 +114,18 @@ func (m MeterMeta) metricLabelModel() string {
 	return m.MetricModel
 }
 
+// Measurements are the per-request numbers a completed stream produced. They
+// mirror plugin.Measurements, which streamwrap cannot import without depending
+// on the pipeline it is metered by.
+type Measurements struct {
+	DurationMs float64
+	TTFTMs     float64
+	TTLTMs     float64
+	HasTTFT    bool
+	CostUSD    float64
+	HasCost    bool
+}
+
 // StreamOutcome bundles the values stamped onto the observability span
 // at stream completion. ErrorMsg is non-empty only on the failure path.
 type StreamOutcome struct {
@@ -118,6 +136,12 @@ type StreamOutcome struct {
 	TTFTMs      float64
 	TTLTMs      float64
 	ErrorMsg    string
+	// Model is the model the PROVIDER reported, accumulated from the chunks —
+	// the streaming counterpart of Response.Model, and the only way the span can
+	// carry gen_ai.response.model, which is not knowable until chunks arrive.
+	// Set on the success path only, matching the non-streaming path, which does
+	// not claim a response model for a request that produced no response.
+	Model string
 }
 
 // SpanFinisher is implemented by the gateway-level observability span
@@ -165,7 +189,6 @@ func Meter(ctx context.Context, src <-chan providers.StreamChunk, start time.Tim
 		var streamErr error
 		var firstChunkAt time.Time
 		var lastChunkAt time.Time
-		clientCanceled := false
 		resp := providers.Response{
 			Object:   "chat.completion",
 			Provider: meta.Provider,
@@ -176,13 +199,17 @@ func Meter(ctx context.Context, src <-chan providers.StreamChunk, start time.Tim
 		for {
 			select {
 			case <-ctx.Done():
-				// Consumer (typically the HTTP handler) went away. Stop trying
+				// The consumer (typically the HTTP handler) is gone. Stop trying
 				// to forward chunks — out is almost certainly unread — but
 				// keep draining src so the upstream provider goroutine can
 				// finish its in-flight write to src and exit. The provider
 				// MUST close src eventually for this to terminate; that is
 				// the existing contract for every CompleteStream impl.
-				clientCanceled = true
+				//
+				// WHY it is gone decides who is at fault: the caller hanging up,
+				// or the gateway's idle bound firing on an upstream that sent
+				// nothing. metrics.ProviderErrorType reads the cause and answers
+				// that, for this path and every other surface at once.
 				streamErr = drainSrc(ctx, src, streamErr)
 				break loop
 			case chunk, ok := <-src:
@@ -220,7 +247,6 @@ func Meter(ctx context.Context, src <-chan providers.StreamChunk, start time.Tim
 				select {
 				case out <- forward:
 				case <-ctx.Done():
-					clientCanceled = true
 					streamErr = drainSrc(ctx, src, streamErr)
 					break loop
 				}
@@ -245,7 +271,12 @@ func Meter(ctx context.Context, src <-chan providers.StreamChunk, start time.Tim
 		}
 
 		if streamErr != nil {
-			finishStreamOnError(ctx, meta, usage, ttftMs, ttltMs, clientCanceled, streamErr, latency)
+			finishStreamOnError(ctx, meta, usage, ttftMs, ttltMs, streamErr, latency, Measurements{
+				DurationMs: float64(latency.Microseconds()) / 1000.0,
+				TTFTMs:     ttftMs,
+				TTLTMs:     ttltMs,
+				HasTTFT:    !firstChunkAt.IsZero(),
+			})
 			return
 		}
 
@@ -257,12 +288,39 @@ func Meter(ctx context.Context, src <-chan providers.StreamChunk, start time.Tim
 		if resp.Usage.TotalTokens == 0 {
 			resp.Usage.TotalTokens = resp.Usage.PromptTokens + resp.Usage.CompletionTokens
 		}
-		if handleCompletionFn(ctx, meta, usage, ttftMs, ttltMs, &resp, out) {
+		// Priced before the completion callback, because the after_request
+		// plugins it runs persist the cost and cannot compute it themselves.
+		// The same result is handed to finishStreamOnSuccess so the recorded
+		// figure and the reported one cannot diverge.
+		cost := models.Calculate(meta.Catalog, meta.Provider+"/"+meta.Model, models.Usage{
+			PromptTokens:     usage.PromptTokens,
+			CompletionTokens: usage.CompletionTokens,
+			ReasoningTokens:  usage.ReasoningTokens,
+			CacheReadTokens:  usage.CacheReadTokens,
+			CacheWriteTokens: usage.CacheWriteTokens,
+		})
+		measured := Measurements{
+			DurationMs: float64(latency.Microseconds()) / 1000.0,
+			TTFTMs:     ttftMs,
+			TTLTMs:     ttltMs,
+			// No chunk ever arrived, so there is no first token to have timed.
+			HasTTFT: !firstChunkAt.IsZero(),
+			CostUSD: cost.TotalUSD,
+			// Priced, not ModelFound: a catalog entry carrying no input price
+			// yields ModelFound=true with a total of zero, and reporting that as
+			// a known cost files the request under the priced-$0 floor instead
+			// of "cost unknown". About a fifth of the catalog is priced null —
+			// ollama, self-hosted, free and preview entries — so ModelFound made
+			// the spend total look complete while it was blind to all of them.
+			HasCost: cost.Priced,
+		}
+
+		if handleCompletionFn(ctx, meta, usage, &resp, out, measured) {
 			return
 		}
 
 		// Success path: emit the same metrics as Gateway.Route().
-		finishStreamOnSuccess(ctx, meta, usage, ttftMs, ttltMs, latency)
+		finishStreamOnSuccess(ctx, meta, usage, resp.Model, ttftMs, ttltMs, latency, cost)
 	}()
 
 	return out
@@ -271,11 +329,16 @@ func Meter(ctx context.Context, src <-chan providers.StreamChunk, start time.Tim
 // drainSrc drains src to completion after the consumer has abandoned the
 // stream, preserving the goroutine-leak guard: provider stream goroutines
 // block on an unguarded `src <- chunk`, so src MUST be read until the provider
-// closes it. streamErr is seeded from ctx.Err() when not already set, then
-// overwritten by the last error chunk observed while draining, and returned.
+// closes it. streamErr is seeded from the context's cause when not already set,
+// then overwritten by the last error chunk observed while draining, and returned.
+//
+// The cause rather than ctx.Err(): this error is what the request log and the
+// span record, and "context canceled" describes the teardown rather than the
+// fault that caused it. context.Cause degrades to exactly ctx.Err() when nothing
+// named a reason, so this is never less specific than what it replaced.
 func drainSrc(ctx context.Context, src <-chan providers.StreamChunk, streamErr error) error {
 	if streamErr == nil {
-		streamErr = ctx.Err()
+		streamErr = context.Cause(ctx)
 	}
 	for chunk := range src {
 		if chunk.Error != nil {
@@ -293,18 +356,17 @@ func finishStreamOnError(
 	meta MeterMeta,
 	usage providers.Usage,
 	ttftMs, ttltMs float64,
-	clientCanceled bool,
 	streamErr error,
 	latency time.Duration,
+	measured Measurements,
 ) {
-	errType := "provider_error"
-	switch {
-	case clientCanceled:
-		errType = "client_canceled"
-	case errors.Is(streamErr, circuitbreaker.ErrCircuitOpen):
-		errType = "circuit_open"
-	}
+	errType := metrics.ProviderErrorType(ctx, streamErr)
 	requestMetrics := metrics.ForRequest(meta.Provider, meta.metricLabelModel())
+	// A stream that broke after eight seconds and one that broke instantly are
+	// different incidents, and only this histogram can tell them apart. Observing
+	// successes alone made the mid-stream failure — the streaming failure mode
+	// that costs the most time — the one the quantiles could not see.
+	requestMetrics.Duration.Observe(latency.Seconds())
 	requestMetrics.Error.Inc()
 	metrics.ForProviderError(meta.Provider, errType).Inc()
 	if meta.PublishFn != nil {
@@ -312,13 +374,13 @@ func finishStreamOnError(
 			meta.TraceID,
 			meta.Provider,
 			meta.Model,
-			streamErr.Error(),
+			streamErr,
 			latency,
 			true,
 		))
 	}
 	if meta.ErrorFn != nil {
-		meta.ErrorFn(ctx, streamErr)
+		meta.ErrorFn(ctx, streamErr, measured)
 	}
 	if meta.SpanFinisher != nil {
 		meta.SpanFinisher.Finish(StreamOutcome{
@@ -344,20 +406,25 @@ func handleCompletionFn(
 	ctx context.Context,
 	meta MeterMeta,
 	usage providers.Usage,
-	ttftMs, ttltMs float64,
 	resp *providers.Response,
 	out chan<- providers.StreamChunk,
+	measured Measurements,
 ) bool {
 	if meta.CompletionFn == nil {
 		return false
 	}
-	err := meta.CompletionFn(ctx, resp)
+	err := meta.CompletionFn(ctx, resp, measured)
 	if err == nil {
 		return false
 	}
 	requestMetrics := metrics.ForRequest(meta.Provider, meta.metricLabelModel())
+	// The stream ran to completion and an after_request plugin then failed it.
+	// The whole thing still took the time it took, so it is observed like any
+	// other outcome — the same rule the non-streaming after-plugin failure
+	// follows.
+	requestMetrics.Duration.Observe(measured.DurationMs / 1000.0)
 	requestMetrics.Error.Inc()
-	metrics.ForProviderError(meta.Provider, "plugin_error").Inc()
+	metrics.ForProviderError(meta.Provider, metrics.ErrTypePlugin).Inc()
 	select {
 	case out <- providers.StreamChunk{Error: err}:
 	case <-ctx.Done():
@@ -366,8 +433,8 @@ func handleCompletionFn(
 		meta.SpanFinisher.Finish(StreamOutcome{
 			TokensIn:  usage.PromptTokens,
 			TokensOut: usage.CompletionTokens,
-			TTFTMs:    ttftMs,
-			TTLTMs:    ttltMs,
+			TTFTMs:    measured.TTFTMs,
+			TTLTMs:    measured.TTLTMs,
 			ErrorMsg:  err.Error(),
 		})
 	}
@@ -385,8 +452,10 @@ func finishStreamOnSuccess(
 	ctx context.Context,
 	meta MeterMeta,
 	usage providers.Usage,
+	responseModel string,
 	ttftMs, ttltMs float64,
 	latency time.Duration,
+	cost models.CostResult,
 ) {
 	requestMetrics := metrics.ForRequest(meta.Provider, meta.metricLabelModel())
 	requestMetrics.Duration.Observe(latency.Seconds())
@@ -399,14 +468,6 @@ func finishStreamOnSuccess(
 		requestMetrics.TokensOut.Add(float64(usage.CompletionTokens))
 	}
 
-	// Compute and emit cost.
-	cost := models.Calculate(meta.Catalog, meta.Provider+"/"+meta.Model, models.Usage{
-		PromptTokens:     usage.PromptTokens,
-		CompletionTokens: usage.CompletionTokens,
-		ReasoningTokens:  usage.ReasoningTokens,
-		CacheReadTokens:  usage.CacheReadTokens,
-		CacheWriteTokens: usage.CacheWriteTokens,
-	})
 	if cost.TotalUSD > 0 {
 		requestMetrics.CostUSD.Add(cost.TotalUSD)
 	}
@@ -432,6 +493,7 @@ func finishStreamOnSuccess(
 			Cost:        cost,
 			TTFTMs:      ttftMs,
 			TTLTMs:      ttltMs,
+			Model:       responseModel,
 		})
 	}
 	if meta.CircuitBreakerOutcome != nil {
@@ -467,11 +529,49 @@ func applyChunkToResponse(resp *providers.Response, chunk providers.StreamChunk)
 			choice.Message.Role = streamChoice.Delta.Role
 		}
 		choice.Message.Content += streamChoice.Delta.Content
-		if len(streamChoice.Delta.ToolCalls) > 0 {
-			choice.Message.ToolCalls = append(choice.Message.ToolCalls, streamChoice.Delta.ToolCalls...)
+		for _, delta := range streamChoice.Delta.ToolCalls {
+			choice.Message.ToolCalls = mergeToolCallDelta(choice.Message.ToolCalls, delta)
 		}
 		if streamChoice.FinishReason != "" {
 			choice.FinishReason = streamChoice.FinishReason
 		}
 	}
+}
+
+// mergeToolCallDelta folds one streaming tool-call fragment into calls. The
+// OpenAI streaming contract keys tool-call deltas by index: the first fragment
+// for an index carries id/type/name and every later one appends argument text.
+// Accumulating the fragments verbatim would hand after_request plugins, the
+// request log, and cost accounting a response full of partial duplicates
+// instead of the calls the model actually made.
+//
+// A fragment with no index cannot be keyed to an earlier one, so it is taken as
+// a call in its own right — that is the shape providers use when they emit each
+// tool call whole.
+func mergeToolCallDelta(calls []providers.ToolCall, delta providers.ToolCall) []providers.ToolCall {
+	if delta.Index != nil {
+		for i := range calls {
+			if calls[i].Index != nil && *calls[i].Index == *delta.Index {
+				mergeToolCallInto(&calls[i], delta)
+				return calls
+			}
+		}
+	}
+	return append(calls, delta)
+}
+
+// mergeToolCallInto applies one fragment to the call it belongs to. Identity
+// fields are overwritten only when the fragment carries them, since they arrive
+// once; arguments are the streamed part and concatenate.
+func mergeToolCallInto(call *providers.ToolCall, delta providers.ToolCall) {
+	if delta.ID != "" {
+		call.ID = delta.ID
+	}
+	if delta.Type != "" {
+		call.Type = delta.Type
+	}
+	if delta.Function.Name != "" {
+		call.Function.Name = delta.Function.Name
+	}
+	call.Function.Arguments += delta.Function.Arguments
 }

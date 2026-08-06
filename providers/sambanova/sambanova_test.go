@@ -28,23 +28,6 @@ func TestNewSambaNova(t *testing.T) {
 	}
 }
 
-func TestSambaNovaProvider_SupportedModels(t *testing.T) {
-	p, _ := New("test-key", "")
-	models := p.SupportedModels()
-	if len(models) == 0 {
-		t.Error("SupportedModels() returned empty")
-	}
-	found := false
-	for _, m := range models {
-		if m == "Meta-Llama-3.1-70B-Instruct" {
-			found = true
-		}
-	}
-	if !found {
-		t.Error("Meta-Llama-3.1-70B-Instruct not found")
-	}
-}
-
 func TestSambaNovaProvider_SupportsModel(t *testing.T) {
 	p, _ := New("test-key", "")
 	if !p.SupportsModel("Meta-Llama-3.1-70B-Instruct") {
@@ -52,16 +35,6 @@ func TestSambaNovaProvider_SupportsModel(t *testing.T) {
 	}
 	if !p.SupportsModel("custom-model") {
 		t.Error("passthrough: expected all models to return true")
-	}
-}
-
-func TestSambaNovaProvider_Models(t *testing.T) {
-	p, _ := New("test-key", "")
-	models := p.Models()
-	for _, m := range models {
-		if m.OwnedBy != "sambanova" {
-			t.Errorf("ModelInfo.OwnedBy = %q, want sambanova", m.OwnedBy)
-		}
 	}
 }
 
@@ -156,8 +129,8 @@ func captureSambaNovaChatBody(t *testing.T, req core.Request) map[string]json.Ra
 		if r.Method != http.MethodPost {
 			t.Errorf("method = %s, want POST", r.Method)
 		}
-		if r.URL.Path != "/chat/completions" {
-			t.Errorf("path = %q, want /chat/completions", r.URL.Path)
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Errorf("path = %q, want /v1/chat/completions", r.URL.Path)
 		}
 		if got := r.Header.Get("Authorization"); got != testBearerAPIKey {
 			t.Errorf("Authorization = %q, want %s", got, testBearerAPIKey)
@@ -221,8 +194,8 @@ func TestSambaNovaProvider_DiscoverModels(t *testing.T) {
 		if r.Method != http.MethodGet {
 			t.Errorf("method = %q, want GET", r.Method)
 		}
-		if r.URL.Path != "/models" {
-			t.Errorf("path = %q, want /models", r.URL.Path)
+		if r.URL.Path != "/v1/models" {
+			t.Errorf("path = %q, want /v1/models", r.URL.Path)
 		}
 		if got := r.Header.Get("Authorization"); got != testBearerAPIKey {
 			t.Errorf("Authorization = %q, want %s", got, testBearerAPIKey)
@@ -259,8 +232,8 @@ func TestSambaNovaProvider_Embed_MockHTTP(t *testing.T) {
 		if r.Method != http.MethodPost {
 			t.Errorf("method = %s, want POST", r.Method)
 		}
-		if r.URL.Path != "/embeddings" {
-			t.Errorf("path = %q, want /embeddings", r.URL.Path)
+		if r.URL.Path != "/v1/embeddings" {
+			t.Errorf("path = %q, want /v1/embeddings", r.URL.Path)
 		}
 		if got := r.Header.Get("Authorization"); got != testBearerAPIKey {
 			t.Errorf("Authorization = %q, want %s", got, testBearerAPIKey)
@@ -311,8 +284,8 @@ func TestSambaNovaProvider_Embed_MockHTTP(t *testing.T) {
 
 func TestSambaNovaProvider_Embed_UpstreamError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/embeddings" {
-			t.Errorf("path = %q, want /embeddings", r.URL.Path)
+		if r.URL.Path != "/v1/embeddings" {
+			t.Errorf("path = %q, want /v1/embeddings", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusTooManyRequests)
@@ -337,5 +310,24 @@ func TestSambaNovaProvider_Embed_UpstreamError(t *testing.T) {
 func TestNewSambaNova_RejectsInvalidBaseURL(t *testing.T) {
 	if _, err := New("k", "://bad"); err == nil {
 		t.Fatal("New accepted an invalid base URL")
+	}
+}
+
+// TestNewSambaNova_BaseURLIsTheAPIRoot pins the shape a base URL is written in: the
+// API root, used verbatim. The one net: a bare host is not an API root, so it
+// adopts the trailing version segment of the provider's default root.
+func TestNewSambaNova_BaseURLIsTheAPIRoot(t *testing.T) {
+	for base, want := range map[string]string{
+		"":                                       "https://api.sambanova.ai/v1",
+		"https://api.sambanova.ai":               "https://api.sambanova.ai/v1",
+		"https://proxy.example.com/sambanova/v1": "https://proxy.example.com/sambanova/v1",
+	} {
+		p, err := New("test-key", base)
+		if err != nil {
+			t.Fatalf("New(_, %q) error: %v", base, err)
+		}
+		if got := p.BaseURL(); got != want {
+			t.Errorf("New(_, %q).BaseURL() = %q, want %q", base, got, want)
+		}
 	}
 }

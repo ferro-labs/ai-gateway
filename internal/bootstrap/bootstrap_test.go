@@ -1,10 +1,13 @@
 package bootstrap
 
 import (
+	"bytes"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/ferro-labs/ai-gateway/pkg/logger"
 	"github.com/ferro-labs/ai-gateway/providers"
 )
 
@@ -13,7 +16,9 @@ func TestCheckProductionSafety(t *testing.T) {
 		name        string
 		allowUnauth string
 		gatewayEnv  string
+		corsOrigins string
 		wantErr     bool
+		wantErrText string
 	}{
 		{
 			name:        "production + unauthenticated proxy enabled",
@@ -57,16 +62,87 @@ func TestCheckProductionSafety(t *testing.T) {
 			gatewayEnv:  "staging",
 			wantErr:     false,
 		},
+		{
+			// "*" is matched literally against the Origin header, so it permits
+			// nothing while reading like it permits everything. It cannot become
+			// correct on its own, which is what separates a refusal from a
+			// warning.
+			name:        "production + CORS_ORIGINS wildcard",
+			gatewayEnv:  "production",
+			corsOrigins: "*",
+			wantErr:     true,
+			wantErrText: "matched literally",
+		},
+		{
+			// A compose list entry keeps its quotes, so the check saw the
+			// three-character string `"*"` and let the deployment start in the
+			// state the refusal exists to prevent.
+			name:        "production + CORS_ORIGINS wildcard in quotes",
+			gatewayEnv:  "production",
+			corsOrigins: `"*"`,
+			wantErr:     true,
+			wantErrText: "matched literally",
+		},
+		{
+			name:        "production + CORS_ORIGINS wildcard in single quotes",
+			gatewayEnv:  "production",
+			corsOrigins: "'*'",
+			wantErr:     true,
+			wantErrText: "matched literally",
+		},
+		{
+			name:        "production + CORS_ORIGINS wildcard among real origins",
+			gatewayEnv:  "production",
+			corsOrigins: "https://app.example.com, *",
+			wantErr:     true,
+			wantErrText: "matched literally",
+		},
+		{
+			name:        "production + explicit CORS origins",
+			gatewayEnv:  "production",
+			corsOrigins: "https://app.example.com,https://admin.example.com",
+			wantErr:     false,
+		},
+		{
+			name:        "production + an origin that merely contains an asterisk",
+			gatewayEnv:  "production",
+			corsOrigins: "https://*.example.com",
+			wantErr:     false,
+		},
+		{
+			// Outside production the same value is honoured, with a warning.
+			name:        "development + CORS_ORIGINS wildcard",
+			gatewayEnv:  "development",
+			corsOrigins: "*",
+			wantErr:     false,
+		},
+		{
+			// Both problems are reported together, so fixing a production
+			// deployment is one edit rather than a restart per problem.
+			name:        "production + both refusals at once",
+			allowUnauth: "true",
+			gatewayEnv:  "production",
+			corsOrigins: "*",
+			wantErr:     true,
+			wantErrText: "ALLOW_UNAUTHENTICATED_PROXY",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv("ALLOW_UNAUTHENTICATED_PROXY", tt.allowUnauth)
 			t.Setenv("GATEWAY_ENV", tt.gatewayEnv)
+			t.Setenv("CORS_ORIGINS", tt.corsOrigins)
 
 			err := CheckProductionSafety()
 			if (err != nil) != tt.wantErr {
-				t.Errorf("CheckProductionSafety() error = %v, wantErr %v", err, tt.wantErr)
+				t.Fatalf("CheckProductionSafety() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErrText != "" && !strings.Contains(err.Error(), tt.wantErrText) {
+				t.Errorf("error = %q, want it to mention %q", err, tt.wantErrText)
+			}
+			if tt.name == "production + both refusals at once" && !strings.Contains(err.Error(), "CORS_ORIGINS") {
+				t.Errorf("error = %q, want it to name both problems", err)
 			}
 		})
 	}
@@ -140,4 +216,138 @@ func TestDiscoveryIntervalFromEnv(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestWarnProductionRisks covers the settings production allows but must not
+// pass over in silence. Each was previously an INFO line or nothing at all, so
+// a production gateway's own startup log did not distinguish it from a laptop.
+func TestWarnProductionRisks(t *testing.T) {
+	tests := []struct {
+		name            string
+		gatewayEnv      string
+		rateLimitRPS    string
+		enablePprof     string
+		keyStoreBackend string
+		want            []string
+		wantNone        bool
+	}{
+		{
+			name:            "not production: no warnings",
+			gatewayEnv:      "development",
+			rateLimitRPS:    "0",
+			enablePprof:     "true",
+			keyStoreBackend: BackendMemory,
+			wantNone:        true,
+		},
+		{
+			name:            "production with none of them set",
+			gatewayEnv:      "production",
+			keyStoreBackend: "sqlite",
+			wantNone:        true,
+		},
+		{
+			name:            "production with rate limiting off",
+			gatewayEnv:      "production",
+			rateLimitRPS:    "0",
+			keyStoreBackend: "sqlite",
+			want:            []string{"RATE_LIMIT_RPS"},
+		},
+		{
+			// Parsed, not string-compared: these disabled the limiter while the
+			// warning stayed silent.
+			name:            "production with rate limiting off as a float",
+			gatewayEnv:      "production",
+			rateLimitRPS:    "0.0",
+			keyStoreBackend: "sqlite",
+			want:            []string{"RATE_LIMIT_RPS"},
+		},
+		{
+			// The mirror case: this warned about a limiter still running.
+			name:            "production with a padded rate that still limits",
+			gatewayEnv:      "production",
+			rateLimitRPS:    " 0 ",
+			keyStoreBackend: "sqlite",
+			wantNone:        true,
+		},
+		{
+			name:            "production with profiling mounted",
+			gatewayEnv:      "production",
+			enablePprof:     "true",
+			keyStoreBackend: "sqlite",
+			want:            []string{"ENABLE_PPROF"},
+		},
+		{
+			name:            "production with an in-memory key store",
+			gatewayEnv:      "production",
+			keyStoreBackend: BackendMemory,
+			want:            []string{"in-memory"},
+		},
+		{
+			name:            "production with all three",
+			gatewayEnv:      "production",
+			rateLimitRPS:    "0",
+			enablePprof:     "true",
+			keyStoreBackend: BackendMemory,
+			want:            []string{"RATE_LIMIT_RPS", "ENABLE_PPROF", "in-memory"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("GATEWAY_ENV", tt.gatewayEnv)
+			t.Setenv("RATE_LIMIT_RPS", tt.rateLimitRPS)
+			t.Setenv("ENABLE_PPROF", tt.enablePprof)
+
+			var buf bytes.Buffer
+			restore := logger.Default()
+			logger.SetDefault(logger.New(logger.Options{Output: &buf}))
+			defer logger.SetDefault(restore)
+
+			warnProductionRisks(tt.keyStoreBackend, NewRateLimitStore() == nil)
+
+			got := buf.String()
+			if tt.wantNone {
+				if strings.Contains(got, "production:") {
+					t.Fatalf("expected no production warning, got:\n%s", got)
+				}
+				return
+			}
+			for _, want := range tt.want {
+				if !strings.Contains(got, want) {
+					t.Errorf("missing a warning naming %q; log was:\n%s", want, got)
+				}
+			}
+		})
+	}
+}
+
+// TestLogDeprecatedEnvVars names the replacement, not just the problem: the
+// warning is the only place an operator on an Ollama host learns that the
+// variable they set is Ollama's own models directory and that
+// FERRO_OLLAMA_MODELS is what to set instead.
+func TestLogDeprecatedEnvVars(t *testing.T) {
+	t.Run("warns and names the replacement", func(t *testing.T) {
+		buf := captureDefaultLogger(t)
+		t.Setenv("OLLAMA_MODELS", "/root/.ollama/models")
+
+		LogDeprecatedEnvVars()
+
+		out := buf.String()
+		for _, want := range []string{"OLLAMA_MODELS", "FERRO_OLLAMA_MODELS", "deprecated"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("log does not mention %q: %s", want, out)
+			}
+		}
+	})
+
+	t.Run("silent when unset", func(t *testing.T) {
+		buf := captureDefaultLogger(t)
+		t.Setenv("OLLAMA_MODELS", "")
+
+		LogDeprecatedEnvVars()
+
+		if out := strings.TrimSpace(buf.String()); out != "" {
+			t.Errorf("unset OLLAMA_MODELS logged %q, want silence", out)
+		}
+	})
 }

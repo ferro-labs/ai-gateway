@@ -1,0 +1,9 @@
+{
+				"id": "cohere-conformance",
+				"finish_reason": "COMPLETE",
+				"message": {"role": "assistant", "content": [{"type": "text", "text": "conformance ok"}]},
+				"usage": {
+					"billed_units": {"input_tokens": 11, "output_tokens": 7},
+					"tokens": {"input_tokens": 11, "output_tokens": 7}
+				}
+			}

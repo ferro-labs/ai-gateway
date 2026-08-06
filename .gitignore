@@ -19,12 +19,7 @@ profile.cov
 
 # Dependency directories (remove the comment below to include it)
 vendor/
-# Allow vendored frontend assets
-!web/static/vendor/
-scripts/*
-!scripts/catalog-check/
-scripts/catalog-check/*
-!scripts/catalog-check/main.go
+
 
 # Go workspace file
 go.work
@@ -46,8 +41,20 @@ go.work.sum
 config.json
 config.yaml
 
+# The web application's runtime config is a build input, not an operator's local
+# gateway config. It is the same filename, so the bare pattern above swallowed
+# it: a clean checkout shipped a dist with no config.json, loadRuntimeConfig
+# threw HTTP 404, and the SPA rendered its fatal-error screen instead of
+# mounting. The committed file carries the same-origin default the README
+# documents, and the gateway now serves the dashboard same-origin, so the
+# default is also the deployed value.
+!web/public/config.json
+
 # binaries
 bin/
+# `go build ./cmd/ferrogw` with no -o writes the binary here, and that command
+# is in the docs as the way to check a build without Node.
+/ferrogw
 
 # Database files
 *.db
@@ -55,6 +62,28 @@ bin/
 #git hooks
 .githooks
 
-# Superpowers brainstorm sessions and internal planning docs
+# Playwright test artifacts
+.playwright/
+.playwright-mcp/
+
+# Local scratch and planning notes, not part of the distribution.
 .superpowers/
 docs/superpowers/
+
+# Stray npm/vitest artifacts if a web command is run from the repo root.
+node_modules/
+
+# The dashboard bundle is compiled into the binary with go:embed, so it has to
+# live inside the package directory — go:embed cannot reach outside it. The
+# build copies web/dist here. Only .gitkeep is committed, which keeps the embed
+# pattern resolvable in a fresh clone; the bundle itself is generated, and
+# nothing tracked lives here for a build to dirty.
+internal/webui/dist/*
+!internal/webui/dist/.gitkeep
+
+# GoReleaser build output.
+/dist/
+
+# Generated at release time by scripts/gen-licenses.sh (kept out of dist/ so
+# GoReleaser's empty-dist guard is satisfied); bundled into archives + image.
+/notices/

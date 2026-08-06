@@ -13,7 +13,7 @@ import (
 func TestHealth_OK(t *testing.T) {
 	env := newTestServer(t)
 
-	resp, err := http.Get(env.Server.URL + "/health")
+	resp, err := http.DefaultClient.Do(newTestRequest(t, http.MethodGet, env.Server.URL+"/health", nil))
 	if err != nil {
 		t.Fatalf("GET /health: %v", err)
 	}

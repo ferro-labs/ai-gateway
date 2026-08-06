@@ -34,7 +34,7 @@
 📖 **Documentation:** [docs.ferrolabs.ai](https://docs.ferrolabs.ai)
 
 🔀 **30 providers, 2,500+ models — one API**<br/>
-⚡ **13,925 RPS at 1,000 concurrent users**<br/>
+⚡ **13,925 RPS at 1,000 concurrent users** ([v1.0.0 benchmark](#performance))<br/>
 📦 **Single static binary, no external services required, 32 MB base memory**
 
 <img src="docs/architecture.svg" alt="Ferro Labs AI Gateway Architecture" width="100%" />
@@ -53,9 +53,15 @@ Get from zero to first request in under 2 minutes.
 VER=$(curl -fsSL https://api.github.com/repos/ferro-labs/ai-gateway/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
 curl -fsSL "https://github.com/ferro-labs/ai-gateway/releases/download/${VER}/ferrogw_${VER#v}_linux_amd64.tar.gz" | tar xz
 chmod +x ferrogw
-./ferrogw init          # generates config.yaml + MASTER_KEY
-./ferrogw               # starts the server
+./ferrogw init                        # generates config.yaml + MASTER_KEY
+export GATEWAY_CONFIG=./config.yaml   # the server reads a config file only when this is set
+export OPENAI_API_KEY=sk-your-key     # providers are registered at startup, so export before starting
+export MASTER_KEY=fgw_your-master-key # the key ferrogw init printed
+./ferrogw                             # starts the server
 ```
+
+Releases are signed and ship SBOMs — verification steps are in
+[SECURITY.md](SECURITY.md#verifying-releases).
 
 ### Option B — Docker
 
@@ -71,29 +77,16 @@ docker run -p 8080:8080 \
 
 ```bash
 go install github.com/ferro-labs/ai-gateway/cmd/ferrogw@latest
-ferrogw init            # first-run setup
-ferrogw                 # start the server
+ferrogw init                          # first-run setup
+export GATEWAY_CONFIG=./config.yaml   # the server reads a config file only when this is set
+export OPENAI_API_KEY=sk-your-key     # providers are registered at startup, so export before starting
+export MASTER_KEY=fgw_your-master-key # the key ferrogw init printed
+ferrogw                               # start the server
 ```
 
-### First-time setup
-
-`ferrogw init` generates a master key and writes a minimal `config.yaml`:
-
-```
-$ ferrogw init
-
-  Master key (set as MASTER_KEY env var):
-  fgw_a3f2e1d4c5b6a7f8e9d0c1b2a3f4e5d6
-
-  Config written to: ./config.yaml
-
-  Next steps:
-    export MASTER_KEY=fgw_a3f2e1d4c5b6a7f8e9d0c1b2a3f4e5d6
-    export OPENAI_API_KEY=sk-...
-    ferrogw
-```
-
-The master key is shown once — store it in your `.env` file or secret manager. It is never written to disk.
+`ferrogw init` generates the master key and writes a minimal `config.yaml`. The
+key is shown **once** and never written to disk — store it in your `.env` file
+or secret manager.
 
 <div align="center">
   <img src="docs/demo.gif" alt="Ferro Labs AI Gateway — Quick Start Demo" width="720" />
@@ -101,7 +94,7 @@ The master key is shown once — store it in your `.env` file or secret manager.
 
 ### Minimal config
 
-Create `config.yaml` (or use `ferrogw init`):
+Create `config.yaml` (or use `ferrogw init`), then point the gateway at it with `export GATEWAY_CONFIG=./config.yaml` — a config file is loaded only when that variable names it:
 
 ```yaml
 strategy:
@@ -122,8 +115,7 @@ aliases:
 ### First request
 
 ```bash
-export OPENAI_API_KEY=sk-your-key
-export MASTER_KEY=fgw_your-master-key   # set by ferrogw init
+export MASTER_KEY=fgw_your-master-key   # the key ferrogw init printed, in whichever shell you curl from
 
 curl http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
@@ -155,13 +147,14 @@ Most AI gateways are Python proxies that crack under load or JavaScript services
 
 ## Performance
 
-Benchmarked against Kong OSS, Bifrost, LiteLLM, and Portkey on
+Every figure in this section comes from one run: **Ferro Labs v1.0.0, measured
+2026-03-23**. Benchmarked against Kong OSS, Bifrost, LiteLLM, and Portkey on
 **GCP n2-standard-8** (8 vCPU, 32 GB RAM) using a **60ms fixed-latency
-mock upstream** — results reflect gateway overhead only.
+mock upstream** — results reflect gateway overhead only. Later releases have not
+been re-measured; reproduce against the version you intend to run using the
+commands below.
 
 ![Throughput comparison — Ferro Labs vs Kong, Bifrost, LiteLLM, Portkey across 150–1,000 VU](docs/benchmarks/throughput-comparison.png)
-
-### Ferro Labs Latency Profile
 
 | VU | RPS | p50 | p99 | Memory |
 |---:|---:|---:|---:|---:|
@@ -172,33 +165,12 @@ mock upstream** — results reflect gateway overhead only.
 | 1,000 | 13,925 | 68.1ms | 111.9ms | 135 MB |
 
 At 1,000 VU: **13,925 RPS**, p50 overhead **8.1ms**, memory **135 MB**.
-No connection pool failures. No throughput ceiling.
-
-### Live Upstream Overhead (OpenAI API)
-
-Measured against **live OpenAI API** (gpt-4o-mini) using two independent methods:
-the gateway's `X-Gateway-Overhead-Ms` response header (precise internal timing)
-and paired direct-vs-gateway requests (external black-box validation).
-
-| Configuration | Overhead p50 | Overhead p99 |
-|:---|---:|---:|
-| No plugins (bare proxy) | **0.002ms** (2 microseconds) | 0.03ms |
-| With plugins (word-filter, max-token, logger, rate-limit) | **0.025ms** (25 microseconds) | 0.074ms |
-
-The gateway adds **25 microseconds** of processing overhead per request in a typical
-production configuration. LLM API calls take 500ms-2s — the gateway is 20,000x faster
-than the provider it proxies.
-
-### How to Reproduce
-
-```bash
-git clone https://github.com/ferro-labs/ai-gateway-performance-benchmarks
-cd ai-gateway-performance-benchmarks
-make setup && make bench
-```
+Against the live OpenAI API, the gateway itself adds **25 microseconds** p50 in
+a typical plugin configuration (2µs bare).
 
 Full methodology, raw results, and flamegraph analysis:
 [ferro-labs/ai-gateway-performance-benchmarks](https://github.com/ferro-labs/ai-gateway-performance-benchmarks)
+(`make setup && make bench` reproduces it).
 
 ---
 
@@ -206,7 +178,7 @@ Full methodology, raw results, and flamegraph analysis:
 
 ### 🔀 Routing
 
-- **8 routing strategies:** single, fallback, load balance, least latency, cost-optimized, content-based, A/B test, conditional
+- **8 routing strategies:** single, fallback, load balance, least latency, cost-optimized, content-based, A/B test, conditional — see [internal/strategies/README.md](internal/strategies/README.md)
 - Provider failover with configurable retry policies and status code filters
 - Cost-optimized routing can explicitly fallback, skip, or allow providers with unknown catalog prices
 - Per-request model aliases (`fast → gpt-4o-mini`, `smart → claude-3-5-sonnet`)
@@ -227,14 +199,16 @@ Full methodology, raw results, and flamegraph analysis:
 | AI21 | | | Cerebras |
 | Moonshot / Kimi | | | Qwen / DashScope |
 
+Beyond chat and streaming, providers serve **embeddings, images, rerank,
+moderations, speech-to-text, text-to-speech, and batch** where the vendor offers
+them — the full per-provider endpoint matrix is
+[providers/README.md](providers/README.md).
+
 ### 🛡️ Guardrails & Plugins
 
-- **Word/phrase filtering** — block sensitive terms before they reach providers
-- **Token and message limits** — enforce max_tokens and max_messages per request
-- **Response caching** — in-memory cache with configurable TTL and entry limits
-- **Rate limiting** — global RPS plus per-API-key and per-user RPM limits
-- **Budget controls** — per-API-key USD spend tracking with configurable token pricing
-- **Request logging** — structured logs with optional SQLite/PostgreSQL persistence
+Six plugins ship built-in — word filter, token/message limits, response cache,
+rate limiting, per-key budgets, and request logging — and the framework is
+public for writing your own. See [plugin/README.md](plugin/README.md).
 
 ### 🎯 Provider Capabilities
 
@@ -243,29 +217,67 @@ Full methodology, raw results, and flamegraph analysis:
 - **Strict mode** — `compatibility.on_unsupported_param: warn | drop | reject`; a parameter the provider cannot honor is no longer silently discarded
 - **Conformance-tested** — every provider is built through the same seam the gateway uses and asserted against its real upstream payload shape
 
-### ⚡ Performance
-
-- Per-provider HTTP connection pools with optimized settings
-- `sync.Pool` for JSON marshaling buffers and streaming I/O
-- Zero-allocation stream detection, async hook dispatch batching
-- Single binary, ~32 MB base memory, linear scaling to 1,000+ VUs
-
 ### 🤖 MCP (Model Context Protocol)
 
-- Agentic tool-call loop — the gateway drives `tool_calls` automatically
-- **Streamable HTTP transport** (MCP 2025-11-25 spec) and **stdio transport** (subprocess)
-- Tool filtering with `allowed_tools` and bounded `max_call_depth`
-- Multiple MCP servers with cross-server tool deduplication
+The gateway connects to MCP tool servers (stdio and Streamable HTTP), injects
+their tools into chat completions, and drives the agentic `tool_calls` loop
+itself — bounded depth, tool filtering, cross-server dedup. See
+[mcp/README.md](mcp/README.md).
 
 ### 📊 Observability
 
-- **OpenTelemetry tracing** (v1.1.0+) — OTLP gRPC/HTTP exporter, W3C `traceparent` propagation, GenAI semantic conventions (`gen_ai.*`) plus `ferro.*` extensions for cost, routing, MCP, and stream timings; `privacy_level` enforced on error recording; configurable `shutdown_grace`
-- Prometheus metrics at `/metrics`
-- Deep health checks at `/health` with per-provider status
-- Structured JSON request logging with SQLite/PostgreSQL persistence (trace ID unified across logs, OTel spans, and `X-Request-ID` response header)
-- Admin API with usage stats, request logs, and config history/rollback
-- Built-in dashboard UI at `/dashboard`
-- HTTP-level connection tracing with DNS, TLS, and first-byte latency
+- **OpenTelemetry tracing** — OTLP export, W3C propagation, GenAI semantic conventions plus `ferro.*` cost/routing/MCP attributes; a zero-allocation no-op until enabled. See [observability/README.md](observability/README.md)
+- **Prometheus metrics** at `/metrics` (authenticated) and deep health checks at `/health`, `/livez`, `/readyz`
+- One trace ID threads logs, spans, and the `X-Request-ID` header; request logs persist to SQLite/PostgreSQL
+
+---
+
+## Dashboard
+
+Every gateway binary serves a built-in operations console at `/` — same port as
+the API, compiled in with `go:embed`, no second image and no second origin. Sign
+in with your `MASTER_KEY` or any admin / read-only key and it reads the live
+gateway: traffic, spend, provider health, routing, plugins, request logs, and the
+audit trail.
+
+<div align="center">
+  <img src="docs/dashboard.gif" alt="Ferro Labs AI Gateway operations console: Overview, Analytics, Providers, Routing Strategies, Plugins, Playground, Tracing, Request Logs, Audit Trail, Configuration, and API Keys" width="100%" />
+</div>
+
+Overview, Analytics (latency/TTFT/cost percentiles), Providers, Routing,
+Plugins, a Playground over the real routing path, Tracing, Request Logs, the
+Audit Trail, Configuration with history/rollback, and scoped API key management.
+
+Run the gateway and open <http://localhost:8080>. To see it filled like the
+recording above, bring up the self-contained demo stack:
+
+```bash
+make up-fullstack   # gateway + Postgres + Jaeger + Prometheus + Grafana + mock upstream + load generator
+# then open http://localhost:8080
+```
+
+Build and development details are in [web/README.md](web/README.md).
+
+---
+
+## Documentation
+
+The root README is the overview; each subsystem keeps its own reference beside
+its code:
+
+| Reference | Covers |
+|:---|:---|
+| [providers/README.md](providers/README.md) | The 30 providers, the per-provider endpoint matrix, and every `/v1/*` surface |
+| [config/README.md](config/README.md) | Config loading, validation, `${VAR}` secrets, declared models, trusted proxies |
+| [internal/strategies/README.md](internal/strategies/README.md) | All 8 routing strategies and their failure semantics |
+| [plugin/README.md](plugin/README.md) | The plugin framework and the six built-in plugins |
+| [mcp/README.md](mcp/README.md) | MCP tool servers, transports, the subprocess trust boundary, readiness |
+| [observability/README.md](observability/README.md) | Tracing setup, managed backends, emitted attributes, privacy levels, exporters |
+| [deploy/README.md](deploy/README.md) | Dockerfiles, Compose files, the fullstack demo stack |
+| [web/README.md](web/README.md) | Dashboard development and the embed contract |
+| [AGENTS.md](AGENTS.md) | The complete operator/developer reference: architecture, every env var, request flow |
+| [SECURITY.md](SECURITY.md) | Reporting, security posture, release verification |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Branch strategy, commit conventions, provider/plugin checklists |
 
 ---
 
@@ -286,244 +298,94 @@ Integration examples for common use cases are in [ferro-labs/ai-gateway-examples
 
 ## Configuration
 
-Full annotated example — copy to `config.yaml` and customize:
+One YAML/JSON file, named by `GATEWAY_CONFIG`, drives routing, guardrails, MCP
+tools, and observability:
 
 ```yaml
-# Routing strategy
 strategy:
-  mode: fallback  # single | fallback | loadbalance | conditional
-                  # least-latency | cost-optimized | content-based | ab-test
-  # cost-optimized only: fallback (default) | skip | allow
-  # unpriced_strategy: fallback
+  mode: fallback              # 8 modes — see internal/strategies/README.md
 
-# What to do when a request carries a parameter the target provider cannot express.
-# warn (default) logs and forwards; drop strips it; reject fails with a 400.
-# See GET /v1/capabilities for what each provider supports.
-compatibility:
-  on_unsupported_param: warn  # warn | drop | reject
-
-# Bounds a single non-streaming request end to end: plugin stages, the provider
-# call, and every retry and fallback attempt combined. Omit for no gateway-imposed
-# deadline (the provider clients' own timeouts still apply).
-# request_timeout: 60s
-
-# Provider targets (tried in order for fallback mode)
 targets:
-  - virtual_key: openai
-    retry:
-      attempts: 3
-      # Defaults to 408, 429, and 5xx. A 400 or 401 fails the same way on
-      # every attempt, so it is not retried.
-      on_status_codes: [429, 502, 503]
-      initial_backoff_ms: 100
-    # Bound in-flight requests to this provider. Requests beyond max_concurrency
-    # wait in a bounded queue; when that fills, the target sheds with 429
-    # provider_saturated instead of piling up. Omit to leave the target unlimited.
-    concurrency:
-      max_concurrency: 32
-      queue_size: 1000
+  - virtual_key: openai       # an allowlist: only listed providers are routable
+    retry: { attempts: 3 }    # per target, honoured under every routing mode
+    concurrency: { max_concurrency: 32, queue_size: 1000 }
   - virtual_key: anthropic
-    retry:
-      attempts: 2
-  - virtual_key: gemini
 
-# Model aliases — resolved before routing
 aliases:
   fast: gpt-4o-mini
-  smart: claude-3-5-sonnet-20241022
-  cheap: gemini-1.5-flash
 
-# Plugins — executed in order at the configured stage
-plugins:
+plugins:                      # guardrails first, then cache — see plugin/README.md
   - name: word-filter
     type: guardrail
     stage: before_request
     enabled: true
-    config:
-      blocked_words: ["password", "secret"]
-      case_sensitive: false
+    config: { blocked_words: ["password", "secret"] }
 
-  - name: max-token
-    type: guardrail
-    stage: before_request
-    enabled: true
-    config:
-      max_tokens: 4096
-      max_messages: 50
-
-  - name: rate-limit
-    type: guardrail
-    stage: before_request
-    enabled: true
-    config:
-      requests_per_second: 100
-      key_rpm: 60
-
-  - name: request-logger
-    type: logging
-    stage: before_request
-    enabled: true
-    config:
-      level: info
-      persist: true
-      backend: sqlite
-      dsn: ferrogw-requests.db
-
-# MCP tool servers — HTTP transport
-mcp_servers:
-  - name: my-tools
+mcp_servers:                  # tool servers — see mcp/README.md
+  - name: search
     url: https://mcp.example.com/mcp
-    headers:
-      Authorization: Bearer ${MY_TOOLS_TOKEN}
-    allowed_tools: [search, get_weather]
-    max_call_depth: 5
-    timeout_seconds: 30
-
-  # stdio transport — gateway spawns the subprocess
-  - name: brave-search
-    command: npx
-    args: ["-y", "@modelcontextprotocol/server-brave-search"]
-    # The subprocess does NOT inherit the gateway's environment: it gets
-    # PATH/HOME/LANG/TMPDIR plus exactly the keys below. This keeps gateway
-    # credentials out of MCP servers, so anything the server needs — including
-    # HTTPS_PROXY, NODE_PATH or SSL_CERT_FILE — must be listed here.
-    env:
-      BRAVE_API_KEY: ${BRAVE_API_KEY}
+    headers: { Authorization: "Bearer ${SEARCH_TOKEN}" }
 ```
 
-`${VAR}` references in MCP headers, MCP stdio `env`, plugin config, and observability exporter config are substituted **when that component is constructed**, not when the config file is read. The config itself keeps the `${VAR}` reference for its whole life, so a secret is never written to the config-history store, never returned by `GET /admin/config`, and never restored into the database on a rollback — while the plugin, exporter, or MCP client still receives the real value.
+`${VAR}` references (braced form only) resolve when a component is constructed,
+never at file load — so secrets are never stored, served by `GET /admin/config`,
+or restored by a rollback. A bare `$` is data; an undefined variable is an
+error.
 
-Because substitution happens at construction rather than at file load, a `${VAR}` pushed through the admin/GitOps config API is resolved exactly the same way.
-
-Only the braced form is a reference. A bare `$` is data and is preserved verbatim, so a blocked word like `$100`, a price like `costs $5`, or a password like `pa$$w0rd` survives unchanged. A `${VAR}` whose variable is undefined is an error rather than a silently blank secret or an empty guardrail rule.
-
-See [config.example.yaml](config.example.yaml) and [config.example.json](config.example.json) for the full template with all options.
+The full annotated reference with every option is
+[config.example.yaml](config.example.yaml) /
+[config.example.json](config.example.json), and the schema guide is
+[config/README.md](config/README.md). `ferrogw validate` checks a file without
+starting the server.
 
 ### Key environment variables
 
 | Variable | Purpose |
 |----------|---------|
-| `MASTER_KEY` | Single admin credential for all auth (generated by `ferrogw init`) |
+| `MASTER_KEY` | Bootstrap and break-glass admin credential (generated by `ferrogw init`); give each operator their own key from `POST /admin/keys` for day-to-day use |
 | `GATEWAY_CONFIG` | Path to config YAML/JSON |
-| `GATEWAY_ENV` | Set to `production` to enable production-mode safety guards |
+| `GATEWAY_ENV` | Set to `production` to enable production-mode safety guards: it refuses to start on `ALLOW_UNAUTHENTICATED_PROXY=true` or a `*` entry in `CORS_ORIGINS`, and warns when per-IP rate limiting is off, pprof is mounted, or the API key store is in-memory |
 | `PORT` | Server port (default: `8080`) |
 | `ALLOW_UNAUTHENTICATED_PROXY` | Set to `true` to disable proxy-route auth (dev only; blocked when `GATEWAY_ENV=production`) |
-| `CORS_ORIGINS` | Comma-separated allowed CORS origins; cross-origin is denied when unset |
-| `TRUSTED_PROXIES` | Comma-separated CIDRs of trusted reverse proxies; `X-Forwarded-For`/`X-Real-IP` is honored only from these (default: loopback) |
+| `CORS_ORIGINS` | Comma-separated allowed CORS origins; cross-origin is denied when unset. Matched **literally** — there is no wildcard, so list each origin explicitly |
+| `TRUSTED_PROXIES` | CIDRs of trusted reverse proxies; forwarded headers are honored only from these (default: loopback). See [config/README.md](config/README.md#trusted-proxies-trusted_proxies) |
+| `<PROVIDER>_BASE_URL` | Points a provider at a proxy, self-hosted server, or regional endpoint. It is the **API root**, used verbatim — write it exactly as the vendor documents it, version segment included (`https://api.groq.com/openai/v1`); a bare host resolves to the provider's own version segment |
 
-See [AGENTS.md](AGENTS.md) for the full environment variable reference including provider API keys and OTel settings.
-
-### Trusted proxy configuration
-
-By default the gateway only trusts `X-Forwarded-For` / `X-Real-IP` headers from loopback addresses (`127.0.0.0/8`, `::1/128`). This means per-IP rate limiting and request logs always see the real client IP — not the load balancer's IP — without being spoofable by an external caller.
-
-Set `TRUSTED_PROXIES` to the CIDR range(s) of your reverse proxy or load balancer:
-
-```bash
-# Single upstream proxy
-TRUSTED_PROXIES=10.0.0.1/32
-
-# Internal network range (e.g. AWS VPC, GCP VPC, k8s node CIDR)
-TRUSTED_PROXIES=10.0.0.0/8
-
-# Multiple ranges (comma-separated)
-TRUSTED_PROXIES=10.0.0.0/8,172.16.0.0/12
-```
-
-**Common deployment patterns:**
-
-| Deployment | Recommended value |
-|---|---|
-| Local dev (no proxy) | _(leave unset — loopback default)_ |
-| Docker Compose with nginx | `172.16.0.0/12` or the bridge subnet |
-| AWS ALB / NLB | Your VPC CIDR (e.g. `10.0.0.0/8`) |
-| GCP Load Balancer | `10.0.0.0/8` |
-| Kubernetes cluster-internal | Your pod/node CIDR |
-| Cloudflare Tunnel | Cloudflare's published IP ranges |
-
-> **Important:** Configure your proxy to **replace** `X-Forwarded-For` (not append to it). If the proxy appends, the leftmost entry — which the gateway trusts — can still be forged by a client.
-
-When a request arrives from an IP outside the trusted CIDR list, the gateway ignores all forwarded headers and uses the raw TCP peer IP. This prevents clients from injecting a fake source IP to bypass per-IP rate limits.
+See [AGENTS.md](AGENTS.md) for the full environment variable reference including provider API keys, store backends, and OTel settings.
 
 ---
 
 ## Observability
 
-Ferro Labs AI Gateway ships first-class **OpenTelemetry** support in v1.1.0+. When OTel is disabled (the default) the gateway runs with a zero-allocation no-op provider — there is no cost to leaving it off. When you set an OTLP endpoint, every request emits a `gateway.request` root span with rich GenAI semantic conventions plus Ferro-specific extensions for cost, routing, and stream timings.
+**See everything your gateway does** — every request, what it cost, how long it took, which provider served it, and which guardrails ran. Ferro Labs AI Gateway ships first-class **OpenTelemetry tracing** and **Prometheus metrics** out of the box, and stays at a **zero-allocation no-op until you turn it on**. Point it at **Jaeger, Grafana, New Relic, LangSmith, Datadog, or Honeycomb** — anything that speaks OTLP — and every request emits a `gateway.request` span carrying GenAI semantic conventions (`gen_ai.*`) plus `ferro.*` extensions for cost, routing, MCP tool calls, and stream timings. The same trace ID threads your logs, spans, and the `X-Request-ID` response header.
 
-### Enable in one step
+> 📈 **Full observability guide → [observability/README.md](observability/README.md)** — managed-backend setup, endpoint & transport rules, every emitted attribute, privacy levels, and exporter plugins.
 
-Either set the standard OTel environment variable:
+Bring up the gateway wired to a full monitoring stack — **Prometheus, Grafana, and Jaeger** — driven by generated traffic, in one command:
+
+```bash
+make up-fullstack   # then open Grafana at http://localhost:3000
+```
+
+<p align="center">
+  <img src="docs/observability/grafana-dashboard.gif" alt="Grafana dashboard: per-provider request rate, latency percentiles, token cost, and circuit-breaker state" width="100%" />
+  <br/>
+  <em>Grafana — request rate, latency percentiles, per-provider breakdown, token cost, and circuit-breaker state, all from the gateway's Prometheus metrics.</em>
+</p>
+
+<p align="center">
+  <img src="docs/observability/jaeger-trace.gif" alt="Jaeger trace: one gateway.request span expanding to show its gen_ai.* and ferro.* attributes" width="100%" />
+  <br/>
+  <em>Jaeger — one request's <code>gateway.request</code> span, opened to reveal its <code>gen_ai.*</code> and <code>ferro.*</code> attributes.</em>
+</p>
+
+Enable tracing with one variable (or the `observability:` config block —
+endpoint, protocol, sampling, privacy, headers are all documented in the guide):
 
 ```bash
 export OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4317
 ferrogw serve
 ```
-
-…or add an `observability` block to `config.yaml`:
-
-```yaml
-observability:
-  tracing:
-    enabled: true
-    endpoint: localhost:4317   # or leave blank to read OTEL_EXPORTER_OTLP_ENDPOINT
-    protocol: grpc             # grpc | http/protobuf
-    service_name: ferrogw
-    sample_ratio: 1.0
-    privacy_level: metadata    # none | metadata | full  (see below)
-    shutdown_grace: 10s        # per OTel shutdown stage; total can take up to 2x this value
-    # headers:                        # OTLP export headers for authenticated backends
-    #   dd-api-key: "${DATADOG_API_KEY}"  # values support ${ENV_VAR} interpolation
-
-  # exporters wires plugin observability exporters (see "Plugin exporters" below).
-  # exporters:
-  #   - name: langsmith
-  #     enabled: true
-  #     config:
-  #       api_key: "${LANGSMITH_API_KEY}"
-```
-
-Standard `OTEL_*` environment variables (e.g. `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_TRACES_SAMPLER`) always take precedence over the config file — this matches the OTel SDK convention and is required for predictable container deployments.
-
-`observability.tracing.headers` lets you send OTLP traces to authenticated managed backends (Datadog, New Relic, Honeycomb, Grafana Cloud) by setting vendor-specific headers such as API keys. Values support `${ENV_VAR}` interpolation so secrets are never stored literally in the config file. The standard `OTEL_EXPORTER_OTLP_HEADERS` environment variable also applies per OTel convention. Observability exporter `config` blocks loaded from YAML/JSON also support `${VAR}` interpolation.
-
-The **endpoint scheme selects transport security**: an `https://` endpoint uses TLS, while an `http://` endpoint or a bare `host:port` (e.g. `localhost:4317`) connects in plaintext. Managed backends require the `https://` form.
-
-### What gets emitted
-
-The following attributes are **currently emitted** on the `gateway.request` root span. Attributes marked "Planned" are reserved but not yet wired.
-
-- **`gateway.request`** root span per request (`SERVER` kind) with `gen_ai.system`, `gen_ai.operation.name`, `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.usage.{input,output}_tokens`
-- **`HTTP {GET,POST}`** child span per outbound provider call (`CLIENT` kind, via `otelhttp` transport wrapping) — propagates `traceparent` to upstream providers
-- **`ferro.*` emitted attributes**: `ferro.cost.{usd,input_usd,output_usd,cache_read_usd,cache_write_usd,reasoning_usd,model_found}`, `ferro.routing.{strategy,target_key}`, `ferro.stream.time_to_{first,last}_token_ms`, `ferro.gateway.trace_id`, `ferro.plugin.{name,kind,stage,outcome,reason}`, `ferro.mcp.{server,tool,latency_ms}`
-- **W3C TraceContext + Baggage** propagation: inbound `traceparent` is honoured; outbound requests carry it forward
-- **Unified trace ID**: the OTel `trace_id`, the `X-Request-ID` response header, and the `trace_id` field on every log line are guaranteed equal per request for all requests served through the gateway's HTTP stack. (Embedders that bypass `logging.Middleware` receive a consistent-but-independent span trace ID.)
-
-### Try it locally with Jaeger
-
-```bash
-docker run --rm -p 16686:16686 -p 4317:4317 jaegertracing/all-in-one
-OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4317 ferrogw serve
-# fire a request, then open http://localhost:16686
-```
-
-### Privacy levels
-
-`privacy_level` controls how error messages are recorded on spans. No prompt or response content is exported at any level — that requires a future L3 exporter plugin.
-
-| Level | Error recording on spans | Default |
-|:------|:------|:------|
-| `none` | Status and exception carry only the static string `"redacted"` — no content or internal type exposed | — |
-| `metadata` | Error message is redacted (email / JWT / AWS keys replaced by tokens) before being attached | ✅ |
-| `full` | Raw error text recorded without redaction — for trusted self-hosted debugging only | — |
-
-Invalid values are rejected at startup by config validation.
-
-### Plugin exporters
-
-The `observability.exporters` config block wires plugin exporters that receive `gateway.request.completed` and `gateway.request.failed` events on every request. Exporters operate independently of whether an OTLP tracing endpoint is configured.
-
-**No built-in exporter plugins ship in this repo.** They are provided by the `ai-gateway-plugins` repository and self-register via `observability.RegisterExporter` in their `init()`. The `observability.Exporter` contract is stable as of v1.1.0. Unrecognised or failing exporters emit a warning and are skipped — the gateway still starts.
 
 ---
 
@@ -541,7 +403,7 @@ The `observability.exporters` config block wires plugin exporters that receive `
 | `ferrogw status` | Show gateway health and provider status |
 | `ferrogw version` | Print version, commit, and build info |
 | `ferrogw admin keys list` | List API keys |
-| `ferrogw admin keys create <name>` | Create an API key |
+| `ferrogw admin keys create --name <name>` | Create an API key (`--scope`, `--expires-in`) |
 | `ferrogw admin logs stats` | Show request log statistics |
 | `ferrogw plugins` | List registered plugins |
 
@@ -560,99 +422,32 @@ export GATEWAY_CONFIG=./config.yaml
 make build && ./bin/ferrogw
 ```
 
-### Railway (SQLite)
+### Railway & Render
 
-For a fast Railway deploy with persistent SQLite storage, attach a Railway Volume at `/data` and set:
+The deploy buttons at the top of this README provision either platform: Railway
+with SQLite on a volume (set the three `*_STORE_DSN` variables to paths under
+`/data`) or PostgreSQL, and Render from the repo's `render.yaml` Blueprint,
+which generates `MASTER_KEY` and wires the store DSNs to a managed Postgres
+automatically.
 
-```bash
-MASTER_KEY=fgw_your-master-key
-OPENAI_API_KEY=sk-your-key
-PORT=8080
-API_KEY_STORE_BACKEND=sqlite
-API_KEY_STORE_DSN=/data/keys.db
-CONFIG_STORE_BACKEND=sqlite
-CONFIG_STORE_DSN=/data/config.db
-REQUEST_LOG_STORE_BACKEND=sqlite
-REQUEST_LOG_STORE_DSN=/data/logs.db
-RAILWAY_RUN_UID=0
-```
+### Docker Compose
 
-### Render (PostgreSQL)
-
-The repo includes a `render.yaml` Blueprint for a one-click Render deploy with a Docker web service and managed Postgres database. It generates `MASTER_KEY`, asks the user for `OPENAI_API_KEY`, and wires the three store DSNs to the database's internal connection string automatically.
-
-Use the button at the top of this README, or deploy directly from:
-
-```text
-https://render.com/deploy?repo=https://github.com/ferro-labs/ai-gateway
-```
-
-### Option D — Docker Compose (dev & prod)
-
-The repo ships three Compose files that follow the standard override pattern:
-
-| File | Purpose |
-|---|---|
-| `docker-compose.yml` | Base — shared image, port mapping, all provider env var stubs |
-| `docker-compose.dev.yml` | Dev — builds from source, debug logging, live config mount, Ollama host access |
-| `docker-compose.prod.yml` | Prod — pinned image tag, restart policy, health check, resource limits, log rotation |
-
-**Dev** (builds from source):
+Three Compose files in `deploy/` follow the standard override pattern — a shared
+base, a dev override that builds from source, and a prod override with a pinned
+tag, health check, and resource limits. Run everything from the repository root:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+make up             # dev: builds from source
+IMAGE_TAG=v1.4.0 CORS_ORIGINS=https://your-domain.com make up-prod
+make down           # tears down either
 ```
 
-**Prod** (pin to a release tag — never use `latest` in production):
-
-```bash
-# Replace IMAGE_TAG with the latest release tag before running.
-IMAGE_TAG=v1.1.7 CORS_ORIGINS=https://your-domain.com \
-  docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
-```
-
-Provider API keys are commented out in `docker-compose.yml`. Uncomment and set the ones you need, or supply them via a `.env` file in the same directory.
-
----
-
-### Docker Compose (with PostgreSQL)
-
-```yaml
-services:
-  ferrogw:
-    image: ghcr.io/ferro-labs/ai-gateway:latest
-    ports:
-      - "8080:8080"
-    environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - GATEWAY_CONFIG=/etc/ferrogw/config.yaml
-      - CONFIG_STORE_BACKEND=postgres
-      - CONFIG_STORE_DSN=postgresql://ferrogw:ferrogw@db:5432/ferrogw?sslmode=disable
-      - API_KEY_STORE_BACKEND=postgres
-      - API_KEY_STORE_DSN=postgresql://ferrogw:ferrogw@db:5432/ferrogw?sslmode=disable
-      - REQUEST_LOG_STORE_BACKEND=postgres
-      - REQUEST_LOG_STORE_DSN=postgresql://ferrogw:ferrogw@db:5432/ferrogw?sslmode=disable
-    volumes:
-      - ./config.yaml:/etc/ferrogw/config.yaml:ro
-    depends_on:
-      - db
-
-  db:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_USER: ferrogw
-      POSTGRES_PASSWORD: ferrogw
-      POSTGRES_DB: ferrogw
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-
-volumes:
-  pgdata:
-```
+One container serves both the API and the dashboard — no second image, no second
+origin. Provider keys go in a repository-root `.env` or the environment.
+[deploy/README.md](deploy/README.md) has the full reference, including a
+self-contained PostgreSQL pairing and the fullstack observability stack.
 
 ### Kubernetes via Helm
-
-[![Artifact Hub](https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/ferro-labs)](https://artifacthub.io/packages/search?org=ferro-labs)
 
 ```bash
 helm repo add ferro-labs https://ferro-labs.github.io/helm-charts
@@ -667,11 +462,12 @@ Helm charts: [github.com/ferro-labs/helm-charts](https://github.com/ferro-labs/h
 
 ## Migrate to Ferro Labs AI Gateway
 
+The gateway is OpenAI-compatible, so migration from any gateway — or from
+calling a provider directly — is a `base_url` change.
+
 ### From LiteLLM
 
-LiteLLM users can migrate in one step. Ferro Labs AI Gateway is OpenAI-compatible — change one line in your code:
-
-**Python (before — LiteLLM):**
+**Before (LiteLLM):**
 
 ```python
 from litellm import completion
@@ -682,7 +478,7 @@ response = completion(
 )
 ```
 
-**Python (after — Ferro Labs AI Gateway):**
+**After (Ferro Labs AI Gateway):**
 
 ```python
 from openai import OpenAI
@@ -698,21 +494,9 @@ response = client.chat.completions.create(
 )
 ```
 
-**Node.js (after — Ferro Labs AI Gateway):**
-
-```typescript
-import OpenAI from "openai";
-
-const client = new OpenAI({
-  baseURL: "http://localhost:8080/v1",
-  apiKey: "your-ferro-api-key",
-});
-
-const response = await client.chat.completions.create({
-  model: "gpt-4o",
-  messages: [{ role: "user", content: "Hello" }],
-});
-```
+Provider API keys move to environment variables (`OPENAI_API_KEY`,
+`ANTHROPIC_API_KEY`, …); the model list becomes `targets` + `aliases` in
+`config.yaml`.
 
 **Why migrate from LiteLLM:**
 
@@ -721,55 +505,10 @@ const response = await client.chat.completions.create({
 - Single binary — no Python environment, no pip, no virtualenv
 - Predictable latency — p99 stays under 65 ms at 150 VU vs LiteLLM's timeouts at the same concurrency
 
-**Config migration:**
-
-```
-# LiteLLM config.yaml               # Ferro Labs config.yaml
-model_list:                          strategy:
-  - model_name: gpt-4o                mode: fallback
-    litellm_params:
-      model: gpt-4o                  targets:
-      api_key: sk-...                  - virtual_key: openai
-  - model_name: claude-3-5-sonnet     - virtual_key: anthropic
-    litellm_params:
-      model: claude-3-5-sonnet       aliases:
-      api_key: sk-ant-...              fast: gpt-4o
-                                       smart: claude-3-5-sonnet-20241022
-```
-
-Provider API keys are set via environment variables (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, etc.) — not in the config file.
-
 ### From Portkey
 
-Portkey users: Ferro Labs AI Gateway uses the standard OpenAI SDK — no custom headers required in self-hosted mode.
-
-**Before (Portkey hosted):**
-
-```python
-from portkey_ai import Portkey
-
-client = Portkey(api_key="portkey-key")
-response = client.chat.completions.create(
-    model="gpt-4o",
-    messages=[{"role": "user", "content": "Hello"}],
-)
-```
-
-**After (Ferro Labs AI Gateway self-hosted):**
-
-```python
-from openai import OpenAI
-
-client = OpenAI(
-    base_url="http://localhost:8080/v1",
-    api_key="your-ferro-api-key",
-)
-
-response = client.chat.completions.create(
-    model="gpt-4o",
-    messages=[{"role": "user", "content": "Hello"}],
-)
-```
+The code change is the same one line — Ferro Labs uses the standard OpenAI SDK
+with no custom headers in self-hosted mode.
 
 **Why migrate from Portkey:**
 
@@ -778,24 +517,6 @@ response = client.chat.completions.create(
 - No vendor lock-in — Apache 2.0 license
 - MCP support — Portkey self-hosted lacks native MCP
 - FerroCloud (coming soon) for teams that want a managed service
-
-### From OpenAI SDK directly
-
-No gateway yet? Add Ferro Labs AI Gateway in front of your existing code with a single `base_url` change. No other code changes required.
-
-```python
-# Before — calling OpenAI directly
-client = OpenAI(api_key="sk-...")
-
-# After — routing through Ferro Labs AI Gateway
-# Gains: failover, caching, rate limiting, cost tracking
-client = OpenAI(
-    base_url="http://localhost:8080/v1",
-    api_key="your-ferro-api-key",
-)
-```
-
-Ferro Labs AI Gateway handles provider failover automatically — if OpenAI is down, your requests fall through to Anthropic or Gemini with zero application code changes.
 
 ---
 
@@ -809,7 +530,8 @@ FerroCloud — the managed version of Ferro Labs AI Gateway with multi-tenancy, 
 
 ## SDKs
 
-Official client libraries for the Ferro Labs AI Gateway:
+Official client libraries for the Ferro Labs AI Gateway — and the standard
+OpenAI SDK works unchanged: point `base_url` at `http://your-gateway:8080/v1`.
 
 | SDK | Install | Repository |
 |:----|:--------|:-----------|
@@ -853,32 +575,6 @@ const response = await client.chat.completions.create({
 ```
 
 </details>
-
-### OpenAI SDK Compatible
-
-You can also use the standard OpenAI SDK directly — just change the base URL:
-
-**Python:**
-
-```python
-from openai import OpenAI
-
-client = OpenAI(
-    api_key="sk-ferro-...",
-    base_url="http://localhost:8080/v1",
-)
-```
-
-**TypeScript:**
-
-```typescript
-import OpenAI from "openai";
-
-const client = new OpenAI({
-  apiKey: "sk-ferro-...",
-  baseURL: "http://localhost:8080/v1",
-});
-```
 
 ---
 

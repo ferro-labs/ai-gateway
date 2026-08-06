@@ -27,7 +27,11 @@ func NormalizeFinishReason(native string) string {
 	switch strings.ToLower(strings.TrimSpace(native)) {
 	case "":
 		return ""
-	case "stop", "end_turn", "stop_sequence", "complete", "finish":
+	// "finished" and "stop_criteria_met" are Amazon Titan's documented
+	// completionReason values for a normal completion; without them a Titan
+	// response reported its native uppercase string as the finish_reason, which
+	// a client checking for "stop" reads as an unfinished answer.
+	case "stop", "end_turn", "stop_sequence", "complete", "finish", "finished", "stop_criteria_met":
 		return FinishReasonStop
 	case "length", "max_tokens", "model_length", "max_completion_tokens":
 		return FinishReasonLength

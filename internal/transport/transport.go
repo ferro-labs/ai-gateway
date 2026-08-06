@@ -15,6 +15,7 @@ package transport
 import (
 	"net"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 
@@ -39,14 +40,21 @@ type Config struct {
 // DefaultConfig returns production-optimized defaults.
 func DefaultConfig() Config {
 	return Config{
-		MaxIdleConnsPerHost:   100,
-		MaxIdleConns:          1000,
-		MaxConnsPerHost:       0,
-		IdleConnTimeout:       90 * time.Second,
-		DialTimeout:           10 * time.Second,
-		KeepAliveInterval:     30 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ResponseHeaderTimeout: 30 * time.Second,
+		MaxIdleConnsPerHost: 100,
+		MaxIdleConns:        1000,
+		MaxConnsPerHost:     0,
+		IdleConnTimeout:     90 * time.Second,
+		DialTimeout:         10 * time.Second,
+		KeepAliveInterval:   30 * time.Second,
+		TLSHandshakeTimeout: 10 * time.Second,
+		// Bounded by how long a model can take to answer, not by how long an
+		// HTTP service can take to respond. A provider sends no header until it
+		// has something to say, which for a non-streaming call is the whole
+		// generation and for a streaming one is the first token — both of which
+		// routinely pass thirty seconds on a reasoning model or a long prompt.
+		// A provider whose observed behaviour differs sets its own value in
+		// KnownProviderPresets, which overrides this.
+		ResponseHeaderTimeout: 120 * time.Second,
 		ForceHTTP2:            true,
 		DisableCompression:    false,
 		StreamingIdleTimeout:  5 * time.Minute,
@@ -94,12 +102,6 @@ func (m *Manager) ForProvider(provider string) *http.Client {
 		return c
 	}
 	return m.defaultClient
-}
-
-// ForStreaming returns the SSE-optimized client.
-// No ResponseHeaderTimeout — first LLM token can take 10-30s.
-func (m *Manager) ForStreaming(_ string) *http.Client {
-	return m.streamClient
 }
 
 // RegisterProvider registers a custom-tuned client for a provider.
@@ -193,5 +195,60 @@ func (m *Manager) buildClient(cfg Config, streaming bool) (*http.Client, *http.T
 		Transport: otelhttp.NewTransport(t),
 		// No global Timeout — use context.WithTimeout per request.
 		// LLM streaming responses can legitimately take 60-120s.
+		CheckRedirect: noRedirect,
 	}, t
+}
+
+// noRedirect surfaces a 3xx to the caller instead of following it.
+//
+// These clients inject the operator's provider credential on every request. Go
+// strips Authorization on a cross-domain hop but copies custom headers
+// verbatim, so an upstream that redirects — whether compromised, or simply a
+// misconfigured <PROVIDER>_BASE_URL — would have x-api-key, api-key and
+// x-goog-api-key replayed to a host the operator never configured.
+//
+// Returning ErrUseLastResponse is not an error path: http.Client hands the
+// caller the 3xx response with its body intact, so a legitimate redirect is
+// visible and diagnosable rather than silently followed.
+func noRedirect(*http.Request, []*http.Request) error {
+	return http.ErrUseLastResponse
+}
+
+// RedirectTarget describes where a surfaced 3xx pointed, for inclusion in the
+// error a caller reports. It returns "" for any response that is not a
+// redirect, so a caller can use it as the whole condition.
+//
+// Every client above refuses redirects identically, so without this the two
+// cases an operator most needs to tell apart read the same: a same-host
+// normalisation redirect (a trailing slash an MCP server adds, an ingress
+// upgrading http to https) and a cross-host hop that would have replayed a
+// credential. The first is the operator's own URL to fix; the second is the
+// reason the policy exists.
+//
+// It names the scheme and host and nothing else. A Location URL can carry a
+// credential in its userinfo or its query string, and url.URL keeps both out of
+// Host — so the safe field is also the one that answers the question. A
+// relative Location is resolved against the request so it too reports a host.
+func RedirectTarget(resp *http.Response) string {
+	if resp == nil || resp.StatusCode < 300 || resp.StatusCode > 399 {
+		return ""
+	}
+	loc := resp.Header.Get("Location")
+	if loc == "" {
+		return "redirect with no Location header"
+	}
+	target, err := url.Parse(loc)
+	if err != nil {
+		return "redirect to an unparseable Location"
+	}
+	if resp.Request != nil && resp.Request.URL != nil {
+		target = resp.Request.URL.ResolveReference(target)
+		if target.Host == resp.Request.URL.Host {
+			return "redirect to " + target.Scheme + "://" + target.Host + " (same host)"
+		}
+	}
+	if target.Host == "" || target.Scheme == "" {
+		return "redirect to a relative Location"
+	}
+	return "redirect to " + target.Scheme + "://" + target.Host
 }
