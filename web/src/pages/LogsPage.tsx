@@ -1,7 +1,7 @@
 import { Filter, RefreshCw, Search, Trash2 } from 'lucide-react'
 import { useAuth } from '../auth/AuthProvider'
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useSearchParams } from 'react-router'
 import { DataTable, type DataTableColumn } from '../components/DataTable'
 import { Button, CopyButton, EmptyState, Modal, Notice, PageHeader, StatusPill } from '../components/ui'
 import { Input } from '@/components/ui/input'

@@ -1,6 +1,6 @@
 import { ImageIcon, MessagesSquare, Ruler } from 'lucide-react'
 import { useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useAuth } from '../auth/AuthProvider'
 import { Button, EmptyState, LoadingState, Notice, PageHeader } from '../components/ui'

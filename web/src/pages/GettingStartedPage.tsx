@@ -1,6 +1,6 @@
 import { Check, Circle, ExternalLink, KeyRound, Play, ScrollText, ServerCog, Sparkles } from 'lucide-react'
 import { type ComponentType } from 'react'
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import { cn } from '@/lib/utils'
 import { Button, LoadingState, Notice, PageHeader } from '../components/ui'
 import { request } from '../lib/api'

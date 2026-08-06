@@ -1,6 +1,6 @@
 import { ChevronDown, ChevronRight, Filter, RefreshCw } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router'
 import { DataTable, type DataTableColumn } from '../components/DataTable'
 import { Button, CopyButton, EmptyState, Notice, PageHeader, StatusPill } from '../components/ui'
 import { Input } from '@/components/ui/input'
