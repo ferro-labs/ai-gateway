@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [1.4.1] — 2026-08-07
+
+A dependency-security patch for the web toolchain and the embedded dashboard.
+No gateway code changes.
+
 ### Changed — the web toolchain clears every open dependency advisory
 
 The dashboard's router moves to `react-router` 8.3.0 — the package that
