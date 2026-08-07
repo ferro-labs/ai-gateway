@@ -27,8 +27,7 @@ import (
 // in-flight slot when a target sets max_concurrency but omits queue_size.
 const DefaultConcurrencyQueueSize = 1000
 
-// MaxTargetConcurrency moved to the config package; it is re-exported as an
-// alias in config_aliases.go.
+// MaxTargetConcurrency lives in the config package (config.MaxTargetConcurrency).
 
 // providerLimiter bounds how many requests may be in flight against a single
 // target, and how many may wait for a slot.

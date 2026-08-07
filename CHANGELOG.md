@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _Nothing yet._
 
+## [1.4.2] — 2026-08-07
+
+A documentation correction for the v1.4.0 configuration-package move.
+
+### Changed — the configuration schema lives in the config package
+
+v1.4.0 moved the configuration schema — `Config` and its sub-types — and the
+loader and validator out of the root package and into the `config` package
+(`github.com/ferro-labs/ai-gateway/config`). Two code comments still referred to
+a root-package alias file that was never shipped; they now point at the `config`
+package, which is the single home for these types.
+
+For an embedder this remains a breaking change from the pre-v1.4.0 API, and the
+migration is a one-line import: reference `config.Config`, `config.ValidateConfig`,
+`config.ModeFallback` and the rest instead of the former `aigateway.*` names. The
+gateway is still constructed the same way — `aigateway.New` takes a `config.Config`.
+
 ## [1.4.1] — 2026-08-07
 
 A dependency-security patch for the web toolchain and the embedded dashboard.

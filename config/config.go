@@ -1,7 +1,8 @@
 // Package config defines the AI Gateway configuration schema (Config and its
-// sub-types) and the loader/validator (LoadConfig, ValidateConfig). The root
-// aigateway package re-exports these as aliases (see config_aliases.go) so
-// existing embedders keep compiling; new code may import this package directly.
+// sub-types) and the loader/validator (LoadConfig, ValidateConfig). These types
+// moved here from the root aigateway package in v1.4.0; embedders import this
+// package directly. The gateway is still built with aigateway.New, which takes a
+// config.Config.
 package config
 
 import "github.com/ferro-labs/ai-gateway/mcp"
