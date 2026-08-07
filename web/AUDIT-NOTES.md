@@ -5,28 +5,25 @@ whoever runs it — not a scanner config. There is no `osv-scanner.toml`,
 `.nsprc`, or `audit-ci` allowlist because no tool that reads one runs against
 `web/`.
 
-## GHSA-qwww-vcr4-c8h2 — react-router / react-router-dom — expected, already fixed
+There are currently no exceptions.
 
-**Re-check after 2026-10-31.** If the advisory range has been corrected by then,
-delete this entry. If it has not, confirm the two facts below still hold and
-extend the date — do not extend it unread.
+## GHSA-qwww-vcr4-c8h2 — react-router — retired 2026-08-06
 
-`npm audit` reports this advisory against react-router at any 7.x version. It is
-a false positive here for two independent reasons:
+Retired when the dashboard moved to `react-router@8.3.0`, the version the
+advisory lists as patched: the advisory no longer matches the lockfile and
+`npm audit` reports nothing. While the dashboard was on 7.18.2 this was the
+one exception, documented as a false positive for two reasons — both verified,
+and both still true of the 7.x line:
 
-1. **Already patched.** The fix was backported to 7.x by upstream PR #15353 and
-   released as 7.18.2, which is what the lockfile resolves. The advisory's
-   affected range still reads `>=7.12.0 <8.3.0` and has not been corrected for
-   the backport, so the scanner keeps matching a patched version.
-2. **Not reachable.** The vulnerable code ships only under the `react-server`
-   export condition. This is a client-only Vite SPA using `<BrowserRouter>`
-   (`src/App.tsx`), with no RSC server and no custom `resolve.conditions`, so
-   that condition is never set. Diffing the published 7.18.1 and 7.18.2
-   tarballs, the client-reachable module graph is byte-identical apart from the
-   version string; the CSRF hardening appears only in `index-react-server.mjs`.
-
-Verify claim 1 in one command:
-
-```sh
-npm view react-router@7.18.2 dist.tarball   # then read its CHANGELOG.md
-```
+1. **7.18.2 carries the backported fix.** Its published changelog entry reads
+   "Harden RSC CSRF codepaths" (upstream PR #15353). The advisory's affected
+   range (`>=7.12.0 <8.3.0`) was never updated to exclude it, so scanners kept
+   matching a patched version. Verify in one command:
+   `npm pack react-router@7.18.2` and read `package/CHANGELOG.md` — do not
+   trust secondhand summaries of the advisory here; several state that no 7.x
+   patch exists.
+2. **The vulnerable surface is RSC-only.** The hardening lives under the
+   `react-server` export condition. This is a client-only Vite SPA using
+   `<BrowserRouter>` with no RSC server and no custom `resolve.conditions`,
+   so that condition is never set; the client-reachable module graph of
+   7.18.1 and 7.18.2 is byte-identical apart from the version string.

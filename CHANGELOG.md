@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _Nothing yet._
 
+## [1.4.1] — 2026-08-07
+
+A dependency-security patch for the web toolchain and the embedded dashboard.
+No gateway code changes.
+
+### Changed — the web toolchain clears every open dependency advisory
+
+The dashboard's router moves to `react-router` 8.3.0 — the package that
+absorbed `react-router-dom`, whose 7.x line advisory scanners flag on an
+uncorrected affected range — together with React 19.2.8 (Router 8's peer
+floor is React 19.2.7). The client routing API is unchanged and the rendered
+browser suites pass unmodified.
+
+Seven build- and tooling-time packages move onto their patched releases:
+`undici`, `ip-address`, `fast-uri`, `postcss`, `@hono/node-server` (reached
+through the component tooling's MCP SDK), `brace-expansion`, and `hono`. None
+of them ships in the embedded bundle. `npm audit` reports zero
+vulnerabilities.
+
 ## [1.4.0] — 2026-08-07
 
 This release consolidates routing. Chat, streaming, embeddings and image

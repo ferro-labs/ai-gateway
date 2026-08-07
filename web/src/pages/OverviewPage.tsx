@@ -1,5 +1,5 @@
 import { CalendarDays, RefreshCw } from 'lucide-react'
-import { Link, useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router'
 import { SeriesChart } from '../components/SeriesChart'
 import { TRAFFIC_BANDS } from '../lib/chartBands'
 import { Button, EmptyState, LoadingState, Notice, PageHeader, StatusPill } from '../components/ui'

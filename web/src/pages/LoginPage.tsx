@@ -1,6 +1,6 @@
 import { ArrowRight, Eye, EyeOff, Github, KeyRound } from 'lucide-react'
 import { useEffect, useState, type FormEvent } from 'react'
-import { Navigate, useLocation } from 'react-router-dom'
+import { Navigate, useLocation } from 'react-router'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { useAuth } from '../auth/AuthProvider'

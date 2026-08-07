@@ -1,6 +1,6 @@
 import { CalendarDays, Filter, RefreshCw } from 'lucide-react'
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useSearchParams } from 'react-router'
 import { Button, EmptyState, LoadingState, Notice, PageHeader } from '../components/ui'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
