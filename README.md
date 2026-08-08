@@ -30,6 +30,7 @@
 [![Artifact Hub](https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/ferro-labs)](https://artifacthub.io/packages/search?org=ferro-labs)
 [![Docs](https://img.shields.io/badge/docs-ferrolabs.ai-2ea44f)](https://docs.ferrolabs.ai)
 [![Discord](https://img.shields.io/badge/Discord-Join%20Us-5865F2?logo=discord&logoColor=white)](https://discord.gg/yCAeYvJeDV)
+[![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://codspeed.io/ferro-labs/ai-gateway?utm_source=badge)
 
 📖 **Documentation:** [docs.ferrolabs.ai](https://docs.ferrolabs.ai)
 
@@ -588,6 +589,7 @@ We welcome contributions. New providers go in this OSS repo only — never in Fe
 
 - [GitHub Discussions](https://github.com/ferro-labs/ai-gateway/discussions)
 - [Discord](https://discord.gg/yCAeYvJeDV)
+[![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://codspeed.io/ferro-labs/ai-gateway?utm_source=badge)
 - Built with Ferro Labs AI Gateway? Open a PR to add to our showcase.
 
 ---
