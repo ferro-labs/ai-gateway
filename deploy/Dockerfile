@@ -21,7 +21,7 @@
 
 # ── Dashboard bundle ─────────────────────────────────────────────────────────
 
-FROM node:22-alpine AS web-build
+FROM node:25-alpine AS web-build
 
 WORKDIR /src
 
