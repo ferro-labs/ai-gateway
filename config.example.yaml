@@ -181,6 +181,7 @@ targets:
   - virtual_key: nvidia-nim
   - virtual_key: openrouter
   - virtual_key: qwen
+  - virtual_key: requesty
   - virtual_key: sambanova
 
 # Batch + files backend. The /v1/files* and /v1/batches* endpoints carry no
