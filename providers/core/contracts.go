@@ -38,6 +38,56 @@ type Provider interface {
 	SupportsModel(model string) bool
 }
 
+// ProviderUnwrapper exposes the provider beneath an identity-only decorator.
+// Consumers should normally use As rather than unwrapping directly so nested
+// decorators remain an implementation detail.
+type ProviderUnwrapper interface {
+	UnwrapProvider() Provider
+}
+
+type namedProvider struct {
+	Provider
+	name string
+}
+
+var _ Provider = (*namedProvider)(nil)
+
+func (p *namedProvider) Name() string { return p.name }
+
+func (p *namedProvider) UnwrapProvider() Provider { return p.Provider }
+
+// WithName returns a provider registered under name without copying its
+// optional capability interfaces onto a lossy wrapper. Use As to resolve an
+// optional interface through the returned identity decorator.
+func WithName(p Provider, name string) Provider {
+	if p == nil || name == "" || p.Name() == name {
+		return p
+	}
+	return &namedProvider{Provider: p, name: name}
+}
+
+// As resolves T from p or from an identity decorator beneath it. Every provider
+// in the chain is inspected, including the one reached by the final unwrap. The
+// bounded walk (at most 32 unwraps) prevents a broken third-party decorator that
+// unwraps to itself from hanging capability resolution.
+func As[T any](p Provider) (T, bool) {
+	var zero T
+	for i := 0; ; i++ {
+		if capability, ok := any(p).(T); ok {
+			return capability, true
+		}
+		unwrapper, ok := p.(ProviderUnwrapper)
+		if !ok || i >= 32 {
+			return zero, false
+		}
+		next := unwrapper.UnwrapProvider()
+		if next == nil {
+			return zero, false
+		}
+		p = next
+	}
+}
+
 // AnyModelProvider is the opt-in declaration that a provider's upstream accepts
 // model ids nothing can enumerate in advance — a deployment name chosen at
 // deploy time, a serving endpoint named by a workspace, a model pulled onto the

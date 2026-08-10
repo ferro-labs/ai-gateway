@@ -27,8 +27,7 @@ import (
 // in-flight slot when a target sets max_concurrency but omits queue_size.
 const DefaultConcurrencyQueueSize = 1000
 
-// MaxTargetConcurrency moved to the config package; it is re-exported as an
-// alias in config_aliases.go.
+// MaxTargetConcurrency lives in the config package (config.MaxTargetConcurrency).
 
 // providerLimiter bounds how many requests may be in flight against a single
 // target, and how many may wait for a slot.
@@ -111,7 +110,7 @@ func (p *limitedProvider) Complete(ctx context.Context, req providers.Request) (
 // once response headers arrive would let unlimited streams run concurrently and
 // defeat the cap entirely.
 func (p *limitedProvider) CompleteStream(ctx context.Context, req providers.Request) (<-chan providers.StreamChunk, error) {
-	sp, ok := p.Provider.(providers.StreamProvider)
+	sp, ok := providers.As[providers.StreamProvider](p.Provider)
 	if !ok {
 		return nil, fmt.Errorf("provider %s does not support streaming", p.name)
 	}

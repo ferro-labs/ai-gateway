@@ -10,6 +10,7 @@ import (
 	aigateway "github.com/ferro-labs/ai-gateway"
 	"github.com/ferro-labs/ai-gateway/internal/apierror"
 	"github.com/ferro-labs/ai-gateway/internal/sse"
+	"github.com/ferro-labs/ai-gateway/internal/version"
 )
 
 // ChatCompletions handles POST /v1/chat/completions.
@@ -121,6 +122,9 @@ func Health(gw *aigateway.Gateway) http.HandlerFunc {
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"status":    status,
+			"version":   version.Version,
+			"commit":    version.Commit,
+			"built":     version.Date,
 			"providers": providerStatuses,
 		})
 	}

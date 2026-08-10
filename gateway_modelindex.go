@@ -80,7 +80,7 @@ type modelLookupIndex struct {
 // an Azure deployment, an OLLAMA_MODELS entry — or nil for the providers whose
 // inventory the catalog supplies. See core.ConfiguredModelProvider.
 func configuredModelsOf(p providers.Provider) []string {
-	cm, ok := p.(providers.ConfiguredModelProvider)
+	cm, ok := providers.As[providers.ConfiguredModelProvider](p)
 	if !ok {
 		return nil
 	}
@@ -166,6 +166,27 @@ func (g *Gateway) modelsForRoutingLocked(name string, p providers.Provider) []st
 	return out
 }
 
+// canonicalProviderName returns the name of the provider beneath any identity
+// (aliasing) decorators — the vendor identity the model catalog and price book
+// are keyed on. A provider registered under its own name unwraps to itself, so
+// the routing key (which may be an alias bound to a specific credential) stays
+// separate from the canonical identity used for catalog inventory and pricing.
+// The bounded walk mirrors core.As and cannot hang on a self-referential wrapper.
+func canonicalProviderName(p providers.Provider) string {
+	for range 32 {
+		unwrapper, ok := p.(providers.ProviderUnwrapper)
+		if !ok {
+			break
+		}
+		next := unwrapper.UnwrapProvider()
+		if next == nil {
+			break
+		}
+		p = next
+	}
+	return p.Name()
+}
+
 // rebuildModelIndexesLocked repopulates every exact model→provider index from
 // the current provider set, and drops the built strategy: it selects targets
 // against a snapshot of this index, so leaving it in place would keep routing
@@ -185,7 +206,15 @@ func (g *Gateway) rebuildModelIndexesLocked() {
 	// treats them as read-only.
 	g.catalogModels = make(map[string][]string, len(g.providerNames))
 	for _, name := range g.providerNames {
-		if ids := g.catalog.ModelsForProvider(name); len(ids) > 0 {
+		p, ok := g.providers[name]
+		if !ok {
+			continue
+		}
+		// Key the catalog lookup on the provider's canonical vendor identity, not
+		// the (possibly aliased) routing key it was registered under — otherwise an
+		// alias inherits none of its provider's catalog models and they vanish from
+		// routing and /v1/models.
+		if ids := g.catalog.ModelsForProvider(canonicalProviderName(p)); len(ids) > 0 {
 			g.catalogModels[name] = ids
 		}
 	}
@@ -245,7 +274,7 @@ func (g *Gateway) publishRoutingLocked() {
 // when p implements the capability interface T. Used to populate the per-capability
 // exact indexes without repeating the type-assert-and-append block per capability.
 func indexModelsIfImplements[T any](p providers.Provider, name string, models []string, index map[string][]string) {
-	if _, ok := any(p).(T); !ok {
+	if _, ok := providers.As[T](p); !ok {
 		return
 	}
 	for _, model := range models {
@@ -269,7 +298,7 @@ func indexModelsIfImplements[T any](p providers.Provider, name string, models []
 func findByModel[T any](s *routingSnapshot, index map[string][]string, model string) (name string, impl T, ok bool) {
 	owners := index[model]
 	for _, n := range owners {
-		if t, is := any(s.providers[n]).(T); is {
+		if t, is := providers.As[T](s.providers[n]); is {
 			return n, t, true
 		}
 	}
@@ -279,7 +308,7 @@ func findByModel[T any](s *routingSnapshot, index map[string][]string, model str
 			if !exists || !servesAnyModel(p) {
 				continue
 			}
-			if t, is := any(p).(T); is {
+			if t, is := providers.As[T](p); is {
 				return n, t, true
 			}
 		}
@@ -292,7 +321,7 @@ func findByModel[T any](s *routingSnapshot, index map[string][]string, model str
 // that its upstream accepts model ids no index can enumerate. It is the ONLY
 // way a target becomes a candidate for a model the index has no owner for.
 func servesAnyModel(p providers.Provider) bool {
-	_, ok := p.(providers.AnyModelProvider)
+	_, ok := providers.As[providers.AnyModelProvider](p)
 	return ok
 }
 
@@ -391,7 +420,7 @@ func (p *indexedStreamProvider) CompleteStream(ctx context.Context, req provider
 // owned, so the view answers for the declared wildcards and nobody else.
 func withIndexedModels(name string, p providers.Provider, index map[string][]string) providers.Provider {
 	view := &indexedProvider{Provider: p, name: name, index: index, anyModel: servesAnyModel(p)}
-	if sp, ok := p.(providers.StreamProvider); ok {
+	if sp, ok := providers.As[providers.StreamProvider](p); ok {
 		return &indexedStreamProvider{indexedProvider: view, stream: sp}
 	}
 	return view

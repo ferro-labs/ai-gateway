@@ -832,27 +832,33 @@ func surfaceGate(surface string) capabilityGate {
 // and the hot path allocates nothing to describe the call. The gate above has
 // already run by the time either executes, so neither assertion can fail.
 func embed(ctx context.Context, p providers.Provider, req providers.EmbeddingRequest) (*providers.EmbeddingResponse, error) {
-	return p.(providers.EmbeddingProvider).Embed(ctx, req) //nolint:forcetypeassert // embeddingCapable gated candidacy
+	provider, _ := providers.As[providers.EmbeddingProvider](p)
+	return provider.Embed(ctx, req) // embeddingCapable gated candidacy
 }
 
 func generateImage(ctx context.Context, p providers.Provider, req providers.ImageRequest) (*providers.ImageResponse, error) {
-	return p.(providers.ImageProvider).GenerateImage(ctx, req) //nolint:forcetypeassert // imageCapable gated candidacy
+	provider, _ := providers.As[providers.ImageProvider](p)
+	return provider.GenerateImage(ctx, req) // imageCapable gated candidacy
 }
 
 func rerank(ctx context.Context, p providers.Provider, req providers.RerankRequest) (*providers.RerankResponse, error) {
-	return p.(providers.RerankProvider).Rerank(ctx, req) //nolint:forcetypeassert // rerankCapable gated candidacy
+	provider, _ := providers.As[providers.RerankProvider](p)
+	return provider.Rerank(ctx, req) // rerankCapable gated candidacy
 }
 
 func moderate(ctx context.Context, p providers.Provider, req providers.ModerationRequest) (*providers.ModerationResponse, error) {
-	return p.(providers.ModerationProvider).Moderate(ctx, req) //nolint:forcetypeassert // moderationCapable gated candidacy
+	provider, _ := providers.As[providers.ModerationProvider](p)
+	return provider.Moderate(ctx, req) // moderationCapable gated candidacy
 }
 
 func transcribe(ctx context.Context, p providers.Provider, req providers.TranscriptionRequest) (*providers.TranscriptionResponse, error) {
-	return p.(providers.TranscriptionProvider).Transcribe(ctx, req) //nolint:forcetypeassert // transcriptionCapable gated candidacy
+	provider, _ := providers.As[providers.TranscriptionProvider](p)
+	return provider.Transcribe(ctx, req) // transcriptionCapable gated candidacy
 }
 
 func speak(ctx context.Context, p providers.Provider, req providers.SpeechRequest) (*providers.SpeechResponse, error) {
-	return p.(providers.SpeechProvider).Speech(ctx, req) //nolint:forcetypeassert // speechCapable gated candidacy
+	provider, _ := providers.As[providers.SpeechProvider](p)
+	return provider.Speech(ctx, req) // speechCapable gated candidacy
 }
 
 // routeEmbedding runs an embedding request through the shared request pipeline

@@ -674,11 +674,12 @@ func (g *Gateway) routeChat(ctx context.Context, s strategies.Strategy, req prov
 // gate and a leaf call:
 //
 //	func embeddingProvider(p providers.Provider) bool {
-//		_, ok := p.(providers.EmbeddingProvider)
+//		_, ok := providers.As[providers.EmbeddingProvider](p)
 //		return ok
 //	}
 //	func embed(ctx context.Context, p providers.Provider, req providers.EmbeddingRequest) (*providers.EmbeddingResponse, error) {
-//		return p.(providers.EmbeddingProvider).Embed(ctx, req)
+//		provider, _ := providers.As[providers.EmbeddingProvider](p)
+//		return provider.Embed(ctx, req)
 //	}
 //
 // then routeTargets(ctx, g, g.planFor(req.Model, keys), req, embeddingProvider, embed).

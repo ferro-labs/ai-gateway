@@ -9,6 +9,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _Nothing yet._
 
+## [1.4.2] — 2026-08-10
+
+### Added — registration aliases preserve provider capabilities
+
+`Gateway.RegisterProviderAs` registers one provider under a distinct routing target,
+so deployments can bind multiple credentials for the same canonical provider. The
+alias now resolves every optional provider capability through the original provider;
+streaming, embeddings, images, rerank, moderation, audio, discovery, batch,
+Responses, and generic pass-through no longer disappear behind an identity wrapper.
+
+### Added — embedding HTTP surface facade
+
+The public `httpgateway` package exposes the OSS-owned Files/Batches, Responses,
+and generic pass-through handlers to embedding applications. Embedders can keep
+their own authentication and tenant policy middleware while reusing the same
+provider resolution, credential injection, traversal protection, governance, and
+usage capture as the standalone server.
+
+### Added — build provenance on the health endpoint
+
+`GET /health` now reports the binary's `version`, `commit`, and `built` build
+metadata alongside provider status, so an operator or embedding application can
+confirm which build is serving traffic. Values come from `internal/version` and
+default to `dev` / `none` / `unknown` for an unstamped local build.
+
+### Changed — the configuration schema lives in the config package
+
+v1.4.0 moved the configuration schema — `Config` and its sub-types — and the
+loader and validator out of the root package and into the `config` package
+(`github.com/ferro-labs/ai-gateway/config`). Two code comments still referred to
+a root-package alias file that was never shipped; they now point at the `config`
+package, which is the single home for these types.
+
+For an embedder this remains a breaking change from the pre-v1.4.0 API, and the
+migration is a one-line import: reference `config.Config`, `config.ValidateConfig`,
+`config.ModeFallback` and the rest instead of the former `aigateway.*` names. The
+gateway is still constructed the same way — `aigateway.New` takes a `config.Config`.
+
 ## [1.4.1] — 2026-08-07
 
 A dependency-security patch for the web toolchain and the embedded dashboard.

@@ -144,7 +144,7 @@ func passThroughHandler(src providers.ProviderSource) http.HandlerFunc {
 			return
 		}
 
-		pp, canProxy := p.(providers.ProxiableProvider)
+		pp, canProxy := providers.As[providers.ProxiableProvider](p)
 		if !canProxy {
 			apierror.WriteOpenAI(w, http.StatusNotImplemented,
 				"provider "+p.Name()+" does not support proxy pass-through",
@@ -159,7 +159,7 @@ func passThroughHandler(src providers.ProviderSource) http.HandlerFunc {
 		// their base URL. Refuse with 501 instead of forwarding a request their
 		// upstream cannot parse; they remain available via their native
 		// translated endpoints. See core.NonOpenAIWireProvider.
-		if _, nativeOnly := p.(providers.NonOpenAIWireProvider); nativeOnly {
+		if _, nativeOnly := providers.As[providers.NonOpenAIWireProvider](p); nativeOnly {
 			apierror.WriteOpenAI(w, http.StatusNotImplemented,
 				"provider "+p.Name()+" is not available for OpenAI-compatible pass-through; use its native chat, embeddings, or images endpoints",
 				"invalid_request_error",
@@ -220,7 +220,7 @@ func passThroughHandler(src providers.ProviderSource) http.HandlerFunc {
 		// transport so the fully-formed outbound request is signed; a signing
 		// failure surfaces via ErrorHandler rather than as an unsigned forward.
 		var transport http.RoundTripper = httpclient.SharedStreamingTransport()
-		if signer, ok := p.(providers.RequestSigner); ok {
+		if signer, ok := providers.As[providers.RequestSigner](p); ok {
 			transport = signingRoundTripper{base: transport, signer: signer}
 		}
 

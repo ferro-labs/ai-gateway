@@ -116,7 +116,7 @@ func (g *Gateway) rankConfiguredSurfaceTargets(targets []config.Target, provider
 		if mode == config.ModeLatency {
 			candidate.latency, candidate.hasLatency = g.latencyTracker.Stats(target.VirtualKey)
 		} else {
-			modelKey := p.Name() + "/" + model
+			modelKey := canonicalProviderName(p) + "/" + model
 			candidate.cost = models.Calculate(catalog, modelKey, usage)
 			candidate.priced = surfaceHasPrice(catalog, modelKey, surface)
 		}
@@ -294,22 +294,22 @@ func surfaceHasPrice(catalog models.Catalog, modelKey, surface string) bool {
 func providerSupportsSurface(p providers.Provider, surface string) bool {
 	switch surface {
 	case surfaceEmbeddings:
-		_, ok := p.(providers.EmbeddingProvider)
+		_, ok := providers.As[providers.EmbeddingProvider](p)
 		return ok
 	case surfaceImages:
-		_, ok := p.(providers.ImageProvider)
+		_, ok := providers.As[providers.ImageProvider](p)
 		return ok
 	case surfaceRerank:
-		_, ok := p.(providers.RerankProvider)
+		_, ok := providers.As[providers.RerankProvider](p)
 		return ok
 	case surfaceModeration:
-		_, ok := p.(providers.ModerationProvider)
+		_, ok := providers.As[providers.ModerationProvider](p)
 		return ok
 	case surfaceTranscription:
-		_, ok := p.(providers.TranscriptionProvider)
+		_, ok := providers.As[providers.TranscriptionProvider](p)
 		return ok
 	case surfaceSpeech:
-		_, ok := p.(providers.SpeechProvider)
+		_, ok := providers.As[providers.SpeechProvider](p)
 		return ok
 	default:
 		return false
