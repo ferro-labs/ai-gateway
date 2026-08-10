@@ -48,10 +48,16 @@ func TestHealthStatusCodes(t *testing.T) {
 				t.Fatalf("status code = %d, want %d: %s", w.Code, tt.wantCode, w.Body.String())
 			}
 			var payload struct {
-				Status string `json:"status"`
+				Status  string `json:"status"`
+				Version string `json:"version"`
+				Commit  string `json:"commit"`
+				Built   string `json:"built"`
 			}
 			if err := json.NewDecoder(w.Body).Decode(&payload); err != nil {
 				t.Fatalf("decode health response: %v", err)
+			}
+			if payload.Version == "" || payload.Commit == "" || payload.Built == "" {
+				t.Fatalf("health provenance missing: %+v", payload)
 			}
 			if payload.Status != tt.wantStatus {
 				t.Fatalf("status = %q, want %q", payload.Status, tt.wantStatus)

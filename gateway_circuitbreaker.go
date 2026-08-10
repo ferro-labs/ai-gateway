@@ -59,7 +59,7 @@ func (p *cbProvider) CompleteStream(ctx context.Context, req providers.Request) 
 			panic(r)
 		}
 	}()
-	sp, ok := p.Provider.(providers.StreamProvider)
+	sp, ok := providers.As[providers.StreamProvider](p.Provider)
 	if !ok {
 		p.cb.ReleaseProbe()
 		return nil, fmt.Errorf("provider %s does not support streaming", p.name)

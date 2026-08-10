@@ -12,6 +12,9 @@ import "github.com/ferro-labs/ai-gateway/providers/core"
 // Provider is an alias for core.Provider.
 type Provider = core.Provider
 
+// ProviderUnwrapper is an alias for core.ProviderUnwrapper.
+type ProviderUnwrapper = core.ProviderUnwrapper
+
 // StreamProvider is an alias for core.StreamProvider.
 type StreamProvider = core.StreamProvider
 
@@ -185,3 +188,11 @@ var ParseStatusCode = core.ParseStatusCode
 
 // RetryAfterFrom re-exports core.RetryAfterFrom.
 var RetryAfterFrom = core.RetryAfterFrom
+
+// WithName re-exports core.WithName.
+var WithName = core.WithName
+
+// As resolves an optional capability through identity-only provider wrappers.
+func As[T any](p Provider) (T, bool) {
+	return core.As[T](p)
+}

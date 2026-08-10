@@ -110,7 +110,7 @@ func (p *limitedProvider) Complete(ctx context.Context, req providers.Request) (
 // once response headers arrive would let unlimited streams run concurrently and
 // defeat the cap entirely.
 func (p *limitedProvider) CompleteStream(ctx context.Context, req providers.Request) (<-chan providers.StreamChunk, error) {
-	sp, ok := p.Provider.(providers.StreamProvider)
+	sp, ok := providers.As[providers.StreamProvider](p.Provider)
 	if !ok {
 		return nil, fmt.Errorf("provider %s does not support streaming", p.name)
 	}

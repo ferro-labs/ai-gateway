@@ -47,7 +47,7 @@ func (r *Registry) ModelsFor(name string) []ModelInfo {
 	if !ok {
 		return nil
 	}
-	cm, ok := p.(ConfiguredModelProvider)
+	cm, ok := As[ConfiguredModelProvider](p)
 	if !ok {
 		return nil
 	}

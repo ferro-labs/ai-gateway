@@ -9,9 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _Nothing yet._
 
-## [1.4.2] — 2026-08-07
+## [1.4.2] — 2026-08-10
 
-A documentation correction for the v1.4.0 configuration-package move.
+### Added — registration aliases preserve provider capabilities
+
+`Gateway.RegisterProviderAs` registers one provider under a distinct routing target,
+so deployments can bind multiple credentials for the same canonical provider. The
+alias now resolves every optional provider capability through the original provider;
+streaming, embeddings, images, rerank, moderation, audio, discovery, batch,
+Responses, and generic pass-through no longer disappear behind an identity wrapper.
+
+### Added — embedding HTTP surface facade
+
+The public `httpgateway` package exposes the OSS-owned Files/Batches, Responses,
+and generic pass-through handlers to embedding applications. Embedders can keep
+their own authentication and tenant policy middleware while reusing the same
+provider resolution, credential injection, traversal protection, governance, and
+usage capture as the standalone server.
+
+### Added — build provenance on the health endpoint
+
+`GET /health` now reports the binary's `version`, `commit`, and `built` build
+metadata alongside provider status, so an operator or embedding application can
+confirm which build is serving traffic. Values come from `internal/version` and
+default to `dev` / `none` / `unknown` for an unstamped local build.
 
 ### Changed — the configuration schema lives in the config package
 

@@ -80,7 +80,7 @@ type modelLookupIndex struct {
 // an Azure deployment, an OLLAMA_MODELS entry — or nil for the providers whose
 // inventory the catalog supplies. See core.ConfiguredModelProvider.
 func configuredModelsOf(p providers.Provider) []string {
-	cm, ok := p.(providers.ConfiguredModelProvider)
+	cm, ok := providers.As[providers.ConfiguredModelProvider](p)
 	if !ok {
 		return nil
 	}
@@ -245,7 +245,7 @@ func (g *Gateway) publishRoutingLocked() {
 // when p implements the capability interface T. Used to populate the per-capability
 // exact indexes without repeating the type-assert-and-append block per capability.
 func indexModelsIfImplements[T any](p providers.Provider, name string, models []string, index map[string][]string) {
-	if _, ok := any(p).(T); !ok {
+	if _, ok := providers.As[T](p); !ok {
 		return
 	}
 	for _, model := range models {
@@ -269,7 +269,7 @@ func indexModelsIfImplements[T any](p providers.Provider, name string, models []
 func findByModel[T any](s *routingSnapshot, index map[string][]string, model string) (name string, impl T, ok bool) {
 	owners := index[model]
 	for _, n := range owners {
-		if t, is := any(s.providers[n]).(T); is {
+		if t, is := providers.As[T](s.providers[n]); is {
 			return n, t, true
 		}
 	}
@@ -279,7 +279,7 @@ func findByModel[T any](s *routingSnapshot, index map[string][]string, model str
 			if !exists || !servesAnyModel(p) {
 				continue
 			}
-			if t, is := any(p).(T); is {
+			if t, is := providers.As[T](p); is {
 				return n, t, true
 			}
 		}
@@ -292,7 +292,7 @@ func findByModel[T any](s *routingSnapshot, index map[string][]string, model str
 // that its upstream accepts model ids no index can enumerate. It is the ONLY
 // way a target becomes a candidate for a model the index has no owner for.
 func servesAnyModel(p providers.Provider) bool {
-	_, ok := p.(providers.AnyModelProvider)
+	_, ok := providers.As[providers.AnyModelProvider](p)
 	return ok
 }
 
@@ -391,7 +391,7 @@ func (p *indexedStreamProvider) CompleteStream(ctx context.Context, req provider
 // owned, so the view answers for the declared wildcards and nobody else.
 func withIndexedModels(name string, p providers.Provider, index map[string][]string) providers.Provider {
 	view := &indexedProvider{Provider: p, name: name, index: index, anyModel: servesAnyModel(p)}
-	if sp, ok := p.(providers.StreamProvider); ok {
+	if sp, ok := providers.As[providers.StreamProvider](p); ok {
 		return &indexedStreamProvider{indexedProvider: view, stream: sp}
 	}
 	return view

@@ -56,12 +56,12 @@ func ResponsesCreate(src ResponsesSource) http.HandlerFunc {
 			return
 		}
 
-		pp, canProxy := p.(providers.ProxiableProvider)
+		pp, canProxy := providers.As[providers.ProxiableProvider](p)
 		if !canProxy {
 			apierror.WriteOpenAI(w, http.StatusNotImplemented, "provider "+p.Name()+" does not support the responses endpoint", "invalid_request_error", "responses_not_supported")
 			return
 		}
-		if _, nativeOnly := p.(providers.NonOpenAIWireProvider); nativeOnly {
+		if _, nativeOnly := providers.As[providers.NonOpenAIWireProvider](p); nativeOnly {
 			apierror.WriteOpenAI(w, http.StatusNotImplemented, "provider "+p.Name()+" is not available for the OpenAI-compatible responses endpoint; use its native chat endpoint", "invalid_request_error", "responses_not_supported")
 			return
 		}
@@ -137,7 +137,7 @@ func ResponsesIDs(src ResponsesSource) http.HandlerFunc {
 			apierror.WriteOpenAI(w, http.StatusNotImplemented, "the configured responses target is unavailable", "invalid_request_error", "responses_not_configured")
 			return
 		}
-		pp, canProxy := p.(providers.ProxiableProvider)
+		pp, canProxy := providers.As[providers.ProxiableProvider](p)
 		if !canProxy {
 			apierror.WriteOpenAI(w, http.StatusNotImplemented, "provider "+p.Name()+" does not support the responses endpoint", "invalid_request_error", "responses_not_supported")
 			return

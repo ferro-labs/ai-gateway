@@ -66,7 +66,7 @@ func (g *Gateway) startStreamWithStrategy(startCtx, streamCtx context.Context, r
 // streamCapable is streaming's candidacy gate: a target whose provider cannot
 // stream is not a candidate and is never called.
 func streamCapable(p providers.Provider) bool {
-	_, ok := p.(providers.StreamProvider)
+	_, ok := providers.As[providers.StreamProvider](p)
 	return ok
 }
 
@@ -91,7 +91,7 @@ func startStreamOn(streamCtx context.Context, admitted **circuitbreaker.CircuitB
 		}
 		// streamCapable already proved this of the undecorated provider, and
 		// both decorators forward CompleteStream, so the assertion cannot fail.
-		sp, ok := p.(providers.StreamProvider)
+		sp, ok := providers.As[providers.StreamProvider](p)
 		if !ok {
 			return nil, fmt.Errorf("provider %s does not support streaming", p.Name())
 		}

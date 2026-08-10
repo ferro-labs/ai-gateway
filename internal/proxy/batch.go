@@ -62,7 +62,7 @@ func BatchHandler(src BatchSource) http.HandlerFunc {
 				"invalid_request_error", "batch_not_configured")
 			return
 		}
-		bp, ok := p.(providers.BatchProvider)
+		bp, ok := providers.As[providers.BatchProvider](p)
 		if !ok {
 			apierror.WriteOpenAI(w, http.StatusNotImplemented,
 				"provider "+p.Name()+" does not support the batch and files endpoints",

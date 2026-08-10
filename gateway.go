@@ -316,14 +316,26 @@ const (
 	roleUser = "user"
 )
 
-// RegisterProvider registers a provider with the gateway.
+// RegisterProvider registers a provider with the gateway under its canonical name.
 func (g *Gateway) RegisterProvider(p providers.Provider) {
+	g.RegisterProviderAs(p.Name(), p)
+}
+
+// RegisterProviderAs registers a provider under name while retaining the
+// provider's canonical identity and every optional capability it implements.
+// This is intended for deployments that bind multiple credentials for one
+// canonical provider to distinct routing targets.
+func (g *Gateway) RegisterProviderAs(name string, p providers.Provider) {
+	if name == "" {
+		name = p.Name()
+	}
+	p = providers.WithName(p, name)
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if _, exists := g.providers[p.Name()]; !exists {
-		g.providerNames = append(g.providerNames, p.Name())
+	if _, exists := g.providers[name]; !exists {
+		g.providerNames = append(g.providerNames, name)
 	}
-	g.providers[p.Name()] = p
+	g.providers[name] = p
 	g.rebuildModelIndexesLocked()
 	g.strategy = nil // force strategy rebuild
 }

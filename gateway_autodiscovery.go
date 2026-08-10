@@ -57,7 +57,7 @@ func (g *Gateway) runDiscovery(ctx context.Context, log *logger.Logger) {
 	g.mu.RLock()
 	discoverable := make(map[string]providers.DiscoveryProvider, len(g.providers))
 	for name, p := range g.providers {
-		if dp, ok := p.(providers.DiscoveryProvider); ok {
+		if dp, ok := providers.As[providers.DiscoveryProvider](p); ok {
 			discoverable[name] = dp
 		}
 	}
