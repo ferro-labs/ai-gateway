@@ -1,5 +1,5 @@
-// Package httpgateway exposes OSS-owned HTTP surfaces to applications that
-// embed an aigateway.Gateway behind their own authentication and policy layer.
+// Package httpgateway exposes HTTP handlers for applications that embed an
+// aigateway.Gateway behind their own authentication and policy middleware.
 package httpgateway
 
 import (
@@ -21,8 +21,8 @@ func Batch(gw *aigateway.Gateway) http.HandlerFunc {
 	return internalproxy.BatchHandler(gw)
 }
 
-// ResponsesCreate exposes governed, model-routed POST /v1/responses. The
-// response usage tee keeps this surface priced by the OSS lifecycle.
+// ResponsesCreate handles model-routed POST /v1/responses, pricing the surface
+// from the response usage as it streams through.
 func ResponsesCreate(gw *aigateway.Gateway) http.HandlerFunc {
 	return internalproxy.ResponsesCreate(gw)
 }

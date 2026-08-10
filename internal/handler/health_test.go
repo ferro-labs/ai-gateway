@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/ferro-labs/ai-gateway/config"
+	"github.com/ferro-labs/ai-gateway/internal/version"
 	mcpconfig "github.com/ferro-labs/ai-gateway/mcp"
 	"github.com/ferro-labs/ai-gateway/providers"
 )
@@ -56,8 +57,11 @@ func TestHealthStatusCodes(t *testing.T) {
 			if err := json.NewDecoder(w.Body).Decode(&payload); err != nil {
 				t.Fatalf("decode health response: %v", err)
 			}
-			if payload.Version == "" || payload.Commit == "" || payload.Built == "" {
-				t.Fatalf("health provenance missing: %+v", payload)
+			if payload.Version != version.Version ||
+				payload.Commit != version.Commit ||
+				payload.Built != version.Date {
+				t.Fatalf("health provenance = %+v, want version=%q commit=%q built=%q",
+					payload, version.Version, version.Commit, version.Date)
 			}
 			if payload.Status != tt.wantStatus {
 				t.Fatalf("status = %q, want %q", payload.Status, tt.wantStatus)

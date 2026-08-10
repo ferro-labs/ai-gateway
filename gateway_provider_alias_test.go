@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/ferro-labs/ai-gateway/config"
+	"github.com/ferro-labs/ai-gateway/models"
 	"github.com/ferro-labs/ai-gateway/providers"
 )
 
@@ -171,5 +172,51 @@ func TestRegisterProviderAsPreservesEveryOptionalCapability(t *testing.T) {
 	}
 	if _, err := gw.Speech(ctx, providers.SpeechRequest{Model: "alias-model", Input: "hello", Voice: "test"}); err != nil {
 		t.Fatalf("speech through alias: %v", err)
+	}
+}
+
+func sortedModelIDs(infos []providers.ModelInfo) []string {
+	ids := make([]string, len(infos))
+	for i, m := range infos {
+		ids[i] = m.ID
+	}
+	slices.Sort(ids)
+	return ids
+}
+
+// TestRegisterProviderAsPreservesCatalogIdentity guards the routing-key /
+// canonical-identity split: a catalog-backed provider registered under a
+// distinct alias must still inherit its canonical provider's catalog models,
+// without the caller having to re-declare them on targets[].models.
+func TestRegisterProviderAsPreservesCatalogIdentity(t *testing.T) {
+	t.Setenv(models.CatalogURLEnv, "file:///ferro-tests-use-embedded-catalog")
+	entry, ok := providers.GetProviderEntry(providers.NameOpenAI)
+	if !ok {
+		t.Fatal("openai provider entry missing from registry")
+	}
+	provider, err := entry.Build(providers.ProviderConfig{providers.CfgKeyAPIKey: "test-key"})
+	if err != nil {
+		t.Fatalf("build openai provider: %v", err)
+	}
+	gw, err := New(config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets:  []config.Target{{VirtualKey: "openai::credential-1"}}, // no Models declared
+	})
+	if err != nil {
+		t.Fatalf("create gateway: %v", err)
+	}
+	t.Cleanup(func() { _ = gw.Close() })
+
+	gw.RegisterProvider(provider)                           // canonical "openai"
+	gw.RegisterProviderAs("openai::credential-1", provider) // alias of the same provider
+
+	canonical := sortedModelIDs(gw.ModelsFor("openai"))
+	if len(canonical) == 0 {
+		t.Skip("embedded catalog carries no openai models; cannot verify alias identity")
+	}
+	alias := sortedModelIDs(gw.ModelsFor("openai::credential-1"))
+	if !slices.Equal(alias, canonical) {
+		t.Fatalf("alias catalog models (%d) != canonical (%d); alias lost catalog identity",
+			len(alias), len(canonical))
 	}
 }

@@ -166,6 +166,27 @@ func (g *Gateway) modelsForRoutingLocked(name string, p providers.Provider) []st
 	return out
 }
 
+// canonicalProviderName returns the name of the provider beneath any identity
+// (aliasing) decorators — the vendor identity the model catalog and price book
+// are keyed on. A provider registered under its own name unwraps to itself, so
+// the routing key (which may be an alias bound to a specific credential) stays
+// separate from the canonical identity used for catalog inventory and pricing.
+// The bounded walk mirrors core.As and cannot hang on a self-referential wrapper.
+func canonicalProviderName(p providers.Provider) string {
+	for range 32 {
+		unwrapper, ok := p.(providers.ProviderUnwrapper)
+		if !ok {
+			break
+		}
+		next := unwrapper.UnwrapProvider()
+		if next == nil {
+			break
+		}
+		p = next
+	}
+	return p.Name()
+}
+
 // rebuildModelIndexesLocked repopulates every exact model→provider index from
 // the current provider set, and drops the built strategy: it selects targets
 // against a snapshot of this index, so leaving it in place would keep routing
@@ -185,7 +206,15 @@ func (g *Gateway) rebuildModelIndexesLocked() {
 	// treats them as read-only.
 	g.catalogModels = make(map[string][]string, len(g.providerNames))
 	for _, name := range g.providerNames {
-		if ids := g.catalog.ModelsForProvider(name); len(ids) > 0 {
+		p, ok := g.providers[name]
+		if !ok {
+			continue
+		}
+		// Key the catalog lookup on the provider's canonical vendor identity, not
+		// the (possibly aliased) routing key it was registered under — otherwise an
+		// alias inherits none of its provider's catalog models and they vanish from
+		// routing and /v1/models.
+		if ids := g.catalog.ModelsForProvider(canonicalProviderName(p)); len(ids) > 0 {
 			g.catalogModels[name] = ids
 		}
 	}
