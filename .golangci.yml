@@ -50,6 +50,48 @@ linters:
           deny:
             - pkg: gopkg.in/yaml.v3
               desc: gopkg.in/yaml.v3 is unmaintained; use go.yaml.in/yaml/v3
+        # cli/ is a separate module that talks to the gateway over HTTP only.
+        # Scoped to its files because the gateway obviously imports its own
+        # packages; golangci-lint runs per module, so this rule is inert on a
+        # root run and live on a `cd cli` run, which finds this file by
+        # searching upward.
+        #
+        # Each gateway package root is denied individually rather than the
+        # module path once: the gateway's path is a PREFIX of cli's, so
+        # denying it wholesale also denies every .../ai-gateway/cli/... import
+        # and fails the build on correct code. depguard's `allow` is a strict
+        # whitelist rather than an exception list, so it cannot express the
+        # carve-out either. Both spellings were tried and observed to fail.
+        #
+        # A direct import of the gateway's ROOT package is the one case this
+        # cannot express (its path is the unavoidable prefix). The go.mod check
+        # in cli-ci.yml refuses that, and is the primary gate regardless:
+        # nothing here resolves until someone adds a require.
+        no-gateway-imports:
+          # depguard matches `files` against ABSOLUTE paths, which makes the
+          # two obvious spellings both wrong, in opposite directions:
+          #   "**/cli/**" also matches the gateway's own internal/cli package
+          #     (the ferrogw command implementation) and refuses its imports.
+          #   "cli/**" matches nothing, since no absolute path starts with it,
+          #     leaving the rule silently inert.
+          # Both were observed. Naming the parent directory is what pins it to
+          # the nested module and only that.
+          files:
+            - "**/ai-gateway/cli/**"
+          deny:
+            - pkg: "github.com/ferro-labs/ai-gateway/internal"
+              desc: &cli-http-only >-
+                ferro talks to the gateway over HTTP only. Copy the wire shape
+                into cli/internal/api; never import gateway packages.
+            - { pkg: "github.com/ferro-labs/ai-gateway/pkg", desc: *cli-http-only }
+            - { pkg: "github.com/ferro-labs/ai-gateway/plugin", desc: *cli-http-only }
+            - { pkg: "github.com/ferro-labs/ai-gateway/providers", desc: *cli-http-only }
+            - { pkg: "github.com/ferro-labs/ai-gateway/config", desc: *cli-http-only }
+            - { pkg: "github.com/ferro-labs/ai-gateway/observability", desc: *cli-http-only }
+            - { pkg: "github.com/ferro-labs/ai-gateway/mcp", desc: *cli-http-only }
+            - { pkg: "github.com/ferro-labs/ai-gateway/models", desc: *cli-http-only }
+            - { pkg: "github.com/ferro-labs/ai-gateway/cmd", desc: *cli-http-only }
+            - { pkg: "github.com/ferro-labs/ai-gateway/test", desc: *cli-http-only }
     gocyclo:
       min-complexity: 30
     dupl:
@@ -117,3 +159,22 @@ linters:
         linters:
           - maintidx
         text: "RouteStream"
+      # cli/internal/command/output.go's isTTY is the module's single answer to
+      # "is this stream a terminal", and it must write int(f.Fd()): os.File.Fd
+      # returns uintptr while every descriptor-taking function in
+      # golang.org/x/term (IsTerminal, GetSize, ReadPassword, MakeRaw, …) takes
+      # an int. The os package's own documentation for Fd uses exactly this
+      # conversion in its example. No code change removes it, and the three
+      # alternatives are each worse than the finding: a bounds check is
+      # unreachable code guarding an impossible value, swapping to a library
+      # whose signature happens to differ is dodging the analyzer rather than
+      # fixing anything, and syscall.Stdout is an int on Unix but a Handle on
+      # Windows. The conversion was consolidated from three sites to this one
+      # so the exception covers a single line.
+      #
+      # Excluded here rather than with a //nolint so the reasoning lives with
+      # the policy instead of being re-litigated at the call site.
+      - path: cli/internal/command/output\.go
+        linters:
+          - gosec
+        text: "G115"
