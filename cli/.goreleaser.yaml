@@ -1,0 +1,62 @@
+# GoReleaser for the ferro CLI (nested module at cli/).
+#
+# Run from the repository root with `-f cli/.goreleaser.yaml`. The build itself
+# is scoped to cli/, while running at the root lets the archives include the
+# repository's one Apache license without duplicating it in the nested module.
+#
+# Deliberately none of the gateway's release machinery: no npm dashboard build,
+# no Docker images, no ghcr push. A static admin client has nothing to embed
+# and nothing to containerize.
+version: 2
+project_name: ferro
+dist: cli/dist
+
+builds:
+  - id: ferro
+    dir: cli
+    main: ./cmd/ferro
+    binary: ferro
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w
+      - -X github.com/ferro-labs/ai-gateway/cli/internal/version.Version={{.Version}}
+      - -X github.com/ferro-labs/ai-gateway/cli/internal/version.Commit={{.ShortCommit}}
+      - -X github.com/ferro-labs/ai-gateway/cli/internal/version.Date={{.Date}}
+
+# cmd/fakegw is a development tool (a fake gateway for testing the CLI without
+# a server). It is excluded by omission — builds are listed explicitly above.
+# Do not add a build entry for it.
+
+archives:
+  - formats: [tar.gz]
+    # Product-oriented names: the tag says cli/v0.1.0, the artifact says ferro.
+    name_template: "ferro_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - src: cli/README.md
+        dst: README.md
+      - src: cli/CHANGELOG.md
+        dst: CHANGELOG.md
+      - src: LICENSE
+        dst: LICENSE
+
+checksum:
+  name_template: checksums.txt
+
+release:
+  name_template: "Ferro CLI v{{ .Version }}"
+
+# Only this module's commits belong in this changelog. Without the scope
+# filter a CLI release would recite every gateway commit since the last cli/
+# tag — the two products share a history but not a story.
+changelog:
+  use: git
+  filters:
+    include:
+      - "^feat\\(cli\\)"
+      - "^fix\\(cli\\)"
+      - "^perf\\(cli\\)"
