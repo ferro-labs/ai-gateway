@@ -87,3 +87,5 @@ internal/webui/dist/*
 # Generated at release time by scripts/gen-licenses.sh (kept out of dist/ so
 # GoReleaser's empty-dist guard is satisfied); bundled into archives + image.
 /notices/
+/.agents/
+/.codex/
