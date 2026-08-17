@@ -125,11 +125,11 @@ Most AI gateways are Python proxies that crack under load or JavaScript services
 
 ## Features
 
-| | | |
+| Capability | What it does | Reference |
 |:---|:---|:---|
 | 🔀 **Routing** | 8 strategies — single, fallback, load balance, least latency, cost-optimized, content-based, A/B test, conditional — with per-target retry, failover, and model aliases | [Docs →](https://docs.ferrolabs.ai/routing/) |
 | 🔌 **30 providers** | Chat and streaming everywhere; embeddings, images, rerank, moderations, speech-to-text, text-to-speech, and batch where the vendor offers them | [Docs →](https://docs.ferrolabs.ai/providers/) |
-| 🛡️ **Guardrails & plugins** | Six built in — word filter, token/message limits, response cache, rate limiting, per-key budgets, request logging — and the framework is public for your own | [Docs →](https://docs.ferrolabs.ai/plugins/) |
+| 🛡️ **Guardrails & plugins** | Six built in — word filter, token/message limits, response cache, rate limiting, per-key budgets, request logging — and the plugin framework is public for writing your own | [Docs →](https://docs.ferrolabs.ai/plugins/) |
 | 🎯 **Capability matrix** | One declarative record of which OpenAI parameters each provider forwards, translates, or cannot express, served by `GET /v1/capabilities` | [Docs →](https://docs.ferrolabs.ai/guides/provider-capabilities/) |
 | 🤖 **MCP** | Connects to stdio and Streamable HTTP tool servers, injects their tools into chat completions, and drives the agentic `tool_calls` loop itself | [Docs →](https://docs.ferrolabs.ai/guides/mcp/) |
 | 📊 **Observability** | OpenTelemetry tracing and Prometheus metrics, one trace ID across logs and spans — a zero-allocation no-op until enabled | [Docs →](https://docs.ferrolabs.ai/guides/observability/) |
@@ -446,7 +446,7 @@ commands below.
 
 At 1,000 VU: **13,925 RPS**, p50 overhead **8.1ms**, memory **135 MB**.
 Against the live OpenAI API, the gateway itself adds **25 microseconds** p50 in
-a typical plugin configuration (2µs bare).
+a typical plugin configuration, and **2 microseconds** with no plugins enabled.
 
 Full methodology, raw results, and flamegraph analysis:
 [ferro-labs/ai-gateway-performance-benchmarks](https://github.com/ferro-labs/ai-gateway-performance-benchmarks)

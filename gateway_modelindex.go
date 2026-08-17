@@ -362,6 +362,16 @@ type indexedProvider struct {
 	anyModel bool
 }
 
+// UnwrapIdentity exposes the provider beneath the view. This decorator narrows
+// a model set; it is not a vendor, and it deliberately does NOT implement
+// ProviderUnwrapper — see core.IdentityUnwrapper for why the two are separate.
+//
+// Without this, CanonicalName stops here and returns whatever Name() promotes
+// to, which for a target registered through RegisterProviderAs is the routing
+// alias. The cost-optimized strategy then prices against a key the catalog has
+// never heard of and drops the target as unpriced.
+func (p *indexedProvider) UnwrapIdentity() providers.Provider { return p.Provider }
+
 // SupportsModel answers for routing, and is the same rule
 // supportsModelForRoutingLocked applies: the index decides, and a declared
 // AnyModelProvider is offered only the names the index gives no owner. The

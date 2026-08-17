@@ -18,26 +18,31 @@ breaking changes.
 
 ### Security — the Go toolchain moves to 1.25.13
 
-Seven Go standard-library advisories are reachable from gateway code at the
+Six Go standard-library advisories are reachable from gateway code at the
 pinned 1.25.12 toolchain, and every one is fixed in 1.25.13: quadratic
 complexity in `net/url`'s `resolvePath`, JavaScript regexp context tracking in
 `html/template`, unbounded post-handshake messages in `crypto/tls`,
 `ReadHeaderTimeout` not applied on the unencrypted HTTP/2 check in `net/http`,
-recursion depth during decode in `encoding/xml`, maximum recursion depth in
-`encoding/asn1`, and ASCII-only Punycode labels not rejected in
-`golang.org/x/net/idna`. They are reached through provider HTTP clients, the
-serving path, the request-log store, the streaming reader, the signing proxy,
-Bedrock's XML response stream, and Vertex AI's OAuth token exchange.
+recursion depth during decode in `encoding/xml`, and maximum recursion depth in
+`encoding/asn1`. They are reached through provider HTTP clients, the serving
+path, the request-log store, the streaming reader, the signing proxy, Bedrock's
+XML response stream, and Vertex AI's OAuth token exchange.
+
+A seventh advisory — ASCII-only Punycode labels not rejected in
+`golang.org/x/net/idna`, reached through Vertex AI's OAuth token exchange —
+is **not** a standard-library issue and is not fixed by the toolchain. It lives
+in an external module and is cleared by `golang.org/x/net` v0.55.0, which this
+build already pins. It is listed here for completeness, not as a change in this
+release.
 
 No gateway code changes; the fix is the toolchain version.
 
 ### Security — the dashboard toolchain clears its open advisory
 
 `nanoid` moves to 3.3.18, closing a high-severity advisory where a custom
-generator can loop indefinitely when `size` is zero. It is a build-time tooling
-dependency — reached through the component-scaffolding CLI's own PostCSS — and
-is not present in the dashboard bundle the binary embeds. `npm audit` reports
-zero vulnerabilities.
+generator can loop indefinitely when `size` is zero. It is a build-time
+dependency and is not present in the dashboard bundle the binary embeds, so no
+shipped artifact was affected. `npm audit` reports zero vulnerabilities.
 
 ### Fixed — registration aliases are priced correctly
 

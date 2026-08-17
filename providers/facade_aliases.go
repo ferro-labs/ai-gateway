@@ -15,6 +15,9 @@ type Provider = core.Provider
 // ProviderUnwrapper is an alias for core.ProviderUnwrapper.
 type ProviderUnwrapper = core.ProviderUnwrapper
 
+// IdentityUnwrapper is an alias for core.IdentityUnwrapper.
+type IdentityUnwrapper = core.IdentityUnwrapper
+
 // StreamProvider is an alias for core.StreamProvider.
 type StreamProvider = core.StreamProvider
 

@@ -165,3 +165,91 @@ func TestGateway_AliasPricing_Streaming(t *testing.T) {
 		})
 	}
 }
+
+// TestGateway_AliasPricing_CostOptimizedStrategy is issue 396's third path, and
+// the one the strategy-level unit tests could not reach.
+//
+// internal/strategies exercises SelectTargets against a lookup that hands back
+// the raw providers.WithName wrapper. The gateway does not: getStrategy wraps
+// every provider in the model-index view and then in the concurrency limiter
+// and circuit breaker, and CanonicalName has to survive all three to reach the
+// vendor the catalog is keyed on. It did not, so an aliased target priced as
+// unpriced and `unpriced_strategy: skip` dropped it from routing entirely --
+// exactly the defect 396 reports, passing its own unit test the whole time.
+//
+// This asserts through gateway wiring rather than a hand-built lookup, so a
+// future decorator that forgets core.IdentityUnwrapper fails here.
+func TestGateway_AliasPricing_CostOptimizedStrategy(t *testing.T) {
+	tests := []struct {
+		name       string
+		virtualKey string
+	}{
+		{name: "canonical name", virtualKey: "mock"},
+		{name: "routing alias", virtualKey: "mock--credential-1"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gw, err := newTestGateway(t, config.Config{
+				Strategy: config.StrategyConfig{
+					Mode: config.ModeCostOptimized,
+					// skip is the setting that turns mis-pricing from a
+					// wrong ORDER into a dropped target, so it is the one
+					// that fails loudly when the identity is lost.
+					UnpricedStrategy: config.UnpricedStrategySkip,
+				},
+				Targets: []config.Target{{VirtualKey: tt.virtualKey}},
+			})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			gw.catalog = aliasPricingCatalog()
+
+			gw.RegisterProviderAs(tt.virtualKey, &mockProvider{
+				name:   "mock",
+				models: []string{testModel},
+			})
+
+			strategy, err := gw.getStrategy()
+			if err != nil {
+				t.Fatalf("getStrategy: %v", err)
+			}
+
+			keys, err := strategy.SelectTargets(providers.Request{
+				Model:    testModel,
+				Messages: []providers.Message{{Role: "user", Content: "hi"}},
+			})
+			if err != nil {
+				t.Fatalf("SelectTargets: the target is priced through its canonical identity, so skip mode must rank it: %v", err)
+			}
+			if len(keys) == 0 || keys[0] != tt.virtualKey {
+				t.Fatalf("SelectTargets = %v, want %q to lead", keys, tt.virtualKey)
+			}
+		})
+	}
+}
+
+// TestCanonicalNameSurvivesRoutingDecorators pins the seam itself, one layer at
+// a time, so a regression names the decorator that lost the identity rather
+// than surfacing as a mis-priced route several packages away.
+func TestCanonicalNameSurvivesRoutingDecorators(t *testing.T) {
+	const canonical = "mock"
+	raw := &mockProvider{name: canonical, models: []string{testModel}}
+	alias := providers.WithName(raw, "mock--credential-1")
+
+	indexed := withIndexedModels("mock--credential-1", alias, map[string][]string{})
+	limited := &limitedProvider{Provider: indexed, lim: newProviderLimiter(1, 1), name: "mock--credential-1"}
+
+	for _, tc := range []struct {
+		layer string
+		p     providers.Provider
+	}{
+		{"WithName", alias},
+		{"+ indexed view", indexed},
+		{"+ concurrency limiter", limited},
+	} {
+		if got := providers.CanonicalName(tc.p); got != canonical {
+			t.Errorf("%s: CanonicalName = %q, want %q", tc.layer, got, canonical)
+		}
+	}
+}
