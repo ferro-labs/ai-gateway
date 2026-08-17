@@ -37,6 +37,13 @@ gateway itself is a single static executable with no Python runtime involved.
 Full documentation: <https://github.com/ferro-labs/ai-gateway>
 """, content-type = "text/markdown" }
 license = "Apache-2.0"
+# The SPDX string above only *names* the licence. Apache-2.0 section 4(a)
+# requires the text itself to accompany the distribution, so the file ships too
+# and lands in ferrogw-<version>.dist-info/licenses/. build_wheels.py copies it
+# into the build tree from the release archive; setuptools resolves this path
+# relative to that tree and fails the build if it is missing, which is the
+# behaviour worth having — a wheel that silently omits it is the failure.
+license-files = ["LICENSE"]
 # Only pip's ability to unpack a `py3-none-<platform>` wheel is at stake — no
 # Python of ours runs, so the floor is deliberately generous.
 requires-python = ">=3.8"

@@ -19,8 +19,9 @@ cross-origin redirects.
 `scripts/install/install.sh` and `install.ps1` are the single source of truth.
 The `[build]` command in `wrangler.toml` inlines them into the bundle on every
 `wrangler dev` and `wrangler deploy`, emitting `scripts.generated.js` — a build
-artifact. **Do not commit it**; add `deploy/get-worker/scripts.generated.js` to
-`.gitignore` (still outstanding).
+artifact. **Do not commit it** — committing it would give the installers a
+second home that can silently disagree with the first, and it is the copy the
+edge would actually serve. `.gitignore` covers both it and `.wrangler/`.
 
 ## Deploy
 

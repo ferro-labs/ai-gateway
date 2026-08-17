@@ -37,6 +37,11 @@ go.work.sum
 # Python virtual environment
 .venv
 
+# Byte-compiled Python. Only relevant since packaging/pypi/ arrived — running
+# build_wheels.py or importing setup.py leaves these beside the source.
+__pycache__/
+*.py[cod]
+
 #config
 config.json
 config.yaml

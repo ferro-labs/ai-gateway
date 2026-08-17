@@ -10,8 +10,8 @@ download, so a wheel built from them cannot disagree with the tarball.
 Nothing here is version-pinned. The version comes out of the archive filenames,
 and the wheel set is derived from the archives that are present rather than
 declared in this file — so the windows/arm64 wheel starts shipping by itself
-the first release after `.goreleaser.yaml` drops its `ignore:` for that pair
-(spec §4.2). An archive for a platform this file has no wheel tag for is a hard
+the first release after `.goreleaser.yaml` drops its `ignore:` for that pair.
+An archive for a platform this file has no wheel tag for is a hard
 error instead: a newly built target must not disappear from PyPI quietly.
 
 Usage:
@@ -121,12 +121,14 @@ def discover(archive_dir: Path) -> list[dict]:
     return found
 
 
-def extract_binary(archive: Path, member: str, dest_dir: Path) -> Path:
-    """Pull the gateway out of the archive, executable bit intact.
+def extract_member(archive: Path, member: str, dest_dir: Path, mode: int) -> Path:
+    """Pull one root member out of the archive with an explicit mode.
 
     Neither container is trusted to carry the mode across: zip does not record
-    a POSIX one at all, and the bit has to survive all the way into the wheel
-    or pip installs a file nobody can run.
+    a POSIX one at all, and for the binary the executable bit has to survive
+    all the way into the wheel or pip installs a file nobody can run. The
+    caller states the mode rather than the archive implying it, because the two
+    members this is used for want different ones.
     """
     out = dest_dir / member
     try:
@@ -144,11 +146,13 @@ def extract_binary(archive: Path, member: str, dest_dir: Path) -> Path:
     except KeyError:
         fail(f"{archive.name} has no {member} at its root")
 
-    out.chmod(0o755)
+    out.chmod(mode)
     return out
 
 
-def build_wheel(binary: Path, version: str, plat_tag: str, dist_dir: Path) -> Path:
+def build_wheel(
+    binary: Path, license_file: Path, version: str, plat_tag: str, dist_dir: Path
+) -> Path:
     """Run `setup.py bdist_wheel` for one platform tag, in a throwaway tree.
 
     Each platform builds in its own copy of setup.py/pyproject.toml so that a
@@ -160,6 +164,14 @@ def build_wheel(binary: Path, version: str, plat_tag: str, dist_dir: Path) -> Pa
         work = Path(tmp)
         for name in ("setup.py", "pyproject.toml"):
             shutil.copy2(HERE / name, work / name)
+
+        # Apache-2.0 section 4(a) requires the licence to travel with the
+        # distribution, and a wheel is a distribution. pyproject declares
+        # license-files = ["LICENSE"], which setuptools resolves relative to
+        # this build tree, so the file has to be here before setup.py runs --
+        # otherwise the build fails rather than quietly shipping without it.
+        # The npm packages carry it for the same reason.
+        shutil.copy2(license_file, work / "LICENSE")
 
         subprocess.run(
             [sys.executable, "setup.py", "--quiet", "bdist_wheel",
@@ -174,8 +186,8 @@ def build_wheel(binary: Path, version: str, plat_tag: str, dist_dir: Path) -> Pa
         )
 
         produced = sorted(p.name for p in (work / "dist").iterdir())
-        # Spec §2 wants no sdist: there is nothing to build from source, and an
-        # sdist that only raises is code for a path that does not occur. This
+        # No sdist: there is nothing to build from source, and an sdist that
+        # only raises is code for a path that does not occur. This
         # invocation cannot emit one — assert it rather than assume it.
         expected = f"ferrogw-{version}-py3-none-{plat_tag}.whl"
         if produced != [expected]:
@@ -242,14 +254,24 @@ def main(argv: list[str] | None = None) -> int:
 
     with tempfile.TemporaryDirectory(prefix="ferrogw-binaries-") as staging:
         for archive in archives:
-            binary = extract_binary(
-                archive["path"], archive["binary"], Path(staging)
+            binary = extract_member(
+                archive["path"], archive["binary"], Path(staging), 0o755
+            )
+            # Taken from the archive rather than the checkout, for the same
+            # reason the binary is: these are the bytes the release published,
+            # so the wheel cannot end up carrying a licence the tarball does
+            # not. Every archive roots one (goreleaser archives.files).
+            license_file = extract_member(
+                archive["path"], "LICENSE", Path(staging), 0o644
             )
             for plat_tag in archive["tags"]:
-                wheel = build_wheel(binary, version, plat_tag, args.dist_dir)
+                wheel = build_wheel(
+                    binary, license_file, version, plat_tag, args.dist_dir
+                )
                 verify_wheel(wheel, version, plat_tag, archive["binary"])
                 print(f"  {wheel.name}  <- {archive['path'].name}")
             binary.unlink()
+            license_file.unlink()
 
     print(f"built {sum(len(a['tags']) for a in archives)} wheels in {args.dist_dir}")
     return 0

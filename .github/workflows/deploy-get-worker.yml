@@ -72,6 +72,15 @@ jobs:
           test -s install.sh.out
           test -s install.ps1.out
 
+          # Against the checked-out source, not just against each other. The
+          # bundle is generated at deploy time, so the failure worth catching is
+          # the edge serving a stale or wrong inline copy — and every
+          # edge-vs-edge comparison passes in exactly that case, because both
+          # routes read the same wrong bundle. This is the only assertion here
+          # that can tell the difference.
+          cmp scripts/install/install.sh install.sh.out
+          cmp scripts/install/install.ps1 install.ps1.out
+
           # A browser is redirected; curl on the same path gets the shell script
           # byte-for-byte. `cmp` is what proves the sniffing branch and the
           # explicit path serve the same thing.

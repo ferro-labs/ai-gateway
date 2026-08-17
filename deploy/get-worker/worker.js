@@ -48,16 +48,26 @@ const PS1_TYPE = "text/plain; charset=utf-8";
 // decides how bad a bad release feels.
 const SCRIPT_CACHE = "public, max-age=300";
 
-const serveScript = (body, contentType, method) =>
-  new Response(method === "HEAD" ? null : body, {
-    headers: {
-      "content-type": contentType,
-      "cache-control": SCRIPT_CACHE,
-      // These are read by shells rather than rendered, but a sniffing
-      // intermediary deciding otherwise is a variable with no upside.
-      "x-content-type-options": "nosniff",
-    },
-  });
+// varyOnUA is set only by the `/` branch, and it is load-bearing there. That
+// path picks its body from the User-Agent while still sending a cacheable
+// max-age, so without `Vary` a shared cache stores whichever body it saw first
+// under the bare `/` key and then serves it to everyone — handing install.sh to
+// a PowerShell client, or the browser redirect to curl. It is deliberately NOT
+// set on /install.sh and /install.ps1: those return one body regardless of who
+// asks, and User-Agent has enormous cardinality, so keying them by it would
+// shatter the cache for the two hot paths to describe a variation they do not
+// have.
+const serveScript = (body, contentType, method, varyOnUA) => {
+  const headers = {
+    "content-type": contentType,
+    "cache-control": SCRIPT_CACHE,
+    // These are read by shells rather than rendered, but a sniffing
+    // intermediary deciding otherwise is a variable with no upside.
+    "x-content-type-options": "nosniff",
+  };
+  if (varyOnUA) headers.vary = "User-Agent";
+  return new Response(method === "HEAD" ? null : body, { headers });
+};
 
 // Plain text, because everything that reaches it is a terminal or a bare fetch.
 const NOT_FOUND = `Not found. This host serves the ferrogw installers only.
@@ -83,12 +93,16 @@ export default {
     }
 
     if (pathname === "/") {
-      if (CURL_UA.test(ua)) return serveScript(installSh, SH_TYPE, request.method);
-      if (POWERSHELL_UA.test(ua)) return serveScript(installPs1, PS1_TYPE, request.method);
+      if (CURL_UA.test(ua)) return serveScript(installSh, SH_TYPE, request.method, true);
+      if (POWERSHELL_UA.test(ua)) return serveScript(installPs1, PS1_TYPE, request.method, true);
       return new Response(null, {
         status: 302,
         headers: {
           location: DOCS_INSTALL_URL,
+          // Content-negotiated like the two branches above, so it carries Vary
+          // for the same reason — belt and braces alongside the no-store below,
+          // which is what actually keeps it out of caches.
+          vary: "User-Agent",
           // Not cached: the target moves with the docs, and a redirect pinned
           // in a browser cache outlives every fix we could ship here.
           "cache-control": "no-store",

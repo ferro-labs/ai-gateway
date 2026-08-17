@@ -32,8 +32,8 @@ set -eu
 
 # ─── Product ─────────────────────────────────────────────────────────────────
 # The only product-specific values in the script, alongside print_next_steps().
-# A sibling installer — `ferro`, the CLI, deferred in the distribution spec §2 —
-# is meant to drop in by editing these two places, not by rewriting the script.
+# A sibling installer for the `ferro` CLI is meant to drop in by editing these
+# two places, not by rewriting the script.
 
 repo="ferro-labs/ai-gateway" # GitHub owner/name; also roots the cosign identity
 bin="ferrogw"                # binary inside the archive, and the installed name

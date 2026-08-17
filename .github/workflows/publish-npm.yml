@@ -95,7 +95,30 @@ jobs:
           gh release download "$TAG" --repo "$REPO" --dir "${RUNNER_TEMP}/artifacts" \
             --pattern 'ferrogw_*.tar.gz' \
             --pattern 'ferrogw_*.zip' \
-            --pattern 'checksums.txt'
+            --pattern 'checksums.txt' \
+            --pattern 'checksums.txt.pem' \
+            --pattern 'checksums.txt.sig'
+
+      # cosign verifies the checksum file itself. sha256sum below then proves
+      # each archive matches it -- but on its own that is only an internal
+      # consistency check: a release whose archives AND checksums.txt were both
+      # replaced passes it. The signature is what ties the file to this
+      # repository's release workflow, and the release already produces one, so
+      # not checking it here would mean signing artifacts nothing verifies.
+      - name: Install cosign
+        uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
+
+      - name: Verify the checksum signature
+        working-directory: ${{ runner.temp }}/artifacts
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          cosign verify-blob \
+            --certificate checksums.txt.pem \
+            --signature checksums.txt.sig \
+            --certificate-identity-regexp "^https://github\.com/${REPO}/\.github/workflows/.+@refs/tags/" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            checksums.txt
 
       # gh downloads over TLS but attests nothing about the bytes. This is the
       # same signed checksum file the shell installer verifies against, so the
@@ -135,8 +158,21 @@ jobs:
           # --ignore-scripts is the corporate default this layout exists to
           # survive, so the smoke test runs under it too.
           npm install --ignore-scripts "${RUNNER_TEMP}"/tgz/*.tgz
-          npx ferrogw version | tee version.txt
-          grep -qF "${TAG#v}" version.txt
+          # --no-install, or this stops being a test of the tarballs. Bare npx
+          # silently fetches ferrogw from the registry when the local install
+          # left no executable — so the exact failure this step exists to catch
+          # (a broken shim, a missing platform package) would be papered over by
+          # downloading the last good published copy and passing.
+          npx --no-install ferrogw version | tee version.txt
+          # Parse the Version field rather than grepping the whole output: the
+          # report also carries a commit and a build date, so a substring match
+          # can pass on a coincidence and would accept a binary reporting some
+          # other version entirely. Same assertion install-matrix.yml makes.
+          got="$(awk '$1 == "Version" { print $2; exit }' version.txt)"
+          if [ "$got" != "${TAG#v}" ]; then
+            echo "::error title=Packed shim reports the wrong version::expected '${TAG#v}', got '${got:-<no Version line in output>}'"
+            exit 1
+          fi
 
       # ORDER IS LOAD-BEARING: platform packages first, `ferrogw` last.
       #

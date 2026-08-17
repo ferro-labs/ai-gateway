@@ -102,6 +102,23 @@ for (const name of fs.readdirSync(opts.artifacts)) {
 if (found.size === 0) fail(`no ferrogw_*.tar.gz / .zip archives in ${opts.artifacts}`);
 if (versions.size > 1) fail(`archives disagree about the version: ${[...versions].sort().join(", ")}`);
 
+// The loop below walks TARGETS and tolerates a missing archive, which covers
+// "the release did not build this platform". It cannot see the other
+// direction: an archive the release DID build that TARGETS has no entry for is
+// simply never read, so a newly added goos/goarch would go missing from npm
+// with a green publish and no warning. Fail on it instead — the same rule
+// build_wheels.py applies on the PyPI side, so the two package surfaces cannot
+// disagree about which platforms a release covers.
+const mapped = new Set(TARGETS.map((t) => `${t.goos}_${t.goarch}`));
+const unmapped = [...found.keys()].filter((k) => !mapped.has(k)).sort();
+if (unmapped.length > 0) {
+  fail(
+    `release archives for ${unmapped.join(", ")} have no TARGETS entry — ` +
+      `add one (npm/os/cpu/ext/exe) so the platform is published, or the release ` +
+      `is shipping a binary npm users cannot install`,
+  );
+}
+
 const version = [...versions][0];
 
 // The tag is a cross-check, never the source. If the two disagree the release

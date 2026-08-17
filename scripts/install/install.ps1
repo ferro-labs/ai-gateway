@@ -8,8 +8,11 @@
 
     Downloads the release archive for this machine's architecture, verifies it
     against the published SHA-256 checksums, and places the binary under
-    %LOCALAPPDATA%\Programs\ferrogw. Nothing else is written: no config, no
-    master key, no change to the current directory.
+    %LOCALAPPDATA%\Programs\ferrogw. It also adds that directory to your user
+    PATH -- pass -NoModifyPath to skip that.
+
+    The binary is the only file written: no config, no master key, no change to
+    the current directory.
 
 .NOTES
     Targets Windows PowerShell 5.1, which is in-box on Windows 10/11. Requiring
@@ -157,6 +160,21 @@ Environment equivalents, which are the only channel the piped form has:
         $InstallDir = Join-Path $env:LOCALAPPDATA "Programs\$($Product.Binary)"
     }
 
+    # Resolve to an absolute, normalised path before anything uses it. A caller
+    # can pass -InstallDir .\bin, or set FERROGW_INSTALL_DIR to a relative path,
+    # and a relative value is wrong in two different ways here: it is written
+    # verbatim into the user PATH, where it would resolve against whatever
+    # directory each future shell happens to start in, and it makes the
+    # "Installed ..." line name a location the user cannot act on.
+    #
+    # Combine leaves an already-absolute path untouched, so this is a no-op for
+    # the default above. $PWD.ProviderPath rather than [Environment]::
+    # CurrentDirectory because PowerShell's location and the process working
+    # directory drift apart -- Set-Location does not update the latter, so the
+    # process value can name a directory the user left long ago.
+    $InstallDir = [System.IO.Path]::GetFullPath(
+        [System.IO.Path]::Combine($PWD.ProviderPath, $InstallDir))
+
     Write-Host "Installing $($Product.DisplayName) $tag (windows/$arch) to $InstallDir"
 
     $tmpDir = Join-Path ([System.IO.Path]::GetTempPath()) ("$($Product.Binary)-install-" + [Guid]::NewGuid().ToString('N'))
@@ -218,7 +236,27 @@ Environment equivalents, which are the only channel the piped form has:
 
         New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
         $target = Join-Path $InstallDir $binaryName
-        Copy-Item -LiteralPath $extracted -Destination $target -Force
+
+        # Stage inside $InstallDir, then swap -- never copy onto $target
+        # directly. Windows holds an executing image locked, so a re-install
+        # while the gateway is running fails partway through a direct copy and
+        # leaves a truncated binary where a working one used to be. Staging
+        # beside it keeps the running copy intact: the move either succeeds
+        # atomically or fails having changed nothing.
+        #
+        # Same rule as install.sh, which stages and renames for the POSIX
+        # spelling of this (ETXTBSY on a running binary). The staging file is
+        # in $InstallDir rather than $tmpDir because Move-Item is only atomic
+        # within one volume, and $env:TEMP is often on a different one.
+        $staged = Join-Path $InstallDir ("{0}.{1}.tmp" -f $binaryName, [guid]::NewGuid().ToString('N'))
+        try {
+            Copy-Item -LiteralPath $extracted -Destination $staged -Force
+            Move-Item -LiteralPath $staged -Destination $target -Force
+        }
+        catch {
+            Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue
+            throw
+        }
     }
     finally {
         $ProgressPreference = $prevProgress
