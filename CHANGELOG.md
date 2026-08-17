@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _Nothing yet._
 
-## [1.4.3] — 2026-08-18
+## [1.4.3] — 2026-08-17
 
 A security patch. Every dependency advisory reachable from gateway code is
 cleared, and registration aliases are priced correctly on the two paths where
