@@ -4,7 +4,7 @@
 the two committed pieces that make that true; everything else is generated from
 a release.
 
-```
+```text
 packaging/npm/
 ├── bin/ferrogw.js   the shim that becomes ferrogw's `bin`
 ├── build.mjs        release archives -> the packages that get published
@@ -182,12 +182,11 @@ after that `ignore:` was dropped produces all six, automatically.
 
 ## Scope
 
-These packages use `@ferro-labs-ai`, matching the org's existing
-[`@ferro-labs-ai/sdk`](https://www.npmjs.com/package/@ferro-labs-ai/sdk). The
-design spec wrote `@ferro-labs`; that scope is unclaimed, and adopting it would
-mean a second npm org to own, secure and explain, splitting the org's identity
-across two scopes for no gain. Claim `@ferro-labs` defensively if you like, but
-publish under the one users already have installed.
+These packages publish under `@ferro-labs-ai`, matching the org's existing
+[`@ferro-labs-ai/sdk`](https://www.npmjs.com/package/@ferro-labs-ai/sdk), so an
+install resolves from the scope users already have. Any second scope would mean
+another npm org to own, secure and explain, and would split the org's identity
+across two names.
 
 ## Verifying a change by hand
 

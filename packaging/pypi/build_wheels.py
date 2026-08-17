@@ -223,12 +223,13 @@ def build_wheel(
 
 
 def verify_wheel(wheel: Path, version: str, plat_tag: str, member: str) -> None:
-    """Assert the four things that make this wheel work, from the outside.
+    """Assert the five things that make this wheel work, from the outside.
 
-    All four are silent failures otherwise: a wheel with a cpython ABI tag
+    All five are silent failures otherwise: a wheel with a cpython ABI tag
     installs on today's interpreter and vanishes on the next; a wheel whose
     script lost its executable bit installs and then cannot be run; a purelib
-    wheel installs the wrong architecture without a word.
+    wheel installs the wrong architecture without a word; a wheel that lost the
+    licence text installs and runs exactly like a compliant one.
     """
     script = f"ferrogw-{version}.data/scripts/{member}"
     dist_info = f"ferrogw-{version}.dist-info/"
@@ -246,6 +247,21 @@ def verify_wheel(wheel: Path, version: str, plat_tag: str, member: str) -> None:
         for line in (f"Tag: py3-none-{plat_tag}", "Root-Is-Purelib: false"):
             if line not in metadata:
                 fail(f"{wheel.name}: WHEEL metadata is missing {line!r}")
+
+        # Apache-2.0 section 4(a) is the one property here nothing else covers:
+        # `stray` below allows the whole dist-info/ prefix, so a wheel that lost
+        # the licence passes every other check and publishes clean. pyproject's
+        # license-files makes setuptools fail the build today, but that is the
+        # build tool's behaviour rather than ours -- a missing or renamed file
+        # downgraded to a warning by a later setuptools would ship a
+        # licence-less wheel silently. Assert the outcome instead of trusting
+        # the producer, at the same place the other four are asserted.
+        licence = f"{dist_info}licenses/LICENSE"
+        if licence not in zf.namelist():
+            fail(
+                f"{wheel.name} has no {licence} -- Apache-2.0 4(a) requires the "
+                f"licence text to travel with the binary"
+            )
 
         stray = [
             n for n in zf.namelist()

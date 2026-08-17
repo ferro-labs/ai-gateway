@@ -67,8 +67,16 @@ jobs:
           set -eu
           base=https://get.ferrolabs.ai
 
-          curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -o install.sh.out "$base/install.sh"
-          curl -fsSL -o install.ps1.out "$base/install.ps1"
+          # One list, both fetches. A first deploy is waiting on DNS and Custom
+          # Domain propagation, and that is not a single event the hostname
+          # passes through: the lookup that served install.sh does not make the
+          # next one resolve, so an unretried second request fails the deploy of
+          # a Worker that is in fact live. Sharing the flags is what keeps the
+          # two requests from drifting apart again.
+          retry=(--retry 5 --retry-all-errors --retry-delay 5)
+
+          curl -fsSL "${retry[@]}" -o install.sh.out "$base/install.sh"
+          curl -fsSL "${retry[@]}" -o install.ps1.out "$base/install.ps1"
           test -s install.sh.out
           test -s install.ps1.out
 
@@ -84,6 +92,12 @@ jobs:
           # A browser is redirected; curl on the same path gets the shell script
           # byte-for-byte. `cmp` is what proves the sniffing branch and the
           # explicit path serve the same thing.
+          #
+          # Deliberately unretried, unlike the fetches above: those have already
+          # resolved the host, so the propagation window is shut by the time
+          # these run -- and a retried transfer piped into `cmp` would restart
+          # from byte zero with the failed attempt's bytes already down the
+          # pipe, turning a transient error into a spurious mismatch.
           browser='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
           test "$(curl -sS -o /dev/null -w '%{http_code}' -A "$browser" "$base/")" = 302
           curl -fsSL -A 'curl/8.5.0' "$base/" | cmp -s - install.sh.out

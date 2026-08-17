@@ -131,6 +131,48 @@ jobs:
             --dist-dir wheelhouse \
             --tag "$TAG"
 
+      # Nothing above this point has run the packaged binary: build_wheels.py
+      # reads each wheel from the outside and never execs what is inside it, so
+      # a wheel whose script is present, correctly tagged and unusable -- a
+      # binary truncated in transit, or one carrying another architecture --
+      # passes every check and fails on the first user's machine instead.
+      # publish-npm.yml execs the packed shim for exactly this reason, and
+      # packaging/pypi/README.md documents this as the local procedure.
+      #
+      # manylinux x86_64 alone, because one runner installs one platform tag and
+      # cannot exec the rest. That is enough to catch the failure this layout
+      # can have: an installed `ferrogw` that is not a runnable program.
+      #
+      # The wheel is globbed rather than named from the tag. Its version is the
+      # PEP 440 spelling (`v1.5.0-rc.1` becomes `1.5.0rc1`) while the binary
+      # reports GoReleaser's, so the two strings differ on every prerelease and
+      # a constructed filename would miss the wheel exactly when a prerelease is
+      # being published. The tag is still what the binary is held to, below.
+      - name: Smoke test the manylinux wheel
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -eu
+          wheel=(wheelhouse/ferrogw-*-py3-none-manylinux2014_x86_64.whl)
+          python -m venv "${RUNNER_TEMP}/wheelcheck"
+          # --no-index, or this stops being a test of these bytes: pip would
+          # otherwise be free to reach PyPI, satisfy `ferrogw` from the last
+          # good published release, and pass while proving nothing about the
+          # wheel this run built.
+          "${RUNNER_TEMP}/wheelcheck/bin/pip" install \
+            --disable-pip-version-check --no-index "${wheel[0]}"
+          raw="$("${RUNNER_TEMP}/wheelcheck/bin/ferrogw" version)"
+          # Parse the Version field rather than grepping the whole output: the
+          # report also carries a commit and a build date, so a substring match
+          # can pass on a coincidence and would accept a binary reporting some
+          # other version entirely. Same assertion publish-npm.yml makes.
+          got="$(printf '%s\n' "$raw" | awk '$1 == "Version" { print $2; exit }')"
+          if [ "$got" != "${TAG#v}" ]; then
+            echo "::error title=Installed wheel reports the wrong version::expected '${TAG#v}', got '${got:-<no Version line in output>}'"
+            printf 'full output:\n%s\n' "$raw"
+            exit 1
+          fi
+
       # Uploads over OIDC against the trusted publisher, and attaches PEP 740
       # attestations by default — the registry-side equivalent of the keyless
       # cosign signatures the release already carries.

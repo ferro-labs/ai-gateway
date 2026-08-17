@@ -163,7 +163,19 @@ jobs:
     name: Publish npm and PyPI packages
     needs: verify-release-assets
     runs-on: ubuntu-latest
+    # A real publish is under ten minutes of work per registry, and the two run
+    # concurrently; the rest of the budget is runner queueing and any manual
+    # approval on the `pypi` environment. What this bounds is `gh run watch`
+    # against a publisher that never finishes -- without it that hangs for the
+    # 6-hour default and takes the install verification and the release
+    # announcement down with it, since both wait on this job. Raise it if the
+    # `pypi` environment ever gains required reviewers who need longer.
+    timeout-minutes: 60
     permissions:
+      # `gh workflow run` creates a workflow_dispatch run on publish-npm.yml and
+      # publish-pypi.yml; that write is the only reason this scope is here. The
+      # publishers hold their own credentials -- this job never touches npm or
+      # PyPI itself.
       actions: write
       contents: read
     steps:

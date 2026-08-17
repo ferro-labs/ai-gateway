@@ -14,7 +14,7 @@ The binary ships as a wheel *script*, so it lands in the wheel's
 straight into the environment's `bin/` (`Scripts\` on Windows), which means the
 installed `ferrogw` **is** the Go binary:
 
-```
+```console
 $ pip install ferrogw
 $ readlink -f "$(command -v ferrogw)"
 .../venv/bin/ferrogw          # 42 MB of static Go, not a launcher script
@@ -64,7 +64,7 @@ nothing else.
 
 ## Layout
 
-```
+```text
 packaging/pypi/
 ├── pyproject.toml    static metadata; version is dynamic
 ├── setup.py          one wheel's worth of build: platform tag + binary copy
@@ -118,6 +118,10 @@ surfaces on a user's machine:
   its executable bit** — zip records no POSIX mode, so the bit has to be put
   back on extraction and survive all the way into the wheel
 - nothing outside `.data/` and `.dist-info/`, i.e. no importable payload
+- `ferrogw-<version>.dist-info/licenses/LICENSE` is present. Apache-2.0 section
+  4(a) requires the licence text to travel with the binary, and setuptools
+  builds a licence-less wheel with no error and no warning whenever
+  `license-files` stops resolving to the file
 
 ## One-time PyPI setup (maintainer)
 

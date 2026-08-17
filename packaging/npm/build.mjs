@@ -231,7 +231,17 @@ writeJSON(path.join(mainDir, "package.json"), {
 // publish, it fails every install on that platform, forever, at that version.
 
 const checkedShim = path.join(mainDir, "bin", "ferrogw.js");
-execFileSync(process.execPath, ["--check", checkedShim], { stdio: "pipe" });
+try {
+  execFileSync(process.execPath, ["--check", checkedShim], { stdio: "pipe" });
+} catch (err) {
+  // The parser error is the whole value of this check -- it names the line and
+  // column that will not parse -- and `stdio: "pipe"` means it lands on
+  // err.stderr instead of the terminal. Letting execFileSync's own throw escape
+  // discarded exactly that, printing a stack trace through node:child_process
+  // that says a command exited 1 and never says what is wrong with the file.
+  const detail = String(err.stderr ?? "").trim() || err.message;
+  fail(`bin/ferrogw.js does not parse:\n${detail}`);
+}
 
 const mainManifest = JSON.parse(fs.readFileSync(path.join(mainDir, "package.json"), "utf8"));
 if (mainManifest.version !== version) fail("main package version does not round-trip");

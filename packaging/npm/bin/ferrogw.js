@@ -60,7 +60,30 @@ const child = spawn(binary, process.argv.slice(2), { stdio: "inherit" });
 const FORWARDED = ["SIGINT", "SIGTERM", "SIGHUP", "SIGBREAK"];
 for (const signal of FORWARDED) {
   process.on(signal, () => {
-    if (!child.killed) child.kill(signal);
+    // `child.killed` records only that a signal was ever SENT -- it flips true
+    // on the first kill() and stays true while the child keeps running, which
+    // is the normal case here, because the gateway catches SIGINT/SIGTERM to
+    // shut down gracefully. Guarding on it relays the first signal and swallows
+    // every one after it, so a supervisor escalating SIGINT -> SIGTERM ->
+    // SIGKILL gets only the SIGINT through and then waits out its whole timeout
+    // on a process nobody asked again. exitCode/signalCode are both null
+    // exactly while the child is running, and one of them is set the moment it
+    // is not, which is the fact this guard actually wants.
+    //
+    // Wrapped because this runs INSIDE a signal handler, where an uncaught
+    // throw takes the shim down and orphans the gateway. On Windows only
+    // SIGTERM/SIGKILL/SIGINT terminate a process, and libuv raises EINVAL for
+    // the other two names in FORWARDED -- so on the one platform where SIGHUP
+    // and SIGBREAK are reachable, relaying them is what would kill the relay.
+    if (child.exitCode === null && child.signalCode === null) {
+      try {
+        child.kill(signal);
+      } catch {
+        // Nothing useful to do: the child is alive and this platform will not
+        // deliver this signal. Staying up keeps the exit-code and re-raise
+        // paths below intact, which is the more important guarantee.
+      }
+    }
   });
 }
 

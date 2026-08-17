@@ -16,7 +16,8 @@ An explicit path always beats User-Agent sniffing.
 `curl … | sh` onto a third party, and it breaks behind proxies that refuse
 cross-origin redirects.
 
-`scripts/install/install.sh` and `install.ps1` are the single source of truth.
+`scripts/install/install.sh` and `scripts/install/install.ps1` are the single
+source of truth.
 The `[build]` command in `wrangler.toml` inlines them into the bundle on every
 `wrangler dev` and `wrangler deploy`, emitting `scripts.generated.js` — a build
 artifact. **Do not commit it** — committing it would give the installers a

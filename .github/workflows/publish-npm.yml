@@ -28,22 +28,27 @@ concurrency:
   group: publish-npm-${{ inputs.tag }}
   cancel-in-progress: false
 
-permissions:
-  contents: read
-  # The only credential this workflow has. Publishing goes over npm Trusted
-  # Publishing (OIDC) — the same keyless posture as the cosign signatures on the
-  # release itself — so there is deliberately no long-lived npm token in secrets
-  # to leak or rotate.
-  #
-  # npmjs.com pins that trust to this repository AND to this file's name, so
-  # renaming this workflow stops publishing until the trusted publisher is
-  # updated on all seven packages.
-  id-token: write
+# Nothing at workflow level. A grant here is minted into every job the file
+# grows, so an OIDC token that can publish seven packages would be handed to
+# steps that publish nothing -- and the scope of a future job is decided by
+# whoever adds it rather than here. publish-pypi.yml is written the same way.
+permissions: {}
 
 jobs:
   publish:
     name: npm
     runs-on: ubuntu-latest
+    permissions:
+      contents: read   # actions/checkout + gh release download
+      # The only credential this job has. Publishing goes over npm Trusted
+      # Publishing (OIDC) -- the same keyless posture as the cosign signatures
+      # on the release itself -- so there is deliberately no long-lived npm
+      # token in secrets to leak or rotate.
+      #
+      # npmjs.com pins that trust to this repository AND to this file's name, so
+      # renaming this workflow stops publishing until the trusted publisher is
+      # updated on all seven packages.
+      id-token: write
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2

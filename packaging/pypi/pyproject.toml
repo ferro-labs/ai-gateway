@@ -44,8 +44,21 @@ license = "Apache-2.0"
 # relative to that tree and fails the build if it is missing, which is the
 # behaviour worth having — a wheel that silently omits it is the failure.
 license-files = ["LICENSE"]
-# Only pip's ability to unpack a `py3-none-<platform>` wheel is at stake — no
-# Python of ours runs, so the floor is deliberately generous.
+# Only an installer's ability to unpack a `py3-none-<platform>` wheel is at
+# stake -- no Python of ours runs, the payload is a static Go binary -- so the
+# floor is deliberately generous.
+#
+# This is NOT the lever for the PEP 639 metadata above, and raising it for that
+# reason is the mistake worth naming: `license` + `license-files` under
+# setuptools>=77 stamps Metadata-Version 2.4, which is a question about the
+# INSTALLER, while requires-python constrains the INTERPRETER. A 3.9 or 3.11
+# floor would force nobody onto a newer pip and would only hide the wheels from
+# Pythons the binary runs on perfectly well -- pip then reports the package as
+# unavailable, the same silent-disappearance failure the platform tags exist to
+# avoid. If an installer ever cannot read 2.4, the fix is `pip install --upgrade
+# pip` (25.0 vendors the packaging release that knows it), documented as a pip
+# floor. Measured, not assumed: pip 24.0 on CPython 3.12 installs a built
+# ferrogw wheel and runs it, so no pip floor is asserted here today.
 requires-python = ">=3.8"
 authors = [{ name = "Ferro Labs" }]
 keywords = ["llm", "ai-gateway", "openai", "anthropic", "proxy", "routing"]
