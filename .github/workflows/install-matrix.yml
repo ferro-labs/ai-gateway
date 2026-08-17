@@ -246,10 +246,21 @@ jobs:
           last_len="$(tail -n 1 "${work}/instrumented.sh" | wc -c)"
           limit=$((total - last_len))
 
-          # One shell, chopping a character at a time with ${s%?}, each candidate
-          # in a subshell. Spawning head+sh per offset instead did not finish
-          # 16k prefixes in ten minutes; this runs in well under a minute.
-          TRUNCATION_MARKER="$marker" sh -c '
+          # One shell, chopping one unit at a time with ${s%?}, each candidate in
+          # a subshell. Spawning head+sh per offset instead did not finish 16k
+          # prefixes in ten minutes; this runs in well under a minute.
+          #
+          # LC_ALL=C is load-bearing, not hygiene. `limit` above is bytes from
+          # `wc -c`, while ${#src} and ${s%?} count whatever the shell calls a
+          # character -- and install.sh is NOT single-byte, it carries em dashes
+          # and box drawing in its comments (16878 bytes, 16286 characters).
+          # Measured: dash answers 16902 in any locale, bash answers 16902 under
+          # C and 16310 under UTF-8. At 16310 the starting length is already
+          # below `limit`, so the trim loop never runs and the first candidate
+          # tested is the whole file, closing brace included -- which executes,
+          # and the step fails on the script working exactly as designed. Under
+          # C every shell counts bytes and both bounds mean the same thing.
+          LC_ALL=C TRUNCATION_MARKER="$marker" sh -c '
             src=$(cat "$1"); marker="$2"; limit=$3
             s=$src; n=${#src}
             while [ "$n" -gt "$limit" ]; do s=${s%?}; n=$((n-1)); done
@@ -308,7 +319,13 @@ jobs:
         shell: pwsh
         run: |
           Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Scope CurrentUser -Force
+          # IncludeRules is what selects the rule set. `Rules` alone only
+          # CONFIGURES a rule -- every default rule still runs, so this step
+          # failed on PSAvoidUsingWriteHost for each Write-Host in the installer
+          # and PSReviewUnusedParameter for the param block, neither of which
+          # this step is asking about. The question here is 5.1 syntax only.
           $settings = @{
+            IncludeRules = @('PSUseCompatibleSyntax')
             Rules = @{
               PSUseCompatibleSyntax = @{
                 Enable = $true
@@ -342,16 +359,36 @@ jobs:
           # ones a line-granular sweep never builds. The file is pure ASCII --
           # enforced by the compatibility rules above -- so one char is one byte.
           # Each prefix runs in-process, so this costs no process spawns.
-          for ($i = 1; $i -lt $instrumented.Length; $i++) {
-            Remove-Item -Force -ErrorAction SilentlyContinue $marker
-            $prefix = $instrumented.Substring(0, $i)
-            $shell = [powershell]::Create()
-            try { [void]$shell.AddScript($prefix).Invoke() } catch { } finally { $shell.Dispose() }
-            if (Test-Path -LiteralPath $marker) {
-              throw "A truncated install.ps1 prefix executed installer code at byte $i."
+          # One runspace for the whole sweep, and a parse check before each
+          # invoke. Creating a [powershell] per offset allocated a runspace per
+          # byte; nearly every prefix ends mid-token, so almost all of that was
+          # spent starting a runspace to run something that cannot parse.
+          #
+          # Skipping the unparseable ones loses no coverage: PowerShell executes
+          # nothing from a script it cannot parse, so "does not parse" already
+          # settles the question this step asks.
+          $rs = [runspacefactory]::CreateRunspace()
+          $rs.Open()
+          $invoked = 0
+          try {
+            for ($i = 1; $i -lt $instrumented.Length; $i++) {
+              $prefix = $instrumented.Substring(0, $i)
+              $errors = $null
+              [void][System.Management.Automation.Language.Parser]::ParseInput(
+                $prefix, [ref]$null, [ref]$errors)
+              if ($errors.Count -gt 0) { continue }
+
+              Remove-Item -Force -ErrorAction SilentlyContinue $marker
+              $shell = [powershell]::Create()
+              $shell.Runspace = $rs
+              try { [void]$shell.AddScript($prefix).Invoke() } catch { } finally { $shell.Dispose() }
+              $invoked++
+              if (Test-Path -LiteralPath $marker) {
+                throw "A truncated install.ps1 prefix executed installer code at byte $i."
+              }
             }
-          }
-          Write-Host "checked $($instrumented.Length) byte-offset prefixes; none executed installer code"
+          } finally { $rs.Dispose() }
+          Write-Host "checked $($instrumented.Length) byte-offset prefixes ($invoked parsed and were run); none executed installer code"
 
       - name: Validate GoReleaser configuration
         uses: goreleaser/goreleaser-action@ec59f474b9834571250b370d4735c50f8e2d1e29 # v7.0.0
@@ -640,9 +677,15 @@ jobs:
         shell: powershell
         run: |
           New-Item -ItemType Directory -Force -Path $env:INSTALL_DIR | Out-Null
-          $scriptArgs = @('-InstallDir', $env:INSTALL_DIR, '-NoModifyPath')
-          if ($env:PIN_VERSION) { $scriptArgs += @('-Version', $env:PIN_VERSION) }
-          Write-Host "+ install.ps1 $($scriptArgs -join ' ')"
+          # A HASHTABLE splat, not an array. Splatting an array passes its
+          # elements positionally, so @('-InstallDir', $dir, '-NoModifyPath')
+          # bound the literal string '-InstallDir' to -Version and the directory
+          # to -InstallDir, and never set the switch at all. The run then failed
+          # in the version guard rather than anywhere near the real mistake.
+          # Only a hashtable binds by name.
+          $scriptArgs = @{ InstallDir = $env:INSTALL_DIR; NoModifyPath = $true }
+          if ($env:PIN_VERSION) { $scriptArgs.Version = $env:PIN_VERSION }
+          Write-Host "+ install.ps1 $(($scriptArgs.GetEnumerator() | ForEach-Object { "-$($_.Key) $($_.Value)" }) -join ' ')"
           & .\scripts\install\install.ps1 @scriptArgs
 
       # Byte-for-byte the shape of `irm https://get.ferrolabs.ai/install.ps1 | iex`:
