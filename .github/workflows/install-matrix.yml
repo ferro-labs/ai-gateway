@@ -227,6 +227,11 @@ jobs:
           mkdir -p "$work"
           grep -q '^{ # opened here' scripts/install/install.sh
           tail -n 1 scripts/install/install.sh | grep -q '^}'
+          # shellcheck disable=SC2016
+          # The single quotes are the point: this injects the LITERAL text
+          # `: > "$TRUNCATION_MARKER"` into the generated script, where it
+          # expands when a prefix is run below. Expanding it here would bake
+          # in the empty value and the probe would never write its marker.
           sed '/^{ # opened here/a : > "$TRUNCATION_MARKER"' \
             scripts/install/install.sh > "${work}/instrumented.sh"
           closing_line="$(wc -l < "${work}/instrumented.sh")"
