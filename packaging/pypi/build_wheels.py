@@ -89,7 +89,7 @@ def pep440(go_version: str) -> str:
         )
 
 
-def discover(archive_dir: Path) -> list[dict]:
+def discover(archive_dir: Path, allow_partial: bool = False) -> list[dict]:
     found = []
     for path in sorted(archive_dir.iterdir()):
         match = ARCHIVE_RE.match(path.name)
@@ -115,6 +115,30 @@ def discover(archive_dir: Path) -> list[dict]:
 
     if not found:
         fail(f"no ferrogw release archives under {archive_dir}")
+
+    # Every platform WHEEL_TAGS knows, or nothing. release.yml gates the normal
+    # path behind its "Verify release asset set" job, but the workflow_dispatch
+    # recovery path documented for a partial-publish failure goes straight to
+    # this script -- so tolerating a subset here meant the one path taken when
+    # something has already gone wrong was the one with no gate, and it would
+    # publish a version silently missing platforms.
+    #
+    # --allow-partial exists for a deliberate reissue of an older tag that
+    # genuinely shipped fewer archives; it is never correct on a current release.
+    missing = sorted(
+        f"{goos}/{goarch}"
+        for (goos, goarch) in WHEEL_TAGS
+        if not any(a["goos"] == goos and a["goarch"] == goarch for a in found)
+    )
+    if missing and not allow_partial:
+        fail(
+            f"{archive_dir} is missing archives for {', '.join(missing)}. "
+            f"Publishing this set would leave the release without those "
+            f"platforms. Pass --allow-partial only to reissue an older tag that "
+            f"really shipped fewer."
+        )
+    if missing:
+        print(f"WARNING: --allow-partial, building without {', '.join(missing)}")
 
     versions = {a["version"] for a in found}
     if len(versions) > 1:
@@ -237,11 +261,14 @@ def main(argv: list[str] | None = None) -> int:
                         help="directory holding the downloaded release archives")
     parser.add_argument("--dist-dir", type=Path, default=Path("wheelhouse"),
                         help="where the built wheels are written")
+    parser.add_argument("--allow-partial", action="store_true",
+                        help="build even when the release is missing platforms "
+                             "WHEEL_TAGS knows; only for reissuing an older tag")
     parser.add_argument("--tag", default=None,
                         help="release tag to cross-check the archives against")
     args = parser.parse_args(argv)
 
-    archives = discover(args.archive_dir)
+    archives = discover(args.archive_dir, args.allow_partial)
     go_version = archives[0]["version"]
 
     # Cheap guard against publishing the wrong release: the tag names what the

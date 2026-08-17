@@ -119,6 +119,21 @@ resolve_version() {
     v*) ;;
     *) version="v$version" ;;
     esac
+
+    # Anchored, because this value is not just displayed: it becomes part of the
+    # asset filename and therefore part of a curl -o path. Only the auto-resolved
+    # branch below was checked, and that one cannot contain a slash by
+    # construction -- an explicitly passed --version can. Reject anything outside
+    # a tag's alphabet rather than trying to sanitise it.
+    case "$version" in
+    v[0-9]*) ;;
+    *) die "--version must look like v1.4.2 (got '$version')" ;;
+    esac
+    case "$version" in
+    *[!0-9A-Za-z.+-]* | *..*)
+      die "--version contains characters a release tag cannot have (got '$version')"
+      ;;
+    esac
     return
   fi
 
@@ -243,7 +258,15 @@ pick_install_dir() { # <extracted_binary_path>
 # than copied over the target: rename(2) is atomic and, unlike truncating an open
 # file, does not fail with ETXTBSY when the gateway being upgraded is running.
 install_binary() { # <extracted_binary_path>
-  staged="$install_dir/.$bin.install.$$"
+  # mktemp, not $$: a PID-derived name is guessable, and cp follows a symlink
+  # that is already sitting at the path rather than refusing it. In a
+  # group-writable install_dir -- /usr/local/bin is group-writable on some
+  # multi-user setups -- another local user could pre-create that name pointing
+  # at a file this user can write, and the copy would land there instead.
+  # mktemp creates the file itself with O_EXCL, so there is nothing to
+  # pre-create. install.ps1 uses a GUID for the same reason.
+  staged=$(mktemp "$install_dir/.$bin.install.XXXXXX" 2>/dev/null) ||
+    die "could not write to '$install_dir'"
   cp "$1" "$staged" || die "could not write to '$install_dir'"
   chmod 0755 "$staged"
   mv -f "$staged" "$install_dir/$bin" || die "could not install into '$install_dir'"

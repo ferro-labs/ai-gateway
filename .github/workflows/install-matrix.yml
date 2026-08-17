@@ -234,18 +234,36 @@ jobs:
           # in the empty value and the probe would never write its marker.
           sed '/^{ # opened here/a : > "$TRUNCATION_MARKER"' \
             scripts/install/install.sh > "${work}/instrumented.sh"
-          closing_line="$(wc -l < "${work}/instrumented.sh")"
-          line=1
-          while [ "$line" -lt "$closing_line" ]; do
-            rm -f "$marker"
-            head -n "$line" "${work}/instrumented.sh" > "${work}/prefix.sh"
-            TRUNCATION_MARKER="$marker" sh "${work}/prefix.sh" >/dev/null 2>&1 || true
-            if [ -e "$marker" ]; then
-              echo "::error file=scripts/install/install.sh,line=${line}::a truncated prefix executed installer code"
-              exit 1
-            fi
-            line=$((line + 1))
-          done
+          # BYTE offsets, not lines. A dropped connection cuts wherever the last
+          # packet ended -- mid-token, mid-string, mid-heredoc -- and a
+          # line-granular sweep never builds any of those states, so it asserted
+          # something weaker than the guarantee it exists to hold.
+          #
+          # Bounded ABOVE by the closing brace. Once that byte is present the
+          # group is complete and running is the correct outcome, so sweeping
+          # past it reports the script working as designed as a failure.
+          total="$(wc -c < "${work}/instrumented.sh")"
+          last_len="$(tail -n 1 "${work}/instrumented.sh" | wc -c)"
+          limit=$((total - last_len))
+
+          # One shell, chopping a character at a time with ${s%?}, each candidate
+          # in a subshell. Spawning head+sh per offset instead did not finish
+          # 16k prefixes in ten minutes; this runs in well under a minute.
+          TRUNCATION_MARKER="$marker" sh -c '
+            src=$(cat "$1"); marker="$2"; limit=$3
+            s=$src; n=${#src}
+            while [ "$n" -gt "$limit" ]; do s=${s%?}; n=$((n-1)); done
+            while [ "$n" -gt 0 ]; do
+              rm -f "$marker" 2>/dev/null
+              ( eval "$s" ) >/dev/null 2>&1
+              if [ -e "$marker" ]; then
+                echo "::error file=scripts/install/install.sh::a truncated prefix executed installer code at byte $n"
+                exit 1
+              fi
+              s=${s%?}; n=$((n-1))
+            done
+            echo "checked $limit byte-offset prefixes; none executed installer code"
+          ' _ "${work}/instrumented.sh" "$marker" "$limit"
 
       # There is deliberately no shfmt step. It was here on the rationale that
       # `-ln posix` makes shfmt reject a bashism, giving a second opinion on the
@@ -319,17 +337,21 @@ jobs:
             'function Install-FerroGateway {',
             "function Install-FerroGateway {`n[IO.File]::WriteAllText(`$env:TRUNCATION_MARKER, 'started')")
           if ($instrumented -eq $source) { throw 'Could not instrument Install-FerroGateway.' }
-          $instrumentedLines = @($instrumented -split "`r?`n")
-          $callLine = [Array]::LastIndexOf($instrumentedLines, 'Install-FerroGateway')
-          for ($count = 1; $count -le $callLine; $count++) {
+          # Byte offsets, not lines. A dropped transfer cuts wherever the last
+          # packet ended, so the states worth proving inert are the mid-token
+          # ones a line-granular sweep never builds. The file is pure ASCII --
+          # enforced by the compatibility rules above -- so one char is one byte.
+          # Each prefix runs in-process, so this costs no process spawns.
+          for ($i = 1; $i -lt $instrumented.Length; $i++) {
             Remove-Item -Force -ErrorAction SilentlyContinue $marker
-            $prefix = [string]::Join("`n", $instrumentedLines[0..($count - 1)])
+            $prefix = $instrumented.Substring(0, $i)
             $shell = [powershell]::Create()
-            try { [void]$shell.AddScript($prefix).Invoke() } finally { $shell.Dispose() }
+            try { [void]$shell.AddScript($prefix).Invoke() } catch { } finally { $shell.Dispose() }
             if (Test-Path -LiteralPath $marker) {
-              throw "A truncated install.ps1 prefix executed installer code at line $count."
+              throw "A truncated install.ps1 prefix executed installer code at byte $i."
             }
           }
+          Write-Host "checked $($instrumented.Length) byte-offset prefixes; none executed installer code"
 
       - name: Validate GoReleaser configuration
         uses: goreleaser/goreleaser-action@ec59f474b9834571250b370d4735c50f8e2d1e29 # v7.0.0
@@ -837,20 +859,14 @@ jobs:
             echo "::warning title=PyPI smoke tests are NOT ARMED::set INSTALL_MATRIX_PYPI_LIVE=true when ferrogw is published to PyPI."
           fi
 
-      - name: Install uv (Unix)
-        if: runner.os != 'Windows'
-        shell: bash
-        run: |
-          set -euo pipefail
-          curl -LsSf https://astral.sh/uv/install.sh | sh
-          echo "${HOME}/.local/bin" >> "$GITHUB_PATH"
-
-      - name: Install uv (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          irm https://astral.sh/uv/install.ps1 | iex
-          "$env:USERPROFILE\.local\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      # The official action, SHA-pinned, rather than piping astral.sh/uv/install.sh
+      # into a shell. That URL serves whatever is current, so it hands its author
+      # arbitrary code execution on a runner that has this repository checked
+      # out — the exact thing scripts/install/install.sh exists to avoid, and it
+      # would be inconsistent to argue that in the installer and not do it here.
+      # The action resolves uv itself and works on every OS in this matrix.
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
 
       - name: uvx ferrogw version
         shell: bash
@@ -937,7 +953,13 @@ jobs:
         shell: powershell
         run: |
           Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
-          Invoke-RestMethod -Uri 'https://get.scoop.sh' -OutFile "$env:RUNNER_TEMP\install-scoop.ps1"
+          # Pinned to a commit rather than fetched from get.scoop.sh, which
+          # redirects to whatever is on that repository's default branch today.
+          # Scoop ships no action, so this is the pinnable form: a raw URL at an
+          # immutable revision. Bump it deliberately, the way the SHA-pinned
+          # actions in this file are bumped.
+          $scoopInstaller = 'https://raw.githubusercontent.com/ScoopInstaller/Install/b0ee913725139b816f9178163af0aecdba07a7ed/install.ps1'
+          Invoke-RestMethod -Uri $scoopInstaller -OutFile "$env:RUNNER_TEMP\install-scoop.ps1"
           & "$env:RUNNER_TEMP\install-scoop.ps1" -RunAsAdmin
           "$env:USERPROFILE\scoop\shims" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 

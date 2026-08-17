@@ -138,3 +138,14 @@ jobs:
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           packages-dir: wheelhouse
+          # PyPI files are immutable, so a run that uploaded four of seven
+          # wheels and then hit a transient error cannot be recovered by the
+          # rerun this workflow documents as its recovery path: the retry meets
+          # the already-published files and fails before reaching the rest,
+          # leaving the version permanently incomplete. Skipping what is already
+          # there lets the retry finish the release.
+          #
+          # It does not weaken the build: the wheels are rebuilt from the same
+          # release archives, which were checksum- and cosign-verified above, so
+          # a skipped file is one this run would have produced identically.
+          skip-existing: true

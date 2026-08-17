@@ -65,4 +65,38 @@ require(
 if "scoop-bucket" in matrix:
     raise SystemExit(f"{matrix_path}: stale standalone Scoop repository")
 
+# The checks above are substring matches, which is enough to prove a step still
+# exists but says nothing about ORDER — and order is the whole invariant here.
+# Every one of them passed on a release.yml with its `needs:` edges deleted,
+# which is exactly the "independently gated handoff" this script is named for.
+# So the graph is parsed rather than grepped.
+import yaml  # noqa: E402  (kept beside the check it serves)
+
+graph = yaml.safe_load(read(release_path))["jobs"]
+
+REQUIRED_EDGES = {
+    # publishing waits for the asset set, so a release short an archive cannot
+    # reach a registry
+    "publish-packages": "verify-release-assets",
+    # installs are proven only after the packages exist
+    "verify-installation": "publish-packages",
+    # the announcement waits for the installs
+    "notify-discord": "verify-installation",
+    "verify-release-assets": "release",
+    "release": "ci",
+}
+
+for job, needed in REQUIRED_EDGES.items():
+    if job not in graph:
+        raise SystemExit(f"{release_path}: job {job!r} is gone")
+    needs = graph[job].get("needs") or []
+    if isinstance(needs, str):
+        needs = [needs]
+    if needed not in needs:
+        raise SystemExit(
+            f"{release_path}: {job!r} must wait on {needed!r} (needs: {needs}). "
+            f"Without that edge the step still runs, just not in an order that "
+            f"gates anything."
+        )
+
 print("distribution workflow invariants are present")

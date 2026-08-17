@@ -64,11 +64,15 @@ jobs:
       # line above already satisfies). Node 22 still bundles npm 10, so the
       # runner's npm cannot authenticate over OIDC without this.
       #
-      # Floating on the major is deliberate, unlike the GoReleaser pin in
-      # release.yml: that tool decides what the published artifacts *are*, while
-      # this one only uploads bytes that were already built and checksummed.
+      # Pinned exactly. An earlier revision floated this on the major, arguing
+      # the tool only uploads bytes that were already built and checksummed.
+      # That misreads where it sits: this step runs immediately before
+      # `npm publish`, in a job holding OIDC publish rights for seven packages,
+      # so a compromised npm release would execute with those rights in hand.
+      # It is the one floating dependency in a file where every action is
+      # SHA-pinned and cosign is version-pinned. Bump it deliberately.
       - name: Upgrade npm for trusted publishing
-        run: npm install -g npm@^11.5.1
+        run: npm install -g npm@11.19.0
 
       - name: Resolve tag
         id: tag

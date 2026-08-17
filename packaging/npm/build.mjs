@@ -79,11 +79,15 @@ const { values: opts } = parseArgs({
     artifacts: { type: "string" },
     out: { type: "string" },
     tag: { type: "string" },
+    // Only for reissuing an older tag that genuinely shipped fewer archives.
+    // Never correct on a current release — see the TARGETS loop below.
+    "allow-partial": { type: "boolean", default: false },
   },
 });
+opts.allowPartial = opts["allow-partial"];
 
 if (!opts.artifacts || !opts.out) {
-  fail("usage: build.mjs --artifacts <release-assets-dir> --out <dir> [--tag vX.Y.Z]");
+  fail("usage: build.mjs --artifacts <release-assets-dir> --out <dir> [--tag vX.Y.Z] [--allow-partial]");
 }
 
 // ─── Read the release ────────────────────────────────────────────────────────
@@ -138,11 +142,23 @@ const built = [];
 for (const t of TARGETS) {
   const archive = found.get(`${t.goos}_${t.goarch}`);
   if (!archive) {
-    // Not fatal. The release is the authority on what exists, and a platform it
-    // did not build must not appear in optionalDependencies pointing at a
-    // version that was never published. Loud, because the usual cause is an
-    // `ignore:` entry in .goreleaser.yaml rather than a deliberate drop.
-    console.warn(`WARNING: no ${t.goos}/${t.goarch} archive in this release — skipping ${SCOPE}/gateway-${t.npm}`);
+    // Fatal unless --allow-partial. This used to warn and skip, on the grounds
+    // that a platform the release did not build must not appear in
+    // optionalDependencies pointing at a version that was never published —
+    // true, but it makes the wrong half of the choice. release.yml gates the
+    // normal path behind "Verify release asset set"; the workflow_dispatch
+    // recovery path documented for a partial-publish failure comes straight
+    // here, so the run taken when something has already gone wrong was the one
+    // that would quietly publish a platform short.
+    if (!opts.allowPartial) {
+      fail(
+        `no ${t.goos}/${t.goarch} archive in this release, so ${SCOPE}/gateway-${t.npm} ` +
+          `cannot be built. Publishing the rest would ship a version missing that ` +
+          `platform. Pass --allow-partial only to reissue an older tag that really ` +
+          `shipped fewer archives.`,
+      );
+    }
+    console.warn(`WARNING: --allow-partial, skipping ${SCOPE}/gateway-${t.npm} (no ${t.goos}/${t.goarch} archive)`);
     continue;
   }
 
