@@ -3,9 +3,11 @@ package aigateway
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/ferro-labs/ai-gateway/config"
 	"github.com/ferro-labs/ai-gateway/models"
+	"github.com/ferro-labs/ai-gateway/pkg/circuitbreaker"
 	"github.com/ferro-labs/ai-gateway/providers"
 )
 
@@ -232,21 +234,30 @@ func TestGateway_AliasPricing_CostOptimizedStrategy(t *testing.T) {
 // TestCanonicalNameSurvivesRoutingDecorators pins the seam itself, one layer at
 // a time, so a regression names the decorator that lost the identity rather
 // than surfacing as a mis-priced route several packages away.
+// The limiter and breaker layers are composed with decorateProvider rather than
+// built by hand, so the test covers the ORDER production applies as well as the
+// seam itself -- breaker outermost, limiter innermost.
 func TestCanonicalNameSurvivesRoutingDecorators(t *testing.T) {
-	const canonical = "mock"
+	const (
+		canonical = "mock"
+		alias     = "mock--credential-1"
+	)
 	raw := &mockProvider{name: canonical, models: []string{testModel}}
-	alias := providers.WithName(raw, "mock--credential-1")
+	named := providers.WithName(raw, alias)
 
-	indexed := withIndexedModels("mock--credential-1", alias, map[string][]string{})
-	limited := &limitedProvider{Provider: indexed, lim: newProviderLimiter(1, 1), name: "mock--credential-1"}
+	indexed := withIndexedModels(alias, named, map[string][]string{})
+	lim := newProviderLimiter(1, 1)
+	cb := circuitbreaker.New(1, 1, 1, time.Minute)
 
 	for _, tc := range []struct {
 		layer string
 		p     providers.Provider
 	}{
-		{"WithName", alias},
+		{"WithName", named},
 		{"+ indexed view", indexed},
-		{"+ concurrency limiter", limited},
+		{"+ concurrency limiter", decorateProvider(alias, indexed, nil, lim)},
+		{"+ circuit breaker", decorateProvider(alias, indexed, cb, nil)},
+		{"+ both, as getStrategy composes them", decorateProvider(alias, indexed, cb, lim)},
 	} {
 		if got := providers.CanonicalName(tc.p); got != canonical {
 			t.Errorf("%s: CanonicalName = %q, want %q", tc.layer, got, canonical)
