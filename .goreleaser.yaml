@@ -206,9 +206,10 @@ release:
   name_template: "v{{ .Version }}"
 
 # ─── Package managers ────────────────────────────────────────────────────────
-# The three blocks below publish *into other repositories* once the release
-# above exists: a Homebrew tap, a Scoop bucket, and a pull request against
-# Microsoft's winget-pkgs. They consume the archives; they add no artifacts.
+# The three blocks below publish *outside this repository* once the release
+# above exists: Homebrew and Scoop share one package repository; winget opens a
+# pull request against Microsoft's winget-pkgs. They consume the archives; they
+# add no artifacts.
 #
 # None of them can use the workflow's GITHUB_TOKEN. That token is scoped to
 # ferro-labs/ai-gateway alone, so a push to any other repository 404s with a
@@ -304,9 +305,11 @@ homebrew_casks:
 
 # ─── Scoop ───────────────────────────────────────────────────────────────────
 # Yields:
-#   scoop bucket add ferrolabs https://github.com/ferro-labs/scoop-bucket
+#   scoop bucket add ferrolabs https://github.com/ferro-labs/homebrew-tap
 #   scoop install ferrogw
-# Generic bucket name for the same reason the tap has one.
+# The Homebrew tap also serves as the Scoop bucket. GoReleaser writes the
+# Scoop manifest at the repository root so Scoop discovers and reports it
+# normally.
 #
 # The manifest carries a per-architecture block, so dropping the windows/arm64
 # `ignore:` in `builds:` is what makes this real for arm64 Windows rather than
@@ -317,7 +320,7 @@ scoops:
     ids: [ferrogw]
     repository:
       owner: ferro-labs
-      name: scoop-bucket
+      name: homebrew-tap
       token: "{{ .Env.TAP_GITHUB_TOKEN }}"
     homepage: "https://github.com/ferro-labs/ai-gateway"
     description: "Open-source AI Gateway for LLM routing"
@@ -325,6 +328,10 @@ scoops:
     skip_upload: '{{ if eq .Env.TAP_GITHUB_TOKEN "" }}true{{ else }}auto{{ end }}'
 
 # ─── winget ──────────────────────────────────────────────────────────────────
+# Deferred from the current launch. Leave WINGET_GITHUB_TOKEN unset: that makes
+# skip_upload true, so no fork, branch, or upstream PR is required. Keep this
+# dormant config only to avoid reconstructing the reviewed manifest later.
+#
 # This one is NOT automatic in the way the tap and the bucket are, and the
 # difference matters for anyone reading the release checklist: GoReleaser pushes
 # a branch to a fork of microsoft/winget-pkgs and opens a pull request upstream,

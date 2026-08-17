@@ -7,7 +7,7 @@
 # resolves a version range. None of that touches a commit in this repository,
 # so a workflow that only runs on pull requests reports green for as long as
 # nobody edits the installer — which is precisely the file nobody edits. The
-# weekly cron is the point of this workflow; the pull-request and release
+# weekly cron is the point of this workflow; the pull-request and release-call
 # triggers are the cheap extras.
 #
 # What it asserts is deliberately narrow and deliberately strict: the installer
@@ -17,7 +17,7 @@
 #
 # Getting "expected" right is the one genuinely delicate part:
 #
-#   * on `release: [published]` the tag that just shipped is the expectation,
+#   * when release.yml calls this workflow, the tag that just shipped is the expectation,
 #     and it is passed to the installer explicitly so the run tests that exact
 #     release rather than whatever `latest` currently points at;
 #   * on `schedule` and `pull_request` there is no tag, so the installer is
@@ -25,11 +25,11 @@
 #     most likely to rot — and the expectation is resolved THE SAME WAY the
 #     installer does it (follow the /releases/latest 302, spec §4.1 step 2).
 #
-# It is not api.github.com, on purpose: that endpoint is capped at 60 requests
-# an hour per IP unauthenticated, and shared CI egress burns that budget on
-# somebody else's job. A matrix that asserts against a wrong expected version
-# is worse than no matrix, so the resolution lives in exactly one job and every
-# other job reads its output.
+# Latest-tag resolution does not use api.github.com: that endpoint is capped at
+# 60 requests an hour per IP when unauthenticated. Once the tag is known, this
+# job makes one authenticated asset-list query only to keep old releases (such
+# as v1.4.3, which has no Windows ARM archive) testable. Every other job reads
+# these outputs.
 #
 # Interface under test — spec §4.1 / §4.2:
 #   flags     --version, --install-dir, --verify-signature, --no-modify-path
@@ -49,12 +49,24 @@ on:
   pull_request:
     paths:
       - "scripts/install/**"
+      - "scripts/check_distribution_workflows.py"
       - "packaging/**"
+      - ".goreleaser.yaml"
       - ".github/workflows/install-matrix.yml"
-  # Verify the installers against the release that just shipped, while the
-  # person who shipped it is still watching.
-  release:
-    types: [published]
+      - ".github/workflows/release.yml"
+      - ".github/workflows/publish-npm.yml"
+      - ".github/workflows/publish-pypi.yml"
+  workflow_call:
+    inputs:
+      version:
+        description: "Tag to verify (e.g. v1.4.2)"
+        required: true
+        type: string
+      require_new_assets:
+        description: "Fail if assets introduced by the distribution release are missing"
+        required: false
+        default: true
+        type: boolean
   # The reason this file exists. 05:00 Monday sits after ci.yml (04:00) and
   # before catalog-backup (06:00), matching how the other scheduled workflows
   # in this repository are slotted.
@@ -68,7 +80,7 @@ on:
         type: string
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: install-matrix-${{ inputs.version || github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 # This workflow reads a public release and runs a script. It writes nothing,
@@ -91,29 +103,28 @@ jobs:
       # carries NO leading v — so the binary says 1.4.2 where the tag says
       # v1.4.2. Asserting the tag against the binary would fail every run.
       version: ${{ steps.resolve.outputs.version }}
-      # Non-empty only when a specific tag was named (release / manual run).
+      # Non-empty only when a specific tag was named (release call / manual run).
       # Empty means "let the installer resolve latest itself", which is the
       # path the weekly cron exists to exercise.
       pin: ${{ steps.resolve.outputs.pin }}
+      windows_arm64: ${{ steps.resolve.outputs.windows_arm64 }}
+      linux_packages: ${{ steps.resolve.outputs.linux_packages }}
     steps:
       - name: Resolve
         id: resolve
         env:
           # Every value that comes from an event payload or a human is read
           # through the environment, never interpolated into the script body.
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
           INPUT_VERSION: ${{ inputs.version }}
           REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
 
           pin=""
-          if [ -n "${RELEASE_TAG:-}" ]; then
-            pin="${RELEASE_TAG}"
-            source="release payload"
-          elif [ -n "${INPUT_VERSION:-}" ]; then
+          if [ -n "${INPUT_VERSION:-}" ]; then
             pin="${INPUT_VERSION}"
-            source="workflow_dispatch input"
+            source="workflow input"
           fi
 
           if [ -n "$pin" ]; then
@@ -144,11 +155,29 @@ jobs:
             exit 1
           fi
 
+          assets="$(gh release view "$tag" --repo "$REPO" --json assets --jq '.assets[].name')"
+          windows_arm64=false
+          if grep -Fxq "ferrogw_${tag#v}_windows_arm64.zip" <<<"$assets"; then
+            windows_arm64=true
+          fi
+          linux_packages=true
+          for extension in deb rpm apk; do
+            if ! grep -Fxq "ferrogw_${tag#v}_linux_amd64.${extension}" <<<"$assets"; then
+              linux_packages=false
+            fi
+          done
+
           {
             echo "tag=${tag}"
             echo "version=${tag#v}"
             echo "pin=${pin:+${tag}}"
+            echo "windows_arm64=${windows_arm64}"
+            echo "linux_packages=${linux_packages}"
           } >> "$GITHUB_OUTPUT"
+
+          if [ "$windows_arm64" != true ]; then
+            echo "::warning title=Windows ARM64 asset is absent::${tag} predates Windows ARM64 distribution; that runner row will be skipped unless this is a new release call."
+          fi
 
           if [ -n "$pin" ]; then
             pinned="yes — \`${tag}\` is passed to the installer explicitly"
@@ -178,13 +207,40 @@ jobs:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          ref: ${{ inputs.version || github.ref }}
           persist-credentials: false
+
+      - name: Check distribution workflow invariants
+        run: python3 scripts/check_distribution_workflows.py
 
       # --shell=sh, not bash. The script is piped to `/bin/sh`, which is dash on
       # Debian and busybox ash on Alpine; linting it as bash approves the exact
       # constructs the container jobs below then fail on.
       - name: shellcheck (POSIX sh)
         run: shellcheck --shell=sh --severity=style scripts/install/install.sh
+
+      - name: Verify truncated install.sh prefixes are inert
+        run: |
+          set -eu
+          work="${RUNNER_TEMP}/install-sh-truncation"
+          marker="${work}/started"
+          mkdir -p "$work"
+          grep -q '^{ # opened here' scripts/install/install.sh
+          tail -n 1 scripts/install/install.sh | grep -q '^}'
+          sed '/^{ # opened here/a : > "$TRUNCATION_MARKER"' \
+            scripts/install/install.sh > "${work}/instrumented.sh"
+          closing_line="$(wc -l < "${work}/instrumented.sh")"
+          line=1
+          while [ "$line" -lt "$closing_line" ]; do
+            rm -f "$marker"
+            head -n "$line" "${work}/instrumented.sh" > "${work}/prefix.sh"
+            TRUNCATION_MARKER="$marker" sh "${work}/prefix.sh" >/dev/null 2>&1 || true
+            if [ -e "$marker" ]; then
+              echo "::error file=scripts/install/install.sh,line=${line}::a truncated prefix executed installer code"
+              exit 1
+            fi
+            line=$((line + 1))
+          done
 
       # There is deliberately no shfmt step. It was here on the rationale that
       # `-ln posix` makes shfmt reject a bashism, giving a second opinion on the
@@ -224,6 +280,61 @@ jobs:
             exit 1
           }
           Write-Host 'install.ps1 parses cleanly.'
+
+      - name: Check Windows PowerShell 5.1 syntax compatibility
+        shell: pwsh
+        run: |
+          Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Scope CurrentUser -Force
+          $settings = @{
+            Rules = @{
+              PSUseCompatibleSyntax = @{
+                Enable = $true
+                TargetVersions = @('5.1')
+              }
+            }
+          }
+          $findings = @(Invoke-ScriptAnalyzer -Path ./scripts/install/install.ps1 -Settings $settings)
+          if ($findings.Count -gt 0) {
+            $findings | Format-Table -AutoSize | Out-String | Write-Host
+            exit 1
+          }
+
+      - name: Verify truncated install.ps1 prefixes are inert
+        shell: pwsh
+        run: |
+          $path = './scripts/install/install.ps1'
+          $lines = @(Get-Content -LiteralPath $path)
+          if ($lines[-1] -ne 'Install-FerroGateway') {
+            throw 'Install-FerroGateway must remain the final line.'
+          }
+          $marker = Join-Path $env:RUNNER_TEMP 'install-ps1-truncation-started'
+          $env:TRUNCATION_MARKER = $marker
+          $source = Get-Content -Raw -LiteralPath $path
+          $instrumented = $source.Replace(
+            'function Install-FerroGateway {',
+            "function Install-FerroGateway {`n[IO.File]::WriteAllText(`$env:TRUNCATION_MARKER, 'started')")
+          if ($instrumented -eq $source) { throw 'Could not instrument Install-FerroGateway.' }
+          $instrumentedLines = @($instrumented -split "`r?`n")
+          $callLine = [Array]::LastIndexOf($instrumentedLines, 'Install-FerroGateway')
+          for ($count = 1; $count -le $callLine; $count++) {
+            Remove-Item -Force -ErrorAction SilentlyContinue $marker
+            $prefix = [string]::Join("`n", $instrumentedLines[0..($count - 1)])
+            $shell = [powershell]::Create()
+            try { [void]$shell.AddScript($prefix).Invoke() } finally { $shell.Dispose() }
+            if (Test-Path -LiteralPath $marker) {
+              throw "A truncated install.ps1 prefix executed installer code at line $count."
+            }
+          }
+
+      - name: Validate GoReleaser configuration
+        uses: goreleaser/goreleaser-action@ec59f474b9834571250b370d4735c50f8e2d1e29 # v7.0.0
+        with:
+          distribution: goreleaser
+          version: "2.17.1"
+          args: check
+        env:
+          TAP_GITHUB_TOKEN: ""
+          WINGET_GITHUB_TOKEN: ""
 
   # ---------------------------------------------------------------------------
   # install.sh on real runners. macos-latest is arm64 and macos-13 is x64 —
@@ -275,6 +386,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          ref: ${{ inputs.version || github.ref }}
           persist-credentials: false
 
       # The `runner` context is not available in a job-level `env:` block, so
@@ -388,6 +500,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          ref: ${{ inputs.version || github.ref }}
           persist-credentials: false
 
       - name: Write in-container test script
@@ -466,22 +579,25 @@ jobs:
   # targets — not pwsh 7, which would require an install before the install.
   # ---------------------------------------------------------------------------
   windows-installer:
-    name: install.ps1 (windows-latest, ${{ matrix.form }} form)
+    name: install.ps1 (${{ matrix.runner }}, ${{ matrix.form }} form)
     needs: resolve
-    runs-on: windows-latest
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
+        runner: ${{ fromJSON((inputs.require_new_assets || needs.resolve.outputs.windows_arm64 == 'true') && '["windows-latest","windows-11-arm"]' || '["windows-latest"]') }}
         form: [parameter, env-var]
     env:
       EXPECTED_VERSION: ${{ needs.resolve.outputs.version }}
       PIN_VERSION: ${{ needs.resolve.outputs.pin }}
       FORM: ${{ matrix.form }}
+      RUNNER_LABEL: ${{ matrix.runner }}
       NO_COLOR: "1"
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          ref: ${{ inputs.version || github.ref }}
           persist-credentials: false
 
       # The `runner` context is not available in a job-level `env:` block; both
@@ -522,7 +638,7 @@ jobs:
         run: |
           $bin = Join-Path $env:INSTALL_DIR 'ferrogw.exe'
           if (-not (Test-Path -LiteralPath $bin)) {
-            Write-Host "::error title=install.ps1 wrote no binary on windows-latest (${env:FORM} form)::expected ${bin}"
+            Write-Host "::error title=install.ps1 wrote no binary on ${env:RUNNER_LABEL} (${env:FORM} form)::expected ${bin}"
             if (Test-Path -LiteralPath $env:INSTALL_DIR) {
               Get-ChildItem -Force -LiteralPath $env:INSTALL_DIR | Out-String | Write-Host
             }
@@ -538,85 +654,138 @@ jobs:
 
           if ($got -ne $env:EXPECTED_VERSION) {
             $shown = if ($got) { $got } else { '<no Version line in output>' }
-            Write-Host "::error title=Version mismatch on windows-latest (${env:FORM} form)::expected ferrogw version '${env:EXPECTED_VERSION}', got '$shown'"
+            Write-Host "::error title=Version mismatch on ${env:RUNNER_LABEL} (${env:FORM} form)::expected ferrogw version '${env:EXPECTED_VERSION}', got '$shown'"
             Write-Host "full output:`n$raw"
             exit 1
           }
 
-          Write-Host "OK windows-latest (${env:FORM} form): ferrogw $got"
+          Write-Host "OK ${env:RUNNER_LABEL} (${env:FORM} form): ferrogw $got"
 
-  # ===========================================================================
-  # PACKAGE SMOKE TESTS — WRITTEN, RUNNING, AND NOT YET ARMED
-  #
-  # None of ferrogw's package surfaces exist yet: npm and PyPI land in phase 2
-  # of the install-distribution spec, Homebrew and Scoop in phase 3. These three
-  # jobs are written now, against the interface those phases commit to, and they
-  # RUN on every trigger — the output is real and visible in the log — but they
-  # cannot fail the workflow until they are armed.
-  #
-  # The gate is the repository variable INSTALL_MATRIX_PACKAGES_LIVE.
-  #
-  #   TO ARM (do this the day the last surface publishes):
-  #     Settings > Secrets and variables > Actions > Variables >
-  #     New repository variable: INSTALL_MATRIX_PACKAGES_LIVE = true
-  #   No edit to this file is needed; the next run is blocking.
-  #
-  #   TODO(install-distribution): once all four surfaces have shipped and the
-  #   variable has been green for a couple of weekly runs, delete every
-  #   `continue-on-error:` line and every "Gate status" step below, and delete
-  #   the repository variable. A permanent gate is a permanent excuse.
-  #
-  # Each job announces its own gate state as a warning annotation on every run,
-  # so an unarmed job never reads as a quiet pass — the run summary always says
-  # out loud that these results were not enforced.
-  # ===========================================================================
-
-  packages-registries:
-    name: npx + uvx (${{ matrix.os }})
+  package-builders:
+    name: Build package artifacts from release archives
     needs: resolve
-    runs-on: ${{ matrix.os }}
-    continue-on-error: ${{ vars.INSTALL_MATRIX_PACKAGES_LIVE != 'true' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    env:
-      EXPECTED_VERSION: ${{ needs.resolve.outputs.version }}
-      ARMED: ${{ vars.INSTALL_MATRIX_PACKAGES_LIVE }}
-      NO_COLOR: "1"
+    runs-on: ubuntu-latest
     steps:
-      - name: Gate status
-        shell: bash
-        run: |
-          if [ "${ARMED:-}" = "true" ]; then
-            echo "::notice title=Package smoke tests are ARMED::a failure below fails this workflow."
-          else
-            echo "::warning title=Package smoke tests are NOT ARMED (results below are advisory)::ferrogw is not published to npm or PyPI yet (install-distribution spec, phase 2). Arm by setting repository variable INSTALL_MATRIX_PACKAGES_LIVE=true, then delete the continue-on-error lines in .github/workflows/install-matrix.yml."
-          fi
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.version || github.ref }}
+          persist-credentials: false
 
       - name: Set up Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22"
 
-      # uv's own installer, not a third-party action — nothing to SHA-pin and
-      # it is the path uv's docs give. Both spellings drop the binary in
-      # ~/.local/bin, which is not on this step's PATH, so it is appended
-      # explicitly rather than by sourcing a profile the runner never reads.
-      - name: Install uv (Unix)
-        if: runner.os != 'Windows'
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install PyPI build dependencies
+        run: python -m pip install --disable-pip-version-check "setuptools==84.0.0" "packaging==26.3"
+
+      - name: Download release archives
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+        run: |
+          mkdir artifacts
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir artifacts \
+            --pattern 'ferrogw_*.tar.gz' \
+            --pattern 'ferrogw_*.zip'
+
+      - name: Build npm packages from release archives
+        env:
+          TAG: ${{ needs.resolve.outputs.tag }}
+        run: node packaging/npm/build.mjs --artifacts artifacts --out npm-packages --tag "$TAG"
+
+      - name: Build PyPI wheels from release archives
+        env:
+          TAG: ${{ needs.resolve.outputs.tag }}
+        run: python packaging/pypi/build_wheels.py --archive-dir artifacts --dist-dir wheelhouse --tag "$TAG"
+
+  linux-packages:
+    name: Smoke-test Linux package (${{ matrix.format }})
+    if: inputs.require_new_assets || (inputs.version != '' && needs.resolve.outputs.linux_packages == 'true')
+    needs: resolve
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - format: deb
+            image: debian:stable-slim
+            pattern: ferrogw_*_amd64.deb
+          - format: rpm
+            image: fedora:latest
+            pattern: ferrogw_*_amd64.rpm
+          - format: apk
+            image: alpine:latest
+            pattern: ferrogw_*_amd64.apk
+    steps:
+      - name: Download package
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          PATTERN: ${{ matrix.pattern }}
+        run: |
+          mkdir package
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir package --pattern "$PATTERN"
+
+      - name: Install package and verify binary
+        env:
+          IMAGE: ${{ matrix.image }}
+          FORMAT: ${{ matrix.format }}
+          EXPECTED_VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          docker run --rm \
+            --volume "${GITHUB_WORKSPACE}/package:/package:ro" \
+            --env FORMAT \
+            --env EXPECTED_VERSION \
+            --env NO_COLOR=1 \
+            "$IMAGE" /bin/sh -eu -c '
+              case "$FORMAT" in
+                deb) dpkg -i /package/*.deb ;;
+                rpm) rpm -i /package/*.rpm ;;
+                apk) apk add --allow-untrusted /package/*.apk ;;
+              esac
+              raw="$(ferrogw version)"
+              got="$(printf "%s\n" "$raw" | awk '\''$1 == "Version" { print $2; exit }'\'')"
+              test "$got" = "$EXPECTED_VERSION"
+              echo "OK $FORMAT package: ferrogw $got"
+            '
+
+  # Package surfaces become blocking independently. This lets npm go live
+  # without hiding a PyPI failure (or vice versa) while Homebrew and Scoop are
+  # still being prepared.
+  packages-npm:
+    name: npx (${{ matrix.os }})
+    needs: resolve
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ vars.INSTALL_MATRIX_NPM_LIVE != 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    env:
+      EXPECTED_VERSION: ${{ needs.resolve.outputs.version }}
+      ARMED: ${{ vars.INSTALL_MATRIX_NPM_LIVE }}
+      NO_COLOR: "1"
+    steps:
+      - name: Gate status
         shell: bash
         run: |
-          set -euo pipefail
-          curl -LsSf https://astral.sh/uv/install.sh | sh
-          echo "${HOME}/.local/bin" >> "$GITHUB_PATH"
+          if [ "${ARMED:-}" = "true" ]; then
+            echo "::notice title=npm smoke tests are ARMED::a failure below fails this workflow."
+          else
+            echo "::warning title=npm smoke tests are NOT ARMED::set INSTALL_MATRIX_NPM_LIVE=true when ferrogw is published to npm."
+          fi
 
-      - name: Install uv (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          irm https://astral.sh/uv/install.ps1 | iex
-          "$env:USERPROFILE\.local\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
 
       # --ignore-scripts is not incidental: spec §6 requires the npm path to
       # work under it, because it is increasingly the corporate default and it
@@ -640,10 +809,45 @@ jobs:
           fi
           echo "OK npx on ${RUNNER_OS}: ferrogw ${got}"
 
-      # Runs even when npx failed: "npm is broken" and "PyPI is broken" are
-      # different reports and a weekly run should produce both.
+  packages-pypi:
+    name: uvx (${{ matrix.os }})
+    needs: resolve
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ vars.INSTALL_MATRIX_PYPI_LIVE != 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    env:
+      EXPECTED_VERSION: ${{ needs.resolve.outputs.version }}
+      ARMED: ${{ vars.INSTALL_MATRIX_PYPI_LIVE }}
+      NO_COLOR: "1"
+    steps:
+      - name: Gate status
+        shell: bash
+        run: |
+          if [ "${ARMED:-}" = "true" ]; then
+            echo "::notice title=PyPI smoke tests are ARMED::a failure below fails this workflow."
+          else
+            echo "::warning title=PyPI smoke tests are NOT ARMED::set INSTALL_MATRIX_PYPI_LIVE=true when ferrogw is published to PyPI."
+          fi
+
+      - name: Install uv (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "${HOME}/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install uv (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          irm https://astral.sh/uv/install.ps1 | iex
+          "$env:USERPROFILE\.local\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
       - name: uvx ferrogw version
-        if: ${{ !cancelled() }}
         shell: bash
         run: |
           set -uo pipefail
@@ -665,10 +869,10 @@ jobs:
     name: brew install (macos-latest)
     needs: resolve
     runs-on: macos-latest
-    continue-on-error: ${{ vars.INSTALL_MATRIX_PACKAGES_LIVE != 'true' }}
+    continue-on-error: ${{ vars.INSTALL_MATRIX_HOMEBREW_LIVE != 'true' }}
     env:
       EXPECTED_VERSION: ${{ needs.resolve.outputs.version }}
-      ARMED: ${{ vars.INSTALL_MATRIX_PACKAGES_LIVE }}
+      ARMED: ${{ vars.INSTALL_MATRIX_HOMEBREW_LIVE }}
       NO_COLOR: "1"
     steps:
       - name: Gate status
@@ -676,7 +880,7 @@ jobs:
           if [ "${ARMED:-}" = "true" ]; then
             echo "::notice title=Homebrew smoke test is ARMED::a failure below fails this workflow."
           else
-            echo "::warning title=Homebrew smoke test is NOT ARMED (result below is advisory)::ferro-labs/homebrew-tap does not exist yet (install-distribution spec, phase 3). Arm by setting repository variable INSTALL_MATRIX_PACKAGES_LIVE=true, then delete the continue-on-error line in .github/workflows/install-matrix.yml."
+            echo "::warning title=Homebrew smoke test is NOT ARMED::set INSTALL_MATRIX_HOMEBREW_LIVE=true when ferro-labs/homebrew-tap is live."
           fi
 
       # A cask serves macOS and Linuxbrew from one block (spec §4.5), so this
@@ -705,10 +909,10 @@ jobs:
     name: scoop install (windows-latest)
     needs: resolve
     runs-on: windows-latest
-    continue-on-error: ${{ vars.INSTALL_MATRIX_PACKAGES_LIVE != 'true' }}
+    continue-on-error: ${{ vars.INSTALL_MATRIX_SCOOP_LIVE != 'true' }}
     env:
       EXPECTED_VERSION: ${{ needs.resolve.outputs.version }}
-      ARMED: ${{ vars.INSTALL_MATRIX_PACKAGES_LIVE }}
+      ARMED: ${{ vars.INSTALL_MATRIX_SCOOP_LIVE }}
       NO_COLOR: "1"
     steps:
       - name: Gate status
@@ -717,7 +921,7 @@ jobs:
           if [ "${ARMED:-}" = "true" ]; then
             echo "::notice title=Scoop smoke test is ARMED::a failure below fails this workflow."
           else
-            echo "::warning title=Scoop smoke test is NOT ARMED (result below is advisory)::ferro-labs/scoop-bucket does not exist yet (install-distribution spec, phase 3). Arm by setting repository variable INSTALL_MATRIX_PACKAGES_LIVE=true, then delete the continue-on-error line in .github/workflows/install-matrix.yml."
+            echo "::warning title=Scoop smoke test is NOT ARMED::set INSTALL_MATRIX_SCOOP_LIVE=true when ferro-labs/homebrew-tap is live."
           fi
 
       # -RunAsAdmin because the hosted Windows runner's user is in the
@@ -735,7 +939,7 @@ jobs:
       - name: scoop install ferrogw
         shell: powershell
         run: |
-          scoop bucket add ferrolabs https://github.com/ferro-labs/scoop-bucket
+          scoop bucket add ferrolabs https://github.com/ferro-labs/homebrew-tap
           scoop install ferrogw
 
           $raw = (ferrogw version 2>&1 | Out-String)

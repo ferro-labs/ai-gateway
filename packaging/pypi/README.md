@@ -48,9 +48,8 @@ pip on Alpine reports the package as unavailable.
 
 The wheel set is derived from the archives that are present, not declared, so
 this table is the mapping rather than the promise: a release produces one wheel
-per row whose archive it actually built. All eight ship as of the release that
-followed `.goreleaser.yaml` dropping its windows/arm64 `ignore:`; the local
-verification runs in this README's history predate that and show seven.
+per row whose archive it actually built. A release containing Windows arm64
+produces all eight wheels; `v1.4.3` and earlier produce seven.
 
 An archive for a platform `WHEEL_TAGS` has no entry for is a hard error rather
 than a skip: a newly built target must not go missing from PyPI quietly.
@@ -79,7 +78,7 @@ environment. Running it directly is not supported.
 
 ## How a release publishes
 
-`.github/workflows/publish-pypi.yml`, on `release: published`:
+`.github/workflows/publish-pypi.yml`, after the GitHub release assets exist:
 
 1. `gh release download` fetches the archives the release already published.
    Not `dist/artifacts.json` — that belongs to the release job and is gone by
@@ -91,8 +90,14 @@ environment. Running it directly is not supported.
 3. Each wheel is verified before it leaves the job (see below).
 4. `pypa/gh-action-pypi-publish` uploads over OIDC.
 
-There is no hand-maintained version anywhere in this directory, and no step
-outside the workflow. One `git tag` is still the whole release.
+There is no hand-maintained version anywhere in this directory.
+
+The release workflow dispatches this workflow after GoReleaser succeeds and
+waits for it to finish. GitHub suppresses most follow-on events created with the
+repository `GITHUB_TOKEN`, but explicitly allows `workflow_dispatch`. A separate
+run is required here because PyPI does not accept a reusable workflow as a
+Trusted Publisher identity. Both the automatic and manual paths check out the
+requested tag before running versioned build code.
 
 **Prerelease tags are normalised, not rejected.** GoReleaser runs
 `prerelease: auto`, and `1.5.0-rc.1` is not a valid PEP 440 version — the

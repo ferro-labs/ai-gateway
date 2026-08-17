@@ -7,9 +7,9 @@
 # optionalDependencies. No package runs an install script — see
 # packaging/npm/README.md for why that is the whole point.
 #
-# This runs on release *publication*, not on the tag push, because it consumes
-# the release's own archives: the same bytes users download and verify, rather
-# than a `dist/` directory that no longer exists by the time this job starts.
+# release.yml dispatches this after GoReleaser publishes the release assets and
+# waits for it to finish. workflow_dispatch is one of the events GitHub permits
+# a repository GITHUB_TOKEN to create.
 #
 # To publish by hand (recovery, or a registry outage):
 #   gh workflow run publish-npm.yml -f tag=v1.4.2
@@ -17,14 +17,16 @@
 name: Publish npm
 
 on:
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
       tag:
         description: "Release tag to publish (e.g. v1.4.2)"
         required: true
         type: string
+
+concurrency:
+  group: publish-npm-${{ inputs.tag }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -46,6 +48,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          ref: ${{ inputs.tag }}
           persist-credentials: false
 
       # No `registry-url`: that input exists only to write an .npmrc that reads
@@ -70,13 +73,9 @@ jobs:
       - name: Resolve tag
         id: tag
         env:
-          # `release` supplies the first, `workflow_dispatch` the second. Read
-          # through env rather than inlined into the script, so a tag can never
-          # be interpolated as shell.
-          EVENT_TAG: ${{ github.event.release.tag_name }}
           INPUT_TAG: ${{ inputs.tag }}
         run: |
-          TAG="${EVENT_TAG:-$INPUT_TAG}"
+          TAG="$INPUT_TAG"
           if [ -z "$TAG" ]; then
             echo "no tag on this event"
             exit 1
@@ -198,13 +197,15 @@ jobs:
               echo "$name@$version already published — skipping"
               return
             fi
+            dist_tag=latest
+            case "$version" in *-*) dist_tag=next ;; esac
             # --access public: scoped packages default to restricted, and
             # provenance requires a public package.
             # --provenance: implied under trusted publishing, stated anyway so
             # the intent survives a change in CLI defaults and so a
             # misconfigured trust relationship fails here instead of publishing
             # an unattested package.
-            npm publish --access public --provenance "$dir"
+            npm publish --access public --provenance --tag "$dist_tag" "$dir"
           }
 
           # 1. the binaries

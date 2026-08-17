@@ -11,8 +11,10 @@ packaging/npm/
 └── README.md        this file
 ```
 
-Published by [`.github/workflows/publish-npm.yml`](../../.github/workflows/publish-npm.yml)
-on release publication.
+Built and published by
+[`.github/workflows/publish-npm.yml`](../../.github/workflows/publish-npm.yml)
+after the release assets exist. The release workflow must dispatch it
+explicitly; see [Publishing](#publishing).
 
 ## Layout
 
@@ -79,11 +81,9 @@ gh release download v1.4.2 --dir /tmp/artifacts \
 node packaging/npm/build.mjs --artifacts /tmp/artifacts --out /tmp/npm --tag v1.4.2
 ```
 
-**The input is the published release assets, not `dist/`.** The workflow runs on
-release publication, by which time the GoReleaser job's working directory is
-gone — and the release is the better anchor anyway: it packages the exact bytes
-users download, and the `workflow_dispatch` recovery path takes an identical
-code path to the automatic one.
+**The input is the published release assets, not `dist/`.** By the time this
+workflow runs, the GoReleaser job's working directory is gone — and the release
+is the better anchor anyway because it packages the exact bytes users download.
 
 **Nothing here carries a version.** `build.mjs` reads both the version and the
 platform set off the archive filenames, and `--tag` is only a cross-check that
@@ -123,6 +123,16 @@ Requirements, all encoded in the workflow:
   requires a public package;
 - a `repository` field matching where the publish runs from.
 
+The trusted-publisher configuration on npm must name repository
+`ferro-labs/ai-gateway`, workflow `publish-npm.yml`, and allowed action
+`npm publish`.
+
+The release workflow dispatches this workflow after GoReleaser succeeds and
+waits for it to finish. GitHub suppresses most follow-on events created with the
+repository `GITHUB_TOKEN`, but explicitly allows `workflow_dispatch`. Both the
+automatic and manual paths check out the requested tag before running versioned
+build code.
+
 **Order is load-bearing: platform packages first, `ferrogw` last.** The main
 package names each platform package at an exact version, so publishing it first
 opens a window where an install resolves the shim and no binary at all — and
@@ -130,8 +140,11 @@ optional dependencies fail *quietly*, so those users get a broken `npx ferrogw`
 rather than a failed install.
 
 Re-running skips versions already on the registry, so a publish that dies
-halfway can be resumed with `gh workflow run publish-npm.yml -f tag=v1.4.2`
-instead of hitting a conflict.
+halfway can be resumed without hitting a conflict.
+
+Stable versions publish under npm's `latest` dist-tag. Versions containing a
+prerelease component publish under `next`, so an `-rc` release cannot replace
+the default installed by `npm install ferrogw`.
 
 ### One-time bootstrap (required before the first release)
 
@@ -141,10 +154,12 @@ restriction. **Each of the seven packages therefore needs one manual,
 token-authenticated publish before OIDC works**, after which the token should be
 revoked:
 
-1. build the packages locally from an existing release (see above);
+1. build the packages locally from the first release that contains all six
+   platform archives;
 2. `npm publish --access public` each one with a granular token;
-3. on npmjs.com, add a trusted publisher for each package —
-   repo `ferro-labs/ai-gateway`, workflow file `publish-npm.yml`;
+3. on npmjs.com, add a trusted publisher for each package — repository
+   `ferro-labs/ai-gateway`, workflow file `publish-npm.yml`, allowed action
+   `npm publish`;
 4. revoke the token.
 
 Because npm pins trust to the **workflow filename**, renaming
@@ -160,7 +175,7 @@ would be worse than not naming it at all. A platform that appears needs no edit
 here.
 
 That is not hypothetical. `.goreleaser.yaml` carried
-`ignore: {goos: windows, goarch: arm64}` until recently, so **v1.4.2 and earlier
+`ignore: {goos: windows, goarch: arm64}` until recently, so **v1.4.3 and earlier
 ship no `ferrogw_<version>_windows_arm64.zip`** and building against one of
 those tags produces five platform packages with a warning. The first release cut
 after that `ignore:` was dropped produces all six, automatically.

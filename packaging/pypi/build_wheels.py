@@ -2,10 +2,11 @@
 """Turn a published GoReleaser release into one wheel per platform.
 
 The input is the **published release archives** — whatever `gh release
-download` left in `--archive-dir` — rather than `dist/artifacts.json`. This
-runs in its own workflow on `release: published`, by which time the release
-job's `dist/` no longer exists; and the archives are the bytes users already
-download, so a wheel built from them cannot disagree with the tarball.
+download` left in `--archive-dir` — rather than `dist/artifacts.json`. The
+release workflow dispatches this builder only after GoReleaser finishes, by
+which time the release job's `dist/` no longer exists; and the archives are the
+bytes users already download, so a wheel built from them cannot disagree with
+the tarball.
 
 Nothing here is version-pinned. The version comes out of the archive filenames,
 and the wheel set is derived from the archives that are present rather than
