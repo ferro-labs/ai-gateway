@@ -45,6 +45,31 @@ type ProviderUnwrapper interface {
 	UnwrapProvider() Provider
 }
 
+// IdentityUnwrapper exposes the provider whose vendor identity a decorator
+// carries. It is for decorators that change BEHAVIOUR but not identity — the
+// routing layer's circuit breaker, concurrency limiter and model-index view.
+//
+// It is deliberately a separate interface from ProviderUnwrapper rather than a
+// second implementation of it, because the two answer different questions and
+// only one of them is safe to make transparent:
+//
+//   - As walks ProviderUnwrapper to resolve capability interfaces. A
+//     behaviour-adding decorator must NOT be transparent there, or a caller
+//     resolves StreamProvider/EmbeddingProvider straight past the circuit
+//     breaker and concurrency limiter that were wrapped around it, silently
+//     losing the protection.
+//   - CanonicalName walks both, because identity is safe to see through: none
+//     of those decorators claims a vendor of its own, and pricing has to reach
+//     the vendor the catalog is keyed on.
+//
+// Implement this on any decorator that wraps a provider without becoming a
+// different vendor. Without it, CanonicalName stops at the decorator and
+// returns whatever Name() promotes to — which for an aliased registration is
+// the routing alias, so the catalog lookup silently finds nothing.
+type IdentityUnwrapper interface {
+	UnwrapIdentity() Provider
+}
+
 type namedProvider struct {
 	Provider
 	name string
@@ -64,6 +89,34 @@ func WithName(p Provider, name string) Provider {
 		return p
 	}
 	return &namedProvider{Provider: p, name: name}
+}
+
+// CanonicalName returns the identity beneath any WithName decorator: the
+// vendor name the model catalog and price book are keyed on. A provider
+// registered under its own name returns its own Name(); one registered under a
+// routing alias unwraps to the vendor identity beneath the alias. The bounded
+// walk mirrors As and cannot hang on a self-referential wrapper.
+// It walks IdentityUnwrapper as well as ProviderUnwrapper. The routing layer
+// hands strategies a provider wrapped in the model-index view, the concurrency
+// limiter and the circuit breaker; none of those is a vendor, and stopping at
+// them returned the routing alias, which the catalog cannot price.
+func CanonicalName(p Provider) string {
+	for range 32 {
+		var next Provider
+		switch d := p.(type) {
+		case ProviderUnwrapper:
+			next = d.UnwrapProvider()
+		case IdentityUnwrapper:
+			next = d.UnwrapIdentity()
+		default:
+			return p.Name()
+		}
+		if next == nil {
+			return p.Name()
+		}
+		p = next
+	}
+	return p.Name()
 }
 
 // As resolves T from p or from an identity decorator beneath it. Every provider

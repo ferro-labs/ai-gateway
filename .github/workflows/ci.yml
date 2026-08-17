@@ -46,7 +46,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        go: ["1.25.12"]
+        go: ["1.25.13"]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -85,7 +85,7 @@ jobs:
         run: go test -v -short -race -timeout 300s ./...
 
       - name: Test coverage
-        if: matrix.go == '1.25.12'
+        if: matrix.go == '1.25.13'
         id: coverage
         run: |
           go test -short -race -coverprofile=coverage.out -covermode=atomic ./...
@@ -100,7 +100,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload coverage artifact
-        if: matrix.go == '1.25.12'
+        if: matrix.go == '1.25.13'
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: coverage-go-${{ matrix.go }}
@@ -113,7 +113,7 @@ jobs:
       # fail_ci_if_error would let a Codecov outage block a release. Keeping it
       # off the tag path is also why the reusable call passes no secrets.
       - name: Upload coverage to Codecov
-        if: matrix.go == '1.25.12' && github.ref_type != 'tag'
+        if: matrix.go == '1.25.13' && github.ref_type != 'tag'
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
@@ -155,7 +155,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.25.12"
+          go-version: "1.25.13"
           check-latest: true
           cache: true
 
@@ -176,7 +176,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.25.12"
+          go-version: "1.25.13"
           check-latest: true
           cache: true
 
@@ -199,7 +199,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
       with:
-        go-version: '1.25.12'
+        go-version: '1.25.13'
         check-latest: true
 
     - name: Run golangci-lint (v2)

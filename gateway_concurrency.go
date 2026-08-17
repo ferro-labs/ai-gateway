@@ -96,6 +96,12 @@ type limitedProvider struct {
 	name string
 }
 
+// UnwrapIdentity exposes the provider beneath the limiter. Holding a slot does
+// not make this a vendor, so identity is safe to see through — but capabilities
+// are not, which is why this type must never implement ProviderUnwrapper. See
+// core.IdentityUnwrapper.
+func (p *limitedProvider) UnwrapIdentity() providers.Provider { return p.Provider }
+
 // Complete holds an in-flight slot for the duration of the upstream call.
 func (p *limitedProvider) Complete(ctx context.Context, req providers.Request) (*providers.Response, error) {
 	if err := p.lim.acquire(ctx); err != nil {

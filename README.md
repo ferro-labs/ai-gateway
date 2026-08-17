@@ -13,8 +13,6 @@
 
 **High-performance AI gateway in Go. Route LLM requests across 30 providers via a single OpenAI-compatible API.**
 
-**Deploy templates**
-
 [![Deploy on Railway: SQLite](https://railway.com/button.svg)](https://railway.com/deploy/ferro-labs-ai-sqlite-storage?referralCode=KblxKX&utm_medium=integration&utm_source=template&utm_campaign=generic)
 [![Deploy on Railway: PostgreSQL](https://railway.com/button.svg)](https://railway.com/deploy/ferro-labs-ai-postgresql-storage?referralCode=KblxKX&utm_medium=integration&utm_source=template&utm_campaign=generic)
 [![Deploy to Render: PostgreSQL](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/ferro-labs/ai-gateway)
@@ -92,26 +90,6 @@ or secret manager.
   <img src="docs/demo.gif" alt="Ferro Labs AI Gateway — Quick Start Demo" width="720" />
 </div>
 
-### Minimal config
-
-Create `config.yaml` (or use `ferrogw init`), then point the gateway at it with `export GATEWAY_CONFIG=./config.yaml` — a config file is loaded only when that variable names it:
-
-```yaml
-strategy:
-  mode: fallback
-
-targets:
-  - virtual_key: openai
-    retry:
-      attempts: 3
-      on_status_codes: [429, 502, 503]
-  - virtual_key: anthropic
-
-aliases:
-  fast: gpt-4o-mini
-  smart: claude-3-5-sonnet-20241022
-```
-
 ### First request
 
 ```bash
@@ -145,90 +123,17 @@ Most AI gateways are Python proxies that crack under load or JavaScript services
 
 ---
 
-## Performance
-
-Every figure in this section comes from one run: **Ferro Labs v1.0.0, measured
-2026-03-23**. Benchmarked against Kong OSS, Bifrost, LiteLLM, and Portkey on
-**GCP n2-standard-8** (8 vCPU, 32 GB RAM) using a **60ms fixed-latency
-mock upstream** — results reflect gateway overhead only. Later releases have not
-been re-measured; reproduce against the version you intend to run using the
-commands below.
-
-![Throughput comparison — Ferro Labs vs Kong, Bifrost, LiteLLM, Portkey across 150–1,000 VU](docs/benchmarks/throughput-comparison.png)
-
-| VU | RPS | p50 | p99 | Memory |
-|---:|---:|---:|---:|---:|
-| 50 | 813 | 61.3ms | 64.1ms | 36 MB |
-| 150 | 2,447 | 61.2ms | 63.4ms | 47 MB |
-| 300 | 4,890 | 61.2ms | 64.4ms | 72 MB |
-| 500 | 8,014 | 61.5ms | 72.9ms | 89 MB |
-| 1,000 | 13,925 | 68.1ms | 111.9ms | 135 MB |
-
-At 1,000 VU: **13,925 RPS**, p50 overhead **8.1ms**, memory **135 MB**.
-Against the live OpenAI API, the gateway itself adds **25 microseconds** p50 in
-a typical plugin configuration (2µs bare).
-
-Full methodology, raw results, and flamegraph analysis:
-[ferro-labs/ai-gateway-performance-benchmarks](https://github.com/ferro-labs/ai-gateway-performance-benchmarks)
-(`make setup && make bench` reproduces it).
-
----
-
 ## Features
 
-### 🔀 Routing
-
-- **8 routing strategies:** single, fallback, load balance, least latency, cost-optimized, content-based, A/B test, conditional — see [internal/strategies/README.md](internal/strategies/README.md)
-- Provider failover with configurable retry policies and status code filters
-- Cost-optimized routing can explicitly fallback, skip, or allow providers with unknown catalog prices
-- Per-request model aliases (`fast → gpt-4o-mini`, `smart → claude-3-5-sonnet`)
-
-### 🔌 Providers (30)
-
-| OpenAI & Compatible | Anthropic & Google | Cloud & Enterprise | Open Source & Inference |
-|:---|:---|:---|:---|
-| OpenAI | Anthropic | AWS Bedrock | Ollama, Ollama Cloud |
-| Azure OpenAI | Google Gemini | Azure Foundry | Hugging Face |
-| OpenRouter | Vertex AI | Databricks | Replicate |
-| DeepSeek | | Cloudflare Workers AI | Together AI |
-| Perplexity | | | Fireworks |
-| xAI (Grok) | | | DeepInfra |
-| Mistral | | | NVIDIA NIM |
-| Groq | | | SambaNova |
-| Cohere | | | Novita AI |
-| AI21 | | | Cerebras |
-| Moonshot / Kimi | | | Qwen / DashScope |
-
-Beyond chat and streaming, providers serve **embeddings, images, rerank,
-moderations, speech-to-text, text-to-speech, and batch** where the vendor offers
-them — the full per-provider endpoint matrix is
-[providers/README.md](providers/README.md).
-
-### 🛡️ Guardrails & Plugins
-
-Six plugins ship built-in — word filter, token/message limits, response cache,
-rate limiting, per-key budgets, and request logging — and the framework is
-public for writing your own. See [plugin/README.md](plugin/README.md).
-
-### 🎯 Provider Capabilities
-
-- **Capability matrix** — one declarative record of which OpenAI parameters each provider forwards, translates, or cannot express
-- **`GET /v1/capabilities`** — compare providers programmatically before you route to them
-- **Strict mode** — `compatibility.on_unsupported_param: warn | drop | reject`; a parameter the provider cannot honor is no longer silently discarded
-- **Conformance-tested** — every provider is built through the same seam the gateway uses and asserted against its real upstream payload shape
-
-### 🤖 MCP (Model Context Protocol)
-
-The gateway connects to MCP tool servers (stdio and Streamable HTTP), injects
-their tools into chat completions, and drives the agentic `tool_calls` loop
-itself — bounded depth, tool filtering, cross-server dedup. See
-[mcp/README.md](mcp/README.md).
-
-### 📊 Observability
-
-- **OpenTelemetry tracing** — OTLP export, W3C propagation, GenAI semantic conventions plus `ferro.*` cost/routing/MCP attributes; a zero-allocation no-op until enabled. See [observability/README.md](observability/README.md)
-- **Prometheus metrics** at `/metrics` (authenticated) and deep health checks at `/health`, `/livez`, `/readyz`
-- One trace ID threads logs, spans, and the `X-Request-ID` header; request logs persist to SQLite/PostgreSQL
+| Capability | What it does | Reference |
+|:---|:---|:---|
+| 🔀 **Routing** | 8 strategies — single, fallback, load balance, least latency, cost-optimized, content-based, A/B test, conditional — with per-target retry, failover, and model aliases | [Docs →](https://docs.ferrolabs.ai/routing/) |
+| 🔌 **30 providers** | Chat and streaming everywhere; embeddings, images, rerank, moderations, speech-to-text, text-to-speech, and batch where the vendor offers them | [Docs →](https://docs.ferrolabs.ai/providers/) |
+| 🛡️ **Guardrails & plugins** | Six built in — word filter, token/message limits, response cache, rate limiting, per-key budgets, request logging — and the plugin framework is public for writing your own | [Docs →](https://docs.ferrolabs.ai/plugins/) |
+| 🎯 **Capability matrix** | One declarative record of which OpenAI parameters each provider forwards, translates, or cannot express, served by `GET /v1/capabilities` | [Docs →](https://docs.ferrolabs.ai/guides/provider-capabilities/) |
+| 🤖 **MCP** | Connects to stdio and Streamable HTTP tool servers, injects their tools into chat completions, and drives the agentic `tool_calls` loop itself | [Docs →](https://docs.ferrolabs.ai/guides/mcp/) |
+| 📊 **Observability** | OpenTelemetry tracing and Prometheus metrics, one trace ID across logs and spans — a zero-allocation no-op until enabled | [Docs →](https://docs.ferrolabs.ai/guides/observability/) |
+| 🖥️ **Dashboard** | Operations console compiled into the binary and served at `/` — traffic, spend, provider health, request logs, audit trail | [Docs →](https://docs.ferrolabs.ai/guides/dashboard/) |
 
 ---
 
@@ -517,6 +422,35 @@ with no custom headers in self-hosted mode.
 - No vendor lock-in — Apache 2.0 license
 - MCP support — Portkey self-hosted lacks native MCP
 - FerroCloud (coming soon) for teams that want a managed service
+
+---
+
+## Performance
+
+Every figure in this section comes from one run: **Ferro Labs v1.0.0, measured
+2026-03-23**. Benchmarked against Kong OSS, Bifrost, LiteLLM, and Portkey on
+**GCP n2-standard-8** (8 vCPU, 32 GB RAM) using a **60ms fixed-latency
+mock upstream** — results reflect gateway overhead only. Later releases have not
+been re-measured; reproduce against the version you intend to run using the
+commands below.
+
+![Throughput comparison — Ferro Labs vs Kong, Bifrost, LiteLLM, Portkey across 150–1,000 VU](docs/benchmarks/throughput-comparison.png)
+
+| VU | RPS | p50 | p99 | Memory |
+|---:|---:|---:|---:|---:|
+| 50 | 813 | 61.3ms | 64.1ms | 36 MB |
+| 150 | 2,447 | 61.2ms | 63.4ms | 47 MB |
+| 300 | 4,890 | 61.2ms | 64.4ms | 72 MB |
+| 500 | 8,014 | 61.5ms | 72.9ms | 89 MB |
+| 1,000 | 13,925 | 68.1ms | 111.9ms | 135 MB |
+
+At 1,000 VU: **13,925 RPS**, p50 overhead **8.1ms**, memory **135 MB**.
+Against the live OpenAI API, the gateway itself adds **25 microseconds** p50 in
+a typical plugin configuration, and **2 microseconds** with no plugins enabled.
+
+Full methodology, raw results, and flamegraph analysis:
+[ferro-labs/ai-gateway-performance-benchmarks](https://github.com/ferro-labs/ai-gateway-performance-benchmarks)
+(`make setup && make bench` reproduces it).
 
 ---
 

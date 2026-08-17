@@ -232,3 +232,119 @@ func TestCostOptimized_NoTargets(t *testing.T) {
 		t.Errorf("expected no candidates with no targets, got %v", keys)
 	}
 }
+
+// TestCostOptimized_AliasPricing is issue #396's regression suite: a target
+// registered through Gateway.RegisterProviderAs carries a routing alias
+// (e.g. "openai--cred-1") distinct from its provider's canonical vendor
+// identity ("openai"). SelectTargets must price such a target exactly as it
+// would price the same provider registered under its own canonical name --
+// pricing the alias itself finds nothing in the catalog, which used to rank
+// every aliased target as unpriced and, under unpriced_strategy: skip, drop
+// it from routing entirely.
+func TestCostOptimized_AliasPricing(t *testing.T) {
+	aliasCatalog := models.Catalog{
+		"openai/gpt-4o": {
+			Provider: "openai",
+			ModelID:  "gpt-4o",
+			Mode:     models.ModeChat,
+			Pricing: models.Pricing{
+				InputPerMTokens:  ptrF(5.0),
+				OutputPerMTokens: ptrF(15.0),
+			},
+		},
+	}
+
+	tests := []struct {
+		name             string
+		targets          []Target
+		lookup           ProviderLookup
+		catalog          models.Catalog
+		unpricedStrategy string
+		wantLead         string // asserted when wantErr is empty
+		wantKeys         []string
+		wantErr          string // substring; empty means no error expected
+	}{
+		{
+			// Declared order puts the expensive alias first, so only a
+			// correct canonical-keyed price lookup can reorder it behind the
+			// cheap one -- a strategy still pricing the alias name itself
+			// would find both unpriced and leave the declared (wrong) order
+			// standing.
+			name: "ranks cheapest alias first, same as it would unaliased",
+			targets: []Target{
+				{VirtualKey: "expensive--cred-1"},
+				{VirtualKey: "cheap--cred-1"},
+			},
+			lookup: newLookup(
+				providers.WithName(&mockProvider{name: "expensive", models: []string{"gpt-4o"}}, "expensive--cred-1"),
+				providers.WithName(&mockProvider{name: "cheap", models: []string{"gpt-4o"}}, "cheap--cred-1"),
+			),
+			catalog:  buildCatalog(),
+			wantLead: "cheap--cred-1",
+		},
+		{
+			// A provider registered under its own canonical name is the
+			// baseline every alias case above is measured against: WithName
+			// is a no-op here (core.WithName returns p unchanged when
+			// name == p.Name()), so this is unaffected by the fix.
+			name: "provider registered under its canonical name is unaffected",
+			targets: []Target{
+				{VirtualKey: "expensive"},
+				{VirtualKey: "cheap"},
+			},
+			lookup: newLookup(
+				&mockProvider{name: "expensive", models: []string{"gpt-4o"}},
+				&mockProvider{name: "cheap", models: []string{"gpt-4o"}},
+			),
+			catalog:  buildCatalog(),
+			wantLead: "cheap",
+		},
+		{
+			// The acceptance case named explicitly in issue #396: under
+			// unpriced_strategy: skip, an aliased target that IS priced in
+			// the catalog (under its canonical name) must not be dropped
+			// from routing.
+			name: "skip strategy does not drop a priced aliased target",
+			targets: []Target{
+				{VirtualKey: "openai--cred-1"},
+			},
+			lookup: newLookup(
+				providers.WithName(&mockProvider{name: "openai", models: []string{"gpt-4o"}}, "openai--cred-1"),
+			),
+			catalog:          aliasCatalog,
+			unpricedStrategy: "skip",
+			wantKeys:         []string{"openai--cred-1"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var s *CostOptimized
+			if tt.unpricedStrategy != "" {
+				s = NewCostOptimized(tt.targets, tt.lookup, tt.catalog, tt.unpricedStrategy)
+			} else {
+				s = NewCostOptimized(tt.targets, tt.lookup, tt.catalog)
+			}
+
+			keys, err := s.SelectTargets(req("hello world"))
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("SelectTargets error = %v, want containing %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("SelectTargets: %v", err)
+			}
+			if tt.wantKeys != nil {
+				if len(keys) != len(tt.wantKeys) || keys[0] != tt.wantKeys[0] {
+					t.Fatalf("SelectTargets keys = %v, want %v", keys, tt.wantKeys)
+				}
+				return
+			}
+			if len(keys) == 0 || keys[0] != tt.wantLead {
+				t.Fatalf("SelectTargets leads with %v, want %q first", keys, tt.wantLead)
+			}
+		})
+	}
+}

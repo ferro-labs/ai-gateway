@@ -27,7 +27,7 @@ func TestClr(t *testing.T) {
 	})
 
 	t.Run("wraps text in ANSI codes when color is enabled", func(t *testing.T) {
-		if runtime.GOOS == "windows" {
+		if runtime.GOOS == osWindows {
 			t.Skip("color is disabled on bare Windows terminals")
 		}
 		t.Setenv("NO_COLOR", "")
@@ -48,7 +48,7 @@ func TestClr(t *testing.T) {
 // whether anything was on the other end. This drives the real check — no seam
 // override — against a stdout that is a pipe, which is what a redirect gives.
 func TestNoColor_NonTerminalStdout(t *testing.T) {
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == osWindows {
 		t.Skip("the Windows branch already suppresses colour without a TTY check")
 	}
 	t.Setenv("NO_COLOR", "")

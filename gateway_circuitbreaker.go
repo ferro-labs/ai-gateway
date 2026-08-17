@@ -21,6 +21,13 @@ type cbProvider struct {
 	name string
 }
 
+// UnwrapIdentity exposes the provider beneath the breaker. A circuit breaker
+// adds behaviour without becoming a vendor, so identity is safe to see through
+// while capabilities are not — this type must never implement
+// ProviderUnwrapper, or As would resolve CompleteStream/Embed past the breaker
+// and lose it. See core.IdentityUnwrapper.
+func (p *cbProvider) UnwrapIdentity() providers.Provider { return p.Provider }
+
 func (p *cbProvider) Complete(ctx context.Context, req providers.Request) (resp *providers.Response, err error) {
 	if !p.cb.Allow() {
 		return nil, circuitbreaker.ErrCircuitOpen

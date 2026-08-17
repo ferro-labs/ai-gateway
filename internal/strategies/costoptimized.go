@@ -67,10 +67,15 @@ func (c *CostOptimized) SelectTargets(req providers.Request) ([]string, error) {
 	estimatedPromptTokens := estimatePromptTokens(req)
 	candidates := make([]costOrderCandidate, 0, len(c.targets))
 	for _, t := range c.targets {
-		if !routableCandidate(c.lookup, t.VirtualKey, req.Model) {
+		p, ok := c.lookup(t.VirtualKey)
+		if !ok || !p.SupportsModel(req.Model) {
 			continue
 		}
-		result := models.Calculate(c.catalog, t.VirtualKey+"/"+req.Model, models.Usage{
+		// Price against the provider's canonical vendor identity, not the
+		// (possibly aliased) routing key: an alias registered through
+		// RegisterProviderAs shares its provider's catalog price rather than
+		// pricing against a name the catalog has never heard of.
+		result := models.Calculate(c.catalog, providers.CanonicalName(p)+"/"+req.Model, models.Usage{
 			PromptTokens: estimatedPromptTokens,
 		})
 		candidates = append(candidates, costOrderCandidate{

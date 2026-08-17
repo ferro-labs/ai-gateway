@@ -28,6 +28,9 @@ const (
 	SymDASH = "[-]"
 )
 
+// osWindows is runtime.GOOS on Windows.
+const osWindows = "windows"
+
 // stdoutIsTerminal reports whether this process's stdout is an interactive
 // terminal. It is a var because there is no portable way to open a pty just to
 // assert that colour IS emitted in front of one, so the positive case is pinned
@@ -41,7 +44,7 @@ var NoColor = func() bool {
 	}
 	// Disable colors on Windows cmd.exe unless running in Windows Terminal
 	// or another modern terminal that sets WT_SESSION or TERM.
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == osWindows {
 		if os.Getenv("WT_SESSION") == "" && os.Getenv("TERM") == "" {
 			return true
 		}
