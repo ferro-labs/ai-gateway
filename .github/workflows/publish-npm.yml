@@ -1,0 +1,180 @@
+# Publishes the npm surface for a release, so that `npx ferrogw` runs the
+# gateway with nothing pre-installed.
+#
+# One tag produces up to seven packages. Six carry a binary plus an `os`/`cpu`
+# pair, so npm installs exactly the one matching the host and silently skips the
+# rest; `ferrogw` itself carries only a small shim and names the six as
+# optionalDependencies. No package runs an install script — see
+# packaging/npm/README.md for why that is the whole point.
+#
+# This runs on release *publication*, not on the tag push, because it consumes
+# the release's own archives: the same bytes users download and verify, rather
+# than a `dist/` directory that no longer exists by the time this job starts.
+#
+# To publish by hand (recovery, or a registry outage):
+#   gh workflow run publish-npm.yml -f tag=v1.4.2
+
+name: Publish npm
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish (e.g. v1.4.2)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  # The only credential this workflow has. Publishing goes over npm Trusted
+  # Publishing (OIDC) — the same keyless posture as the cosign signatures on the
+  # release itself — so there is deliberately no long-lived npm token in secrets
+  # to leak or rotate.
+  #
+  # npmjs.com pins that trust to this repository AND to this file's name, so
+  # renaming this workflow stops publishing until the trusted publisher is
+  # updated on all seven packages.
+  id-token: write
+
+jobs:
+  publish:
+    name: npm
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      # No `registry-url`: that input exists only to write an .npmrc that reads
+      # NODE_AUTH_TOKEN, and there is no token here. registry.npmjs.org is npm's
+      # default anyway, so omitting it leaves OIDC as the only auth path — which
+      # is what we want it to be.
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+
+      # Trusted publishing needs npm >= 11.5.1 (and Node >= 22.14, which the
+      # line above already satisfies). Node 22 still bundles npm 10, so the
+      # runner's npm cannot authenticate over OIDC without this.
+      #
+      # Floating on the major is deliberate, unlike the GoReleaser pin in
+      # release.yml: that tool decides what the published artifacts *are*, while
+      # this one only uploads bytes that were already built and checksummed.
+      - name: Upgrade npm for trusted publishing
+        run: npm install -g npm@^11.5.1
+
+      - name: Resolve tag
+        id: tag
+        env:
+          # `release` supplies the first, `workflow_dispatch` the second. Read
+          # through env rather than inlined into the script, so a tag can never
+          # be interpolated as shell.
+          EVENT_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          TAG="${EVENT_TAG:-$INPUT_TAG}"
+          if [ -z "$TAG" ]; then
+            echo "no tag on this event"
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      # Archives only. checksums.txt also covers the per-archive SBOMs, which
+      # nothing here packages — hence --ignore-missing on the verify below.
+      - name: Download release archives
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          mkdir -p "${RUNNER_TEMP}/artifacts"
+          gh release download "$TAG" --repo "$REPO" --dir "${RUNNER_TEMP}/artifacts" \
+            --pattern 'ferrogw_*.tar.gz' \
+            --pattern 'ferrogw_*.zip' \
+            --pattern 'checksums.txt'
+
+      # gh downloads over TLS but attests nothing about the bytes. This is the
+      # same signed checksum file the shell installer verifies against, so the
+      # binary inside an npm package is the binary the release published.
+      - name: Verify archives against the release checksums
+        working-directory: ${{ runner.temp }}/artifacts
+        run: sha256sum --ignore-missing -c checksums.txt
+
+      # Version and platform set are read off the archives; --tag is only a
+      # cross-check that these assets are the ones this tag produced.
+      - name: Build packages
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          node packaging/npm/build.mjs \
+            --artifacts "${RUNNER_TEMP}/artifacts" \
+            --out "${RUNNER_TEMP}/npm" \
+            --tag "$TAG"
+
+      # Prove the shim actually execs the binary before anything is published,
+      # from the packed tarballs rather than the source directories, because a
+      # `files` allowlist that drops bin/ only shows up after packing. Covers
+      # linux-x64 alone — one runner cannot exec the other five — which is
+      # enough to catch the failure this whole layout can have: a shim that
+      # resolves nothing.
+      - name: Smoke test the packed tarballs
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -eu
+          mkdir -p "${RUNNER_TEMP}/tgz" "${RUNNER_TEMP}/smoke"
+          for dir in "${RUNNER_TEMP}"/npm/ferrogw "${RUNNER_TEMP}"/npm/gateway-linux-x64; do
+            (cd "$dir" && npm pack --pack-destination "${RUNNER_TEMP}/tgz")
+          done
+          cd "${RUNNER_TEMP}/smoke"
+          npm init -y > /dev/null
+          # --ignore-scripts is the corporate default this layout exists to
+          # survive, so the smoke test runs under it too.
+          npm install --ignore-scripts "${RUNNER_TEMP}"/tgz/*.tgz
+          npx ferrogw version | tee version.txt
+          grep -qF "${TAG#v}" version.txt
+
+      # ORDER IS LOAD-BEARING: platform packages first, `ferrogw` last.
+      #
+      # The main package names each platform package at an exact version. If it
+      # went first, every install landing in the window before the binaries
+      # existed would resolve the shim and no binary at all — and optional
+      # dependencies fail *quietly*, so those users get a broken `npx ferrogw`
+      # rather than a failed install. Publishing the binaries first makes the
+      # main package's arrival the moment the surface becomes usable.
+      #
+      # Already-published versions are skipped rather than fatal, so a rerun
+      # after a partial failure resumes instead of starting from a conflict.
+      # That is the entire reason workflow_dispatch is on this workflow.
+      - name: Publish to npm
+        run: |
+          set -eu
+
+          publish() {
+            dir="$1"
+            name=$(node -p "require('$dir/package.json').name")
+            version=$(node -p "require('$dir/package.json').version")
+            if npm view "$name@$version" version > /dev/null 2>&1; then
+              echo "$name@$version already published — skipping"
+              return
+            fi
+            # --access public: scoped packages default to restricted, and
+            # provenance requires a public package.
+            # --provenance: implied under trusted publishing, stated anyway so
+            # the intent survives a change in CLI defaults and so a
+            # misconfigured trust relationship fails here instead of publishing
+            # an unattested package.
+            npm publish --access public --provenance "$dir"
+          }
+
+          # 1. the binaries
+          for dir in "${RUNNER_TEMP}"/npm/gateway-*; do
+            publish "$dir"
+          done
+
+          # 2. then the package that points at them
+          publish "${RUNNER_TEMP}/npm/ferrogw"

@@ -109,6 +109,25 @@ jobs:
           args: release --clean --release-notes="${{ runner.temp }}/release-notes.md"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The Homebrew tap, the Scoop bucket and the winget fork are all
+          # repositories other than this one, and GITHUB_TOKEN is scoped to
+          # ferro-labs/ai-gateway alone — it cannot push to any of them.
+          #
+          # Both variables are exported unconditionally, including before the
+          # secrets exist. That is not defensive: an *undefined* variable is not
+          # a scoped failure, because Go's template engine aborts config load
+          # with `map has no entry for key` before a single binary is built,
+          # taking the whole release down with it. An unset secret expands to
+          # the empty string, which the templated `skip_upload` in
+          # .goreleaser.yaml reads as "this tap does not exist yet" and
+          # withholds that surface alone, logging the skip.
+          #
+          # The winget token is deliberately separate. The other two push to
+          # org-owned repositories; this one pushes to a fork that opens pull
+          # requests against microsoft/winget-pkgs, which is a different trust
+          # grant and should be revocable on its own.
+          TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+          WINGET_GITHUB_TOKEN: ${{ secrets.WINGET_GITHUB_TOKEN }}
 
   notify-discord:
     name: Discord Release Notification

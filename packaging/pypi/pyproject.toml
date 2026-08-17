@@ -1,0 +1,64 @@
+# Metadata for the `ferrogw` distribution on PyPI.
+#
+# This package contains no importable Python. It exists so that `uvx ferrogw`
+# and `pipx run ferrogw` reach the same Go binary the GitHub release ships —
+# see README.md in this directory for the mechanism.
+
+[build-system]
+# setup.py declares the binary via the SPDX `license` string and imports
+# bdist_wheel from setuptools rather than from the standalone `wheel`
+# distribution; both need setuptools 77 or newer.
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ferrogw"
+# Set by setup.py from the release archive's own filename. A version constant
+# here would be one more thing to forget on tag day, and the whole point of
+# building from `dist/` is that no surface can disagree with the tag.
+dynamic = ["version"]
+description = "Ferro Labs AI Gateway — one binary in front of 30 LLM providers"
+readme = { text = """
+# ferrogw
+
+The [Ferro Labs AI Gateway](https://github.com/ferro-labs/ai-gateway) — an
+OpenAI-compatible routing layer in front of 30 LLM providers, with smart
+routing, plugin middleware and API key management.
+
+```
+uvx ferrogw version
+pipx run ferrogw version
+```
+
+This distribution carries the prebuilt Go binary for your platform and puts it
+on `PATH`. It is not a Python library and exposes nothing importable; the
+gateway itself is a single static executable with no Python runtime involved.
+
+Full documentation: <https://github.com/ferro-labs/ai-gateway>
+""", content-type = "text/markdown" }
+license = "Apache-2.0"
+# Only pip's ability to unpack a `py3-none-<platform>` wheel is at stake — no
+# Python of ours runs, so the floor is deliberately generous.
+requires-python = ">=3.8"
+authors = [{ name = "Ferro Labs" }]
+keywords = ["llm", "ai-gateway", "openai", "anthropic", "proxy", "routing"]
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Intended Audience :: System Administrators",
+  "Operating System :: MacOS",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Go",
+  "Topic :: Internet :: Proxy Servers",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Topic :: Software Development :: Libraries",
+]
+
+[project.urls]
+Homepage = "https://github.com/ferro-labs/ai-gateway"
+Documentation = "https://docs.ferrolabs.ai"
+Source = "https://github.com/ferro-labs/ai-gateway"
+Changelog = "https://github.com/ferro-labs/ai-gateway/blob/main/CHANGELOG.md"
+Issues = "https://github.com/ferro-labs/ai-gateway/issues"

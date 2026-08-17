@@ -46,9 +46,15 @@ builds:
     goarch:
       - amd64
       - arm64
-    ignore:
-      - goos: windows
-        goarch: arm64
+    # There is deliberately no `ignore:` here. windows/arm64 used to be excluded,
+    # which made it the one platform the matrix above claimed and the release did
+    # not ship: every installer that derives an asset URL from `uname`/
+    # PROCESSOR_ARCHITECTURE built a correct name for an asset that 404s, so the
+    # Windows script needed a "supported, but not really" branch and the Scoop
+    # and winget manifests could only carry an amd64 entry. The binary is
+    # CGO_ENABLED=0, so this is a cross-compile like every other one — the cost
+    # is one extra archive per release and the saving is a special case in four
+    # downstream surfaces.
 
 # ─── Archives ────────────────────────────────────────────────────────────────
 
@@ -69,6 +75,61 @@ archives:
       - src: notices/THIRD-PARTY-NOTICES.txt
         dst: .
         strip_parent: true
+
+# ─── Linux packages ──────────────────────────────────────────────────────────
+# .deb / .rpm / .apk built from the same binaries the archives above carry, and
+# attached to the GitHub release as ordinary assets.
+#
+# What this gives you is `dpkg -i` / `rpm -i` against a file downloaded from the
+# release. It does **not** give you `apt install ferrogw`: resolving by name
+# needs a hosted repository — dists/, Packages.gz, and a GPG key with a rotation
+# story — which is the only piece of the distribution work with unbounded
+# ongoing cost, and is deferred on purpose (spec §2 and §7). Saying otherwise in
+# a README is how you get an install command that has never worked.
+#
+# These sit above `checksum:` because they change what it covers: the checksum
+# block filters no ids, so each package gains a line in checksums.txt and is
+# therefore covered by the cosign signature over it. They do **not** gain their
+# own SBOM — `sboms.artifacts: archive` selects archives, and a package is a
+# `package` artifact — which loses nothing, because the binary inside is byte
+# for byte the one the already-inventoried archive carries.
+
+nfpms:
+  - id: ferrogw
+    ids: [ferrogw]
+    # Without this the package would be named for the project (ai-gateway,
+    # inferred from the repository since no project_name is set) rather than for
+    # the command it puts on PATH.
+    package_name: ferrogw
+    formats: [deb, rpm, apk]
+    maintainer: "Ferro Labs <hello@ferrolabs.ai>"
+    description: "Open-source AI Gateway for LLM routing"
+    homepage: "https://github.com/ferro-labs/ai-gateway"
+    license: Apache-2.0
+    # Debian archive section. `utils` is the correct one for a standalone
+    # command-line tool; `net` would assert this is a network daemon package,
+    # which it only becomes once an operator writes a unit file for it — and
+    # this package deliberately ships none.
+    section: utils
+    # Nothing lands in /etc, on purpose. The gateway opens no configuration path
+    # unless GATEWAY_CONFIG names one, and `ferrogw init` writes config.yaml
+    # into the working directory rather than to a fixed location — so an
+    # /etc/ferrogw/config.yaml would be a conffile dpkg tracks forever, prompts
+    # about on every upgrade, and that the binary never reads. It would look
+    # live and be inert, which is worse than absent. The example ships as
+    # documentation instead, where its status is unambiguous.
+    #
+    # THIRD-PARTY-NOTICES.txt is not decoration here. The binary statically
+    # links every dependency — that is why the before hook generates the file at
+    # all — so a package that dropped it would be the one channel distributing
+    # that code with no licence text alongside it.
+    contents:
+      - src: LICENSE
+        dst: /usr/share/doc/ferrogw/LICENSE
+      - src: notices/THIRD-PARTY-NOTICES.txt
+        dst: /usr/share/doc/ferrogw/THIRD-PARTY-NOTICES.txt
+      - src: config.example.yaml
+        dst: /usr/share/doc/ferrogw/config.example.yaml
 
 # ─── Checksums ───────────────────────────────────────────────────────────────
 
@@ -143,6 +204,182 @@ release:
   prerelease: auto
   mode: replace
   name_template: "v{{ .Version }}"
+
+# ─── Package managers ────────────────────────────────────────────────────────
+# The three blocks below publish *into other repositories* once the release
+# above exists: a Homebrew tap, a Scoop bucket, and a pull request against
+# Microsoft's winget-pkgs. They consume the archives; they add no artifacts.
+#
+# None of them can use the workflow's GITHUB_TOKEN. That token is scoped to
+# ferro-labs/ai-gateway alone, so a push to any other repository 404s with a
+# message about the repository not existing. Each reads a PAT from the
+# environment instead, which .github/workflows/release.yml passes through to the
+# GoReleaser step.
+#
+# release.yml MUST export both variables even before the secrets exist, because
+# an *undefined* one is not a scoped failure — Go's template engine aborts with
+# `map has no entry for key` during config load, before a single binary is
+# built, taking the whole release with it. Exported-but-empty templates cleanly
+# to "", which is what makes the next paragraph possible.
+#
+# `skip_upload` is therefore templated rather than a bare `auto`. An absent
+# token means the tap does not exist yet — these blocks land in the repository
+# ahead of the repos they publish to — so the surface is withheld and GoReleaser
+# logs the skip. A token that is present but wrong still fails the release
+# loudly, which is the case that actually matters: once a tap is live, a silent
+# skip would leave `brew upgrade` serving the previous version off a green
+# release. Withholding a surface nobody can install yet costs nothing;
+# withholding one people already have costs trust.
+#
+# `auto` is the non-empty arm, which additionally withholds the update when the
+# tag carries a prerelease indicator (v1.4.3-rc1) — exactly the tags
+# `release.prerelease: auto` above publishes as prereleases, and exactly the
+# ones a `brew install` must not start handing to everybody. Snapshot builds
+# need no setting at all: GoReleaser skips every publishing pipe under
+# --snapshot, so a local `--snapshot` run never reaches a tap.
+#
+# Each block sets `name:` explicitly. No project_name is configured, so it is
+# inferred from the repository as `ai-gateway`, and every default below would
+# otherwise name the package after the repo rather than after the command.
+
+# ─── Homebrew (cask) ─────────────────────────────────────────────────────────
+# Yields `brew install ferro-labs/tap/ferrogw`. Homebrew strips the `homebrew-`
+# prefix from a tap repository, so `ferro-labs/homebrew-tap` *is* the tap
+# `ferro-labs/tap`. The repository name is generic rather than
+# `homebrew-ferrogw` so the sibling `ferro` CLI can publish into the same tap
+# later; a tap per product is a tap per product to keep alive.
+#
+# `homebrew_casks:`, not `brews:`. Checked rather than assumed — a `brews:`
+# block under the pinned v2.17.1 makes `goreleaser check` print
+#   • DEPRECATED: brews should not be used anymore
+# (soft-deprecated in v2.10, hard in v2.16). Per GoReleaser's own deprecation
+# note, formulae existed only because "this was the only way to do it for
+# Linuxbrew at the time, but this is no longer true" — one cask now serves macOS
+# and Linuxbrew both, which is why there is a single block here and no
+# formula/cask split.
+
+homebrew_casks:
+  - name: ferrogw
+    ids: [ferrogw]
+    repository:
+      owner: ferro-labs
+      name: homebrew-tap
+      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
+    homepage: "https://github.com/ferro-labs/ai-gateway"
+    description: "Open-source AI Gateway for LLM routing"
+    license: Apache-2.0
+    # The cask's `binary` stanza, and the one line here that depends on a
+    # decision made in `archives:` above: the archive is flat, so the binary is
+    # at its root and this is a bare name rather than a path. Give the archives
+    # a wrapper directory and this has to gain that prefix or every install
+    # links a file that is not there.
+    binaries:
+      - ferrogw
+    # macOS attaches com.apple.quarantine to anything fetched over the network,
+    # and these binaries are neither Developer ID signed nor notarized — so
+    # without this the first `ferrogw` after a *successful* `brew install` dies
+    # on "cannot be opened because the developer cannot be verified", which is
+    # the worst possible place to discover it.
+    #
+    # There is no `no_quarantine` option to reach for: it is absent from
+    # v2.17.1's schema (`goreleaser schema`), and the cask template embedded in
+    # that binary emits a `postflight` block only when this hook is set — it
+    # strips nothing on its own. The `OS.mac?` guard is load-bearing rather than
+    # defensive, because this same cask is what Linuxbrew installs, and
+    # /usr/bin/xattr does not exist there.
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/ferrogw"]
+          end
+    # No `zap:`. A zap stanza names the paths `brew uninstall --zap` should
+    # remove after the cask itself is gone, and this cask stages exactly one
+    # file — the binary, which the uninstall already removes. `ferrogw init`
+    # writes config.yaml into the working directory and never to a fixed path,
+    # so there is no location a zap could name that would be right for anyone,
+    # and guessing one means deleting an operator's config from a directory this
+    # package never wrote to.
+    skip_upload: '{{ if eq .Env.TAP_GITHUB_TOKEN "" }}true{{ else }}auto{{ end }}'
+
+# ─── Scoop ───────────────────────────────────────────────────────────────────
+# Yields:
+#   scoop bucket add ferrolabs https://github.com/ferro-labs/scoop-bucket
+#   scoop install ferrogw
+# Generic bucket name for the same reason the tap has one.
+#
+# The manifest carries a per-architecture block, so dropping the windows/arm64
+# `ignore:` in `builds:` is what makes this real for arm64 Windows rather than
+# an amd64 manifest those machines run under emulation.
+
+scoops:
+  - name: ferrogw
+    ids: [ferrogw]
+    repository:
+      owner: ferro-labs
+      name: scoop-bucket
+      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
+    homepage: "https://github.com/ferro-labs/ai-gateway"
+    description: "Open-source AI Gateway for LLM routing"
+    license: Apache-2.0
+    skip_upload: '{{ if eq .Env.TAP_GITHUB_TOKEN "" }}true{{ else }}auto{{ end }}'
+
+# ─── winget ──────────────────────────────────────────────────────────────────
+# This one is NOT automatic in the way the tap and the bucket are, and the
+# difference matters for anyone reading the release checklist: GoReleaser pushes
+# a branch to a fork of microsoft/winget-pkgs and opens a pull request upstream,
+# and there it enters Microsoft's review queue behind their validation pipeline.
+# Everything up to the PR is unattended; the merge is not, so `winget install`
+# lags the tag by however long that queue takes and can be rejected outright.
+#
+# The fork is what the PAT needs write access to — GITHUB_TOKEN cannot push to
+# it, and nobody gets write access to microsoft/winget-pkgs itself. Referenced
+# as the secret name only; the value belongs in repository secrets.
+#
+# `package_identifier` is the string users type. GoReleaser would default it to
+# publisher + "." + name, which is the same value — it is spelled out because it
+# is the public install command, not an implementation detail, and winget
+# rejects an identifier that ever changes shape between versions.
+
+winget:
+  - name: ferrogw
+    package_identifier: FerroLabs.ferrogw
+    ids: [ferrogw]
+    publisher: FerroLabs
+    publisher_url: "https://github.com/ferro-labs"
+    publisher_support_url: "https://github.com/ferro-labs/ai-gateway/issues"
+    homepage: "https://github.com/ferro-labs/ai-gateway"
+    license: Apache-2.0
+    license_url: "https://github.com/ferro-labs/ai-gateway/blob/main/LICENSE"
+    short_description: "Open-source AI Gateway for LLM routing"
+    # Folded, not literal: winget renders Description as one paragraph, so hard
+    # newlines from a `|` block survive into the manifest and the store listing.
+    description: >-
+      Ferro Labs AI Gateway is a unified routing layer between applications and
+      30 LLM providers, with an OpenAI-compatible API, smart routing strategies,
+      plugin middleware, API key management and a built-in operations dashboard.
+    # winget search is the only discovery surface this package gets, and it
+    # matches on these.
+    tags:
+      - ai
+      - llm
+      - gateway
+      - proxy
+      - openai
+    repository:
+      owner: ferro-labs
+      name: winget-pkgs
+      branch: "ferrogw-{{ .Version }}"
+      token: "{{ .Env.WINGET_GITHUB_TOKEN }}"
+      pull_request:
+        enabled: true
+        base:
+          owner: microsoft
+          name: winget-pkgs
+          # winget-pkgs is one of the repositories still on `master`; `main`
+          # opens the PR against a branch that does not exist.
+          branch: master
+    skip_upload: '{{ if eq .Env.WINGET_GITHUB_TOKEN "" }}true{{ else }}auto{{ end }}'
 
 # ─── Docker images ───────────────────────────────────────────────────────────
 # Uses deploy/gateway.release.Dockerfile, which copies the pre-built binary

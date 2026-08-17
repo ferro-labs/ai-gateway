@@ -1,0 +1,753 @@
+# Install matrix — executes the published installers on every platform they
+# claim to support and asserts the version they actually produce.
+#
+# Installers rot from the OUTSIDE. GitHub changes an asset URL or a redirect
+# shape, a runner image rotates its preinstalled tools, a Homebrew cask goes
+# stale behind a tap that stopped being updated, a registry changes how it
+# resolves a version range. None of that touches a commit in this repository,
+# so a workflow that only runs on pull requests reports green for as long as
+# nobody edits the installer — which is precisely the file nobody edits. The
+# weekly cron is the point of this workflow; the pull-request and release
+# triggers are the cheap extras.
+#
+# What it asserts is deliberately narrow and deliberately strict: the installer
+# runs to completion, writes an executable, and that executable reports the
+# EXPECTED version. "Exit code 0" is not the check — an installer that quietly
+# resolves last year's tag exits 0 all day.
+#
+# Getting "expected" right is the one genuinely delicate part:
+#
+#   * on `release: [published]` the tag that just shipped is the expectation,
+#     and it is passed to the installer explicitly so the run tests that exact
+#     release rather than whatever `latest` currently points at;
+#   * on `schedule` and `pull_request` there is no tag, so the installer is
+#     left to resolve `latest` itself — that resolution is one of the things
+#     most likely to rot — and the expectation is resolved THE SAME WAY the
+#     installer does it (follow the /releases/latest 302, spec §4.1 step 2).
+#
+# It is not api.github.com, on purpose: that endpoint is capped at 60 requests
+# an hour per IP unauthenticated, and shared CI egress burns that budget on
+# somebody else's job. A matrix that asserts against a wrong expected version
+# is worse than no matrix, so the resolution lives in exactly one job and every
+# other job reads its output.
+#
+# Interface under test — spec §4.1 / §4.2:
+#   flags     --version, --install-dir, --verify-signature, --no-modify-path
+#   env       FERROGW_VERSION, FERROGW_INSTALL_DIR
+# The PowerShell script exposes the same switches in PascalCase (-Version,
+# -InstallDir, -NoModifyPath) and reads the same FERROGW_* variables.
+#
+# Related: docs/superpowers/specs/2026-08-17-install-distribution-design.md
+# §4.6 (this workflow) and §6 (what it is allowed to call done).
+
+name: Install Matrix
+
+on:
+  # Only the installer surfaces. This workflow reaches the network and the
+  # published releases; running it on every Go change would be noise with a
+  # rate limit attached.
+  pull_request:
+    paths:
+      - "scripts/install/**"
+      - "packaging/**"
+      - ".github/workflows/install-matrix.yml"
+  # Verify the installers against the release that just shipped, while the
+  # person who shipped it is still watching.
+  release:
+    types: [published]
+  # The reason this file exists. 05:00 Monday sits after ci.yml (04:00) and
+  # before catalog-backup (06:00), matching how the other scheduled workflows
+  # in this repository are slotted.
+  schedule:
+    - cron: "0 5 * * 1"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Tag to verify (e.g. v1.4.2). Empty resolves the latest release, exactly as the installer does."
+        required: false
+        type: string
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# This workflow reads a public release and runs a script. It writes nothing,
+# publishes nothing, and needs no token beyond checking out the tree.
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # The single source of "what version should we see?" for every job below.
+  # ---------------------------------------------------------------------------
+  resolve:
+    name: Resolve expected version
+    runs-on: ubuntu-latest
+    outputs:
+      # Tag as published, with the leading v — e.g. v1.4.2.
+      tag: ${{ steps.resolve.outputs.tag }}
+      # What `ferrogw version` prints. GoReleaser injects {{.Version}} into
+      # internal/version.Version (.goreleaser.yaml:37), and that template value
+      # carries NO leading v — so the binary says 1.4.2 where the tag says
+      # v1.4.2. Asserting the tag against the binary would fail every run.
+      version: ${{ steps.resolve.outputs.version }}
+      # Non-empty only when a specific tag was named (release / manual run).
+      # Empty means "let the installer resolve latest itself", which is the
+      # path the weekly cron exists to exercise.
+      pin: ${{ steps.resolve.outputs.pin }}
+    steps:
+      - name: Resolve
+        id: resolve
+        env:
+          # Every value that comes from an event payload or a human is read
+          # through the environment, never interpolated into the script body.
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          pin=""
+          if [ -n "${RELEASE_TAG:-}" ]; then
+            pin="${RELEASE_TAG}"
+            source="release payload"
+          elif [ -n "${INPUT_VERSION:-}" ]; then
+            pin="${INPUT_VERSION}"
+            source="workflow_dispatch input"
+          fi
+
+          if [ -n "$pin" ]; then
+            # Tolerate a human typing 1.4.2 for the tag v1.4.2.
+            case "$pin" in
+              v*) tag="$pin" ;;
+              *)  tag="v${pin}" ;;
+            esac
+          else
+            source="/releases/latest redirect"
+            # The same call install.sh makes (spec §4.1 step 2): follow the 302
+            # and read the tag off the effective URL. --retry covers a transient
+            # 5xx on a weekly unattended run; it does not paper over a 404.
+            effective="$(curl -fsSLI --retry 3 --retry-delay 2 -o /dev/null \
+              -w '%{url_effective}' "https://github.com/${REPO}/releases/latest")"
+            tag="${effective##*/}"
+            if [ "$tag" = "latest" ] || [ -z "$tag" ]; then
+              echo "::error title=Could not resolve the latest release::https://github.com/${REPO}/releases/latest did not redirect to a tag (effective URL: ${effective}). Every job in this run would assert against a wrong version, so the run stops here."
+              exit 1
+            fi
+          fi
+
+          # Refuse anything that is not a version tag before it reaches a shell
+          # in seven other jobs. workflow_dispatch inputs are attacker-shaped by
+          # construction; a release tag is only as clean as whoever pushed it.
+          if ! printf '%s' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)*$'; then
+            echo "::error title=Refusing a malformed version::'${tag}' (from ${source}) is not a vMAJOR.MINOR.PATCH tag."
+            exit 1
+          fi
+
+          {
+            echo "tag=${tag}"
+            echo "version=${tag#v}"
+            echo "pin=${pin:+${tag}}"
+          } >> "$GITHUB_OUTPUT"
+
+          if [ -n "$pin" ]; then
+            pinned="yes — \`${tag}\` is passed to the installer explicitly"
+          else
+            pinned="no — the installer resolves \`latest\` itself, and this run checks that it lands on \`${tag}\`"
+          fi
+
+          {
+            echo "## Install matrix"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Expected tag | \`${tag}\` |"
+            echo "| Expected \`ferrogw version\` | \`${tag#v}\` |"
+            echo "| Resolved from | ${source} |"
+            echo "| Installer version pinned | ${pinned} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # Static checks. Cheap, and the only job that can fail before a release
+  # exists.
+  # ---------------------------------------------------------------------------
+  lint:
+    name: Lint installers
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      # --shell=sh, not bash. The script is piped to `/bin/sh`, which is dash on
+      # Debian and busybox ash on Alpine; linting it as bash approves the exact
+      # constructs the container jobs below then fail on.
+      - name: shellcheck (POSIX sh)
+        run: shellcheck --shell=sh --severity=style scripts/install/install.sh
+
+      # There is deliberately no shfmt step. It was here on the rationale that
+      # `-ln posix` makes shfmt reject a bashism, giving a second opinion on the
+      # class shellcheck covers — that is not true, and was checked rather than
+      # assumed: `shfmt -ln posix` reprints `if [[ $x == 1 ]]` unchanged and
+      # exits 0. The flag selects a formatting dialect, it does not validate.
+      # shellcheck above is the real gate, and it does catch that line (SC3010),
+      # along with arrays (SC3030) and array refs (SC3054).
+      #
+      # What the step actually enforced was indentation, and it failed on this
+      # file for a structural reason: install.sh wraps its whole body in a brace
+      # group so a truncated `curl | sh` cannot execute a prefix, and shfmt
+      # wants every line inside that group indented. Reformatting to satisfy it
+      # would re-indent the entire file to buy nothing — the group is the
+      # truncation defence, and it is deliberately flush-left so the diff of a
+      # real change stays readable.
+
+      # GitHub's ubuntu image ships PowerShell, so the Windows script gets a
+      # syntax check without spending a Windows runner on it. A parse error is
+      # the failure mode `irm | iex` reports worst: the user sees a wall of
+      # PowerShell internals with no line number that means anything to them.
+      - name: Parse-check install.ps1
+        shell: pwsh
+        run: |
+          $path = './scripts/install/install.ps1'
+          if (-not (Test-Path -LiteralPath $path)) {
+            Write-Host "::error title=install.ps1 is missing::expected $path"
+            exit 1
+          }
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path -LiteralPath $path).Path, [ref]$null, [ref]$errors)
+          if ($errors -and $errors.Count -gt 0) {
+            foreach ($e in $errors) {
+              Write-Host "::error file=scripts/install/install.ps1,line=$($e.Extent.StartLineNumber)::$($e.Message)"
+            }
+            exit 1
+          }
+          Write-Host 'install.ps1 parses cleanly.'
+
+  # ---------------------------------------------------------------------------
+  # install.sh on real runners. macos-latest is arm64 and macos-13 is x64 —
+  # genuinely different architectures on genuinely different images, which is
+  # the whole reason both are here rather than one standing in for the other.
+  # ---------------------------------------------------------------------------
+  shell-installer:
+    name: install.sh (${{ matrix.label }})
+    needs: resolve
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      # Every broken platform in one run. Stopping at the first failure turns a
+      # weekly report into a guessing game about the other six.
+      fail-fast: false
+      matrix:
+        include:
+          - label: linux/amd64 (ubuntu-latest)
+            runner: ubuntu-latest
+          # GitHub's hosted arm64 Linux runners, free for public repositories.
+          # Chosen over a QEMU-emulated aarch64 container: this is a NATIVE
+          # arm64 kernel and userland, so `uname -m` reports what a real user's
+          # machine reports and the downloaded arm64 binary actually executes.
+          # QEMU would test the installer's arch detection against an emulator's
+          # answer and run the binary under translation — two layers that can
+          # each mask a break. If the org ever loses access to this label, the
+          # fallback is docker/setup-qemu-action + an arm64 container, NOT
+          # deleting the arm64 row.
+          - label: linux/arm64 (ubuntu-24.04-arm)
+            runner: ubuntu-24.04-arm
+          - label: darwin/arm64 (macos-latest)
+            runner: macos-latest
+          # Spec §4.6 names macos-13 for the x64 row; GitHub retired that image,
+          # so the Intel runner is now a `-intel` variant of a current macOS.
+          # The ROW is what matters, not the label: darwin/amd64 and
+          # darwin/arm64 download different archives and run different machine
+          # code, so a matrix that let the x64 row lapse would stop testing half
+          # of macOS. When this label is retired in turn, move it to the next
+          # `-intel` image — do not delete the row.
+          - label: darwin/amd64 (macos-15-intel)
+            runner: macos-15-intel
+    env:
+      EXPECTED_VERSION: ${{ needs.resolve.outputs.version }}
+      PIN_VERSION: ${{ needs.resolve.outputs.pin }}
+      LABEL: ${{ matrix.label }}
+      # Keeps ANSI escapes out of the assertion even if the CLI's TTY detection
+      # ever changes (internal/cli/colors.go).
+      NO_COLOR: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      # The `runner` context is not available in a job-level `env:` block, so
+      # the one definition of the install directory is published here instead of
+      # being repeated on every step that reads it.
+      - name: Resolve install directory
+        run: echo "INSTALL_DIR=${RUNNER_TEMP}/ferrogw-bin" >> "$GITHUB_ENV"
+
+      - name: Run install.sh (flag form)
+        run: |
+          set -euo pipefail
+          mkdir -p "$INSTALL_DIR"
+
+          # --no-modify-path: a CI runner has no shell to fix up, and rewriting
+          # its rc files would make the next step's PATH lookup lie.
+          set -- --install-dir "$INSTALL_DIR" --no-modify-path
+          if [ -n "${PIN_VERSION:-}" ]; then
+            set -- "$@" --version "$PIN_VERSION"
+          fi
+
+          echo "+ sh ./scripts/install/install.sh $*"
+          sh ./scripts/install/install.sh "$@"
+
+      - name: Assert ferrogw version
+        run: |
+          set -euo pipefail
+          bin="${INSTALL_DIR}/ferrogw"
+
+          if [ ! -x "$bin" ]; then
+            echo "::error title=install.sh wrote no binary on ${LABEL}::expected an executable at ${bin}"
+            ls -la "$INSTALL_DIR" || true
+            exit 1
+          fi
+
+          raw="$("$bin" version)"
+          got="$(printf '%s\n' "$raw" | awk '$1 == "Version" { print $2; exit }')"
+
+          if [ "$got" != "$EXPECTED_VERSION" ]; then
+            echo "::error title=Version mismatch on ${LABEL}::expected ferrogw version '${EXPECTED_VERSION}', got '${got:-<no Version line in output>}'. If PIN_VERSION was empty, install.sh and this workflow resolved 'latest' independently — a release published between the two calls looks exactly like this."
+            printf 'full output:\n%s\n' "$raw"
+            exit 1
+          fi
+
+          echo "OK ${LABEL}: ferrogw ${got}"
+
+      # Exercised on one runner only, because this is a property of the script
+      # rather than of the platform. `sh < file` is the shape `curl | sh` has:
+      # no $0, no "$@", nothing to pass a flag through — so if the FERROGW_*
+      # variables ever stop being read, the headline one-liner in the README is
+      # the thing that breaks, silently, for everyone.
+      - name: Run install.sh (piped form, env vars only)
+        if: matrix.runner == 'ubuntu-latest'
+        env:
+          FERROGW_INSTALL_DIR: ${{ runner.temp }}/ferrogw-piped
+        run: |
+          set -euo pipefail
+          mkdir -p "$FERROGW_INSTALL_DIR"
+
+          if [ -n "${PIN_VERSION:-}" ]; then
+            export FERROGW_VERSION="$PIN_VERSION"
+          fi
+
+          sh < ./scripts/install/install.sh
+
+          bin="${FERROGW_INSTALL_DIR}/ferrogw"
+          if [ ! -x "$bin" ]; then
+            echo "::error title=Piped install.sh wrote no binary::FERROGW_INSTALL_DIR was ${FERROGW_INSTALL_DIR}; nothing executable landed there. The 'curl | sh' path cannot pass flags, so this is the only way that form is configurable."
+            ls -la "$FERROGW_INSTALL_DIR" || true
+            exit 1
+          fi
+
+          raw="$("$bin" version)"
+          got="$(printf '%s\n' "$raw" | awk '$1 == "Version" { print $2; exit }')"
+          if [ "$got" != "$EXPECTED_VERSION" ]; then
+            echo "::error title=Version mismatch on linux/amd64 (piped form)::expected '${EXPECTED_VERSION}', got '${got:-<no Version line in output>}'"
+            printf 'full output:\n%s\n' "$raw"
+            exit 1
+          fi
+
+          echo "OK linux/amd64 (piped, env vars): ferrogw ${got}"
+
+  # ---------------------------------------------------------------------------
+  # The highest-signal rows in the matrix.
+  #
+  # Every runner above has bash at /bin/sh or close enough that a bashism slips
+  # through unnoticed. Alpine's /bin/sh is busybox ash and Debian's is dash;
+  # neither forgives `local -n`, `[[ ]]`, arrays, `${x^^}`, `echo -e`, or
+  # `set -o pipefail`. These two are where the POSIX claim in spec §4.1 is
+  # actually tested.
+  #
+  # Run through `docker run` rather than a job-level `container:` deliberately:
+  # a job container makes the runner inject its own Node into the image so that
+  # JavaScript actions (actions/checkout) can run, which is a moving dependency
+  # on the image's libc that has broken on musl before. Checking out on the host
+  # and mounting the tree read-only keeps the container to one job: being the
+  # shell.
+  # ---------------------------------------------------------------------------
+  shell-installer-container:
+    name: install.sh (${{ matrix.label }})
+    needs: resolve
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: alpine:latest
+            label: alpine:latest (busybox ash)
+          - image: debian:stable-slim
+            label: debian:stable-slim (dash)
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Write in-container test script
+        run: |
+          cat > "${RUNNER_TEMP}/container-test.sh" <<'CONTAINER_SCRIPT'
+          #!/bin/sh
+          # Runs inside the image, under whatever /bin/sh that image ships.
+          set -eu
+
+          # Neither base image carries curl. Installing it is setup, not the
+          # test: what is under test is install.sh's own shell compatibility.
+          if command -v apk >/dev/null 2>&1; then
+            apk add --no-cache curl ca-certificates tar >/dev/null
+          else
+            apt-get update -qq >/dev/null
+            apt-get install -y -qq --no-install-recommends curl ca-certificates >/dev/null
+          fi
+
+          INSTALL_DIR=/tmp/ferrogw-bin
+          mkdir -p "$INSTALL_DIR"
+
+          set -- --install-dir "$INSTALL_DIR" --no-modify-path
+          if [ -n "${PIN_VERSION:-}" ]; then
+            set -- "$@" --version "$PIN_VERSION"
+          fi
+
+          echo "+ /bin/sh /src/scripts/install/install.sh $*"
+          /bin/sh /src/scripts/install/install.sh "$@"
+
+          bin="${INSTALL_DIR}/ferrogw"
+          if [ ! -x "$bin" ]; then
+            echo "::error title=install.sh wrote no binary on ${LABEL}::expected an executable at ${bin}"
+            ls -la "$INSTALL_DIR" || true
+            exit 1
+          fi
+
+          raw="$("$bin" version)"
+          got="$(printf '%s\n' "$raw" | awk '$1 == "Version" { print $2; exit }')"
+
+          if [ "$got" != "$EXPECTED_VERSION" ]; then
+            echo "::error title=Version mismatch on ${LABEL}::expected ferrogw version '${EXPECTED_VERSION}', got '${got:-<no Version line in output>}'"
+            printf 'full output:\n%s\n' "$raw"
+            exit 1
+          fi
+
+          echo "OK ${LABEL}: ferrogw ${got}"
+          CONTAINER_SCRIPT
+          chmod +x "${RUNNER_TEMP}/container-test.sh"
+
+      - name: Run install.sh in ${{ matrix.image }}
+        env:
+          IMAGE: ${{ matrix.image }}
+          LABEL: ${{ matrix.label }}
+          EXPECTED_VERSION: ${{ needs.resolve.outputs.version }}
+          PIN_VERSION: ${{ needs.resolve.outputs.pin }}
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --volume "${GITHUB_WORKSPACE}:/src:ro" \
+            --volume "${RUNNER_TEMP}/container-test.sh:/container-test.sh:ro" \
+            --env LABEL \
+            --env EXPECTED_VERSION \
+            --env PIN_VERSION \
+            --env NO_COLOR=1 \
+            "$IMAGE" /bin/sh /container-test.sh
+
+  # ---------------------------------------------------------------------------
+  # install.ps1. Both invocation forms, because they are not the same code path:
+  # `irm … | iex` runs the script from stdin with no argv at all, so a parameter
+  # block that works perfectly under -File does nothing there. The env-var form
+  # is the ONLY way the documented one-liner can be configured, and it is the
+  # form that breaks silently — the script runs, exits 0, and installs the
+  # wrong version.
+  #
+  # `shell: powershell` is Windows PowerShell 5.1, the in-box shell spec §4.2
+  # targets — not pwsh 7, which would require an install before the install.
+  # ---------------------------------------------------------------------------
+  windows-installer:
+    name: install.ps1 (windows-latest, ${{ matrix.form }} form)
+    needs: resolve
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        form: [parameter, env-var]
+    env:
+      EXPECTED_VERSION: ${{ needs.resolve.outputs.version }}
+      PIN_VERSION: ${{ needs.resolve.outputs.pin }}
+      FORM: ${{ matrix.form }}
+      NO_COLOR: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      # The `runner` context is not available in a job-level `env:` block; both
+      # install steps and the assertion read this one definition.
+      - name: Resolve install directory
+        shell: powershell
+        run: |
+          "INSTALL_DIR=$env:RUNNER_TEMP\ferrogw-$env:FORM" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Run install.ps1 (parameter form)
+        if: matrix.form == 'parameter'
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path $env:INSTALL_DIR | Out-Null
+          $scriptArgs = @('-InstallDir', $env:INSTALL_DIR, '-NoModifyPath')
+          if ($env:PIN_VERSION) { $scriptArgs += @('-Version', $env:PIN_VERSION) }
+          Write-Host "+ install.ps1 $($scriptArgs -join ' ')"
+          & .\scripts\install\install.ps1 @scriptArgs
+
+      # Byte-for-byte the shape of `irm https://get.ferrolabs.ai/install.ps1 | iex`:
+      # the script text is piped into the engine, so it has no $PSScriptRoot, no
+      # bound parameters, and nothing but the environment to read.
+      - name: Run install.ps1 (env-var form, simulating irm | iex)
+        if: matrix.form == 'env-var'
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path $env:INSTALL_DIR | Out-Null
+          $env:FERROGW_INSTALL_DIR = $env:INSTALL_DIR
+          # Env spelling of --no-modify-path (spec §4.1: every flag is also
+          # readable as FERROGW_*). Harmless on a throwaway runner if ignored.
+          $env:FERROGW_NO_MODIFY_PATH = '1'
+          if ($env:PIN_VERSION) { $env:FERROGW_VERSION = $env:PIN_VERSION }
+          Get-Content -Raw -LiteralPath .\scripts\install\install.ps1 | Invoke-Expression
+
+      - name: Assert ferrogw version
+        shell: powershell
+        run: |
+          $bin = Join-Path $env:INSTALL_DIR 'ferrogw.exe'
+          if (-not (Test-Path -LiteralPath $bin)) {
+            Write-Host "::error title=install.ps1 wrote no binary on windows-latest (${env:FORM} form)::expected ${bin}"
+            if (Test-Path -LiteralPath $env:INSTALL_DIR) {
+              Get-ChildItem -Force -LiteralPath $env:INSTALL_DIR | Out-String | Write-Host
+            }
+            exit 1
+          }
+
+          $raw = (& $bin version 2>&1 | Out-String)
+          if ($raw -match '(?m)^\s*Version\s+(\S+)\s*$') {
+            $got = $Matches[1]
+          } else {
+            $got = ''
+          }
+
+          if ($got -ne $env:EXPECTED_VERSION) {
+            $shown = if ($got) { $got } else { '<no Version line in output>' }
+            Write-Host "::error title=Version mismatch on windows-latest (${env:FORM} form)::expected ferrogw version '${env:EXPECTED_VERSION}', got '$shown'"
+            Write-Host "full output:`n$raw"
+            exit 1
+          }
+
+          Write-Host "OK windows-latest (${env:FORM} form): ferrogw $got"
+
+  # ===========================================================================
+  # PACKAGE SMOKE TESTS — WRITTEN, RUNNING, AND NOT YET ARMED
+  #
+  # None of ferrogw's package surfaces exist yet: npm and PyPI land in phase 2
+  # of the install-distribution spec, Homebrew and Scoop in phase 3. These three
+  # jobs are written now, against the interface those phases commit to, and they
+  # RUN on every trigger — the output is real and visible in the log — but they
+  # cannot fail the workflow until they are armed.
+  #
+  # The gate is the repository variable INSTALL_MATRIX_PACKAGES_LIVE.
+  #
+  #   TO ARM (do this the day the last surface publishes):
+  #     Settings > Secrets and variables > Actions > Variables >
+  #     New repository variable: INSTALL_MATRIX_PACKAGES_LIVE = true
+  #   No edit to this file is needed; the next run is blocking.
+  #
+  #   TODO(install-distribution): once all four surfaces have shipped and the
+  #   variable has been green for a couple of weekly runs, delete every
+  #   `continue-on-error:` line and every "Gate status" step below, and delete
+  #   the repository variable. A permanent gate is a permanent excuse.
+  #
+  # Each job announces its own gate state as a warning annotation on every run,
+  # so an unarmed job never reads as a quiet pass — the run summary always says
+  # out loud that these results were not enforced.
+  # ===========================================================================
+
+  packages-registries:
+    name: npx + uvx (${{ matrix.os }})
+    needs: resolve
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ vars.INSTALL_MATRIX_PACKAGES_LIVE != 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    env:
+      EXPECTED_VERSION: ${{ needs.resolve.outputs.version }}
+      ARMED: ${{ vars.INSTALL_MATRIX_PACKAGES_LIVE }}
+      NO_COLOR: "1"
+    steps:
+      - name: Gate status
+        shell: bash
+        run: |
+          if [ "${ARMED:-}" = "true" ]; then
+            echo "::notice title=Package smoke tests are ARMED::a failure below fails this workflow."
+          else
+            echo "::warning title=Package smoke tests are NOT ARMED (results below are advisory)::ferrogw is not published to npm or PyPI yet (install-distribution spec, phase 2). Arm by setting repository variable INSTALL_MATRIX_PACKAGES_LIVE=true, then delete the continue-on-error lines in .github/workflows/install-matrix.yml."
+          fi
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+
+      # uv's own installer, not a third-party action — nothing to SHA-pin and
+      # it is the path uv's docs give. Both spellings drop the binary in
+      # ~/.local/bin, which is not on this step's PATH, so it is appended
+      # explicitly rather than by sourcing a profile the runner never reads.
+      - name: Install uv (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "${HOME}/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install uv (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          irm https://astral.sh/uv/install.ps1 | iex
+          "$env:USERPROFILE\.local\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      # --ignore-scripts is not incidental: spec §6 requires the npm path to
+      # work under it, because it is increasingly the corporate default and it
+      # is exactly what a postinstall-downloader package would fail. The
+      # optionalDependencies design in §4.4 exists to satisfy this line.
+      - name: npx ferrogw version
+        shell: bash
+        run: |
+          set -uo pipefail
+          raw="$(npx --yes --ignore-scripts "ferrogw@${EXPECTED_VERSION}" version 2>&1)"; rc=$?
+          if [ "$rc" -ne 0 ]; then
+            echo "::error title=npx ferrogw failed on ${RUNNER_OS}::npx exited ${rc} for ferrogw@${EXPECTED_VERSION} (with --ignore-scripts)"
+            printf '%s\n' "$raw"
+            exit 1
+          fi
+          got="$(printf '%s\n' "$raw" | awk '$1 == "Version" { print $2; exit }')"
+          if [ "$got" != "$EXPECTED_VERSION" ]; then
+            echo "::error title=npx version mismatch on ${RUNNER_OS}::expected ferrogw version '${EXPECTED_VERSION}', got '${got:-<no Version line in output>}'"
+            printf 'full output:\n%s\n' "$raw"
+            exit 1
+          fi
+          echo "OK npx on ${RUNNER_OS}: ferrogw ${got}"
+
+      # Runs even when npx failed: "npm is broken" and "PyPI is broken" are
+      # different reports and a weekly run should produce both.
+      - name: uvx ferrogw version
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          raw="$(uvx --from "ferrogw==${EXPECTED_VERSION}" ferrogw version 2>&1)"; rc=$?
+          if [ "$rc" -ne 0 ]; then
+            echo "::error title=uvx ferrogw failed on ${RUNNER_OS}::uvx exited ${rc} for ferrogw==${EXPECTED_VERSION}"
+            printf '%s\n' "$raw"
+            exit 1
+          fi
+          got="$(printf '%s\n' "$raw" | awk '$1 == "Version" { print $2; exit }')"
+          if [ "$got" != "$EXPECTED_VERSION" ]; then
+            echo "::error title=uvx version mismatch on ${RUNNER_OS}::expected ferrogw version '${EXPECTED_VERSION}', got '${got:-<no Version line in output>}'"
+            printf 'full output:\n%s\n' "$raw"
+            exit 1
+          fi
+          echo "OK uvx on ${RUNNER_OS}: ferrogw ${got}"
+
+  packages-homebrew:
+    name: brew install (macos-latest)
+    needs: resolve
+    runs-on: macos-latest
+    continue-on-error: ${{ vars.INSTALL_MATRIX_PACKAGES_LIVE != 'true' }}
+    env:
+      EXPECTED_VERSION: ${{ needs.resolve.outputs.version }}
+      ARMED: ${{ vars.INSTALL_MATRIX_PACKAGES_LIVE }}
+      NO_COLOR: "1"
+    steps:
+      - name: Gate status
+        run: |
+          if [ "${ARMED:-}" = "true" ]; then
+            echo "::notice title=Homebrew smoke test is ARMED::a failure below fails this workflow."
+          else
+            echo "::warning title=Homebrew smoke test is NOT ARMED (result below is advisory)::ferro-labs/homebrew-tap does not exist yet (install-distribution spec, phase 3). Arm by setting repository variable INSTALL_MATRIX_PACKAGES_LIVE=true, then delete the continue-on-error line in .github/workflows/install-matrix.yml."
+          fi
+
+      # A cask serves macOS and Linuxbrew from one block (spec §4.5), so this
+      # one runner covers both. `brew install` takes whatever the tap currently
+      # publishes — there is no way to ask it for a specific version — so on a
+      # release run a mismatch here means the tap PR had not merged yet. That is
+      # a real finding about the release automation, not noise: it is the
+      # failure mode the 2026-07-04 ecosystem audit recorded three times.
+      - name: brew install ferro-labs/tap/ferrogw
+        run: |
+          set -uo pipefail
+          if ! brew install ferro-labs/tap/ferrogw; then
+            echo "::error title=brew install failed::ferro-labs/tap/ferrogw did not install on macos-latest"
+            exit 1
+          fi
+          raw="$(ferrogw version 2>&1)"
+          got="$(printf '%s\n' "$raw" | awk '$1 == "Version" { print $2; exit }')"
+          if [ "$got" != "$EXPECTED_VERSION" ]; then
+            echo "::error title=Homebrew version mismatch::expected ferrogw version '${EXPECTED_VERSION}', got '${got:-<no Version line in output>}'. The cask lags the release when the tap PR has not merged."
+            printf 'full output:\n%s\n' "$raw"
+            exit 1
+          fi
+          echo "OK homebrew: ferrogw ${got}"
+
+  packages-scoop:
+    name: scoop install (windows-latest)
+    needs: resolve
+    runs-on: windows-latest
+    continue-on-error: ${{ vars.INSTALL_MATRIX_PACKAGES_LIVE != 'true' }}
+    env:
+      EXPECTED_VERSION: ${{ needs.resolve.outputs.version }}
+      ARMED: ${{ vars.INSTALL_MATRIX_PACKAGES_LIVE }}
+      NO_COLOR: "1"
+    steps:
+      - name: Gate status
+        shell: bash
+        run: |
+          if [ "${ARMED:-}" = "true" ]; then
+            echo "::notice title=Scoop smoke test is ARMED::a failure below fails this workflow."
+          else
+            echo "::warning title=Scoop smoke test is NOT ARMED (result below is advisory)::ferro-labs/scoop-bucket does not exist yet (install-distribution spec, phase 3). Arm by setting repository variable INSTALL_MATRIX_PACKAGES_LIVE=true, then delete the continue-on-error line in .github/workflows/install-matrix.yml."
+          fi
+
+      # -RunAsAdmin because the hosted Windows runner's user is in the
+      # Administrators group and Scoop's installer refuses that combination
+      # without it. Shims land in %USERPROFILE%\scoop\shims, which has to be
+      # put on PATH for later steps by hand.
+      - name: Install Scoop
+        shell: powershell
+        run: |
+          Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
+          Invoke-RestMethod -Uri 'https://get.scoop.sh' -OutFile "$env:RUNNER_TEMP\install-scoop.ps1"
+          & "$env:RUNNER_TEMP\install-scoop.ps1" -RunAsAdmin
+          "$env:USERPROFILE\scoop\shims" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: scoop install ferrogw
+        shell: powershell
+        run: |
+          scoop bucket add ferrolabs https://github.com/ferro-labs/scoop-bucket
+          scoop install ferrogw
+
+          $raw = (ferrogw version 2>&1 | Out-String)
+          if ($raw -match '(?m)^\s*Version\s+(\S+)\s*$') {
+            $got = $Matches[1]
+          } else {
+            $got = ''
+          }
+          if ($got -ne $env:EXPECTED_VERSION) {
+            $shown = if ($got) { $got } else { '<no Version line in output>' }
+            Write-Host "::error title=Scoop version mismatch::expected ferrogw version '${env:EXPECTED_VERSION}', got '$shown'. The bucket lags the release when its manifest commit has not landed."
+            Write-Host "full output:`n$raw"
+            exit 1
+          }
+          Write-Host "OK scoop: ferrogw $got"

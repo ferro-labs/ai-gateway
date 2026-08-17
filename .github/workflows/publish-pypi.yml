@@ -1,0 +1,97 @@
+# Publishes the `ferrogw` platform wheels to PyPI, built from the archives the
+# release has already produced. This is what makes `uvx ferrogw` work.
+#
+# It runs on release *publication* rather than on the tag push, so GoReleaser's
+# assets are guaranteed to exist by the time this reads them, and it is a
+# separate workflow from release.yml on purpose: a PyPI outage must not fail a
+# release that has already shipped binaries, images and signatures.
+#
+# To republish a release that failed here:
+#   gh workflow run publish-pypi.yml -f tag=v1.4.2
+#
+# See packaging/pypi/README.md for the one-time PyPI trusted-publisher setup.
+
+name: Publish to PyPI
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish, e.g. v1.4.2"
+        required: true
+
+permissions: {}
+
+jobs:
+  publish:
+    name: Build and publish wheels
+    runs-on: ubuntu-latest
+    # PyPI scopes the trusted publisher to this environment name as well as to
+    # the workflow filename, so the two must match what is registered there.
+    environment: pypi
+    permissions:
+      contents: read   # gh release download
+      id-token: write  # PyPI Trusted Publishing — no API token in secrets
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      # Exact, not floating, for the same reason release.yml pins GoReleaser:
+      # this decides what the published artifact *is*. setuptools stamps the
+      # wheel's platform tag and owns `setup.py bdist_wheel`, an entry point it
+      # has been deprecating for years — a floating version means two tags cut
+      # from the same commit can produce differently tagged wheels, or none.
+      #
+      # Nothing here tracks these automatically; bump them by hand.
+      - name: Install build dependencies
+        run: python -m pip install --disable-pip-version-check "setuptools==84.0.0" "packaging==26.3"
+
+      - name: Resolve release tag
+        id: release
+        env:
+          TAG: ${{ inputs.tag || github.event.release.tag_name }}
+        run: echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      # The published archives, not the release job's dist/artifacts.json —
+      # that directory is long gone by now. These are also the exact bytes
+      # users download, so a wheel built from them cannot disagree with the
+      # tarball. The SBOMs, checksums and cosign material do not match the
+      # patterns and are left behind.
+      - name: Download release archives
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          gh release download "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir artifacts \
+            --pattern 'ferrogw_*.tar.gz' \
+            --pattern 'ferrogw_*.zip'
+
+      # --tag is a cross-check, not an input: the version the wheels carry comes
+      # from the archive filenames, and this fails the run if the two disagree.
+      - name: Build wheels
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          python packaging/pypi/build_wheels.py \
+            --archive-dir artifacts \
+            --dist-dir wheelhouse \
+            --tag "$TAG"
+
+      # Uploads over OIDC against the trusted publisher, and attaches PEP 740
+      # attestations by default — the registry-side equivalent of the keyless
+      # cosign signatures the release already carries.
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          packages-dir: wheelhouse
