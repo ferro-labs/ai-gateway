@@ -47,6 +47,16 @@ type MeterMeta struct {
 	// client supplied it, so it is used for cost lookup and event payloads but
 	// never as a Prometheus label — see MetricModel.
 	Model string
+	// PriceProvider is the provider's canonical vendor identity — the name the
+	// model catalog and price book are keyed on. Provider names the ROUTING
+	// TARGET a stream used and stays on every metric label, event and the
+	// Response it produces; PriceProvider exists solely so a target registered
+	// under a routing alias (Gateway.RegisterProviderAs) is priced as its
+	// underlying provider rather than against a name the catalog has never
+	// heard of. Empty falls back to Provider, which is what every caller that
+	// predates this field — registered under its own canonical name, where the
+	// two already agree — continues to get.
+	PriceProvider string
 	// MetricModel is the bounded form of Model used for Prometheus labels: a
 	// model the gateway cannot route collapses to metrics.UnknownModelLabel so a
 	// client cannot mint unbounded time series. Required whenever Model can carry
@@ -112,6 +122,17 @@ func (m MeterMeta) metricLabelModel() string {
 		return metrics.UnknownModelLabel
 	}
 	return m.MetricModel
+}
+
+// priceProviderName returns the catalog key this stream is priced against:
+// PriceProvider when the caller resolved one, Provider otherwise. Every
+// caller that predates PriceProvider leaves it unset and gets exactly the
+// pricing behaviour it always had.
+func (m MeterMeta) priceProviderName() string {
+	if m.PriceProvider != "" {
+		return m.PriceProvider
+	}
+	return m.Provider
 }
 
 // Measurements are the per-request numbers a completed stream produced. They
@@ -292,7 +313,7 @@ func Meter(ctx context.Context, src <-chan providers.StreamChunk, start time.Tim
 		// plugins it runs persist the cost and cannot compute it themselves.
 		// The same result is handed to finishStreamOnSuccess so the recorded
 		// figure and the reported one cannot diverge.
-		cost := models.Calculate(meta.Catalog, meta.Provider+"/"+meta.Model, models.Usage{
+		cost := models.Calculate(meta.Catalog, meta.priceProviderName()+"/"+meta.Model, models.Usage{
 			PromptTokens:     usage.PromptTokens,
 			CompletionTokens: usage.CompletionTokens,
 			ReasoningTokens:  usage.ReasoningTokens,

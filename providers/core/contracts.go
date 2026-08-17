@@ -66,6 +66,26 @@ func WithName(p Provider, name string) Provider {
 	return &namedProvider{Provider: p, name: name}
 }
 
+// CanonicalName returns the identity beneath any WithName decorator: the
+// vendor name the model catalog and price book are keyed on. A provider
+// registered under its own name returns its own Name(); one registered under a
+// routing alias unwraps to the vendor identity beneath the alias. The bounded
+// walk mirrors As and cannot hang on a self-referential wrapper.
+func CanonicalName(p Provider) string {
+	for i := 0; i < 32; i++ {
+		unwrapper, ok := p.(ProviderUnwrapper)
+		if !ok {
+			break
+		}
+		next := unwrapper.UnwrapProvider()
+		if next == nil {
+			break
+		}
+		p = next
+	}
+	return p.Name()
+}
+
 // As resolves T from p or from an identity decorator beneath it. Every provider
 // in the chain is inspected, including the one reached by the final unwrap. The
 // bounded walk (at most 32 unwraps) prevents a broken third-party decorator that

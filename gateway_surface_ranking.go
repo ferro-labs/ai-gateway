@@ -116,7 +116,7 @@ func (g *Gateway) rankConfiguredSurfaceTargets(targets []config.Target, provider
 		if mode == config.ModeLatency {
 			candidate.latency, candidate.hasLatency = g.latencyTracker.Stats(target.VirtualKey)
 		} else {
-			modelKey := canonicalProviderName(p) + "/" + model
+			modelKey := providers.CanonicalName(p) + "/" + model
 			candidate.cost = models.Calculate(catalog, modelKey, usage)
 			candidate.priced = surfaceHasPrice(catalog, modelKey, surface)
 		}

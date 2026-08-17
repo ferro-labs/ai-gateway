@@ -9,6 +9,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _Nothing yet._
 
+## [1.4.3] — 2026-08-18
+
+A security patch. Every dependency advisory reachable from gateway code is
+cleared, and registration aliases are priced correctly on the two paths where
+the alias reached the catalog instead of the vendor identity behind it. No
+breaking changes.
+
+### Security — the Go toolchain moves to 1.25.13
+
+Seven Go standard-library advisories are reachable from gateway code at the
+pinned 1.25.12 toolchain, and every one is fixed in 1.25.13: quadratic
+complexity in `net/url`'s `resolvePath`, JavaScript regexp context tracking in
+`html/template`, unbounded post-handshake messages in `crypto/tls`,
+`ReadHeaderTimeout` not applied on the unencrypted HTTP/2 check in `net/http`,
+recursion depth during decode in `encoding/xml`, maximum recursion depth in
+`encoding/asn1`, and ASCII-only Punycode labels not rejected in
+`golang.org/x/net/idna`. They are reached through provider HTTP clients, the
+serving path, the request-log store, the streaming reader, the signing proxy,
+Bedrock's XML response stream, and Vertex AI's OAuth token exchange.
+
+No gateway code changes; the fix is the toolchain version.
+
+### Security — the dashboard toolchain clears its open advisory
+
+`nanoid` moves to 3.3.18, closing a high-severity advisory where a custom
+generator can loop indefinitely when `size` is zero. It is a build-time tooling
+dependency — reached through the component-scaffolding CLI's own PostCSS — and
+is not present in the dashboard bundle the binary embeds. `npm audit` reports
+zero vulnerabilities.
+
+### Fixed — registration aliases are priced correctly
+
+`RegisterProviderAs`, added in 1.4.2, registers a provider under a routing
+alias that differs from its canonical vendor identity. 1.4.2 corrected catalog
+inventory and surface ranking to resolve the canonical identity; pricing still
+keyed on the alias in two places, so an aliased target was treated as unpriced:
+
+- **Cost-optimized routing.** The strategy built its price key from the routing
+  alias, so an aliased target ranked as unpriced — dropped from routing entirely
+  under `unpriced_strategy: skip`, and ordered wrongly otherwise. This affected
+  every provider.
+- **Streaming cost.** A streaming response carries no provider identity of its
+  own, so its cost was computed against the routing alias — a key the catalog
+  cannot price. The span cost, request-log cost and budget spend for a streamed
+  request through an aliased target recorded as zero. This also affected every
+  provider.
+
+Both now resolve the canonical identity for the catalog lookup. A third path —
+non-streaming cost recording — is corrected for completeness: it reads the
+provider name off the response, and every built-in provider sets that field to
+its own canonical name, so in practice built-in providers were already priced
+correctly there. A provider implementation that leaves the field unset was not.
+
+Attribution is unchanged. The routing alias, not the canonical name, still
+identifies the target in metrics labels, in the span, and in the `Target` field
+plugins read.
+
+Deployments that register providers under their canonical name are unaffected.
+
 ## [1.4.2] — 2026-08-10
 
 ### Added — registration aliases preserve provider capabilities

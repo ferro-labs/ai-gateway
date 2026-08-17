@@ -171,11 +171,18 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 	// metrics and event hooks once the stream completes.
 	g.mu.RLock()
 	catalog := g.catalog
+	// Resolved once, alongside the catalog snapshot, from the same live
+	// provider set routing just selected providerName from — see
+	// canonicalPriceKeyLocked. providerName itself keeps naming the routing
+	// target on meta.Provider (attribution: metric labels, the completed/failed
+	// event, resp.Provider); priceProvider exists solely for the cost lookup.
+	priceProvider := g.canonicalPriceKeyLocked(providerName)
 	g.mu.RUnlock()
 
 	meta := streamwrap.MeterMeta{
-		Provider: providerName,
-		Model:    req.Model,
+		Provider:      providerName,
+		PriceProvider: priceProvider,
+		Model:         req.Model,
 		// Model stays raw for cost lookup and event payloads; only the metric
 		// label is bounded, mirroring the non-streaming path's use of the
 		// provider-reported model.

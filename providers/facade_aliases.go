@@ -192,6 +192,9 @@ var RetryAfterFrom = core.RetryAfterFrom
 // WithName re-exports core.WithName.
 var WithName = core.WithName
 
+// CanonicalName re-exports core.CanonicalName.
+var CanonicalName = core.CanonicalName
+
 // As resolves an optional capability through identity-only provider wrappers.
 func As[T any](p Provider) (T, bool) {
 	return core.As[T](p)
