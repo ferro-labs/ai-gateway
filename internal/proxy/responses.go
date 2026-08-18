@@ -22,7 +22,7 @@ import (
 type ResponsesSource interface {
 	providers.ProviderSource
 	ResponsesTarget() string
-	RouteResponses(ctx context.Context, target, model, body string, bodyInspectable bool, maxOutputTokens int, usage *providers.Usage, forward func(context.Context) error) error
+	RouteResponsesWithPricingProvider(ctx context.Context, target, priceProvider, model, body string, bodyInspectable bool, maxOutputTokens int, usage *providers.Usage, forward func(context.Context) error) error
 }
 
 // ResponsesCreate returns the handler for POST /v1/responses. It routes by the
@@ -75,6 +75,7 @@ func ResponsesCreate(src ResponsesSource) http.HandlerFunc {
 
 		projText, inspectable := projectBody(r)
 		providerName := p.Name()
+		priceProvider := providers.CanonicalName(p)
 		authHeaders := pp.AuthHeaders()
 
 		// The usage tee wraps the response body once the upstream headers are in:
@@ -102,7 +103,7 @@ func ResponsesCreate(src ResponsesSource) http.HandlerFunc {
 			return nil
 		}
 
-		err = src.RouteResponses(r.Context(), providerName, model, projText, inspectable, maxOutputTokens, &usage, forward)
+		err = src.RouteResponsesWithPricingProvider(r.Context(), providerName, priceProvider, model, projText, inspectable, maxOutputTokens, &usage, forward)
 		if err != nil && !forwarded {
 			apierror.WriteRouteError(w, err)
 		}

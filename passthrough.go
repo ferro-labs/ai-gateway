@@ -158,6 +158,12 @@ func (g *Gateway) RoutePassthrough(ctx context.Context, target, model, body stri
 // the only differences from RoutePassthrough are the two governance inputs it
 // threads through, both of which RoutePassthrough passes as zero.
 func (g *Gateway) RouteResponses(ctx context.Context, target, model, body string, bodyInspectable bool, maxOutputTokens int, usage *providers.Usage, forward func(context.Context) error) error {
+	return g.RouteResponsesWithPricingProvider(ctx, target, g.pricingProviderFor(target), model, body, bodyInspectable, maxOutputTokens, usage, forward)
+}
+
+// RouteResponsesWithPricingProvider governs a Responses forward using the
+// canonical pricing identity captured when the proxy selected its provider.
+func (g *Gateway) RouteResponsesWithPricingProvider(ctx context.Context, target, priceProvider, model, body string, bodyInspectable bool, maxOutputTokens int, usage *providers.Usage, forward func(context.Context) error) error {
 	start := time.Now()
 	hooksEnabled := g.hasHooks()
 
@@ -181,7 +187,7 @@ func (g *Gateway) RouteResponses(ctx context.Context, target, model, body string
 	defer span.End()
 
 	record, err := g.runPassthroughGovernance(ctx, span, start, passthroughParams{
-		target: target, model: model, body: body, bodyInspectable: bodyInspectable,
+		target: target, priceProvider: priceProvider, model: model, body: body, bodyInspectable: bodyInspectable,
 		maxOutputTokens: maxOutputTokens, usage: usage,
 	}, forward)
 	latency := time.Since(start)
@@ -202,10 +208,10 @@ const surfaceResponses = "responses"
 // forward captured a non-zero one, and maxOutputTokens becomes the plugin
 // request's completion ceiling. The generic pass-through leaves both zero.
 type passthroughParams struct {
-	target, model, body string
-	bodyInspectable     bool
-	maxOutputTokens     int
-	usage               *providers.Usage
+	target, priceProvider, model, body string
+	bodyInspectable                    bool
+	maxOutputTokens                    int
+	usage                              *providers.Usage
 }
 
 // runPassthroughGovernance is the pass-through's plugin stage sequence. It is
@@ -221,7 +227,6 @@ func (g *Gateway) runPassthroughGovernance(
 	forward func(context.Context) error,
 ) (surfaceRecord, error) {
 	target, model, body, bodyInspectable := p.target, p.model, p.body, p.bodyInspectable
-	priceProvider := g.pricingProviderFor(target)
 	g.mu.RLock()
 	plugins := g.plugins
 	release := acquirePluginManager(plugins)
@@ -242,7 +247,7 @@ func (g *Gateway) runPassthroughGovernance(
 		// and stays unpriced. Priced here, inside call, so both the plugin and the
 		// no-plugin path (which returns call directly) get it.
 		if err == nil && p.usage != nil && (p.usage.PromptTokens > 0 || p.usage.CompletionTokens > 0 || p.usage.TotalTokens > 0) {
-			record = g.priceSurface(routedTarget{key: target, priceProvider: priceProvider}, model, *p.usage, 0)
+			record = g.priceSurface(routedTarget{key: target, priceProvider: p.priceProvider}, model, *p.usage, 0)
 		}
 		return record, err
 	}

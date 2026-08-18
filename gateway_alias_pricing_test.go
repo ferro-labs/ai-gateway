@@ -7,6 +7,7 @@ import (
 
 	"github.com/ferro-labs/ai-gateway/config"
 	"github.com/ferro-labs/ai-gateway/models"
+	"github.com/ferro-labs/ai-gateway/observability"
 	"github.com/ferro-labs/ai-gateway/pkg/circuitbreaker"
 	"github.com/ferro-labs/ai-gateway/providers"
 )
@@ -179,23 +180,15 @@ func TestRouteResponses_AliasPricingSurvivesProviderReplacement(t *testing.T) {
 	fp := &fakeProvider{}
 	gw.SetObservability(fp)
 	gw.RegisterProviderAs(alias, &mockProvider{name: "mock", models: []string{testModel}})
+	selected, ok := gw.GetProvider(alias)
+	if !ok {
+		t.Fatal("expected original provider to be registered")
+	}
+	gw.RegisterProviderAs(alias, &mockProvider{name: "replacement", models: []string{testModel}})
 
 	usage := providers.Usage{PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150}
-	started := make(chan struct{})
-	release := make(chan struct{})
-	done := make(chan error, 1)
-	go func() {
-		done <- gw.RouteResponses(context.Background(), alias, testModel, "hello", true, 0, &usage,
-			func(context.Context) error {
-				close(started)
-				<-release
-				return nil
-			})
-	}()
-	<-started
-	gw.RegisterProviderAs(alias, &mockProvider{name: "replacement", models: []string{testModel}})
-	close(release)
-	if err := <-done; err != nil {
+	if err := gw.RouteResponsesWithPricingProvider(context.Background(), alias, providers.CanonicalName(selected), testModel, "hello", true, 0, &usage,
+		func(context.Context) error { return nil }); err != nil {
 		t.Fatalf("RouteResponses: %v", err)
 	}
 
@@ -327,6 +320,9 @@ func TestGateway_AliasStreamingPricingSurvivesProviderReplacement(t *testing.T) 
 	sp := fp.rootSpan()
 	if sp == nil {
 		t.Fatal("expected a root span")
+	}
+	if got := sp.attrs[observability.AttrGenAISystem]; got != alias {
+		t.Errorf("stream span provider = %q, want routing key %q", got, alias)
 	}
 	if sp.cost.TotalUSD != aliasPricingWantCostUSD {
 		t.Errorf("stream span cost = %+v, want original provider TotalUSD %.5f", sp.cost, aliasPricingWantCostUSD)
