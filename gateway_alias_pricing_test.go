@@ -162,6 +162,39 @@ func TestGateway_AliasPricing_Streaming(t *testing.T) {
 	}
 }
 
+// TestRouteResponses_AliasPricing covers the pass-through pricing path, which
+// does not select a provider through routeTargets and must resolve the target's
+// canonical provider name from the registry instead.
+func TestRouteResponses_AliasPricing(t *testing.T) {
+	const alias = "mock--credential-1"
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets:  []config.Target{{VirtualKey: alias}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	gw.catalog = aliasPricingCatalog()
+
+	fp := &fakeProvider{}
+	gw.SetObservability(fp)
+	gw.RegisterProviderAs(alias, &mockProvider{name: "mock", models: []string{testModel}})
+
+	usage := providers.Usage{PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150}
+	if err := gw.RouteResponses(context.Background(), alias, testModel, "hello", true, 0, &usage,
+		func(context.Context) error { return nil }); err != nil {
+		t.Fatalf("RouteResponses: %v", err)
+	}
+
+	sp := fp.rootSpan()
+	if sp == nil {
+		t.Fatal("expected a root span")
+	}
+	if sp.cost.TotalUSD != aliasPricingWantCostUSD || !sp.cost.ModelFound {
+		t.Errorf("responses span cost = %+v, want TotalUSD %.5f and ModelFound true", sp.cost, aliasPricingWantCostUSD)
+	}
+}
+
 func TestGateway_AliasPricingSurvivesProviderReplacement(t *testing.T) {
 	const alias = "mock--credential-1"
 	gw, err := newTestGateway(t, config.Config{

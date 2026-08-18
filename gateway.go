@@ -840,6 +840,16 @@ func (g *Gateway) GetProvider(name string) (providers.Provider, bool) {
 	return p, ok
 }
 
+// pricingProviderFor returns the canonical provider registered under key. An
+// unknown key falls back to itself and remains unpriced by the model catalog.
+func (g *Gateway) pricingProviderFor(key string) string {
+	p, ok := g.GetProvider(key)
+	if !ok || p == nil {
+		return key
+	}
+	return providers.CanonicalName(p)
+}
+
 // Get satisfies providers.ProviderSource (alias for GetProvider).
 func (g *Gateway) Get(name string) (providers.Provider, bool) {
 	return g.GetProvider(name)
