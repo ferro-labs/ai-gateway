@@ -367,11 +367,21 @@ jobs:
           # Skipping the unparseable ones loses no coverage: PowerShell executes
           # nothing from a script it cannot parse, so "does not parse" already
           # settles the question this step asks.
+          # Bounded ABOVE by the final `Install-FerroGateway` line, exactly as
+          # the shell sweep is bounded by its closing brace. A prefix that
+          # reaches the call is a COMPLETE script, so running is the correct
+          # outcome -- sweeping past it reports the file working as designed as
+          # a failure. The line-based loop this replaced bounded at $callLine;
+          # the byte conversion has to carry that bound across.
+          $callIndex = $instrumented.LastIndexOf("`nInstall-FerroGateway")
+          if ($callIndex -lt 0) { throw 'Could not locate the final Install-FerroGateway call.' }
+          $limit = $callIndex + 1
+
           $rs = [runspacefactory]::CreateRunspace()
           $rs.Open()
           $invoked = 0
           try {
-            for ($i = 1; $i -lt $instrumented.Length; $i++) {
+            for ($i = 1; $i -lt $limit; $i++) {
               $prefix = $instrumented.Substring(0, $i)
               $errors = $null
               [void][System.Management.Automation.Language.Parser]::ParseInput(
@@ -388,7 +398,7 @@ jobs:
               }
             }
           } finally { $rs.Dispose() }
-          Write-Host "checked $($instrumented.Length) byte-offset prefixes ($invoked parsed and were run); none executed installer code"
+          Write-Host "checked $limit byte-offset prefixes ($invoked parsed and were run); none executed installer code"
 
       - name: Validate GoReleaser configuration
         uses: goreleaser/goreleaser-action@ec59f474b9834571250b370d4735c50f8e2d1e29 # v7.0.0
@@ -772,15 +782,25 @@ jobs:
             --pattern 'ferrogw_*.tar.gz' \
             --pattern 'ferrogw_*.zip'
 
+      # --allow-partial here, and deliberately NOT on the publish path.
+      #
+      # This job smoke-tests the BUILDERS against whichever release `resolve`
+      # picked, which on a pull request or the weekly cron is simply the latest
+      # one -- and releases through v1.4.3 carry no windows/arm64 archive. The
+      # builders refuse a short platform set by default, because publishing one
+      # ships a version silently missing a platform; that refusal belongs on
+      # release.yml's publish jobs, which pass no such flag. Refusing here would
+      # only mean the builders cannot be exercised until a release happens to be
+      # complete, which is the opposite of what a smoke test is for.
       - name: Build npm packages from release archives
         env:
           TAG: ${{ needs.resolve.outputs.tag }}
-        run: node packaging/npm/build.mjs --artifacts artifacts --out npm-packages --tag "$TAG"
+        run: node packaging/npm/build.mjs --artifacts artifacts --out npm-packages --tag "$TAG" --allow-partial
 
       - name: Build PyPI wheels from release archives
         env:
           TAG: ${{ needs.resolve.outputs.tag }}
-        run: python packaging/pypi/build_wheels.py --archive-dir artifacts --dist-dir wheelhouse --tag "$TAG"
+        run: python packaging/pypi/build_wheels.py --archive-dir artifacts --dist-dir wheelhouse --tag "$TAG" --allow-partial
 
   linux-packages:
     name: Smoke-test Linux package (${{ matrix.format }})
