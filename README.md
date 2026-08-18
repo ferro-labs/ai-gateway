@@ -43,6 +43,8 @@
 
 ## Quick Start
 
+Get from zero to a served request in under two minutes.
+
 | Platform / tool | Install |
 |:---|:---|
 | macOS, Linux | `curl -fsSL https://get.ferrolabs.ai \| sh` |
@@ -67,6 +69,10 @@ ferrogw serve                         # starts the server on :8080
 
 The master key is shown **once** and never written to disk — keep it in your
 `.env` file or a secret manager.
+
+Docker runs the server for you: pass `-e OPENAI_API_KEY=sk-your-key` and
+`-e MASTER_KEY=fgw_your-master-key` to the `docker run` command above instead of
+the exports, and skip `ferrogw init`.
 
 <div align="center">
   <img src="docs/demo.gif" alt="Installing Ferro Labs AI Gateway with one command, running ferrogw init, starting the server, and getting a completed chat response" width="100%" />
