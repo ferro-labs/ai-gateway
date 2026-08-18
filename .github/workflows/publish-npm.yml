@@ -48,7 +48,7 @@ jobs:
       # npmjs.com pins that trust to this repository AND to this file's name, so
       # renaming this workflow stops publishing until the trusted publisher is
       # updated on all seven packages.
-      id-token: write
+      id-token: write   # npm Trusted Publishing (OIDC); see the note above
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2

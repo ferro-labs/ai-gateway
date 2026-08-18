@@ -73,7 +73,13 @@ jobs:
           # next one resolve, so an unretried second request fails the deploy of
           # a Worker that is in fact live. Sharing the flags is what keeps the
           # two requests from drifting apart again.
-          retry=(--retry 5 --retry-all-errors --retry-delay 5)
+          #
+          # --connect-timeout/--max-time because a first deploy can meet a
+          # half-resolved hostname that accepts a connection and then never
+          # answers; without a bound the step holds the job until the runner
+          # times out, with nothing said about why.
+          retry=(--retry 5 --retry-all-errors --retry-delay 5
+                 --connect-timeout 10 --max-time 120)
 
           curl -fsSL "${retry[@]}" -o install.sh.out "$base/install.sh"
           curl -fsSL "${retry[@]}" -o install.ps1.out "$base/install.ps1"
@@ -93,11 +99,17 @@ jobs:
           # byte-for-byte. `cmp` is what proves the sniffing branch and the
           # explicit path serve the same thing.
           #
-          # Deliberately unretried, unlike the fetches above: those have already
-          # resolved the host, so the propagation window is shut by the time
-          # these run -- and a retried transfer piped into `cmp` would restart
-          # from byte zero with the failed attempt's bytes already down the
-          # pipe, turning a transient error into a spurious mismatch.
+          # Retried like the fetches above, and to a FILE rather than a pipe.
+          # An earlier revision left these unretried, reasoning that a retried
+          # transfer piped into `cmp` restarts from byte zero with the failed
+          # attempt's bytes already down the pipe. That much is true, but the
+          # conclusion was wrong: the fix is not to drop the retry, it is to
+          # stop piping. Writing the body out first gives both.
+          #
+          # -f on the status probe so an HTTP error is a curl failure and
+          # therefore retryable. Without it a 5xx is a successful transfer whose
+          # code is simply not 302, which fails the step on one bad moment.
           browser='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
-          test "$(curl -sS -o /dev/null -w '%{http_code}' -A "$browser" "$base/")" = 302
-          curl -fsSL -A 'curl/8.5.0' "$base/" | cmp -s - install.sh.out
+          test "$(curl -fsS "${retry[@]}" -o /dev/null -w '%{http_code}' -A "$browser" "$base/")" = 302
+          curl -fsSL "${retry[@]}" -A 'curl/8.5.0' -o root.out "$base/"
+          cmp root.out install.sh.out
