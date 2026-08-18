@@ -43,66 +43,49 @@
 
 ## Quick Start
 
-Get from zero to first request in under 2 minutes.
+| Platform / tool | Install |
+|:---|:---|
+| macOS, Linux | `curl -fsSL https://get.ferrolabs.ai \| sh` |
+| Windows | `irm https://get.ferrolabs.ai/install.ps1 \| iex` |
+| Homebrew | `brew install ferro-labs/tap/ferrogw` |
+| Scoop | `scoop bucket add ferrolabs https://github.com/ferro-labs/homebrew-tap` then `scoop install ferrogw` |
+| npm | `npx ferrogw` |
+| Python | `uvx ferrogw` |
+| Docker | `docker run -p 8080:8080 ghcr.io/ferro-labs/ai-gateway:latest` |
+| Go | `go install github.com/ferro-labs/ai-gateway/cmd/ferrogw@latest` |
+| Debian, RPM, Alpine | `.deb`, `.rpm` and `.apk` packages on the [releases page](https://github.com/ferro-labs/ai-gateway/releases/latest) |
 
-### Option A — Binary (fastest)
+Then go from nothing to a served request:
 
 ```bash
-VER=$(curl -fsSL https://api.github.com/repos/ferro-labs/ai-gateway/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
-curl -fsSL "https://github.com/ferro-labs/ai-gateway/releases/download/${VER}/ferrogw_${VER#v}_linux_amd64.tar.gz" | tar xz
-chmod +x ferrogw
-./ferrogw init                        # generates config.yaml + MASTER_KEY
+ferrogw init                          # writes config.yaml, prints your master key
 export GATEWAY_CONFIG=./config.yaml   # the server reads a config file only when this is set
-export OPENAI_API_KEY=sk-your-key     # providers are registered at startup, so export before starting
+export OPENAI_API_KEY=sk-your-key     # providers register at startup, so export before starting
 export MASTER_KEY=fgw_your-master-key # the key ferrogw init printed
-./ferrogw                             # starts the server
+ferrogw serve                         # starts the server on :8080
 ```
 
-Releases are signed and ship SBOMs — verification steps are in
-[SECURITY.md](SECURITY.md#verifying-releases).
-
-### Option B — Docker
-
-```bash
-docker pull ghcr.io/ferro-labs/ai-gateway:latest
-docker run -p 8080:8080 \
-  -e OPENAI_API_KEY=sk-your-key \
-  -e MASTER_KEY=fgw_your-master-key \
-  ghcr.io/ferro-labs/ai-gateway:latest
-```
-
-### Option C — Go
-
-```bash
-go install github.com/ferro-labs/ai-gateway/cmd/ferrogw@latest
-ferrogw init                          # first-run setup
-export GATEWAY_CONFIG=./config.yaml   # the server reads a config file only when this is set
-export OPENAI_API_KEY=sk-your-key     # providers are registered at startup, so export before starting
-export MASTER_KEY=fgw_your-master-key # the key ferrogw init printed
-ferrogw                               # start the server
-```
-
-`ferrogw init` generates the master key and writes a minimal `config.yaml`. The
-key is shown **once** and never written to disk — store it in your `.env` file
-or secret manager.
+The master key is shown **once** and never written to disk — keep it in your
+`.env` file or a secret manager.
 
 <div align="center">
-  <img src="docs/demo.gif" alt="Ferro Labs AI Gateway — Quick Start Demo" width="720" />
+  <img src="docs/demo.gif" alt="Installing Ferro Labs AI Gateway with one command, running ferrogw init, starting the server, and getting a completed chat response" width="100%" />
 </div>
 
 ### First request
 
 ```bash
-export MASTER_KEY=fgw_your-master-key   # the key ferrogw init printed, in whichever shell you curl from
-
 curl http://localhost:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
   -H "Authorization: Bearer $MASTER_KEY" \
+  -H "Content-Type: application/json" \
   -d '{
     "model": "gpt-4o-mini",
     "messages": [{"role": "user", "content": "Hello from Ferro Labs AI Gateway"}]
   }' | jq
 ```
+
+Every release is signed with keyless cosign and ships an SPDX SBOM —
+verification steps are in [SECURITY.md](SECURITY.md#verifying-releases).
 
 ---
 
