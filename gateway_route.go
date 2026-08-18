@@ -170,6 +170,8 @@ func withUnsupportedParamMode(ctx context.Context, compatMode string) context.Co
 }
 
 // Route routes a request to the appropriate provider based on the configuration.
+//
+//nolint:maintidx // The request lifecycle stays together so plugin, routing, MCP, and accounting stages cannot drift.
 func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.Response, error) {
 	ctx, task := trace.NewTask(ctx, "gateway.route")
 	defer task.End()
@@ -307,7 +309,7 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	// Run the request through the pipeline: the strategy's target order, then
 	// per-target retry, breaker and concurrency limit around each provider call.
 	var resp *providers.Response
-	var target string
+	var target routedTarget
 	var providerDuration time.Duration
 	providerStart := time.Now()
 	trace.WithRegion(ctx, "gateway.route.provider.execute", func() {
@@ -320,7 +322,7 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 		// target names the last target actually attempted. Reporting "" here
 		// left every non-streaming provider failure in one unlabelled bucket,
 		// which is the one thing per-provider alerting needs.
-		g.routeError(ctx, span, obs, pctx, plugins, target, req.Model, err, latency, originalStream, hooksEnabled, obsEventsActive)
+		g.routeError(ctx, span, obs, pctx, plugins, target.key, req.Model, err, latency, originalStream, hooksEnabled, obsEventsActive)
 		return nil, err
 	}
 
@@ -342,25 +344,25 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	// the LLM until no more tool_calls are present or the depth limit is hit.
 	if mcpExecutorSnapshot != nil && mcpActive {
 		var loopDuration time.Duration
-		var loopProvider string
+		var loopTarget routedTarget
 		var loopUsage core.Usage
-		resp, loopUsage, loopDuration, loopProvider, err = g.runMCPLoop(ctx, mcpExecutorSnapshot, plugins, pctx, s, &provReq, resp)
+		resp, loopUsage, loopDuration, loopTarget, err = g.runMCPLoop(ctx, mcpExecutorSnapshot, plugins, pctx, s, &provReq, resp, target)
 		providerDuration += loopDuration
 		if err != nil {
 			// The turns that completed before the failure spent real tokens, so
 			// they are billed. Reporting only the error charged nothing for
 			// them, which made a prompt that reliably fails late free.
 			if pctx != nil {
-				pctx.Response = &providers.Response{Model: req.Model, Provider: loopProvider, Usage: loopUsage}
+				pctx.Response = &providers.Response{Model: req.Model, Provider: loopTarget.key, Usage: loopUsage}
 			}
-			g.routeError(ctx, span, obs, pctx, plugins, loopProvider, req.Model, err, time.Since(start), originalStream, hooksEnabled, obsEventsActive)
+			g.routeError(ctx, span, obs, pctx, plugins, loopTarget.key, req.Model, err, time.Since(start), originalStream, hooksEnabled, obsEventsActive)
 			return nil, err
 		}
 		// The loop re-contacts the provider, so the target that answered LAST is
 		// the one this request finished on — the same rule the failure path
-		// already applies to loopProvider.
-		if loopProvider != "" {
-			target = loopProvider
+		// already applies to loopTarget.
+		if loopTarget.key != "" {
+			target = loopTarget
 		}
 	}
 	// originalStream is included in the completed event so hook consumers
@@ -371,12 +373,12 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	// the after-request plugins need it: the request logger persists it, and it
 	// cannot be recovered later. recordSuccess is handed the same result rather
 	// than repeating the calculation.
-	cost := g.calculateCost(resp)
+	cost := g.calculateCost(resp, target.priceProvider)
 
 	// Measured before the stage runs, so the duration a logging plugin records
 	// does not include that plugin. Streaming requests take the other path, in
 	// RouteStream, where a time to first token also exists.
-	resp, err = g.runAfterPlugins(ctx, plugins, pctx, resp, target, plugin.Measurements{
+	resp, err = g.runAfterPlugins(ctx, plugins, pctx, resp, target.key, plugin.Measurements{
 		DurationMs: float64(time.Since(start).Microseconds()) / 1000.0,
 		CostUSD:    cost.TotalUSD,
 		HasCost:    cost.Priced,
@@ -474,11 +476,11 @@ func (g *Gateway) metricModel(model string) string {
 // tool messages. Returns the final response, the accumulated provider-call
 // duration (for OverheadMs accounting), the provider name of the last
 // attempted call (for error reporting), and any error.
-func (g *Gateway) runMCPLoop(ctx context.Context, mcpExecutorSnapshot *mcp.Executor, plugins *plugin.Manager, pctx *plugin.Context, s strategies.Strategy, req *providers.Request, resp *providers.Response) (*providers.Response, core.Usage, time.Duration, string, error) {
+func (g *Gateway) runMCPLoop(ctx context.Context, mcpExecutorSnapshot *mcp.Executor, plugins *plugin.Manager, pctx *plugin.Context, s strategies.Strategy, req *providers.Request, resp *providers.Response, initialTarget routedTarget) (*providers.Response, core.Usage, time.Duration, routedTarget, error) {
 	var providerDuration time.Duration
 	var err error
 	depth := 0
-	loopProvider := resp.Provider
+	loopTarget := initialTarget
 	// What this request has spent so far, fed to the per-turn budget check.
 	var (
 		spentUSD    float64
@@ -553,11 +555,11 @@ func (g *Gateway) runMCPLoop(ctx context.Context, mcpExecutorSnapshot *mcp.Execu
 			}
 
 			callStart := time.Now()
-			var target string
+			var target routedTarget
 			resp, target, err = g.routeChat(ctx, s, *req)
 			providerDuration += time.Since(callStart)
-			if target != "" {
-				loopProvider = target
+			if target.key != "" {
+				loopTarget = target
 			}
 			if err != nil {
 				return
@@ -575,7 +577,7 @@ func (g *Gateway) runMCPLoop(ctx context.Context, mcpExecutorSnapshot *mcp.Execu
 			// differently-priced providers, and pricing each against the provider
 			// that served it is strictly better than pricing the total at the
 			// last one's rate.
-			if turnCost := g.calculateCost(resp); turnCost.Priced {
+			if turnCost := g.calculateCost(resp, target.priceProvider); turnCost.Priced {
 				spentUSD += turnCost.TotalUSD
 				spentPriced = true
 			}
@@ -590,5 +592,5 @@ func (g *Gateway) runMCPLoop(ctx context.Context, mcpExecutorSnapshot *mcp.Execu
 	// failed on turn three still spent turns one and two, and returning only an
 	// error billed the caller nothing for them — free, and steerable by any
 	// prompt that reliably fails late.
-	return resp, total, providerDuration, loopProvider, err
+	return resp, total, providerDuration, loopTarget, err
 }

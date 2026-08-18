@@ -7,6 +7,7 @@ import (
 
 	"github.com/ferro-labs/ai-gateway/config"
 	"github.com/ferro-labs/ai-gateway/models"
+	"github.com/ferro-labs/ai-gateway/observability"
 	"github.com/ferro-labs/ai-gateway/pkg/circuitbreaker"
 	"github.com/ferro-labs/ai-gateway/providers"
 )
@@ -37,11 +38,10 @@ func aliasPricingCatalog() models.Catalog {
 // distinct from its provider's canonical name ("mock") must be priced
 // identically to the same provider registered under its canonical name.
 //
-// gateway_route.go computes cost once (`cost := g.calculateCost(resp)`) and
-// feeds the same value to the request logger and the budget plugin, so
-// asserting calculateCost's result covers both request-log cost and budget
-// spend; asserting the span cost covers the third. resp.Provider must keep
-// naming the routing key everywhere attribution reads it.
+// gateway_route.go computes cost once and feeds the same value to the request
+// logger, budget plugin and span, so asserting the span cost covers the shared
+// result. resp.Provider must keep naming the routing key everywhere attribution
+// reads it.
 //
 // The mock leaves Response.Provider unset, matching a provider that does not
 // stamp its own identity: the shape RegisterProviderAs is documented for,
@@ -88,11 +88,6 @@ func TestGateway_AliasPricing(t *testing.T) {
 
 			if resp.Provider != tt.virtualKey {
 				t.Errorf("resp.Provider = %q, want routing key %q", resp.Provider, tt.virtualKey)
-			}
-
-			cost := gw.calculateCost(resp)
-			if !cost.Priced || cost.TotalUSD != aliasPricingWantCostUSD {
-				t.Errorf("calculateCost = %+v, want Priced TotalUSD %.5f", cost, aliasPricingWantCostUSD)
 			}
 
 			sp := fp.rootSpan()
@@ -165,6 +160,172 @@ func TestGateway_AliasPricing_Streaming(t *testing.T) {
 				t.Errorf("stream span cost = %+v, want TotalUSD %.5f", sp.cost, aliasPricingWantCostUSD)
 			}
 		})
+	}
+}
+
+// TestRouteResponses_AliasPricingSurvivesProviderReplacement covers the
+// pass-through pricing path, which must capture the target's canonical provider
+// name before forwarding because it does not select through routeTargets.
+func TestRouteResponses_AliasPricingSurvivesProviderReplacement(t *testing.T) {
+	const alias = "mock--credential-1"
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets:  []config.Target{{VirtualKey: alias}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	gw.catalog = aliasPricingCatalog()
+
+	fp := &fakeProvider{}
+	gw.SetObservability(fp)
+	gw.RegisterProviderAs(alias, &mockProvider{name: "mock", models: []string{testModel}})
+	selected, ok := gw.GetProvider(alias)
+	if !ok {
+		t.Fatal("expected original provider to be registered")
+	}
+	gw.RegisterProviderAs(alias, &mockProvider{name: "replacement", models: []string{testModel}})
+
+	usage := providers.Usage{PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150}
+	if err := gw.RouteResponsesWithPricingProvider(context.Background(), alias, providers.CanonicalName(selected), testModel, "hello", true, 0, &usage,
+		func(context.Context) error { return nil }); err != nil {
+		t.Fatalf("RouteResponses: %v", err)
+	}
+
+	sp := fp.rootSpan()
+	if sp == nil {
+		t.Fatal("expected a root span")
+	}
+	if sp.cost.TotalUSD != aliasPricingWantCostUSD || !sp.cost.ModelFound {
+		t.Errorf("responses span cost = %+v, want TotalUSD %.5f and ModelFound true", sp.cost, aliasPricingWantCostUSD)
+	}
+}
+
+func TestGateway_AliasPricingSurvivesProviderReplacement(t *testing.T) {
+	const alias = "mock--credential-1"
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets:  []config.Target{{VirtualKey: alias}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	gw.catalog = aliasPricingCatalog()
+
+	fp := &fakeProvider{}
+	gw.SetObservability(fp)
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	gw.RegisterProviderAs(alias, &mockProvider{
+		name:   "mock",
+		models: []string{testModel},
+		completeFn: func(context.Context, providers.Request) (*providers.Response, error) {
+			close(started)
+			<-release
+			return &providers.Response{
+				Model: testModel,
+				Usage: providers.Usage{PromptTokens: 100, CompletionTokens: 50},
+			}, nil
+		},
+	})
+
+	type result struct {
+		resp *providers.Response
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		resp, routeErr := gw.Route(context.Background(), providers.Request{
+			Model:    testModel,
+			Messages: []providers.Message{{Role: "user", Content: "hi"}},
+		})
+		done <- result{resp: resp, err: routeErr}
+	}()
+	<-started
+	gw.RegisterProviderAs(alias, &mockProvider{name: "replacement", models: []string{testModel}})
+	close(release)
+
+	got := <-done
+	if got.err != nil {
+		t.Fatalf("Route: %v", got.err)
+	}
+	if got.resp.Provider != alias {
+		t.Errorf("resp.Provider = %q, want routing key %q", got.resp.Provider, alias)
+	}
+	sp := fp.rootSpan()
+	if sp == nil {
+		t.Fatal("expected a root span")
+	}
+	if sp.cost.TotalUSD != aliasPricingWantCostUSD {
+		t.Errorf("span cost = %+v, want original provider TotalUSD %.5f", sp.cost, aliasPricingWantCostUSD)
+	}
+}
+
+func TestGateway_AliasStreamingPricingSurvivesProviderReplacement(t *testing.T) {
+	const alias = "mock--credential-1"
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets:  []config.Target{{VirtualKey: alias}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	gw.catalog = aliasPricingCatalog()
+
+	fp := &fakeProvider{}
+	gw.SetObservability(fp)
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	gw.RegisterProviderAs(alias, &mockStreamProvider{
+		mockProvider: mockProvider{name: "mock", models: []string{testModel}},
+		streamFn: func(context.Context, providers.Request) (<-chan providers.StreamChunk, error) {
+			close(started)
+			<-release
+			ch := make(chan providers.StreamChunk, 1)
+			ch <- providers.StreamChunk{
+				Model: testModel,
+				Usage: &providers.Usage{PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150},
+			}
+			close(ch)
+			return ch, nil
+		},
+	})
+
+	type result struct {
+		ch  <-chan providers.StreamChunk
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		ch, routeErr := gw.RouteStream(context.Background(), providers.Request{
+			Model:    testModel,
+			Stream:   true,
+			Messages: []providers.Message{{Role: "user", Content: "hi"}},
+		})
+		done <- result{ch: ch, err: routeErr}
+	}()
+	<-started
+	gw.RegisterProviderAs(alias, &mockStreamProvider{
+		mockProvider: mockProvider{name: "replacement", models: []string{testModel}},
+	})
+	close(release)
+
+	got := <-done
+	if got.err != nil {
+		t.Fatalf("RouteStream: %v", got.err)
+	}
+	drainStream(t, got.ch)
+	sp := fp.rootSpan()
+	if sp == nil {
+		t.Fatal("expected a root span")
+	}
+	if got := sp.attrs[observability.AttrGenAISystem]; got != alias {
+		t.Errorf("stream span provider = %q, want routing key %q", got, alias)
+	}
+	if sp.cost.TotalUSD != aliasPricingWantCostUSD {
+		t.Errorf("stream span cost = %+v, want original provider TotalUSD %.5f", sp.cost, aliasPricingWantCostUSD)
 	}
 }
 
