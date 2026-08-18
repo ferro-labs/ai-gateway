@@ -5,9 +5,16 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.4.4] — 2026-08-18
 
-_Nothing yet._
+### Fixed — in-flight requests keep the provider price selected for them
+
+An alias repointed to a different provider while a request was in flight could
+price that request against the replacement provider, even though the original
+provider served it. Routing now carries the canonical pricing identity captured
+at provider selection through unary and streaming cost accounting. Attribution
+is unchanged: responses, metrics, spans and plugin context still name the
+routing alias.
 
 ## [1.4.3] — 2026-08-17
 

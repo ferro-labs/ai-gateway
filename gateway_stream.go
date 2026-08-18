@@ -152,7 +152,8 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 	// timer, deferred here purely so a panic can't leak it.
 	startCtx, cancelStart := withRequestDeadline(ctx, requestTimeout)
 	defer cancelStart()
-	providerName, rawCh, targetBreaker, err := g.startStreamWithStrategy(startCtx, ctx, req)
+	target, rawCh, targetBreaker, err := g.startStreamWithStrategy(startCtx, ctx, req)
+	providerName := target.key
 	span.SetAttribute(observability.AttrGenAISystem, providerName)
 	// Stamp the resolved target key (virtual key = provider name in this routing layer).
 	if providerName != "" {
@@ -171,17 +172,11 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 	// metrics and event hooks once the stream completes.
 	g.mu.RLock()
 	catalog := g.catalog
-	// Resolved once, alongside the catalog snapshot, from the same live
-	// provider set routing just selected providerName from — see
-	// canonicalPriceKeyLocked. providerName itself keeps naming the routing
-	// target on meta.Provider (attribution: metric labels, the completed/failed
-	// event, resp.Provider); priceProvider exists solely for the cost lookup.
-	priceProvider := g.canonicalPriceKeyLocked(providerName)
 	g.mu.RUnlock()
 
 	meta := streamwrap.MeterMeta{
 		Provider:      providerName,
-		PriceProvider: priceProvider,
+		PriceProvider: target.priceProvider,
 		Model:         req.Model,
 		// Model stays raw for cost lookup and event payloads; only the metric
 		// label is bounded, mirroring the non-streaming path's use of the

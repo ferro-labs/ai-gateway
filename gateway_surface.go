@@ -79,12 +79,12 @@ func (r surfaceRecord) pluginView() *providers.Response {
 // the metrics and the span report are the same number — pricing twice is how
 // they come to disagree when a catalog refresh lands between the two calls.
 // Chat splits calculateCost out of recordSuccess for the same reason.
-func (g *Gateway) priceSurface(provider, model string, tokens providers.Usage, imageCount int) surfaceRecord {
-	record := surfaceRecord{provider: provider, model: model, tokens: tokens, imageCount: imageCount}
+func (g *Gateway) priceSurface(target routedTarget, model string, tokens providers.Usage, imageCount int) surfaceRecord {
+	record := surfaceRecord{provider: target.key, model: model, tokens: tokens, imageCount: imageCount}
 	g.mu.RLock()
 	catalog := g.catalog
 	g.mu.RUnlock()
-	record.cost = models.Calculate(catalog, provider+"/"+model, record.billable())
+	record.cost = models.Calculate(catalog, target.priceProvider+"/"+model, record.billable())
 	return record
 }
 
@@ -330,14 +330,14 @@ func (g *Gateway) Embed(ctx context.Context, req providers.EmbeddingRequest) (*p
 	var resp *providers.EmbeddingResponse
 	record, err := g.runSurfaceGovernance(ctx, surfaceEmbeddings, span, start, req.Model, req.Input, func(ctx context.Context, model string) (surfaceRecord, error) {
 		req.Model = model
-		embedded, key, routeErr := g.routeEmbedding(ctx, req)
+		embedded, target, routeErr := g.routeEmbedding(ctx, req)
 		if routeErr != nil {
-			// key still names the last target attempted, which is what a
+			// target still names the last target attempted, which is what a
 			// per-provider error series needs to be worth anything.
-			return surfaceRecord{provider: key, model: req.Model}, routeErr
+			return surfaceRecord{provider: target.key, model: req.Model}, routeErr
 		}
 		resp = embedded
-		return g.priceSurface(key, embedded.Model, providers.Usage{
+		return g.priceSurface(target, embedded.Model, providers.Usage{
 			PromptTokens: embedded.Usage.PromptTokens,
 			TotalTokens:  embedded.Usage.TotalTokens,
 		}, 0), nil
@@ -395,9 +395,9 @@ func (g *Gateway) GenerateImage(ctx context.Context, req providers.ImageRequest)
 	var resp *providers.ImageResponse
 	record, err := g.runSurfaceGovernance(ctx, surfaceImages, span, start, req.Model, req.Prompt, func(ctx context.Context, model string) (surfaceRecord, error) {
 		req.Model = model
-		generated, key, routeErr := g.routeImage(ctx, req)
+		generated, target, routeErr := g.routeImage(ctx, req)
 		if routeErr != nil {
-			return surfaceRecord{provider: key, model: req.Model}, routeErr
+			return surfaceRecord{provider: target.key, model: req.Model}, routeErr
 		}
 		resp = generated
 		// The provider's own token counts, not an empty literal: the gpt-image
@@ -405,7 +405,7 @@ func (g *Gateway) GenerateImage(ctx context.Context, req providers.ImageRequest)
 		// discarding them here priced every such generation at nothing. A
 		// provider that reports none leaves this zero and its request stays
 		// unpriced, exactly as before.
-		return g.priceSurface(key, req.Model, generated.Usage, len(generated.Data)), nil
+		return g.priceSurface(target, req.Model, generated.Usage, len(generated.Data)), nil
 	})
 	latency := time.Since(start)
 	if err != nil {
@@ -462,17 +462,17 @@ func (g *Gateway) Rerank(ctx context.Context, req providers.RerankRequest) (*pro
 	var resp *providers.RerankResponse
 	record, err := g.runSurfaceGovernance(ctx, surfaceRerank, span, start, req.Model, content, func(ctx context.Context, model string) (surfaceRecord, error) {
 		req.Model = model
-		reranked, key, routeErr := g.routeRerank(ctx, req)
+		reranked, target, routeErr := g.routeRerank(ctx, req)
 		if routeErr != nil {
-			// key still names the last target attempted, which a per-provider
+			// target still names the last target attempted, which a per-provider
 			// error series needs to be worth anything.
-			return surfaceRecord{provider: key, model: req.Model}, routeErr
+			return surfaceRecord{provider: target.key, model: req.Model}, routeErr
 		}
 		resp = reranked
 		// Rerank bills in search-units, which the catalog does not yet price, so
 		// the request is left unpriced (zero tokens) rather than costed wrongly —
 		// the same graceful-zero path an unpriced image model takes.
-		return g.priceSurface(key, req.Model, providers.Usage{}, 0), nil
+		return g.priceSurface(target, req.Model, providers.Usage{}, 0), nil
 	})
 	latency := time.Since(start)
 	if err != nil {
@@ -524,12 +524,12 @@ func (g *Gateway) Moderate(ctx context.Context, req providers.ModerationRequest)
 	var resp *providers.ModerationResponse
 	record, err := g.runSurfaceGovernance(ctx, surfaceModeration, span, start, req.Model, req.Input, func(ctx context.Context, model string) (surfaceRecord, error) {
 		req.Model = model
-		moderated, key, routeErr := g.routeModeration(ctx, req)
+		moderated, target, routeErr := g.routeModeration(ctx, req)
 		if routeErr != nil {
-			return surfaceRecord{provider: key, model: req.Model}, routeErr
+			return surfaceRecord{provider: target.key, model: req.Model}, routeErr
 		}
 		resp = moderated
-		return g.priceSurface(key, req.Model, providers.Usage{}, 0), nil
+		return g.priceSurface(target, req.Model, providers.Usage{}, 0), nil
 	})
 	latency := time.Since(start)
 	if err != nil {
@@ -581,12 +581,12 @@ func (g *Gateway) Transcribe(ctx context.Context, req providers.TranscriptionReq
 	var resp *providers.TranscriptionResponse
 	record, err := g.runSurfaceGovernance(ctx, surfaceTranscription, span, start, req.Model, req.Prompt, func(ctx context.Context, model string) (surfaceRecord, error) {
 		req.Model = model
-		transcribed, key, routeErr := g.routeTranscription(ctx, req)
+		transcribed, target, routeErr := g.routeTranscription(ctx, req)
 		if routeErr != nil {
-			return surfaceRecord{provider: key, model: req.Model}, routeErr
+			return surfaceRecord{provider: target.key, model: req.Model}, routeErr
 		}
 		resp = transcribed
-		return g.priceSurface(key, req.Model, providers.Usage{}, 0), nil
+		return g.priceSurface(target, req.Model, providers.Usage{}, 0), nil
 	})
 	latency := time.Since(start)
 	if err != nil {
@@ -638,12 +638,12 @@ func (g *Gateway) Speech(ctx context.Context, req providers.SpeechRequest) (*pro
 	var resp *providers.SpeechResponse
 	record, err := g.runSurfaceGovernance(ctx, surfaceSpeech, span, start, req.Model, req.Input, func(ctx context.Context, model string) (surfaceRecord, error) {
 		req.Model = model
-		synthesized, key, routeErr := g.routeSpeech(ctx, req)
+		synthesized, target, routeErr := g.routeSpeech(ctx, req)
 		if routeErr != nil {
-			return surfaceRecord{provider: key, model: req.Model}, routeErr
+			return surfaceRecord{provider: target.key, model: req.Model}, routeErr
 		}
 		resp = synthesized
-		return g.priceSurface(key, req.Model, providers.Usage{}, 0), nil
+		return g.priceSurface(target, req.Model, providers.Usage{}, 0), nil
 	})
 	latency := time.Since(start)
 	if err != nil {
@@ -876,64 +876,64 @@ func speak(ctx context.Context, p providers.Provider, req providers.SpeechReques
 // EmbeddingProvider, not registered) the request is refused: targets is an
 // allowlist, so a provider that is registered but not listed never serves a
 // request, on this surface or any other.
-func (g *Gateway) routeEmbedding(ctx context.Context, req providers.EmbeddingRequest) (*providers.EmbeddingResponse, string, error) {
+func (g *Gateway) routeEmbedding(ctx context.Context, req providers.EmbeddingRequest) (*providers.EmbeddingResponse, routedTarget, error) {
 	keys, err := g.surfaceTargetOrder(req.Model, surfaceEmbeddings, models.Usage{PromptTokens: 1})
 	if err != nil {
-		return nil, "", err
+		return nil, routedTarget{}, err
 	}
 	return routeTargets(ctx, g, g.planFor(req.Model, keys), req, embeddingCapable, embed)
 }
 
 // routeImage is routeEmbedding's counterpart for image generation; see its doc
 // comment for the shared pipeline it attaches to.
-func (g *Gateway) routeImage(ctx context.Context, req providers.ImageRequest) (*providers.ImageResponse, string, error) {
+func (g *Gateway) routeImage(ctx context.Context, req providers.ImageRequest) (*providers.ImageResponse, routedTarget, error) {
 	imageCount := 1
 	if req.N != nil && *req.N > 0 {
 		imageCount = *req.N
 	}
 	keys, err := g.surfaceTargetOrder(req.Model, surfaceImages, models.Usage{ImageCount: imageCount})
 	if err != nil {
-		return nil, "", err
+		return nil, routedTarget{}, err
 	}
 	return routeTargets(ctx, g, g.planFor(req.Model, keys), req, imageCapable, generateImage)
 }
 
 // routeRerank is routeEmbedding's counterpart for reranking; see its doc comment
 // for the shared pipeline it attaches to.
-func (g *Gateway) routeRerank(ctx context.Context, req providers.RerankRequest) (*providers.RerankResponse, string, error) {
+func (g *Gateway) routeRerank(ctx context.Context, req providers.RerankRequest) (*providers.RerankResponse, routedTarget, error) {
 	keys, err := g.surfaceTargetOrder(req.Model, surfaceRerank, models.Usage{})
 	if err != nil {
-		return nil, "", err
+		return nil, routedTarget{}, err
 	}
 	return routeTargets(ctx, g, g.planFor(req.Model, keys), req, rerankCapable, rerank)
 }
 
 // routeModeration is routeEmbedding's counterpart for moderation; see its doc
 // comment for the shared pipeline it attaches to.
-func (g *Gateway) routeModeration(ctx context.Context, req providers.ModerationRequest) (*providers.ModerationResponse, string, error) {
+func (g *Gateway) routeModeration(ctx context.Context, req providers.ModerationRequest) (*providers.ModerationResponse, routedTarget, error) {
 	keys, err := g.surfaceTargetOrder(req.Model, surfaceModeration, models.Usage{})
 	if err != nil {
-		return nil, "", err
+		return nil, routedTarget{}, err
 	}
 	return routeTargets(ctx, g, g.planFor(req.Model, keys), req, moderationCapable, moderate)
 }
 
 // routeTranscription is routeEmbedding's counterpart for audio transcription;
 // see its doc comment for the shared pipeline it attaches to.
-func (g *Gateway) routeTranscription(ctx context.Context, req providers.TranscriptionRequest) (*providers.TranscriptionResponse, string, error) {
+func (g *Gateway) routeTranscription(ctx context.Context, req providers.TranscriptionRequest) (*providers.TranscriptionResponse, routedTarget, error) {
 	keys, err := g.surfaceTargetOrder(req.Model, surfaceTranscription, models.Usage{})
 	if err != nil {
-		return nil, "", err
+		return nil, routedTarget{}, err
 	}
 	return routeTargets(ctx, g, g.planFor(req.Model, keys), req, transcriptionCapable, transcribe)
 }
 
 // routeSpeech is routeEmbedding's counterpart for text-to-speech; see its doc
 // comment for the shared pipeline it attaches to.
-func (g *Gateway) routeSpeech(ctx context.Context, req providers.SpeechRequest) (*providers.SpeechResponse, string, error) {
+func (g *Gateway) routeSpeech(ctx context.Context, req providers.SpeechRequest) (*providers.SpeechResponse, routedTarget, error) {
 	keys, err := g.surfaceTargetOrder(req.Model, surfaceSpeech, models.Usage{})
 	if err != nil {
-		return nil, "", err
+		return nil, routedTarget{}, err
 	}
 	return routeTargets(ctx, g, g.planFor(req.Model, keys), req, speechCapable, speak)
 }

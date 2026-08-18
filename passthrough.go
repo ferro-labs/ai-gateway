@@ -241,7 +241,7 @@ func (g *Gateway) runPassthroughGovernance(
 		// and stays unpriced. Priced here, inside call, so both the plugin and the
 		// no-plugin path (which returns call directly) get it.
 		if err == nil && p.usage != nil && (p.usage.PromptTokens > 0 || p.usage.CompletionTokens > 0 || p.usage.TotalTokens > 0) {
-			record = g.priceSurface(target, model, *p.usage, 0)
+			record = g.priceSurface(routedTarget{key: target, priceProvider: target}, model, *p.usage, 0)
 		}
 		return record, err
 	}

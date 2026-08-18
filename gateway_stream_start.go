@@ -41,7 +41,7 @@ import (
 // mid-start would otherwise hand the stream's eventual outcome to a fresh
 // breaker whose state machine never admitted it. Nil when the target has no
 // breaker configured.
-func (g *Gateway) startStreamWithStrategy(startCtx, streamCtx context.Context, req providers.Request) (string, <-chan providers.StreamChunk, *circuitbreaker.CircuitBreaker, error) {
+func (g *Gateway) startStreamWithStrategy(startCtx, streamCtx context.Context, req providers.Request) (routedTarget, <-chan providers.StreamChunk, *circuitbreaker.CircuitBreaker, error) {
 	g.mu.Lock()
 	g.ensureCircuitBreakersLocked()
 	g.ensureProviderLimitersLocked()
@@ -49,18 +49,18 @@ func (g *Gateway) startStreamWithStrategy(startCtx, streamCtx context.Context, r
 
 	keys, err := g.streamingTargetOrder(req)
 	if err != nil {
-		return "", nil, nil, err
+		return routedTarget{}, nil, nil, err
 	}
 
 	plan := g.planFor(req.Model, keys)
 	plan.responseOutlivesCall = true
 
 	var admitted *circuitbreaker.CircuitBreaker
-	raw, key, err := routeTargets(startCtx, g, plan, req, streamCapable, startStreamOn(streamCtx, &admitted))
+	raw, target, err := routeTargets(startCtx, g, plan, req, streamCapable, startStreamOn(streamCtx, &admitted))
 	if err != nil {
-		return key, nil, nil, err
+		return target, nil, nil, err
 	}
-	return key, raw, admitted, nil
+	return target, raw, admitted, nil
 }
 
 // streamCapable is streaming's candidacy gate: a target whose provider cannot

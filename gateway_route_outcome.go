@@ -178,34 +178,17 @@ func cacheServedMeasurements(start time.Time) plugin.Measurements {
 	}
 }
 
-// canonicalPriceKeyLocked resolves routingKey — a resp.Provider or
-// streamwrap.MeterMeta.Provider value, which names the routing target that
-// served the request rather than a vendor — to the canonical vendor identity
-// the model catalog and price book are keyed on. A target registered through
-// RegisterProviderAs is priced as its underlying provider, not the alias the
-// catalog has never heard of. Attribution is untouched: callers keep using
-// routingKey itself for everything except the catalog lookup. Returns
-// routingKey unchanged when no provider is currently registered under it.
-// Caller must hold g.mu (a read lock is sufficient).
-func (g *Gateway) canonicalPriceKeyLocked(routingKey string) string {
-	if p, ok := g.providers[routingKey]; ok {
-		return providers.CanonicalName(p)
-	}
-	return routingKey
-}
-
 // calculateCost prices a response against the current model catalog.
 //
 // Split out because the after-request plugins need the result before
 // recordSuccess runs — the request logger persists it — and pricing a response
 // twice risks the persisted figure and the reported one disagreeing after a
 // catalog refresh lands between them.
-func (g *Gateway) calculateCost(resp *providers.Response) models.CostResult {
+func (g *Gateway) calculateCost(resp *providers.Response, priceProvider string) models.CostResult {
 	g.mu.RLock()
 	catalog := g.catalog
-	priceKey := g.canonicalPriceKeyLocked(resp.Provider)
 	g.mu.RUnlock()
-	return models.Calculate(catalog, priceKey+"/"+resp.Model, models.Usage{
+	return models.Calculate(catalog, priceProvider+"/"+resp.Model, models.Usage{
 		PromptTokens:     resp.Usage.PromptTokens,
 		CompletionTokens: resp.Usage.CompletionTokens,
 		ReasoningTokens:  resp.Usage.ReasoningTokens,

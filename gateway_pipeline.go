@@ -109,13 +109,20 @@ type targetCall[Req, Resp any] func(context.Context, providers.Provider, Req) (R
 // enough, which is chat's case.
 type capabilityGate func(providers.Provider) bool
 
+// routedTarget carries both identities fixed at provider selection. key is the
+// configured routing target used for attribution; priceProvider is the
+// canonical vendor used only for catalog pricing.
+type routedTarget struct {
+	key           string
+	priceProvider string
+}
+
 // routeTargets walks plan and returns the first target's answer.
 //
-// The second return is the target that produced the response or, on failure,
-// the last one attempted. It is empty only when nothing was attempted at all.
-// Callers label metrics and spans with it: a provider error attributed to ""
-// cannot drive per-provider alerting, which is the one thing those series exist
-// for.
+// The second return identifies the target that produced the response or, on
+// failure, the last one attempted. Its key is empty only when nothing was
+// attempted at all. Callers label metrics and spans with key; pricing uses the
+// canonical provider captured from the same selected provider instance.
 //
 // A failure that is not the fault of any target — nothing registered, nothing
 // that serves the model — is reported as core.ErrNoCapableProvider so it
@@ -129,15 +136,15 @@ func routeTargets[Req, Resp any](
 	req Req,
 	gate capabilityGate,
 	call targetCall[Req, Resp],
-) (Resp, string, error) {
+) (Resp, routedTarget, error) {
 	var zero Resp
 
 	keys := g.eligibleKeys(plan, gate)
 
 	var (
-		lastErr  error
-		lastKey  string
-		attempts int
+		lastErr    error
+		lastTarget routedTarget
+		attempts   int
 		// A failure the walk moves past is invisible to the terminal recorder,
 		// which only ever names the last target tried. Under mode: fallback a
 		// provider can fail every request and read zero on
@@ -157,6 +164,7 @@ func routeTargets[Req, Resp any](
 		if !ok {
 			continue
 		}
+		target := routedTarget{key: key, priceProvider: providers.CanonicalName(p)}
 		if plan.responseOutlivesCall {
 			// Composition and order are decorateProvider's, which is the same
 			// pair callUnderResilience applies at the call site — breaker
@@ -171,7 +179,7 @@ func routeTargets[Req, Resp any](
 		if maskedErr != nil {
 			recordProviderErrorCtx(ctx, maskedKey, maskedErr)
 		}
-		lastKey = key
+		lastTarget = target
 
 		started := time.Now()
 		resp, err := attemptTarget(ctx, g, key, p, cb, lim, req, call)
@@ -182,7 +190,7 @@ func routeTargets[Req, Resp any](
 			// included plugin and alias time would rank targets on work no target
 			// did.
 			g.latencyTracker.Record(key, time.Since(started))
-			return resp, key, nil
+			return resp, target, nil
 		}
 		lastErr = fmt.Errorf("target %s: %w", key, err)
 		maskedKey, maskedErr = key, err
@@ -199,14 +207,14 @@ func routeTargets[Req, Resp any](
 	// it is decided on the attempt count alone — never on whether some skipped
 	// target happened to leave an error behind.
 	if attempts == 0 {
-		return zero, "", errNoCapableTarget(plan.model)
+		return zero, routedTarget{}, errNoCapableTarget(plan.model)
 	}
 	if plan.advance {
 		// Only a strategy that falls back can honestly claim this: it really did
 		// ask every candidate. A single-target mode asked one, and says so.
-		return zero, lastKey, fmt.Errorf("all providers failed: %w", lastErr)
+		return zero, lastTarget, fmt.Errorf("all providers failed: %w", lastErr)
 	}
-	return zero, lastKey, lastErr
+	return zero, lastTarget, lastErr
 }
 
 // eligibleKeys narrows a strategy's candidate order to the targets the walk may
@@ -653,19 +661,19 @@ func completeChat(ctx context.Context, p providers.Provider, req providers.Reque
 
 // routeChat runs a non-streaming chat request through the pipeline and returns
 // the response together with the target that served it.
-func (g *Gateway) routeChat(ctx context.Context, s strategies.Strategy, req providers.Request) (*providers.Response, string, error) {
+func (g *Gateway) routeChat(ctx context.Context, s strategies.Strategy, req providers.Request) (*providers.Response, routedTarget, error) {
 	keys, err := s.SelectTargets(req)
 	if err != nil {
-		return nil, "", err
+		return nil, routedTarget{}, err
 	}
-	resp, key, err := routeTargets(ctx, g, g.planFor(req.Model, keys), req, nil, completeChat)
+	resp, target, err := routeTargets(ctx, g, g.planFor(req.Model, keys), req, nil, completeChat)
 	if err != nil {
-		return nil, key, err
+		return nil, target, err
 	}
 	if resp != nil && resp.Provider == "" {
-		resp.Provider = key
+		resp.Provider = target.key
 	}
-	return resp, key, nil
+	return resp, target, nil
 }
 
 // How the remaining surfaces attach.
