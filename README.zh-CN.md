@@ -43,7 +43,7 @@
 
 ## 快速开始
 
-两分钟之内，从零跑通第一个请求。
+从安装到第一个响应，不到两分钟。
 
 | 平台 / 工具 | 安装方式 |
 |:---|:---|
@@ -51,8 +51,8 @@
 | Windows | `irm https://get.ferrolabs.ai/install.ps1 \| iex` |
 | Homebrew | `brew install ferro-labs/tap/ferrogw` |
 | Scoop | 先 `scoop bucket add ferrolabs https://github.com/ferro-labs/homebrew-tap` 然后 `scoop install ferrogw` |
-| npm | `npx ferrogw` |
-| Python | `uvx ferrogw` |
+| npm | `npm install -g ferrogw` |
+| Python | `uv tool install ferrogw` |
 | Docker | `docker run -p 8080:8080 ghcr.io/ferro-labs/ai-gateway:latest` |
 | Go | `go install github.com/ferro-labs/ai-gateway/cmd/ferrogw@latest` |
 | Debian、RPM、Alpine | [发布页面](https://github.com/ferro-labs/ai-gateway/releases/latest) 提供 `.deb`、`.rpm` 与 `.apk` 软件包 |
@@ -60,9 +60,9 @@
 然后从零跑通第一个请求：
 
 ```bash
+export OPENAI_API_KEY=sk-your-key     # ferrogw init 会检测到它，并写入对应的目标
 ferrogw init                          # 生成 config.yaml，并打印你的主密钥
 export GATEWAY_CONFIG=./config.yaml   # 只有设置了它，服务端才会读取配置文件
-export OPENAI_API_KEY=sk-your-key     # 提供商在启动时注册，所以要先导出再启动
 export MASTER_KEY=fgw_your-master-key # ferrogw init 打印出来的那个密钥
 ferrogw serve                         # 在 :8080 启动服务
 ```
@@ -81,6 +81,8 @@ export，并跳过 `ferrogw init`。
 ### 第一个请求
 
 ```bash
+export MASTER_KEY=fgw_your-master-key   # ferrogw init 打印出来的那个密钥；在哪个 shell 里跑 curl，就在哪个 shell 里导出
+
 curl http://localhost:8080/v1/chat/completions \
   -H "Authorization: Bearer $MASTER_KEY" \
   -H "Content-Type: application/json" \

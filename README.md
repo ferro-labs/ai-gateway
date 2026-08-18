@@ -43,7 +43,7 @@
 
 ## Quick Start
 
-Get from zero to a served request in under two minutes.
+Under two minutes from install to first response.
 
 | Platform / tool | Install |
 |:---|:---|
@@ -51,8 +51,8 @@ Get from zero to a served request in under two minutes.
 | Windows | `irm https://get.ferrolabs.ai/install.ps1 \| iex` |
 | Homebrew | `brew install ferro-labs/tap/ferrogw` |
 | Scoop | `scoop bucket add ferrolabs https://github.com/ferro-labs/homebrew-tap` then `scoop install ferrogw` |
-| npm | `npx ferrogw` |
-| Python | `uvx ferrogw` |
+| npm | `npm install -g ferrogw` |
+| Python | `uv tool install ferrogw` |
 | Docker | `docker run -p 8080:8080 ghcr.io/ferro-labs/ai-gateway:latest` |
 | Go | `go install github.com/ferro-labs/ai-gateway/cmd/ferrogw@latest` |
 | Debian, RPM, Alpine | `.deb`, `.rpm` and `.apk` packages on the [releases page](https://github.com/ferro-labs/ai-gateway/releases/latest) |
@@ -60,9 +60,9 @@ Get from zero to a served request in under two minutes.
 Then go from nothing to a served request:
 
 ```bash
+export OPENAI_API_KEY=sk-your-key     # ferrogw init detects this and writes the matching target
 ferrogw init                          # writes config.yaml, prints your master key
 export GATEWAY_CONFIG=./config.yaml   # the server reads a config file only when this is set
-export OPENAI_API_KEY=sk-your-key     # providers register at startup, so export before starting
 export MASTER_KEY=fgw_your-master-key # the key ferrogw init printed
 ferrogw serve                         # starts the server on :8080
 ```
@@ -81,6 +81,8 @@ the exports, and skip `ferrogw init`.
 ### First request
 
 ```bash
+export MASTER_KEY=fgw_your-master-key   # the key ferrogw init printed, in whichever shell you curl from
+
 curl http://localhost:8080/v1/chat/completions \
   -H "Authorization: Bearer $MASTER_KEY" \
   -H "Content-Type: application/json" \
