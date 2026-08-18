@@ -118,7 +118,7 @@ curl http://localhost:8080/v1/chat/completions \
 |:---|:---|:---|
 | 🔀 **路由** | 8 种策略 —— 单一、回退、负载均衡、最低延迟、成本优化、基于内容、A/B 测试、条件路由 —— 并支持按目标配置重试、故障转移与模型别名 | [文档 →](https://docs.ferrolabs.ai/routing/) |
 | 🔌 **30 个提供商** | 全部支持对话与流式；在厂商提供的前提下，还支持向量嵌入、图像、重排序、内容审核、语音转文字、文字转语音与批处理 | [文档 →](https://docs.ferrolabs.ai/providers/) |
-| 🛡️ **护栏与插件** | 内置六个 —— 敏感词过滤、令牌/消息数限制、响应缓存、限流、按密钥预算、请求日志 —— 插件框架完全公开，可自行编写 | [文档 →](https://docs.ferrolabs.ai/plugins/) |
+| 🛡️ **护栏与插件** | 内置六个 —— 敏感词过滤、令牌/消息数限制、响应缓存、限流、按密钥预算、请求日志 —— 插件框架对外开放，可自行编写插件 | [文档 →](https://docs.ferrolabs.ai/plugins/) |
 | 🎯 **能力矩阵** | 以声明式记录每个提供商对各项 OpenAI 参数是转发、转换还是无法表达，由 `GET /v1/capabilities` 提供 | [文档 →](https://docs.ferrolabs.ai/guides/provider-capabilities/) |
 | 🤖 **MCP** | 连接 stdio 与 Streamable HTTP 工具服务器，把它们的工具注入对话补全，并由网关自身驱动智能体式的 `tool_calls` 循环 | [文档 →](https://docs.ferrolabs.ai/guides/mcp/) |
 | 📊 **可观测性** | OpenTelemetry 链路追踪与 Prometheus 指标，日志与 span 共用一个 trace ID —— 未启用时是零分配的空实现 | [文档 →](https://docs.ferrolabs.ai/guides/observability/) |
@@ -141,8 +141,8 @@ curl http://localhost:8080/v1/chat/completions \
 试验场、链路追踪、请求日志、审计轨迹、带历史与回滚的配置，以及带作用域的
 API 密钥管理。
 
-运行网关并打开 <http://localhost:8080>. 若想看到与上面录屏一样填满数据的效果，
-可以启动自包含的演示环境：
+运行网关，然后在 <http://localhost:8080> 打开即可。若想看到与上面录屏一样填满
+数据的效果，可以启动自包含的演示环境：
 
 ```bash
 make up-fullstack   # 网关 + Postgres + Jaeger + Prometheus + Grafana + 模拟上游 + 压测生成器
@@ -160,7 +160,7 @@ make up-fullstack   # 网关 + Postgres + Jaeger + Prometheus + Grafana + 模拟
 | 参考文档 | 涵盖内容 |
 |:---|:---|
 | [providers/README.md](providers/README.md) | 30 个提供商、各提供商的端点矩阵，以及全部 `/v1/*` 接口 |
-| [config/README.md](config/README.md) | 配置加载与校验、`${VAR}` 密钥引用、声明式模型、受信任代理 |
+| [config/README.md](config/README.md) | 配置加载与校验、`${VAR}` 密钥引用、已声明的模型、受信任代理 |
 | [internal/strategies/README.md](internal/strategies/README.md) | 全部 8 种路由策略及其失败语义 |
 | [plugin/README.md](plugin/README.md) | 插件框架与六个内置插件 |
 | [mcp/README.md](mcp/README.md) | MCP 工具服务器、传输方式、子进程信任边界、就绪判定 |
@@ -282,7 +282,7 @@ ferrogw serve
 
 ## CLI
 
-`ferrogw` 就是那一个二进制文件 —— 无需额外的 CLI 工具。
+`ferrogw` 是单一二进制文件 —— 无需额外的 CLI 工具。
 
 | 命令 | 说明 |
 |:--------|:------------|
@@ -327,9 +327,9 @@ Render 则使用仓库中的 `render.yaml` Blueprint，它会自动生成 `MASTE
 的生产 override。全部命令都在仓库根目录执行：
 
 ```bash
-make up             # dev: builds from source
+make up             # 开发环境：从源码构建
 IMAGE_TAG=v1.4.0 CORS_ORIGINS=https://your-domain.com make up-prod
-make down           # tears down either
+make down           # 两种模式通用的停止命令
 ```
 
 一个容器同时提供 API 与控制台 —— 无需第二个镜像，也没有第二个源站。提供商
@@ -390,10 +390,10 @@ response = client.chat.completions.create(
 
 **为什么从 LiteLLM 迁移：**
 
-- 150 并发用户下吞吐量高 14 倍（2,447 对 175 RPS）
-- 峰值负载下内存少 23 倍（流式场景 47 MB 对 1,124 MB）
+- 150 并发用户下吞吐量达 14 倍（2,447 对 175 RPS）
+- 峰值负载下内存占用仅为其 1/23（流式场景 47 MB 对 1,124 MB）
 - 单一二进制文件 —— 无需 Python 环境、无需 pip、无需 virtualenv
-- 延迟可预期 —— 150 VU 下 p99 保持在 65 毫秒以内，而 LiteLLM 在同等并发下已经超时
+- 延迟可预期 —— 150 VU 下 p99 保持在 65ms 以内，而 LiteLLM 在同等并发下已经超时
 
 ### 从 Portkey 迁移
 
@@ -402,7 +402,7 @@ response = client.chat.completions.create(
 
 **为什么从 Portkey 迁移：**
 
-- 完全开源 —— 没有按请求计费，也没有日志条数限制
+- 完全开源 —— 没有按请求计费，也没有日志限制
 - 自托管 —— 数据永不离开你自己的基础设施
 - 不锁定厂商 —— Apache 2.0 许可证
 - 支持 MCP —— Portkey 自托管版缺少原生 MCP
@@ -418,7 +418,7 @@ response = client.chat.completions.create(
 对比测试 —— 结果只反映网关自身的开销。后续版本尚未重新测量；请用下面的
 命令针对你准备运行的版本自行复现。
 
-![Throughput comparison — Ferro Labs vs Kong, Bifrost, LiteLLM, Portkey across 150–1,000 VU](docs/benchmarks/throughput-comparison.png)
+![吞吐量对比 —— Ferro Labs 与 Kong、Bifrost、LiteLLM、Portkey 在 150–1,000 VU 下的表现](docs/benchmarks/throughput-comparison.png)
 
 | VU | RPS | p50 | p99 | 内存 |
 |---:|---:|---:|---:|---:|
@@ -449,7 +449,7 @@ FerroCloud —— Ferro Labs AI 网关的托管版本，具备多租户、分析
 ## SDK
 
 Ferro Labs AI 网关的官方客户端库 —— 标准 OpenAI SDK 也可直接使用：
-把 `base_url` 指向 `http://your-gateway:8080/v1`.
+把 `base_url` 指向 `http://your-gateway:8080/v1` 即可。
 
 | SDK | 安装 | 仓库 |
 |:----|:--------|:-----------|
