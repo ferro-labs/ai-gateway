@@ -1,0 +1,115 @@
+# Deploys the Cloudflare Worker behind https://get.ferrolabs.ai.
+#
+# Path-filtered on purpose, and specifically NOT triggered by a release: the
+# installers resolve the version at runtime by following the /releases/latest
+# redirect, so cutting a tag does not change a byte of what this Worker serves.
+# Only editing the scripts or the Worker does.
+#
+# See deploy/get-worker/README.md for the Cloudflare token and DNS setup.
+
+name: Deploy get.ferrolabs.ai
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "scripts/install/**"
+      - "deploy/get-worker/**"
+      - ".github/workflows/deploy-get-worker.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One deploy at a time, and never cancelled mid-flight: a superseded run has
+# already uploaded a script version, and racing two uploads makes which one is
+# live a coin toss.
+concurrency:
+  group: deploy-get-worker
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy Worker
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+
+      # `wrangler deploy` runs the [build] command in wrangler.toml, which is
+      # what inlines scripts/install/* into the bundle — so this step has no
+      # copy of that logic and cannot disagree with `wrangler dev`.
+      #
+      # Exact version, not a range. This tool decides what bytes end up at a URL
+      # people pipe into a shell; a floating major means two runs from the same
+      # commit can publish different bundles. Bump it by hand — Dependabot only
+      # rewrites `uses:` refs, so it does not track this.
+      - name: Deploy
+        working-directory: deploy/get-worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx --yes wrangler@4.123.0 deploy
+
+      # A green deploy whose hostname answers 404 is a failure this org has
+      # shipped before (helm charts, npm). The contract is three routes, so
+      # assert all three against the live endpoint rather than trusting the
+      # upload's exit code. Retries cover DNS coming up on a first deploy.
+      - name: Verify the live endpoint
+        run: |
+          set -eu
+          base=https://get.ferrolabs.ai
+
+          # One list, both fetches. A first deploy is waiting on DNS and Custom
+          # Domain propagation, and that is not a single event the hostname
+          # passes through: the lookup that served install.sh does not make the
+          # next one resolve, so an unretried second request fails the deploy of
+          # a Worker that is in fact live. Sharing the flags is what keeps the
+          # two requests from drifting apart again.
+          #
+          # --connect-timeout/--max-time because a first deploy can meet a
+          # half-resolved hostname that accepts a connection and then never
+          # answers; without a bound the step holds the job until the runner
+          # times out, with nothing said about why.
+          retry=(--retry 5 --retry-all-errors --retry-delay 5
+                 --connect-timeout 10 --max-time 120)
+
+          curl -fsSL "${retry[@]}" -o install.sh.out "$base/install.sh"
+          curl -fsSL "${retry[@]}" -o install.ps1.out "$base/install.ps1"
+          test -s install.sh.out
+          test -s install.ps1.out
+
+          # Against the checked-out source, not just against each other. The
+          # bundle is generated at deploy time, so the failure worth catching is
+          # the edge serving a stale or wrong inline copy — and every
+          # edge-vs-edge comparison passes in exactly that case, because both
+          # routes read the same wrong bundle. This is the only assertion here
+          # that can tell the difference.
+          cmp scripts/install/install.sh install.sh.out
+          cmp scripts/install/install.ps1 install.ps1.out
+
+          # A browser is redirected; curl on the same path gets the shell script
+          # byte-for-byte. `cmp` is what proves the sniffing branch and the
+          # explicit path serve the same thing.
+          #
+          # Retried like the fetches above, and to a FILE rather than a pipe.
+          # An earlier revision left these unretried, reasoning that a retried
+          # transfer piped into `cmp` restarts from byte zero with the failed
+          # attempt's bytes already down the pipe. That much is true, but the
+          # conclusion was wrong: the fix is not to drop the retry, it is to
+          # stop piping. Writing the body out first gives both.
+          #
+          # -f on the status probe so an HTTP error is a curl failure and
+          # therefore retryable. Without it a 5xx is a successful transfer whose
+          # code is simply not 302, which fails the step on one bad moment.
+          browser='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
+          test "$(curl -fsS "${retry[@]}" -o /dev/null -w '%{http_code}' -A "$browser" "$base/")" = 302
+          curl -fsSL "${retry[@]}" -A 'curl/8.5.0' -o root.out "$base/"
+          cmp root.out install.sh.out

@@ -37,6 +37,11 @@ go.work.sum
 # Python virtual environment
 .venv
 
+# Byte-compiled Python. Only relevant since packaging/pypi/ arrived — running
+# build_wheels.py or importing setup.py leaves these beside the source.
+__pycache__/
+*.py[cod]
+
 #config
 config.json
 config.yaml
@@ -50,8 +55,14 @@ config.yaml
 # default is also the deployed value.
 !web/public/config.json
 
-# binaries
-bin/
+# binaries — `make build` writes ./bin/ferrogw.
+#
+# Anchored with a leading slash on purpose. Unanchored, `bin/` matches a
+# directory of that name at ANY depth, which silently swallowed
+# packaging/npm/bin/ferrogw.js — the npm package's entire entry point — so the
+# published package would have had no shim and `npx ferrogw` would have failed
+# with nothing in the repository to explain it. Only ./bin is a build output.
+/bin/
 # `go build ./cmd/ferrogw` with no -o writes the binary here, and that command
 # is in the docs as the way to check a build without Node.
 /ferrogw
@@ -72,6 +83,14 @@ docs/superpowers/
 
 # Stray npm/vitest artifacts if a web command is run from the repo root.
 node_modules/
+
+# The get.ferrolabs.ai Worker inlines scripts/install/ into its bundle at deploy
+# time, so this file is a copy of two tracked scripts. Committing it would give
+# the installers a second home that can silently disagree with the first — and
+# it is the copy the edge would actually serve. CI builds it from a fresh
+# checkout; only a local `wrangler dev` leaves it (and .wrangler/) behind.
+deploy/get-worker/scripts.generated.js
+deploy/get-worker/.wrangler/
 
 # The dashboard bundle is compiled into the binary with go:embed, so it has to
 # live inside the package directory — go:embed cannot reach outside it. The

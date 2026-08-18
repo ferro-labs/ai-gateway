@@ -109,11 +109,128 @@ jobs:
           args: release --clean --release-notes="${{ runner.temp }}/release-notes.md"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The Homebrew tap, the Scoop bucket and the winget fork are all
+          # repositories other than this one, and GITHUB_TOKEN is scoped to
+          # ferro-labs/ai-gateway alone — it cannot push to any of them.
+          #
+          # Both variables are exported unconditionally, including before the
+          # secrets exist. That is not defensive: an *undefined* variable is not
+          # a scoped failure, because Go's template engine aborts config load
+          # with `map has no entry for key` before a single binary is built,
+          # taking the whole release down with it. An unset secret expands to
+          # the empty string, which the templated `skip_upload` in
+          # .goreleaser.yaml reads as "this tap does not exist yet" and
+          # withholds that surface alone, logging the skip.
+          #
+          # The winget token is deliberately separate. The other two push to
+          # org-owned repositories; this one pushes to a fork that opens pull
+          # requests against microsoft/winget-pkgs, which is a different trust
+          # grant and should be revocable on its own.
+          TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+          WINGET_GITHUB_TOKEN: ${{ secrets.WINGET_GITHUB_TOKEN }}
+
+  verify-release-assets:
+    name: Verify release asset set
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every distribution artifact
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          assets="$(gh release view "$TAG" --repo "$REPO" --json assets --jq '.assets[].name')"
+          version="${TAG#v}"
+          for target in \
+            linux_amd64.tar.gz linux_arm64.tar.gz \
+            darwin_amd64.tar.gz darwin_arm64.tar.gz \
+            windows_amd64.zip windows_arm64.zip; do
+            grep -Fxq "ferrogw_${version}_${target}" <<<"$assets" || {
+              echo "::error title=Missing release archive::ferrogw_${version}_${target} was not published"
+              exit 1
+            }
+          done
+          for extension in deb rpm apk; do
+            grep -Fxq "ferrogw_${version}_linux_amd64.${extension}" <<<"$assets" || {
+              echo "::error title=Missing Linux package::ferrogw_${version}_linux_amd64.${extension} was not published"
+              exit 1
+            }
+          done
+
+  publish-packages:
+    name: Publish npm and PyPI packages
+    needs: verify-release-assets
+    runs-on: ubuntu-latest
+    # A real publish is under ten minutes of work per registry, and the two run
+    # concurrently; the rest of the budget is runner queueing and any manual
+    # approval on the `pypi` environment. What this bounds is `gh run watch`
+    # against a publisher that never finishes -- without it that hangs for the
+    # 6-hour default and takes the install verification and the release
+    # announcement down with it, since both wait on this job. Raise it if the
+    # `pypi` environment ever gains required reviewers who need longer.
+    timeout-minutes: 60
+    permissions:
+      # `gh workflow run` creates a workflow_dispatch run on publish-npm.yml and
+      # publish-pypi.yml; that write is the only reason this scope is here. The
+      # publishers hold their own credentials -- this job never touches npm or
+      # PyPI itself.
+      actions: write
+      contents: read
+    steps:
+      - name: Dispatch publishers and wait for completion
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          latest_run() {
+            gh run list --repo "$REPO" --workflow "$1" --event workflow_dispatch \
+              --commit "$COMMIT" --limit 1 --json databaseId \
+              --jq '.[0].databaseId // empty'
+          }
+
+          dispatch() {
+            workflow="$1"
+            previous="$(latest_run "$workflow")"
+            gh workflow run "$workflow" --repo "$REPO" --ref "$TAG" -f tag="$TAG" >/dev/null
+            attempt=0
+            while [ "$attempt" -lt 30 ]; do
+              current="$(latest_run "$workflow")"
+              if [ -n "$current" ] && [ "$current" != "$previous" ]; then
+                printf '%s' "$current"
+                return
+              fi
+              attempt=$((attempt + 1))
+              sleep 2
+            done
+            echo "::error title=Publisher run did not start::${workflow} was dispatched but no new run appeared" >&2
+            return 1
+          }
+
+          npm_run="$(dispatch publish-npm.yml)"
+          pypi_run="$(dispatch publish-pypi.yml)"
+          status=0
+          gh run watch "$npm_run" --repo "$REPO" --exit-status || status=1
+          gh run watch "$pypi_run" --repo "$REPO" --exit-status || status=1
+          exit "$status"
+
+  verify-installation:
+    name: Verify published installation paths
+    needs: publish-packages
+    uses: ./.github/workflows/install-matrix.yml
+    with:
+      version: ${{ github.ref_name }}
+      require_new_assets: true
 
   notify-discord:
     name: Discord Release Notification
     runs-on: ubuntu-latest
-    needs: release
+    needs: verify-installation
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
