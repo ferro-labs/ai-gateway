@@ -54,7 +54,7 @@
 | npm | `npm install -g ferrogw` |
 | Python | `uv tool install ferrogw` |
 | Docker | `docker run -p 8080:8080 ghcr.io/ferro-labs/ai-gateway:latest` |
-| Go | `go install github.com/ferro-labs/ai-gateway/cmd/ferrogw@latest` |
+| Go | `go install github.com/ferro-labs/ai-gateway/cmd/ferrogw@latest` —— 从源码构建，不含控制台 |
 | Debian、RPM、Alpine | [发布页面](https://github.com/ferro-labs/ai-gateway/releases/latest) 提供 `.deb`、`.rpm` 与 `.apk` 软件包 |
 
 然后从零跑通第一个请求：
@@ -70,9 +70,9 @@ ferrogw serve                         # 在 :8080 启动服务
 主密钥只会显示**一次**，且不会写入磁盘 —— 请把它保存在
 `.env` 文件或密钥管理服务中。
 
-Docker 会替你运行服务端：把 `-e OPENAI_API_KEY=sk-your-key` 和
-`-e MASTER_KEY=fgw_your-master-key` 传给上面的 `docker run` 命令来代替这些
-export，并跳过 `ferrogw init`。
+Docker 会替你运行服务端：保留上面的 export，再用 `-e OPENAI_API_KEY -e MASTER_KEY`
+按变量名把它们传给上面的 `docker run` 命令，这样密钥不会留在 shell 历史里，
+并跳过 `ferrogw init`。
 
 <div align="center">
   <img src="docs/demo.gif" alt="一条命令安装 Ferro Labs AI 网关，运行 ferrogw init，启动服务，并得到一次完整的对话响应" width="100%" />
@@ -130,10 +130,14 @@ curl http://localhost:8080/v1/chat/completions \
 
 ## 控制台
 
-每个网关二进制文件都会在 `/` 上提供内置的运维控制台 —— 与 API 同一端口，
+每个发行版二进制文件都会在 `/` 上提供内置的运维控制台 —— 与 API 同一端口，
 通过 `go:embed` 编译进来，无需第二个镜像，也没有第二个源站。使用
 `MASTER_KEY` 或任意管理员 / 只读密钥登录，即可读取网关的实时状态：流量、
 花费、提供商健康状况、路由、插件、请求日志与审计轨迹。
+
+控制台资源由发布流水线构建，因此用 `go install` 从源码构建的二进制文件是唯一
+的例外：它在 `/` 上返回的是占位页面。使用上表中的其他任意安装方式即可获得
+控制台。
 
 <div align="center">
   <img src="docs/dashboard.gif" alt="Ferro Labs AI 网关运维控制台：总览、分析、提供商、路由策略、插件、试验场、链路追踪、请求日志、审计轨迹、配置与 API 密钥" width="100%" />
@@ -405,7 +409,7 @@ response = client.chat.completions.create(
 **为什么从 Portkey 迁移：**
 
 - 完全开源 —— 没有按请求计费，也没有日志限制
-- 自托管 —— 数据永不离开你自己的基础设施
+- 自托管 —— 网关运行在你自己的基础设施中，提示词只会发往你所配置的提供商
 - 不锁定厂商 —— Apache 2.0 许可证
 - 支持 MCP —— Portkey 自托管版缺少原生 MCP
 - 需要托管服务的团队还可以选择 FerroCloud（即将推出）

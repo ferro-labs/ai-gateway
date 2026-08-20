@@ -54,7 +54,7 @@ Under two minutes from install to first response.
 | npm | `npm install -g ferrogw` |
 | Python | `uv tool install ferrogw` |
 | Docker | `docker run -p 8080:8080 ghcr.io/ferro-labs/ai-gateway:latest` |
-| Go | `go install github.com/ferro-labs/ai-gateway/cmd/ferrogw@latest` |
+| Go | `go install github.com/ferro-labs/ai-gateway/cmd/ferrogw@latest` — builds from source, without the dashboard |
 | Debian, RPM, Alpine | `.deb`, `.rpm` and `.apk` packages on the [releases page](https://github.com/ferro-labs/ai-gateway/releases/latest) |
 
 Then go from nothing to a served request:
@@ -70,9 +70,9 @@ ferrogw serve                         # starts the server on :8080
 The master key is shown **once** and never written to disk — keep it in your
 `.env` file or a secret manager.
 
-Docker runs the server for you: pass `-e OPENAI_API_KEY=sk-your-key` and
-`-e MASTER_KEY=fgw_your-master-key` to the `docker run` command above instead of
-the exports, and skip `ferrogw init`.
+Docker runs the server for you: keep the exports above, hand them to the
+`docker run` command by name with `-e OPENAI_API_KEY -e MASTER_KEY` so no secret
+lands in your shell history, and skip `ferrogw init`.
 
 <div align="center">
   <img src="docs/demo.gif" alt="Installing Ferro Labs AI Gateway with one command, running ferrogw init, starting the server, and getting a completed chat response" width="100%" />
@@ -130,11 +130,15 @@ Most AI gateways are Python proxies that crack under load or JavaScript services
 
 ## Dashboard
 
-Every gateway binary serves a built-in operations console at `/` — same port as
+Every release binary serves a built-in operations console at `/` — same port as
 the API, compiled in with `go:embed`, no second image and no second origin. Sign
 in with your `MASTER_KEY` or any admin / read-only key and it reads the live
 gateway: traffic, spend, provider health, routing, plugins, request logs, and the
 audit trail.
+
+The bundle is produced by the release pipeline, so a binary built with
+`go install` is the one exception: it answers `/` with a placeholder instead.
+Any other install method above ships the console.
 
 <div align="center">
   <img src="docs/dashboard.gif" alt="Ferro Labs AI Gateway operations console: Overview, Analytics, Providers, Routing Strategies, Plugins, Playground, Tracing, Request Logs, Audit Trail, Configuration, and API Keys" width="100%" />
@@ -409,7 +413,7 @@ with no custom headers in self-hosted mode.
 **Why migrate from Portkey:**
 
 - Fully open source — no per-request pricing, no log limits
-- Self-hosted — your data never leaves your infrastructure
+- Self-hosted — the gateway runs in your infrastructure, and prompts reach only the providers you configure
 - No vendor lock-in — Apache 2.0 license
 - MCP support — Portkey self-hosted lacks native MCP
 - FerroCloud (coming soon) for teams that want a managed service
