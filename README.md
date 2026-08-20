@@ -67,12 +67,12 @@ export MASTER_KEY=fgw_your-master-key # the key ferrogw init printed
 ferrogw serve                         # starts the server on :8080
 ```
 
-The master key is shown **once** and never written to disk — keep it in your
-`.env` file or a secret manager.
+`ferrogw init` prints the master key **once** and never writes it to disk — save
+it yourself, in your `.env` file or a secret manager.
 
-Docker runs the server for you: keep the exports above, hand them to the
-`docker run` command by name with `-e OPENAI_API_KEY -e MASTER_KEY` so no secret
-lands in your shell history, and skip `ferrogw init`.
+Docker runs the server for you: keep the exports above and hand them to the
+`docker run` command by name, `-e OPENAI_API_KEY -e MASTER_KEY`, so the values
+stay off the command line where `ps` would show them, and skip `ferrogw init`.
 
 <div align="center">
   <img src="docs/demo.gif" alt="Installing Ferro Labs AI Gateway with one command, running ferrogw init, starting the server, and getting a completed chat response" width="100%" />

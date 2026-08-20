@@ -67,12 +67,12 @@ export MASTER_KEY=fgw_your-master-key # ferrogw init 打印出来的那个密钥
 ferrogw serve                         # 在 :8080 启动服务
 ```
 
-主密钥只会显示**一次**，且不会写入磁盘 —— 请把它保存在
-`.env` 文件或密钥管理服务中。
+`ferrogw init` 只会打印**一次**主密钥，并且不会把它写入磁盘 —— 请你自己保存，
+放进 `.env` 文件或密钥管理服务中。
 
 Docker 会替你运行服务端：保留上面的 export，再用 `-e OPENAI_API_KEY -e MASTER_KEY`
-按变量名把它们传给上面的 `docker run` 命令，这样密钥不会留在 shell 历史里，
-并跳过 `ferrogw init`。
+按变量名把它们传给上面的 `docker run` 命令，这样密钥的值不会出现在命令行上
+（否则 `ps` 就能看到），并跳过 `ferrogw init`。
 
 <div align="center">
   <img src="docs/demo.gif" alt="一条命令安装 Ferro Labs AI 网关，运行 ferrogw init，启动服务，并得到一次完整的对话响应" width="100%" />
