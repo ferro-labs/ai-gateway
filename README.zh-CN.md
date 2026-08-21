@@ -79,6 +79,9 @@ export MASTER_KEY=fgw-any-strong-secret-you-choose
 docker run -p 8080:8080 -e OPENAI_API_KEY -e MASTER_KEY ghcr.io/ferro-labs/ai-gateway:latest
 ```
 
+按变量名传入只能让密钥的值不出现在进程参数里 —— 它们仍然可以从容器环境和
+`docker inspect` 中读到，因此生产环境请使用 Docker secrets 或平台提供的密钥存储。
+
 <div align="center">
   <img src="docs/demo.gif" alt="一条命令安装 Ferro Labs AI 网关，运行 ferrogw init，启动服务，并得到一次完整的对话响应" width="100%" />
 </div>
@@ -365,8 +368,9 @@ Helm charts：[github.com/ferro-labs/helm-charts](https://github.com/ferro-labs/
 ## 迁移至 Ferro Labs AI 网关
 
 网关兼容 OpenAI，因此对于已经使用 OpenAI 兼容 SDK 的调用方，无论是从别的网关迁移，
-还是从直接调用提供商迁移，都只需改一个 `base_url`。而自带 API 的客户端（例如下面
-LiteLLM 的 `completion()`）还需要改用 OpenAI SDK。
+还是从直接调用提供商迁移，都只需改 `base_url` 和 `api_key`：把 SDK 指向网关，并用
+网关签发的凭据替换提供商自己的密钥。而自带 API 的客户端（例如下面 LiteLLM 的
+`completion()`）还需要改用 OpenAI SDK。
 
 ### 从 LiteLLM 迁移
 

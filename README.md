@@ -80,6 +80,10 @@ export MASTER_KEY=fgw-any-strong-secret-you-choose
 docker run -p 8080:8080 -e OPENAI_API_KEY -e MASTER_KEY ghcr.io/ferro-labs/ai-gateway:latest
 ```
 
+Passing them by name keeps the values out of process arguments only — they are
+still readable in the container's environment and through `docker inspect`, so
+use Docker secrets or your platform's secret storage in production.
+
 <div align="center">
   <img src="docs/demo.gif" alt="Installing Ferro Labs AI Gateway with one command, running ferrogw init, starting the server, and getting a completed chat response" width="100%" />
 </div>
@@ -370,8 +374,10 @@ Helm charts: [github.com/ferro-labs/helm-charts](https://github.com/ferro-labs/h
 
 The gateway is OpenAI-compatible, so for a client already using an
 OpenAI-compatible SDK, migration — from another gateway or from calling a
-provider directly — is a `base_url` change. A client with its own API, such as
-LiteLLM's `completion()` below, also moves to the OpenAI SDK.
+provider directly — is a `base_url` and `api_key` change: point the SDK at the
+gateway and present a gateway-issued credential in place of the provider's own.
+A client with its own API, such as LiteLLM's `completion()` below, also moves to
+the OpenAI SDK.
 
 ### From LiteLLM
 
