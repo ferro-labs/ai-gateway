@@ -70,9 +70,15 @@ ferrogw serve                         # starts the server on :8080
 `ferrogw init` prints the master key **once** and never writes it to disk — save
 it yourself, in your `.env` file or a secret manager.
 
-Docker runs the server for you: keep the exports above and hand them to the
-`docker run` command by name, `-e OPENAI_API_KEY -e MASTER_KEY`, so the values
-stay off the command line where `ps` would show them, and skip `ferrogw init`.
+Docker runs the server itself, so there is no `ferrogw init` to print a master
+key — choose your own. Pass both variables by name so their values stay off the
+command line, where `ps` would show them:
+
+```bash
+export OPENAI_API_KEY=sk-your-key
+export MASTER_KEY=fgw-any-strong-secret-you-choose
+docker run -p 8080:8080 -e OPENAI_API_KEY -e MASTER_KEY ghcr.io/ferro-labs/ai-gateway:latest
+```
 
 <div align="center">
   <img src="docs/demo.gif" alt="Installing Ferro Labs AI Gateway with one command, running ferrogw init, starting the server, and getting a completed chat response" width="100%" />
@@ -99,7 +105,7 @@ verification steps are in [SECURITY.md](SECURITY.md#verifying-releases).
 
 ## Why Ferro Labs AI Gateway
 
-Most AI gateways are Python proxies that crack under load or JavaScript services that eat memory. Ferro Labs AI Gateway is written in Go from the ground up for real-world throughput — a single binary that routes LLM requests with predictable latency and minimal resource usage.
+AI gateways differ most under load, in throughput, latency and memory. Ferro Labs AI Gateway is written in Go from the ground up for real-world throughput — a single binary that routes LLM requests with predictable latency and minimal resource usage.
 
 | Feature          | Ferro Labs  | LiteLLM | Bifrost    | Kong AI     |
 |:-----------------|:------------|:--------|:-----------|:------------|
@@ -325,8 +331,8 @@ make build && ./bin/ferrogw
 ### Railway & Render
 
 The deploy buttons at the top of this README provision either platform: Railway
-with SQLite on a volume (set the three `*_STORE_DSN` variables to paths under
-`/data`) or PostgreSQL, and Render from the repo's `render.yaml` Blueprint,
+with SQLite on a volume (point `API_KEY_STORE_DSN`, `CONFIG_STORE_DSN` and
+`REQUEST_LOG_STORE_DSN` at paths under `/data`) or PostgreSQL, and Render from the repo's `render.yaml` Blueprint,
 which generates `MASTER_KEY` and wires the store DSNs to a managed Postgres
 automatically.
 
@@ -338,7 +344,7 @@ tag, health check, and resource limits. Run everything from the repository root:
 
 ```bash
 make up             # dev: builds from source
-IMAGE_TAG=v1.4.0 CORS_ORIGINS=https://your-domain.com make up-prod
+IMAGE_TAG=v1.4.4 CORS_ORIGINS=https://your-domain.com make up-prod
 make down           # tears down either
 ```
 
@@ -362,8 +368,10 @@ Helm charts: [github.com/ferro-labs/helm-charts](https://github.com/ferro-labs/h
 
 ## Migrate to Ferro Labs AI Gateway
 
-The gateway is OpenAI-compatible, so migration from any gateway — or from
-calling a provider directly — is a `base_url` change.
+The gateway is OpenAI-compatible, so for a client already using an
+OpenAI-compatible SDK, migration — from another gateway or from calling a
+provider directly — is a `base_url` change. A client with its own API, such as
+LiteLLM's `completion()` below, also moves to the OpenAI SDK.
 
 ### From LiteLLM
 

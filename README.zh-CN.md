@@ -70,9 +70,14 @@ ferrogw serve                         # 在 :8080 启动服务
 `ferrogw init` 只会打印**一次**主密钥，并且不会把它写入磁盘 —— 请你自己保存，
 放进 `.env` 文件或密钥管理服务中。
 
-Docker 会替你运行服务端：保留上面的 export，再用 `-e OPENAI_API_KEY -e MASTER_KEY`
-按变量名把它们传给上面的 `docker run` 命令，这样密钥的值不会出现在命令行上
-（否则 `ps` 就能看到），并跳过 `ferrogw init`。
+Docker 会自己运行服务端，因此不会有 `ferrogw init` 来打印主密钥 —— 请自行选定一个。
+按变量名传入这两个变量，密钥的值就不会出现在命令行上（否则 `ps` 就能看到）：
+
+```bash
+export OPENAI_API_KEY=sk-your-key
+export MASTER_KEY=fgw-any-strong-secret-you-choose
+docker run -p 8080:8080 -e OPENAI_API_KEY -e MASTER_KEY ghcr.io/ferro-labs/ai-gateway:latest
+```
 
 <div align="center">
   <img src="docs/demo.gif" alt="一条命令安装 Ferro Labs AI 网关，运行 ferrogw init，启动服务，并得到一次完整的对话响应" width="100%" />
@@ -99,7 +104,7 @@ curl http://localhost:8080/v1/chat/completions \
 
 ## 为什么选择 Ferro Labs AI 网关
 
-大多数 AI 网关要么是高负载下就会崩溃的 Python 代理，要么是内存开销巨大的 JavaScript 服务。Ferro Labs AI 网关从头用 Go 编写，为真实场景的吞吐量而生 —— 单一二进制文件，以可预期的延迟和极低的资源占用路由 LLM 请求。
+不同 AI 网关的差异主要体现在高负载下的吞吐量、延迟与内存占用上。Ferro Labs AI 网关从头用 Go 编写，为真实场景的吞吐量而生 —— 单一二进制文件，以可预期的延迟和极低的资源占用路由 LLM 请求。
 
 | 特性             | Ferro Labs  | LiteLLM | Bifrost    | Kong AI     |
 |:-----------------|:------------|:--------|:-----------|:------------|
@@ -322,7 +327,8 @@ make build && ./bin/ferrogw
 ### Railway 与 Render
 
 本 README 顶部的部署按钮可在这两个平台上完成开通：Railway 可选择挂载卷上的
-SQLite（把三个 `*_STORE_DSN` 变量设为 `/data` 下的路径）或 PostgreSQL；
+SQLite（把 `API_KEY_STORE_DSN`、`CONFIG_STORE_DSN` 和 `REQUEST_LOG_STORE_DSN`
+指向 `/data` 下的路径）或 PostgreSQL；
 Render 则使用仓库中的 `render.yaml` Blueprint，它会自动生成 `MASTER_KEY`
 并把各存储 DSN 接到托管 Postgres 上。
 
@@ -334,7 +340,7 @@ Render 则使用仓库中的 `render.yaml` Blueprint，它会自动生成 `MASTE
 
 ```bash
 make up             # 开发环境：从源码构建
-IMAGE_TAG=v1.4.0 CORS_ORIGINS=https://your-domain.com make up-prod
+IMAGE_TAG=v1.4.4 CORS_ORIGINS=https://your-domain.com make up-prod
 make down           # 两种模式通用的停止命令
 ```
 
@@ -358,8 +364,9 @@ Helm charts：[github.com/ferro-labs/helm-charts](https://github.com/ferro-labs/
 
 ## 迁移至 Ferro Labs AI 网关
 
-网关兼容 OpenAI，因此无论从哪个网关迁移 —— 或是从直接调用提供商迁移 ——
-都只是改一个 `base_url`。
+网关兼容 OpenAI，因此对于已经使用 OpenAI 兼容 SDK 的调用方，无论是从别的网关迁移，
+还是从直接调用提供商迁移，都只需改一个 `base_url`。而自带 API 的客户端（例如下面
+LiteLLM 的 `completion()`）还需要改用 OpenAI SDK。
 
 ### 从 LiteLLM 迁移
 
