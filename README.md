@@ -43,51 +43,49 @@
 
 ## Quick Start
 
-Get from zero to first request in under 2 minutes.
+Under two minutes from install to first response.
 
-### Option A — Binary (fastest)
+| Platform / tool | Install |
+|:---|:---|
+| macOS, Linux | `curl -fsSL https://get.ferrolabs.ai \| sh` |
+| Windows | `irm https://get.ferrolabs.ai/install.ps1 \| iex` |
+| Homebrew | `brew install ferro-labs/tap/ferrogw` |
+| Scoop | `scoop bucket add ferrolabs https://github.com/ferro-labs/homebrew-tap` then `scoop install ferrogw` |
+| npm | `npm install -g ferrogw` |
+| Python | `uv tool install ferrogw` |
+| Docker | `docker run -p 8080:8080 ghcr.io/ferro-labs/ai-gateway:latest` |
+| Go | `go install github.com/ferro-labs/ai-gateway/cmd/ferrogw@latest` — builds from source, without the dashboard |
+| Debian, RPM, Alpine | `.deb`, `.rpm` and `.apk` packages on the [releases page](https://github.com/ferro-labs/ai-gateway/releases/latest) |
+
+Then go from nothing to a served request:
 
 ```bash
-VER=$(curl -fsSL https://api.github.com/repos/ferro-labs/ai-gateway/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
-curl -fsSL "https://github.com/ferro-labs/ai-gateway/releases/download/${VER}/ferrogw_${VER#v}_linux_amd64.tar.gz" | tar xz
-chmod +x ferrogw
-./ferrogw init                        # generates config.yaml + MASTER_KEY
+export OPENAI_API_KEY=sk-your-key     # ferrogw init detects this and writes the matching target
+ferrogw init                          # writes config.yaml, prints your master key
 export GATEWAY_CONFIG=./config.yaml   # the server reads a config file only when this is set
-export OPENAI_API_KEY=sk-your-key     # providers are registered at startup, so export before starting
 export MASTER_KEY=fgw_your-master-key # the key ferrogw init printed
-./ferrogw                             # starts the server
+ferrogw serve                         # starts the server on :8080
 ```
 
-Releases are signed and ship SBOMs — verification steps are in
-[SECURITY.md](SECURITY.md#verifying-releases).
+`ferrogw init` prints the master key **once** and never writes it to disk — save
+it yourself, in your `.env` file or a secret manager.
 
-### Option B — Docker
+Docker runs the server itself, so there is no `ferrogw init` to print a master
+key — choose your own. Pass both variables by name so their values stay off the
+command line, where `ps` would show them:
 
 ```bash
-docker pull ghcr.io/ferro-labs/ai-gateway:latest
-docker run -p 8080:8080 \
-  -e OPENAI_API_KEY=sk-your-key \
-  -e MASTER_KEY=fgw_your-master-key \
-  ghcr.io/ferro-labs/ai-gateway:latest
+export OPENAI_API_KEY=sk-your-key
+export MASTER_KEY=fgw-any-strong-secret-you-choose
+docker run -p 8080:8080 -e OPENAI_API_KEY -e MASTER_KEY ghcr.io/ferro-labs/ai-gateway:latest
 ```
 
-### Option C — Go
-
-```bash
-go install github.com/ferro-labs/ai-gateway/cmd/ferrogw@latest
-ferrogw init                          # first-run setup
-export GATEWAY_CONFIG=./config.yaml   # the server reads a config file only when this is set
-export OPENAI_API_KEY=sk-your-key     # providers are registered at startup, so export before starting
-export MASTER_KEY=fgw_your-master-key # the key ferrogw init printed
-ferrogw                               # start the server
-```
-
-`ferrogw init` generates the master key and writes a minimal `config.yaml`. The
-key is shown **once** and never written to disk — store it in your `.env` file
-or secret manager.
+Passing them by name keeps the values out of process arguments only — they are
+still readable in the container's environment and through `docker inspect`, so
+use Docker secrets or your platform's secret storage in production.
 
 <div align="center">
-  <img src="docs/demo.gif" alt="Ferro Labs AI Gateway — Quick Start Demo" width="720" />
+  <img src="docs/demo.gif" alt="Installing Ferro Labs AI Gateway with one command, running ferrogw init, starting the server, and getting a completed chat response" width="100%" />
 </div>
 
 ### First request
@@ -96,19 +94,22 @@ or secret manager.
 export MASTER_KEY=fgw_your-master-key   # the key ferrogw init printed, in whichever shell you curl from
 
 curl http://localhost:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
   -H "Authorization: Bearer $MASTER_KEY" \
+  -H "Content-Type: application/json" \
   -d '{
     "model": "gpt-4o-mini",
     "messages": [{"role": "user", "content": "Hello from Ferro Labs AI Gateway"}]
   }' | jq
 ```
 
+Every release is signed with keyless cosign and ships an SPDX SBOM —
+verification steps are in [SECURITY.md](SECURITY.md#verifying-releases).
+
 ---
 
 ## Why Ferro Labs AI Gateway
 
-Most AI gateways are Python proxies that crack under load or JavaScript services that eat memory. Ferro Labs AI Gateway is written in Go from the ground up for real-world throughput — a single binary that routes LLM requests with predictable latency and minimal resource usage.
+AI gateways differ most under load, in throughput, latency and memory. Ferro Labs AI Gateway is written in Go from the ground up for real-world throughput — a single binary that routes LLM requests with predictable latency and minimal resource usage.
 
 | Feature          | Ferro Labs  | LiteLLM | Bifrost    | Kong AI     |
 |:-----------------|:------------|:--------|:-----------|:------------|
@@ -139,11 +140,15 @@ Most AI gateways are Python proxies that crack under load or JavaScript services
 
 ## Dashboard
 
-Every gateway binary serves a built-in operations console at `/` — same port as
+Every release binary serves a built-in operations console at `/` — same port as
 the API, compiled in with `go:embed`, no second image and no second origin. Sign
 in with your `MASTER_KEY` or any admin / read-only key and it reads the live
 gateway: traffic, spend, provider health, routing, plugins, request logs, and the
 audit trail.
+
+The bundle is produced by the release pipeline, so a binary built with
+`go install` is the one exception: it answers `/` with a placeholder instead.
+Any other install method above ships the console.
 
 <div align="center">
   <img src="docs/dashboard.gif" alt="Ferro Labs AI Gateway operations console: Overview, Analytics, Providers, Routing Strategies, Plugins, Playground, Tracing, Request Logs, Audit Trail, Configuration, and API Keys" width="100%" />
@@ -330,8 +335,8 @@ make build && ./bin/ferrogw
 ### Railway & Render
 
 The deploy buttons at the top of this README provision either platform: Railway
-with SQLite on a volume (set the three `*_STORE_DSN` variables to paths under
-`/data`) or PostgreSQL, and Render from the repo's `render.yaml` Blueprint,
+with SQLite on a volume (point `API_KEY_STORE_DSN`, `CONFIG_STORE_DSN` and
+`REQUEST_LOG_STORE_DSN` at paths under `/data`) or PostgreSQL, and Render from the repo's `render.yaml` Blueprint,
 which generates `MASTER_KEY` and wires the store DSNs to a managed Postgres
 automatically.
 
@@ -343,7 +348,7 @@ tag, health check, and resource limits. Run everything from the repository root:
 
 ```bash
 make up             # dev: builds from source
-IMAGE_TAG=v1.4.0 CORS_ORIGINS=https://your-domain.com make up-prod
+IMAGE_TAG=v1.4.4 CORS_ORIGINS=https://your-domain.com make up-prod
 make down           # tears down either
 ```
 
@@ -367,8 +372,12 @@ Helm charts: [github.com/ferro-labs/helm-charts](https://github.com/ferro-labs/h
 
 ## Migrate to Ferro Labs AI Gateway
 
-The gateway is OpenAI-compatible, so migration from any gateway — or from
-calling a provider directly — is a `base_url` change.
+The gateway is OpenAI-compatible, so for a client already using an
+OpenAI-compatible SDK, migration — from another gateway or from calling a
+provider directly — is a `base_url` and `api_key` change: point the SDK at the
+gateway and present a gateway-issued credential in place of the provider's own.
+A client with its own API, such as LiteLLM's `completion()` below, also moves to
+the OpenAI SDK.
 
 ### From LiteLLM
 
@@ -418,7 +427,7 @@ with no custom headers in self-hosted mode.
 **Why migrate from Portkey:**
 
 - Fully open source — no per-request pricing, no log limits
-- Self-hosted — your data never leaves your infrastructure
+- Self-hosted — the gateway runs in your infrastructure, and prompts reach only the providers you configure
 - No vendor lock-in — Apache 2.0 license
 - MCP support — Portkey self-hosted lacks native MCP
 - FerroCloud (coming soon) for teams that want a managed service
