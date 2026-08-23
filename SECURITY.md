@@ -4,8 +4,11 @@
 
 | Version | Supported |
 |---------|-----------|
-| 1.1.x   | ✅ Yes    |
-| 1.0.x   | ❌ No     |
+| 1.4.x   | ✅ Yes    |
+| < 1.4   | ❌ No     |
+
+Fixes land on the current minor series. There are no backports to earlier ones,
+so upgrading within 1.4.x is how a security fix is applied.
 
 ## Reporting a Vulnerability
 

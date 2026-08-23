@@ -5,6 +5,62 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.5] — 2026-08-23
+
+A security patch. The stdio MCP transport now applies the same 10 MiB bound as
+the HTTP transport, and three dependency advisories are cleared. No breaking
+changes to configuration or the API.
+
+### Security — a stdio MCP server can no longer exhaust gateway memory
+
+The two MCP transports disagreed about whether a server is trusted with gateway
+memory. HTTP treats one as an untrusted-content boundary and caps a response at
+10 MiB. stdio applied no bound at all: its JSON-RPC framing was read with an
+unbounded `ReadString`, and the result was then converted through JSON twice, so
+peak memory ran to roughly three times whatever the server sent. A local MCP
+server is arbitrary local code — at least as untrusted as a remote one — so a
+tool result of any size could drive the gateway out of memory, though the same
+protection had always applied to HTTP responses.
+
+stdio now applies the same 10 MiB bound, measured per JSON-RPC message rather
+than per session, so an ordinary conversation of any length is unaffected. To
+place that bound the gateway spawns the MCP subprocess itself and builds the
+transport over its pipes, rather than asking the transport to spawn it; the
+teardown ladder that came with the old arrangement — close stdin, grace period,
+SIGTERM, SIGKILL, reap — runs unchanged, followed by the same process-group
+sweep for descendants an `npx` or `uvx` launcher left behind.
+
+**A previously working oversized tool result will now fail**, which is the
+intended behaviour. It is terminal for that server rather than for the one call:
+the framing cannot resume mid-message, so the transport closes, in-flight calls
+unblock, and the registry withdraws the server and stops advertising its tools.
+A server with a legitimate reason to return more than 10 MiB should page its
+results.
+
+### Security — three dependency advisories cleared
+
+`govulncheck` now reports zero vulnerabilities in every category, where it
+previously reported one imported and one required. None was reachable from
+gateway code, and the third is not present in a shipped artifact; all three are
+cleared rather than carried.
+
+- `golang.org/x/text` moves to v0.39.0 — an infinite loop on invalid input
+  (GO-2026-5970). Imported, never called.
+- `golang.org/x/net` moves to v0.56.0 — a panic parsing an invalid SVCB or HTTPS
+  DNS record (GO-2026-5942). Required, never imported.
+- `github.com/moby/go-archive` moves to v0.3.0 — a crafted tar archive can write
+  outside the extraction directory. It arrives through testcontainers and is
+  reached only by the integration suite, so it has never been part of the
+  gateway binary.
+
+The Go toolchain stays at 1.25.13, which has no outstanding standard-library
+advisory, and `npm audit` on the dashboard toolchain reports none either.
+
+### Documentation
+
+- `SECURITY.md` named 1.1.x as the supported series, three minor versions out of
+  date. It names 1.4.x.
+
 ## [1.4.4] — 2026-08-18
 
 ### Fixed — in-flight requests keep the provider price selected for them

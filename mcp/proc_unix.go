@@ -4,6 +4,7 @@ package mcp
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"syscall"
 )
@@ -46,4 +47,11 @@ func sweepProcessGroup(pgid int) error {
 		return err
 	}
 	return nil
+}
+
+// terminateProcess asks the child to exit. SIGTERM, not SIGKILL: this is the
+// rung between closing stdin and force-killing, and a server that handles it
+// gets to flush and release whatever it holds.
+func terminateProcess(p *os.Process) error {
+	return p.Signal(syscall.SIGTERM)
 }

@@ -343,7 +343,7 @@ Render 则使用仓库中的 `render.yaml` Blueprint，它会自动生成 `MASTE
 
 ```bash
 make up             # 开发环境：从源码构建
-IMAGE_TAG=v1.4.4 CORS_ORIGINS=https://your-domain.com make up-prod
+IMAGE_TAG=v1.4.5 CORS_ORIGINS=https://your-domain.com make up-prod
 make down           # 两种模式通用的停止命令
 ```
 
