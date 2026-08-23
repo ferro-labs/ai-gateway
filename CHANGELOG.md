@@ -7,8 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.4.5] — 2026-08-23
 
-A security patch. The stdio MCP transport gains the bound its HTTP counterpart
-has always applied, and three dependency advisories are cleared. No breaking
+A security patch. The stdio MCP transport now applies the same 10 MiB bound as
+the HTTP transport, and three dependency advisories are cleared. No breaking
 changes to configuration or the API.
 
 ### Security — a stdio MCP server can no longer exhaust gateway memory
@@ -19,8 +19,8 @@ memory. HTTP treats one as an untrusted-content boundary and caps a response at
 unbounded `ReadString`, and the result was then converted through JSON twice, so
 peak memory ran to roughly three times whatever the server sent. A local MCP
 server is arbitrary local code — at least as untrusted as a remote one — so a
-tool result of any size could drive the gateway out of memory, on a path where
-the identical defence already existed one file over.
+tool result of any size could drive the gateway out of memory, though the same
+protection had always applied to HTTP responses.
 
 stdio now applies the same 10 MiB bound, measured per JSON-RPC message rather
 than per session, so an ordinary conversation of any length is unaffected. To
