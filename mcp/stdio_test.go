@@ -326,3 +326,49 @@ func TestExitStatusKeepsAnUnsignalledFailure(t *testing.T) {
 		})
 	}
 }
+
+// shellCmd finds a POSIX shell, which is the portable way to build a child that
+// refuses SIGTERM.
+func shellCmd(t *testing.T) string {
+	t.Helper()
+	for _, p := range []string{"/bin/sh", "/usr/bin/sh"} {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	t.Skip("no POSIX shell found for stdio teardown tests on this platform")
+	return ""
+}
+
+// TestStdioClientForceKillsAServerThatIgnoresSIGTERM drives the last rung of the
+// ladder, and the reason the ladder has rungs at all.
+//
+// A server that ignores both its stdin closing and SIGTERM has to be taken by
+// force, or it outlives the gateway holding the pipes open. The shell here also
+// leaves a descendant behind — the same shape an npx or uvx launcher produces —
+// so the process-group sweep is what finally reaps the tree.
+func TestStdioClientForceKillsAServerThatIgnoresSIGTERM(t *testing.T) {
+	sh := shellCmd(t)
+	c := newStdioClient("test", sh, []string{"-c", `trap "" TERM; sleep 120`}, nil)
+	if ec, failed := c.(*errClient); failed {
+		t.Fatalf("newStdioClient failed to start %q: %v", sh, ec.err)
+	}
+	sc, ok := c.(*stdioClient)
+	if !ok {
+		t.Fatalf("expected a *stdioClient, got %T", c)
+	}
+
+	start := time.Now()
+	if err := c.Close(); err != nil {
+		t.Fatalf("Close reported a failure for a successful teardown: %v", err)
+	}
+
+	// Both timed rungs must have elapsed: stdin closing did nothing, and neither
+	// did the SIGTERM after it.
+	if elapsed, floor := time.Since(start), stdioGraceTimeout+stdioKillTimeout; elapsed < floor {
+		t.Fatalf("Close returned in %v, before the %v the ladder needs to reach SIGKILL", elapsed, floor)
+	}
+	if sc.cmd.ProcessState == nil {
+		t.Error("subprocess was not reaped by Close")
+	}
+}
