@@ -215,3 +215,58 @@ func TestRegistryStdioClose(t *testing.T) {
 		t.Fatalf("Registry.Close() unexpected error: %v", err)
 	}
 }
+
+// sleepCmd finds a command that stays alive without reading stdin, so the
+// teardown ladder has to escalate past its grace period to end it.
+func sleepCmd(t *testing.T) string {
+	t.Helper()
+	for _, p := range []string{"/bin/sleep", "/usr/bin/sleep"} {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	t.Skip("no sleep command found for stdio teardown tests on this platform")
+	return ""
+}
+
+// TestStdioClientTerminatesAServerThatIgnoresStdin exercises the teardown ladder
+// the gateway owns now that it spawns the subprocess itself.
+//
+// An MCP server that never watches its stdin is the ordinary case, not an
+// exotic one, so closing stdin cannot be the whole of shutdown: the ladder has
+// to escalate. The status Wait then reports is teardown working, and Close must
+// not present it as a failure — the registry logs a warning on a non-nil Close,
+// and one on every shutdown that needed a signal is noise that hides the real
+// leak it exists to report.
+func TestStdioClientTerminatesAServerThatIgnoresStdin(t *testing.T) {
+	c := newStdioClient("test", sleepCmd(t), []string{"120"}, nil)
+	sc, ok := c.(*stdioClient)
+	if !ok {
+		t.Skip("command failed to start — skipping stdioClient path")
+	}
+	if sc.cmd == nil || sc.cmd.Process == nil {
+		t.Fatal("expected a spawned process")
+	}
+
+	start := time.Now()
+	if err := c.Close(); err != nil {
+		t.Fatalf("Close reported a failure for a successful teardown: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed < stdioGraceTimeout {
+		t.Fatalf("Close returned in %v, before the %v grace period — the child cannot have been reaped",
+			elapsed, stdioGraceTimeout)
+	}
+
+	// Reaped, not merely signalled. Wait sets ProcessState before it returns and
+	// Close does not return until it has, so an unset one means a child left
+	// running with the pipes still open.
+	if sc.cmd.ProcessState == nil {
+		t.Error("subprocess was not reaped by Close")
+	}
+
+	// Close is reachable twice — re-registration, then shutdown — and cmd.Wait
+	// may be called exactly once.
+	if err := c.Close(); err != nil {
+		t.Fatalf("second Close changed its answer: %v", err)
+	}
+}
