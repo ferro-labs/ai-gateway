@@ -196,7 +196,7 @@ func newStdioClient(name, command string, args []string, envOverrides map[string
 // It sits between the child's stdout and the transport's bufio.Reader, which
 // frames JSON-RPC with ReadString('\n') and will otherwise accumulate a line of
 // any length. The count resets at every newline, so the bound is per message,
-// not per session, and the overshoot is one buffer fill.
+// not per session.
 //
 // Exceeding it is terminal for the transport: the read loop treats any error as
 // the server having gone, unblocking in-flight calls, and the registry withdraws
@@ -206,44 +206,67 @@ type boundedLineReader struct {
 	r      io.Reader
 	server string
 	limit  int
-	n      int // bytes seen since the last newline
+	n      int  // bytes of the message in progress; never allowed past limit
+	failed bool // sticky: the bound was exceeded, and that is terminal
 }
 
 func (b *boundedLineReader) Read(p []byte) (int, error) {
+	if b.failed {
+		return 0, b.errTooLarge()
+	}
+
 	n, err := b.r.Read(p)
 	if n == 0 {
 		return n, err
 	}
 
-	// Walk the chunk's message boundaries rather than only its tail. The first
-	// newline ends the message carried in from earlier reads — the one whose
-	// running total is the only thing that can already be near the limit — and
-	// everything after the last one starts the next. Measuring the tail alone
-	// would reset the count for a message that both ended and overran inside
-	// this chunk, which is the whole of a long message's final read.
-	rest := p[:n]
-	for {
-		i := bytes.IndexByte(rest, '\n')
+	// Walk the chunk one message at a time, and cut the returned slice at the
+	// limit rather than reporting the error alongside the whole of it.
+	//
+	// That distinction is the guard, not a detail of it. bufio.Reader hands its
+	// caller any complete line already sitting in its buffer *before* it reports
+	// a stored read error, so returning a terminating newline together with the
+	// error would let one oversized message through intact and fail only the
+	// read after it — leaving the cap true of memory and false of the message.
+	// Cutting before the byte that crosses the limit leaves the transport a
+	// fragment with no newline in it, which it cannot mistake for a message.
+	//
+	// Walking every boundary rather than measuring the chunk's tail matters for
+	// the same reason: the first newline ends the message carried in from
+	// earlier reads — the only one whose running total can already be near the
+	// limit — and a message that both ends and overruns inside one chunk is the
+	// whole of a long message's final read.
+	for off := 0; off < n; {
+		room := b.limit - b.n
+		i := bytes.IndexByte(p[off:n], '\n')
 		if i < 0 {
-			b.n += len(rest)
-			break
+			// The message runs on into the next read.
+			if n-off > room {
+				return off + room, b.errTooLarge()
+			}
+			b.n += n - off
+			return n, err
 		}
-		b.n += i
-		if b.n > b.limit {
-			break
+		if i > room {
+			// It ends inside this chunk, but overruns before it does.
+			return off + room, b.errTooLarge()
 		}
 		b.n = 0
-		rest = rest[i+1:]
-	}
-
-	// Reported alongside the bytes just read, which the caller keeps. Returning
-	// it now rather than on the next call is what caps the accumulation at the
-	// limit plus one read — a bound the caller sets, and one far below the limit
-	// for any transport worth bounding.
-	if b.n > b.limit && err == nil {
-		err = fmt.Errorf("mcp stdio: server %q sent a message over the %d byte limit", b.server, b.limit)
+		off += i + 1
 	}
 	return n, err
+}
+
+// errTooLarge marks the reader finished and names the server, which is the only
+// record an operator gets of what tripped the bound.
+//
+// It replaces whatever the wrapped reader reported rather than deferring to it.
+// A reader may legally deliver its final bytes with io.EOF attached, and on that
+// read a plain end-of-stream would send whoever reads the log looking for a
+// crashed server instead of an oversized message.
+func (b *boundedLineReader) errTooLarge() error {
+	b.failed = true
+	return fmt.Errorf("mcp stdio: server %q sent a message over the %d byte limit", b.server, b.limit)
 }
 
 // drainStderr copies a child's stderr into the gateway log, one record per line.
@@ -398,6 +421,7 @@ func (c *stdioClient) terminate() error {
 	waited := make(chan error, 1)
 	go func() { waited <- c.cmd.Wait() }()
 
+	// Before any signal the exit status is the child's own, and is reported.
 	if done, err := waitForExit(waited, stdioGraceTimeout); done {
 		return err
 	}
@@ -407,7 +431,7 @@ func (c *stdioClient) terminate() error {
 		_ = terminateProcess(c.cmd.Process)
 	}
 	if done, err := waitForExit(waited, stdioKillTimeout); done {
-		return err
+		return signalledExit(err)
 	}
 	if c.cmd.Process != nil {
 		if err := c.cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
@@ -415,9 +439,27 @@ func (c *stdioClient) terminate() error {
 		}
 	}
 	if done, err := waitForExit(waited, stdioKillTimeout); done {
-		return err
+		return signalledExit(err)
 	}
 	return errors.New("mcp stdio: subprocess did not exit after SIGKILL")
+}
+
+// signalledExit drops the exit status of a child the gateway has just signalled.
+//
+// Past the grace period the child is dying because teardown killed it, so the
+// non-zero status Wait reports is that teardown working. Returning it puts a
+// "failed to close" warning in the log of every shutdown that needed a signal,
+// which is the ordinary case for a server that does not watch its stdin.
+//
+// Anything that is not an exit status still is a failure — a WaitDelay expiring
+// on pipes an orphaned grandchild is holding open says the process tree outlived
+// the ladder, which is exactly what the caller needs to hear.
+func signalledExit(err error) error {
+	var exit *exec.ExitError
+	if errors.As(err, &exit) {
+		return nil
+	}
+	return err
 }
 
 // waitForExit reports the child's exit status when it arrives within timeout.
