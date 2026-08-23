@@ -3,7 +3,9 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
+	"os/exec"
 	"testing"
 	"time"
 )
@@ -239,10 +241,17 @@ func sleepCmd(t *testing.T) string {
 // and one on every shutdown that needed a signal is noise that hides the real
 // leak it exists to report.
 func TestStdioClientTerminatesAServerThatIgnoresStdin(t *testing.T) {
-	c := newStdioClient("test", sleepCmd(t), []string{"120"}, nil)
+	cmd := sleepCmd(t)
+	c := newStdioClient("test", cmd, []string{"120"}, nil)
+	// sleepCmd already established the executable exists, so a failure to spawn
+	// here is a regression rather than an unsupported platform. Skipping would
+	// let this test pass without ever reaching the teardown it exists to cover.
+	if ec, failed := c.(*errClient); failed {
+		t.Fatalf("newStdioClient failed to start %q: %v", cmd, ec.err)
+	}
 	sc, ok := c.(*stdioClient)
 	if !ok {
-		t.Skip("command failed to start — skipping stdioClient path")
+		t.Fatalf("expected a *stdioClient, got %T", c)
 	}
 	if sc.cmd == nil || sc.cmd.Process == nil {
 		t.Fatal("expected a spawned process")
@@ -268,5 +277,52 @@ func TestStdioClientTerminatesAServerThatIgnoresStdin(t *testing.T) {
 	// may be called exactly once.
 	if err := c.Close(); err != nil {
 		t.Fatalf("second Close changed its answer: %v", err)
+	}
+}
+
+// TestExitStatusKeepsAnUnsignalledFailure covers the rule the teardown ladder
+// reports by. The race it guards — a child exiting on its own in the window
+// between the grace period elapsing and the signal being delivered — cannot be
+// staged from a real subprocess, so the decision is tested where it is made.
+func TestExitStatusKeepsAnUnsignalledFailure(t *testing.T) {
+	exit := &exec.ExitError{ProcessState: &os.ProcessState{}}
+	other := errors.New("wait delay expired")
+
+	tests := []struct {
+		name      string
+		err       error
+		signalled bool
+		want      error
+	}{
+		{
+			name:      "a status we caused is teardown working",
+			err:       exit,
+			signalled: true,
+		},
+		{
+			name:      "a status we did not cause is the child's own failure",
+			err:       exit,
+			signalled: false,
+			want:      exit,
+		},
+		{
+			name:      "a wait failure survives a signal we delivered",
+			err:       other,
+			signalled: true,
+			want:      other,
+		},
+		{
+			name:      "a clean exit stays clean",
+			err:       nil,
+			signalled: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := exitStatus(tt.err, tt.signalled); !errors.Is(got, tt.want) {
+				t.Fatalf("exitStatus(%v, %t) = %v, want %v", tt.err, tt.signalled, got, tt.want)
+			}
+		})
 	}
 }

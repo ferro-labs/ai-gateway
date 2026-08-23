@@ -421,40 +421,57 @@ func (c *stdioClient) terminate() error {
 	waited := make(chan error, 1)
 	go func() { waited <- c.cmd.Wait() }()
 
-	// Before any signal the exit status is the child's own, and is reported.
+	// signalled tracks whether the gateway actually delivered a signal, which is
+	// what makes the status that follows its doing rather than the child's. It
+	// is sticky: a child that survives SIGTERM and dies to it a moment later
+	// refuses the SIGKILL with ErrProcessDone, and the status is still ours.
+	signalled := false
+
 	if done, err := waitForExit(waited, stdioGraceTimeout); done {
-		return err
+		return exitStatus(err, signalled)
 	}
 	if c.cmd.Process != nil {
-		// A server that ignored its stdin closing. Not worth returning: this rung
-		// is exactly what that case is for.
-		_ = terminateProcess(c.cmd.Process)
+		// A server that ignored its stdin closing — this rung is what that case
+		// is for. A refusal is not a failure to report: the only one reachable is
+		// a child that has already exited, whose status is then its own.
+		signalled = terminateProcess(c.cmd.Process) == nil
 	}
 	if done, err := waitForExit(waited, stdioKillTimeout); done {
-		return signalledExit(err)
+		return exitStatus(err, signalled)
 	}
 	if c.cmd.Process != nil {
-		if err := c.cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		switch err := c.cmd.Process.Kill(); {
+		case err == nil:
+			signalled = true
+		case !errors.Is(err, os.ErrProcessDone):
 			return fmt.Errorf("mcp stdio: kill subprocess: %w", err)
 		}
 	}
 	if done, err := waitForExit(waited, stdioKillTimeout); done {
-		return signalledExit(err)
+		return exitStatus(err, signalled)
 	}
 	return errors.New("mcp stdio: subprocess did not exit after SIGKILL")
 }
 
-// signalledExit drops the exit status of a child the gateway has just signalled.
+// exitStatus reports what Wait returned, dropping an exit status that the
+// gateway's own signal produced.
 //
-// Past the grace period the child is dying because teardown killed it, so the
-// non-zero status Wait reports is that teardown working. Returning it puts a
-// "failed to close" warning in the log of every shutdown that needed a signal,
-// which is the ordinary case for a server that does not watch its stdin.
+// A child killed by teardown reports a non-zero status, and that status is
+// teardown working. Returning it puts a "failed to close" warning in the log of
+// every shutdown that needed a signal — the ordinary case for a server that does
+// not watch its stdin — where noise hides the leak the warning exists to report.
 //
-// Anything that is not an exit status still is a failure — a WaitDelay expiring
-// on pipes an orphaned grandchild is holding open says the process tree outlived
-// the ladder, which is exactly what the caller needs to hear.
-func signalledExit(err error) error {
+// Only a signal the gateway delivered earns that. A child that exited on its own
+// between the grace period and the signal refuses the signal, and the status it
+// exited with is its own to surface.
+//
+// Anything that is not an exit status is a failure either way: a WaitDelay
+// expiring on pipes an orphaned grandchild is holding open says the process tree
+// outlived the ladder, which is exactly what the caller needs to hear.
+func exitStatus(err error, signalled bool) error {
+	if !signalled {
+		return err
+	}
 	var exit *exec.ExitError
 	if errors.As(err, &exit) {
 		return nil
