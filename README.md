@@ -348,7 +348,7 @@ tag, health check, and resource limits. Run everything from the repository root:
 
 ```bash
 make up             # dev: builds from source
-IMAGE_TAG=v1.4.4 CORS_ORIGINS=https://your-domain.com make up-prod
+IMAGE_TAG=v1.4.5 CORS_ORIGINS=https://your-domain.com make up-prod
 make down           # tears down either
 ```
 
