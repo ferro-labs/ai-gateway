@@ -34,7 +34,7 @@ RUN npm run build
 
 # ── Gateway ──────────────────────────────────────────────────────────────────
 
-FROM golang:1.25.13-alpine AS gateway-build
+FROM golang:1.27.0-alpine AS gateway-build
 
 RUN apk add --no-cache git ca-certificates
 
