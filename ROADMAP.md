@@ -7,7 +7,6 @@ see [CHANGELOG.md](CHANGELOG.md).
 
 What's next, roughly in priority order:
 
-- **Embeddable gateway** — a public, importable Go entrypoint so the gateway can run inside your own program, not only as the standalone `ferrogw` binary.
 - **Plugin SDK & vendor observability bridges** — external guardrail and transform plugins, plus bridges for LangSmith, Langfuse, Datadog, New Relic, Honeycomb, Grafana, and more, shipped from a companion `ai-gateway-plugins` repo so the core binary stays slim.
 - **Webhook notifications** — configurable alerts for budget limits, error spikes, and circuit-breaker events.
 - **Semantic & Redis-backed caching** — beyond the built-in in-memory cache.
@@ -79,3 +78,4 @@ Everything below is available today.
 - memory / SQLite / PostgreSQL backends
 - Multi-arch container images, a Helm chart, GoReleaser packaging, and Railway & Render deploy templates
 - Official Python and TypeScript SDKs
+- Importable from Go (v1.5.0): `run.Main()` composes the whole `ferrogw` program into your own binary with extra plugins compiled in, `run.Run(ctx, …)` runs it under a context you own, and `httpgateway` mounts the gateway's HTTP surfaces behind your own middleware
