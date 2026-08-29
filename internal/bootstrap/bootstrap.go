@@ -271,7 +271,7 @@ func buildServer(ctx context.Context, lg *logger.Logger) (app *serverRuntime, er
 	}
 	app.otelShutdown = otelShutdown
 
-	gw, err := BuildGateway(cfg, registry, logWriter, lg)
+	gw, err := BuildGateway(ctx, cfg, registry, logWriter, lg)
 	if err != nil {
 		return nil, err
 	}
@@ -604,7 +604,7 @@ func registerBedrockProvider(registry *providers.Registry) {
 
 // BuildGateway constructs the Gateway, wires providers, and loads plugins.
 // If cfg is nil a default fallback config is created from the registry.
-func BuildGateway(cfg *config.Config, registry *providers.Registry, logWriter requestlog.Writer, lg *logger.Logger) (*aigateway.Gateway, error) {
+func BuildGateway(ctx context.Context, cfg *config.Config, registry *providers.Registry, logWriter requestlog.Writer, lg *logger.Logger) (*aigateway.Gateway, error) {
 	if cfg == nil {
 		defaultTargets := make([]config.Target, 0, len(registry.List()))
 		for _, name := range registry.List() {
@@ -620,7 +620,7 @@ func BuildGateway(cfg *config.Config, registry *providers.Registry, logWriter re
 		)
 	}
 
-	gw, err := aigateway.New(*cfg, aigateway.WithLogger(lg))
+	gw, err := aigateway.New(*cfg, aigateway.WithLogger(lg), aigateway.WithContext(ctx))
 	if err != nil {
 		logger.Default().Error("failed to create gateway", "error", err)
 		return nil, err

@@ -114,8 +114,13 @@ func TestGracefulShutdownWaitsForActiveHandlersBeforeClosingResources(t *testing
 	case <-time.After(time.Second):
 		t.Fatal("handler did not finish")
 	}
-	if err := <-done; !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("gracefulShutdown error = %v, want shutdown deadline error", err)
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("gracefulShutdown error = %v, want shutdown deadline error", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("gracefulShutdown did not return after the handler finished")
 	}
 	if !cleanupStarted.Load() {
 		t.Fatal("cleanup did not run after the handler finished")
