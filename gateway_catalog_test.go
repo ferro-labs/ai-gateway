@@ -2,6 +2,7 @@ package aigateway
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -199,7 +200,7 @@ func TestRouting_RejectsUnknownModel(t *testing.T) {
 	}
 }
 
-func TestNewWithContextCancelsCatalogFetch(t *testing.T) {
+func TestNewWithContextStopsConstructionWhenCatalogFetchIsCanceled(t *testing.T) {
 	requestStarted := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		close(requestStarted)
@@ -210,16 +211,17 @@ func TestNewWithContextCancelsCatalogFetch(t *testing.T) {
 	t.Setenv(models.CatalogFetchTimeoutEnv, time.Minute.String())
 
 	ctx, cancel := context.WithCancel(t.Context())
-	done := make(chan error, 1)
+	type result struct {
+		gw  *Gateway
+		err error
+	}
+	done := make(chan result, 1)
 	go func() {
 		gw, err := New(config.Config{
 			Strategy: config.StrategyConfig{Mode: config.ModeSingle},
 			Targets:  []config.Target{{VirtualKey: "openai"}},
 		}, WithContext(ctx))
-		if gw != nil {
-			_ = gw.Close()
-		}
-		done <- err
+		done <- result{gw: gw, err: err}
 	}()
 
 	select {
@@ -229,9 +231,13 @@ func TestNewWithContextCancelsCatalogFetch(t *testing.T) {
 	}
 	cancel()
 	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("New returned an error after catalog cancellation: %v", err)
+	case got := <-done:
+		if got.gw != nil {
+			_ = got.gw.Close()
+			t.Fatal("New returned a gateway after construction was canceled")
+		}
+		if !errors.Is(got.err, context.Canceled) {
+			t.Fatalf("New error = %v, want context.Canceled", got.err)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("New did not return after context cancellation")

@@ -151,8 +151,12 @@ func New(cfg config.Config, opts ...Option) (*Gateway, error) {
 		gw.constructionCtx = context.Background()
 	}
 
-	catalogResult, err := models.LoadWithInfoContext(gw.constructionCtx)
+	constructionCtx := gw.constructionCtx
+	catalogResult, err := models.LoadWithInfoContext(constructionCtx)
 	gw.constructionCtx = nil
+	if err := constructionCtx.Err(); err != nil {
+		return nil, err
+	}
 	recordCatalogLoad(catalogResult.Source, err)
 	catalog := catalogResult.Catalog
 	if err != nil {
