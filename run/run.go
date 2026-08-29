@@ -25,8 +25,7 @@ import (
 
 type options struct{}
 
-// Option configures the process runtime. v1.5.0 reserves the additive option
-// seam; concrete options will be added only when a runtime consumer needs one.
+// Option configures the process runtime.
 type Option func(*options)
 
 // Run starts ferrogw and blocks until shutdown.
@@ -49,9 +48,11 @@ func Main() {
 
 func newRootCmd(serve func() error) *cobra.Command {
 	rootCmd := &cobra.Command{
-		Use:          "ferrogw",
-		Short:        "Ferro Labs AI Gateway",
-		Long:         "High-performance AI gateway with smart routing, plugins, and an authenticated Admin API.",
+		Use:   "ferrogw",
+		Short: "Ferro Labs AI Gateway",
+		Long:  "Routes AI API requests to configured providers with plugin middleware and an authenticated Admin API.",
+		// Args must remain nil so Cobra reports unknown subcommands.
+		// SilenceUsage avoids printing usage after errors.
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runServe(cmd, serve)

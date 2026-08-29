@@ -134,8 +134,8 @@ func warnProductionRisks(keyStoreBackend string, rateLimitDisabled bool) {
 // defaultListenAddr is the address the HTTP server listens on when PORT is unset.
 const defaultListenAddr = ":8080"
 
-// shutdownGracePeriod bounds how long graceful shutdown waits for in-flight
-// HTTP connections to drain before returning.
+// shutdownGracePeriod bounds the initial drain attempt before shutdown reports
+// a timeout and continues waiting with dependencies still available.
 const shutdownGracePeriod = 15 * time.Second
 
 // Serve runs the full gateway server startup sequence and blocks until the
@@ -146,22 +146,28 @@ func Serve(ctx context.Context) error {
 	// explicitly into the components that hold their own logger.
 	lg := logger.New(logger.FromEnv())
 	logger.SetDefault(lg)
+	if ctx.Err() != nil {
+		return nil
+	}
 
 	if err := CheckProductionSafety(); err != nil {
 		lg.Error("startup blocked: unsafe configuration", "error", err)
 		return err
 	}
 
-	app, err := buildServer(lg)
+	app, err := buildServer(ctx, lg)
 	if err != nil {
+		if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
+			return nil
+		}
 		return err
 	}
 	listenErr := runUntilShutdown(ctx, app.gw, app.srv)
-	gracefulShutdown(app)
-	if listenErr != nil && !errors.Is(listenErr, http.ErrServerClosed) {
-		return listenErr
+	shutdownErr := gracefulShutdown(app, shutdownGracePeriod)
+	if errors.Is(listenErr, http.ErrServerClosed) || (ctx.Err() != nil && errors.Is(listenErr, ctx.Err())) {
+		listenErr = nil
 	}
-	return nil
+	return errors.Join(listenErr, shutdownErr)
 }
 
 type serverRuntime struct {
@@ -199,7 +205,7 @@ func closeRuntimeResources(resources []httpserver.NamedResource, otelShutdown gw
 // the router and HTTP server, prints the startup banner, and logs readiness.
 // It returns startup errors and the long-lived components needed to run and
 // later shut down the server.
-func buildServer(lg *logger.Logger) (app *serverRuntime, err error) {
+func buildServer(ctx context.Context, lg *logger.Logger) (app *serverRuntime, err error) {
 	app = &serverRuntime{}
 	started := app
 	defer func() {
@@ -236,7 +242,7 @@ func buildServer(lg *logger.Logger) (app *serverRuntime, err error) {
 	// logging plugins as they load. The reader is also the writer (one
 	// *SQLWriter serves both the admin log views and the plugin), or nil when
 	// no request-log backend is configured.
-	logReader, logMaintainer, logReaderBackend, err := CreateRequestLogReaderFromEnv(context.Background())
+	logReader, logMaintainer, logReaderBackend, err := CreateRequestLogReaderFromEnv(ctx)
 	if err != nil {
 		logger.Default().Error("failed to initialize request log reader", "error", err)
 		return nil, err
@@ -258,7 +264,7 @@ func buildServer(lg *logger.Logger) (app *serverRuntime, err error) {
 	if cfg != nil {
 		obsCfg = cfg.Observability
 	}
-	obsProvider, otelShutdown, err := gwotel.Init(context.Background(), otelConfigFromGateway(obsCfg))
+	obsProvider, otelShutdown, err := gwotel.Init(ctx, otelConfigFromGateway(obsCfg))
 	if err != nil {
 		logger.Default().Error("failed to initialize observability", "error", err)
 		return nil, err
@@ -276,10 +282,7 @@ func buildServer(lg *logger.Logger) (app *serverRuntime, err error) {
 	// every scrape, rather than from whenever a request last finished.
 	gw.PublishCircuitBreakerMetrics()
 
-	// No lifecycle context exists yet at this point in startup (signal.NotifyContext
-	// is only set up later, in runUntilShutdown), matching the gwotel.Init call
-	// above — these are one-time store-initialization calls, not per-request work.
-	cfgManager, configStoreBackend, err := CreateConfigManagerFromEnv(context.Background(), gw)
+	cfgManager, configStoreBackend, err := CreateConfigManagerFromEnv(ctx, gw)
 	if err != nil {
 		logger.Default().Error("failed to initialize config store", "error", err)
 		return nil, err
@@ -293,7 +296,7 @@ func buildServer(lg *logger.Logger) (app *serverRuntime, err error) {
 	// than from the file.
 	active := ResolveActiveConfig(gw, cfgManager, cfg, configStoreBackend)
 
-	keyStore, keyStoreBackend, err := CreateKeyStoreFromEnv(context.Background())
+	keyStore, keyStoreBackend, err := CreateKeyStoreFromEnv(ctx)
 	if err != nil {
 		logger.Default().Error("failed to initialize API key store", "error", err)
 		return nil, err
@@ -304,7 +307,7 @@ func buildServer(lg *logger.Logger) (app *serverRuntime, err error) {
 	// configures persistence once (see CreateSessionStoreFromEnv). It is a
 	// distinct store, and for SQLite a distinct database file, from the key
 	// store built above.
-	sessionStore, _, err := CreateSessionStoreFromEnv(context.Background())
+	sessionStore, _, err := CreateSessionStoreFromEnv(ctx)
 	if err != nil {
 		logger.Default().Error("failed to initialize session store", "error", err)
 		return nil, err
@@ -314,7 +317,7 @@ func buildServer(lg *logger.Logger) (app *serverRuntime, err error) {
 	// The audit store follows the key store's backend too, for the same reason
 	// (see CreateAuditStoreFromEnv). It is a distinct store and, for SQLite, a
 	// distinct file from the key, session, and config stores.
-	auditStore, auditStoreBackend, err := CreateAuditStoreFromEnv(context.Background())
+	auditStore, auditStoreBackend, err := CreateAuditStoreFromEnv(ctx)
 	if err != nil {
 		logger.Default().Error("failed to initialize audit store", "error", err)
 		return nil, err
@@ -414,24 +417,32 @@ func runUntilShutdown(ctx context.Context, gw *aigateway.Gateway, srv *http.Serv
 // gracefulShutdown drains the HTTP server, closes the persistence stores, and
 // flushes OTel exporters in that order — the same list, in the same order, that
 // a failed startup closes (see buildServer).
-func gracefulShutdown(app *serverRuntime) {
+func gracefulShutdown(app *serverRuntime, gracePeriod time.Duration) error {
 	// Shutdown drains active connections before returning — the stores must
 	// close after so in-flight requests can still reach them.
 	logger.Default().Info("shutting down gracefully")
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownGracePeriod)
-	if err := app.srv.Shutdown(shutdownCtx); err != nil {
-		logger.Default().Error("shutdown error", "error", err)
-	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), gracePeriod)
+	shutdownErr := app.srv.Shutdown(shutdownCtx)
 	cancel()
+	if shutdownErr != nil {
+		logger.Default().Error("shutdown error", "error", shutdownErr)
+		// Shutdown's deadline does not terminate active handlers. Keep shared
+		// resources alive and wait for them before cleanup.
+		if err := app.srv.Shutdown(context.Background()); err != nil {
+			shutdownErr = errors.Join(shutdownErr, err)
+		}
+	}
 
 	// OTel drains last so spans emitted during the rest of the shutdown
 	// sequence still reach the collector. The ShutdownFunc from gwotel.Init
 	// applies its own deadline (cfg.ShutdownGrace), hence context.Background().
-	if err := closeRuntimeResources(app.resources(), app.otelShutdown); err != nil {
-		logger.Default().Error("shutdown cleanup error", "error", err)
+	cleanupErr := closeRuntimeResources(app.resources(), app.otelShutdown)
+	if cleanupErr != nil {
+		logger.Default().Error("shutdown cleanup error", "error", cleanupErr)
 	}
 
 	logger.Default().Info("server stopped")
+	return errors.Join(shutdownErr, cleanupErr)
 }
 
 // discoveryIntervalFromEnv reads the FERRO_MODEL_DISCOVERY_INTERVAL env var and
