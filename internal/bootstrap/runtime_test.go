@@ -5,12 +5,15 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"reflect"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/ferro-labs/ai-gateway/internal/httpserver"
+	"github.com/ferro-labs/ai-gateway/pkg/logger"
 )
 
 type orderedCloser struct {
@@ -53,6 +56,70 @@ func TestServeAlreadyCanceledIsGraceful(t *testing.T) {
 	cancel()
 	if err := Serve(ctx); err != nil {
 		t.Fatalf("Serve(already canceled) = %v, want graceful nil", err)
+	}
+}
+
+func TestServeReturnsProductionSafetyErrors(t *testing.T) {
+	t.Setenv("GATEWAY_ENV", "production")
+	t.Setenv("ALLOW_UNAUTHENTICATED_PROXY", "true")
+
+	if err := Serve(t.Context()); err == nil {
+		t.Fatal("Serve must return production safety errors")
+	}
+}
+
+func TestServeReturnsConfigErrors(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte("strategy:\n  mode: not-a-mode\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GATEWAY_ENV", "")
+	t.Setenv("ALLOW_UNAUTHENTICATED_PROXY", "")
+	t.Setenv("GATEWAY_CONFIG", configPath)
+
+	if err := Serve(t.Context()); err == nil {
+		t.Fatal("Serve must return config errors")
+	}
+}
+
+func TestBuildServerReturnsCompleteRuntime(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte("strategy:\n  mode: single\ntargets:\n  - virtual_key: openai\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GATEWAY_CONFIG", configPath)
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	t.Setenv("FERRO_MODEL_CATALOG_TIMEOUT", "0")
+	t.Setenv("API_KEY_STORE_BACKEND", "memory")
+	t.Setenv("CONFIG_STORE_BACKEND", "memory")
+	t.Setenv("REQUEST_LOG_STORE_BACKEND", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
+	t.Setenv("PORT", "0")
+
+	lg := logger.New(logger.FromEnv())
+	app, err := buildServer(t.Context(), lg)
+	if err != nil {
+		t.Fatalf("buildServer: %v", err)
+	}
+	if app.gw == nil || app.srv == nil || app.cfgManager == nil || app.keyStore == nil || app.sessionStore == nil || app.auditStore == nil || app.otelShutdown == nil {
+		t.Fatalf("buildServer returned an incomplete runtime: %+v", app)
+	}
+	if app.srv.Addr != ":0" {
+		t.Errorf("server address = %q, want :0", app.srv.Addr)
+	}
+	t.Cleanup(func() {
+		if err := closeRuntimeResources(app.resources(), app.otelShutdown); err != nil {
+			t.Errorf("close runtime resources: %v", err)
+		}
+	})
+}
+
+func TestRunUntilShutdownReturnsListenErrors(t *testing.T) {
+	srv := httpserver.NewServer("invalid::address", http.NotFoundHandler())
+
+	if err := runUntilShutdown(t.Context(), nil, srv); err == nil {
+		t.Fatal("runUntilShutdown must return listener errors")
 	}
 }
 

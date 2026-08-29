@@ -73,3 +73,17 @@ func TestRunHonorsCanceledContext(t *testing.T) {
 		t.Fatal("Run did not trigger graceful shutdown after context cancellation")
 	}
 }
+
+func TestRunAppliesOptionsAndIgnoresNil(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	applied := false
+
+	err := Run(ctx, nil, func(*options) { applied = true })
+	if err != nil {
+		t.Fatalf("Run returned an error for context cancellation: %v", err)
+	}
+	if !applied {
+		t.Fatal("Run did not apply its option")
+	}
+}
