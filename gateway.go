@@ -43,6 +43,7 @@ type Gateway struct {
 	// logger.Default() in New. Set once at construction and never mutated, so it
 	// is read without holding mu.
 	log              *logger.Logger
+	constructionCtx  context.Context
 	config           config.Config
 	catalog          models.Catalog
 	providers        map[string]providers.Provider
@@ -123,6 +124,11 @@ func WithLogger(l *logger.Logger) Option {
 	return func(g *Gateway) { g.log = l }
 }
 
+// WithContext sets the context used by work performed during construction.
+func WithContext(ctx context.Context) Option {
+	return func(g *Gateway) { g.constructionCtx = ctx }
+}
+
 // New creates a new Gateway instance with the given configuration.
 // It validates cfg with ValidateConfig before initialising any resources,
 // returning an error immediately if the config is invalid. This matches the
@@ -141,14 +147,16 @@ func New(cfg config.Config, opts ...Option) (*Gateway, error) {
 	if gw.log == nil {
 		gw.log = logger.Default()
 	}
+	if gw.constructionCtx == nil {
+		gw.constructionCtx = context.Background()
+	}
 
-	// No lifecycle context exists yet at this point in construction (shutdownCtx
-	// is created below), so context.Background() is the only choice available
-	// here. The fetch is bounded by fetchRemote's own client timeout, which an
-	// operator can shorten or disable entirely via FERRO_MODEL_CATALOG_TIMEOUT.
-	// That matters because this runs before the listener binds: until it
-	// returns, the process answers no readiness probe.
-	catalogResult, err := models.LoadWithInfoContext(context.Background())
+	constructionCtx := gw.constructionCtx
+	catalogResult, err := models.LoadWithInfoContext(constructionCtx)
+	gw.constructionCtx = nil
+	if err := constructionCtx.Err(); err != nil {
+		return nil, err
+	}
 	recordCatalogLoad(catalogResult.Source, err)
 	catalog := catalogResult.Catalog
 	if err != nil {

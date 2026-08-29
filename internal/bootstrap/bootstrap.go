@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -133,45 +134,96 @@ func warnProductionRisks(keyStoreBackend string, rateLimitDisabled bool) {
 // defaultListenAddr is the address the HTTP server listens on when PORT is unset.
 const defaultListenAddr = ":8080"
 
-// shutdownGracePeriod bounds how long graceful shutdown waits for in-flight
-// HTTP connections to drain before returning.
+// shutdownGracePeriod bounds the initial drain attempt before shutdown reports
+// a timeout and continues waiting with dependencies still available.
 const shutdownGracePeriod = 15 * time.Second
 
 // Serve runs the full gateway server startup sequence and blocks until the
-// server shuts down.  It exits the process on fatal errors.
-func Serve() {
+// server shuts down or ctx is canceled.
+func Serve(ctx context.Context) error {
 	// Configure the process logger from the environment (LOG_LEVEL) and install
 	// it as the default (mirrored into slog.SetDefault). lg is then threaded
 	// explicitly into the components that hold their own logger.
 	lg := logger.New(logger.FromEnv())
 	logger.SetDefault(lg)
+	if ctx.Err() != nil {
+		return nil
+	}
 
 	if err := CheckProductionSafety(); err != nil {
 		lg.Error("startup blocked: unsafe configuration", "error", err)
-		os.Exit(1)
+		return err
 	}
 
-	gw, srv, cfgManager, keyStore, sessionStore, auditStore, logReader, otelShutdown := buildServer(lg)
-	listenErr := runUntilShutdown(gw, srv)
-	gracefulShutdown(srv, gw, cfgManager, keyStore, sessionStore, auditStore, logReader, otelShutdown, listenErr)
+	app, err := buildServer(ctx, lg)
+	if err != nil {
+		if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
+			return nil
+		}
+		return err
+	}
+	listenErr := runUntilShutdown(ctx, app.gw, app.srv)
+	shutdownErr := gracefulShutdown(app, shutdownGracePeriod)
+	if errors.Is(listenErr, http.ErrServerClosed) || (ctx.Err() != nil && errors.Is(listenErr, ctx.Err())) {
+		listenErr = nil
+	}
+	return errors.Join(listenErr, shutdownErr)
+}
+
+type serverRuntime struct {
+	gw           *aigateway.Gateway
+	srv          *http.Server
+	cfgManager   handlers.ConfigManager
+	keyStore     repository.Store
+	sessionStore repository.SessionStore
+	auditStore   repository.AuditStore
+	logReader    requestlog.Reader
+	otelShutdown gwotel.ShutdownFunc
+}
+
+func (app *serverRuntime) resources() []httpserver.NamedResource {
+	return []httpserver.NamedResource{
+		{Name: "gateway", Value: app.gw},
+		{Name: "config manager", Value: app.cfgManager},
+		{Name: "api key store", Value: app.keyStore},
+		{Name: "session store", Value: app.sessionStore},
+		{Name: "audit store", Value: app.auditStore},
+		{Name: "request log store", Value: app.logReader},
+	}
+}
+
+func closeRuntimeResources(resources []httpserver.NamedResource, otelShutdown gwotel.ShutdownFunc) error {
+	err := httpserver.CloseResources(resources...)
+	if otelShutdown != nil {
+		err = errors.Join(err, otelShutdown(context.Background()))
+	}
+	return err
 }
 
 // buildServer runs the startup sequence: it loads configuration, registers
 // providers, initializes observability and the persistence stores, constructs
 // the router and HTTP server, prints the startup banner, and logs readiness.
-// It exits the process on any fatal initialization error and returns the
-// long-lived components needed to run and later shut down the server.
-func buildServer(lg *logger.Logger) (
-	*aigateway.Gateway,
-	*http.Server,
-	handlers.ConfigManager,
-	repository.Store,
-	repository.SessionStore,
-	repository.AuditStore,
-	requestlog.Reader,
-	gwotel.ShutdownFunc,
-) {
-	cfg := LoadConfig()
+// It returns startup errors and the long-lived components needed to run and
+// later shut down the server.
+func buildServer(ctx context.Context, lg *logger.Logger) (app *serverRuntime, err error) {
+	app = &serverRuntime{}
+	started := app
+	defer func() {
+		if err == nil {
+			return
+		}
+		if closeErr := closeRuntimeResources(started.resources(), started.otelShutdown); closeErr != nil {
+			// Logged here because the CLI silences the returned error: startup
+			// already reported its own failure, and this one must not be lost with it.
+			logger.Default().Error("startup cleanup error", "error", closeErr)
+			err = errors.Join(err, closeErr)
+		}
+	}()
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		return nil, err
+	}
 	// Ahead of RegisterProviders, so an operator reads the rename before the
 	// line reporting the provider that was built from the deprecated variable.
 	LogDeprecatedEnvVars()
@@ -190,11 +242,12 @@ func buildServer(lg *logger.Logger) (
 	// logging plugins as they load. The reader is also the writer (one
 	// *SQLWriter serves both the admin log views and the plugin), or nil when
 	// no request-log backend is configured.
-	logReader, logMaintainer, logReaderBackend, err := CreateRequestLogReaderFromEnv(context.Background())
+	logReader, logMaintainer, logReaderBackend, err := CreateRequestLogReaderFromEnv(ctx)
 	if err != nil {
 		logger.Default().Error("failed to initialize request log reader", "error", err)
-		os.Exit(1)
+		return nil, err
 	}
+	app.logReader = logReader
 	logWriter, _ := logReader.(requestlog.Writer)
 
 	// Initialise OpenTelemetry. Init returns a NoOp provider (and a
@@ -211,27 +264,30 @@ func buildServer(lg *logger.Logger) (
 	if cfg != nil {
 		obsCfg = cfg.Observability
 	}
-	obsProvider, otelShutdown, err := gwotel.Init(context.Background(), otelConfigFromGateway(obsCfg))
+	obsProvider, otelShutdown, err := gwotel.Init(ctx, otelConfigFromGateway(obsCfg))
 	if err != nil {
 		logger.Default().Error("failed to initialize observability", "error", err)
-		os.Exit(1)
+		return nil, err
 	}
+	app.otelShutdown = otelShutdown
 
-	gw := BuildGateway(cfg, registry, logWriter, lg)
+	gw, err := BuildGateway(ctx, cfg, registry, logWriter, lg)
+	if err != nil {
+		return nil, err
+	}
+	app.gw = gw
 	gw.SetObservability(obsProvider)
 
 	// Resolve gateway_circuit_breaker_state from this gateway's live breakers on
 	// every scrape, rather than from whenever a request last finished.
 	gw.PublishCircuitBreakerMetrics()
 
-	// No lifecycle context exists yet at this point in startup (signal.NotifyContext
-	// is only set up later, in runUntilShutdown), matching the gwotel.Init call
-	// above — these are one-time store-initialization calls, not per-request work.
-	cfgManager, configStoreBackend, err := CreateConfigManagerFromEnv(context.Background(), gw)
+	cfgManager, configStoreBackend, err := CreateConfigManagerFromEnv(ctx, gw)
 	if err != nil {
 		logger.Default().Error("failed to initialize config store", "error", err)
-		os.Exit(1)
+		return nil, err
 	}
+	app.cfgManager = cfgManager
 
 	// Config resolution is complete only here: the store, when it holds one,
 	// has just superseded whatever the gateway was built from. Everything
@@ -240,30 +296,33 @@ func buildServer(lg *logger.Logger) (
 	// than from the file.
 	active := ResolveActiveConfig(gw, cfgManager, cfg, configStoreBackend)
 
-	keyStore, keyStoreBackend, err := CreateKeyStoreFromEnv(context.Background())
+	keyStore, keyStoreBackend, err := CreateKeyStoreFromEnv(ctx)
 	if err != nil {
 		logger.Default().Error("failed to initialize API key store", "error", err)
-		os.Exit(1)
+		return nil, err
 	}
+	app.keyStore = keyStore
 
 	// The session store follows the key store's backend so an operator
 	// configures persistence once (see CreateSessionStoreFromEnv). It is a
 	// distinct store, and for SQLite a distinct database file, from the key
 	// store built above.
-	sessionStore, _, err := CreateSessionStoreFromEnv(context.Background())
+	sessionStore, _, err := CreateSessionStoreFromEnv(ctx)
 	if err != nil {
 		logger.Default().Error("failed to initialize session store", "error", err)
-		os.Exit(1)
+		return nil, err
 	}
+	app.sessionStore = sessionStore
 
 	// The audit store follows the key store's backend too, for the same reason
 	// (see CreateAuditStoreFromEnv). It is a distinct store and, for SQLite, a
 	// distinct file from the key, session, and config stores.
-	auditStore, auditStoreBackend, err := CreateAuditStoreFromEnv(context.Background())
+	auditStore, auditStoreBackend, err := CreateAuditStoreFromEnv(ctx)
 	if err != nil {
 		logger.Default().Error("failed to initialize audit store", "error", err)
-		os.Exit(1)
+		return nil, err
 	}
+	app.auditStore = auditStore
 
 	var corsOrigins []string
 	if origins := os.Getenv("CORS_ORIGINS"); origins != "" {
@@ -282,7 +341,7 @@ func buildServer(lg *logger.Logger) (
 	trustedProxies, err := httpserver.ParseTrustedProxyCIDRs(os.Getenv("TRUSTED_PROXIES"))
 	if err != nil {
 		logger.Default().Error("invalid TRUSTED_PROXIES", "error", err)
-		os.Exit(1)
+		return nil, err
 	}
 
 	rlStore := NewRateLimitStore()
@@ -298,6 +357,7 @@ func buildServer(lg *logger.Logger) (
 		addr = ":" + p
 	}
 	srv := httpserver.NewServer(addr, r)
+	app.srv = srv
 
 	PrintStartupBanner(addr, registry, &active, masterKey, keyStoreBackend, configStoreBackend)
 	logger.Default().Info("ferrogw started",
@@ -310,20 +370,26 @@ func buildServer(lg *logger.Logger) (
 		"audit_store", auditStoreBackend,
 	)
 
-	return gw, srv, cfgManager, keyStore, sessionStore, auditStore, logReader, otelShutdown
+	return app, nil
 }
 
 // runUntilShutdown starts the HTTP server and optional live model discovery,
 // then blocks until an OS signal or a fatal listen error. It returns the listen
 // error observed, if any.
-func runUntilShutdown(gw *aigateway.Gateway, srv *http.Server) error {
-	// Run the server in a goroutine so the main goroutine can block on signal
-	// or a fatal listen error.
+func runUntilShutdown(ctx context.Context, gw *aigateway.Gateway, srv *http.Server) error {
+	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", srv.Addr)
+	if err != nil {
+		logger.Default().Error("server error", "error", err)
+		return err
+	}
+
+	// Bind before observing cancellation so graceful shutdown cannot race a
+	// not-yet-started ListenAndServe goroutine and leave a listener behind.
 	serveErr := make(chan error, 1)
-	go func() { serveErr <- srv.ListenAndServe() }()
+	go func() { serveErr <- srv.Serve(listener) }()
 
 	// Block until OS signal or a fatal server error.
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 
 	// Opt-in live model discovery: refreshes provider model lists in the
 	// background and stops when the lifecycle ctx is cancelled on shutdown.
@@ -344,58 +410,39 @@ func runUntilShutdown(gw *aigateway.Gateway, srv *http.Server) error {
 			logger.Default().Error("server error", "error", listenErr)
 		}
 	}
-	stop() // release signal resources; called explicitly so os.Exit below doesn't bypass it
+	stop()
 	return listenErr
 }
 
 // gracefulShutdown drains the HTTP server, closes the persistence stores, and
-// flushes OTel exporters in that order, then exits the process if the server
-// terminated on a fatal listen error.
-func gracefulShutdown(
-	srv *http.Server,
-	gw *aigateway.Gateway,
-	cfgManager handlers.ConfigManager,
-	keyStore repository.Store,
-	sessionStore repository.SessionStore,
-	auditStore repository.AuditStore,
-	logReader requestlog.Reader,
-	otelShutdown gwotel.ShutdownFunc,
-	listenErr error,
-) {
-	// Shutdown drains active connections before returning — CloseResources must
-	// come after so in-flight requests can still reach the stores.
+// flushes OTel exporters in that order — the same list, in the same order, that
+// a failed startup closes (see buildServer).
+func gracefulShutdown(app *serverRuntime, gracePeriod time.Duration) error {
+	// Shutdown drains active connections before returning — the stores must
+	// close after so in-flight requests can still reach them.
 	logger.Default().Info("shutting down gracefully")
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownGracePeriod)
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		logger.Default().Error("shutdown error", "error", err)
-	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), gracePeriod)
+	shutdownErr := app.srv.Shutdown(shutdownCtx)
 	cancel()
-
-	if err := httpserver.CloseResources(
-		httpserver.NamedResource{Name: "gateway", Value: gw},
-		httpserver.NamedResource{Name: "config manager", Value: cfgManager},
-		httpserver.NamedResource{Name: "api key store", Value: keyStore},
-		httpserver.NamedResource{Name: "session store", Value: sessionStore},
-		httpserver.NamedResource{Name: "audit store", Value: auditStore},
-		httpserver.NamedResource{Name: "request log store", Value: logReader},
-	); err != nil {
-		logger.Default().Error("shutdown cleanup error", "error", err)
+	if shutdownErr != nil {
+		logger.Default().Error("shutdown error", "error", shutdownErr)
+		// Shutdown's deadline does not terminate active handlers. Keep shared
+		// resources alive and wait for them before cleanup.
+		if err := app.srv.Shutdown(context.Background()); err != nil {
+			shutdownErr = errors.Join(shutdownErr, err)
+		}
 	}
 
-	// Drain OTel exporters last so spans emitted during the rest of the
-	// shutdown sequence still reach the collector.
-	// The ShutdownFunc returned by gwotel.Init applies its own internal
-	// deadline derived from cfg.ShutdownGrace, so we pass context.Background()
-	// here rather than duplicating the duration parse.
-	if err := otelShutdown(context.Background()); err != nil {
-		logger.Default().Error("otel shutdown error", "error", err)
+	// OTel drains last so spans emitted during the rest of the shutdown
+	// sequence still reach the collector. The ShutdownFunc from gwotel.Init
+	// applies its own deadline (cfg.ShutdownGrace), hence context.Background().
+	cleanupErr := closeRuntimeResources(app.resources(), app.otelShutdown)
+	if cleanupErr != nil {
+		logger.Default().Error("shutdown cleanup error", "error", cleanupErr)
 	}
 
 	logger.Default().Info("server stopped")
-
-	if listenErr != nil && !errors.Is(listenErr, http.ErrServerClosed) {
-		os.Exit(1)
-	}
+	return errors.Join(shutdownErr, cleanupErr)
 }
 
 // discoveryIntervalFromEnv reads the FERRO_MODEL_DISCOVERY_INTERVAL env var and
@@ -472,20 +519,20 @@ func warnUnreadConfigFile() {
 // What it returns is the *file's* config, which is not necessarily the config
 // the gateway ends up running: a persistent config store, if it holds one,
 // supersedes this later in startup. ResolveActiveConfig names the winner.
-func LoadConfig() *config.Config {
+func LoadConfig() (*config.Config, error) {
 	cfgPath := configFilePath()
 	if cfgPath == "" {
 		warnUnreadConfigFile()
-		return nil
+		return nil, nil
 	}
 	loaded, err := config.LoadConfig(cfgPath)
 	if err != nil {
 		logger.Default().Error("failed to load config", "error", err)
-		os.Exit(1)
+		return nil, err
 	}
 	if err := config.ValidateConfig(*loaded); err != nil {
 		logger.Default().Error("invalid config", "error", err)
-		os.Exit(1)
+		return nil, err
 	}
 	// "config file loaded" rather than "config loaded": this line describes the
 	// file, and a persisted config may still replace all of it below.
@@ -494,7 +541,7 @@ func LoadConfig() *config.Config {
 		"strategy", loaded.Strategy.Mode,
 		"targets", len(loaded.Targets),
 	)
-	return loaded
+	return loaded, nil
 }
 
 // RegisterProviders auto-registers all providers found via environment variables.
@@ -557,7 +604,7 @@ func registerBedrockProvider(registry *providers.Registry) {
 
 // BuildGateway constructs the Gateway, wires providers, and loads plugins.
 // If cfg is nil a default fallback config is created from the registry.
-func BuildGateway(cfg *config.Config, registry *providers.Registry, logWriter requestlog.Writer, lg *logger.Logger) *aigateway.Gateway {
+func BuildGateway(ctx context.Context, cfg *config.Config, registry *providers.Registry, logWriter requestlog.Writer, lg *logger.Logger) (*aigateway.Gateway, error) {
 	if cfg == nil {
 		defaultTargets := make([]config.Target, 0, len(registry.List()))
 		for _, name := range registry.List() {
@@ -573,10 +620,10 @@ func BuildGateway(cfg *config.Config, registry *providers.Registry, logWriter re
 		)
 	}
 
-	gw, err := aigateway.New(*cfg, aigateway.WithLogger(lg))
+	gw, err := aigateway.New(*cfg, aigateway.WithLogger(lg), aigateway.WithContext(ctx))
 	if err != nil {
 		logger.Default().Error("failed to create gateway", "error", err)
-		os.Exit(1)
+		return nil, err
 	}
 	// Install the shared request-log store before LoadPlugins, so a logging
 	// plugin records through it instead of opening its own.
@@ -590,11 +637,12 @@ func BuildGateway(cfg *config.Config, registry *providers.Registry, logWriter re
 	if len(cfg.Plugins) > 0 {
 		if err := gw.LoadPlugins(); err != nil {
 			logger.Default().Error("failed to load plugins", "error", err)
-			os.Exit(1)
+			_ = gw.Close()
+			return nil, err
 		}
 		logger.Default().Info("plugins loaded", "count", len(cfg.Plugins))
 	}
-	return gw
+	return gw, nil
 }
 
 // warnUnroutableTargets reports every configured target that resolves to no

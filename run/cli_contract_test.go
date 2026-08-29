@@ -1,7 +1,8 @@
-package main
+package run
 
 import (
 	"bytes"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -14,7 +15,7 @@ func runCLI(t *testing.T, args ...string) (out *bytes.Buffer, served *bool, err 
 	t.Helper()
 	out = &bytes.Buffer{}
 	ran := false
-	root := newRootCmd(func() { ran = true })
+	root := newRootCmd(func() error { ran = true; return nil })
 	root.SetOut(out)
 	root.SetErr(out)
 	root.SetArgs(args)
@@ -94,6 +95,21 @@ func TestCommandErrorPrintsNoUsageBlock(t *testing.T) {
 	}
 }
 
+func TestServeErrorIsNotPrintedTwice(t *testing.T) {
+	out := &bytes.Buffer{}
+	root := newRootCmd(func() error { return errors.New("startup failed") })
+	root.SetOut(out)
+	root.SetErr(out)
+	root.SetArgs([]string{"serve"})
+
+	if err := root.Execute(); err == nil {
+		t.Fatal("serve must return its startup error")
+	}
+	if strings.Contains(out.String(), "startup failed") {
+		t.Fatalf("Cobra printed an error the startup path already logged: %s", out.String())
+	}
+}
+
 // A nil Args is cobra's ArbitraryArgs: the command accepts tokens it will never
 // read, which is how a mistyped invocation becomes a silent no-op. This walks
 // the root's own children — the commands this binary mounts — so one added
@@ -101,7 +117,7 @@ func TestCommandErrorPrintsNoUsageBlock(t *testing.T) {
 // than recursing: `admin`'s leaves are declared in their own file and are that
 // file's contract to state.
 func TestMountedCommandsDeclareAnArgumentPolicy(t *testing.T) {
-	root := newRootCmd(func() {})
+	root := newRootCmd(func() error { return nil })
 	// The root is the exception, and the opposite way round: see
 	// TestRootRejectsUnknownSubcommand.
 	if root.Args != nil {

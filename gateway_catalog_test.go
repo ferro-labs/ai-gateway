@@ -2,10 +2,12 @@ package aigateway
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sort"
 	"testing"
+	"time"
 
 	"github.com/ferro-labs/ai-gateway/config"
 	"github.com/ferro-labs/ai-gateway/models"
@@ -195,6 +197,50 @@ func TestRouting_RejectsUnknownModel(t *testing.T) {
 
 	if _, ok := gw.FindByModel("definitely-not-a-real-model-zzz"); ok {
 		t.Fatal("FindByModel accepted an unknown model")
+	}
+}
+
+func TestNewWithContextStopsConstructionWhenCatalogFetchIsCanceled(t *testing.T) {
+	requestStarted := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		close(requestStarted)
+		<-r.Context().Done()
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv(models.CatalogURLEnv, server.URL)
+	t.Setenv(models.CatalogFetchTimeoutEnv, time.Minute.String())
+
+	ctx, cancel := context.WithCancel(t.Context())
+	type result struct {
+		gw  *Gateway
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		gw, err := New(config.Config{
+			Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+			Targets:  []config.Target{{VirtualKey: "openai"}},
+		}, WithContext(ctx))
+		done <- result{gw: gw, err: err}
+	}()
+
+	select {
+	case <-requestStarted:
+	case <-time.After(time.Second):
+		t.Fatal("catalog request did not start")
+	}
+	cancel()
+	select {
+	case got := <-done:
+		if got.gw != nil {
+			_ = got.gw.Close()
+			t.Fatal("New returned a gateway after construction was canceled")
+		}
+		if !errors.Is(got.err, context.Canceled) {
+			t.Fatalf("New error = %v, want context.Canceled", got.err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("New did not return after context cancellation")
 	}
 }
 
