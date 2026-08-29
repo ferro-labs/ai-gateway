@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
 	"time"
 
 	"github.com/ferro-labs/ai-gateway/internal/httpclient"
@@ -48,7 +49,9 @@ func CloseResources(resources ...NamedResource) error {
 	var err error
 	for _, resource := range resources {
 		closer, ok := resource.Value.(interface{ Close() error })
-		if !ok {
+		if !ok || isNilPointer(resource.Value) {
+			// A struct field that was never assigned arrives here as a typed nil:
+			// the assertion succeeds, and Close dereferences it.
 			continue
 		}
 		if closeErr := closer.Close(); closeErr != nil {
@@ -57,4 +60,9 @@ func CloseResources(resources ...NamedResource) error {
 	}
 	httpclient.CloseIdleConnections()
 	return err
+}
+
+func isNilPointer(v any) bool {
+	rv := reflect.ValueOf(v)
+	return rv.Kind() == reflect.Pointer && rv.IsNil()
 }

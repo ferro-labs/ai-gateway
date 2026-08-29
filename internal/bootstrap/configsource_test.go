@@ -275,7 +275,7 @@ func TestWarnUnreadConfigFile(t *testing.T) {
 	t.Setenv("GATEWAY_CONFIG", "")
 	buf := captureDefaultLogger(t)
 
-	if cfg := LoadConfig(); cfg != nil {
+	if cfg, err := LoadConfig(); err != nil || cfg != nil {
 		t.Fatalf("LoadConfig must not adopt an unnamed file, got %+v", cfg)
 	}
 
@@ -305,7 +305,7 @@ func TestWarnUnreadConfigFile_SilentWhenNamed(t *testing.T) {
 	t.Setenv("GATEWAY_CONFIG", path)
 	buf := captureDefaultLogger(t)
 
-	if cfg := LoadConfig(); cfg == nil {
+	if cfg, err := LoadConfig(); err != nil || cfg == nil {
 		t.Fatal("LoadConfig returned nil for a named, valid config file")
 	}
 	if hasEntry(t, buf, "GATEWAY_CONFIG is unset") {

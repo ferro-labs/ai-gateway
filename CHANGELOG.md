@@ -5,6 +5,23 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] — 2026-08-29
+
+### Added — the gateway is importable
+
+A new public `run` package exposes the `ferrogw` program to Go code. `run.Main()`
+is what `cmd/ferrogw` now calls; `run.Run(ctx, opts...)` runs the same server
+under a caller-owned context and returns startup and listen errors instead of
+exiting the process, with context cancellation triggering the same graceful
+shutdown as SIGTERM. A custom binary is a `main` that blank-imports its plugins
+and calls `run.Main()` — the process lane. `httpgateway` (since 1.4.2) remains
+the library lane for mounting gateway surfaces behind your own middleware.
+Closes [#206](https://github.com/ferro-labs/ai-gateway/issues/206).
+
+The server now binds its listener before it starts observing shutdown, so a
+cancellation that arrives during startup can no longer leave a listener behind.
+Existing `ferrogw` behaviour — commands, flags, exit codes — is unchanged.
+
 ## [1.4.5] — 2026-08-23
 
 A security patch. The stdio MCP transport now applies the same 10 MiB bound as
