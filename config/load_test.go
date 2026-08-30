@@ -58,6 +58,28 @@ func TestLoadConfig_TargetModelMap(t *testing.T) {
 	}
 }
 
+func TestLoadConfig_RejectsDuplicateModelMapKeys(t *testing.T) {
+	tests := []struct {
+		name string
+		ext  string
+		data string
+	}{
+		{name: "JSON", ext: "json", data: `{"targets":[{"virtual_key":"openai","model_map":{"support-chat":"gpt-4o","support-chat":"gpt-4o-mini"}}]}`},
+		{name: "YAML", ext: "yaml", data: "targets:\n  - virtual_key: openai\n    model_map:\n      support-chat: gpt-4o\n      support-chat: gpt-4o-mini\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := config.LoadConfig(writeTempFile(t, "config."+tt.ext, tt.data))
+			if err == nil {
+				t.Fatal("expected duplicate model_map key to be rejected")
+			}
+			if !strings.Contains(err.Error(), "support-chat") {
+				t.Fatalf("error %q should identify duplicate key support-chat", err)
+			}
+		})
+	}
+}
+
 func TestLoadConfig_CostOptimizedUnpricedStrategy(t *testing.T) {
 	data := `{
 		"strategy": {"mode": "cost-optimized", "unpriced_strategy": "skip"},

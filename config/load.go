@@ -72,10 +72,10 @@ func LoadConfig(path string) (*Config, error) {
 }
 
 // DecodeJSONStrict decodes one JSON config document into cfg, rejecting unknown
-// keys and data trailing the top-level object. It is the single decoder for
-// every way a JSON config enters the gateway — a file read by LoadConfig and a
-// request body applied through PUT/POST /admin/config — so the two cannot
-// disagree about which configs are valid.
+// keys, duplicate object keys, and data trailing the top-level object. It is the
+// single decoder for every way a JSON config enters the gateway — a file read
+// by LoadConfig and a request body applied through PUT/POST /admin/config — so
+// the two cannot disagree about which configs are valid.
 //
 // It reports EVERY unknown key, not the first. encoding/json's
 // DisallowUnknownFields returns on the first one, so a config with three typos
@@ -97,6 +97,9 @@ func LoadConfig(path string) (*Config, error) {
 // re-resolving every key against the schema at its own nesting depth, which is
 // the decoder's job twice over for a degenerate input.
 func DecodeJSONStrict(data []byte, cfg *Config) error {
+	if err := rejectDuplicateJSONKeys(data); err != nil {
+		return err
+	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(cfg); err != nil {
@@ -108,6 +111,64 @@ func DecodeJSONStrict(data []byte, cfg *Config) error {
 		return errors.New("unexpected data after top-level object")
 	}
 	return nil
+}
+
+type duplicateJSONKeyError string
+
+func (e duplicateJSONKeyError) Error() string {
+	return fmt.Sprintf("json: duplicate object key %q", string(e))
+}
+
+// rejectDuplicateJSONKeys scans the first JSON value without materializing it.
+// All non-duplicate errors are left to the typed decoder below so malformed
+// input keeps encoding/json's existing error behavior.
+func rejectDuplicateJSONKeys(data []byte) error {
+	err := scanJSONValue(json.NewDecoder(bytes.NewReader(data)))
+	var duplicate duplicateJSONKeyError
+	if errors.As(err, &duplicate) {
+		return duplicate
+	}
+	return nil
+}
+
+func scanJSONValue(dec *json.Decoder) error {
+	token, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	delim, ok := token.(json.Delim)
+	if !ok {
+		return nil
+	}
+	switch delim {
+	case '{':
+		seen := make(map[string]struct{})
+		for dec.More() {
+			keyToken, err := dec.Token()
+			if err != nil {
+				return err
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return errors.New("json: object key is not a string")
+			}
+			if _, exists := seen[key]; exists {
+				return duplicateJSONKeyError(key)
+			}
+			seen[key] = struct{}{}
+			if err := scanJSONValue(dec); err != nil {
+				return err
+			}
+		}
+	case '[':
+		for dec.More() {
+			if err := scanJSONValue(dec); err != nil {
+				return err
+			}
+		}
+	}
+	_, err = dec.Token()
+	return err
 }
 
 // withEveryUnknownField upgrades encoding/json's first-unknown-key error to the
