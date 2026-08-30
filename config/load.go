@@ -173,11 +173,22 @@ func ValidateConfig(cfg Config) error {
 		return fmt.Errorf("at least one target is required")
 	}
 
+	targetKeys := make(map[string]struct{}, len(cfg.Targets))
 	for _, t := range cfg.Targets {
+		if t.VirtualKey == "" {
+			return fmt.Errorf("target virtual_key must not be empty")
+		}
+		if _, duplicate := targetKeys[t.VirtualKey]; duplicate {
+			return fmt.Errorf("target virtual_key %q is listed more than once", t.VirtualKey)
+		}
+		targetKeys[t.VirtualKey] = struct{}{}
 		if err := validateTargetConcurrency(t); err != nil {
 			return err
 		}
 		if err := validateTargetModels(t); err != nil {
+			return err
+		}
+		if err := validateTargetModelMap(t, cfg.Aliases); err != nil {
 			return err
 		}
 		if err := validateTargetRetry(t); err != nil {
@@ -695,6 +706,27 @@ func validateTargetModels(t Target) error {
 			return fmt.Errorf("target %q: models[%d] %q is listed more than once", t.VirtualKey, i, m)
 		}
 		seen[m] = struct{}{}
+	}
+	return nil
+}
+
+func validateTargetModelMap(t Target, aliases map[string]string) error {
+	for routed, upstream := range t.ModelMap {
+		if routed == "" || strings.TrimSpace(routed) != routed {
+			return fmt.Errorf("target %q: model_map key must be a non-empty model id with no surrounding whitespace, got %q", t.VirtualKey, routed)
+		}
+		if strings.ContainsAny(routed, modelWildcardChars) {
+			return fmt.Errorf("target %q: model_map key %q contains a wildcard; declare each model id exactly", t.VirtualKey, routed)
+		}
+		if _, unreachable := aliases[routed]; unreachable {
+			return fmt.Errorf("target %q: model_map key %q is unreachable because it is a global alias", t.VirtualKey, routed)
+		}
+		if upstream == "" || strings.TrimSpace(upstream) != upstream {
+			return fmt.Errorf("target %q: model_map[%q] must be a non-empty model id with no surrounding whitespace, got %q", t.VirtualKey, routed, upstream)
+		}
+		if strings.ContainsAny(upstream, modelWildcardChars) {
+			return fmt.Errorf("target %q: model_map[%q] %q contains a wildcard; map to an exact model id", t.VirtualKey, routed, upstream)
+		}
 	}
 	return nil
 }

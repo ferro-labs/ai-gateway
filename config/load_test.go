@@ -36,6 +36,28 @@ func TestLoadConfig_Valid(t *testing.T) {
 	}
 }
 
+func TestLoadConfig_TargetModelMap(t *testing.T) {
+	tests := []struct {
+		name string
+		ext  string
+		data string
+	}{
+		{name: "JSON", ext: "json", data: `{"strategy":{"mode":"single"},"targets":[{"virtual_key":"openai","model_map":{"support-chat":"gpt-4o"}}]}`},
+		{name: "YAML", ext: "yaml", data: "strategy:\n  mode: single\ntargets:\n  - virtual_key: openai\n    model_map:\n      support-chat: gpt-4o\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := config.LoadConfig(writeTempFile(t, "config."+tt.ext, tt.data))
+			if err != nil {
+				t.Fatalf("LoadConfig: %v", err)
+			}
+			if got := cfg.Targets[0].ModelMap["support-chat"]; got != "gpt-4o" {
+				t.Errorf("model_map[support-chat] = %q, want gpt-4o", got)
+			}
+		})
+	}
+}
+
 func TestLoadConfig_CostOptimizedUnpricedStrategy(t *testing.T) {
 	data := `{
 		"strategy": {"mode": "cost-optimized", "unpriced_strategy": "skip"},

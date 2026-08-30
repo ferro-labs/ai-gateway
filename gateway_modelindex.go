@@ -87,7 +87,8 @@ func configuredModelsOf(p providers.Provider) []string {
 	return cm.ConfiguredModels()
 }
 
-// declaredModelsByTarget collects targets[].models into a per-provider list.
+// declaredModelsByTarget collects targets[].models and model_map keys into a
+// per-provider list.
 //
 // A target's virtual_key IS the provider name everywhere else in routing
 // (targetedProviders, IsTargetedProvider, routeTargets), so the same identity
@@ -102,10 +103,12 @@ func configuredModelsOf(p providers.Provider) []string {
 func declaredModelsByTarget(targets []config.Target) map[string][]string {
 	out := make(map[string][]string, len(targets))
 	for _, t := range targets {
-		if len(t.Models) == 0 {
-			continue
-		}
 		for _, m := range t.Models {
+			if !slices.Contains(out[t.VirtualKey], m) {
+				out[t.VirtualKey] = append(out[t.VirtualKey], m)
+			}
+		}
+		for m := range t.ModelMap {
 			if !slices.Contains(out[t.VirtualKey], m) {
 				out[t.VirtualKey] = append(out[t.VirtualKey], m)
 			}

@@ -382,6 +382,10 @@ type Target struct {
 	// no-op — the sources are merged and de-duplicated — so pinning one against a
 	// catalog that may change is safe.
 	Models []string `json:"models,omitempty" yaml:"models,omitempty"`
+	// ModelMap maps routed model IDs to exact model IDs sent to this target.
+	// Keys join the target's additive model inventory. Global aliases resolve
+	// before this mapping, so an alias name cannot be used as a key.
+	ModelMap map[string]string `json:"model_map,omitempty" yaml:"model_map,omitempty"`
 	// Retry configuration for this target.
 	Retry *RetryConfig `json:"retry,omitempty" yaml:"retry,omitempty"`
 	// CircuitBreaker configuration for this target (optional).

@@ -53,6 +53,7 @@ func TestGateway_AliasPricing(t *testing.T) {
 	}{
 		{name: "canonical name", virtualKey: "mock"},
 		{name: "routing alias", virtualKey: "mock--credential-1"},
+		{name: "credential-scoped routing alias", virtualKey: "openai::credential-id"},
 	}
 
 	for _, tt := range tests {
