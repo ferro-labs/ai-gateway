@@ -477,11 +477,43 @@ func TestPipeline_PoolModesStopOnUnsafeFailures(t *testing.T) {
 				if routeErr == nil {
 					t.Fatal("routeTargets succeeded")
 				}
+				wantErr := fmt.Sprintf("target first: %v", failure.err)
+				if routeErr.Error() != wantErr {
+					t.Errorf("error = %q, want %q", routeErr, wantErr)
+				}
 				if target.key != "first" || first.calls.Load() != 1 || second.calls.Load() != 0 {
 					t.Errorf("target=%q calls=(%d,%d), want first and (1,0)", target.key, first.calls.Load(), second.calls.Load())
 				}
 			})
 		}
+	}
+}
+
+func TestPipeline_ExhaustedPoolReportsAggregateFailure(t *testing.T) {
+	firstErr := errors.New("first failed")
+	secondErr := errors.New("second failed")
+	first := newCountingProvider("first", func() (*providers.Response, error) { return nil, firstErr })
+	second := newCountingProvider("second", func() (*providers.Response, error) { return nil, secondErr })
+	gw, err := newTestGateway(t, config.Config{Targets: []config.Target{
+		{VirtualKey: "first"}, {VirtualKey: "second"},
+	}})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+	gw.RegisterProvider(first)
+	gw.RegisterProvider(second)
+
+	_, target, routeErr := routeTargets(context.Background(), gw, targetPlan{
+		keys: []string{"first", "second"}, model: pipelineModel, advance: true,
+	}, pipelineRequest(), nil, completeChat)
+	if routeErr == nil {
+		t.Fatal("routeTargets succeeded")
+	}
+	if want := "all providers failed: target second: second failed"; routeErr.Error() != want {
+		t.Errorf("error = %q, want %q", routeErr, want)
+	}
+	if target.key != "second" || first.calls.Load() != 1 || second.calls.Load() != 1 {
+		t.Errorf("target=%q calls=(%d,%d), want second and (1,1)", target.key, first.calls.Load(), second.calls.Load())
 	}
 }
 

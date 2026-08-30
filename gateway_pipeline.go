@@ -145,9 +145,10 @@ func routeTargets[Req, Resp any](
 	keys := g.eligibleKeys(plan, gate)
 
 	var (
-		lastErr    error
-		lastTarget routedTarget
-		attempts   int
+		lastErr      error
+		lastTarget   routedTarget
+		attempts     int
+		stoppedEarly bool
 		// A failure the walk moves past is invisible to the terminal recorder,
 		// which only ever names the last target tried. Under mode: fallback a
 		// provider can fail every request and read zero on
@@ -201,6 +202,7 @@ func routeTargets[Req, Resp any](
 			break
 		}
 		if ctx.Err() != nil || !shouldAdvanceTarget(err) {
+			stoppedEarly = true
 			break
 		}
 	}
@@ -212,7 +214,7 @@ func routeTargets[Req, Resp any](
 	if attempts == 0 {
 		return zero, routedTarget{}, errNoCapableTarget(plan.model)
 	}
-	if plan.advance {
+	if plan.advance && !stoppedEarly {
 		// Only a strategy that falls back can honestly claim this: it really did
 		// ask every candidate. A single-target mode asked one, and says so.
 		return zero, lastTarget, fmt.Errorf("all providers failed: %w", lastErr)
