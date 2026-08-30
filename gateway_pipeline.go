@@ -579,13 +579,13 @@ func attemptTarget[Req, Resp any](
 		resp, err := callUnderResilience(ctx, target.key, p, cb, lim, req, upstreamModel, call)
 		if obsEventsActive {
 			(*attemptSequence)++
-			g.recordRoutingAttempt(ctx, obs, true, routingAttempt{
-				target:         target,
-				routedModel:    routedModel,
-				sequence:       *attemptSequence,
-				targetSequence: attempt + 1,
-			}, time.Since(started), err)
 		}
+		g.recordRoutingAttempt(ctx, obs, obsEventsActive, routingAttempt{
+			target:         target,
+			routedModel:    routedModel,
+			sequence:       *attemptSequence,
+			targetSequence: attempt + 1,
+		}, time.Since(started), err)
 		if err == nil {
 			return resp, nil
 		}

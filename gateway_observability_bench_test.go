@@ -61,6 +61,37 @@ func TestRoutingAttemptRecordingDisabledAllocatesNothing(t *testing.T) {
 	}
 }
 
+func TestAttemptTargetDisabledRecordingAllocatesNothing(t *testing.T) {
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets:  []config.Target{{VirtualKey: "mock"}},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+	ctx := context.Background()
+	p := &mockProvider{name: "mock", models: []string{"gpt-4o"}}
+	resp := &providers.Response{ID: "ok", Provider: "mock", Model: "gpt-4o"}
+	call := func(context.Context, providers.Provider, providers.Request, string) (*providers.Response, error) {
+		return resp, nil
+	}
+	req := providers.Request{Model: "gpt-4o"}
+	target := routedTarget{key: "mock", priceProvider: "mock", upstreamModel: "gpt-4o"}
+	sequence := 0
+
+	callAllocs := testing.AllocsPerRun(1000, func() {
+		_, _ = callUnderResilience(ctx, "mock", p, nil, nil, req, "gpt-4o", call)
+	})
+	attemptAllocs := testing.AllocsPerRun(1000, func() {
+		sequence = 0
+		_, _ = attemptTarget(ctx, gw, observability.NoOp(), false, target, "gpt-4o", &sequence, p, nil, nil, req, "gpt-4o", call)
+	})
+	t.Logf("allocations per run: attempt=%v call=%v attributable=%v", attemptAllocs, callAllocs, attemptAllocs-callAllocs)
+	if attributable := attemptAllocs - callAllocs; attributable != 0 {
+		t.Fatalf("disabled attempt recording allocations = %v (attempt=%v call=%v), want 0", attributable, attemptAllocs, callAllocs)
+	}
+}
+
 // TestRoute_TracingOff_AllocBaseline asserts the issue #49 acceptance
 // criterion: calling SetObservability(observability.NoOp()) must add ZERO
 // allocations compared to a gateway that never calls SetObservability (which

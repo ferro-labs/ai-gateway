@@ -10,6 +10,7 @@ import (
 
 	"github.com/ferro-labs/ai-gateway/config"
 	"github.com/ferro-labs/ai-gateway/observability"
+	"github.com/ferro-labs/ai-gateway/pkg/circuitbreaker"
 	"github.com/ferro-labs/ai-gateway/pkg/logger"
 	"github.com/ferro-labs/ai-gateway/pkg/metrics"
 	"github.com/ferro-labs/ai-gateway/plugin"
@@ -575,6 +576,105 @@ func TestGateway_Route_RecordsEachRetryAndFailoverAttempt(t *testing.T) {
 	}
 	if terminal := eventsWithSubject(ep.capturedEvents(), "gateway.request.completed"); len(terminal) != 1 {
 		t.Errorf("completed terminal events = %d, want 1", len(terminal))
+	}
+}
+
+func TestGateway_Route_RecordsOpenCircuitRefusalAttempt(t *testing.T) {
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets: []config.Target{{
+			VirtualKey:     "mock",
+			CircuitBreaker: &config.CircuitBreakerConfig{FailureThreshold: 1, Timeout: "1h"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+	ep := &eventCapturingProvider{recordingActive: true}
+	gw.SetObservability(ep)
+
+	calls := 0
+	gw.RegisterProvider(&mockProvider{
+		name: "mock", models: []string{testModel},
+		completeFn: func(context.Context, providers.Request) (*providers.Response, error) {
+			calls++
+			return nil, errors.New("upstream failed")
+		},
+	})
+	req := providers.Request{Model: testModel, Messages: []providers.Message{{Role: "user", Content: "hi"}}}
+	if _, err := gw.Route(context.Background(), req); err == nil {
+		t.Fatal("seed call should open the circuit")
+	}
+	before := len(eventsWithSubject(ep.capturedEvents(), observability.SubjectRoutingAttempt))
+
+	_, err = gw.Route(context.Background(), req)
+	if !errors.Is(err, circuitbreaker.ErrCircuitOpen) {
+		t.Fatalf("refused route error = %v, want ErrCircuitOpen", err)
+	}
+	if calls != 1 {
+		t.Fatalf("provider calls = %d, want 1: refused call must not invoke provider", calls)
+	}
+	attempts := eventsWithSubject(ep.capturedEvents(), observability.SubjectRoutingAttempt)
+	if len(attempts) != before+1 {
+		t.Fatalf("refusal attempt event delta = %d, want 1", len(attempts)-before)
+	}
+	got := attempts[len(attempts)-1].RoutingAttempt
+	if got == nil || got.Status != http.StatusServiceUnavailable || got.Outcome != observability.RoutingAttemptError {
+		t.Fatalf("refusal attempt = %#v, want status 503 and error outcome", got)
+	}
+}
+
+func TestGateway_Route_RecordsSaturationRefusalAttempt(t *testing.T) {
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets: []config.Target{{
+			VirtualKey:  "mock",
+			Concurrency: &config.ConcurrencyConfig{MaxConcurrency: 1, QueueSize: 1},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+	ep := &eventCapturingProvider{recordingActive: true}
+	gw.SetObservability(ep)
+
+	calls := 0
+	gw.RegisterProvider(&mockProvider{
+		name: "mock", models: []string{testModel},
+		completeFn: func(context.Context, providers.Request) (*providers.Response, error) {
+			calls++
+			return &providers.Response{ID: "unexpected"}, nil
+		},
+	})
+	lim := gw.limiters["mock"]
+	if err := lim.acquire(context.Background()); err != nil {
+		t.Fatalf("occupy in-flight slot: %v", err)
+	}
+	queuedCtx, cancelQueued := context.WithCancel(context.Background())
+	queued := make(chan error, 1)
+	go func() { queued <- lim.acquire(queuedCtx) }()
+	waitFor(t, func() bool { return lim.waiting.Load() == 1 })
+
+	_, routeErr := gw.Route(context.Background(), providers.Request{Model: testModel, Messages: []providers.Message{{Role: "user", Content: "hi"}}})
+	cancelQueued()
+	if err := <-queued; !errors.Is(err, context.Canceled) {
+		t.Fatalf("queued acquire cleanup = %v, want context.Canceled", err)
+	}
+	lim.release()
+
+	if !errors.Is(routeErr, providers.ErrProviderSaturated) {
+		t.Fatalf("refused route error = %v, want ErrProviderSaturated", routeErr)
+	}
+	if calls != 0 {
+		t.Fatalf("provider calls = %d, want 0 for refused call", calls)
+	}
+	attempts := eventsWithSubject(ep.capturedEvents(), observability.SubjectRoutingAttempt)
+	if len(attempts) != 1 {
+		t.Fatalf("routing attempt events = %d, want 1", len(attempts))
+	}
+	got := attempts[0].RoutingAttempt
+	if got == nil || got.Status != http.StatusTooManyRequests || got.Outcome != observability.RoutingAttemptError {
+		t.Fatalf("refusal attempt = %#v, want status 429 and error outcome", got)
 	}
 }
 
