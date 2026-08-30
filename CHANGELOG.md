@@ -458,9 +458,11 @@ model. Under `cost-optimized`, which ranks deterministically, that was every
 request.
 
 `fallback`, `loadbalance`, `least-latency`, `cost-optimized` and `ab-test` now
-advance to the next candidate. `single`, `conditional` and `content-based` do
-not: those name one target on purpose, and answering from another would make the
-rule a suggestion.
+advance after transport failures, 408, 429, 5xx, an open circuit, or target
+saturation. They stop on cancellation, deadline expiry, and every other 4xx.
+`single`, `conditional` and `content-based` do not advance after a provider call:
+those name one target on purpose, and answering from another would make the rule
+a suggestion.
 
 A circuit breaker was previously the only thing that moved traffic off a bad
 target, and breakers are opt-in — the shipped examples configure one across

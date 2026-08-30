@@ -2,7 +2,9 @@ package aigateway
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/ferro-labs/ai-gateway/config"
@@ -198,7 +200,7 @@ func routeTargets[Req, Resp any](
 		if !plan.advance {
 			break
 		}
-		if ctx.Err() != nil {
+		if ctx.Err() != nil || !shouldAdvanceTarget(err) {
 			break
 		}
 	}
@@ -216,6 +218,21 @@ func routeTargets[Req, Resp any](
 		return zero, lastTarget, fmt.Errorf("all providers failed: %w", lastErr)
 	}
 	return zero, lastTarget, lastErr
+}
+
+// shouldAdvanceTarget reports whether a pool may offer a failed request to a
+// different target after the current target's configured attempts are spent.
+// Same-target retry is classified separately by strategies.ShouldRetry.
+func shouldAdvanceTarget(err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	if errors.Is(err, circuitbreaker.ErrCircuitOpen) || errors.Is(err, core.ErrProviderSaturated) {
+		return true
+	}
+	code := providers.ParseStatusCode(err)
+	return code == 0 || code == http.StatusRequestTimeout ||
+		code == http.StatusTooManyRequests || code >= http.StatusInternalServerError
 }
 
 // eligibleKeys narrows a strategy's candidate order to the targets the walk may

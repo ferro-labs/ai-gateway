@@ -377,6 +377,146 @@ func TestPipeline_FallbackAdvancesPastAFailingTarget(t *testing.T) {
 	}
 }
 
+func TestPipeline_PoolModesAdvanceOnlyOnSafeFailures(t *testing.T) {
+	poolModes := []config.StrategyMode{
+		config.ModeFallback,
+		config.ModeLoadBalance,
+		config.ModeLatency,
+		config.ModeCostOptimized,
+		config.ModeABTest,
+	}
+	failures := []struct {
+		name     string
+		err      error
+		attempts int64
+	}{
+		{name: "transport", err: errors.New("connection reset"), attempts: 2},
+		{name: "request timeout", err: core.StatusError("first", http.StatusRequestTimeout, "timeout"), attempts: 2},
+		{name: "rate limit", err: core.StatusError("first", http.StatusTooManyRequests, "limited"), attempts: 2},
+		{name: "server error", err: core.StatusError("first", http.StatusBadGateway, "bad gateway"), attempts: 2},
+		{name: "open circuit", err: fmt.Errorf("breaker: %w", circuitbreaker.ErrCircuitOpen), attempts: 1},
+		{name: "saturation", err: fmt.Errorf("limiter: %w", core.ErrProviderSaturated), attempts: 1},
+	}
+
+	for _, mode := range poolModes {
+		for _, failure := range failures {
+			t.Run(string(mode)+"/"+failure.name, func(t *testing.T) {
+				first := newCountingProvider("first", func() (*providers.Response, error) {
+					return nil, failure.err
+				})
+				second := newCountingProvider("second", func() (*providers.Response, error) {
+					return &providers.Response{ID: "ok", Model: pipelineModel}, nil
+				})
+				gw, err := newTestGateway(t, config.Config{Targets: []config.Target{
+					{VirtualKey: "first", Retry: &config.RetryConfig{Attempts: 2, InitialBackoffMs: 1}},
+					{VirtualKey: "second"},
+				}})
+				if err != nil {
+					t.Fatalf("new gateway: %v", err)
+				}
+				gw.RegisterProvider(first)
+				gw.RegisterProvider(second)
+
+				_, target, routeErr := routeTargets(context.Background(), gw, targetPlan{
+					keys: []string{"first", "second"}, model: pipelineModel, advance: advancesPastFailure(mode),
+				}, pipelineRequest(), nil, completeChat)
+				if routeErr != nil {
+					t.Fatalf("routeTargets: %v", routeErr)
+				}
+				if target.key != "second" || first.calls.Load() != failure.attempts || second.calls.Load() != 1 {
+					t.Errorf("target=%q calls=(%d,%d), want second and (%d,1)", target.key, first.calls.Load(), second.calls.Load(), failure.attempts)
+				}
+			})
+		}
+	}
+}
+
+func TestPipeline_PoolModesStopOnUnsafeFailures(t *testing.T) {
+	poolModes := []config.StrategyMode{
+		config.ModeFallback,
+		config.ModeLoadBalance,
+		config.ModeLatency,
+		config.ModeCostOptimized,
+		config.ModeABTest,
+	}
+	failures := []struct {
+		name string
+		err  error
+	}{
+		{name: "400", err: core.StatusError("first", http.StatusBadRequest, "bad request")},
+		{name: "401", err: core.StatusError("first", http.StatusUnauthorized, "unauthorized")},
+		{name: "403", err: core.StatusError("first", http.StatusForbidden, "forbidden")},
+		{name: "404", err: core.StatusError("first", http.StatusNotFound, "not found")},
+		{name: "422", err: core.StatusError("first", http.StatusUnprocessableEntity, "invalid")},
+		{name: "canceled", err: fmt.Errorf("provider: %w", context.Canceled)},
+		{name: "deadline", err: fmt.Errorf("provider: %w", context.DeadlineExceeded)},
+		{name: "deadline beats saturation", err: errors.Join(core.ErrProviderSaturated, context.DeadlineExceeded)},
+	}
+
+	for _, mode := range poolModes {
+		for _, failure := range failures {
+			t.Run(string(mode)+"/"+failure.name, func(t *testing.T) {
+				first := newCountingProvider("first", func() (*providers.Response, error) {
+					return nil, failure.err
+				})
+				second := newCountingProvider("second", func() (*providers.Response, error) {
+					return &providers.Response{ID: "unexpected", Model: pipelineModel}, nil
+				})
+				gw, err := newTestGateway(t, config.Config{Targets: []config.Target{
+					{VirtualKey: "first"}, {VirtualKey: "second"},
+				}})
+				if err != nil {
+					t.Fatalf("new gateway: %v", err)
+				}
+				gw.RegisterProvider(first)
+				gw.RegisterProvider(second)
+
+				_, target, routeErr := routeTargets(context.Background(), gw, targetPlan{
+					keys: []string{"first", "second"}, model: pipelineModel, advance: advancesPastFailure(mode),
+				}, pipelineRequest(), nil, completeChat)
+				if routeErr == nil {
+					t.Fatal("routeTargets succeeded")
+				}
+				if target.key != "first" || first.calls.Load() != 1 || second.calls.Load() != 0 {
+					t.Errorf("target=%q calls=(%d,%d), want first and (1,0)", target.key, first.calls.Load(), second.calls.Load())
+				}
+			})
+		}
+	}
+}
+
+func TestPipeline_RequestCancellationStopsTransportFailover(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	first := newCountingProvider("first", func() (*providers.Response, error) {
+		cancel()
+		return nil, errors.New("connection reset")
+	})
+	second := newCountingProvider("second", func() (*providers.Response, error) {
+		return &providers.Response{ID: "unexpected", Model: pipelineModel}, nil
+	})
+	gw, err := newTestGateway(t, config.Config{Targets: []config.Target{
+		{VirtualKey: "first"}, {VirtualKey: "second"},
+	}})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+	gw.RegisterProvider(first)
+	gw.RegisterProvider(second)
+
+	_, target, routeErr := routeTargets(ctx, gw, targetPlan{
+		keys: []string{"first", "second"}, model: pipelineModel, advance: true,
+	}, pipelineRequest(), nil, completeChat)
+	if routeErr == nil {
+		t.Fatal("routeTargets succeeded")
+	}
+	if second.calls.Load() != 0 {
+		t.Errorf("second target was attempted %d times after request cancellation", second.calls.Load())
+	}
+	if target.key != "first" {
+		t.Errorf("failed target = %q, want first", target.key)
+	}
+}
+
 // The pipeline records latency against the TARGET KEY, which is the key
 // LeastLatency reads its samples back by. Recording the provider's own reported
 // name instead would leave the tracker holding samples nothing ever queries.
