@@ -373,7 +373,7 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	// the after-request plugins need it: the request logger persists it, and it
 	// cannot be recovered later. recordSuccess is handed the same result rather
 	// than repeating the calculation.
-	cost := g.calculateCost(resp, target.priceProvider)
+	cost := g.calculateCost(resp, target.priceProvider, target.upstreamModel)
 
 	// Measured before the stage runs, so the duration a logging plugin records
 	// does not include that plugin. Streaming requests take the other path, in
@@ -577,7 +577,7 @@ func (g *Gateway) runMCPLoop(ctx context.Context, mcpExecutorSnapshot *mcp.Execu
 			// differently-priced providers, and pricing each against the provider
 			// that served it is strictly better than pricing the total at the
 			// last one's rate.
-			if turnCost := g.calculateCost(resp, target.priceProvider); turnCost.Priced {
+			if turnCost := g.calculateCost(resp, target.priceProvider, target.upstreamModel); turnCost.Priced {
 				spentUSD += turnCost.TotalUSD
 				spentPriced = true
 			}

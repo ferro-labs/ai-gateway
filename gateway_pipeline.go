@@ -101,7 +101,7 @@ type targetPlan struct {
 // targetCall performs one surface's provider call. It is passed as a plain
 // function rather than a closure so the request does not have to be captured,
 // which keeps the hot path free of a per-request closure allocation.
-type targetCall[Req, Resp any] func(context.Context, providers.Provider, Req) (Resp, error)
+type targetCall[Req, Resp any] func(context.Context, providers.Provider, Req, string) (Resp, error)
 
 // capabilityGate reports whether a provider can serve a surface at all —
 // providers.StreamProvider for streaming, providers.EmbeddingProvider for
@@ -115,6 +115,7 @@ type capabilityGate func(providers.Provider) bool
 type routedTarget struct {
 	key           string
 	priceProvider string
+	upstreamModel string
 }
 
 // routeTargets walks plan and returns the first target's answer.
@@ -160,11 +161,11 @@ func routeTargets[Req, Resp any](
 		maskedErr error
 	)
 	for _, key := range keys {
-		p, cb, lim, ok := g.resolveTarget(ctx, key, plan.model, gate)
+		p, cb, lim, upstreamModel, ok := g.resolveTarget(ctx, key, plan.model, gate)
 		if !ok {
 			continue
 		}
-		target := routedTarget{key: key, priceProvider: providers.CanonicalName(p)}
+		target := routedTarget{key: key, priceProvider: providers.CanonicalName(p), upstreamModel: upstreamModel}
 		if plan.responseOutlivesCall {
 			// Composition and order are decorateProvider's, which is the same
 			// pair callUnderResilience applies at the call site — breaker
@@ -182,7 +183,7 @@ func routeTargets[Req, Resp any](
 		lastTarget = target
 
 		started := time.Now()
-		resp, err := attemptTarget(ctx, g, key, p, cb, lim, req, call)
+		resp, err := attemptTarget(ctx, g, key, p, cb, lim, req, upstreamModel, call)
 		if err == nil {
 			// Latency is recorded against the TARGET KEY and covers the provider
 			// call only. Both halves matter: least-latency reads its samples back
@@ -445,12 +446,21 @@ func (g *Gateway) admitModel(ctx context.Context, plugins *plugin.Manager, model
 // resolveTarget looks up one candidate and the resilience decorators configured
 // for it, in a single lock acquisition. It reports false when the target is not
 // registered, does not serve the model, or cannot serve this surface.
-func (g *Gateway) resolveTarget(ctx context.Context, key, model string, gate capabilityGate) (providers.Provider, *circuitbreaker.CircuitBreaker, *providerLimiter, bool) {
+func (g *Gateway) resolveTarget(ctx context.Context, key, model string, gate capabilityGate) (providers.Provider, *circuitbreaker.CircuitBreaker, *providerLimiter, string, bool) {
 	g.mu.RLock()
 	p, registered := g.providers[key]
 	serves := registered && g.candidateLocked(key, p, model, gate)
 	cb := g.circuitBreakers[key]
 	lim := g.limiters[key]
+	upstreamModel := model
+	for _, target := range g.config.Targets {
+		if target.VirtualKey == key {
+			if mapped := target.ModelMap[model]; mapped != "" {
+				upstreamModel = mapped
+			}
+			break
+		}
+	}
 	g.mu.RUnlock()
 
 	if !registered {
@@ -460,15 +470,15 @@ func (g *Gateway) resolveTarget(ctx context.Context, key, model string, gate cap
 		// which providers are configured and which of them are broken. The
 		// operator reads it here instead.
 		g.log.Ctx(ctx).Warn("provider not found, skipping", "provider", key)
-		return nil, nil, nil, false
+		return nil, nil, nil, "", false
 	}
 	// A registered target that does not serve this model is ordinary routing,
 	// not a fault, and logging it would put a line on the hot path of every
 	// multi-target config.
 	if !serves {
-		return nil, nil, nil, false
+		return nil, nil, nil, "", false
 	}
-	return p, cb, lim, true
+	return p, cb, lim, upstreamModel, true
 }
 
 // servesSurface reports whether a target could serve this surface at all,
@@ -509,6 +519,7 @@ func attemptTarget[Req, Resp any](
 	cb *circuitbreaker.CircuitBreaker,
 	lim *providerLimiter,
 	req Req,
+	upstreamModel string,
 	call targetCall[Req, Resp],
 ) (Resp, error) {
 	var zero Resp
@@ -536,7 +547,7 @@ func attemptTarget[Req, Resp any](
 			}
 			g.log.Ctx(ctx).Info("retrying target", "target", key, "attempt", attempt+1)
 		}
-		resp, err := callUnderResilience(ctx, key, p, cb, lim, req, call)
+		resp, err := callUnderResilience(ctx, key, p, cb, lim, req, upstreamModel, call)
 		if err == nil {
 			return resp, nil
 		}
@@ -572,10 +583,11 @@ func callUnderResilience[Req, Resp any](
 	cb *circuitbreaker.CircuitBreaker,
 	lim *providerLimiter,
 	req Req,
+	upstreamModel string,
 	call targetCall[Req, Resp],
 ) (resp Resp, err error) {
 	if cb == nil && lim == nil {
-		return call(ctx, p, req)
+		return call(ctx, p, req, upstreamModel)
 	}
 
 	if cb != nil {
@@ -600,7 +612,7 @@ func callUnderResilience[Req, Resp any](
 		defer lim.release()
 	}
 
-	return call(ctx, p, req)
+	return call(ctx, p, req, upstreamModel)
 }
 
 // planFor pairs a strategy's candidate order with whether that strategy falls
@@ -655,7 +667,9 @@ func advancesPastFailure(mode config.StrategyMode) bool {
 // completeChat is chat's provider call. A package-level function, not a
 // closure: the request rides through routeTargets as a value, so the hot path
 // allocates nothing to describe the call.
-func completeChat(ctx context.Context, p providers.Provider, req providers.Request) (*providers.Response, error) {
+
+func completeChat(ctx context.Context, p providers.Provider, req providers.Request, upstreamModel string) (*providers.Response, error) {
+	req.Model = upstreamModel
 	return p.Complete(ctx, req)
 }
 

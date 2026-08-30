@@ -80,6 +80,9 @@ func (r surfaceRecord) pluginView() *providers.Response {
 // they come to disagree when a catalog refresh lands between the two calls.
 // Chat splits calculateCost out of recordSuccess for the same reason.
 func (g *Gateway) priceSurface(target routedTarget, model string, tokens providers.Usage, imageCount int) surfaceRecord {
+	if model == "" {
+		model = target.upstreamModel
+	}
 	record := surfaceRecord{provider: target.key, model: model, tokens: tokens, imageCount: imageCount}
 	g.mu.RLock()
 	catalog := g.catalog
@@ -405,7 +408,7 @@ func (g *Gateway) GenerateImage(ctx context.Context, req providers.ImageRequest)
 		// discarding them here priced every such generation at nothing. A
 		// provider that reports none leaves this zero and its request stays
 		// unpriced, exactly as before.
-		return g.priceSurface(target, req.Model, generated.Usage, len(generated.Data)), nil
+		return g.priceSurface(target, "", generated.Usage, len(generated.Data)), nil
 	})
 	latency := time.Since(start)
 	if err != nil {
@@ -472,7 +475,7 @@ func (g *Gateway) Rerank(ctx context.Context, req providers.RerankRequest) (*pro
 		// Rerank bills in search-units, which the catalog does not yet price, so
 		// the request is left unpriced (zero tokens) rather than costed wrongly —
 		// the same graceful-zero path an unpriced image model takes.
-		return g.priceSurface(target, req.Model, providers.Usage{}, 0), nil
+		return g.priceSurface(target, reranked.Model, providers.Usage{}, 0), nil
 	})
 	latency := time.Since(start)
 	if err != nil {
@@ -491,8 +494,6 @@ func (g *Gateway) Rerank(ctx context.Context, req providers.RerankRequest) (*pro
 // the gateway strategy, under the shared governance pipeline — the same signals
 // as Embed. Moderation is unpriced (OpenAI's classifier is free); cost stays
 // zero.
-//
-//nolint:dupl // the non-chat surface methods are intentionally parallel to Embed/Transcribe; a generic helper would obscure per-surface differences (content projection, span operation, logging)
 func (g *Gateway) Moderate(ctx context.Context, req providers.ModerationRequest) (*providers.ModerationResponse, error) {
 	log := g.log.Ctx(ctx)
 	start := time.Now()
@@ -529,7 +530,7 @@ func (g *Gateway) Moderate(ctx context.Context, req providers.ModerationRequest)
 			return surfaceRecord{provider: target.key, model: req.Model}, routeErr
 		}
 		resp = moderated
-		return g.priceSurface(target, req.Model, providers.Usage{}, 0), nil
+		return g.priceSurface(target, moderated.Model, providers.Usage{}, 0), nil
 	})
 	latency := time.Since(start)
 	if err != nil {
@@ -586,7 +587,7 @@ func (g *Gateway) Transcribe(ctx context.Context, req providers.TranscriptionReq
 			return surfaceRecord{provider: target.key, model: req.Model}, routeErr
 		}
 		resp = transcribed
-		return g.priceSurface(target, req.Model, providers.Usage{}, 0), nil
+		return g.priceSurface(target, "", providers.Usage{}, 0), nil
 	})
 	latency := time.Since(start)
 	if err != nil {
@@ -643,7 +644,7 @@ func (g *Gateway) Speech(ctx context.Context, req providers.SpeechRequest) (*pro
 			return surfaceRecord{provider: target.key, model: req.Model}, routeErr
 		}
 		resp = synthesized
-		return g.priceSurface(target, req.Model, providers.Usage{}, 0), nil
+		return g.priceSurface(target, "", providers.Usage{}, 0), nil
 	})
 	latency := time.Since(start)
 	if err != nil {
@@ -831,32 +832,38 @@ func surfaceGate(surface string) capabilityGate {
 // rather than closures, so the request rides through routeTargets as a value
 // and the hot path allocates nothing to describe the call. The gate above has
 // already run by the time either executes, so neither assertion can fail.
-func embed(ctx context.Context, p providers.Provider, req providers.EmbeddingRequest) (*providers.EmbeddingResponse, error) {
+func embed(ctx context.Context, p providers.Provider, req providers.EmbeddingRequest, upstreamModel string) (*providers.EmbeddingResponse, error) {
+	req.Model = upstreamModel
 	provider, _ := providers.As[providers.EmbeddingProvider](p)
 	return provider.Embed(ctx, req) // embeddingCapable gated candidacy
 }
 
-func generateImage(ctx context.Context, p providers.Provider, req providers.ImageRequest) (*providers.ImageResponse, error) {
+func generateImage(ctx context.Context, p providers.Provider, req providers.ImageRequest, upstreamModel string) (*providers.ImageResponse, error) {
+	req.Model = upstreamModel
 	provider, _ := providers.As[providers.ImageProvider](p)
 	return provider.GenerateImage(ctx, req) // imageCapable gated candidacy
 }
 
-func rerank(ctx context.Context, p providers.Provider, req providers.RerankRequest) (*providers.RerankResponse, error) {
+func rerank(ctx context.Context, p providers.Provider, req providers.RerankRequest, upstreamModel string) (*providers.RerankResponse, error) {
+	req.Model = upstreamModel
 	provider, _ := providers.As[providers.RerankProvider](p)
 	return provider.Rerank(ctx, req) // rerankCapable gated candidacy
 }
 
-func moderate(ctx context.Context, p providers.Provider, req providers.ModerationRequest) (*providers.ModerationResponse, error) {
+func moderate(ctx context.Context, p providers.Provider, req providers.ModerationRequest, upstreamModel string) (*providers.ModerationResponse, error) {
+	req.Model = upstreamModel
 	provider, _ := providers.As[providers.ModerationProvider](p)
 	return provider.Moderate(ctx, req) // moderationCapable gated candidacy
 }
 
-func transcribe(ctx context.Context, p providers.Provider, req providers.TranscriptionRequest) (*providers.TranscriptionResponse, error) {
+func transcribe(ctx context.Context, p providers.Provider, req providers.TranscriptionRequest, upstreamModel string) (*providers.TranscriptionResponse, error) {
+	req.Model = upstreamModel
 	provider, _ := providers.As[providers.TranscriptionProvider](p)
 	return provider.Transcribe(ctx, req) // transcriptionCapable gated candidacy
 }
 
-func speak(ctx context.Context, p providers.Provider, req providers.SpeechRequest) (*providers.SpeechResponse, error) {
+func speak(ctx context.Context, p providers.Provider, req providers.SpeechRequest, upstreamModel string) (*providers.SpeechResponse, error) {
+	req.Model = upstreamModel
 	provider, _ := providers.As[providers.SpeechProvider](p)
 	return provider.Speech(ctx, req) // speechCapable gated candidacy
 }

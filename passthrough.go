@@ -358,8 +358,8 @@ func (g *Gateway) forwardUnderResilience(ctx context.Context, key string, forwar
 	lim := g.limiters[key]
 	g.mu.RUnlock()
 
-	_, err := callUnderResilience(ctx, key, nil, cb, lim, struct{}{},
-		func(ctx context.Context, _ providers.Provider, _ struct{}) (struct{}, error) {
+	_, err := callUnderResilience(ctx, key, nil, cb, lim, struct{}{}, "",
+		func(ctx context.Context, _ providers.Provider, _ struct{}, _ string) (struct{}, error) {
 			return struct{}{}, forward(ctx)
 		})
 	return err

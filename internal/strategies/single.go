@@ -8,6 +8,7 @@ import (
 type Target struct {
 	VirtualKey string
 	Weight     float64
+	ModelMap   map[string]string
 }
 
 // Single routes all requests to a single provider.

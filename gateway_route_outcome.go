@@ -184,11 +184,15 @@ func cacheServedMeasurements(start time.Time) plugin.Measurements {
 // recordSuccess runs — the request logger persists it — and pricing a response
 // twice risks the persisted figure and the reported one disagreeing after a
 // catalog refresh lands between them.
-func (g *Gateway) calculateCost(resp *providers.Response, priceProvider string) models.CostResult {
+func (g *Gateway) calculateCost(resp *providers.Response, priceProvider, fallbackModel string) models.CostResult {
 	g.mu.RLock()
 	catalog := g.catalog
 	g.mu.RUnlock()
-	return models.Calculate(catalog, priceProvider+"/"+resp.Model, models.Usage{
+	model := resp.Model
+	if model == "" {
+		model = fallbackModel
+	}
+	return models.Calculate(catalog, priceProvider+"/"+model, models.Usage{
 		PromptTokens:     resp.Usage.PromptTokens,
 		CompletionTokens: resp.Usage.CompletionTokens,
 		ReasoningTokens:  resp.Usage.ReasoningTokens,
