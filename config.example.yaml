@@ -22,10 +22,10 @@ apiVersion: v1
 
 strategy:
   mode: fallback  # single | fallback | loadbalance | conditional | content-based | ab-test | least-latency | cost-optimized
-  # Only `fallback` asks a SECOND target when the first one fails. Every other
-  # mode picks one target and answers with what that target says — the remaining
-  # targets order the choice, they are not attempts. Use `fallback` when a failed
-  # request should be retried elsewhere.
+  # Pool modes (fallback, loadbalance, least-latency, cost-optimized, ab-test)
+  # advance after transport failures, 408, 429, 5xx, open circuits, or target
+  # saturation. Cancellation, deadline expiry, and every other 4xx stop there.
+  # Named modes (single, conditional, content-based) do not advance after a call.
   #
   # Under EVERY mode a target whose circuit breaker is open is passed over when
   # the choice is made, so a dead backend stops taking traffic while a healthy
@@ -96,8 +96,8 @@ targets:
     # are both rejected at load.
     weight: 1.0
     # Retry is per target and applies under EVERY routing mode. Retry is how
-    # many times ONE target is asked; whether a SECOND target is asked at all is
-    # the routing mode's decision, and only `fallback` asks one.
+    # many times ONE target is asked; pool modes may then advance as described
+    # above, while named modes stop.
     retry:
       attempts: 3
       # Only retry on these HTTP status codes. Omit to use the default policy:
@@ -118,6 +118,9 @@ targets:
       # response headers arrive.
   - virtual_key: anthropic
     weight: 1.0
+    # Optional visible-model to upstream-model translation. Keys participate in
+    # routing and /v1/models; pricing uses the mapped upstream model.
+    # model_map: { smart: claude-sonnet-4-6 }
     # Optional per-target circuit breaker.
     #
     # BLAST RADIUS: one breaker per TARGET, not per endpoint. Chat, streaming,

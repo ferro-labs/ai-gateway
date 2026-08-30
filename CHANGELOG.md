@@ -5,6 +5,27 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `targets[].model_map` lets multiple providers serve one visible model key while
+  translating it to each target's upstream model ID. Mapped keys participate in
+  routing and `/v1/models`; pricing uses the mapped upstream model.
+- Each physical provider call or local circuit-breaker/concurrency refusal emits
+  a separate `gateway.routing.attempt` observation, including retries and
+  cross-target failovers.
+
+### Changed
+
+- Pool modes (`fallback`, `loadbalance`, `least-latency`, `cost-optimized`, and
+  `ab-test`) advance to another target only after transport failures, 408, 429,
+  5xx, open circuits, or target saturation. Cancellation, deadline expiry, and
+  other deterministic 4xx responses stop routing, as do provider-call failures
+  in `single`, `conditional`, and `content-based` modes.
+- Configuration loading rejects duplicate target keys and duplicate JSON object
+  keys instead of accepting an ambiguous routing configuration.
+
 ## [1.5.0] — 2026-08-29
 
 ### Added — the gateway is importable
@@ -447,29 +468,6 @@ reported itself configured and simply never hit.
 
 The tools now go onto a copy used for the provider call, so every plugin stage
 observes the request the caller actually sent.
-
-
-### Fixed — a dead target no longer black-holes its share of the traffic
-
-Only `mode: fallback` moved a request past a target that failed. Every other
-multi-target mode picked one candidate and stopped there, so an outage on that
-target failed its whole selection share while a healthy sibling served the same
-model. Under `cost-optimized`, which ranks deterministically, that was every
-request.
-
-`fallback`, `loadbalance`, `least-latency`, `cost-optimized` and `ab-test` now
-advance after transport failures, 408, 429, 5xx, an open circuit, or target
-saturation. They stop on cancellation, deadline expiry, and every other 4xx.
-`single`, `conditional` and `content-based` do not advance after a provider call:
-those name one target on purpose, and answering from another would make the rule
-a suggestion.
-
-A circuit breaker was previously the only thing that moved traffic off a bad
-target, and breakers are opt-in — the shipped examples configure one across
-thirty targets. It is still worth configuring, for a different reason: without
-one the walk pays the dead target's connection timeout on every request before
-advancing. The breaker makes failover cheap; the routing mode is what makes it
-happen.
 
 
 ### Breaking - pass-through paths cannot traverse outside the provider API root

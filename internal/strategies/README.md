@@ -27,7 +27,7 @@ What a strategy does when its chosen target *fails* splits the eight modes in tw
 
 | Family | Modes | On a failure |
 |---|---|---|
-| **Pool** | fallback, loadbalance, least-latency, cost-optimized, ab-test | the request advances to the next candidate |
+| **Pool** | fallback, loadbalance, least-latency, cost-optimized, ab-test | the request advances only after a failover-safe failure |
 | **Named** | single, conditional, content-based | the request stops and the failure is returned |
 
 A pool mode picks its target for a reason about the *pool* (spread load, take the
@@ -35,6 +35,10 @@ cheapest, take the fastest, split traffic), so carrying a failed request to a
 sibling is what was asked for. A named mode picks a *specific* target (you named
 it, or a rule matched it), so serving from somewhere else would demote the rule
 to a suggestion.
+
+Failover-safe failures are transport failures, 408, 429, 5xx, open circuits,
+and target saturation. Cancellation, deadline expiry, and every other 4xx stop
+at the current target; named modes also stop after any provider-call failure.
 
 Under **every** mode, a target whose **circuit breaker is open** is skipped when
 the choice is made, so a backend the gateway has already decided not to call
@@ -49,8 +53,8 @@ serve is `model_not_found`, even if another configured target serves it — give
 such a model its own target and a mode that can reach it.
 
 ### fallback
-Tries targets in configured order and, on failure, moves to the next. The only
-mode that retries a *request* on a different target.
+Tries targets in configured order and moves to the next after a failover-safe
+failure.
 
 ```yaml
 strategy: { mode: fallback }
