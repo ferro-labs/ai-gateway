@@ -3,6 +3,7 @@ package aigateway
 import (
 	"context"
 	"errors"
+	"net/http"
 	"sync"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/ferro-labs/ai-gateway/pkg/metrics"
 	"github.com/ferro-labs/ai-gateway/plugin"
 	"github.com/ferro-labs/ai-gateway/providers"
+	"github.com/ferro-labs/ai-gateway/providers/core"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -25,8 +27,13 @@ type eventCapturingProvider struct {
 	fakeProvider
 	mu              sync.Mutex
 	events          []observability.Event
-	recorded        chan context.Context
+	recorded        chan recordedEvent
 	recordingActive bool
+}
+
+type recordedEvent struct {
+	ctx   context.Context
+	event observability.Event
 }
 
 func (p *eventCapturingProvider) RecordEvent(ctx context.Context, evt observability.Event) {
@@ -35,7 +42,7 @@ func (p *eventCapturingProvider) RecordEvent(ctx context.Context, evt observabil
 	p.events = append(p.events, evt)
 	if p.recorded != nil {
 		select {
-		case p.recorded <- ctx:
+		case p.recorded <- recordedEvent{ctx: ctx, event: evt}:
 		default:
 		}
 	}
@@ -51,6 +58,16 @@ func (p *eventCapturingProvider) capturedEvents() []observability.Event {
 	out := make([]observability.Event, len(p.events))
 	copy(out, p.events)
 	return out
+}
+
+func eventsWithSubject(events []observability.Event, subject string) []observability.Event {
+	var matched []observability.Event
+	for _, event := range events {
+		if event.Subject == subject {
+			matched = append(matched, event)
+		}
+	}
+	return matched
 }
 
 // Compile-time interface guard: eventCapturingProvider must satisfy both
@@ -311,7 +328,7 @@ func TestGateway_RouteStream_EventContextDetachedButTraced(t *testing.T) {
 	})
 
 	ep := &eventCapturingProvider{
-		recorded:        make(chan context.Context, 1),
+		recorded:        make(chan recordedEvent, 2),
 		recordingActive: true,
 	}
 	gw.SetObservability(ep)
@@ -340,10 +357,15 @@ func TestGateway_RouteStream_EventContextDetachedButTraced(t *testing.T) {
 	}
 
 	var evtCtx context.Context
-	select {
-	case evtCtx = <-ep.recorded:
-	case <-time.After(time.Second):
-		t.Fatal("no observability event was recorded")
+	for evtCtx == nil {
+		select {
+		case recorded := <-ep.recorded:
+			if recorded.event.Subject == "gateway.request.completed" {
+				evtCtx = recorded.ctx
+			}
+		case <-time.After(time.Second):
+			t.Fatal("no completed observability event was recorded")
+		}
 	}
 	if err := evtCtx.Err(); err != nil {
 		t.Fatalf("event ctx should be detached from cancellation, got %v", err)
@@ -422,7 +444,7 @@ func TestGateway_Route_EmitsCompletedEvent(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	evts := ep.capturedEvents()
+	evts := eventsWithSubject(ep.capturedEvents(), "gateway.request.completed")
 	if len(evts) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(evts))
 	}
@@ -473,7 +495,7 @@ func TestGateway_Route_EmitsFailedEvent(t *testing.T) {
 		t.Fatal("expected Route to return an error")
 	}
 
-	evts := ep.capturedEvents()
+	evts := eventsWithSubject(ep.capturedEvents(), "gateway.request.failed")
 	if len(evts) != 1 {
 		t.Fatalf("expected 1 event, got %d: %v", len(evts), evts)
 	}
@@ -486,6 +508,73 @@ func TestGateway_Route_EmitsFailedEvent(t *testing.T) {
 	}
 	if evt.Error == "" {
 		t.Error("event Error should be non-empty for failed requests")
+	}
+}
+
+func TestGateway_Route_RecordsEachRetryAndFailoverAttempt(t *testing.T) {
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeFallback},
+		Targets: []config.Target{
+			{VirtualKey: "primary", ModelMap: map[string]string{testModel: "upstream-primary"}, Retry: &config.RetryConfig{Attempts: 2, InitialBackoffMs: 1}},
+			{VirtualKey: "secondary", ModelMap: map[string]string{testModel: "upstream-secondary"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+	ep := &eventCapturingProvider{recordingActive: true}
+	gw.SetObservability(ep)
+
+	primaryCalls := 0
+	primary := providers.WithName(&mockProvider{
+		name: "vendor-primary", models: []string{testModel},
+		completeFn: func(context.Context, providers.Request) (*providers.Response, error) {
+			primaryCalls++
+			if primaryCalls == 1 {
+				return nil, core.StatusError("vendor-primary", http.StatusServiceUnavailable, "credential AKIAIOSFODNN7EXAMPLE failed")
+			}
+			return nil, errors.New("dial account@example.com: connection refused")
+		},
+	}, "primary")
+	secondary := providers.WithName(&mockProvider{
+		name: "vendor-secondary", models: []string{testModel},
+		resp: &providers.Response{ID: "ok", Provider: "secondary", Model: "upstream-secondary"},
+	}, "secondary")
+	gw.RegisterProvider(primary)
+	gw.RegisterProvider(secondary)
+
+	ctx := logger.WithTraceID(context.Background(), "0123456789abcdef0123456789abcdef")
+	if _, err := gw.Route(ctx, providers.Request{Model: testModel, Messages: []providers.Message{{Role: "user", Content: "hi"}}}); err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+
+	attempts := eventsWithSubject(ep.capturedEvents(), observability.SubjectRoutingAttempt)
+	if len(attempts) != 3 {
+		t.Fatalf("routing attempt events = %d, want 3: %#v", len(attempts), attempts)
+	}
+	want := []observability.RoutingAttempt{
+		{TargetKey: "primary", Provider: "vendor-primary", RoutedModel: testModel, UpstreamModel: "upstream-primary", Sequence: 1, TargetSequence: 1, Status: http.StatusServiceUnavailable, Outcome: observability.RoutingAttemptError, Error: "vendor-primary API error (503): credential [REDACTED_AWS_KEY] failed"},
+		{TargetKey: "primary", Provider: "vendor-primary", RoutedModel: testModel, UpstreamModel: "upstream-primary", Sequence: 2, TargetSequence: 2, Status: http.StatusInternalServerError, Outcome: observability.RoutingAttemptError, Error: "dial [REDACTED_EMAIL]: connection refused"},
+		{TargetKey: "secondary", Provider: "vendor-secondary", RoutedModel: testModel, UpstreamModel: "upstream-secondary", Sequence: 3, TargetSequence: 1, Status: http.StatusOK, Outcome: observability.RoutingAttemptSuccess},
+	}
+	for i, event := range attempts {
+		if event.TraceID != "0123456789abcdef0123456789abcdef" || event.Timestamp.IsZero() {
+			t.Errorf("attempt %d envelope = trace %q timestamp %v", i+1, event.TraceID, event.Timestamp)
+		}
+		if event.RoutingAttempt == nil {
+			t.Fatalf("attempt %d payload is nil", i+1)
+		}
+		got := *event.RoutingAttempt
+		if got.LatencyMs < 0 {
+			t.Errorf("attempt %d latency = %d, want non-negative", i+1, got.LatencyMs)
+		}
+		got.LatencyMs = 0
+		if got != want[i] {
+			t.Errorf("attempt %d = %#v, want %#v", i+1, got, want[i])
+		}
+	}
+	if terminal := eventsWithSubject(ep.capturedEvents(), "gateway.request.completed"); len(terminal) != 1 {
+		t.Errorf("completed terminal events = %d, want 1", len(terminal))
 	}
 }
 

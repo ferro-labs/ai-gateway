@@ -42,6 +42,31 @@ type CostBreakdown struct {
 	ModelFound bool
 }
 
+// RoutingAttemptOutcome is the stable outcome of one routed target invocation.
+type RoutingAttemptOutcome string
+
+const (
+	// RoutingAttemptSuccess means the target invocation returned successfully.
+	RoutingAttemptSuccess RoutingAttemptOutcome = "success"
+	// RoutingAttemptError means the target invocation returned an error.
+	RoutingAttemptError RoutingAttemptOutcome = "error"
+)
+
+// RoutingAttempt describes one invocation admitted to the routing resilience
+// layer, including locally refused breaker and limiter invocations.
+type RoutingAttempt struct {
+	TargetKey      string
+	Provider       string
+	RoutedModel    string
+	UpstreamModel  string
+	Sequence       int
+	TargetSequence int
+	LatencyMs      int64
+	Status         int
+	Outcome        RoutingAttemptOutcome
+	Error          string
+}
+
 // Event is the payload broadcast to all registered Exporter plugins
 // via Provider.RecordEvent. It mirrors the shape of
 // internal/events.HookEvent but lives in the public package so plugin
@@ -72,6 +97,8 @@ type Event struct {
 	Cost CostBreakdown
 	// Timestamp records when the event was constructed.
 	Timestamp time.Time
+	// RoutingAttempt is present only for SubjectRoutingAttempt events.
+	RoutingAttempt *RoutingAttempt
 	// Attributes carries additional ferro.* and gen_ai.* attributes that
 	// don't fit into the typed fields above. Implementations MAY pass
 	// this through to the backing system verbatim.

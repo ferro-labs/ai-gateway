@@ -9,6 +9,7 @@ import (
 
 	"github.com/ferro-labs/ai-gateway/config"
 	"github.com/ferro-labs/ai-gateway/internal/strategies"
+	"github.com/ferro-labs/ai-gateway/observability"
 	"github.com/ferro-labs/ai-gateway/pkg/circuitbreaker"
 	"github.com/ferro-labs/ai-gateway/plugin"
 	"github.com/ferro-labs/ai-gateway/providers"
@@ -160,9 +161,13 @@ func routeTargets[Req, Resp any](
 		// only then has the walk committed to moving on, so the terminal
 		// recorder can never also name it. The failure still pending at return
 		// belongs to lastKey, which the surface records.
-		maskedKey string
-		maskedErr error
+		maskedKey       string
+		maskedErr       error
+		attemptSequence int
 	)
+	g.mu.RLock()
+	obs, obsEventsActive := g.obs, g.obsEventsActive
+	g.mu.RUnlock()
 	for _, key := range keys {
 		p, cb, lim, upstreamModel, ok := g.resolveTarget(ctx, key, plan.model, gate)
 		if !ok {
@@ -186,7 +191,7 @@ func routeTargets[Req, Resp any](
 		lastTarget = target
 
 		started := time.Now()
-		resp, err := attemptTarget(ctx, g, key, p, cb, lim, req, upstreamModel, call)
+		resp, err := attemptTarget(ctx, g, obs, obsEventsActive, target, plan.model, &attemptSequence, p, cb, lim, req, upstreamModel, call)
 		if err == nil {
 			// Latency is recorded against the TARGET KEY and covers the provider
 			// call only. Both halves matter: least-latency reads its samples back
@@ -533,7 +538,11 @@ func (g *Gateway) servesSurface(key string, gate capabilityGate) bool {
 func attemptTarget[Req, Resp any](
 	ctx context.Context,
 	g *Gateway,
-	key string,
+	obs observability.Provider,
+	obsEventsActive bool,
+	target routedTarget,
+	routedModel string,
+	attemptSequence *int,
 	p providers.Provider,
 	cb *circuitbreaker.CircuitBreaker,
 	lim *providerLimiter,
@@ -542,7 +551,7 @@ func attemptTarget[Req, Resp any](
 	call targetCall[Req, Resp],
 ) (Resp, error) {
 	var zero Resp
-	policy := g.retryPolicyFor(key)
+	policy := g.retryPolicyFor(target.key)
 
 	var lastErr error
 	for attempt := 0; attempt < policy.attempts; attempt++ {
@@ -561,12 +570,22 @@ func attemptTarget[Req, Resp any](
 			// this block.
 			if !proceed {
 				g.log.Ctx(ctx).Info("abandoning target: Retry-After exceeds the cap",
-					"target", key, "retry_after", providers.RetryAfterFrom(lastErr))
+					"target", target.key, "retry_after", providers.RetryAfterFrom(lastErr))
 				break
 			}
-			g.log.Ctx(ctx).Info("retrying target", "target", key, "attempt", attempt+1)
+			g.log.Ctx(ctx).Info("retrying target", "target", target.key, "attempt", attempt+1)
 		}
-		resp, err := callUnderResilience(ctx, key, p, cb, lim, req, upstreamModel, call)
+		started := time.Now()
+		resp, err := callUnderResilience(ctx, target.key, p, cb, lim, req, upstreamModel, call)
+		if obsEventsActive {
+			(*attemptSequence)++
+			g.recordRoutingAttempt(ctx, obs, true, routingAttempt{
+				target:         target,
+				routedModel:    routedModel,
+				sequence:       *attemptSequence,
+				targetSequence: attempt + 1,
+			}, time.Since(started), err)
+		}
 		if err == nil {
 			return resp, nil
 		}

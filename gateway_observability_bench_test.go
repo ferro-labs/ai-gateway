@@ -2,6 +2,7 @@ package aigateway
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/ferro-labs/ai-gateway/config"
@@ -46,6 +47,17 @@ func BenchmarkRoute_TracingOff(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, _ = gw.Route(ctx, req)
+	}
+}
+
+func TestRoutingAttemptRecordingDisabledAllocatesNothing(t *testing.T) {
+	gw, _ := newTestGateway(t, config.Config{})
+	err := errors.New("account@example.com AKIAIOSFODNN7EXAMPLE")
+	allocs := testing.AllocsPerRun(1000, func() {
+		gw.recordRoutingAttempt(context.Background(), observability.NoOp(), false, routingAttempt{}, 0, err)
+	})
+	if allocs != 0 {
+		t.Fatalf("disabled routing-attempt recording allocated %v times per call, want 0", allocs)
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"runtime/trace"
 	"time"
 
+	"github.com/ferro-labs/ai-gateway/internal/apierror"
 	"github.com/ferro-labs/ai-gateway/internal/events"
 	"github.com/ferro-labs/ai-gateway/internal/redact"
 	"github.com/ferro-labs/ai-gateway/models"
@@ -16,6 +17,49 @@ import (
 	"github.com/ferro-labs/ai-gateway/providers"
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
+
+type routingAttempt struct {
+	target         routedTarget
+	routedModel    string
+	sequence       int
+	targetSequence int
+}
+
+func (g *Gateway) recordRoutingAttempt(ctx context.Context, obs observability.Provider, active bool, attempt routingAttempt, latency time.Duration, err error) {
+	if !active {
+		return
+	}
+
+	status := providers.ParseStatusCode(err)
+	if err == nil {
+		status = 200
+	} else if status == 0 {
+		status, _, _ = apierror.RouteErrorDetails(err)
+	}
+	outcome := observability.RoutingAttemptSuccess
+	errorMessage := ""
+	if err != nil {
+		outcome = observability.RoutingAttemptError
+		errorMessage = redact.ErrorMessage(err)
+	}
+	obs.RecordEvent(ctx, observability.Event{
+		Subject:   observability.SubjectRoutingAttempt,
+		TraceID:   logger.TraceIDFromContext(ctx),
+		Timestamp: time.Now(),
+		RoutingAttempt: &observability.RoutingAttempt{
+			TargetKey:      attempt.target.key,
+			Provider:       attempt.target.priceProvider,
+			RoutedModel:    attempt.routedModel,
+			UpstreamModel:  attempt.target.upstreamModel,
+			Sequence:       attempt.sequence,
+			TargetSequence: attempt.targetSequence,
+			LatencyMs:      latency.Milliseconds(),
+			Status:         status,
+			Outcome:        outcome,
+			Error:          errorMessage,
+		},
+	})
+}
 
 // dispatchRequestEvent fans a request lifecycle event out to the async hook
 // workers and/or the observability provider, depending on which sinks are
