@@ -284,11 +284,9 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 	obsProvider := obs
 	traceID := logger.TraceIDFromContext(ctx)
 	meta.SpanFinisher = streamwrap.SpanFinisherFunc(func(o streamwrap.StreamOutcome) {
-		// The model the PROVIDER reported, which is only knowable once chunks
-		// have arrived — so it is stamped here rather than beside
-		// gen_ai.request.model above. Without it the streaming span was the one
-		// root span with no gen_ai.response.model, and a consumer comparing
-		// requested against served model simply had no answer for streams.
+		// The routed model attached to the synthesized response after the stream
+		// drains. Provider chunk models are forwarded unchanged but must not leak
+		// into terminal attribution when per-target model mapping is active.
 		if o.Model != "" {
 			finishSpan.SetAttribute(observability.AttrGenAIResponseModel, o.Model)
 		}

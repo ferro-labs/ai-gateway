@@ -309,6 +309,69 @@ func TestModelMap_TerminalAttributionMatchesUnaryAndPricesStreamUpstream(t *test
 	}
 }
 
+func TestRouteStream_ModelMapKeepsRoutedModelInAfterPluginAndSpan(t *testing.T) {
+	const upstreamModel = "vendor/support-v2"
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets: []config.Target{{
+			VirtualKey: "mock",
+			ModelMap:   map[string]string{visibleMappedModel: upstreamModel},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+
+	var afterModel string
+	if err := gw.RegisterPlugin(plugin.StageAfterRequest, &testPlugin{
+		name: "capture-response-model",
+		typ:  plugin.TypeLogging,
+		execFn: func(_ context.Context, pctx *plugin.Context) error {
+			afterModel = pctx.Response.Model
+			return nil
+		},
+	}); err != nil {
+		t.Fatalf("register after plugin: %v", err)
+	}
+	fp := &fakeProvider{}
+	gw.SetObservability(fp)
+	gw.RegisterProvider(&mockStreamProvider{
+		mockProvider: mockProvider{name: "mock", models: []string{upstreamModel}},
+		streamFn: func(context.Context, providers.Request) (<-chan providers.StreamChunk, error) {
+			ch := make(chan providers.StreamChunk, 1)
+			ch <- providers.StreamChunk{Model: upstreamModel}
+			close(ch)
+			return ch, nil
+		},
+	})
+
+	ch, err := gw.RouteStream(context.Background(), providers.Request{Model: visibleMappedModel, Stream: true})
+	if err != nil {
+		t.Fatalf("RouteStream: %v", err)
+	}
+	var forwardedModel string
+	for chunk := range ch {
+		forwardedModel = chunk.Model
+	}
+
+	if forwardedModel != upstreamModel {
+		t.Errorf("forwarded chunk model = %q, want upstream model %q", forwardedModel, upstreamModel)
+	}
+	if afterModel != visibleMappedModel {
+		t.Errorf("after_request response model = %q, want %q", afterModel, visibleMappedModel)
+	}
+	span := fp.rootSpan()
+	if span == nil {
+		t.Fatal("no root span was started")
+	}
+	span.mu.Lock()
+	responseModel := span.attrs[observability.AttrGenAIResponseModel]
+	span.mu.Unlock()
+	if responseModel != visibleMappedModel {
+		t.Errorf("%s = %v, want %q", observability.AttrGenAIResponseModel, responseModel, visibleMappedModel)
+	}
+}
+
 func TestRoute_AliasResolvesBeforeTargetModelMapWithoutMutatingCaller(t *testing.T) {
 	const (
 		alias    = "support"

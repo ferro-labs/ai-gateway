@@ -167,9 +167,9 @@ type StreamOutcome struct {
 	TTFTMs      float64
 	TTLTMs      float64
 	ErrorMsg    string
-	// Model is the model the PROVIDER reported, accumulated from the chunks —
-	// the streaming counterpart of Response.Model, and the only way the span can
-	// carry gen_ai.response.model, which is not knowable until chunks arrive.
+	// Model is the routed, client-visible model used by the synthesized response
+	// and terminal attribution. Provider chunk models remain unchanged on the
+	// forwarded stream but do not replace this internal identity.
 	// Set on the success path only, matching the non-streaming path, which does
 	// not claim a response model for a request that produced no response.
 	Model string
@@ -538,9 +538,6 @@ func applyChunkToResponse(resp *providers.Response, chunk providers.StreamChunk)
 	}
 	if chunk.Created != 0 && resp.Created == 0 {
 		resp.Created = chunk.Created
-	}
-	if chunk.Model != "" {
-		resp.Model = chunk.Model
 	}
 	for _, streamChoice := range chunk.Choices {
 		idx := streamChoice.Index

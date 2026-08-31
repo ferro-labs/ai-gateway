@@ -251,10 +251,8 @@ func TestRouteStream_PluginRejectionObservesDuration(t *testing.T) {
 
 // TestRouteStream_SpanCarriesResponseModel is F71.
 //
-// gen_ai.response.model was the one root-span attribute streaming did not
-// carry: the model a stream was actually served by is not knowable until chunks
-// arrive, so it has to be stamped when the channel drains rather than beside
-// gen_ai.request.model at the start.
+// gen_ai.response.model is stamped when the channel drains, alongside the
+// stream's terminal usage and cost attribution.
 func TestRouteStream_SpanCarriesResponseModel(t *testing.T) {
 	gw, err := newTestGateway(t, config.Config{
 		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
@@ -268,8 +266,8 @@ func TestRouteStream_SpanCarriesResponseModel(t *testing.T) {
 	gw.RegisterProvider(&mockStreamProvider{
 		mockProvider: mockProvider{name: mockProviderName, models: []string{streamPipelineModel}},
 		streamFn: func(context.Context, providers.Request) (<-chan providers.StreamChunk, error) {
-			// The provider reports a more specific model than the one asked for,
-			// which is exactly the difference the attribute exists to expose.
+			// Provider chunk identity remains part of the forwarded wire stream;
+			// internal terminal attribution remains routed/client-visible.
 			return chunkStream(streamPipelineModel + "-2026-01-01"), nil
 		},
 	})
@@ -292,7 +290,7 @@ func TestRouteStream_SpanCarriesResponseModel(t *testing.T) {
 	if !ok {
 		t.Fatalf("streaming span carries no %s", observability.AttrGenAIResponseModel)
 	}
-	if want := streamPipelineModel + "-2026-01-01"; got != want {
+	if want := streamPipelineModel; got != want {
 		t.Errorf("%s = %v, want %q", observability.AttrGenAIResponseModel, got, want)
 	}
 	// The usage half of F71, guarded so a regression cannot zero it again.
