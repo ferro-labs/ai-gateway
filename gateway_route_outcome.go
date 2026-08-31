@@ -252,8 +252,8 @@ func (g *Gateway) calculateCost(resp *providers.Response, priceProvider, fallbac
 }
 
 // recordSuccess records a request a provider served.
-func (g *Gateway) recordSuccess(ctx context.Context, span observability.Span, obs observability.Provider, resp *providers.Response, cost models.CostResult, latency time.Duration, abVariantLabel string, hasABVariant, originalStream, hooksEnabled, obsEventsActive bool) {
-	g.recordOutcome(ctx, span, obs, resp, cost, latency, resp.Provider, abVariantLabel, hasABVariant, originalStream, hooksEnabled, obsEventsActive)
+func (g *Gateway) recordSuccess(ctx context.Context, span observability.Span, obs observability.Provider, resp *providers.Response, routedModel string, cost models.CostResult, latency time.Duration, abVariantLabel string, hasABVariant, originalStream, hooksEnabled, obsEventsActive bool) {
+	g.recordOutcome(ctx, span, obs, resp, routedModel, cost, latency, resp.Provider, abVariantLabel, hasABVariant, originalStream, hooksEnabled, obsEventsActive)
 }
 
 // recordCacheHit records a request the response cache served, which is the same
@@ -263,17 +263,16 @@ func (g *Gateway) recordSuccess(ctx context.Context, span observability.Span, ob
 // lifecycle event, the request-log row — still names the provider that produced
 // it. See metrics.CacheProviderLabel for why the two differ.
 func (g *Gateway) recordCacheHit(ctx context.Context, span observability.Span, obs observability.Provider, resp *providers.Response, latency time.Duration, originalStream, hooksEnabled, obsEventsActive bool) {
-	g.recordOutcome(ctx, span, obs, resp, cacheServedCost(), latency, metrics.CacheProviderLabel, "", false, originalStream, hooksEnabled, obsEventsActive)
+	g.recordOutcome(ctx, span, obs, resp, resp.Model, cacheServedCost(), latency, metrics.CacheProviderLabel, "", false, originalStream, hooksEnabled, obsEventsActive)
 }
 
 // recordOutcome emits Prometheus + cost metrics under metricProvider, stamps the
 // root span with the resolved provider/model/usage/cost, logs at debug level,
 // and dispatches the completed lifecycle event.
-func (g *Gateway) recordOutcome(ctx context.Context, span observability.Span, obs observability.Provider, resp *providers.Response, cost models.CostResult, latency time.Duration, metricProvider, abVariantLabel string, hasABVariant, originalStream, hooksEnabled, obsEventsActive bool) {
-	// Bound the metric label; the raw resp.Model still reaches the span, the
-	// cost result and the lifecycle event below. Providers that accept any model
-	// ID echo the caller's string back on success, so an unbounded label here
-	// would let a client mint a new time series per request.
+func (g *Gateway) recordOutcome(ctx context.Context, span observability.Span, obs observability.Provider, resp *providers.Response, routedModel string, cost models.CostResult, latency time.Duration, metricProvider, abVariantLabel string, hasABVariant, originalStream, hooksEnabled, obsEventsActive bool) {
+	// Bound the metric label. Providers that accept any model ID echo the
+	// caller's string back on success, so an unbounded label here would let a
+	// client mint a new time series per request.
 	requestMetrics := metrics.ForRequest(metricProvider, g.metricModel(resp.Model))
 	requestMetrics.Duration.Observe(latency.Seconds())
 	requestMetrics.Success.Inc()
@@ -286,7 +285,7 @@ func (g *Gateway) recordOutcome(ctx context.Context, span observability.Span, ob
 
 	// Stamp final usage + cost + resolved provider/model on the root span.
 	span.SetAttribute(observability.AttrGenAISystem, resp.Provider)
-	span.SetAttribute(observability.AttrGenAIResponseModel, resp.Model)
+	span.SetAttribute(observability.AttrGenAIResponseModel, routedModel)
 	// Stamp the resolved target key (virtual key = provider name in this routing layer).
 	if resp.Provider != "" {
 		span.SetAttribute(observability.AttrFerroRoutingTargetKey, resp.Provider)
@@ -317,7 +316,7 @@ func (g *Gateway) recordOutcome(ctx context.Context, span observability.Span, ob
 		he := completedEventData(
 			logger.TraceIDFromContext(ctx),
 			resp.Provider,
-			resp.Model,
+			routedModel,
 			latency,
 			originalStream,
 			resp.Usage.PromptTokens,

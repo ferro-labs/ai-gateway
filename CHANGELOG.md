@@ -29,6 +29,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configuration loading rejects duplicate target keys and duplicate JSON object
   keys instead of accepting an ambiguous routing configuration.
 - Configuration validation rejects duplicate `ab_variants[].target_key` entries.
+- Streaming and unary terminal telemetry keeps the routed, client-visible model
+  when `model_map` translates a request, while stream cost lookup continues to
+  use the mapped upstream model.
 
 ## [1.5.0] — 2026-08-29
 

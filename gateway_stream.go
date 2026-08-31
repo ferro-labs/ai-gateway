@@ -177,10 +177,10 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 	meta := streamwrap.MeterMeta{
 		Provider:      providerName,
 		PriceProvider: target.priceProvider,
-		Model:         target.upstreamModel,
-		// Model stays raw for cost lookup and event payloads; only the metric
-		// label is bounded, mirroring the non-streaming path's use of the
-		// provider-reported model.
+		Model:         req.Model,
+		PriceModel:    target.upstreamModel,
+		// Model stays raw for event payloads; only the metric label is bounded,
+		// mirroring the non-streaming path's use of the routed model.
 		MetricModel:     g.metricModel(req.Model),
 		Catalog:         catalog,
 		TraceID:         logger.TraceIDFromContext(ctx),

@@ -489,6 +489,141 @@ func TestPipeline_PoolModesStopOnUnsafeFailures(t *testing.T) {
 	}
 }
 
+type sharedPolicyProvider struct {
+	mockProvider
+	err         error
+	chatCalls   atomic.Int64
+	streamCalls atomic.Int64
+	embedCalls  atomic.Int64
+}
+
+func (p *sharedPolicyProvider) Complete(context.Context, providers.Request) (*providers.Response, error) {
+	p.chatCalls.Add(1)
+	if p.err != nil {
+		return nil, p.err
+	}
+	return &providers.Response{Model: pipelineModel}, nil
+}
+
+func (p *sharedPolicyProvider) CompleteStream(context.Context, providers.Request) (<-chan providers.StreamChunk, error) {
+	p.streamCalls.Add(1)
+	if p.err != nil {
+		return nil, p.err
+	}
+	ch := make(chan providers.StreamChunk)
+	close(ch)
+	return ch, nil
+}
+
+func (p *sharedPolicyProvider) Embed(context.Context, providers.EmbeddingRequest) (*providers.EmbeddingResponse, error) {
+	p.embedCalls.Add(1)
+	if p.err != nil {
+		return nil, p.err
+	}
+	return &providers.EmbeddingResponse{Model: pipelineModel}, nil
+}
+
+func TestPipeline_SharedSurfacesApplySafeAdvanceAndUnsafeStop(t *testing.T) {
+	surfaces := []struct {
+		name  string
+		call  func(*Gateway) error
+		calls func(*sharedPolicyProvider) int64
+	}{
+		{name: "chat", call: func(g *Gateway) error {
+			_, err := g.Route(context.Background(), providers.Request{Model: pipelineModel})
+			return err
+		}, calls: func(p *sharedPolicyProvider) int64 { return p.chatCalls.Load() }},
+		{name: "stream-start", call: func(g *Gateway) error {
+			ch, err := g.RouteStream(context.Background(), providers.Request{Model: pipelineModel, Stream: true})
+			if err == nil {
+				for chunk := range ch {
+					_ = chunk
+				}
+			}
+			return err
+		}, calls: func(p *sharedPolicyProvider) int64 { return p.streamCalls.Load() }},
+		{name: "embeddings", call: func(g *Gateway) error {
+			_, err := g.Embed(context.Background(), providers.EmbeddingRequest{Model: pipelineModel, Input: "hi"})
+			return err
+		}, calls: func(p *sharedPolicyProvider) int64 { return p.embedCalls.Load() }},
+	}
+
+	for _, policy := range []struct {
+		name        string
+		err         error
+		wantSuccess bool
+		wantSecond  int64
+	}{
+		{name: "safe-503-advances", err: core.StatusError("first", http.StatusServiceUnavailable, "down"), wantSuccess: true, wantSecond: 1},
+		{name: "unsafe-400-stops", err: core.StatusError("first", http.StatusBadRequest, "bad request")},
+	} {
+		for _, surface := range surfaces {
+			t.Run(policy.name+"/"+surface.name, func(t *testing.T) {
+				first := &sharedPolicyProvider{mockProvider: mockProvider{name: "first", models: []string{pipelineModel}}, err: policy.err}
+				second := &sharedPolicyProvider{mockProvider: mockProvider{name: "second", models: []string{pipelineModel}}}
+				gw, err := newTestGateway(t, config.Config{
+					Strategy: config.StrategyConfig{Mode: config.ModeFallback},
+					Targets:  []config.Target{{VirtualKey: "first"}, {VirtualKey: "second"}},
+				})
+				if err != nil {
+					t.Fatalf("new gateway: %v", err)
+				}
+				gw.RegisterProvider(first)
+				gw.RegisterProvider(second)
+
+				callErr := surface.call(gw)
+				if (callErr == nil) != policy.wantSuccess {
+					t.Fatalf("error = %v, want success %v", callErr, policy.wantSuccess)
+				}
+				if got := surface.calls(first); got != 1 {
+					t.Errorf("first calls = %d, want 1", got)
+				}
+				if got := surface.calls(second); got != policy.wantSecond {
+					t.Errorf("second calls = %d, want %d", got, policy.wantSecond)
+				}
+			})
+		}
+	}
+}
+
+func TestPipeline_RetryAfterControlsRetryBeforeAdvancement(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		retryAfter time.Duration
+		wantCalls  int64
+	}{
+		{name: "short hint retries target", retryAfter: time.Millisecond, wantCalls: 2},
+		{name: "hint beyond cap abandons target", retryAfter: 31 * time.Second, wantCalls: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			first := newCountingProvider("first", func() (*providers.Response, error) {
+				return nil, (&core.HTTPStatusError{StatusCode: http.StatusTooManyRequests, Message: "limited", RetryAfter: tc.retryAfter})
+			})
+			second := newCountingProvider("second", func() (*providers.Response, error) {
+				return &providers.Response{Model: pipelineModel}, nil
+			})
+			gw, err := newTestGateway(t, config.Config{
+				Strategy: config.StrategyConfig{Mode: config.ModeFallback},
+				Targets: []config.Target{
+					{VirtualKey: "first", Retry: &config.RetryConfig{Attempts: 2, InitialBackoffMs: 1}},
+					{VirtualKey: "second"},
+				},
+			})
+			if err != nil {
+				t.Fatalf("new gateway: %v", err)
+			}
+			gw.RegisterProvider(first)
+			gw.RegisterProvider(second)
+			if _, err := gw.Route(context.Background(), pipelineRequest()); err != nil {
+				t.Fatalf("Route: %v", err)
+			}
+			if first.calls.Load() != tc.wantCalls || second.calls.Load() != 1 {
+				t.Errorf("calls = (%d, %d), want (%d, 1)", first.calls.Load(), second.calls.Load(), tc.wantCalls)
+			}
+		})
+	}
+}
+
 func TestPipeline_ExhaustedPoolReportsAggregateFailure(t *testing.T) {
 	firstErr := errors.New("first failed")
 	secondErr := errors.New("second failed")

@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/ferro-labs/ai-gateway/config"
+	"github.com/ferro-labs/ai-gateway/models"
+	"github.com/ferro-labs/ai-gateway/observability"
 	"github.com/ferro-labs/ai-gateway/plugin"
 	"github.com/ferro-labs/ai-gateway/providers"
 )
@@ -208,5 +210,131 @@ func TestMappedModel_RemainsVisibleToPlugins(t *testing.T) {
 	}
 	if seen != visibleMappedModel {
 		t.Fatalf("plugin saw %q, want %q", seen, visibleMappedModel)
+	}
+}
+
+func TestModelMap_TerminalAttributionMatchesUnaryAndPricesStreamUpstream(t *testing.T) {
+	const upstreamModel = "vendor/support-v2"
+	pricedCatalog := models.Catalog{
+		"mock/" + upstreamModel: {
+			Provider: "mock",
+			ModelID:  upstreamModel,
+			Mode:     models.ModeChat,
+			Pricing: models.Pricing{
+				InputPerMTokens:  ptrFloat64(5),
+				OutputPerMTokens: ptrFloat64(15),
+			},
+		},
+	}
+
+	for _, tc := range []struct {
+		name          string
+		streamFailure error
+		wantSubject   string
+	}{
+		{name: "completed", wantSubject: "gateway.request.completed"},
+		{name: "failed", streamFailure: errors.New("mid-stream failure"), wantSubject: "gateway.request.failed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			gw, err := newTestGateway(t, config.Config{
+				Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+				Targets: []config.Target{{
+					VirtualKey: "mock",
+					ModelMap:   map[string]string{visibleMappedModel: upstreamModel},
+				}},
+			})
+			if err != nil {
+				t.Fatalf("new gateway: %v", err)
+			}
+			gw.catalog = pricedCatalog
+			ep := &eventCapturingProvider{recordingActive: true}
+			gw.SetObservability(ep)
+			gw.RegisterProvider(&mockStreamProvider{
+				mockProvider: mockProvider{
+					name:   "mock",
+					models: []string{upstreamModel},
+					resp: &providers.Response{
+						Model: upstreamModel,
+						Usage: providers.Usage{PromptTokens: 100, CompletionTokens: 50},
+					},
+				},
+				streamFn: func(_ context.Context, req providers.Request) (<-chan providers.StreamChunk, error) {
+					if req.Model != upstreamModel {
+						t.Errorf("stream provider model = %q, want %q", req.Model, upstreamModel)
+					}
+					ch := make(chan providers.StreamChunk, 2)
+					ch <- providers.StreamChunk{Model: upstreamModel, Usage: &providers.Usage{PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150}}
+					if tc.streamFailure != nil {
+						ch <- providers.StreamChunk{Error: tc.streamFailure}
+					}
+					close(ch)
+					return ch, nil
+				},
+			})
+
+			if _, err := gw.Route(context.Background(), providers.Request{Model: visibleMappedModel}); err != nil {
+				t.Fatalf("Route: %v", err)
+			}
+			unary := eventsWithSubject(ep.capturedEvents(), "gateway.request.completed")
+			if len(unary) != 1 || unary[0].Model != visibleMappedModel {
+				t.Fatalf("unary terminal events = %#v, want model %q", unary, visibleMappedModel)
+			}
+
+			ch, err := gw.RouteStream(context.Background(), providers.Request{Model: visibleMappedModel, Stream: true})
+			if err != nil {
+				t.Fatalf("RouteStream: %v", err)
+			}
+			for chunk := range ch {
+				_ = chunk
+			}
+
+			terminals := eventsWithSubject(ep.capturedEvents(), tc.wantSubject)
+			if tc.wantSubject == "gateway.request.completed" {
+				terminals = terminals[1:]
+			}
+			if len(terminals) != 1 || terminals[0].Model != visibleMappedModel {
+				t.Fatalf("stream terminal events = %#v, want model %q", terminals, visibleMappedModel)
+			}
+			attempts := eventsWithSubject(ep.capturedEvents(), observability.SubjectRoutingAttempt)
+			last := attempts[len(attempts)-1].RoutingAttempt
+			if last.RoutedModel != visibleMappedModel || last.UpstreamModel != upstreamModel {
+				t.Errorf("attempt models = (%q, %q), want (%q, %q)", last.RoutedModel, last.UpstreamModel, visibleMappedModel, upstreamModel)
+			}
+			if tc.streamFailure == nil {
+				if terminals[0].Cost.TotalUSD != aliasPricingWantCostUSD {
+					t.Errorf("stream cost = %v, want %v", terminals[0].Cost.TotalUSD, aliasPricingWantCostUSD)
+				}
+			}
+		})
+	}
+}
+
+func TestRoute_AliasResolvesBeforeTargetModelMapWithoutMutatingCaller(t *testing.T) {
+	const (
+		alias    = "support"
+		upstream = "vendor/support-v2"
+	)
+	provider := newMappedSurfaceProvider("mock", upstream, false)
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Aliases:  map[string]string{alias: visibleMappedModel},
+		Targets: []config.Target{{
+			VirtualKey: "mock",
+			ModelMap:   map[string]string{visibleMappedModel: upstream},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+	gw.RegisterProvider(provider)
+	req := providers.Request{Model: alias}
+	if _, err := gw.Route(context.Background(), req); err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	if req.Model != alias {
+		t.Errorf("caller model = %q, want %q", req.Model, alias)
+	}
+	if len(provider.seen) != 1 || provider.seen[0] != upstream {
+		t.Errorf("provider models = %v, want [%q]", provider.seen, upstream)
 	}
 }

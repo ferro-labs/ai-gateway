@@ -395,7 +395,7 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	// any MCP tool-call loop iterations — keeping it consistent with the
 	// accumulated providerDuration so OverheadMs stays non-negative.
 	latency = time.Since(start)
-	g.recordSuccess(ctx, span, obs, resp, cost, latency, target.abVariantLabel, target.hasABVariant, originalStream, hooksEnabled, obsEventsActive)
+	g.recordSuccess(ctx, span, obs, resp, req.Model, cost, latency, target.abVariantLabel, target.hasABVariant, originalStream, hooksEnabled, obsEventsActive)
 
 	resp.OverheadMs = float64((latency - providerDuration).Microseconds()) / 1000.0
 

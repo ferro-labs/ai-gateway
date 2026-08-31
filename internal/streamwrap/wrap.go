@@ -43,10 +43,13 @@ import (
 type MeterMeta struct {
 	// Provider is the name of the provider that handled the request (e.g. "openai").
 	Provider string
-	// Model is the model ID after alias resolution. It reaches this struct as the
-	// client supplied it, so it is used for cost lookup and event payloads but
-	// never as a Prometheus label — see MetricModel.
+	// Model is the routed model ID after alias resolution. It is used for event
+	// payloads and synthesized responses but never as a Prometheus label — see
+	// MetricModel.
 	Model string
+	// PriceModel is the upstream model ID used only for catalog cost lookup.
+	// Empty falls back to Model for callers without per-target model mapping.
+	PriceModel string
 	// PriceProvider is the provider's canonical vendor identity — the name the
 	// model catalog and price book are keyed on. Provider names the ROUTING
 	// TARGET a stream used and stays on every metric label, event and the
@@ -133,6 +136,13 @@ func (m MeterMeta) priceProviderName() string {
 		return m.PriceProvider
 	}
 	return m.Provider
+}
+
+func (m MeterMeta) priceModelName() string {
+	if m.PriceModel != "" {
+		return m.PriceModel
+	}
+	return m.Model
 }
 
 // Measurements are the per-request numbers a completed stream produced. They
@@ -313,7 +323,7 @@ func Meter(ctx context.Context, src <-chan providers.StreamChunk, start time.Tim
 		// plugins it runs persist the cost and cannot compute it themselves.
 		// The same result is handed to finishStreamOnSuccess so the recorded
 		// figure and the reported one cannot diverge.
-		cost := models.Calculate(meta.Catalog, meta.priceProviderName()+"/"+meta.Model, models.Usage{
+		cost := models.Calculate(meta.Catalog, meta.priceProviderName()+"/"+meta.priceModelName(), models.Usage{
 			PromptTokens:     usage.PromptTokens,
 			CompletionTokens: usage.CompletionTokens,
 			ReasoningTokens:  usage.ReasoningTokens,
