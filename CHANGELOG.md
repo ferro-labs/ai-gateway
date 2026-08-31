@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Each physical provider call or local circuit-breaker/concurrency refusal emits
   a separate `gateway.routing.attempt` observation, including retries and
   cross-target failovers.
+- A/B routing attempts and terminal events carry
+  `ferro.routing.ab_variant_label`, preserving the initially drawn variant
+  through retries and safe cross-target advancement.
 
 ### Changed
 
@@ -25,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in `single`, `conditional`, and `content-based` modes.
 - Configuration loading rejects duplicate target keys and duplicate JSON object
   keys instead of accepting an ambiguous routing configuration.
+- Configuration validation rejects duplicate `ab_variants[].target_key` entries.
 
 ## [1.5.0] — 2026-08-29
 

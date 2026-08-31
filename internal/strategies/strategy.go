@@ -36,10 +36,11 @@ type Strategy interface {
 	// targets. Every routed surface walks this one ordering.
 	//
 	// What the pipeline does with the keys after the first depends on the routing
-	// mode, and the two behaviours are worth keeping apart. Only `fallback`
-	// ADVANCES: when a target fails it asks the next one. Every other mode
-	// commits to a single key and asks that one alone, so a failure there is the
-	// request's answer however many keys this method returned —
+	// mode, and the two behaviours are worth keeping apart. Pool modes
+	// (`fallback`, `loadbalance`, `least-latency`, `cost-optimized`, `ab-test`)
+	// may advance after a failover-safe failure. Named-target modes (`single`,
+	// `conditional`, `content-based`) commit to their selected key, so a provider
+	// failure there is the request's answer however many keys this method returned —
 	// `targets[].retry` still asks that one target repeatedly, under every mode.
 	//
 	// Under a committing mode the tail is not dead weight: it is the set the

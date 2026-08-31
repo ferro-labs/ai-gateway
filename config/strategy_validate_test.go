@@ -50,6 +50,17 @@ func TestValidateStrategy(t *testing.T) {
 				Targets: twoTargets(),
 			},
 		},
+		{
+			name: "ab-test duplicate target",
+			cfg: Config{
+				Strategy: StrategyConfig{Mode: ModeABTest, ABVariants: []ABVariantConfig{
+					{TargetKey: "openai", Weight: 80, Label: "control"},
+					{TargetKey: "openai", Weight: 20, Label: "challenger"},
+				}},
+				Targets: twoTargets(),
+			},
+			wantErr: `ab_variants[1].target_key "openai" duplicates ab_variants[0].target_key`,
+		},
 
 		// ── F16 · a typo in a condition key or content-condition type used to be
 		// accepted and route 100% of that rule's traffic to targets[0], HTTP 200,

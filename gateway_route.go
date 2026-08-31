@@ -257,7 +257,7 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	// still runs the on_error stage, so the request is recorded. It stands down
 	// when a transform plugin may still rewrite the model. See admitModel.
 	if err := g.admitModel(ctx, plugins, req.Model, nil); err != nil {
-		g.routeError(ctx, span, obs, pctx, plugins, "", req.Model, err, time.Since(start), originalStream, hooksEnabled, obsEventsActive)
+		g.routeError(ctx, span, obs, pctx, plugins, "", req.Model, "", err, time.Since(start), originalStream, hooksEnabled, obsEventsActive)
 		return nil, err
 	}
 
@@ -322,7 +322,7 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 		// target names the last target actually attempted. Reporting "" here
 		// left every non-streaming provider failure in one unlabelled bucket,
 		// which is the one thing per-provider alerting needs.
-		g.routeError(ctx, span, obs, pctx, plugins, target.key, req.Model, err, latency, originalStream, hooksEnabled, obsEventsActive)
+		g.routeError(ctx, span, obs, pctx, plugins, target.key, req.Model, target.abVariantLabel, err, latency, originalStream, hooksEnabled, obsEventsActive)
 		return nil, err
 	}
 
@@ -355,7 +355,7 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 			if pctx != nil {
 				pctx.Response = &providers.Response{Model: req.Model, Provider: loopTarget.key, Usage: loopUsage}
 			}
-			g.routeError(ctx, span, obs, pctx, plugins, loopTarget.key, req.Model, err, time.Since(start), originalStream, hooksEnabled, obsEventsActive)
+			g.routeError(ctx, span, obs, pctx, plugins, loopTarget.key, req.Model, loopTarget.abVariantLabel, err, time.Since(start), originalStream, hooksEnabled, obsEventsActive)
 			return nil, err
 		}
 		// The loop re-contacts the provider, so the target that answered LAST is
@@ -395,7 +395,7 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	// any MCP tool-call loop iterations — keeping it consistent with the
 	// accumulated providerDuration so OverheadMs stays non-negative.
 	latency = time.Since(start)
-	g.recordSuccess(ctx, span, obs, resp, cost, latency, originalStream, hooksEnabled, obsEventsActive)
+	g.recordSuccess(ctx, span, obs, resp, cost, latency, target.abVariantLabel, originalStream, hooksEnabled, obsEventsActive)
 
 	resp.OverheadMs = float64((latency - providerDuration).Microseconds()) / 1000.0
 

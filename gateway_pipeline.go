@@ -74,6 +74,9 @@ type targetPlan struct {
 	// single-target strategy means: an a/b variant that cannot serve the request
 	// is a 404, not a silent reroute to somebody else's target.
 	advance bool
+	// abVariantLabel is the initially drawn A/B variant. It remains attached to
+	// the request when retries or safe advancement reach another target.
+	abVariantLabel string
 	// ignoreCircuitState opts out of the health filter eligibleKeys applies.
 	//
 	// Exactly one caller sets it: the /v1/models listing (Gateway.routingServes),
@@ -116,9 +119,10 @@ type capabilityGate func(providers.Provider) bool
 // configured routing target used for attribution; priceProvider is the
 // canonical vendor used only for catalog pricing.
 type routedTarget struct {
-	key           string
-	priceProvider string
-	upstreamModel string
+	key            string
+	priceProvider  string
+	upstreamModel  string
+	abVariantLabel string
 }
 
 // routeTargets walks plan and returns the first target's answer.
@@ -173,7 +177,7 @@ func routeTargets[Req, Resp any](
 		if !ok {
 			continue
 		}
-		target := routedTarget{key: key, priceProvider: providers.CanonicalName(p), upstreamModel: upstreamModel}
+		target := routedTarget{key: key, priceProvider: providers.CanonicalName(p), upstreamModel: upstreamModel, abVariantLabel: plan.abVariantLabel}
 		if plan.responseOutlivesCall {
 			// Composition and order are decorateProvider's, which is the same
 			// pair callUnderResilience applies at the call site — breaker
@@ -657,9 +661,19 @@ func callUnderResilience[Req, Resp any](
 // back. It is the single point at which a routing mode influences execution.
 func (g *Gateway) planFor(model string, keys []string) targetPlan {
 	g.mu.RLock()
-	advance := advancesPastFailure(g.config.Strategy.Mode)
+	mode := g.config.Strategy.Mode
+	advance := advancesPastFailure(mode)
+	label := ""
+	if mode == config.ModeABTest && len(keys) > 0 {
+		for _, variant := range g.config.Strategy.ABVariants {
+			if variant.TargetKey == keys[0] {
+				label = variant.Label
+				break
+			}
+		}
+	}
 	g.mu.RUnlock()
-	return targetPlan{keys: keys, model: model, advance: advance}
+	return targetPlan{keys: keys, model: model, advance: advance, abVariantLabel: label}
 }
 
 // advancesPastFailure splits the routing modes by what their leading candidate

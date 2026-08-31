@@ -137,7 +137,7 @@ func (g *Gateway) RoutePassthrough(ctx context.Context, target, model, body stri
 	record, err := g.runPassthroughGovernance(ctx, span, start, passthroughParams{target: target, model: model, body: body, bodyInspectable: bodyInspectable}, forward)
 	latency := time.Since(start)
 	if err != nil {
-		safeErr := g.recordSurfaceError(ctx, span, obs, record.provider, model, err, latency, hooksEnabled, obsEventsActive)
+		safeErr := g.recordSurfaceError(ctx, span, obs, record.provider, model, record.abVariantLabel, err, latency, hooksEnabled, obsEventsActive)
 		g.log.Ctx(ctx).Error("pass-through request failed", "target", target, "model", model, "error", safeErr)
 		return err
 	}
@@ -192,7 +192,7 @@ func (g *Gateway) RouteResponsesWithPricingProvider(ctx context.Context, target,
 	}, forward)
 	latency := time.Since(start)
 	if err != nil {
-		safeErr := g.recordSurfaceError(ctx, span, obs, record.provider, model, err, latency, hooksEnabled, obsEventsActive)
+		safeErr := g.recordSurfaceError(ctx, span, obs, record.provider, model, record.abVariantLabel, err, latency, hooksEnabled, obsEventsActive)
 		g.log.Ctx(ctx).Error("responses request failed", "target", target, "model", model, "error", safeErr)
 		return err
 	}

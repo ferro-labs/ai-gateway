@@ -579,6 +579,62 @@ func TestGateway_Route_RecordsEachRetryAndFailoverAttempt(t *testing.T) {
 	}
 }
 
+func TestGateway_Route_AttributesABVariantAcrossRetriesAndAdvancement(t *testing.T) {
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeABTest, ABVariants: []config.ABVariantConfig{
+			{TargetKey: "primary", Weight: 1, Label: "control"},
+		}},
+		Targets: []config.Target{
+			{VirtualKey: "primary", Retry: &config.RetryConfig{Attempts: 2, InitialBackoffMs: 1}},
+			{VirtualKey: "secondary"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+	ep := &eventCapturingProvider{recordingActive: true}
+	gw.SetObservability(ep)
+	gw.RegisterProvider(&mockProvider{name: "primary", models: []string{testModel}, err: errors.New("dial failed")})
+	gw.RegisterProvider(&mockProvider{name: "secondary", models: []string{testModel}, resp: &providers.Response{ID: "ok", Provider: "secondary", Model: testModel}})
+
+	if _, err := gw.Route(context.Background(), providers.Request{Model: testModel}); err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	for _, event := range ep.capturedEvents() {
+		if event.Subject != observability.SubjectRoutingAttempt && event.Subject != "gateway.request.completed" {
+			continue
+		}
+		if got := event.Attributes[observability.AttrFerroRoutingABVariantLabel]; got != "control" {
+			t.Errorf("%s variant label = %#v, want control", event.Subject, got)
+		}
+	}
+	if attempts := eventsWithSubject(ep.capturedEvents(), observability.SubjectRoutingAttempt); len(attempts) != 3 {
+		t.Fatalf("routing attempt events = %d, want 3", len(attempts))
+	}
+}
+
+func TestGateway_Route_OmitsABVariantOutsideABTest(t *testing.T) {
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeFallback},
+		Targets:  []config.Target{{VirtualKey: "mock"}},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+	ep := &eventCapturingProvider{recordingActive: true}
+	gw.SetObservability(ep)
+	gw.RegisterProvider(&mockProvider{name: "mock", models: []string{testModel}, resp: &providers.Response{ID: "ok", Provider: "mock", Model: testModel}})
+
+	if _, err := gw.Route(context.Background(), providers.Request{Model: testModel}); err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	for _, event := range ep.capturedEvents() {
+		if _, ok := event.Attributes[observability.AttrFerroRoutingABVariantLabel]; ok {
+			t.Errorf("%s unexpectedly carries an A/B variant label", event.Subject)
+		}
+	}
+}
+
 func TestGateway_Route_RecordsOpenCircuitRefusalAttempt(t *testing.T) {
 	gw, err := newTestGateway(t, config.Config{
 		Strategy: config.StrategyConfig{Mode: config.ModeSingle},

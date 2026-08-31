@@ -535,10 +535,15 @@ func validateABVariants(variants []ABVariantConfig, targets []Target) error {
 		return fmt.Errorf("ab-test strategy requires at least one ab_variant")
 	}
 	weights := make([]namedWeight, 0, len(variants))
+	seenTargets := make(map[string]int, len(variants))
 	for i, v := range variants {
 		if err := requireDeclaredTarget(fmt.Sprintf("ab_variants[%d]", i), v.TargetKey, targets); err != nil {
 			return err
 		}
+		if first, duplicate := seenTargets[v.TargetKey]; duplicate {
+			return fmt.Errorf("ab_variants[%d].target_key %q duplicates ab_variants[%d].target_key", i, v.TargetKey, first)
+		}
+		seenTargets[v.TargetKey] = i
 		name := v.Label
 		if name == "" {
 			name = v.TargetKey

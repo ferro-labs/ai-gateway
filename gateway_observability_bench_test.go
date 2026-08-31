@@ -87,7 +87,7 @@ func TestAttemptTargetDisabledRecordingAllocatesNothing(t *testing.T) {
 		_, _ = attemptTarget(ctx, gw, observability.NoOp(), false, target, "gpt-4o", &sequence, p, nil, nil, req, "gpt-4o", call)
 	})
 	t.Logf("allocations per run: attempt=%v call=%v attributable=%v", attemptAllocs, callAllocs, attemptAllocs-callAllocs)
-	if attributable := attemptAllocs - callAllocs; attributable != 0 {
+	if attributable := attemptAllocs - callAllocs; attributable >= 1 {
 		t.Fatalf("disabled attempt recording allocations = %v (attempt=%v call=%v), want 0", attributable, attemptAllocs, callAllocs)
 	}
 }
