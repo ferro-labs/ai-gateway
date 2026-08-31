@@ -125,7 +125,7 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 	// stage still runs, so the request is recorded. It stands down when a
 	// transform plugin may still rewrite the model. See admitModel.
 	if err := g.admitModel(ctx, plugins, req.Model, streamCapable); err != nil {
-		g.recordStreamStartFailure(ctx, span, obs, plugins, g.newPluginContext(ctx, plugins, span, &req), "", req.Model, err, start, hooksEnabled, obsEventsActive)
+		g.recordStreamStartFailure(ctx, span, obs, plugins, g.newPluginContext(ctx, plugins, span, &req), "", req.Model, "", false, err, start, hooksEnabled, obsEventsActive)
 		releasePluginManager()
 		return nil, err
 	}
@@ -163,7 +163,7 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 		g.log.Ctx(ctx).Debug("stream request started", "model", req.Model, "provider", providerName)
 	}
 	if err != nil {
-		g.recordStreamStartFailure(ctx, span, obs, plugins, pctx, providerName, req.Model, err, start, hooksEnabled, obsEventsActive)
+		g.recordStreamStartFailure(ctx, span, obs, plugins, pctx, providerName, req.Model, target.abVariantLabel, target.hasABVariant, err, start, hooksEnabled, obsEventsActive)
 		releasePluginManager()
 		return nil, err
 	}
@@ -338,7 +338,9 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 			// request ctx is already cancelled. WithoutCancel drops cancellation
 			// while preserving the request's trace context, so the recorded
 			// event stays linked to the originating trace.
-			obsProvider.RecordEvent(context.WithoutCancel(ctx), obsEventFromHook(he))
+			event := obsEventFromHook(he)
+			event.Attributes = abVariantAttributes(target.abVariantLabel, target.hasABVariant)
+			obsProvider.RecordEvent(context.WithoutCancel(ctx), event)
 		}
 	})
 	return streamwrap.Meter(ctx, rawCh, start, meta), nil
@@ -355,7 +357,7 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 //
 // pctx is nil when no plugins are configured; it is retired here, so the caller
 // must not use it afterwards.
-func (g *Gateway) recordStreamStartFailure(ctx context.Context, span observability.Span, obs observability.Provider, plugins *plugin.Manager, pctx *plugin.Context, providerName, model string, err error, start time.Time, hooksEnabled, obsEventsActive bool) {
+func (g *Gateway) recordStreamStartFailure(ctx context.Context, span observability.Span, obs observability.Provider, plugins *plugin.Manager, pctx *plugin.Context, providerName, model, abVariantLabel string, hasABVariant bool, err error, start time.Time, hooksEnabled, obsEventsActive bool) {
 	if pctx != nil {
 		pctx.Error = err
 		pctx.Target = providerName
@@ -385,7 +387,7 @@ func (g *Gateway) recordStreamStartFailure(ctx context.Context, span observabili
 			time.Since(start),
 			true,
 		)
-		g.dispatchRequestEvent(ctx, obs, hooksEnabled, obsEventsActive, he)
+		g.dispatchRequestEventWithABVariant(ctx, obs, hooksEnabled, obsEventsActive, he, abVariantLabel, hasABVariant)
 	}
 }
 

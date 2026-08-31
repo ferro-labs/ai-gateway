@@ -38,6 +38,7 @@ type surfaceRecord struct {
 	provider       string
 	model          string
 	abVariantLabel string
+	hasABVariant   bool
 	// tokens is the chat-shaped token view: real for embeddings, zero for image
 	// generation, which reports no usage at all.
 	tokens providers.Usage
@@ -84,7 +85,7 @@ func (g *Gateway) priceSurface(target routedTarget, model string, tokens provide
 	if model == "" {
 		model = target.upstreamModel
 	}
-	record := surfaceRecord{provider: target.key, model: model, abVariantLabel: target.abVariantLabel, tokens: tokens, imageCount: imageCount}
+	record := surfaceRecord{provider: target.key, model: model, abVariantLabel: target.abVariantLabel, hasABVariant: target.hasABVariant, tokens: tokens, imageCount: imageCount}
 	g.mu.RLock()
 	catalog := g.catalog
 	g.mu.RUnlock()
@@ -338,7 +339,7 @@ func (g *Gateway) Embed(ctx context.Context, req providers.EmbeddingRequest) (*p
 		if routeErr != nil {
 			// target still names the last target attempted, which is what a
 			// per-provider error series needs to be worth anything.
-			return surfaceRecord{provider: target.key, model: req.Model}, routeErr
+			return surfaceRecord{provider: target.key, model: req.Model, abVariantLabel: target.abVariantLabel, hasABVariant: target.hasABVariant}, routeErr
 		}
 		resp = embedded
 		return g.priceSurface(target, embedded.Model, providers.Usage{
@@ -348,7 +349,7 @@ func (g *Gateway) Embed(ctx context.Context, req providers.EmbeddingRequest) (*p
 	})
 	latency := time.Since(start)
 	if err != nil {
-		safeErr := g.recordSurfaceError(ctx, span, obs, record.provider, req.Model, record.abVariantLabel, err, latency, hooksEnabled, obsEventsActive)
+		safeErr := g.recordSurfaceError(ctx, span, obs, record.provider, req.Model, record.abVariantLabel, record.hasABVariant, err, latency, hooksEnabled, obsEventsActive)
 		log.Error("embedding request failed", "model", req.Model, "error", safeErr)
 		return nil, err
 	}
@@ -401,7 +402,7 @@ func (g *Gateway) GenerateImage(ctx context.Context, req providers.ImageRequest)
 		req.Model = model
 		generated, target, routeErr := g.routeImage(ctx, req)
 		if routeErr != nil {
-			return surfaceRecord{provider: target.key, model: req.Model}, routeErr
+			return surfaceRecord{provider: target.key, model: req.Model, abVariantLabel: target.abVariantLabel, hasABVariant: target.hasABVariant}, routeErr
 		}
 		resp = generated
 		// The provider's own token counts, not an empty literal: the gpt-image
@@ -413,7 +414,7 @@ func (g *Gateway) GenerateImage(ctx context.Context, req providers.ImageRequest)
 	})
 	latency := time.Since(start)
 	if err != nil {
-		safeErr := g.recordSurfaceError(ctx, span, obs, record.provider, req.Model, record.abVariantLabel, err, latency, hooksEnabled, obsEventsActive)
+		safeErr := g.recordSurfaceError(ctx, span, obs, record.provider, req.Model, record.abVariantLabel, record.hasABVariant, err, latency, hooksEnabled, obsEventsActive)
 		log.Error("image generation request failed", "model", req.Model, "error", safeErr)
 		return nil, err
 	}
@@ -470,7 +471,7 @@ func (g *Gateway) Rerank(ctx context.Context, req providers.RerankRequest) (*pro
 		if routeErr != nil {
 			// target still names the last target attempted, which a per-provider
 			// error series needs to be worth anything.
-			return surfaceRecord{provider: target.key, model: req.Model}, routeErr
+			return surfaceRecord{provider: target.key, model: req.Model, abVariantLabel: target.abVariantLabel, hasABVariant: target.hasABVariant}, routeErr
 		}
 		resp = reranked
 		// Rerank bills in search-units, which the catalog does not yet price, so
@@ -480,7 +481,7 @@ func (g *Gateway) Rerank(ctx context.Context, req providers.RerankRequest) (*pro
 	})
 	latency := time.Since(start)
 	if err != nil {
-		safeErr := g.recordSurfaceError(ctx, span, obs, record.provider, req.Model, record.abVariantLabel, err, latency, hooksEnabled, obsEventsActive)
+		safeErr := g.recordSurfaceError(ctx, span, obs, record.provider, req.Model, record.abVariantLabel, record.hasABVariant, err, latency, hooksEnabled, obsEventsActive)
 		log.Error("rerank request failed", "model", req.Model, "error", safeErr)
 		return nil, err
 	}
@@ -528,14 +529,14 @@ func (g *Gateway) Moderate(ctx context.Context, req providers.ModerationRequest)
 		req.Model = model
 		moderated, target, routeErr := g.routeModeration(ctx, req)
 		if routeErr != nil {
-			return surfaceRecord{provider: target.key, model: req.Model}, routeErr
+			return surfaceRecord{provider: target.key, model: req.Model, abVariantLabel: target.abVariantLabel, hasABVariant: target.hasABVariant}, routeErr
 		}
 		resp = moderated
 		return g.priceSurface(target, moderated.Model, providers.Usage{}, 0), nil
 	})
 	latency := time.Since(start)
 	if err != nil {
-		safeErr := g.recordSurfaceError(ctx, span, obs, record.provider, req.Model, record.abVariantLabel, err, latency, hooksEnabled, obsEventsActive)
+		safeErr := g.recordSurfaceError(ctx, span, obs, record.provider, req.Model, record.abVariantLabel, record.hasABVariant, err, latency, hooksEnabled, obsEventsActive)
 		log.Error("moderation request failed", "model", req.Model, "error", safeErr)
 		return nil, err
 	}
@@ -585,14 +586,14 @@ func (g *Gateway) Transcribe(ctx context.Context, req providers.TranscriptionReq
 		req.Model = model
 		transcribed, target, routeErr := g.routeTranscription(ctx, req)
 		if routeErr != nil {
-			return surfaceRecord{provider: target.key, model: req.Model}, routeErr
+			return surfaceRecord{provider: target.key, model: req.Model, abVariantLabel: target.abVariantLabel, hasABVariant: target.hasABVariant}, routeErr
 		}
 		resp = transcribed
 		return g.priceSurface(target, "", providers.Usage{}, 0), nil
 	})
 	latency := time.Since(start)
 	if err != nil {
-		safeErr := g.recordSurfaceError(ctx, span, obs, record.provider, req.Model, record.abVariantLabel, err, latency, hooksEnabled, obsEventsActive)
+		safeErr := g.recordSurfaceError(ctx, span, obs, record.provider, req.Model, record.abVariantLabel, record.hasABVariant, err, latency, hooksEnabled, obsEventsActive)
 		log.Error("transcription request failed", "model", req.Model, "error", safeErr)
 		return nil, err
 	}
@@ -642,14 +643,14 @@ func (g *Gateway) Speech(ctx context.Context, req providers.SpeechRequest) (*pro
 		req.Model = model
 		synthesized, target, routeErr := g.routeSpeech(ctx, req)
 		if routeErr != nil {
-			return surfaceRecord{provider: target.key, model: req.Model}, routeErr
+			return surfaceRecord{provider: target.key, model: req.Model, abVariantLabel: target.abVariantLabel, hasABVariant: target.hasABVariant}, routeErr
 		}
 		resp = synthesized
 		return g.priceSurface(target, "", providers.Usage{}, 0), nil
 	})
 	latency := time.Since(start)
 	if err != nil {
-		safeErr := g.recordSurfaceError(ctx, span, obs, record.provider, req.Model, record.abVariantLabel, err, latency, hooksEnabled, obsEventsActive)
+		safeErr := g.recordSurfaceError(ctx, span, obs, record.provider, req.Model, record.abVariantLabel, record.hasABVariant, err, latency, hooksEnabled, obsEventsActive)
 		log.Error("speech request failed", "model", req.Model, "error", safeErr)
 		return nil, err
 	}
@@ -712,7 +713,7 @@ func (g *Gateway) recordSurfaceSuccess(ctx context.Context, span observability.S
 			record.tokens.CompletionTokens,
 			record.cost,
 		)
-		g.dispatchRequestEventWithABVariant(ctx, obs, hooksEnabled, obsEventsActive, he, record.abVariantLabel)
+		g.dispatchRequestEventWithABVariant(ctx, obs, hooksEnabled, obsEventsActive, he, record.abVariantLabel, record.hasABVariant)
 	}
 }
 
@@ -737,7 +738,7 @@ func isPluginAbort(err error) bool {
 //
 // It returns the redacted message for the caller's own log line; the lifecycle
 // event is redacted independently by events.FailedRequest.
-func (g *Gateway) recordSurfaceError(ctx context.Context, span observability.Span, obs observability.Provider, provider, model, abVariantLabel string, err error, latency time.Duration, hooksEnabled, obsEventsActive bool) string {
+func (g *Gateway) recordSurfaceError(ctx context.Context, span observability.Span, obs observability.Provider, provider, model, abVariantLabel string, hasABVariant bool, err error, latency time.Duration, hooksEnabled, obsEventsActive bool) string {
 	// Bucket the label, not the log or the span: model here is still the raw
 	// client value on the "no provider serves this model" path.
 	requestMetrics := metrics.ForRequest(provider, g.metricModel(model))
@@ -774,7 +775,7 @@ func (g *Gateway) recordSurfaceError(ctx context.Context, span observability.Spa
 			latency,
 			false,
 		)
-		g.dispatchRequestEventWithABVariant(ctx, obs, hooksEnabled, obsEventsActive, he, abVariantLabel)
+		g.dispatchRequestEventWithABVariant(ctx, obs, hooksEnabled, obsEventsActive, he, abVariantLabel, hasABVariant)
 	}
 	return safeErr
 }

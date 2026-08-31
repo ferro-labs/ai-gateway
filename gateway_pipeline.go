@@ -77,6 +77,7 @@ type targetPlan struct {
 	// abVariantLabel is the initially drawn A/B variant. It remains attached to
 	// the request when retries or safe advancement reach another target.
 	abVariantLabel string
+	hasABVariant   bool
 	// ignoreCircuitState opts out of the health filter eligibleKeys applies.
 	//
 	// Exactly one caller sets it: the /v1/models listing (Gateway.routingServes),
@@ -123,6 +124,7 @@ type routedTarget struct {
 	priceProvider  string
 	upstreamModel  string
 	abVariantLabel string
+	hasABVariant   bool
 }
 
 // routeTargets walks plan and returns the first target's answer.
@@ -177,7 +179,7 @@ func routeTargets[Req, Resp any](
 		if !ok {
 			continue
 		}
-		target := routedTarget{key: key, priceProvider: providers.CanonicalName(p), upstreamModel: upstreamModel, abVariantLabel: plan.abVariantLabel}
+		target := routedTarget{key: key, priceProvider: providers.CanonicalName(p), upstreamModel: upstreamModel, abVariantLabel: plan.abVariantLabel, hasABVariant: plan.hasABVariant}
 		if plan.responseOutlivesCall {
 			// Composition and order are decorateProvider's, which is the same
 			// pair callUnderResilience applies at the call site — breaker
@@ -664,16 +666,18 @@ func (g *Gateway) planFor(model string, keys []string) targetPlan {
 	mode := g.config.Strategy.Mode
 	advance := advancesPastFailure(mode)
 	label := ""
+	hasABVariant := false
 	if mode == config.ModeABTest && len(keys) > 0 {
 		for _, variant := range g.config.Strategy.ABVariants {
 			if variant.TargetKey == keys[0] {
 				label = variant.Label
+				hasABVariant = true
 				break
 			}
 		}
 	}
 	g.mu.RUnlock()
-	return targetPlan{keys: keys, model: model, advance: advance, abVariantLabel: label}
+	return targetPlan{keys: keys, model: model, advance: advance, abVariantLabel: label, hasABVariant: hasABVariant}
 }
 
 // advancesPastFailure splits the routing modes by what their leading candidate

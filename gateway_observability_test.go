@@ -613,6 +613,182 @@ func TestGateway_Route_AttributesABVariantAcrossRetriesAndAdvancement(t *testing
 	}
 }
 
+func TestGateway_Route_AttributesConfiguredEmptyABVariant(t *testing.T) {
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeABTest, ABVariants: []config.ABVariantConfig{{TargetKey: "mock", Weight: 1}}},
+		Targets:  []config.Target{{VirtualKey: "mock"}},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+	ep := &eventCapturingProvider{recordingActive: true}
+	gw.SetObservability(ep)
+	gw.RegisterProvider(&mockProvider{name: "mock", models: []string{testModel}, resp: &providers.Response{ID: "ok", Provider: "mock", Model: testModel}})
+
+	if _, err := gw.Route(context.Background(), providers.Request{Model: testModel}); err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	for _, event := range ep.capturedEvents() {
+		if event.Subject != observability.SubjectRoutingAttempt && event.Subject != "gateway.request.completed" {
+			continue
+		}
+		got, ok := event.Attributes[observability.AttrFerroRoutingABVariantLabel]
+		if !ok || got != "" {
+			t.Errorf("%s variant label = %#v, present = %v; want present empty string", event.Subject, got, ok)
+		}
+	}
+}
+
+func TestGateway_RouteStream_AttributesABVariantOnTerminalEvents(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		streamError error
+		wantSubject string
+	}{
+		{name: "completed", wantSubject: "gateway.request.completed"},
+		{name: "failed", streamError: errors.New("stream failed"), wantSubject: "gateway.request.failed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			gw, err := newTestGateway(t, config.Config{
+				Strategy: config.StrategyConfig{Mode: config.ModeABTest, ABVariants: []config.ABVariantConfig{{TargetKey: "mock", Weight: 1, Label: "stream-control"}}},
+				Targets:  []config.Target{{VirtualKey: "mock"}},
+			})
+			if err != nil {
+				t.Fatalf("new gateway: %v", err)
+			}
+			ep := &eventCapturingProvider{recordingActive: true}
+			gw.SetObservability(ep)
+			gw.RegisterProvider(&mockStreamProvider{mockProvider: mockProvider{name: "mock", models: []string{testModel}}, streamFn: func(context.Context, providers.Request) (<-chan providers.StreamChunk, error) {
+				ch := make(chan providers.StreamChunk, 1)
+				if tc.streamError != nil {
+					ch <- providers.StreamChunk{Error: tc.streamError}
+				}
+				close(ch)
+				return ch, nil
+			}})
+
+			ch, err := gw.RouteStream(context.Background(), providers.Request{Model: testModel, Stream: true})
+			if err != nil {
+				t.Fatalf("RouteStream: %v", err)
+			}
+			for chunk := range ch {
+				_ = chunk
+			}
+			terminals := eventsWithSubject(ep.capturedEvents(), tc.wantSubject)
+			if len(terminals) != 1 {
+				t.Fatalf("%s events = %d, want 1", tc.wantSubject, len(terminals))
+			}
+			if got := terminals[0].Attributes[observability.AttrFerroRoutingABVariantLabel]; got != "stream-control" {
+				t.Errorf("terminal variant label = %#v, want stream-control", got)
+			}
+		})
+	}
+}
+
+func TestGateway_RouteStream_AttributesABVariantOnStartFailure(t *testing.T) {
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeABTest, ABVariants: []config.ABVariantConfig{{TargetKey: "mock", Weight: 1, Label: "stream-control"}}},
+		Targets:  []config.Target{{VirtualKey: "mock"}},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+	ep := &eventCapturingProvider{recordingActive: true}
+	gw.SetObservability(ep)
+	gw.RegisterProvider(&mockStreamProvider{
+		mockProvider: mockProvider{name: "mock", models: []string{testModel}},
+		streamErr:    errors.New("stream start failed"),
+	})
+
+	if _, err := gw.RouteStream(context.Background(), providers.Request{Model: testModel, Stream: true}); err == nil {
+		t.Fatal("RouteStream unexpectedly succeeded")
+	}
+	failed := eventsWithSubject(ep.capturedEvents(), "gateway.request.failed")
+	if len(failed) != 1 {
+		t.Fatalf("failed events = %d, want 1", len(failed))
+	}
+	if got := failed[0].Attributes[observability.AttrFerroRoutingABVariantLabel]; got != "stream-control" {
+		t.Errorf("start failure variant label = %#v, want stream-control", got)
+	}
+}
+
+type failingRoutedSurfaceProvider struct{ mockProvider }
+
+func (*failingRoutedSurfaceProvider) Embed(context.Context, providers.EmbeddingRequest) (*providers.EmbeddingResponse, error) {
+	return nil, errors.New("embedding failed")
+}
+func (*failingRoutedSurfaceProvider) GenerateImage(context.Context, providers.ImageRequest) (*providers.ImageResponse, error) {
+	return nil, errors.New("image failed")
+}
+func (*failingRoutedSurfaceProvider) Rerank(context.Context, providers.RerankRequest) (*providers.RerankResponse, error) {
+	return nil, errors.New("rerank failed")
+}
+func (*failingRoutedSurfaceProvider) Moderate(context.Context, providers.ModerationRequest) (*providers.ModerationResponse, error) {
+	return nil, errors.New("moderation failed")
+}
+func (*failingRoutedSurfaceProvider) Transcribe(context.Context, providers.TranscriptionRequest) (*providers.TranscriptionResponse, error) {
+	return nil, errors.New("transcription failed")
+}
+func (*failingRoutedSurfaceProvider) Speech(context.Context, providers.SpeechRequest) (*providers.SpeechResponse, error) {
+	return nil, errors.New("speech failed")
+}
+
+func TestGateway_RoutedSurfaceFailuresAttributeABVariant(t *testing.T) {
+	tests := []struct {
+		name string
+		call func(*Gateway) error
+	}{
+		{name: "embeddings", call: func(g *Gateway) error {
+			_, err := g.Embed(context.Background(), providers.EmbeddingRequest{Model: testModel, Input: "hi"})
+			return err
+		}},
+		{name: "images", call: func(g *Gateway) error {
+			_, err := g.GenerateImage(context.Background(), providers.ImageRequest{Model: testModel, Prompt: "hi"})
+			return err
+		}},
+		{name: "rerank", call: func(g *Gateway) error {
+			_, err := g.Rerank(context.Background(), providers.RerankRequest{Model: testModel, Query: "hi"})
+			return err
+		}},
+		{name: "moderation", call: func(g *Gateway) error {
+			_, err := g.Moderate(context.Background(), providers.ModerationRequest{Model: testModel, Input: "hi"})
+			return err
+		}},
+		{name: "transcription", call: func(g *Gateway) error {
+			_, err := g.Transcribe(context.Background(), providers.TranscriptionRequest{Model: testModel})
+			return err
+		}},
+		{name: "speech", call: func(g *Gateway) error {
+			_, err := g.Speech(context.Background(), providers.SpeechRequest{Model: testModel, Input: "hi"})
+			return err
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			gw, err := newTestGateway(t, config.Config{
+				Strategy: config.StrategyConfig{Mode: config.ModeABTest, ABVariants: []config.ABVariantConfig{{TargetKey: "mock", Weight: 1, Label: "surface-control"}}},
+				Targets:  []config.Target{{VirtualKey: "mock"}},
+			})
+			if err != nil {
+				t.Fatalf("new gateway: %v", err)
+			}
+			ep := &eventCapturingProvider{recordingActive: true}
+			gw.SetObservability(ep)
+			gw.RegisterProvider(&failingRoutedSurfaceProvider{mockProvider{name: "mock", models: []string{testModel}}})
+			if err := tc.call(gw); err == nil {
+				t.Fatal("surface call unexpectedly succeeded")
+			}
+			failed := eventsWithSubject(ep.capturedEvents(), "gateway.request.failed")
+			if len(failed) != 1 {
+				t.Fatalf("failed events = %d, want 1", len(failed))
+			}
+			if got := failed[0].Attributes[observability.AttrFerroRoutingABVariantLabel]; got != "surface-control" {
+				t.Errorf("failed variant label = %#v, want surface-control", got)
+			}
+		})
+	}
+}
+
 func TestGateway_Route_OmitsABVariantOutsideABTest(t *testing.T) {
 	gw, err := newTestGateway(t, config.Config{
 		Strategy: config.StrategyConfig{Mode: config.ModeFallback},

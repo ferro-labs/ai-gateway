@@ -58,32 +58,24 @@ func (g *Gateway) recordRoutingAttempt(ctx context.Context, obs observability.Pr
 			Outcome:        outcome,
 			Error:          errorMessage,
 		},
-		Attributes: abVariantAttributes(attempt.target.abVariantLabel),
+		Attributes: abVariantAttributes(attempt.target.abVariantLabel, attempt.target.hasABVariant),
 	})
 }
 
-func abVariantAttributes(label string) map[string]any {
-	if label == "" {
+func abVariantAttributes(label string, present bool) map[string]any {
+	if !present {
 		return nil
 	}
 	return map[string]any{observability.AttrFerroRoutingABVariantLabel: label}
 }
 
-// dispatchRequestEvent fans a request lifecycle event out to the async hook
-// workers and/or the observability provider, depending on which sinks are
-// active. Centralising the branching keeps Route/RouteStream readable and
-// keeps the two delivery paths in sync.
-func (g *Gateway) dispatchRequestEvent(ctx context.Context, obs observability.Provider, hooksEnabled, obsEventsActive bool, he events.HookEvent) {
-	g.dispatchRequestEventWithABVariant(ctx, obs, hooksEnabled, obsEventsActive, he, "")
-}
-
-func (g *Gateway) dispatchRequestEventWithABVariant(ctx context.Context, obs observability.Provider, hooksEnabled, obsEventsActive bool, he events.HookEvent, label string) {
+func (g *Gateway) dispatchRequestEventWithABVariant(ctx context.Context, obs observability.Provider, hooksEnabled, obsEventsActive bool, he events.HookEvent, label string, present bool) {
 	if hooksEnabled {
 		g.publishEvent(ctx, he)
 	}
 	if obsEventsActive {
 		event := obsEventFromHook(he)
-		event.Attributes = abVariantAttributes(label)
+		event.Attributes = abVariantAttributes(label, present)
 		obs.RecordEvent(ctx, event)
 	}
 }
@@ -111,7 +103,7 @@ func recordProviderErrorCtx(ctx context.Context, provider string, err error) {
 // dispatches the failed lifecycle event. Shared by the initial provider call
 // and the MCP tool-call loop's follow-up provider calls so both error paths
 // stay in sync.
-func (g *Gateway) routeError(ctx context.Context, span observability.Span, obs observability.Provider, pctx *plugin.Context, plugins *plugin.Manager, provider, model, abVariantLabel string, err error, latency time.Duration, originalStream, hooksEnabled, obsEventsActive bool) {
+func (g *Gateway) routeError(ctx context.Context, span observability.Span, obs observability.Provider, pctx *plugin.Context, plugins *plugin.Manager, provider, model, abVariantLabel string, hasABVariant bool, err error, latency time.Duration, originalStream, hooksEnabled, obsEventsActive bool) {
 	if pctx != nil {
 		pctx.Error = err
 		// The one fact a failed request's record could not otherwise carry.
@@ -156,7 +148,7 @@ func (g *Gateway) routeError(ctx context.Context, span observability.Span, obs o
 			latency,
 			originalStream,
 		)
-		g.dispatchRequestEventWithABVariant(ctx, obs, hooksEnabled, obsEventsActive, he, abVariantLabel)
+		g.dispatchRequestEventWithABVariant(ctx, obs, hooksEnabled, obsEventsActive, he, abVariantLabel, hasABVariant)
 	}
 }
 
@@ -260,8 +252,8 @@ func (g *Gateway) calculateCost(resp *providers.Response, priceProvider, fallbac
 }
 
 // recordSuccess records a request a provider served.
-func (g *Gateway) recordSuccess(ctx context.Context, span observability.Span, obs observability.Provider, resp *providers.Response, cost models.CostResult, latency time.Duration, abVariantLabel string, originalStream, hooksEnabled, obsEventsActive bool) {
-	g.recordOutcome(ctx, span, obs, resp, cost, latency, resp.Provider, abVariantLabel, originalStream, hooksEnabled, obsEventsActive)
+func (g *Gateway) recordSuccess(ctx context.Context, span observability.Span, obs observability.Provider, resp *providers.Response, cost models.CostResult, latency time.Duration, abVariantLabel string, hasABVariant, originalStream, hooksEnabled, obsEventsActive bool) {
+	g.recordOutcome(ctx, span, obs, resp, cost, latency, resp.Provider, abVariantLabel, hasABVariant, originalStream, hooksEnabled, obsEventsActive)
 }
 
 // recordCacheHit records a request the response cache served, which is the same
@@ -271,13 +263,13 @@ func (g *Gateway) recordSuccess(ctx context.Context, span observability.Span, ob
 // lifecycle event, the request-log row — still names the provider that produced
 // it. See metrics.CacheProviderLabel for why the two differ.
 func (g *Gateway) recordCacheHit(ctx context.Context, span observability.Span, obs observability.Provider, resp *providers.Response, latency time.Duration, originalStream, hooksEnabled, obsEventsActive bool) {
-	g.recordOutcome(ctx, span, obs, resp, cacheServedCost(), latency, metrics.CacheProviderLabel, "", originalStream, hooksEnabled, obsEventsActive)
+	g.recordOutcome(ctx, span, obs, resp, cacheServedCost(), latency, metrics.CacheProviderLabel, "", false, originalStream, hooksEnabled, obsEventsActive)
 }
 
 // recordOutcome emits Prometheus + cost metrics under metricProvider, stamps the
 // root span with the resolved provider/model/usage/cost, logs at debug level,
 // and dispatches the completed lifecycle event.
-func (g *Gateway) recordOutcome(ctx context.Context, span observability.Span, obs observability.Provider, resp *providers.Response, cost models.CostResult, latency time.Duration, metricProvider, abVariantLabel string, originalStream, hooksEnabled, obsEventsActive bool) {
+func (g *Gateway) recordOutcome(ctx context.Context, span observability.Span, obs observability.Provider, resp *providers.Response, cost models.CostResult, latency time.Duration, metricProvider, abVariantLabel string, hasABVariant, originalStream, hooksEnabled, obsEventsActive bool) {
 	// Bound the metric label; the raw resp.Model still reaches the span, the
 	// cost result and the lifecycle event below. Providers that accept any model
 	// ID echo the caller's string back on success, so an unbounded label here
@@ -332,6 +324,6 @@ func (g *Gateway) recordOutcome(ctx context.Context, span observability.Span, ob
 			resp.Usage.CompletionTokens,
 			cost,
 		)
-		g.dispatchRequestEventWithABVariant(ctx, obs, hooksEnabled, obsEventsActive, he, abVariantLabel)
+		g.dispatchRequestEventWithABVariant(ctx, obs, hooksEnabled, obsEventsActive, he, abVariantLabel, hasABVariant)
 	}
 }
