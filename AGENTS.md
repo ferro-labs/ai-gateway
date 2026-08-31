@@ -792,13 +792,17 @@ Modes split by what their leading candidate *means*
 
 | | Modes | On a failure |
 |---|---|---|
-| **Pool** | `fallback`, `loadbalance`, `least-latency`, `cost-optimized`, `ab-test` | the walk advances to the next candidate |
+| **Pool** | `fallback`, `loadbalance`, `least-latency`, `cost-optimized`, `ab-test` | the walk advances only after a failover-safe failure |
 | **Named** | `single`, `conditional`, `content-based` | the walk stops and reports the failure |
 
 A pool mode picks its head for a reason that is about the pool rather than
 about that target — spread the load, take the cheapest, take the fastest, split
 the traffic — from targets the operator declared interchangeable. So the request
 belongs to the pool, and carrying it to a sibling is what was asked for.
+
+Failover-safe failures are transport or no-status failures, 408, 429, 5xx, open
+circuits, and target saturation. Cancellation, deadline expiry, and every other
+4xx stop at the current target.
 
 A named mode picks its head because something named that target specifically:
 `single` names it, and a `conditional` or `content-based` rule matched it.

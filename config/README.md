@@ -83,7 +83,8 @@ sent to one target. The keys join both the routing index and `/v1/models`
 inventory; `targets[].models` remains additive and can still declare other
 models. Cost and pricing use the mapped upstream model, not the visible key.
 
-For fallback, every target must contain the same visible key. The client below
+For fallback, every target intended to participate for that visible model must
+contain the same key; unrelated configured targets need not. The client below
 always requests `smart`, while each provider receives its own model ID:
 
 ```yaml
