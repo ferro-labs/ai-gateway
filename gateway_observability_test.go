@@ -329,7 +329,9 @@ func TestGateway_RouteStream_EventContextDetachedButTraced(t *testing.T) {
 	})
 
 	ep := &eventCapturingProvider{
-		recorded:        make(chan recordedEvent, 2),
+		// Every event the request emits before the test drains the channel has to fit:
+		// one routing attempt, the stream start, and the terminal event at minimum.
+		recorded:        make(chan recordedEvent, 16),
 		recordingActive: true,
 	}
 	gw.SetObservability(ep)

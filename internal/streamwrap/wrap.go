@@ -228,66 +228,89 @@ func Meter(ctx context.Context, src <-chan providers.StreamChunk, start time.Tim
 
 	loop:
 		for {
+			// A chunk already here — or src already closed — is the upstream's
+			// verdict, and it outranks the consumer hanging up in the same
+			// instant: the provider did the work and billed for it, so the
+			// record has to say completed. Both channels ready at once is
+			// exactly the case a plain select decides at random, which logged a
+			// finished stream as a client cancellation about half the time.
+			// Poll src first; cancellation gets a vote only while nothing is
+			// ready.
+			var chunk providers.StreamChunk
+			var ok bool
 			select {
-			case <-ctx.Done():
-				// The consumer (typically the HTTP handler) is gone. Stop trying
-				// to forward chunks — out is almost certainly unread — but
-				// keep draining src so the upstream provider goroutine can
-				// finish its in-flight write to src and exit. The provider
-				// MUST close src eventually for this to terminate; that is
-				// the existing contract for every CompleteStream impl.
-				//
-				// WHY it is gone decides who is at fault: the caller hanging up,
-				// or the gateway's idle bound firing on an upstream that sent
-				// nothing. metrics.ProviderErrorType reads the cause and answers
-				// that, for this path and every other surface at once.
-				streamErr = drainSrc(ctx, src, streamErr)
-				break loop
-			case chunk, ok := <-src:
-				if !ok {
+			case chunk, ok = <-src:
+			default:
+				select {
+				case <-ctx.Done():
+					// The consumer (typically the HTTP handler) is gone. Stop trying
+					// to forward chunks — out is almost certainly unread — but
+					// keep draining src so the upstream provider goroutine can
+					// finish its in-flight write to src and exit. The provider
+					// MUST close src eventually for this to terminate; that is
+					// the existing contract for every CompleteStream impl.
+					//
+					// WHY it is gone decides who is at fault: the caller hanging up,
+					// or the gateway's idle bound firing on an upstream that sent
+					// nothing. metrics.ProviderErrorType reads the cause and answers
+					// that, for this path and every other surface at once.
+					streamErr = drainSrc(ctx, src, streamErr)
 					break loop
+				case chunk, ok = <-src:
 				}
-				now := time.Now()
-				if firstChunkAt.IsZero() {
-					firstChunkAt = now
-				}
-				lastChunkAt = now
+			}
+			if !ok {
+				break loop
+			}
+			now := time.Now()
+			if firstChunkAt.IsZero() {
+				firstChunkAt = now
+			}
+			lastChunkAt = now
 
-				// Capture the last non-zero usage block (the final OpenAI chunk
-				// with include_usage=true has TotalTokens > 0; other providers
-				// may set it differently).
-				if chunk.Usage != nil && (chunk.Usage.TotalTokens > 0 || chunk.Usage.PromptTokens > 0) {
-					usage = *chunk.Usage
-				}
-				applyChunkToResponse(&resp, chunk)
-				if chunk.Error != nil {
-					streamErr = chunk.Error
-				}
+			// Capture the last non-zero usage block (the final OpenAI chunk
+			// with include_usage=true has TotalTokens > 0; other providers
+			// may set it differently).
+			if chunk.Usage != nil && (chunk.Usage.TotalTokens > 0 || chunk.Usage.PromptTokens > 0) {
+				usage = *chunk.Usage
+			}
+			applyChunkToResponse(&resp, chunk)
+			if chunk.Error != nil {
+				streamErr = chunk.Error
+			}
 
-				// Forward the chunk, but stop blocking if the consumer
-				// disconnects mid-send. When the client opted out of usage
-				// reporting, forward a copy with Usage cleared instead of
-				// dropping the chunk outright — it may still carry content
-				// or a finish_reason that must reach the client. Accounting
-				// above already captured the real usage from the
-				// unmodified chunk, so this never affects metrics/cost/plugins.
-				forward := chunk
-				if meta.SuppressUsageForClient && forward.Usage != nil {
-					forward.Usage = nil
-				}
+			// Forward the chunk, but stop blocking if the consumer
+			// disconnects mid-send. When the client opted out of usage
+			// reporting, forward a copy with Usage cleared instead of
+			// dropping the chunk outright — it may still carry content
+			// or a finish_reason that must reach the client. Accounting
+			// above already captured the real usage from the
+			// unmodified chunk, so this never affects metrics/cost/plugins.
+			forward := chunk
+			if meta.SuppressUsageForClient && forward.Usage != nil {
+				forward.Usage = nil
+			}
+			// Same preference as the top of the loop, best effort only: a
+			// consumer already waiting on out takes the chunk even though the
+			// request context is cancelled. out is unbuffered, so a consumer
+			// that has not reached its receive yet cannot be told apart from
+			// one that is gone, and cancellation decides then.
+			select {
+			case out <- forward:
+			default:
 				select {
 				case out <- forward:
 				case <-ctx.Done():
 					streamErr = drainSrc(ctx, src, streamErr)
 					break loop
 				}
+			}
 
-				// Stop consuming src as soon as an error chunk is forwarded.
-				// If the provider does not close src promptly we would
-				// otherwise block here and never emit metrics or close out.
-				if chunk.Error != nil {
-					break loop
-				}
+			// Stop consuming src as soon as an error chunk is forwarded.
+			// If the provider does not close src promptly we would
+			// otherwise block here and never emit metrics or close out.
+			if chunk.Error != nil {
+				break loop
 			}
 		}
 

@@ -29,6 +29,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configuration loading rejects duplicate target keys and duplicate JSON object
   keys instead of accepting an ambiguous routing configuration.
 - Configuration validation rejects duplicate `ab_variants[].target_key` entries.
+
+### Fixed
+
+- A stream whose upstream had already finished when the client hung up was
+  recorded as a client cancellation about half the time. The metering loop
+  chose between the finished stream and the cancelled request at random when
+  both were ready; it now takes the finished stream first, so a completed and
+  billed stream is always recorded as completed. Cancellation still decides
+  once nothing is ready to forward.
+
 - Streaming and unary terminal telemetry keeps the routed, client-visible model
   when `model_map` translates a request, while stream cost lookup continues to
   use the mapped upstream model.
