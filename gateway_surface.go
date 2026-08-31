@@ -36,7 +36,7 @@ const (
 // rather than a union type wide enough to hold every surface's response.
 type surfaceRecord struct {
 	provider       string
-	model          string
+	routedModel    string
 	abVariantLabel string
 	hasABVariant   bool
 	// tokens is the chat-shaped token view: real for embeddings, zero for image
@@ -69,7 +69,7 @@ func (r surfaceRecord) billable() models.Usage {
 // from request_logs report both surfaces as 100% failure.
 func (r surfaceRecord) pluginView() *providers.Response {
 	return &providers.Response{
-		Model:    r.model,
+		Model:    r.routedModel,
 		Provider: r.provider,
 		Usage:    r.tokens,
 	}
@@ -81,15 +81,12 @@ func (r surfaceRecord) pluginView() *providers.Response {
 // the metrics and the span report are the same number — pricing twice is how
 // they come to disagree when a catalog refresh lands between the two calls.
 // Chat splits calculateCost out of recordSuccess for the same reason.
-func (g *Gateway) priceSurface(target routedTarget, model string, tokens providers.Usage, imageCount int) surfaceRecord {
-	if model == "" {
-		model = target.upstreamModel
-	}
-	record := surfaceRecord{provider: target.key, model: model, abVariantLabel: target.abVariantLabel, hasABVariant: target.hasABVariant, tokens: tokens, imageCount: imageCount}
+func (g *Gateway) priceSurface(target routedTarget, routedModel string, tokens providers.Usage, imageCount int) surfaceRecord {
+	record := surfaceRecord{provider: target.key, routedModel: routedModel, abVariantLabel: target.abVariantLabel, hasABVariant: target.hasABVariant, tokens: tokens, imageCount: imageCount}
 	g.mu.RLock()
 	catalog := g.catalog
 	g.mu.RUnlock()
-	record.cost = models.Calculate(catalog, target.priceProvider+"/"+model, record.billable())
+	record.cost = models.Calculate(catalog, target.priceProvider+"/"+target.upstreamModel, record.billable())
 	return record
 }
 
@@ -339,10 +336,11 @@ func (g *Gateway) Embed(ctx context.Context, req providers.EmbeddingRequest) (*p
 		if routeErr != nil {
 			// target still names the last target attempted, which is what a
 			// per-provider error series needs to be worth anything.
-			return surfaceRecord{provider: target.key, model: req.Model, abVariantLabel: target.abVariantLabel, hasABVariant: target.hasABVariant}, routeErr
+			return surfaceRecord{provider: target.key, routedModel: req.Model, abVariantLabel: target.abVariantLabel, hasABVariant: target.hasABVariant}, routeErr
 		}
 		resp = embedded
-		return g.priceSurface(target, embedded.Model, providers.Usage{
+		embedded.Model = req.Model
+		return g.priceSurface(target, req.Model, providers.Usage{
 			PromptTokens: embedded.Usage.PromptTokens,
 			TotalTokens:  embedded.Usage.TotalTokens,
 		}, 0), nil
@@ -402,7 +400,7 @@ func (g *Gateway) GenerateImage(ctx context.Context, req providers.ImageRequest)
 		req.Model = model
 		generated, target, routeErr := g.routeImage(ctx, req)
 		if routeErr != nil {
-			return surfaceRecord{provider: target.key, model: req.Model, abVariantLabel: target.abVariantLabel, hasABVariant: target.hasABVariant}, routeErr
+			return surfaceRecord{provider: target.key, routedModel: req.Model, abVariantLabel: target.abVariantLabel, hasABVariant: target.hasABVariant}, routeErr
 		}
 		resp = generated
 		// The provider's own token counts, not an empty literal: the gpt-image
@@ -410,7 +408,7 @@ func (g *Gateway) GenerateImage(ctx context.Context, req providers.ImageRequest)
 		// discarding them here priced every such generation at nothing. A
 		// provider that reports none leaves this zero and its request stays
 		// unpriced, exactly as before.
-		return g.priceSurface(target, "", generated.Usage, len(generated.Data)), nil
+		return g.priceSurface(target, req.Model, generated.Usage, len(generated.Data)), nil
 	})
 	latency := time.Since(start)
 	if err != nil {
@@ -471,13 +469,14 @@ func (g *Gateway) Rerank(ctx context.Context, req providers.RerankRequest) (*pro
 		if routeErr != nil {
 			// target still names the last target attempted, which a per-provider
 			// error series needs to be worth anything.
-			return surfaceRecord{provider: target.key, model: req.Model, abVariantLabel: target.abVariantLabel, hasABVariant: target.hasABVariant}, routeErr
+			return surfaceRecord{provider: target.key, routedModel: req.Model, abVariantLabel: target.abVariantLabel, hasABVariant: target.hasABVariant}, routeErr
 		}
 		resp = reranked
+		reranked.Model = req.Model
 		// Rerank bills in search-units, which the catalog does not yet price, so
 		// the request is left unpriced (zero tokens) rather than costed wrongly —
 		// the same graceful-zero path an unpriced image model takes.
-		return g.priceSurface(target, reranked.Model, providers.Usage{}, 0), nil
+		return g.priceSurface(target, req.Model, providers.Usage{}, 0), nil
 	})
 	latency := time.Since(start)
 	if err != nil {
@@ -529,10 +528,11 @@ func (g *Gateway) Moderate(ctx context.Context, req providers.ModerationRequest)
 		req.Model = model
 		moderated, target, routeErr := g.routeModeration(ctx, req)
 		if routeErr != nil {
-			return surfaceRecord{provider: target.key, model: req.Model, abVariantLabel: target.abVariantLabel, hasABVariant: target.hasABVariant}, routeErr
+			return surfaceRecord{provider: target.key, routedModel: req.Model, abVariantLabel: target.abVariantLabel, hasABVariant: target.hasABVariant}, routeErr
 		}
 		resp = moderated
-		return g.priceSurface(target, moderated.Model, providers.Usage{}, 0), nil
+		moderated.Model = req.Model
+		return g.priceSurface(target, req.Model, providers.Usage{}, 0), nil
 	})
 	latency := time.Since(start)
 	if err != nil {
@@ -586,10 +586,10 @@ func (g *Gateway) Transcribe(ctx context.Context, req providers.TranscriptionReq
 		req.Model = model
 		transcribed, target, routeErr := g.routeTranscription(ctx, req)
 		if routeErr != nil {
-			return surfaceRecord{provider: target.key, model: req.Model, abVariantLabel: target.abVariantLabel, hasABVariant: target.hasABVariant}, routeErr
+			return surfaceRecord{provider: target.key, routedModel: req.Model, abVariantLabel: target.abVariantLabel, hasABVariant: target.hasABVariant}, routeErr
 		}
 		resp = transcribed
-		return g.priceSurface(target, "", providers.Usage{}, 0), nil
+		return g.priceSurface(target, req.Model, providers.Usage{}, 0), nil
 	})
 	latency := time.Since(start)
 	if err != nil {
@@ -643,10 +643,10 @@ func (g *Gateway) Speech(ctx context.Context, req providers.SpeechRequest) (*pro
 		req.Model = model
 		synthesized, target, routeErr := g.routeSpeech(ctx, req)
 		if routeErr != nil {
-			return surfaceRecord{provider: target.key, model: req.Model, abVariantLabel: target.abVariantLabel, hasABVariant: target.hasABVariant}, routeErr
+			return surfaceRecord{provider: target.key, routedModel: req.Model, abVariantLabel: target.abVariantLabel, hasABVariant: target.hasABVariant}, routeErr
 		}
 		resp = synthesized
-		return g.priceSurface(target, "", providers.Usage{}, 0), nil
+		return g.priceSurface(target, req.Model, providers.Usage{}, 0), nil
 	})
 	latency := time.Since(start)
 	if err != nil {
@@ -677,7 +677,7 @@ func (g *Gateway) recordSurfaceSuccess(ctx context.Context, span observability.S
 	// azure_openai, …) echo the caller's string back on success, so an unbounded
 	// label here would let a client mint a new time series per request. The
 	// streaming path bounds its label the same way.
-	requestMetrics := metrics.ForRequest(record.provider, g.metricModel(record.model))
+	requestMetrics := metrics.ForRequest(record.provider, g.metricModel(record.routedModel))
 	requestMetrics.Duration.Observe(latency.Seconds())
 	requestMetrics.Success.Inc()
 	requestMetrics.TokensIn.Add(float64(record.tokens.PromptTokens))
@@ -687,7 +687,7 @@ func (g *Gateway) recordSurfaceSuccess(ctx context.Context, span observability.S
 	}
 
 	span.SetAttribute(observability.AttrGenAISystem, record.provider)
-	span.SetAttribute(observability.AttrGenAIResponseModel, record.model)
+	span.SetAttribute(observability.AttrGenAIResponseModel, record.routedModel)
 	if record.provider != "" {
 		span.SetAttribute(observability.AttrFerroRoutingTargetKey, record.provider)
 	}
@@ -706,7 +706,7 @@ func (g *Gateway) recordSurfaceSuccess(ctx context.Context, span observability.S
 		he := completedEventData(
 			logger.TraceIDFromContext(ctx),
 			record.provider,
-			record.model,
+			record.routedModel,
 			latency,
 			false,
 			record.tokens.PromptTokens,

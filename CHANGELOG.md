@@ -32,6 +32,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Non-stream responses now consistently expose and attribute the routed model
+  while provider calls and pricing continue to use the configured mapped model.
+  Failures in `after_request` plugins now emit one failed terminal lifecycle
+  event with the selected A/B variant instead of ending without a terminal event.
+
 - A stream whose upstream had already finished when the client hung up was
   recorded as a client cancellation about half the time. The metering loop
   chose between the finished stream and the cancelled request at random when

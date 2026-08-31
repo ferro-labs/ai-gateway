@@ -271,6 +271,7 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 			return nil, err
 		}
 		if early != nil {
+			early.Model = req.Model
 			if early.Object == "" {
 				early.Object = "chat.completion"
 			}
@@ -325,7 +326,6 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 		g.routeError(ctx, span, obs, pctx, plugins, target.key, req.Model, target.abVariantLabel, target.hasABVariant, err, latency, originalStream, hooksEnabled, obsEventsActive)
 		return nil, err
 	}
-
 	// Ensure OpenAI-compatible envelope fields are always set.
 	if resp.Object == "" {
 		resp.Object = "chat.completion"
@@ -365,6 +365,10 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 			target = loopTarget
 		}
 	}
+	// Provider-returned model identifiers are upstream payload detail. The
+	// routed post-alias model is the public identity on every gateway surface.
+	// Apply this after the MCP loop because its final turn can replace resp.
+	resp.Model = req.Model
 	// originalStream is included in the completed event so hook consumers
 	// can distinguish streaming vs non-streaming requests (Phase 1.5 note:
 	// when final-response streaming lands, remove the force-to-false above).
@@ -384,9 +388,10 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 		HasCost:    cost.Priced,
 	})
 	if err != nil {
-		// Set at the call site rather than inside runAfterPlugins, which holds
-		// no span. The provider call succeeded, so nothing below marks it.
-		span.SetError(err)
+		// runAfterPlugins already ran on_error. Finish through failed accounting
+		// without treating the successful provider call as another physical
+		// failure or running on_error twice.
+		g.recordTerminalFailure(ctx, span, obs, target.key, req.Model, target.abVariantLabel, target.hasABVariant, err, time.Since(start), originalStream, hooksEnabled, obsEventsActive)
 		return nil, err
 	}
 

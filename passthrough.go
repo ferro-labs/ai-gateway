@@ -238,7 +238,7 @@ func (g *Gateway) runPassthroughGovernance(
 		// answered, on failure who was asked. A pass-through failure that could
 		// not say which provider failed was the same blind spot the routed
 		// surfaces had.
-		record := surfaceRecord{provider: target, model: model}
+		record := surfaceRecord{provider: target, routedModel: model}
 		err := g.forwardUnderResilience(ctx, target, forward)
 		// Responses (RouteResponses) captures a real usage object off the forwarded
 		// body/stream, so this one pass-through endpoint IS priced on success —
@@ -247,7 +247,7 @@ func (g *Gateway) runPassthroughGovernance(
 		// and stays unpriced. Priced here, inside call, so both the plugin and the
 		// no-plugin path (which returns call directly) get it.
 		if err == nil && p.usage != nil && (p.usage.PromptTokens > 0 || p.usage.CompletionTokens > 0 || p.usage.TotalTokens > 0) {
-			record = g.priceSurface(routedTarget{key: target, priceProvider: p.priceProvider}, model, *p.usage, 0)
+			record = g.priceSurface(routedTarget{key: target, priceProvider: p.priceProvider, upstreamModel: model}, model, *p.usage, 0)
 		}
 		return record, err
 	}

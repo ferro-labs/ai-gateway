@@ -372,6 +372,130 @@ func TestRouteStream_ModelMapKeepsRoutedModelInAfterPluginAndSpan(t *testing.T) 
 	}
 }
 
+func TestRoute_ModelMapIgnoresProviderReturnedModelForIdentityAndPricing(t *testing.T) {
+	const (
+		upstreamModel = "vendor/support-v2"
+		providerModel = "provider/third-id"
+	)
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets: []config.Target{{
+			VirtualKey: "mock",
+			ModelMap:   map[string]string{visibleMappedModel: upstreamModel},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+	gw.catalog = models.Catalog{
+		"mock/" + upstreamModel: {
+			Provider: "mock", ModelID: upstreamModel, Mode: models.ModeChat,
+			Pricing: models.Pricing{InputPerMTokens: ptrFloat64(5), OutputPerMTokens: ptrFloat64(15)},
+		},
+		"mock/" + providerModel: {
+			Provider: "mock", ModelID: providerModel, Mode: models.ModeChat,
+			Pricing: models.Pricing{InputPerMTokens: ptrFloat64(50), OutputPerMTokens: ptrFloat64(150)},
+		},
+	}
+
+	var providerInput, afterModel string
+	gw.RegisterProvider(&mockProvider{
+		name: "mock", models: []string{upstreamModel},
+		completeFn: func(_ context.Context, req providers.Request) (*providers.Response, error) {
+			providerInput = req.Model
+			return &providers.Response{Model: providerModel, Provider: "mock", Usage: providers.Usage{PromptTokens: 100, CompletionTokens: 50}}, nil
+		},
+	})
+	if err := gw.RegisterPlugin(plugin.StageAfterRequest, &testPlugin{name: "capture", typ: plugin.TypeLogging, execFn: func(_ context.Context, pctx *plugin.Context) error {
+		afterModel = pctx.Response.Model
+		return nil
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	ep := &eventCapturingProvider{recordingActive: true}
+	gw.SetObservability(ep)
+
+	resp, err := gw.Route(context.Background(), providers.Request{Model: visibleMappedModel})
+	if err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	if providerInput != upstreamModel {
+		t.Errorf("provider input model = %q, want %q", providerInput, upstreamModel)
+	}
+	if resp.Model != visibleMappedModel || afterModel != visibleMappedModel {
+		t.Errorf("response/after models = (%q, %q), want %q", resp.Model, afterModel, visibleMappedModel)
+	}
+	completed := eventsWithSubject(ep.capturedEvents(), "gateway.request.completed")
+	if len(completed) != 1 || completed[0].Model != visibleMappedModel {
+		t.Fatalf("completed events = %#v, want routed model %q", completed, visibleMappedModel)
+	}
+	if completed[0].Cost.TotalUSD != aliasPricingWantCostUSD {
+		t.Errorf("cost = %v, want upstream-model price %v", completed[0].Cost.TotalUSD, aliasPricingWantCostUSD)
+	}
+	span := ep.rootSpan()
+	span.mu.Lock()
+	spanModel := span.attrs[observability.AttrGenAIResponseModel]
+	span.mu.Unlock()
+	if spanModel != visibleMappedModel {
+		t.Errorf("span model = %v, want %q", spanModel, visibleMappedModel)
+	}
+}
+
+func TestTypedSurfaces_ModelMapNormalizesProviderReturnedModel(t *testing.T) {
+	const (
+		upstreamModel = "vendor/typed-v2"
+		providerModel = "provider/third-id"
+	)
+	tests := []struct {
+		name string
+		call func(*Gateway) (string, error)
+	}{
+		{name: "embeddings", call: func(g *Gateway) (string, error) {
+			resp, err := g.Embed(context.Background(), providers.EmbeddingRequest{Model: visibleMappedModel, Input: "x"})
+			if err != nil {
+				return "", err
+			}
+			return resp.Model, nil
+		}},
+		{name: "rerank", call: func(g *Gateway) (string, error) {
+			resp, err := g.Rerank(context.Background(), providers.RerankRequest{Model: visibleMappedModel, Query: "x", Documents: []string{"x"}})
+			if err != nil {
+				return "", err
+			}
+			return resp.Model, nil
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			provider := newMappedSurfaceProvider("mock", upstreamModel, false)
+			gw, err := newTestGateway(t, config.Config{Strategy: config.StrategyConfig{Mode: config.ModeSingle}, Targets: []config.Target{{VirtualKey: "mock", ModelMap: map[string]string{visibleMappedModel: upstreamModel}}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			gw.RegisterProvider(provider)
+			provider.wantModel = providerModel
+			var afterModel string
+			if err := gw.RegisterPlugin(plugin.StageAfterRequest, &testPlugin{name: "capture", typ: plugin.TypeLogging, execFn: func(_ context.Context, pctx *plugin.Context) error {
+				afterModel = pctx.Response.Model
+				return nil
+			}}); err != nil {
+				t.Fatal(err)
+			}
+
+			got, err := tc.call(gw)
+			if err != nil {
+				t.Fatalf("call: %v", err)
+			}
+			if len(provider.seen) != 1 || provider.seen[0] != upstreamModel {
+				t.Errorf("provider inputs = %v, want [%q]", provider.seen, upstreamModel)
+			}
+			if got != visibleMappedModel || afterModel != visibleMappedModel {
+				t.Errorf("response/after models = (%q, %q), want %q", got, afterModel, visibleMappedModel)
+			}
+		})
+	}
+}
+
 func TestRoute_AliasResolvesBeforeTargetModelMapWithoutMutatingCaller(t *testing.T) {
 	const (
 		alias    = "support"

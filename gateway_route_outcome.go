@@ -128,8 +128,19 @@ func (g *Gateway) routeError(ctx context.Context, span observability.Span, obs o
 	// fast are the requests that worked" and were read as "how fast is the
 	// gateway".
 	requestMetrics.Duration.Observe(latency.Seconds())
-	requestMetrics.Error.Inc()
-	recordProviderErrorCtx(ctx, provider, err)
+	if isPluginAbort(err) {
+		recordPluginAbort(requestMetrics, err)
+	} else {
+		requestMetrics.Error.Inc()
+		recordProviderErrorCtx(ctx, provider, err)
+	}
+	g.recordTerminalFailure(ctx, span, obs, provider, model, abVariantLabel, hasABVariant, err, latency, originalStream, hooksEnabled, obsEventsActive)
+}
+
+// recordTerminalFailure emits the common failed-request span, log and lifecycle
+// signal after the caller has performed the appropriate provider or plugin
+// accounting.
+func (g *Gateway) recordTerminalFailure(ctx context.Context, span observability.Span, obs observability.Provider, provider, model, abVariantLabel string, hasABVariant bool, err error, latency time.Duration, originalStream, hooksEnabled, obsEventsActive bool) {
 
 	span.SetError(err)
 
@@ -234,15 +245,11 @@ func cacheServedMeasurements(start time.Time) plugin.Measurements {
 // recordSuccess runs — the request logger persists it — and pricing a response
 // twice risks the persisted figure and the reported one disagreeing after a
 // catalog refresh lands between them.
-func (g *Gateway) calculateCost(resp *providers.Response, priceProvider, fallbackModel string) models.CostResult {
+func (g *Gateway) calculateCost(resp *providers.Response, priceProvider, priceModel string) models.CostResult {
 	g.mu.RLock()
 	catalog := g.catalog
 	g.mu.RUnlock()
-	model := resp.Model
-	if model == "" {
-		model = fallbackModel
-	}
-	return models.Calculate(catalog, priceProvider+"/"+model, models.Usage{
+	return models.Calculate(catalog, priceProvider+"/"+priceModel, models.Usage{
 		PromptTokens:     resp.Usage.PromptTokens,
 		CompletionTokens: resp.Usage.CompletionTokens,
 		ReasoningTokens:  resp.Usage.ReasoningTokens,

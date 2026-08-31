@@ -615,6 +615,54 @@ func TestGateway_Route_AttributesABVariantAcrossRetriesAndAdvancement(t *testing
 	}
 }
 
+func TestGateway_Route_AfterPluginFailureEmitsOneABFailedTerminal(t *testing.T) {
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeABTest, ABVariants: []config.ABVariantConfig{{TargetKey: "mock", Weight: 1, Label: "control"}}},
+		Targets:  []config.Target{{VirtualKey: "mock"}},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+	ep := &eventCapturingProvider{recordingActive: true}
+	gw.SetObservability(ep)
+	gw.RegisterProvider(&mockProvider{name: "mock", models: []string{testModel}, resp: &providers.Response{Model: "provider-third-id", Provider: "mock"}})
+
+	onErrorCalls := 0
+	if err := gw.RegisterPlugin(plugin.StageAfterRequest, &testPlugin{name: "reject-after", typ: plugin.TypeGuardrail, execFn: func(_ context.Context, pctx *plugin.Context) error {
+		pctx.Reject = true
+		pctx.Reason = "blocked after response"
+		return nil
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := gw.RegisterPlugin(plugin.StageOnError, &testPlugin{name: "count-error", typ: plugin.TypeLogging, execFn: func(context.Context, *plugin.Context) error {
+		onErrorCalls++
+		return nil
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := gw.Route(context.Background(), providers.Request{Model: testModel}); err == nil {
+		t.Fatal("Route unexpectedly succeeded")
+	}
+	failed := eventsWithSubject(ep.capturedEvents(), "gateway.request.failed")
+	if len(failed) != 1 {
+		t.Fatalf("failed terminal events = %d, want 1", len(failed))
+	}
+	if failed[0].Model != testModel || failed[0].Attributes[observability.AttrFerroRoutingABVariantLabel] != "control" {
+		t.Errorf("failed terminal = %#v, want model %q and control label", failed[0], testModel)
+	}
+	if completed := eventsWithSubject(ep.capturedEvents(), "gateway.request.completed"); len(completed) != 0 {
+		t.Errorf("completed terminal events = %d, want 0", len(completed))
+	}
+	if attempts := eventsWithSubject(ep.capturedEvents(), observability.SubjectRoutingAttempt); len(attempts) != 1 {
+		t.Errorf("routing attempt events = %d, want 1", len(attempts))
+	}
+	if onErrorCalls != 1 {
+		t.Errorf("on_error calls = %d, want 1", onErrorCalls)
+	}
+}
+
 func TestGateway_Route_AttributesConfiguredEmptyABVariant(t *testing.T) {
 	gw, err := newTestGateway(t, config.Config{
 		Strategy: config.StrategyConfig{Mode: config.ModeABTest, ABVariants: []config.ABVariantConfig{{TargetKey: "mock", Weight: 1}}},
