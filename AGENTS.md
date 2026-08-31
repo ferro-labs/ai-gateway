@@ -759,7 +759,7 @@ What happens next depends on whether another target serves the model:
 
 | Other targets serve the model | Behaviour once the circuit opens |
 |-------------------------------|----------------------------------|
-| yes | the open target is skipped during selection, under **every** routing mode, and traffic silently moves to a healthy sibling — including under `single`, `conditional` and `content-based`, where the operator named one target on purpose |
+| yes | the open target is skipped during selection, under **every** routing mode that offers a sibling, and traffic silently moves to it — including under `conditional` and `content-based`, where a rule named one target on purpose. `single` offers no sibling: its strategy selects exactly one target, so an open circuit there is refused with `503`, whatever else the config lists |
 | no | the walk attempts it anyway (the filter fails open rather than answering a 404 for a model that plainly exists), the breaker refuses, and the caller gets `503 upstream_unavailable` |
 
 So the symptom an operator sees on the chat surface is either a routing shift
