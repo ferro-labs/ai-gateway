@@ -118,6 +118,14 @@ func (g *Gateway) routeError(ctx context.Context, span observability.Span, obs o
 		plugins.RunOnError(ctx, pctx)
 	}
 
+	g.recordFailureMetrics(ctx, provider, model, err, latency)
+	g.recordTerminalFailure(ctx, span, obs, provider, model, abVariantLabel, hasABVariant, err, latency, originalStream, hooksEnabled, obsEventsActive)
+}
+
+// recordFailureMetrics observes how long a failed request took and counts it
+// against the counter that says why: a plugin abort keeps its own tally, and
+// everything else is a provider error.
+func (g *Gateway) recordFailureMetrics(ctx context.Context, provider, model string, err error, latency time.Duration) {
 	// Bucket the label, not the log/span: model here is still the raw client
 	// value on the "no provider supports this model" path.
 	requestMetrics := metrics.ForRequest(provider, g.metricModel(model))
@@ -130,11 +138,10 @@ func (g *Gateway) routeError(ctx context.Context, span observability.Span, obs o
 	requestMetrics.Duration.Observe(latency.Seconds())
 	if isPluginAbort(err) {
 		recordPluginAbort(requestMetrics, err)
-	} else {
-		requestMetrics.Error.Inc()
-		recordProviderErrorCtx(ctx, provider, err)
+		return
 	}
-	g.recordTerminalFailure(ctx, span, obs, provider, model, abVariantLabel, hasABVariant, err, latency, originalStream, hooksEnabled, obsEventsActive)
+	requestMetrics.Error.Inc()
+	recordProviderErrorCtx(ctx, provider, err)
 }
 
 // recordTerminalFailure emits the common failed-request span, log and lifecycle
@@ -167,9 +174,9 @@ func (g *Gateway) recordTerminalFailure(ctx context.Context, span observability.
 // handing the stage what the gateway measured about the request. It returns the
 // response the plugins left behind, which may be one they substituted.
 //
-// A plugin failure here aborts the request: the stage is counted against the
-// counter that says why — a deliberate rejection and a broken plugin are
-// different faults — and the on_error stage runs before the error is returned.
+// A plugin failure here aborts the request: the on_error stage runs before the
+// error is returned, and the caller finishes the failed request's accounting —
+// recordFailureMetrics keeps a deliberate rejection and a broken plugin apart.
 func (g *Gateway) runAfterPlugins(
 	ctx context.Context,
 	plugins *plugin.Manager,
@@ -190,7 +197,6 @@ func (g *Gateway) runAfterPlugins(
 		err = plugins.RunAfter(ctx, pctx)
 	})
 	if err != nil {
-		recordPluginAbort(metrics.ForRequest(resp.Provider, g.metricModel(resp.Model)), err)
 		pctx.Error = err
 		plugins.RunOnError(ctx, pctx)
 		return nil, err

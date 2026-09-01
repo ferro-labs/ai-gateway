@@ -72,8 +72,10 @@ type RoutingAttempt struct {
 // internal/events.HookEvent but lives in the public package so plugin
 // authors can consume it without importing internal/.
 type Event struct {
-	// Subject identifies the event kind, e.g.
-	// "gateway.request.completed" or "gateway.request.failed".
+	// Subject identifies the event kind: "gateway.request.completed" or
+	// "gateway.request.failed" once per request, and SubjectRoutingAttempt
+	// once per physical provider call for consumers that opted in through
+	// RoutingAttemptExporter or RoutingAttemptRecordingProvider.
 	Subject string
 	// TraceID is the gateway request trace ID.
 	TraceID string

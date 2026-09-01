@@ -172,7 +172,7 @@ func routeTargets[Req, Resp any](
 		attemptSequence int
 	)
 	g.mu.RLock()
-	obs, obsEventsActive := g.obs, g.obsEventsActive
+	obs, attemptsActive := g.obs, g.obsAttemptsActive
 	g.mu.RUnlock()
 	for _, key := range keys {
 		p, cb, lim, upstreamModel, ok := g.resolveTarget(ctx, key, plan.model, gate)
@@ -197,7 +197,7 @@ func routeTargets[Req, Resp any](
 		lastTarget = target
 
 		started := time.Now()
-		resp, err := attemptTarget(ctx, g, obs, obsEventsActive, target, plan.model, &attemptSequence, p, cb, lim, req, upstreamModel, call)
+		resp, err := attemptTarget(ctx, g, obs, attemptsActive, target, plan.model, &attemptSequence, p, cb, lim, req, upstreamModel, call)
 		if err == nil {
 			// Latency is recorded against the TARGET KEY and covers the provider
 			// call only. Both halves matter: least-latency reads its samples back
@@ -212,7 +212,7 @@ func routeTargets[Req, Resp any](
 		if !plan.advance {
 			break
 		}
-		if ctx.Err() != nil || !shouldAdvanceTarget(err) {
+		if !shouldAdvanceTarget(ctx, err) {
 			stoppedEarly = true
 			break
 		}
@@ -236,8 +236,15 @@ func routeTargets[Req, Resp any](
 // shouldAdvanceTarget reports whether a pool may offer a failed request to a
 // different target after the current target's configured attempts are spent.
 // Same-target retry is classified separately by strategies.ShouldRetry.
-func shouldAdvanceTarget(err error) bool {
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+//
+// The request's own context decides first: once the caller has hung up or the
+// request deadline has passed there is nobody left to serve. That is the only
+// deadline the walk honours. An error that merely looks like one — the
+// provider transport's ResponseHeaderTimeout on a target that accepted the
+// connection and never answered — belongs to the attempt, carries no status,
+// and is the failure failover exists for.
+func shouldAdvanceTarget(ctx context.Context, err error) bool {
+	if ctx.Err() != nil {
 		return false
 	}
 	if errors.Is(err, circuitbreaker.ErrCircuitOpen) || errors.Is(err, core.ErrProviderSaturated) {
@@ -540,12 +547,13 @@ func (g *Gateway) servesSurface(key string, gate capabilityGate) bool {
 }
 
 // attemptTarget runs one target's retry policy, calling it under its breaker
-// and limiter on every try.
+// and limiter on every try. attemptsActive is whether obs has opted into one
+// SubjectRoutingAttempt event per call; when it has not, no event is built.
 func attemptTarget[Req, Resp any](
 	ctx context.Context,
 	g *Gateway,
 	obs observability.Provider,
-	obsEventsActive bool,
+	attemptsActive bool,
 	target routedTarget,
 	routedModel string,
 	attemptSequence *int,
@@ -583,10 +591,10 @@ func attemptTarget[Req, Resp any](
 		}
 		started := time.Now()
 		resp, err := callUnderResilience(ctx, target.key, p, cb, lim, req, upstreamModel, call)
-		if obsEventsActive {
+		if attemptsActive {
 			(*attemptSequence)++
 		}
-		g.recordRoutingAttempt(ctx, obs, obsEventsActive, routingAttempt{
+		g.recordRoutingAttempt(ctx, obs, attemptsActive, routingAttempt{
 			target:         target,
 			routedModel:    routedModel,
 			sequence:       *attemptSequence,

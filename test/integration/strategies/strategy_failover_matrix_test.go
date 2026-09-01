@@ -6,6 +6,7 @@ package strategies_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -115,6 +116,8 @@ func (r *attemptRecorder) RecordEvent(_ context.Context, evt observability.Event
 
 func (r *attemptRecorder) RecordingEnabled() bool { return true }
 
+func (r *attemptRecorder) RoutingAttemptsEnabled() bool { return true }
+
 func (r *attemptRecorder) attempts() []observability.Event {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -181,6 +184,20 @@ var failoverClasses = []failoverClass{
 		advances: true,
 		fail: func(context.CancelFunc) func(context.Context) error {
 			return func(context.Context) error { return errors.New("dial tcp 10.0.0.1:443: connect: connection refused") }
+		},
+		callsPerTarget: 1,
+	},
+	// A target that accepted the connection and never answered: the provider
+	// transport's ResponseHeaderTimeout ends the attempt with a
+	// context.DeadlineExceeded the request never set. Only the request's own
+	// deadline stops the walk, so this carries the request to the sibling.
+	{
+		name:     "attempt timeout",
+		advances: true,
+		fail: func(context.CancelFunc) func(context.Context) error {
+			return func(context.Context) error {
+				return fmt.Errorf("Post \"https://api.example.com/v1/chat/completions\": %w", context.DeadlineExceeded)
+			}
 		},
 		callsPerTarget: 1,
 	},

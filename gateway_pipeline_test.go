@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -12,6 +13,8 @@ import (
 	"github.com/ferro-labs/ai-gateway/config"
 	"github.com/ferro-labs/ai-gateway/internal/apierror"
 	"github.com/ferro-labs/ai-gateway/pkg/circuitbreaker"
+	"github.com/ferro-labs/ai-gateway/pkg/metrics"
+	"github.com/ferro-labs/ai-gateway/plugin"
 	"github.com/ferro-labs/ai-gateway/providers"
 	"github.com/ferro-labs/ai-gateway/providers/core"
 	"github.com/prometheus/client_golang/prometheus"
@@ -396,6 +399,16 @@ func TestPipeline_PoolModesAdvanceOnlyOnSafeFailures(t *testing.T) {
 		{name: "server error", err: core.StatusError("first", http.StatusBadGateway, "bad gateway"), attempts: 2},
 		{name: "open circuit", err: fmt.Errorf("breaker: %w", circuitbreaker.ErrCircuitOpen), attempts: 1},
 		{name: "saturation", err: fmt.Errorf("limiter: %w", core.ErrProviderSaturated), attempts: 1},
+		// A target that accepted the connection and never answered ends the
+		// attempt through the provider transport's ResponseHeaderTimeout, whose
+		// error is a context.DeadlineExceeded the request never set. It is not
+		// retried on the same target — a hung target stays hung — but the pool
+		// must carry the request to a sibling: this is the failure failover
+		// exists for.
+		{name: "attempt timeout", err: transportHeaderTimeoutError(t), attempts: 1},
+		// Likewise a cancellation raised inside the target's own call while the
+		// request context is still live belongs to that target, not the caller.
+		{name: "target-side cancellation", err: fmt.Errorf("provider: %w", context.Canceled), attempts: 1},
 	}
 
 	for _, mode := range poolModes {
@@ -448,9 +461,6 @@ func TestPipeline_PoolModesStopOnUnsafeFailures(t *testing.T) {
 		{name: "403", err: core.StatusError("first", http.StatusForbidden, "forbidden")},
 		{name: "404", err: core.StatusError("first", http.StatusNotFound, "not found")},
 		{name: "422", err: core.StatusError("first", http.StatusUnprocessableEntity, "invalid")},
-		{name: "canceled", err: fmt.Errorf("provider: %w", context.Canceled)},
-		{name: "deadline", err: fmt.Errorf("provider: %w", context.DeadlineExceeded)},
-		{name: "deadline beats saturation", err: errors.Join(core.ErrProviderSaturated, context.DeadlineExceeded)},
 	}
 
 	for _, mode := range poolModes {
@@ -652,36 +662,91 @@ func TestPipeline_ExhaustedPoolReportsAggregateFailure(t *testing.T) {
 	}
 }
 
-func TestPipeline_RequestCancellationStopsTransportFailover(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	first := newCountingProvider("first", func() (*providers.Response, error) {
-		cancel()
-		return nil, errors.New("connection reset")
-	})
-	second := newCountingProvider("second", func() (*providers.Response, error) {
-		return &providers.Response{ID: "unexpected", Model: pipelineModel}, nil
-	})
-	gw, err := newTestGateway(t, config.Config{Targets: []config.Target{
-		{VirtualKey: "first"}, {VirtualKey: "second"},
-	}})
-	if err != nil {
-		t.Fatalf("new gateway: %v", err)
-	}
-	gw.RegisterProvider(first)
-	gw.RegisterProvider(second)
+// Once the request's own context has ended there is nobody left to serve, so
+// the walk stops whatever the failing call reported — a transport error after
+// the client hung up, or the deadline itself.
+func TestPipeline_RequestContextEndStopsFailover(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// end brings the request context to its end from inside the first
+		// target's call and returns the error that call reports.
+		end func(t *testing.T) (context.Context, func() error)
+	}{
+		{
+			name: "client hangs up",
+			end: func(*testing.T) (context.Context, func() error) {
+				ctx, cancel := context.WithCancel(context.Background())
+				return ctx, func() error {
+					cancel()
+					return errors.New("connection reset")
+				}
+			},
+		},
+		{
+			name: "request deadline passes",
+			end: func(t *testing.T) (context.Context, func() error) {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+				t.Cleanup(cancel)
+				return ctx, func() error {
+					<-ctx.Done()
+					return fmt.Errorf("upstream: %w", ctx.Err())
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, fail := tc.end(t)
+			first := newCountingProvider("first", func() (*providers.Response, error) {
+				return nil, fail()
+			})
+			second := newCountingProvider("second", func() (*providers.Response, error) {
+				return &providers.Response{ID: "unexpected", Model: pipelineModel}, nil
+			})
+			gw, err := newTestGateway(t, config.Config{Targets: []config.Target{
+				{VirtualKey: "first"}, {VirtualKey: "second"},
+			}})
+			if err != nil {
+				t.Fatalf("new gateway: %v", err)
+			}
+			gw.RegisterProvider(first)
+			gw.RegisterProvider(second)
 
-	_, target, routeErr := routeTargets(ctx, gw, targetPlan{
-		keys: []string{"first", "second"}, model: pipelineModel, advance: true,
-	}, pipelineRequest(), nil, completeChat)
-	if routeErr == nil {
-		t.Fatal("routeTargets succeeded")
+			_, target, routeErr := routeTargets(ctx, gw, targetPlan{
+				keys: []string{"first", "second"}, model: pipelineModel, advance: true,
+			}, pipelineRequest(), nil, completeChat)
+			if routeErr == nil {
+				t.Fatal("routeTargets succeeded")
+			}
+			if second.calls.Load() != 0 {
+				t.Errorf("second target was attempted %d times after the request context ended", second.calls.Load())
+			}
+			if target.key != "first" {
+				t.Errorf("failed target = %q, want first", target.key)
+			}
+		})
 	}
-	if second.calls.Load() != 0 {
-		t.Errorf("second target was attempted %d times after request cancellation", second.calls.Load())
+}
+
+// transportHeaderTimeoutError returns the error net/http hands a provider whose
+// target accepted the connection and never answered: the transport's
+// ResponseHeaderTimeout fired while the request's own context was still live.
+func transportHeaderTimeoutError(t *testing.T) error {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	t.Cleanup(srv.Close)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL, nil)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
 	}
-	if target.key != "first" {
-		t.Errorf("failed target = %q, want first", target.key)
+	client := &http.Client{Transport: &http.Transport{ResponseHeaderTimeout: 10 * time.Millisecond}}
+	resp, err := client.Do(req)
+	if err == nil {
+		_ = resp.Body.Close()
+		t.Fatal("expected the response header timeout to fire")
 	}
+	return err
 }
 
 // The pipeline records latency against the TARGET KEY, which is the key
@@ -897,5 +962,48 @@ func TestPipeline_NamedTargetModesDoNotReroute(t *testing.T) {
 				t.Errorf("healthy target was attempted %d times; the rule named \"dead\"", healthy.calls.Load())
 			}
 		})
+	}
+}
+
+// An after_request plugin that breaks fails a request the provider served. The
+// failure is still a request the gateway answered, so it is timed and counted
+// like any other — as a plugin failure, not as a provider error.
+func TestRoute_AfterRequestPluginFailureIsCountedAndTimed(t *testing.T) {
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets:  []config.Target{{VirtualKey: mockProviderName}},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+	gw.RegisterProvider(&mockProvider{
+		name:   mockProviderName,
+		models: []string{pipelineModel},
+		resp:   &providers.Response{ID: "ok", Model: pipelineModel},
+	})
+	if err := gw.RegisterPlugin(plugin.StageAfterRequest, &testPlugin{
+		name: "broken-guardrail",
+		typ:  plugin.TypeGuardrail,
+		execFn: func(context.Context, *plugin.Context) error {
+			return errors.New("boom")
+		},
+	}); err != nil {
+		t.Fatalf("register after plugin: %v", err)
+	}
+
+	labels := map[string]string{"provider": mockProviderName, "model": pipelineModel}
+	handles := metrics.ForRequest(mockProviderName, pipelineModel)
+	durationsBefore := durationSampleCount(t, labels)
+	errorsBefore := counterValue(t, handles.Error)
+
+	if _, err := gw.Route(context.Background(), pipelineRequest()); err == nil {
+		t.Fatal("expected the after_request failure to fail the route")
+	}
+
+	if delta := durationSampleCount(t, labels) - durationsBefore; delta != 1 {
+		t.Errorf("failed request added %d duration samples, want 1", delta)
+	}
+	if delta := counterValue(t, handles.Error) - errorsBefore; delta != 1 {
+		t.Errorf("failed request added %v to the error counter, want 1", delta)
 	}
 }

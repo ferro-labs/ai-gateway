@@ -104,6 +104,13 @@ type Gateway struct {
 	// Route and RouteStream, so the same lock that guards g.obs guards it.
 	obsEventsActive bool
 
+	// obsAttemptsActive is true when the installed Provider also implements
+	// observability.RoutingAttemptRecordingProvider and RoutingAttemptsEnabled()
+	// returned true at the time SetObservability was called. Guarded like
+	// obsEventsActive and read by routeTargets, which records one event per
+	// physical provider call only while it is set.
+	obsAttemptsActive bool
+
 	// MCP fields — nil when no MCPServers are configured.
 	mcpRegistry *mcp.Registry
 	mcpExecutor *mcp.Executor
@@ -213,10 +220,15 @@ func (g *Gateway) SetObservability(p observability.Provider) {
 	defer g.mu.Unlock()
 	g.obs = p
 	// Cache whether the provider will receive RecordEvent calls so the
-	// hot path can skip Event construction when nothing is listening.
+	// hot path can skip Event construction when nothing is listening, and
+	// whether it also wants the per-attempt events.
 	g.obsEventsActive = false
+	g.obsAttemptsActive = false
 	if er, ok := p.(observability.EventRecordingProvider); ok {
 		g.obsEventsActive = er.RecordingEnabled()
+	}
+	if ar, ok := p.(observability.RoutingAttemptRecordingProvider); ok {
+		g.obsAttemptsActive = g.obsEventsActive && ar.RoutingAttemptsEnabled()
 	}
 }
 

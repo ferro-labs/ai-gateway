@@ -388,10 +388,13 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 		HasCost:    cost.Priced,
 	})
 	if err != nil {
-		// runAfterPlugins already ran on_error. Finish through failed accounting
-		// without treating the successful provider call as another physical
-		// failure or running on_error twice.
-		g.recordTerminalFailure(ctx, span, obs, target.key, req.Model, target.abVariantLabel, target.hasABVariant, err, time.Since(start), originalStream, hooksEnabled, obsEventsActive)
+		// runAfterPlugins already ran on_error, so finish through failed
+		// accounting without running it twice. The request is timed and
+		// counted as the plugin abort it is — the provider call succeeded, so
+		// it is never a provider failure.
+		latency = time.Since(start)
+		g.recordFailureMetrics(ctx, target.key, req.Model, err, latency)
+		g.recordTerminalFailure(ctx, span, obs, target.key, req.Model, target.abVariantLabel, target.hasABVariant, err, latency, originalStream, hooksEnabled, obsEventsActive)
 		return nil, err
 	}
 

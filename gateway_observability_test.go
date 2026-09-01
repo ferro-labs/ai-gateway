@@ -1613,3 +1613,56 @@ func chatRequest(model string) providers.Request {
 		Messages: []providers.Message{{Role: "user", Content: "hi"}},
 	}
 }
+
+// terminalOnlyProvider exports terminal events and has never heard of
+// gateway.routing.attempt: what every observability provider written before
+// attempt events existed looks like to the gateway.
+type terminalOnlyProvider struct {
+	observability.Provider
+	events *eventCapturingProvider
+}
+
+func (p terminalOnlyProvider) RecordEvent(ctx context.Context, evt observability.Event) {
+	p.events.RecordEvent(ctx, evt)
+}
+
+func (p terminalOnlyProvider) RecordingEnabled() bool { return true }
+
+// Attempt events are opt-in. A provider that only ever asked for terminal
+// events keeps receiving exactly one event per request, so an exporter that
+// treats every event as a request does not start recording phantom requests.
+func TestRoute_AttemptEventsRequireProviderOptIn(t *testing.T) {
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets:  []config.Target{{VirtualKey: mockProviderName}},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+	capture := &eventCapturingProvider{recordingActive: true}
+	gw.SetObservability(terminalOnlyProvider{Provider: observability.NoOp(), events: capture})
+	gw.RegisterProvider(&mockProvider{
+		name:   mockProviderName,
+		models: []string{testModel},
+		resp:   &providers.Response{ID: "ok", Model: testModel},
+	})
+
+	if _, err := gw.Route(context.Background(), chatRequest(testModel)); err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+
+	events := capture.capturedEvents()
+	if attempts := eventsWithSubject(events, observability.SubjectRoutingAttempt); len(attempts) != 0 {
+		t.Errorf("%d attempt events reached a provider that never opted in", len(attempts))
+	}
+	if completed := eventsWithSubject(events, "gateway.request.completed"); len(completed) != 1 {
+		t.Errorf("completed events = %d, want exactly 1", len(completed))
+	}
+}
+
+// RoutingAttemptsEnabled opts the capturing provider into attempt events
+// whenever it records events at all, so tests that count attempts need no
+// extra setup and the terminal-only case is expressed by terminalOnlyProvider.
+func (p *eventCapturingProvider) RoutingAttemptsEnabled() bool {
+	return p.recordingActive
+}
