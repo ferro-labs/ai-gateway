@@ -38,6 +38,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"maps"
 	"math/rand"
 	"net/http"
 	"os"
@@ -110,7 +111,9 @@ type mock struct {
 func main() {
 	cfg := settingsFromEnv()
 	addr := ":" + env("PORT", "9090")
-	srv := &http.Server{Addr: addr, Handler: newHandler(cfg), ReadHeaderTimeout: 5 * time.Second}
+	// ReadTimeout bounds the body read as well as the headers; a hung
+	// scenario holds the response, never the request.
+	srv := &http.Server{Addr: addr, Handler: newHandler(cfg), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second}
 	log.Printf("mockllm %q listening on %s", cfg.name, addr)
 	log.Fatal(srv.ListenAndServe())
 }
@@ -160,10 +163,7 @@ func (m *mock) handleCalls(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	m.mu.Lock()
-	models := make(map[string]int, len(m.models))
-	for k, v := range m.models {
-		models[k] = v
-	}
+	models := maps.Clone(m.models)
 	body := map[string]any{"calls": m.calls, "streams": m.streams, "last_model": m.lastModel, "models": models}
 	m.mu.Unlock()
 	writeJSON(w, body)
@@ -319,9 +319,7 @@ func (m *mock) streamChat(w http.ResponseWriter, r *http.Request, model string, 
 			"id": id, "object": "chat.completion.chunk", "created": created, "model": model,
 			"choices": []any{map[string]any{"index": 0, "delta": delta, "finish_reason": finish}},
 		}
-		for k, v := range extra {
-			out[k] = v
-		}
+		maps.Copy(out, extra)
 		return out
 	}
 	errorFrame := map[string]any{"error": map[string]any{"type": "mock_error", "message": "mock upstream failed mid-stream"}}

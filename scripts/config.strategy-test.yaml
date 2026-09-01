@@ -25,7 +25,8 @@ targets:
 # single          → always the FIRST target (groq). A model the first target does
 #                   not serve is model_not_found; it never tries the second.
 # fallback        → first target, and after a failover-safe failure (transport,
-#                   timeout, 408, 429, 5xx, open circuit) the next one in order.
+#                   timeout, 408, 429, 5xx, open circuit, target saturation) the
+#                   next one in order.
 #                   Point GROQ_BASE_URL at a dead host and watch traffic land on
 #                   together. The other pool modes fail over the same way; only
 #                   single, conditional and content-based stop at their target.

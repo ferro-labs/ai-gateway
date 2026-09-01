@@ -29,7 +29,7 @@ Everything below is available today.
 ### Routing
 
 - 8 strategies: single, fallback, load balance, least latency, cost-optimized, content-based, A/B test, conditional
-- Provider failover with per-target retry (jittered backoff, status-code filters), honoured under every routing mode; pool modes move to a sibling only after a failover-safe failure (v1.5.1)
+- Per-target retry (jittered backoff, status-code filters) honoured under every routing mode; provider failover in the pool modes, which move to a sibling only after a failover-safe failure (v1.5.1)
 - Per-request model aliases, operator-declared `targets[].models`, and per-target `model_map` — one visible model key, a different upstream id on each provider (v1.5.1)
 - One `gateway.routing.attempt` observation per physical provider call and A/B variant attribution on every attempt, opt-in for exporters (v1.5.1)
 - Per-target concurrency limits with a bounded queue and 429 shedding

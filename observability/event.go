@@ -53,7 +53,11 @@ const (
 )
 
 // RoutingAttempt describes one invocation admitted to the routing resilience
-// layer, including locally refused breaker and limiter invocations.
+// layer, including locally refused breaker and limiter invocations, so the
+// count is of routing-layer calls, not of bytes that reached a provider. For a
+// streamed request the attempt ends when the stream starts: a failure after
+// the first byte belongs to the request's terminal event, because the walk is
+// over by then and no other target is asked.
 type RoutingAttempt struct {
 	TargetKey      string
 	Provider       string
@@ -74,8 +78,9 @@ type RoutingAttempt struct {
 type Event struct {
 	// Subject identifies the event kind: "gateway.request.completed" or
 	// "gateway.request.failed" once per request, and SubjectRoutingAttempt
-	// once per physical provider call for consumers that opted in through
-	// RoutingAttemptExporter or RoutingAttemptRecordingProvider.
+	// once per routing-layer invocation — locally refused calls included —
+	// for consumers that opted in through RoutingAttemptExporter or
+	// RoutingAttemptRecordingProvider.
 	Subject string
 	// TraceID is the gateway request trace ID.
 	TraceID string
