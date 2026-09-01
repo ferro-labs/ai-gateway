@@ -12,7 +12,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"maps"
 	"net/http"
 	"net/url"
 	"os"
@@ -41,18 +40,69 @@ var embeddedCatalog = sync.OnceValues(func() (Catalog, error) {
 	return c, nil
 })
 
-// loadEmbedded returns the embedded catalog as a shallow copy of the parsed
-// document, so no two callers share a map, and rebuilds the model-id index
-// from it exactly as a fresh parse would — the index always reflects the most
-// recent load.
+// loadEmbedded returns the embedded catalog as a copy of the parsed document
+// that shares nothing with it — not the map, and not the pointer-valued
+// pricing and lifecycle fields — so a caller editing its catalog cannot change
+// what any other caller prices with. The model-id index is rebuilt from the
+// copy exactly as a fresh parse would, so it always reflects the most recent
+// load.
 func loadEmbedded() (Catalog, error) {
 	parsed, err := embeddedCatalog()
 	if err != nil {
 		return nil, err
 	}
-	c := maps.Clone(parsed)
+	c := make(Catalog, len(parsed))
+	for key, m := range parsed {
+		c[key] = m.clone()
+	}
 	BuildIndex(c)
 	return c, nil
+}
+
+// clone returns a Model whose pointer-valued fields are copies, not shares.
+func (m Model) clone() Model {
+	m.Pricing = m.Pricing.clone()
+	m.Lifecycle = m.Lifecycle.clone()
+	return m
+}
+
+func (p Pricing) clone() Pricing {
+	p.InputPerMTokens = cloneFloat(p.InputPerMTokens)
+	p.OutputPerMTokens = cloneFloat(p.OutputPerMTokens)
+	p.CacheReadPerMTokens = cloneFloat(p.CacheReadPerMTokens)
+	p.CacheWritePerMTokens = cloneFloat(p.CacheWritePerMTokens)
+	p.ReasoningPerMTokens = cloneFloat(p.ReasoningPerMTokens)
+	p.ImagePerTile = cloneFloat(p.ImagePerTile)
+	p.AudioInputPerMinute = cloneFloat(p.AudioInputPerMinute)
+	p.AudioOutputPerCharacter = cloneFloat(p.AudioOutputPerCharacter)
+	p.EmbeddingPerMTokens = cloneFloat(p.EmbeddingPerMTokens)
+	p.FinetuneTrainPerMTokens = cloneFloat(p.FinetuneTrainPerMTokens)
+	p.FinetuneInputPerMTokens = cloneFloat(p.FinetuneInputPerMTokens)
+	p.FinetuneOutputPerMTokens = cloneFloat(p.FinetuneOutputPerMTokens)
+	return p
+}
+
+func (l Lifecycle) clone() Lifecycle {
+	l.DeprecationDate = cloneString(l.DeprecationDate)
+	l.SunsetDate = cloneString(l.SunsetDate)
+	l.Successor = cloneString(l.Successor)
+	return l
+}
+
+func cloneFloat(v *float64) *float64 {
+	if v == nil {
+		return nil
+	}
+	c := *v
+	return &c
+}
+
+func cloneString(v *string) *string {
+	if v == nil {
+		return nil
+	}
+	c := *v
+	return &c
 }
 
 // CatalogURLEnv is the env var operators set to override the catalog source.

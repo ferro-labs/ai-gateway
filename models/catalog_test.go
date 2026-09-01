@@ -938,3 +938,46 @@ func BenchmarkLoadEmbedded(b *testing.B) {
 		}
 	}
 }
+
+// A loaded copy owns its pointer-valued fields too. Pricing and lifecycle
+// values are pointers, so a shallow copy of the cached catalog would let one
+// caller's edit change what every later fallback load prices with. The
+// reflection walk covers pointer fields added later without a test change.
+func TestLoadWithInfo_EmbeddedFallbackCopiesPointerFields(t *testing.T) {
+	t.Setenv(CatalogFetchTimeoutEnv, "0")
+	const key = "openai/gpt-4o-mini"
+
+	first, err := LoadWithInfo()
+	if err != nil {
+		t.Fatalf("first load: %v", err)
+	}
+	model, ok := first.Catalog[key]
+	if !ok || model.Pricing.InputPerMTokens == nil {
+		t.Fatalf("%q must be in the embedded catalog with an input price", key)
+	}
+	original := *model.Pricing.InputPerMTokens
+	*model.Pricing.InputPerMTokens = original + 1000
+
+	second, err := LoadWithInfo()
+	if err != nil {
+		t.Fatalf("second load: %v", err)
+	}
+	if got := *second.Catalog[key].Pricing.InputPerMTokens; got != original {
+		t.Fatalf("input price after another caller's edit = %v, want the catalog's %v", got, original)
+	}
+
+	for _, section := range []struct {
+		name          string
+		first, second reflect.Value
+	}{
+		{"Pricing", reflect.ValueOf(model.Pricing), reflect.ValueOf(second.Catalog[key].Pricing)},
+		{"Lifecycle", reflect.ValueOf(model.Lifecycle), reflect.ValueOf(second.Catalog[key].Lifecycle)},
+	} {
+		for i := 0; i < section.first.NumField(); i++ {
+			a, b := section.first.Field(i), section.second.Field(i)
+			if a.Kind() == reflect.Ptr && !a.IsNil() && a.Pointer() == b.Pointer() {
+				t.Errorf("%s.%s is shared between two loads", section.name, section.first.Type().Field(i).Name)
+			}
+		}
+	}
+}
