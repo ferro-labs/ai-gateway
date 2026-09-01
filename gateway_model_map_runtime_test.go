@@ -309,7 +309,10 @@ func TestModelMap_TerminalAttributionMatchesUnaryAndPricesStreamUpstream(t *test
 	}
 }
 
-func TestRouteStream_ModelMapKeepsRoutedModelInAfterPluginAndSpan(t *testing.T) {
+// The routed model is the response's identity on every surface: the chunks the
+// client receives name it, exactly as a non-streaming response does, so the
+// upstream id a model_map translates to never reaches the caller.
+func TestRouteStream_ModelMapKeepsRoutedModelOnChunksInAfterPluginAndSpan(t *testing.T) {
 	const upstreamModel = "vendor/support-v2"
 	gw, err := newTestGateway(t, config.Config{
 		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
@@ -354,8 +357,8 @@ func TestRouteStream_ModelMapKeepsRoutedModelInAfterPluginAndSpan(t *testing.T) 
 		forwardedModel = chunk.Model
 	}
 
-	if forwardedModel != upstreamModel {
-		t.Errorf("forwarded chunk model = %q, want upstream model %q", forwardedModel, upstreamModel)
+	if forwardedModel != visibleMappedModel {
+		t.Errorf("forwarded chunk model = %q, want routed model %q", forwardedModel, visibleMappedModel)
 	}
 	if afterModel != visibleMappedModel {
 		t.Errorf("after_request response model = %q, want %q", afterModel, visibleMappedModel)

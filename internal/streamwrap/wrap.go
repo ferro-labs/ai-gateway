@@ -145,6 +145,21 @@ func (m MeterMeta) priceModelName() string {
 	return m.Model
 }
 
+// clientView is the chunk the consumer receives. It carries the routed model
+// as its identity — the same one a non-streaming response reports, so the id a
+// per-target model mapping translated to never reaches the caller — and no
+// usage block when the client opted out of usage reporting. The chunk is not
+// dropped in that case: it may still carry content or a finish_reason.
+func (m MeterMeta) clientView(chunk providers.StreamChunk) providers.StreamChunk {
+	if m.Model != "" {
+		chunk.Model = m.Model
+	}
+	if m.SuppressUsageForClient {
+		chunk.Usage = nil
+	}
+	return chunk
+}
+
 // Measurements are the per-request numbers a completed stream produced. They
 // mirror plugin.Measurements, which streamwrap cannot import without depending
 // on the pipeline it is metered by.
@@ -279,17 +294,11 @@ func Meter(ctx context.Context, src <-chan providers.StreamChunk, start time.Tim
 				streamErr = chunk.Error
 			}
 
-			// Forward the chunk, but stop blocking if the consumer
-			// disconnects mid-send. When the client opted out of usage
-			// reporting, forward a copy with Usage cleared instead of
-			// dropping the chunk outright — it may still carry content
-			// or a finish_reason that must reach the client. Accounting
-			// above already captured the real usage from the
-			// unmodified chunk, so this never affects metrics/cost/plugins.
-			forward := chunk
-			if meta.SuppressUsageForClient && forward.Usage != nil {
-				forward.Usage = nil
-			}
+			// Forward the client's view of the chunk, but stop blocking if the
+			// consumer disconnects mid-send. Accounting above already read the
+			// unmodified chunk, so the projection never reaches metrics, cost
+			// or plugins.
+			forward := meta.clientView(chunk)
 			// Same preference as the top of the loop, best effort only: a
 			// consumer already waiting on out takes the chunk even though the
 			// request context is cancelled. out is unbuffered, so a consumer

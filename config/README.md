@@ -82,6 +82,8 @@ Maps the model key visible after global alias resolution to the exact model ID
 sent to one target. The keys join both the routing index and `/v1/models`
 inventory; `targets[].models` remains additive and can still declare other
 models. Cost and pricing use the mapped upstream model, not the visible key.
+Responses name the visible key as their `model` on every surface, streamed
+chunks included; the upstream ID never reaches the client.
 
 For fallback, every target intended to participate for that visible model must
 contain the same key; unrelated configured targets need not. The client below
