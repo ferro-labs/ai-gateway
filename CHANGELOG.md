@@ -12,30 +12,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `targets[].model_map` lets multiple providers serve one visible model key while
   translating it to each target's upstream model ID. Mapped keys participate in
   routing and `/v1/models`; pricing uses the mapped upstream model.
-- Each physical provider call or local circuit-breaker/concurrency refusal emits
-  a separate `gateway.routing.attempt` observation, including retries and
-  cross-target failovers.
+- Each physical provider call or local circuit-breaker/concurrency refusal can
+  emit a separate `gateway.routing.attempt` observation, including retries and
+  cross-target failovers. Attempt events are opt-in: an exporter receives them
+  only when it implements `observability.RoutingAttemptExporter`, and a custom
+  `observability.Provider` only when it implements
+  `observability.RoutingAttemptRecordingProvider`. Every existing exporter keeps
+  receiving exactly one event per request.
 - A/B routing attempts and terminal events carry
   `ferro.routing.ab_variant_label`, preserving the initially drawn variant
   through retries and safe cross-target advancement.
+- One-command install and package-manager distribution: `get.ferrolabs.ai`,
+  `ferrogw` on npm and PyPI, a Homebrew cask and Scoop manifest, and GoReleaser
+  platform archives (#412). Landed on `main` during the v1.4.x line without an
+  entry, as did the README quickstart and demo overhaul (#417).
 
 ### Changed
 
 - Pool modes (`fallback`, `loadbalance`, `least-latency`, `cost-optimized`, and
-  `ab-test`) advance to another target only after transport failures, 408, 429,
-  5xx, open circuits, or target saturation. Cancellation, deadline expiry, and
-  other deterministic 4xx responses stop routing, as do provider-call failures
-  in `single`, `conditional`, and `content-based` modes.
-- Configuration loading rejects duplicate target keys and duplicate JSON object
-  keys instead of accepting an ambiguous routing configuration.
+  `ab-test`) advance to another target only after a failover-safe failure: a
+  transport failure, an attempt that timed out waiting on the target, 408, 429,
+  5xx, an open circuit, or target saturation. They previously advanced after
+  any failure, so a target answering 400, 401, 404, or 422 was silently covered
+  by a sibling; those responses now reach the client. The request's own
+  cancellation or deadline still stops routing, as does any provider-call
+  failure in `single`, `conditional`, and `content-based` modes.
+- Responses name the routed model — the model the client asked for, after alias
+  resolution — as their `model` on every surface, streamed chunks included,
+  instead of the identifier the provider reported. Provider calls, pricing, and
+  the `UpstreamModel` of a `gateway.routing.attempt` event still use the mapped
+  upstream model.
+- Configuration loading rejects duplicate target keys, an empty
+  `targets[].virtual_key`, and duplicate JSON object keys instead of accepting
+  an ambiguous routing configuration.
 - Configuration validation rejects duplicate `ab_variants[].target_key` entries.
 
 ### Fixed
 
-- Non-stream responses now consistently expose and attribute the routed model
-  while provider calls and pricing continue to use the configured mapped model.
-  Failures in `after_request` plugins now emit one failed terminal lifecycle
-  event with the selected A/B variant instead of ending without a terminal event.
+- Failures in `after_request` plugins are timed and counted as plugin failures
+  and emit one failed terminal lifecycle event carrying the selected A/B
+  variant, instead of ending without a duration sample or a terminal event.
 
 - A stream whose upstream had already finished when the client hung up was
   recorded as a client cancellation about half the time. The metering loop
@@ -43,10 +59,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   both were ready; it now takes the finished stream first, so a completed and
   billed stream is always recorded as completed. Cancellation still decides
   once nothing is ready to forward.
-
-- Streaming and unary terminal telemetry keeps the routed, client-visible model
-  when `model_map` translates a request, while stream cost lookup continues to
-  use the mapped upstream model.
 
 ## [1.5.0] — 2026-08-29
 
@@ -490,6 +502,27 @@ reported itself configured and simply never hit.
 
 The tools now go onto a copy used for the provider call, so every plugin stage
 observes the request the caller actually sent.
+
+
+### Fixed — a dead target no longer black-holes its share of the traffic
+
+Only `mode: fallback` moved a request past a target that failed. Every other
+multi-target mode picked one candidate and stopped there, so an outage on that
+target failed its whole selection share while a healthy sibling served the same
+model. Under `cost-optimized`, which ranks deterministically, that was every
+request.
+
+`fallback`, `loadbalance`, `least-latency`, `cost-optimized` and `ab-test` now
+advance to the next candidate. `single`, `conditional` and `content-based` do
+not: those name one target on purpose, and answering from another would make the
+rule a suggestion.
+
+A circuit breaker was previously the only thing that moved traffic off a bad
+target, and breakers are opt-in — the shipped examples configure one across
+thirty targets. It is still worth configuring, for a different reason: without
+one the walk pays the dead target's connection timeout on every request before
+advancing. The breaker makes failover cheap; the routing mode is what makes it
+happen.
 
 
 ### Breaking - pass-through paths cannot traverse outside the provider API root

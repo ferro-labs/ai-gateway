@@ -36,9 +36,10 @@ sibling is what was asked for. A named mode picks a *specific* target (you named
 it, or a rule matched it), so serving from somewhere else would demote the rule
 to a suggestion.
 
-Failover-safe failures are transport failures, 408, 429, 5xx, open circuits,
-and target saturation. Cancellation, deadline expiry, and every other 4xx stop
-at the current target; named modes also stop after any provider-call failure.
+Failover-safe failures are transport failures, an attempt that timed out
+waiting on the target, 408, 429, 5xx, open circuits, and target saturation. The
+request's own cancellation or deadline and every other 4xx stop at the current
+target; named modes also stop after any provider-call failure.
 
 Under **every** mode, a target whose **circuit breaker is open** is skipped when
 the choice is made, so a backend the gateway has already decided not to call
@@ -133,6 +134,13 @@ strategy:
     - { target_key: openai, weight: 70, label: control }
     - { target_key: anthropic, weight: 30, label: challenger }
 ```
+
+The label names the variant the request was *drawn* for and stays with the
+request through same-target retries and failover, so an experiment is segmented
+by intent. Which target actually served is on every `gateway.routing.attempt`
+event and on the terminal event's provider — read it when a variant's circuit is
+open, because the draw still happens and the sibling serves under the drawn
+label.
 
 ## `/v1/models` stays in step
 

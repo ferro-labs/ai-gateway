@@ -196,7 +196,7 @@ point into `deploy/`.
 - **OpenAI Compatibility**: All requests/responses match OpenAI spec — other provider responses are translated
 - **Pass-Through Proxy**: Unhandled `/v1/*` endpoints forwarded transparently via `internal/proxy/proxy.go`
 - **Compile-time assertions**: Every provider subpackage has `var _ core.XxxProvider = (*Provider)(nil)` guards
-- **Observability seam**: `Gateway` holds exactly one `observability.Provider` (NoOp by default; install via `SetObservability`). `Route`/`RouteStream`/`Embed`/`GenerateImage` each open a `gateway.request` root span and stamp `gen_ai.*`/`ferro.*` attributes; plugins and MCP tool calls emit child spans. Registered exporters receive `gateway.request.completed`/`failed` events. With OTel disabled the hot path stays at the NoOp allocation baseline (asserted by `TestRoute_TracingOff_AllocBaseline`). `OTEL_EXPORTER_OTLP_ENDPOINT` and `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` take precedence over the configured endpoint; every other tracing setting, the head sampler included, comes from config. The sampler is `ParentBased`, so an inbound sampled `traceparent` is followed whatever `sample_ratio` says.
+- **Observability seam**: `Gateway` holds exactly one `observability.Provider` (NoOp by default; install via `SetObservability`). `Route`/`RouteStream`/`Embed`/`GenerateImage` each open a `gateway.request` root span and stamp `gen_ai.*`/`ferro.*` attributes; plugins and MCP tool calls emit child spans. Registered exporters receive `gateway.request.completed`/`failed` events, and one `gateway.routing.attempt` event per physical provider call when they opt in through `observability.RoutingAttemptExporter`. With OTel disabled the hot path stays at the NoOp allocation baseline (asserted by `TestRoute_TracingOff_AllocBaseline`). `OTEL_EXPORTER_OTLP_ENDPOINT` and `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` take precedence over the configured endpoint; every other tracing setting, the head sampler included, comes from config. The sampler is `ParentBased`, so an inbound sampled `traceparent` is followed whatever `sample_ratio` says.
 
 ### Request Flow
 
@@ -800,9 +800,10 @@ about that target — spread the load, take the cheapest, take the fastest, spli
 the traffic — from targets the operator declared interchangeable. So the request
 belongs to the pool, and carrying it to a sibling is what was asked for.
 
-Failover-safe failures are transport or no-status failures, 408, 429, 5xx, open
-circuits, and target saturation. Cancellation, deadline expiry, and every other
-4xx stop at the current target.
+Failover-safe failures are transport or no-status failures, an attempt that
+timed out waiting on the target, 408, 429, 5xx, open circuits, and target
+saturation. The request's own cancellation or deadline and every other 4xx stop
+at the current target.
 
 A named mode picks its head because something named that target specifically:
 `single` names it, and a `conditional` or `content-based` rule matched it.
@@ -814,7 +815,7 @@ see the table above; the two rules are independent.
 Without a breaker the walk pays the dead target's connection timeout on every
 request before advancing. That is the cost the breaker removes, and the reason
 to configure one on a target that can fail — not to obtain failover, which the
-pool modes now provide unconditionally.
+pool modes provide on every failover-safe failure.
 
 ### Filtering the request log by credential
 
@@ -1153,7 +1154,7 @@ fails otherwise.
 Exporters bridge gateway events to a backend (LangSmith, Langfuse, Datadog, …). They live in the
 separate `ai-gateway-plugins` repo, not here — the gateway only ships the contract + wiring.
 
-1. Implement `observability.Exporter` (`Name`, `Init(cfg map[string]any)`, `Export(ctx, Event)`, `Shutdown(ctx)`). `Export` must be safe for concurrent use and non-blocking.
+1. Implement `observability.Exporter` (`Name`, `Init(cfg map[string]any)`, `Export(ctx, Event)`, `Shutdown(ctx)`). `Export` must be safe for concurrent use and non-blocking. Implement `observability.RoutingAttemptExporter` (`ExportsRoutingAttempts() bool`) as well to receive one `gateway.routing.attempt` event per physical provider call; without it the exporter is handed exactly one event per request.
 2. Register a factory in `init()`: `observability.RegisterExporter("<name>", New)`.
 3. Configure it under `observability.exporters` (`name`/`enabled`/`config`) — `internal/otel.Init` resolves enabled entries via `LookupExporter`; unknown/failed exporters are logged and skipped (non-fatal). Exporters work even with no OTLP endpoint.
 4. Emit new span attributes only via constants in `observability/attributes.go`; mark not-yet-wired ones as Planned.
