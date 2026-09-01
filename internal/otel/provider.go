@@ -3,6 +3,7 @@ package otel
 import (
 	"context"
 	"runtime/debug"
+	"slices"
 	"sync"
 	"sync/atomic"
 
@@ -209,13 +210,24 @@ func (p *otelProvider) runWorker(
 	}
 }
 
-// dispatchEvent fans a single event out to all exporters using the supplied
+// dispatchEvent fans a single event out to the exporters using the supplied
 // context. Steady-state callers pass context.Background(); the drain branch
-// passes the Shutdown context so slow exporters honour the deadline.
+// passes the Shutdown context so slow exporters honour the deadline. An
+// attempt event reaches only the exporters that asked for attempts; every
+// other event reaches them all.
 func (p *otelProvider) dispatchEvent(ctx context.Context, exporters []observability.Exporter, evt observability.Event) {
 	for _, ex := range exporters {
+		if evt.Subject == observability.SubjectRoutingAttempt && !exportsRoutingAttempts(ex) {
+			continue
+		}
 		exportEvent(ctx, ex, evt)
 	}
+}
+
+// exportsRoutingAttempts reports whether ex has opted into attempt events.
+func exportsRoutingAttempts(ex observability.Exporter) bool {
+	attemptExporter, ok := ex.(observability.RoutingAttemptExporter)
+	return ok && attemptExporter.ExportsRoutingAttempts()
 }
 
 // exportEvent delivers evt to one exporter, recovering from a panic. Exporters
@@ -408,9 +420,20 @@ func (p *otelProvider) RecordingEnabled() bool {
 	return len(p.exporters) > 0
 }
 
+// RoutingAttemptsEnabled returns true when at least one attached Exporter has
+// opted into attempt events. Like RecordingEnabled it is cached by the gateway
+// at startup, so a provider with no such exporter never has an attempt event
+// built for it.
+func (p *otelProvider) RoutingAttemptsEnabled() bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return slices.ContainsFunc(p.exporters, exportsRoutingAttempts)
+}
+
 // Compile-time interface guards.
 var (
-	_ observability.Provider               = (*otelProvider)(nil)
-	_ observability.EventRecordingProvider = (*otelProvider)(nil)
-	_ observability.Span                   = (*otelSpan)(nil)
+	_ observability.Provider                        = (*otelProvider)(nil)
+	_ observability.EventRecordingProvider          = (*otelProvider)(nil)
+	_ observability.RoutingAttemptRecordingProvider = (*otelProvider)(nil)
+	_ observability.Span                            = (*otelSpan)(nil)
 )

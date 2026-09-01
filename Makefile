@@ -23,7 +23,7 @@ GATEWAY_PACKAGES = $(shell go list . ./cmd/... ./config/... ./internal/... ./mcp
 # copied in here before the Go build rather than read from web/dist.
 EMBED_DIR := internal/webui/dist
 
-.PHONY: fmt-check build run test test-coverage test-integration test-integration-postgres test-integration-containers test-integration-live test-integration-all bench fmt vet lint lint-fix clean deps web-deps web-build web-embed web-test web-check web-e2e web-clean precommit all snapshot release-check release-dry-run docker-build up up-prod down up-fullstack up-fullstack-live down-fullstack
+.PHONY: fmt-check build run test test-coverage test-integration test-integration-postgres test-integration-containers test-integration-live test-integration-all test-e2e-strategies bench fmt vet lint lint-fix clean deps web-deps web-build web-embed web-test web-check web-e2e web-clean precommit all snapshot release-check release-dry-run docker-build up up-prod down up-fullstack up-fullstack-live down-fullstack
 
 build: web-embed
 	@mkdir -p bin
@@ -94,6 +94,11 @@ test-integration-live:
 	go test -v -tags=live -race -timeout 300s ./test/live/...
 
 test-integration-all: test-integration test-integration-live
+
+# Every routing strategy over the real binary against scriptable mock upstreams
+# (scripts/mockllm) — no provider keys. E2E_SLOW=1 adds the hung-target cell.
+test-e2e-strategies:
+	scripts/strategy_e2e.sh
 
 bench:
 	go test -v -bench=. -benchmem $(GATEWAY_PACKAGES)

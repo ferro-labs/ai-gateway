@@ -100,8 +100,8 @@ func (ab *ABTest) WithRoutingTargets(targets []Target) *ABTest {
 }
 
 // SelectTargets picks a variant by weighted random sampling and returns its
-// target followed by every configured target. The tail is not tried on failure —
-// this mode commits to the drawn variant (see Strategy.SelectTargets). Variants
+// target followed by every configured target. The pipeline may try the tail
+// after a failover-safe failure while retaining attribution to the drawn variant. Variants
 // whose provider is missing or does not serve the model are excluded from the
 // draw.
 //

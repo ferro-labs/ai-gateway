@@ -98,7 +98,7 @@ make down-fullstack      # tears it down and removes its volumes
 | prometheus | http://localhost:9090 | scrapes the gateway's `/metrics` |
 | jaeger | http://localhost:16686 | traces, via OTLP from the gateway |
 | postgres | internal | config, key, and request-log stores |
-| mockllm | internal (demo only) | OpenAI-compatible mock upstream from [`scripts/mockllm`](../scripts/mockllm) — randomized latency, tokens, errors |
+| mockllm | internal (demo only) | OpenAI-compatible mock upstream from [`scripts/mockllm`](../scripts/mockllm) — randomized latency, tokens, errors; scriptable scenarios for the strategy end-to-end suite |
 | loadgen | internal (demo only) | continuous mixed traffic from [`scripts/loadgen.sh`](../scripts/loadgen.sh) |
 
 Open Grafana → **Ferro AI Gateway / Overview**. Within a minute the panels show

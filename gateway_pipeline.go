@@ -2,11 +2,14 @@ package aigateway
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/ferro-labs/ai-gateway/config"
 	"github.com/ferro-labs/ai-gateway/internal/strategies"
+	"github.com/ferro-labs/ai-gateway/observability"
 	"github.com/ferro-labs/ai-gateway/pkg/circuitbreaker"
 	"github.com/ferro-labs/ai-gateway/plugin"
 	"github.com/ferro-labs/ai-gateway/providers"
@@ -71,6 +74,10 @@ type targetPlan struct {
 	// single-target strategy means: an a/b variant that cannot serve the request
 	// is a 404, not a silent reroute to somebody else's target.
 	advance bool
+	// abVariantLabel is the initially drawn A/B variant. It remains attached to
+	// the request when retries or safe advancement reach another target.
+	abVariantLabel string
+	hasABVariant   bool
 	// ignoreCircuitState opts out of the health filter eligibleKeys applies.
 	//
 	// Exactly one caller sets it: the /v1/models listing (Gateway.routingServes),
@@ -101,7 +108,7 @@ type targetPlan struct {
 // targetCall performs one surface's provider call. It is passed as a plain
 // function rather than a closure so the request does not have to be captured,
 // which keeps the hot path free of a per-request closure allocation.
-type targetCall[Req, Resp any] func(context.Context, providers.Provider, Req) (Resp, error)
+type targetCall[Req, Resp any] func(context.Context, providers.Provider, Req, string) (Resp, error)
 
 // capabilityGate reports whether a provider can serve a surface at all —
 // providers.StreamProvider for streaming, providers.EmbeddingProvider for
@@ -113,8 +120,11 @@ type capabilityGate func(providers.Provider) bool
 // configured routing target used for attribution; priceProvider is the
 // canonical vendor used only for catalog pricing.
 type routedTarget struct {
-	key           string
-	priceProvider string
+	key            string
+	priceProvider  string
+	upstreamModel  string
+	abVariantLabel string
+	hasABVariant   bool
 }
 
 // routeTargets walks plan and returns the first target's answer.
@@ -142,9 +152,10 @@ func routeTargets[Req, Resp any](
 	keys := g.eligibleKeys(plan, gate)
 
 	var (
-		lastErr    error
-		lastTarget routedTarget
-		attempts   int
+		lastErr      error
+		lastTarget   routedTarget
+		attempts     int
+		stoppedEarly bool
 		// A failure the walk moves past is invisible to the terminal recorder,
 		// which only ever names the last target tried. Under mode: fallback a
 		// provider can fail every request and read zero on
@@ -156,15 +167,19 @@ func routeTargets[Req, Resp any](
 		// only then has the walk committed to moving on, so the terminal
 		// recorder can never also name it. The failure still pending at return
 		// belongs to lastKey, which the surface records.
-		maskedKey string
-		maskedErr error
+		maskedKey       string
+		maskedErr       error
+		attemptSequence int
 	)
+	g.mu.RLock()
+	obs, attemptsActive := g.obs, g.obsAttemptsActive
+	g.mu.RUnlock()
 	for _, key := range keys {
-		p, cb, lim, ok := g.resolveTarget(ctx, key, plan.model, gate)
+		p, cb, lim, upstreamModel, ok := g.resolveTarget(ctx, key, plan.model, gate)
 		if !ok {
 			continue
 		}
-		target := routedTarget{key: key, priceProvider: providers.CanonicalName(p)}
+		target := routedTarget{key: key, priceProvider: providers.CanonicalName(p), upstreamModel: upstreamModel, abVariantLabel: plan.abVariantLabel, hasABVariant: plan.hasABVariant}
 		if plan.responseOutlivesCall {
 			// Composition and order are decorateProvider's, which is the same
 			// pair callUnderResilience applies at the call site — breaker
@@ -182,7 +197,7 @@ func routeTargets[Req, Resp any](
 		lastTarget = target
 
 		started := time.Now()
-		resp, err := attemptTarget(ctx, g, key, p, cb, lim, req, call)
+		resp, err := attemptTarget(ctx, g, obs, attemptsActive, target, plan.model, &attemptSequence, p, cb, lim, req, upstreamModel, call)
 		if err == nil {
 			// Latency is recorded against the TARGET KEY and covers the provider
 			// call only. Both halves matter: least-latency reads its samples back
@@ -197,7 +212,8 @@ func routeTargets[Req, Resp any](
 		if !plan.advance {
 			break
 		}
-		if ctx.Err() != nil {
+		if !shouldAdvanceTarget(ctx, err) {
+			stoppedEarly = true
 			break
 		}
 	}
@@ -209,12 +225,34 @@ func routeTargets[Req, Resp any](
 	if attempts == 0 {
 		return zero, routedTarget{}, errNoCapableTarget(plan.model)
 	}
-	if plan.advance {
+	if plan.advance && !stoppedEarly {
 		// Only a strategy that falls back can honestly claim this: it really did
 		// ask every candidate. A single-target mode asked one, and says so.
 		return zero, lastTarget, fmt.Errorf("all providers failed: %w", lastErr)
 	}
 	return zero, lastTarget, lastErr
+}
+
+// shouldAdvanceTarget reports whether a pool may offer a failed request to a
+// different target after the current target's configured attempts are spent.
+// Same-target retry is classified separately by strategies.ShouldRetry.
+//
+// The request's own context decides first: once the caller has hung up or the
+// request deadline has passed there is nobody left to serve. That is the only
+// deadline the walk honours. An error that merely looks like one — the
+// provider transport's ResponseHeaderTimeout on a target that accepted the
+// connection and never answered — belongs to the attempt, carries no status,
+// and is the failure failover exists for.
+func shouldAdvanceTarget(ctx context.Context, err error) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	if errors.Is(err, circuitbreaker.ErrCircuitOpen) || errors.Is(err, core.ErrProviderSaturated) {
+		return true
+	}
+	code := providers.ParseStatusCode(err)
+	return code == 0 || code == http.StatusRequestTimeout ||
+		code == http.StatusTooManyRequests || code >= http.StatusInternalServerError
 }
 
 // eligibleKeys narrows a strategy's candidate order to the targets the walk may
@@ -442,15 +480,32 @@ func (g *Gateway) admitModel(ctx context.Context, plugins *plugin.Manager, model
 	return errNoCapableTarget(model)
 }
 
+// targetModelMaps indexes targets[].model_map by virtual key. Config
+// validation rejects duplicate keys, so the index is unambiguous; a target
+// without a map has no entry, and indexing a missing entry yields nothing.
+func targetModelMaps(targets []config.Target) map[string]map[string]string {
+	index := make(map[string]map[string]string, len(targets))
+	for _, t := range targets {
+		if len(t.ModelMap) > 0 {
+			index[t.VirtualKey] = t.ModelMap
+		}
+	}
+	return index
+}
+
 // resolveTarget looks up one candidate and the resilience decorators configured
 // for it, in a single lock acquisition. It reports false when the target is not
 // registered, does not serve the model, or cannot serve this surface.
-func (g *Gateway) resolveTarget(ctx context.Context, key, model string, gate capabilityGate) (providers.Provider, *circuitbreaker.CircuitBreaker, *providerLimiter, bool) {
+func (g *Gateway) resolveTarget(ctx context.Context, key, model string, gate capabilityGate) (providers.Provider, *circuitbreaker.CircuitBreaker, *providerLimiter, string, bool) {
 	g.mu.RLock()
 	p, registered := g.providers[key]
 	serves := registered && g.candidateLocked(key, p, model, gate)
 	cb := g.circuitBreakers[key]
 	lim := g.limiters[key]
+	upstreamModel := model
+	if mapped := g.modelMaps[key][model]; mapped != "" {
+		upstreamModel = mapped
+	}
 	g.mu.RUnlock()
 
 	if !registered {
@@ -460,15 +515,15 @@ func (g *Gateway) resolveTarget(ctx context.Context, key, model string, gate cap
 		// which providers are configured and which of them are broken. The
 		// operator reads it here instead.
 		g.log.Ctx(ctx).Warn("provider not found, skipping", "provider", key)
-		return nil, nil, nil, false
+		return nil, nil, nil, "", false
 	}
 	// A registered target that does not serve this model is ordinary routing,
 	// not a fault, and logging it would put a line on the hot path of every
 	// multi-target config.
 	if !serves {
-		return nil, nil, nil, false
+		return nil, nil, nil, "", false
 	}
-	return p, cb, lim, true
+	return p, cb, lim, upstreamModel, true
 }
 
 // servesSurface reports whether a target could serve this surface at all,
@@ -500,19 +555,25 @@ func (g *Gateway) servesSurface(key string, gate capabilityGate) bool {
 }
 
 // attemptTarget runs one target's retry policy, calling it under its breaker
-// and limiter on every try.
+// and limiter on every try. attemptsActive is whether obs has opted into one
+// SubjectRoutingAttempt event per call; when it has not, no event is built.
 func attemptTarget[Req, Resp any](
 	ctx context.Context,
 	g *Gateway,
-	key string,
+	obs observability.Provider,
+	attemptsActive bool,
+	target routedTarget,
+	routedModel string,
+	attemptSequence *int,
 	p providers.Provider,
 	cb *circuitbreaker.CircuitBreaker,
 	lim *providerLimiter,
 	req Req,
+	upstreamModel string,
 	call targetCall[Req, Resp],
 ) (Resp, error) {
 	var zero Resp
-	policy := g.retryPolicyFor(key)
+	policy := g.retryPolicyFor(target.key)
 
 	var lastErr error
 	for attempt := 0; attempt < policy.attempts; attempt++ {
@@ -531,12 +592,22 @@ func attemptTarget[Req, Resp any](
 			// this block.
 			if !proceed {
 				g.log.Ctx(ctx).Info("abandoning target: Retry-After exceeds the cap",
-					"target", key, "retry_after", providers.RetryAfterFrom(lastErr))
+					"target", target.key, "retry_after", providers.RetryAfterFrom(lastErr))
 				break
 			}
-			g.log.Ctx(ctx).Info("retrying target", "target", key, "attempt", attempt+1)
+			g.log.Ctx(ctx).Info("retrying target", "target", target.key, "attempt", attempt+1)
 		}
-		resp, err := callUnderResilience(ctx, key, p, cb, lim, req, call)
+		started := time.Now()
+		resp, err := callUnderResilience(ctx, target.key, p, cb, lim, req, upstreamModel, call)
+		if attemptsActive {
+			(*attemptSequence)++
+		}
+		g.recordRoutingAttempt(ctx, obs, attemptsActive, routingAttempt{
+			target:         target,
+			routedModel:    routedModel,
+			sequence:       *attemptSequence,
+			targetSequence: attempt + 1,
+		}, time.Since(started), err)
 		if err == nil {
 			return resp, nil
 		}
@@ -572,10 +643,11 @@ func callUnderResilience[Req, Resp any](
 	cb *circuitbreaker.CircuitBreaker,
 	lim *providerLimiter,
 	req Req,
+	upstreamModel string,
 	call targetCall[Req, Resp],
 ) (resp Resp, err error) {
 	if cb == nil && lim == nil {
-		return call(ctx, p, req)
+		return call(ctx, p, req, upstreamModel)
 	}
 
 	if cb != nil {
@@ -600,16 +672,28 @@ func callUnderResilience[Req, Resp any](
 		defer lim.release()
 	}
 
-	return call(ctx, p, req)
+	return call(ctx, p, req, upstreamModel)
 }
 
 // planFor pairs a strategy's candidate order with whether that strategy falls
 // back. It is the single point at which a routing mode influences execution.
 func (g *Gateway) planFor(model string, keys []string) targetPlan {
 	g.mu.RLock()
-	advance := advancesPastFailure(g.config.Strategy.Mode)
+	mode := g.config.Strategy.Mode
+	advance := advancesPastFailure(mode)
+	label := ""
+	hasABVariant := false
+	if mode == config.ModeABTest && len(keys) > 0 {
+		for _, variant := range g.config.Strategy.ABVariants {
+			if variant.TargetKey == keys[0] {
+				label = variant.Label
+				hasABVariant = true
+				break
+			}
+		}
+	}
 	g.mu.RUnlock()
-	return targetPlan{keys: keys, model: model, advance: advance}
+	return targetPlan{keys: keys, model: model, advance: advance, abVariantLabel: label, hasABVariant: hasABVariant}
 }
 
 // advancesPastFailure splits the routing modes by what their leading candidate
@@ -655,7 +739,9 @@ func advancesPastFailure(mode config.StrategyMode) bool {
 // completeChat is chat's provider call. A package-level function, not a
 // closure: the request rides through routeTargets as a value, so the hot path
 // allocates nothing to describe the call.
-func completeChat(ctx context.Context, p providers.Provider, req providers.Request) (*providers.Response, error) {
+
+func completeChat(ctx context.Context, p providers.Provider, req providers.Request, upstreamModel string) (*providers.Response, error) {
+	req.Model = upstreamModel
 	return p.Complete(ctx, req)
 }
 

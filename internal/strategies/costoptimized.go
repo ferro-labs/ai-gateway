@@ -75,7 +75,11 @@ func (c *CostOptimized) SelectTargets(req providers.Request) ([]string, error) {
 		// (possibly aliased) routing key: an alias registered through
 		// RegisterProviderAs shares its provider's catalog price rather than
 		// pricing against a name the catalog has never heard of.
-		result := models.Calculate(c.catalog, providers.CanonicalName(p)+"/"+req.Model, models.Usage{
+		model := req.Model
+		if mapped := t.ModelMap[req.Model]; mapped != "" {
+			model = mapped
+		}
+		result := models.Calculate(c.catalog, providers.CanonicalName(p)+"/"+model, models.Usage{
 			PromptTokens: estimatedPromptTokens,
 		})
 		candidates = append(candidates, costOrderCandidate{

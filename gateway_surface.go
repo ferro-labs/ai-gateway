@@ -35,8 +35,10 @@ const (
 // both settled on: a normalized record of what happened, assembled per surface,
 // rather than a union type wide enough to hold every surface's response.
 type surfaceRecord struct {
-	provider string
-	model    string
+	provider       string
+	routedModel    string
+	abVariantLabel string
+	hasABVariant   bool
 	// tokens is the chat-shaped token view: real for embeddings, zero for image
 	// generation, which reports no usage at all.
 	tokens providers.Usage
@@ -67,7 +69,7 @@ func (r surfaceRecord) billable() models.Usage {
 // from request_logs report both surfaces as 100% failure.
 func (r surfaceRecord) pluginView() *providers.Response {
 	return &providers.Response{
-		Model:    r.model,
+		Model:    r.routedModel,
 		Provider: r.provider,
 		Usage:    r.tokens,
 	}
@@ -79,12 +81,12 @@ func (r surfaceRecord) pluginView() *providers.Response {
 // the metrics and the span report are the same number — pricing twice is how
 // they come to disagree when a catalog refresh lands between the two calls.
 // Chat splits calculateCost out of recordSuccess for the same reason.
-func (g *Gateway) priceSurface(target routedTarget, model string, tokens providers.Usage, imageCount int) surfaceRecord {
-	record := surfaceRecord{provider: target.key, model: model, tokens: tokens, imageCount: imageCount}
+func (g *Gateway) priceSurface(target routedTarget, routedModel string, tokens providers.Usage, imageCount int) surfaceRecord {
+	record := surfaceRecord{provider: target.key, routedModel: routedModel, abVariantLabel: target.abVariantLabel, hasABVariant: target.hasABVariant, tokens: tokens, imageCount: imageCount}
 	g.mu.RLock()
 	catalog := g.catalog
 	g.mu.RUnlock()
-	record.cost = models.Calculate(catalog, target.priceProvider+"/"+model, record.billable())
+	record.cost = models.Calculate(catalog, target.priceProvider+"/"+target.upstreamModel, record.billable())
 	return record
 }
 
@@ -334,17 +336,18 @@ func (g *Gateway) Embed(ctx context.Context, req providers.EmbeddingRequest) (*p
 		if routeErr != nil {
 			// target still names the last target attempted, which is what a
 			// per-provider error series needs to be worth anything.
-			return surfaceRecord{provider: target.key, model: req.Model}, routeErr
+			return surfaceRecord{provider: target.key, routedModel: req.Model, abVariantLabel: target.abVariantLabel, hasABVariant: target.hasABVariant}, routeErr
 		}
 		resp = embedded
-		return g.priceSurface(target, embedded.Model, providers.Usage{
+		embedded.Model = req.Model
+		return g.priceSurface(target, req.Model, providers.Usage{
 			PromptTokens: embedded.Usage.PromptTokens,
 			TotalTokens:  embedded.Usage.TotalTokens,
 		}, 0), nil
 	})
 	latency := time.Since(start)
 	if err != nil {
-		safeErr := g.recordSurfaceError(ctx, span, obs, record.provider, req.Model, err, latency, hooksEnabled, obsEventsActive)
+		safeErr := g.recordSurfaceError(ctx, span, obs, record.provider, req.Model, record.abVariantLabel, record.hasABVariant, err, latency, hooksEnabled, obsEventsActive)
 		log.Error("embedding request failed", "model", req.Model, "error", safeErr)
 		return nil, err
 	}
@@ -397,7 +400,7 @@ func (g *Gateway) GenerateImage(ctx context.Context, req providers.ImageRequest)
 		req.Model = model
 		generated, target, routeErr := g.routeImage(ctx, req)
 		if routeErr != nil {
-			return surfaceRecord{provider: target.key, model: req.Model}, routeErr
+			return surfaceRecord{provider: target.key, routedModel: req.Model, abVariantLabel: target.abVariantLabel, hasABVariant: target.hasABVariant}, routeErr
 		}
 		resp = generated
 		// The provider's own token counts, not an empty literal: the gpt-image
@@ -409,7 +412,7 @@ func (g *Gateway) GenerateImage(ctx context.Context, req providers.ImageRequest)
 	})
 	latency := time.Since(start)
 	if err != nil {
-		safeErr := g.recordSurfaceError(ctx, span, obs, record.provider, req.Model, err, latency, hooksEnabled, obsEventsActive)
+		safeErr := g.recordSurfaceError(ctx, span, obs, record.provider, req.Model, record.abVariantLabel, record.hasABVariant, err, latency, hooksEnabled, obsEventsActive)
 		log.Error("image generation request failed", "model", req.Model, "error", safeErr)
 		return nil, err
 	}
@@ -466,9 +469,10 @@ func (g *Gateway) Rerank(ctx context.Context, req providers.RerankRequest) (*pro
 		if routeErr != nil {
 			// target still names the last target attempted, which a per-provider
 			// error series needs to be worth anything.
-			return surfaceRecord{provider: target.key, model: req.Model}, routeErr
+			return surfaceRecord{provider: target.key, routedModel: req.Model, abVariantLabel: target.abVariantLabel, hasABVariant: target.hasABVariant}, routeErr
 		}
 		resp = reranked
+		reranked.Model = req.Model
 		// Rerank bills in search-units, which the catalog does not yet price, so
 		// the request is left unpriced (zero tokens) rather than costed wrongly —
 		// the same graceful-zero path an unpriced image model takes.
@@ -476,7 +480,7 @@ func (g *Gateway) Rerank(ctx context.Context, req providers.RerankRequest) (*pro
 	})
 	latency := time.Since(start)
 	if err != nil {
-		safeErr := g.recordSurfaceError(ctx, span, obs, record.provider, req.Model, err, latency, hooksEnabled, obsEventsActive)
+		safeErr := g.recordSurfaceError(ctx, span, obs, record.provider, req.Model, record.abVariantLabel, record.hasABVariant, err, latency, hooksEnabled, obsEventsActive)
 		log.Error("rerank request failed", "model", req.Model, "error", safeErr)
 		return nil, err
 	}
@@ -491,8 +495,6 @@ func (g *Gateway) Rerank(ctx context.Context, req providers.RerankRequest) (*pro
 // the gateway strategy, under the shared governance pipeline — the same signals
 // as Embed. Moderation is unpriced (OpenAI's classifier is free); cost stays
 // zero.
-//
-//nolint:dupl // the non-chat surface methods are intentionally parallel to Embed/Transcribe; a generic helper would obscure per-surface differences (content projection, span operation, logging)
 func (g *Gateway) Moderate(ctx context.Context, req providers.ModerationRequest) (*providers.ModerationResponse, error) {
 	log := g.log.Ctx(ctx)
 	start := time.Now()
@@ -526,14 +528,15 @@ func (g *Gateway) Moderate(ctx context.Context, req providers.ModerationRequest)
 		req.Model = model
 		moderated, target, routeErr := g.routeModeration(ctx, req)
 		if routeErr != nil {
-			return surfaceRecord{provider: target.key, model: req.Model}, routeErr
+			return surfaceRecord{provider: target.key, routedModel: req.Model, abVariantLabel: target.abVariantLabel, hasABVariant: target.hasABVariant}, routeErr
 		}
 		resp = moderated
+		moderated.Model = req.Model
 		return g.priceSurface(target, req.Model, providers.Usage{}, 0), nil
 	})
 	latency := time.Since(start)
 	if err != nil {
-		safeErr := g.recordSurfaceError(ctx, span, obs, record.provider, req.Model, err, latency, hooksEnabled, obsEventsActive)
+		safeErr := g.recordSurfaceError(ctx, span, obs, record.provider, req.Model, record.abVariantLabel, record.hasABVariant, err, latency, hooksEnabled, obsEventsActive)
 		log.Error("moderation request failed", "model", req.Model, "error", safeErr)
 		return nil, err
 	}
@@ -583,14 +586,14 @@ func (g *Gateway) Transcribe(ctx context.Context, req providers.TranscriptionReq
 		req.Model = model
 		transcribed, target, routeErr := g.routeTranscription(ctx, req)
 		if routeErr != nil {
-			return surfaceRecord{provider: target.key, model: req.Model}, routeErr
+			return surfaceRecord{provider: target.key, routedModel: req.Model, abVariantLabel: target.abVariantLabel, hasABVariant: target.hasABVariant}, routeErr
 		}
 		resp = transcribed
 		return g.priceSurface(target, req.Model, providers.Usage{}, 0), nil
 	})
 	latency := time.Since(start)
 	if err != nil {
-		safeErr := g.recordSurfaceError(ctx, span, obs, record.provider, req.Model, err, latency, hooksEnabled, obsEventsActive)
+		safeErr := g.recordSurfaceError(ctx, span, obs, record.provider, req.Model, record.abVariantLabel, record.hasABVariant, err, latency, hooksEnabled, obsEventsActive)
 		log.Error("transcription request failed", "model", req.Model, "error", safeErr)
 		return nil, err
 	}
@@ -640,14 +643,14 @@ func (g *Gateway) Speech(ctx context.Context, req providers.SpeechRequest) (*pro
 		req.Model = model
 		synthesized, target, routeErr := g.routeSpeech(ctx, req)
 		if routeErr != nil {
-			return surfaceRecord{provider: target.key, model: req.Model}, routeErr
+			return surfaceRecord{provider: target.key, routedModel: req.Model, abVariantLabel: target.abVariantLabel, hasABVariant: target.hasABVariant}, routeErr
 		}
 		resp = synthesized
 		return g.priceSurface(target, req.Model, providers.Usage{}, 0), nil
 	})
 	latency := time.Since(start)
 	if err != nil {
-		safeErr := g.recordSurfaceError(ctx, span, obs, record.provider, req.Model, err, latency, hooksEnabled, obsEventsActive)
+		safeErr := g.recordSurfaceError(ctx, span, obs, record.provider, req.Model, record.abVariantLabel, record.hasABVariant, err, latency, hooksEnabled, obsEventsActive)
 		log.Error("speech request failed", "model", req.Model, "error", safeErr)
 		return nil, err
 	}
@@ -674,7 +677,7 @@ func (g *Gateway) recordSurfaceSuccess(ctx context.Context, span observability.S
 	// azure_openai, …) echo the caller's string back on success, so an unbounded
 	// label here would let a client mint a new time series per request. The
 	// streaming path bounds its label the same way.
-	requestMetrics := metrics.ForRequest(record.provider, g.metricModel(record.model))
+	requestMetrics := metrics.ForRequest(record.provider, g.metricModel(record.routedModel))
 	requestMetrics.Duration.Observe(latency.Seconds())
 	requestMetrics.Success.Inc()
 	requestMetrics.TokensIn.Add(float64(record.tokens.PromptTokens))
@@ -684,7 +687,7 @@ func (g *Gateway) recordSurfaceSuccess(ctx context.Context, span observability.S
 	}
 
 	span.SetAttribute(observability.AttrGenAISystem, record.provider)
-	span.SetAttribute(observability.AttrGenAIResponseModel, record.model)
+	span.SetAttribute(observability.AttrGenAIResponseModel, record.routedModel)
 	if record.provider != "" {
 		span.SetAttribute(observability.AttrFerroRoutingTargetKey, record.provider)
 	}
@@ -703,14 +706,14 @@ func (g *Gateway) recordSurfaceSuccess(ctx context.Context, span observability.S
 		he := completedEventData(
 			logger.TraceIDFromContext(ctx),
 			record.provider,
-			record.model,
+			record.routedModel,
 			latency,
 			false,
 			record.tokens.PromptTokens,
 			record.tokens.CompletionTokens,
 			record.cost,
 		)
-		g.dispatchRequestEvent(ctx, obs, hooksEnabled, obsEventsActive, he)
+		g.dispatchRequestEventWithABVariant(ctx, obs, hooksEnabled, obsEventsActive, he, record.abVariantLabel, record.hasABVariant)
 	}
 }
 
@@ -735,7 +738,7 @@ func isPluginAbort(err error) bool {
 //
 // It returns the redacted message for the caller's own log line; the lifecycle
 // event is redacted independently by events.FailedRequest.
-func (g *Gateway) recordSurfaceError(ctx context.Context, span observability.Span, obs observability.Provider, provider, model string, err error, latency time.Duration, hooksEnabled, obsEventsActive bool) string {
+func (g *Gateway) recordSurfaceError(ctx context.Context, span observability.Span, obs observability.Provider, provider, model, abVariantLabel string, hasABVariant bool, err error, latency time.Duration, hooksEnabled, obsEventsActive bool) string {
 	// Bucket the label, not the log or the span: model here is still the raw
 	// client value on the "no provider serves this model" path.
 	requestMetrics := metrics.ForRequest(provider, g.metricModel(model))
@@ -772,7 +775,7 @@ func (g *Gateway) recordSurfaceError(ctx context.Context, span observability.Spa
 			latency,
 			false,
 		)
-		g.dispatchRequestEvent(ctx, obs, hooksEnabled, obsEventsActive, he)
+		g.dispatchRequestEventWithABVariant(ctx, obs, hooksEnabled, obsEventsActive, he, abVariantLabel, hasABVariant)
 	}
 	return safeErr
 }
@@ -831,32 +834,38 @@ func surfaceGate(surface string) capabilityGate {
 // rather than closures, so the request rides through routeTargets as a value
 // and the hot path allocates nothing to describe the call. The gate above has
 // already run by the time either executes, so neither assertion can fail.
-func embed(ctx context.Context, p providers.Provider, req providers.EmbeddingRequest) (*providers.EmbeddingResponse, error) {
+func embed(ctx context.Context, p providers.Provider, req providers.EmbeddingRequest, upstreamModel string) (*providers.EmbeddingResponse, error) {
+	req.Model = upstreamModel
 	provider, _ := providers.As[providers.EmbeddingProvider](p)
 	return provider.Embed(ctx, req) // embeddingCapable gated candidacy
 }
 
-func generateImage(ctx context.Context, p providers.Provider, req providers.ImageRequest) (*providers.ImageResponse, error) {
+func generateImage(ctx context.Context, p providers.Provider, req providers.ImageRequest, upstreamModel string) (*providers.ImageResponse, error) {
+	req.Model = upstreamModel
 	provider, _ := providers.As[providers.ImageProvider](p)
 	return provider.GenerateImage(ctx, req) // imageCapable gated candidacy
 }
 
-func rerank(ctx context.Context, p providers.Provider, req providers.RerankRequest) (*providers.RerankResponse, error) {
+func rerank(ctx context.Context, p providers.Provider, req providers.RerankRequest, upstreamModel string) (*providers.RerankResponse, error) {
+	req.Model = upstreamModel
 	provider, _ := providers.As[providers.RerankProvider](p)
 	return provider.Rerank(ctx, req) // rerankCapable gated candidacy
 }
 
-func moderate(ctx context.Context, p providers.Provider, req providers.ModerationRequest) (*providers.ModerationResponse, error) {
+func moderate(ctx context.Context, p providers.Provider, req providers.ModerationRequest, upstreamModel string) (*providers.ModerationResponse, error) {
+	req.Model = upstreamModel
 	provider, _ := providers.As[providers.ModerationProvider](p)
 	return provider.Moderate(ctx, req) // moderationCapable gated candidacy
 }
 
-func transcribe(ctx context.Context, p providers.Provider, req providers.TranscriptionRequest) (*providers.TranscriptionResponse, error) {
+func transcribe(ctx context.Context, p providers.Provider, req providers.TranscriptionRequest, upstreamModel string) (*providers.TranscriptionResponse, error) {
+	req.Model = upstreamModel
 	provider, _ := providers.As[providers.TranscriptionProvider](p)
 	return provider.Transcribe(ctx, req) // transcriptionCapable gated candidacy
 }
 
-func speak(ctx context.Context, p providers.Provider, req providers.SpeechRequest) (*providers.SpeechResponse, error) {
+func speak(ctx context.Context, p providers.Provider, req providers.SpeechRequest, upstreamModel string) (*providers.SpeechResponse, error) {
+	req.Model = upstreamModel
 	provider, _ := providers.As[providers.SpeechProvider](p)
 	return provider.Speech(ctx, req) // speechCapable gated candidacy
 }

@@ -43,10 +43,13 @@ import (
 type MeterMeta struct {
 	// Provider is the name of the provider that handled the request (e.g. "openai").
 	Provider string
-	// Model is the model ID after alias resolution. It reaches this struct as the
-	// client supplied it, so it is used for cost lookup and event payloads but
-	// never as a Prometheus label — see MetricModel.
+	// Model is the routed model ID after alias resolution. It is used for event
+	// payloads and synthesized responses but never as a Prometheus label — see
+	// MetricModel.
 	Model string
+	// PriceModel is the upstream model ID used only for catalog cost lookup.
+	// Empty falls back to Model for callers without per-target model mapping.
+	PriceModel string
 	// PriceProvider is the provider's canonical vendor identity — the name the
 	// model catalog and price book are keyed on. Provider names the ROUTING
 	// TARGET a stream used and stays on every metric label, event and the
@@ -135,6 +138,28 @@ func (m MeterMeta) priceProviderName() string {
 	return m.Provider
 }
 
+func (m MeterMeta) priceModelName() string {
+	if m.PriceModel != "" {
+		return m.PriceModel
+	}
+	return m.Model
+}
+
+// clientView is the chunk the consumer receives. It carries the routed model
+// as its identity — the same one a non-streaming response reports, so the id a
+// per-target model mapping translated to never reaches the caller — and no
+// usage block when the client opted out of usage reporting. The chunk is not
+// dropped in that case: it may still carry content or a finish_reason.
+func (m MeterMeta) clientView(chunk providers.StreamChunk) providers.StreamChunk {
+	if m.Model != "" {
+		chunk.Model = m.Model
+	}
+	if m.SuppressUsageForClient {
+		chunk.Usage = nil
+	}
+	return chunk
+}
+
 // Measurements are the per-request numbers a completed stream produced. They
 // mirror plugin.Measurements, which streamwrap cannot import without depending
 // on the pipeline it is metered by.
@@ -157,9 +182,9 @@ type StreamOutcome struct {
 	TTFTMs      float64
 	TTLTMs      float64
 	ErrorMsg    string
-	// Model is the model the PROVIDER reported, accumulated from the chunks —
-	// the streaming counterpart of Response.Model, and the only way the span can
-	// carry gen_ai.response.model, which is not knowable until chunks arrive.
+	// Model is the routed, client-visible model used by the synthesized response
+	// and terminal attribution. Provider chunk models remain unchanged on the
+	// forwarded stream but do not replace this internal identity.
 	// Set on the success path only, matching the non-streaming path, which does
 	// not claim a response model for a request that produced no response.
 	Model string
@@ -218,66 +243,83 @@ func Meter(ctx context.Context, src <-chan providers.StreamChunk, start time.Tim
 
 	loop:
 		for {
+			// A chunk already here — or src already closed — is the upstream's
+			// verdict, and it outranks the consumer hanging up in the same
+			// instant: the provider did the work and billed for it, so the
+			// record has to say completed. Both channels ready at once is
+			// exactly the case a plain select decides at random, which logged a
+			// finished stream as a client cancellation about half the time.
+			// Poll src first; cancellation gets a vote only while nothing is
+			// ready.
+			var chunk providers.StreamChunk
+			var ok bool
 			select {
-			case <-ctx.Done():
-				// The consumer (typically the HTTP handler) is gone. Stop trying
-				// to forward chunks — out is almost certainly unread — but
-				// keep draining src so the upstream provider goroutine can
-				// finish its in-flight write to src and exit. The provider
-				// MUST close src eventually for this to terminate; that is
-				// the existing contract for every CompleteStream impl.
-				//
-				// WHY it is gone decides who is at fault: the caller hanging up,
-				// or the gateway's idle bound firing on an upstream that sent
-				// nothing. metrics.ProviderErrorType reads the cause and answers
-				// that, for this path and every other surface at once.
-				streamErr = drainSrc(ctx, src, streamErr)
-				break loop
-			case chunk, ok := <-src:
-				if !ok {
+			case chunk, ok = <-src:
+			default:
+				select {
+				case <-ctx.Done():
+					// The consumer (typically the HTTP handler) is gone. Stop trying
+					// to forward chunks — out is almost certainly unread — but
+					// keep draining src so the upstream provider goroutine can
+					// finish its in-flight write to src and exit. The provider
+					// MUST close src eventually for this to terminate; that is
+					// the existing contract for every CompleteStream impl.
+					//
+					// WHY it is gone decides who is at fault: the caller hanging up,
+					// or the gateway's idle bound firing on an upstream that sent
+					// nothing. metrics.ProviderErrorType reads the cause and answers
+					// that, for this path and every other surface at once.
+					streamErr = drainSrc(ctx, src, streamErr)
 					break loop
+				case chunk, ok = <-src:
 				}
-				now := time.Now()
-				if firstChunkAt.IsZero() {
-					firstChunkAt = now
-				}
-				lastChunkAt = now
+			}
+			if !ok {
+				break loop
+			}
+			now := time.Now()
+			if firstChunkAt.IsZero() {
+				firstChunkAt = now
+			}
+			lastChunkAt = now
 
-				// Capture the last non-zero usage block (the final OpenAI chunk
-				// with include_usage=true has TotalTokens > 0; other providers
-				// may set it differently).
-				if chunk.Usage != nil && (chunk.Usage.TotalTokens > 0 || chunk.Usage.PromptTokens > 0) {
-					usage = *chunk.Usage
-				}
-				applyChunkToResponse(&resp, chunk)
-				if chunk.Error != nil {
-					streamErr = chunk.Error
-				}
+			// Capture the last non-zero usage block (the final OpenAI chunk
+			// with include_usage=true has TotalTokens > 0; other providers
+			// may set it differently).
+			if chunk.Usage != nil && (chunk.Usage.TotalTokens > 0 || chunk.Usage.PromptTokens > 0) {
+				usage = *chunk.Usage
+			}
+			applyChunkToResponse(&resp, chunk)
+			if chunk.Error != nil {
+				streamErr = chunk.Error
+			}
 
-				// Forward the chunk, but stop blocking if the consumer
-				// disconnects mid-send. When the client opted out of usage
-				// reporting, forward a copy with Usage cleared instead of
-				// dropping the chunk outright — it may still carry content
-				// or a finish_reason that must reach the client. Accounting
-				// above already captured the real usage from the
-				// unmodified chunk, so this never affects metrics/cost/plugins.
-				forward := chunk
-				if meta.SuppressUsageForClient && forward.Usage != nil {
-					forward.Usage = nil
-				}
+			// Forward the client's view of the chunk, but stop blocking if the
+			// consumer disconnects mid-send. Accounting above already read the
+			// unmodified chunk, so the projection never reaches metrics, cost
+			// or plugins.
+			forward := meta.clientView(chunk)
+			// Same preference as the top of the loop, best effort only: a
+			// consumer already waiting on out takes the chunk even though the
+			// request context is cancelled. out is unbuffered, so a consumer
+			// that has not reached its receive yet cannot be told apart from
+			// one that is gone, and cancellation decides then.
+			select {
+			case out <- forward:
+			default:
 				select {
 				case out <- forward:
 				case <-ctx.Done():
 					streamErr = drainSrc(ctx, src, streamErr)
 					break loop
 				}
+			}
 
-				// Stop consuming src as soon as an error chunk is forwarded.
-				// If the provider does not close src promptly we would
-				// otherwise block here and never emit metrics or close out.
-				if chunk.Error != nil {
-					break loop
-				}
+			// Stop consuming src as soon as an error chunk is forwarded.
+			// If the provider does not close src promptly we would
+			// otherwise block here and never emit metrics or close out.
+			if chunk.Error != nil {
+				break loop
 			}
 		}
 
@@ -313,7 +355,7 @@ func Meter(ctx context.Context, src <-chan providers.StreamChunk, start time.Tim
 		// plugins it runs persist the cost and cannot compute it themselves.
 		// The same result is handed to finishStreamOnSuccess so the recorded
 		// figure and the reported one cannot diverge.
-		cost := models.Calculate(meta.Catalog, meta.priceProviderName()+"/"+meta.Model, models.Usage{
+		cost := models.Calculate(meta.Catalog, meta.priceProviderName()+"/"+meta.priceModelName(), models.Usage{
 			PromptTokens:     usage.PromptTokens,
 			CompletionTokens: usage.CompletionTokens,
 			ReasoningTokens:  usage.ReasoningTokens,
@@ -341,7 +383,7 @@ func Meter(ctx context.Context, src <-chan providers.StreamChunk, start time.Tim
 		}
 
 		// Success path: emit the same metrics as Gateway.Route().
-		finishStreamOnSuccess(ctx, meta, usage, resp.Model, ttftMs, ttltMs, latency, cost)
+		finishStreamOnSuccess(ctx, meta, usage, ttftMs, ttltMs, latency, cost)
 	}()
 
 	return out
@@ -473,7 +515,6 @@ func finishStreamOnSuccess(
 	ctx context.Context,
 	meta MeterMeta,
 	usage providers.Usage,
-	responseModel string,
 	ttftMs, ttltMs float64,
 	latency time.Duration,
 	cost models.CostResult,
@@ -514,7 +555,7 @@ func finishStreamOnSuccess(
 			Cost:        cost,
 			TTFTMs:      ttftMs,
 			TTLTMs:      ttltMs,
-			Model:       responseModel,
+			Model:       meta.Model,
 		})
 	}
 	if meta.CircuitBreakerOutcome != nil {
@@ -528,9 +569,6 @@ func applyChunkToResponse(resp *providers.Response, chunk providers.StreamChunk)
 	}
 	if chunk.Created != 0 && resp.Created == 0 {
 		resp.Created = chunk.Created
-	}
-	if chunk.Model != "" {
-		resp.Model = chunk.Model
 	}
 	for _, streamChoice := range chunk.Choices {
 		idx := streamChoice.Index

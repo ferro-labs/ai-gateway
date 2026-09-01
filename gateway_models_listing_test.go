@@ -70,12 +70,6 @@ func TestServedProviders(t *testing.T) {
 			registered: []string{"deepseek", "groq"},
 			want:       []string{"groq", "deepseek"},
 		},
-		{
-			name:       "two targets on one provider are served once",
-			targets:    []config.Target{{VirtualKey: "deepseek"}, {VirtualKey: "deepseek", Models: []string{"x"}}},
-			registered: []string{"deepseek"},
-			want:       []string{"deepseek"},
-		},
 	}
 
 	for _, tt := range tests {
@@ -207,6 +201,31 @@ func routes(t *testing.T, gw *Gateway, model string) bool {
 
 func advertises(gw *Gateway, model string) bool {
 	return slices.ContainsFunc(gw.AllModels(), func(m providers.ModelInfo) bool { return m.ID == model })
+}
+
+func TestTargetModelMapKeysJoinModelInventory(t *testing.T) {
+	const virtualModel = "support-chat"
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets: []config.Target{{
+			VirtualKey: declaredTargetProvider,
+			Models:     []string{declaredModelID},
+			ModelMap:   map[string]string{virtualModel: "gemini-2.5-flash"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	gw.RegisterProvider(&mockProvider{name: declaredTargetProvider})
+
+	for _, model := range []string{declaredModelID, virtualModel} {
+		if !advertises(gw, model) {
+			t.Errorf("AllModels() does not advertise %q", model)
+		}
+		if _, ok := gw.FindByModel(model); !ok {
+			t.Errorf("FindByModel(%q) found = false, want true", model)
+		}
+	}
 }
 
 // TestTargetModelsRoutability is the regression guard in both directions: a

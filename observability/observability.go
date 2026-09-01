@@ -87,6 +87,23 @@ type EventRecordingProvider interface {
 	RecordingEnabled() bool
 }
 
+// RoutingAttemptRecordingProvider is an optional interface a Provider
+// implements to receive one Event per physical routing attempt — Subject
+// SubjectRoutingAttempt — alongside each request's terminal event. The gateway
+// checks it once, in SetObservability, exactly as it checks
+// EventRecordingProvider: a provider that does not implement it, or reports
+// false, receives terminal events only and pays nothing per attempt.
+//
+// Attempt events are opt-in because a request that retried or failed over
+// records several of them, and a consumer written against "one Event per
+// request" would count each as a request of its own.
+type RoutingAttemptRecordingProvider interface {
+	EventRecordingProvider
+	// RoutingAttemptsEnabled returns true when at least one consumer wants
+	// SubjectRoutingAttempt events.
+	RoutingAttemptsEnabled() bool
+}
+
 // Exporter is implemented by every observability plugin in the
 // ai-gateway-plugins repository (langsmith, langfuse, phoenix,
 // datadog, newrelic, sentry, helicone, honeycomb, grafana, …).
@@ -110,4 +127,16 @@ type Exporter interface {
 	// Shutdown drains the exporter's buffers within the supplied
 	// deadline. Called once at gateway shutdown.
 	Shutdown(ctx context.Context) error
+}
+
+// RoutingAttemptExporter is an Exporter that also wants SubjectRoutingAttempt
+// events. An Exporter that does not implement it is handed the terminal
+// gateway.request.completed and gateway.request.failed events only, so every
+// exporter written before attempt events existed keeps seeing exactly one
+// Event per request.
+type RoutingAttemptExporter interface {
+	Exporter
+	// ExportsRoutingAttempts returns true when this exporter should be handed
+	// SubjectRoutingAttempt events.
+	ExportsRoutingAttempts() bool
 }

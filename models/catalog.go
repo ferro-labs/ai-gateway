@@ -27,6 +27,84 @@ import (
 //go:embed catalog_backup.json
 var bundledCatalog []byte
 
+// embeddedCatalog parses catalog_backup.json once per process. The document is
+// the fallback for every gateway constructed without a reachable remote
+// catalog — one per tenant in an embedding platform, one per test gateway in
+// this repository — and decoding its 3 MB costs ~90 ms, ten times that under
+// the race detector. Callers never receive this map itself; see loadEmbedded.
+var embeddedCatalog = sync.OnceValues(func() (Catalog, error) {
+	var c Catalog
+	if err := json.Unmarshal(bundledCatalog, &c); err != nil {
+		return nil, fmt.Errorf("catalog parse: %w", err)
+	}
+	return c, nil
+})
+
+// loadEmbedded returns the embedded catalog as a copy of the parsed document
+// that shares nothing with it — not the map, and not the pointer-valued
+// pricing and lifecycle fields — so a caller editing its catalog cannot change
+// what any other caller prices with. The model-id index is rebuilt from the
+// copy exactly as a fresh parse would, so it always reflects the most recent
+// load.
+func loadEmbedded() (Catalog, error) {
+	parsed, err := embeddedCatalog()
+	if err != nil {
+		return nil, err
+	}
+	c := make(Catalog, len(parsed))
+	for key, m := range parsed {
+		c[key] = m.clone()
+	}
+	BuildIndex(c)
+	return c, nil
+}
+
+// clone returns a Model whose pointer-valued fields are copies, not shares.
+func (m Model) clone() Model {
+	m.Pricing = m.Pricing.clone()
+	m.Lifecycle = m.Lifecycle.clone()
+	return m
+}
+
+func (p Pricing) clone() Pricing {
+	p.InputPerMTokens = cloneFloat(p.InputPerMTokens)
+	p.OutputPerMTokens = cloneFloat(p.OutputPerMTokens)
+	p.CacheReadPerMTokens = cloneFloat(p.CacheReadPerMTokens)
+	p.CacheWritePerMTokens = cloneFloat(p.CacheWritePerMTokens)
+	p.ReasoningPerMTokens = cloneFloat(p.ReasoningPerMTokens)
+	p.ImagePerTile = cloneFloat(p.ImagePerTile)
+	p.AudioInputPerMinute = cloneFloat(p.AudioInputPerMinute)
+	p.AudioOutputPerCharacter = cloneFloat(p.AudioOutputPerCharacter)
+	p.EmbeddingPerMTokens = cloneFloat(p.EmbeddingPerMTokens)
+	p.FinetuneTrainPerMTokens = cloneFloat(p.FinetuneTrainPerMTokens)
+	p.FinetuneInputPerMTokens = cloneFloat(p.FinetuneInputPerMTokens)
+	p.FinetuneOutputPerMTokens = cloneFloat(p.FinetuneOutputPerMTokens)
+	return p
+}
+
+func (l Lifecycle) clone() Lifecycle {
+	l.DeprecationDate = cloneString(l.DeprecationDate)
+	l.SunsetDate = cloneString(l.SunsetDate)
+	l.Successor = cloneString(l.Successor)
+	return l
+}
+
+func cloneFloat(v *float64) *float64 {
+	if v == nil {
+		return nil
+	}
+	c := *v
+	return &c
+}
+
+func cloneString(v *string) *string {
+	if v == nil {
+		return nil
+	}
+	c := *v
+	return &c
+}
+
 // CatalogURLEnv is the env var operators set to override the catalog source.
 // Useful for air-gapped deployments or enterprise custom pricing.
 const CatalogURLEnv = "FERRO_MODEL_CATALOG_URL"
@@ -238,7 +316,7 @@ func LoadWithInfoContext(ctx context.Context) (LoadResult, error) {
 		logger.Default().Warn("model catalog remote fetch failed; using embedded fallback", "url", CatalogURLForLog(catalogURL), "error", catalogLoadErrorForLog(err, catalogURL)) // values are CR/LF-sanitized before logging.
 	}
 
-	c, err := parse(bundledCatalog)
+	c, err := loadEmbedded()
 	if err != nil {
 		return LoadResult{Source: LoadSourceFallback, URL: catalogURL}, err
 	}

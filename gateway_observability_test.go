@@ -3,16 +3,19 @@ package aigateway
 import (
 	"context"
 	"errors"
+	"net/http"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/ferro-labs/ai-gateway/config"
 	"github.com/ferro-labs/ai-gateway/observability"
+	"github.com/ferro-labs/ai-gateway/pkg/circuitbreaker"
 	"github.com/ferro-labs/ai-gateway/pkg/logger"
 	"github.com/ferro-labs/ai-gateway/pkg/metrics"
 	"github.com/ferro-labs/ai-gateway/plugin"
 	"github.com/ferro-labs/ai-gateway/providers"
+	"github.com/ferro-labs/ai-gateway/providers/core"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -25,8 +28,13 @@ type eventCapturingProvider struct {
 	fakeProvider
 	mu              sync.Mutex
 	events          []observability.Event
-	recorded        chan context.Context
+	recorded        chan recordedEvent
 	recordingActive bool
+}
+
+type recordedEvent struct {
+	ctx   context.Context
+	event observability.Event
 }
 
 func (p *eventCapturingProvider) RecordEvent(ctx context.Context, evt observability.Event) {
@@ -35,7 +43,7 @@ func (p *eventCapturingProvider) RecordEvent(ctx context.Context, evt observabil
 	p.events = append(p.events, evt)
 	if p.recorded != nil {
 		select {
-		case p.recorded <- ctx:
+		case p.recorded <- recordedEvent{ctx: ctx, event: evt}:
 		default:
 		}
 	}
@@ -51,6 +59,16 @@ func (p *eventCapturingProvider) capturedEvents() []observability.Event {
 	out := make([]observability.Event, len(p.events))
 	copy(out, p.events)
 	return out
+}
+
+func eventsWithSubject(events []observability.Event, subject string) []observability.Event {
+	var matched []observability.Event
+	for _, event := range events {
+		if event.Subject == subject {
+			matched = append(matched, event)
+		}
+	}
+	return matched
 }
 
 // Compile-time interface guard: eventCapturingProvider must satisfy both
@@ -311,7 +329,9 @@ func TestGateway_RouteStream_EventContextDetachedButTraced(t *testing.T) {
 	})
 
 	ep := &eventCapturingProvider{
-		recorded:        make(chan context.Context, 1),
+		// Every event the request emits before the test drains the channel has to fit:
+		// one routing attempt, the stream start, and the terminal event at minimum.
+		recorded:        make(chan recordedEvent, 16),
 		recordingActive: true,
 	}
 	gw.SetObservability(ep)
@@ -340,10 +360,15 @@ func TestGateway_RouteStream_EventContextDetachedButTraced(t *testing.T) {
 	}
 
 	var evtCtx context.Context
-	select {
-	case evtCtx = <-ep.recorded:
-	case <-time.After(time.Second):
-		t.Fatal("no observability event was recorded")
+	for evtCtx == nil {
+		select {
+		case recorded := <-ep.recorded:
+			if recorded.event.Subject == "gateway.request.completed" {
+				evtCtx = recorded.ctx
+			}
+		case <-time.After(time.Second):
+			t.Fatal("no completed observability event was recorded")
+		}
 	}
 	if err := evtCtx.Err(); err != nil {
 		t.Fatalf("event ctx should be detached from cancellation, got %v", err)
@@ -422,7 +447,7 @@ func TestGateway_Route_EmitsCompletedEvent(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	evts := ep.capturedEvents()
+	evts := eventsWithSubject(ep.capturedEvents(), "gateway.request.completed")
 	if len(evts) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(evts))
 	}
@@ -473,7 +498,7 @@ func TestGateway_Route_EmitsFailedEvent(t *testing.T) {
 		t.Fatal("expected Route to return an error")
 	}
 
-	evts := ep.capturedEvents()
+	evts := eventsWithSubject(ep.capturedEvents(), "gateway.request.failed")
 	if len(evts) != 1 {
 		t.Fatalf("expected 1 event, got %d: %v", len(evts), evts)
 	}
@@ -486,6 +511,452 @@ func TestGateway_Route_EmitsFailedEvent(t *testing.T) {
 	}
 	if evt.Error == "" {
 		t.Error("event Error should be non-empty for failed requests")
+	}
+}
+
+func TestGateway_Route_RecordsEachRetryAndFailoverAttempt(t *testing.T) {
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeFallback},
+		Targets: []config.Target{
+			{VirtualKey: "primary", ModelMap: map[string]string{testModel: "upstream-primary"}, Retry: &config.RetryConfig{Attempts: 2, InitialBackoffMs: 1}},
+			{VirtualKey: "secondary", ModelMap: map[string]string{testModel: "upstream-secondary"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+	ep := &eventCapturingProvider{recordingActive: true}
+	gw.SetObservability(ep)
+
+	primaryCalls := 0
+	primary := providers.WithName(&mockProvider{
+		name: "vendor-primary", models: []string{testModel},
+		completeFn: func(context.Context, providers.Request) (*providers.Response, error) {
+			primaryCalls++
+			if primaryCalls == 1 {
+				return nil, core.StatusError("vendor-primary", http.StatusServiceUnavailable, "credential AKIAIOSFODNN7EXAMPLE failed")
+			}
+			return nil, errors.New("dial account@example.com: connection refused")
+		},
+	}, "primary")
+	secondary := providers.WithName(&mockProvider{
+		name: "vendor-secondary", models: []string{testModel},
+		resp: &providers.Response{ID: "ok", Provider: "secondary", Model: "upstream-secondary"},
+	}, "secondary")
+	gw.RegisterProvider(primary)
+	gw.RegisterProvider(secondary)
+
+	ctx := logger.WithTraceID(context.Background(), "0123456789abcdef0123456789abcdef")
+	if _, err := gw.Route(ctx, providers.Request{Model: testModel, Messages: []providers.Message{{Role: "user", Content: "hi"}}}); err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+
+	attempts := eventsWithSubject(ep.capturedEvents(), observability.SubjectRoutingAttempt)
+	if len(attempts) != 3 {
+		t.Fatalf("routing attempt events = %d, want 3: %#v", len(attempts), attempts)
+	}
+	want := []observability.RoutingAttempt{
+		{TargetKey: "primary", Provider: "vendor-primary", RoutedModel: testModel, UpstreamModel: "upstream-primary", Sequence: 1, TargetSequence: 1, Status: http.StatusServiceUnavailable, Outcome: observability.RoutingAttemptError, Error: "vendor-primary API error (503): credential [REDACTED_AWS_KEY] failed"},
+		{TargetKey: "primary", Provider: "vendor-primary", RoutedModel: testModel, UpstreamModel: "upstream-primary", Sequence: 2, TargetSequence: 2, Status: http.StatusInternalServerError, Outcome: observability.RoutingAttemptError, Error: "dial [REDACTED_EMAIL]: connection refused"},
+		{TargetKey: "secondary", Provider: "vendor-secondary", RoutedModel: testModel, UpstreamModel: "upstream-secondary", Sequence: 3, TargetSequence: 1, Status: http.StatusOK, Outcome: observability.RoutingAttemptSuccess},
+	}
+	for i, event := range attempts {
+		if event.TraceID != "0123456789abcdef0123456789abcdef" || event.Timestamp.IsZero() {
+			t.Errorf("attempt %d envelope = trace %q timestamp %v", i+1, event.TraceID, event.Timestamp)
+		}
+		if event.RoutingAttempt == nil {
+			t.Fatalf("attempt %d payload is nil", i+1)
+		}
+		got := *event.RoutingAttempt
+		if got.LatencyMs < 0 {
+			t.Errorf("attempt %d latency = %d, want non-negative", i+1, got.LatencyMs)
+		}
+		got.LatencyMs = 0
+		if got != want[i] {
+			t.Errorf("attempt %d = %#v, want %#v", i+1, got, want[i])
+		}
+	}
+	if terminal := eventsWithSubject(ep.capturedEvents(), "gateway.request.completed"); len(terminal) != 1 {
+		t.Errorf("completed terminal events = %d, want 1", len(terminal))
+	}
+}
+
+func TestGateway_Route_AttributesABVariantAcrossRetriesAndAdvancement(t *testing.T) {
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeABTest, ABVariants: []config.ABVariantConfig{
+			{TargetKey: "primary", Weight: 1, Label: "control"},
+		}},
+		Targets: []config.Target{
+			{VirtualKey: "primary", Retry: &config.RetryConfig{Attempts: 2, InitialBackoffMs: 1}},
+			{VirtualKey: "secondary"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+	ep := &eventCapturingProvider{recordingActive: true}
+	gw.SetObservability(ep)
+	gw.RegisterProvider(&mockProvider{name: "primary", models: []string{testModel}, err: errors.New("dial failed")})
+	gw.RegisterProvider(&mockProvider{name: "secondary", models: []string{testModel}, resp: &providers.Response{ID: "ok", Provider: "secondary", Model: testModel}})
+
+	if _, err := gw.Route(context.Background(), providers.Request{Model: testModel}); err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	for _, event := range ep.capturedEvents() {
+		if event.Subject != observability.SubjectRoutingAttempt && event.Subject != "gateway.request.completed" {
+			continue
+		}
+		if got := event.Attributes[observability.AttrFerroRoutingABVariantLabel]; got != "control" {
+			t.Errorf("%s variant label = %#v, want control", event.Subject, got)
+		}
+	}
+	if attempts := eventsWithSubject(ep.capturedEvents(), observability.SubjectRoutingAttempt); len(attempts) != 3 {
+		t.Fatalf("routing attempt events = %d, want 3", len(attempts))
+	}
+}
+
+func TestGateway_Route_AfterPluginFailureEmitsOneABFailedTerminal(t *testing.T) {
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeABTest, ABVariants: []config.ABVariantConfig{{TargetKey: "mock", Weight: 1, Label: "control"}}},
+		Targets:  []config.Target{{VirtualKey: "mock"}},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+	ep := &eventCapturingProvider{recordingActive: true}
+	gw.SetObservability(ep)
+	gw.RegisterProvider(&mockProvider{name: "mock", models: []string{testModel}, resp: &providers.Response{Model: "provider-third-id", Provider: "mock"}})
+
+	onErrorCalls := 0
+	if err := gw.RegisterPlugin(plugin.StageAfterRequest, &testPlugin{name: "reject-after", typ: plugin.TypeGuardrail, execFn: func(_ context.Context, pctx *plugin.Context) error {
+		pctx.Reject = true
+		pctx.Reason = "blocked after response"
+		return nil
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := gw.RegisterPlugin(plugin.StageOnError, &testPlugin{name: "count-error", typ: plugin.TypeLogging, execFn: func(context.Context, *plugin.Context) error {
+		onErrorCalls++
+		return nil
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := gw.Route(context.Background(), providers.Request{Model: testModel}); err == nil {
+		t.Fatal("Route unexpectedly succeeded")
+	}
+	failed := eventsWithSubject(ep.capturedEvents(), "gateway.request.failed")
+	if len(failed) != 1 {
+		t.Fatalf("failed terminal events = %d, want 1", len(failed))
+	}
+	if failed[0].Model != testModel || failed[0].Attributes[observability.AttrFerroRoutingABVariantLabel] != "control" {
+		t.Errorf("failed terminal = %#v, want model %q and control label", failed[0], testModel)
+	}
+	if completed := eventsWithSubject(ep.capturedEvents(), "gateway.request.completed"); len(completed) != 0 {
+		t.Errorf("completed terminal events = %d, want 0", len(completed))
+	}
+	if attempts := eventsWithSubject(ep.capturedEvents(), observability.SubjectRoutingAttempt); len(attempts) != 1 {
+		t.Errorf("routing attempt events = %d, want 1", len(attempts))
+	}
+	if onErrorCalls != 1 {
+		t.Errorf("on_error calls = %d, want 1", onErrorCalls)
+	}
+}
+
+func TestGateway_Route_AttributesConfiguredEmptyABVariant(t *testing.T) {
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeABTest, ABVariants: []config.ABVariantConfig{{TargetKey: "mock", Weight: 1}}},
+		Targets:  []config.Target{{VirtualKey: "mock"}},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+	ep := &eventCapturingProvider{recordingActive: true}
+	gw.SetObservability(ep)
+	gw.RegisterProvider(&mockProvider{name: "mock", models: []string{testModel}, resp: &providers.Response{ID: "ok", Provider: "mock", Model: testModel}})
+
+	if _, err := gw.Route(context.Background(), providers.Request{Model: testModel}); err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	for _, event := range ep.capturedEvents() {
+		if event.Subject != observability.SubjectRoutingAttempt && event.Subject != "gateway.request.completed" {
+			continue
+		}
+		got, ok := event.Attributes[observability.AttrFerroRoutingABVariantLabel]
+		if !ok || got != "" {
+			t.Errorf("%s variant label = %#v, present = %v; want present empty string", event.Subject, got, ok)
+		}
+	}
+}
+
+func TestGateway_RouteStream_AttributesABVariantOnTerminalEvents(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		streamError error
+		wantSubject string
+	}{
+		{name: "completed", wantSubject: "gateway.request.completed"},
+		{name: "failed", streamError: errors.New("stream failed"), wantSubject: "gateway.request.failed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			gw, err := newTestGateway(t, config.Config{
+				Strategy: config.StrategyConfig{Mode: config.ModeABTest, ABVariants: []config.ABVariantConfig{{TargetKey: "mock", Weight: 1, Label: "stream-control"}}},
+				Targets:  []config.Target{{VirtualKey: "mock"}},
+			})
+			if err != nil {
+				t.Fatalf("new gateway: %v", err)
+			}
+			ep := &eventCapturingProvider{recordingActive: true}
+			gw.SetObservability(ep)
+			gw.RegisterProvider(&mockStreamProvider{mockProvider: mockProvider{name: "mock", models: []string{testModel}}, streamFn: func(context.Context, providers.Request) (<-chan providers.StreamChunk, error) {
+				ch := make(chan providers.StreamChunk, 1)
+				if tc.streamError != nil {
+					ch <- providers.StreamChunk{Error: tc.streamError}
+				}
+				close(ch)
+				return ch, nil
+			}})
+
+			ch, err := gw.RouteStream(context.Background(), providers.Request{Model: testModel, Stream: true})
+			if err != nil {
+				t.Fatalf("RouteStream: %v", err)
+			}
+			for chunk := range ch {
+				_ = chunk
+			}
+			terminals := eventsWithSubject(ep.capturedEvents(), tc.wantSubject)
+			if len(terminals) != 1 {
+				t.Fatalf("%s events = %d, want 1", tc.wantSubject, len(terminals))
+			}
+			if got := terminals[0].Attributes[observability.AttrFerroRoutingABVariantLabel]; got != "stream-control" {
+				t.Errorf("terminal variant label = %#v, want stream-control", got)
+			}
+		})
+	}
+}
+
+func TestGateway_RouteStream_AttributesABVariantOnStartFailure(t *testing.T) {
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeABTest, ABVariants: []config.ABVariantConfig{{TargetKey: "mock", Weight: 1, Label: "stream-control"}}},
+		Targets:  []config.Target{{VirtualKey: "mock"}},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+	ep := &eventCapturingProvider{recordingActive: true}
+	gw.SetObservability(ep)
+	gw.RegisterProvider(&mockStreamProvider{
+		mockProvider: mockProvider{name: "mock", models: []string{testModel}},
+		streamErr:    errors.New("stream start failed"),
+	})
+
+	if _, err := gw.RouteStream(context.Background(), providers.Request{Model: testModel, Stream: true}); err == nil {
+		t.Fatal("RouteStream unexpectedly succeeded")
+	}
+	failed := eventsWithSubject(ep.capturedEvents(), "gateway.request.failed")
+	if len(failed) != 1 {
+		t.Fatalf("failed events = %d, want 1", len(failed))
+	}
+	if got := failed[0].Attributes[observability.AttrFerroRoutingABVariantLabel]; got != "stream-control" {
+		t.Errorf("start failure variant label = %#v, want stream-control", got)
+	}
+}
+
+type failingRoutedSurfaceProvider struct{ mockProvider }
+
+func (*failingRoutedSurfaceProvider) Embed(context.Context, providers.EmbeddingRequest) (*providers.EmbeddingResponse, error) {
+	return nil, errors.New("embedding failed")
+}
+func (*failingRoutedSurfaceProvider) GenerateImage(context.Context, providers.ImageRequest) (*providers.ImageResponse, error) {
+	return nil, errors.New("image failed")
+}
+func (*failingRoutedSurfaceProvider) Rerank(context.Context, providers.RerankRequest) (*providers.RerankResponse, error) {
+	return nil, errors.New("rerank failed")
+}
+func (*failingRoutedSurfaceProvider) Moderate(context.Context, providers.ModerationRequest) (*providers.ModerationResponse, error) {
+	return nil, errors.New("moderation failed")
+}
+func (*failingRoutedSurfaceProvider) Transcribe(context.Context, providers.TranscriptionRequest) (*providers.TranscriptionResponse, error) {
+	return nil, errors.New("transcription failed")
+}
+func (*failingRoutedSurfaceProvider) Speech(context.Context, providers.SpeechRequest) (*providers.SpeechResponse, error) {
+	return nil, errors.New("speech failed")
+}
+
+func TestGateway_RoutedSurfaceFailuresAttributeABVariant(t *testing.T) {
+	tests := []struct {
+		name string
+		call func(*Gateway) error
+	}{
+		{name: "embeddings", call: func(g *Gateway) error {
+			_, err := g.Embed(context.Background(), providers.EmbeddingRequest{Model: testModel, Input: "hi"})
+			return err
+		}},
+		{name: "images", call: func(g *Gateway) error {
+			_, err := g.GenerateImage(context.Background(), providers.ImageRequest{Model: testModel, Prompt: "hi"})
+			return err
+		}},
+		{name: "rerank", call: func(g *Gateway) error {
+			_, err := g.Rerank(context.Background(), providers.RerankRequest{Model: testModel, Query: "hi"})
+			return err
+		}},
+		{name: "moderation", call: func(g *Gateway) error {
+			_, err := g.Moderate(context.Background(), providers.ModerationRequest{Model: testModel, Input: "hi"})
+			return err
+		}},
+		{name: "transcription", call: func(g *Gateway) error {
+			_, err := g.Transcribe(context.Background(), providers.TranscriptionRequest{Model: testModel})
+			return err
+		}},
+		{name: "speech", call: func(g *Gateway) error {
+			_, err := g.Speech(context.Background(), providers.SpeechRequest{Model: testModel, Input: "hi"})
+			return err
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			gw, err := newTestGateway(t, config.Config{
+				Strategy: config.StrategyConfig{Mode: config.ModeABTest, ABVariants: []config.ABVariantConfig{{TargetKey: "mock", Weight: 1, Label: "surface-control"}}},
+				Targets:  []config.Target{{VirtualKey: "mock"}},
+			})
+			if err != nil {
+				t.Fatalf("new gateway: %v", err)
+			}
+			ep := &eventCapturingProvider{recordingActive: true}
+			gw.SetObservability(ep)
+			gw.RegisterProvider(&failingRoutedSurfaceProvider{mockProvider{name: "mock", models: []string{testModel}}})
+			if err := tc.call(gw); err == nil {
+				t.Fatal("surface call unexpectedly succeeded")
+			}
+			failed := eventsWithSubject(ep.capturedEvents(), "gateway.request.failed")
+			if len(failed) != 1 {
+				t.Fatalf("failed events = %d, want 1", len(failed))
+			}
+			if got := failed[0].Attributes[observability.AttrFerroRoutingABVariantLabel]; got != "surface-control" {
+				t.Errorf("failed variant label = %#v, want surface-control", got)
+			}
+		})
+	}
+}
+
+func TestGateway_Route_OmitsABVariantOutsideABTest(t *testing.T) {
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeFallback},
+		Targets:  []config.Target{{VirtualKey: "mock"}},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+	ep := &eventCapturingProvider{recordingActive: true}
+	gw.SetObservability(ep)
+	gw.RegisterProvider(&mockProvider{name: "mock", models: []string{testModel}, resp: &providers.Response{ID: "ok", Provider: "mock", Model: testModel}})
+
+	if _, err := gw.Route(context.Background(), providers.Request{Model: testModel}); err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	for _, event := range ep.capturedEvents() {
+		if _, ok := event.Attributes[observability.AttrFerroRoutingABVariantLabel]; ok {
+			t.Errorf("%s unexpectedly carries an A/B variant label", event.Subject)
+		}
+	}
+}
+
+func TestGateway_Route_RecordsOpenCircuitRefusalAttempt(t *testing.T) {
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets: []config.Target{{
+			VirtualKey:     "mock",
+			CircuitBreaker: &config.CircuitBreakerConfig{FailureThreshold: 1, Timeout: "1h"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+	ep := &eventCapturingProvider{recordingActive: true}
+	gw.SetObservability(ep)
+
+	calls := 0
+	gw.RegisterProvider(&mockProvider{
+		name: "mock", models: []string{testModel},
+		completeFn: func(context.Context, providers.Request) (*providers.Response, error) {
+			calls++
+			return nil, errors.New("upstream failed")
+		},
+	})
+	req := providers.Request{Model: testModel, Messages: []providers.Message{{Role: "user", Content: "hi"}}}
+	if _, err := gw.Route(context.Background(), req); err == nil {
+		t.Fatal("seed call should open the circuit")
+	}
+	before := len(eventsWithSubject(ep.capturedEvents(), observability.SubjectRoutingAttempt))
+
+	_, err = gw.Route(context.Background(), req)
+	if !errors.Is(err, circuitbreaker.ErrCircuitOpen) {
+		t.Fatalf("refused route error = %v, want ErrCircuitOpen", err)
+	}
+	if calls != 1 {
+		t.Fatalf("provider calls = %d, want 1: refused call must not invoke provider", calls)
+	}
+	attempts := eventsWithSubject(ep.capturedEvents(), observability.SubjectRoutingAttempt)
+	if len(attempts) != before+1 {
+		t.Fatalf("refusal attempt event delta = %d, want 1", len(attempts)-before)
+	}
+	got := attempts[len(attempts)-1].RoutingAttempt
+	if got == nil || got.Status != http.StatusServiceUnavailable || got.Outcome != observability.RoutingAttemptError {
+		t.Fatalf("refusal attempt = %#v, want status 503 and error outcome", got)
+	}
+}
+
+func TestGateway_Route_RecordsSaturationRefusalAttempt(t *testing.T) {
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets: []config.Target{{
+			VirtualKey:  "mock",
+			Concurrency: &config.ConcurrencyConfig{MaxConcurrency: 1, QueueSize: 1},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+	ep := &eventCapturingProvider{recordingActive: true}
+	gw.SetObservability(ep)
+
+	calls := 0
+	gw.RegisterProvider(&mockProvider{
+		name: "mock", models: []string{testModel},
+		completeFn: func(context.Context, providers.Request) (*providers.Response, error) {
+			calls++
+			return &providers.Response{ID: "unexpected"}, nil
+		},
+	})
+	lim := gw.limiters["mock"]
+	if err := lim.acquire(context.Background()); err != nil {
+		t.Fatalf("occupy in-flight slot: %v", err)
+	}
+	queuedCtx, cancelQueued := context.WithCancel(context.Background())
+	queued := make(chan error, 1)
+	go func() { queued <- lim.acquire(queuedCtx) }()
+	waitFor(t, func() bool { return lim.waiting.Load() == 1 })
+
+	_, routeErr := gw.Route(context.Background(), providers.Request{Model: testModel, Messages: []providers.Message{{Role: "user", Content: "hi"}}})
+	cancelQueued()
+	if err := <-queued; !errors.Is(err, context.Canceled) {
+		t.Fatalf("queued acquire cleanup = %v, want context.Canceled", err)
+	}
+	lim.release()
+
+	if !errors.Is(routeErr, providers.ErrProviderSaturated) {
+		t.Fatalf("refused route error = %v, want ErrProviderSaturated", routeErr)
+	}
+	if calls != 0 {
+		t.Fatalf("provider calls = %d, want 0 for refused call", calls)
+	}
+	attempts := eventsWithSubject(ep.capturedEvents(), observability.SubjectRoutingAttempt)
+	if len(attempts) != 1 {
+		t.Fatalf("routing attempt events = %d, want 1", len(attempts))
+	}
+	got := attempts[0].RoutingAttempt
+	if got == nil || got.Status != http.StatusTooManyRequests || got.Outcome != observability.RoutingAttemptError {
+		t.Fatalf("refusal attempt = %#v, want status 429 and error outcome", got)
 	}
 }
 
@@ -1141,4 +1612,57 @@ func chatRequest(model string) providers.Request {
 		Model:    model,
 		Messages: []providers.Message{{Role: "user", Content: "hi"}},
 	}
+}
+
+// terminalOnlyProvider exports terminal events and has never heard of
+// gateway.routing.attempt: what every observability provider written before
+// attempt events existed looks like to the gateway.
+type terminalOnlyProvider struct {
+	observability.Provider
+	events *eventCapturingProvider
+}
+
+func (p terminalOnlyProvider) RecordEvent(ctx context.Context, evt observability.Event) {
+	p.events.RecordEvent(ctx, evt)
+}
+
+func (p terminalOnlyProvider) RecordingEnabled() bool { return true }
+
+// Attempt events are opt-in. A provider that only ever asked for terminal
+// events keeps receiving exactly one event per request, so an exporter that
+// treats every event as a request does not start recording phantom requests.
+func TestRoute_AttemptEventsRequireProviderOptIn(t *testing.T) {
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets:  []config.Target{{VirtualKey: mockProviderName}},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+	capture := &eventCapturingProvider{recordingActive: true}
+	gw.SetObservability(terminalOnlyProvider{Provider: observability.NoOp(), events: capture})
+	gw.RegisterProvider(&mockProvider{
+		name:   mockProviderName,
+		models: []string{testModel},
+		resp:   &providers.Response{ID: "ok", Model: testModel},
+	})
+
+	if _, err := gw.Route(context.Background(), chatRequest(testModel)); err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+
+	events := capture.capturedEvents()
+	if attempts := eventsWithSubject(events, observability.SubjectRoutingAttempt); len(attempts) != 0 {
+		t.Errorf("%d attempt events reached a provider that never opted in", len(attempts))
+	}
+	if completed := eventsWithSubject(events, "gateway.request.completed"); len(completed) != 1 {
+		t.Errorf("completed events = %d, want exactly 1", len(completed))
+	}
+}
+
+// RoutingAttemptsEnabled opts the capturing provider into attempt events
+// whenever it records events at all, so tests that count attempts need no
+// extra setup and the terminal-only case is expressed by terminalOnlyProvider.
+func (p *eventCapturingProvider) RoutingAttemptsEnabled() bool {
+	return p.recordingActive
 }

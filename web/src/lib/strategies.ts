@@ -86,11 +86,7 @@ export const STRATEGIES: readonly StrategyInfo[] = [
     id: 'ab-test',
     label: 'A/B test',
     icon: FlaskConical,
-    // The label names the variant in the configuration and nowhere else: the
-    // strategy contributes a target order, and only the target a request lands
-    // on reaches logs, metrics and traces. Saying otherwise sent operators
-    // looking for a field no query can find.
-    summary: 'Splits traffic between labelled variants by weight. Only the target a request lands on is recorded — the variant label is configuration, not telemetry.',
+    summary: 'Splits traffic between labelled variants by weight and records the variant label on routing telemetry.',
     configures: 'strategy.ab_variants',
   },
 ] as const

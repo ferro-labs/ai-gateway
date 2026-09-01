@@ -257,7 +257,7 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	// still runs the on_error stage, so the request is recorded. It stands down
 	// when a transform plugin may still rewrite the model. See admitModel.
 	if err := g.admitModel(ctx, plugins, req.Model, nil); err != nil {
-		g.routeError(ctx, span, obs, pctx, plugins, "", req.Model, err, time.Since(start), originalStream, hooksEnabled, obsEventsActive)
+		g.routeError(ctx, span, obs, pctx, plugins, "", req.Model, "", false, err, time.Since(start), originalStream, hooksEnabled, obsEventsActive)
 		return nil, err
 	}
 
@@ -271,6 +271,7 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 			return nil, err
 		}
 		if early != nil {
+			early.Model = req.Model
 			if early.Object == "" {
 				early.Object = "chat.completion"
 			}
@@ -322,10 +323,9 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 		// target names the last target actually attempted. Reporting "" here
 		// left every non-streaming provider failure in one unlabelled bucket,
 		// which is the one thing per-provider alerting needs.
-		g.routeError(ctx, span, obs, pctx, plugins, target.key, req.Model, err, latency, originalStream, hooksEnabled, obsEventsActive)
+		g.routeError(ctx, span, obs, pctx, plugins, target.key, req.Model, target.abVariantLabel, target.hasABVariant, err, latency, originalStream, hooksEnabled, obsEventsActive)
 		return nil, err
 	}
-
 	// Ensure OpenAI-compatible envelope fields are always set.
 	if resp.Object == "" {
 		resp.Object = "chat.completion"
@@ -355,7 +355,7 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 			if pctx != nil {
 				pctx.Response = &providers.Response{Model: req.Model, Provider: loopTarget.key, Usage: loopUsage}
 			}
-			g.routeError(ctx, span, obs, pctx, plugins, loopTarget.key, req.Model, err, time.Since(start), originalStream, hooksEnabled, obsEventsActive)
+			g.routeError(ctx, span, obs, pctx, plugins, loopTarget.key, req.Model, loopTarget.abVariantLabel, loopTarget.hasABVariant, err, time.Since(start), originalStream, hooksEnabled, obsEventsActive)
 			return nil, err
 		}
 		// The loop re-contacts the provider, so the target that answered LAST is
@@ -365,6 +365,10 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 			target = loopTarget
 		}
 	}
+	// Provider-returned model identifiers are upstream payload detail. The
+	// routed post-alias model is the public identity on every gateway surface.
+	// Apply this after the MCP loop because its final turn can replace resp.
+	resp.Model = req.Model
 	// originalStream is included in the completed event so hook consumers
 	// can distinguish streaming vs non-streaming requests (Phase 1.5 note:
 	// when final-response streaming lands, remove the force-to-false above).
@@ -373,7 +377,7 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	// the after-request plugins need it: the request logger persists it, and it
 	// cannot be recovered later. recordSuccess is handed the same result rather
 	// than repeating the calculation.
-	cost := g.calculateCost(resp, target.priceProvider)
+	cost := g.calculateCost(resp, target.priceProvider, target.upstreamModel)
 
 	// Measured before the stage runs, so the duration a logging plugin records
 	// does not include that plugin. Streaming requests take the other path, in
@@ -384,9 +388,13 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 		HasCost:    cost.Priced,
 	})
 	if err != nil {
-		// Set at the call site rather than inside runAfterPlugins, which holds
-		// no span. The provider call succeeded, so nothing below marks it.
-		span.SetError(err)
+		// runAfterPlugins already ran on_error, so finish through failed
+		// accounting without running it twice. The request is timed and
+		// counted as the plugin abort it is — the provider call succeeded, so
+		// it is never a provider failure.
+		latency = time.Since(start)
+		g.recordFailureMetrics(ctx, target.key, req.Model, err, latency)
+		g.recordTerminalFailure(ctx, span, obs, target.key, req.Model, target.abVariantLabel, target.hasABVariant, err, latency, originalStream, hooksEnabled, obsEventsActive)
 		return nil, err
 	}
 
@@ -395,7 +403,7 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	// any MCP tool-call loop iterations — keeping it consistent with the
 	// accumulated providerDuration so OverheadMs stays non-negative.
 	latency = time.Since(start)
-	g.recordSuccess(ctx, span, obs, resp, cost, latency, originalStream, hooksEnabled, obsEventsActive)
+	g.recordSuccess(ctx, span, obs, resp, req.Model, cost, latency, target.abVariantLabel, target.hasABVariant, originalStream, hooksEnabled, obsEventsActive)
 
 	resp.OverheadMs = float64((latency - providerDuration).Microseconds()) / 1000.0
 
@@ -577,7 +585,7 @@ func (g *Gateway) runMCPLoop(ctx context.Context, mcpExecutorSnapshot *mcp.Execu
 			// differently-priced providers, and pricing each against the provider
 			// that served it is strictly better than pricing the total at the
 			// last one's rate.
-			if turnCost := g.calculateCost(resp, target.priceProvider); turnCost.Priced {
+			if turnCost := g.calculateCost(resp, target.priceProvider, target.upstreamModel); turnCost.Priced {
 				spentUSD += turnCost.TotalUSD
 				spentPriced = true
 			}

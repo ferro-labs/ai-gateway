@@ -53,6 +53,34 @@ func TestCostOptimized_PicksCheapest(t *testing.T) {
 	assertLeadsWith(t, s, req("hello world"), "cheap")
 }
 
+func TestCostOptimized_PricesEachTargetsMappedModel(t *testing.T) {
+	first := &mockProvider{name: "first", models: []string{"support-chat"}}
+	second := &mockProvider{name: "second", models: []string{"support-chat"}}
+	catalog := models.Catalog{
+		"first/expensive-upstream": {
+			Provider: "first", ModelID: "expensive-upstream", Mode: models.ModeChat,
+			Pricing: models.Pricing{InputPerMTokens: ptrF(10), OutputPerMTokens: ptrF(10)},
+		},
+		"second/cheap-upstream": {
+			Provider: "second", ModelID: "cheap-upstream", Mode: models.ModeChat,
+			Pricing: models.Pricing{InputPerMTokens: ptrF(1), OutputPerMTokens: ptrF(1)},
+		},
+	}
+	targets := []Target{
+		{VirtualKey: "first", ModelMap: map[string]string{"support-chat": "expensive-upstream"}},
+		{VirtualKey: "second", ModelMap: map[string]string{"support-chat": "cheap-upstream"}},
+	}
+
+	s := NewCostOptimized(targets, newLookup(first, second), catalog)
+	keys, err := s.SelectTargets(providers.Request{Model: "support-chat", Messages: []providers.Message{{Content: "hello"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) == 0 || keys[0] != "second" {
+		t.Fatalf("SelectTargets = %v, want second to lead by its mapped upstream price", keys)
+	}
+}
+
 func TestCostOptimized_FallsBackWhenNoPricing(t *testing.T) {
 	// Catalog has no entry for "unknown/gpt-4o".
 	mp := &mockProvider{name: "unknown", models: []string{"gpt-4o"}}

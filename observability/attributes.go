@@ -80,3 +80,6 @@ const (
 // build emits. Exporters MAY use this value to branch on schema
 // migrations.
 const SchemaVersion = "1.0.0-draft"
+
+// SubjectRoutingAttempt identifies one physical routing attempt.
+const SubjectRoutingAttempt = "gateway.routing.attempt"

@@ -441,3 +441,39 @@ func TestMeter_UnsetMetricModelDoesNotEmitRawModelLabel(t *testing.T) {
 		}
 	}
 }
+
+// The routed model is the stream's identity toward the client, as it is for a
+// non-streaming response: every forwarded chunk names it, whatever model id
+// the provider put on the chunk and even when it put none.
+func TestMeter_ForwardsChunksUnderTheRoutedModel(t *testing.T) {
+	src := feed(
+		providers.StreamChunk{ID: "1", Model: "vendor/upstream-id", Choices: []providers.StreamChoice{{Delta: providers.MessageDelta{Content: "hello"}}}},
+		providers.StreamChunk{ID: "2", Choices: []providers.StreamChoice{{Delta: providers.MessageDelta{Content: " world"}}}},
+	)
+	out := Meter(context.Background(), src, time.Now(), MeterMeta{
+		Provider:    "openai",
+		Model:       "smart",
+		MetricModel: "smart",
+		Catalog:     models.Catalog{},
+	})
+
+	for c := range out {
+		if c.Model != "smart" {
+			t.Errorf("chunk %s forwarded as model %q, want the routed model %q", c.ID, c.Model, "smart")
+		}
+	}
+}
+
+func TestMeter_LeavesChunkModelWithoutARoutedModel(t *testing.T) {
+	src := feed(providers.StreamChunk{ID: "1", Model: "vendor/upstream-id"})
+	out := Meter(context.Background(), src, time.Now(), MeterMeta{
+		Provider: "openai",
+		Catalog:  models.Catalog{},
+	})
+
+	for c := range out {
+		if c.Model != "vendor/upstream-id" {
+			t.Errorf("chunk forwarded as model %q, want the provider's %q when no routed model is set", c.Model, "vendor/upstream-id")
+		}
+	}
+}

@@ -341,8 +341,8 @@ type ABVariantConfig struct {
 	// config error, and so is an all-zero set — with nothing left to select, the
 	// gateway would answer every request 404 while reporting itself ready.
 	Weight float64 `json:"weight" yaml:"weight"`
-	// Label is a short human-readable identifier (e.g. "control", "challenger").
-	// It is logged with every routed request for observability.
+	// Label is the value emitted as ferro.routing.ab_variant_label on every
+	// routing attempt and terminal event for a request assigned to this variant.
 	Label string `json:"label" yaml:"label"`
 }
 
@@ -382,6 +382,10 @@ type Target struct {
 	// no-op — the sources are merged and de-duplicated — so pinning one against a
 	// catalog that may change is safe.
 	Models []string `json:"models,omitempty" yaml:"models,omitempty"`
+	// ModelMap maps routed model IDs to exact model IDs sent to this target.
+	// Keys join the target's additive model inventory. Global aliases resolve
+	// before this mapping, so an alias name cannot be used as a key.
+	ModelMap map[string]string `json:"model_map,omitempty" yaml:"model_map,omitempty"`
 	// Retry configuration for this target.
 	Retry *RetryConfig `json:"retry,omitempty" yaml:"retry,omitempty"`
 	// CircuitBreaker configuration for this target (optional).

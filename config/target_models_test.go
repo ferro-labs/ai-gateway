@@ -117,3 +117,74 @@ func TestValidateTargetModelsAcrossTargets(t *testing.T) {
 		t.Fatalf("ValidateConfig() = %v, want nil: one model may be served by several targets", err)
 	}
 }
+
+func TestValidateTargetIdentity(t *testing.T) {
+	tests := []struct {
+		name    string
+		targets []Target
+		wantErr string
+	}{
+		{name: "empty", targets: []Target{{}}, wantErr: "virtual_key must not be empty"},
+		{name: "duplicate", targets: []Target{{VirtualKey: "openai"}, {VirtualKey: "openai"}}, wantErr: `virtual_key "openai" is listed more than once`},
+		{name: "unique", targets: []Target{{VirtualKey: "openai"}, {VirtualKey: "anthropic"}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateConfig(Config{Strategy: StrategyConfig{Mode: ModeFallback}, Targets: tt.targets})
+			if tt.wantErr == "" && err != nil {
+				t.Fatalf("ValidateConfig() = %v, want nil", err)
+			}
+			if tt.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErr)) {
+				t.Fatalf("ValidateConfig() = %v, want error containing %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateTargetModelMap(t *testing.T) {
+	tests := []struct {
+		name     string
+		modelMap map[string]string
+		aliases  map[string]string
+		wantErr  string
+	}{
+		{name: "omitted"},
+		{name: "exact mapping", modelMap: map[string]string{"support-chat": "gpt-4o"}},
+		{name: "empty key", modelMap: map[string]string{"": "gpt-4o"}, wantErr: "model_map key must be a non-empty model id"},
+		{name: "key whitespace", modelMap: map[string]string{" support-chat": "gpt-4o"}, wantErr: "model_map key"},
+		{name: "key wildcard", modelMap: map[string]string{"support-*": "gpt-4o"}, wantErr: "contains a wildcard"},
+		{name: "empty value", modelMap: map[string]string{"support-chat": ""}, wantErr: `model_map["support-chat"] must be a non-empty model id`},
+		{name: "value whitespace", modelMap: map[string]string{"support-chat": " gpt-4o"}, wantErr: `model_map["support-chat"]`},
+		{name: "value wildcard", modelMap: map[string]string{"support-chat": "gpt-*"}, wantErr: "contains a wildcard"},
+		{name: "global alias key", modelMap: map[string]string{"fast": "gpt-4o"}, aliases: map[string]string{"fast": "gpt-4o-mini"}, wantErr: `model_map key "fast" is unreachable because it is a global alias`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Config{
+				Strategy: StrategyConfig{Mode: ModeSingle},
+				Targets:  []Target{{VirtualKey: "openai", ModelMap: tt.modelMap}},
+				Aliases:  tt.aliases,
+			}
+			err := ValidateConfig(cfg)
+			if tt.wantErr == "" && err != nil {
+				t.Fatalf("ValidateConfig() = %v, want nil", err)
+			}
+			if tt.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErr)) {
+				t.Fatalf("ValidateConfig() = %v, want error containing %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateTargetModelMapAcrossTargets(t *testing.T) {
+	cfg := Config{
+		Strategy: StrategyConfig{Mode: ModeFallback},
+		Targets: []Target{
+			{VirtualKey: "openai", ModelMap: map[string]string{"support-chat": "gpt-4o"}},
+			{VirtualKey: "anthropic", ModelMap: map[string]string{"support-chat": "claude-sonnet-4"}},
+		},
+	}
+	if err := ValidateConfig(cfg); err != nil {
+		t.Fatalf("ValidateConfig() = %v, want nil", err)
+	}
+}

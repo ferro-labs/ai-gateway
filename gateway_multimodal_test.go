@@ -699,7 +699,7 @@ func TestGateway_Embed_EmitsMetricsSpanAndEvent(t *testing.T) {
 		t.Errorf("routing target key attr = %v, want embed-provider", got)
 	}
 
-	evts := obs.capturedEvents()
+	evts := eventsWithSubject(obs.capturedEvents(), "gateway.request.completed")
 	if len(evts) != 1 {
 		t.Fatalf("expected 1 completed event, got %d", len(evts))
 	}
@@ -773,7 +773,7 @@ func TestGateway_GenerateImage_EmitsMetricsSpanAndEvent(t *testing.T) {
 		t.Errorf("routing target key attr = %v, want image-provider", got)
 	}
 
-	evts := obs.capturedEvents()
+	evts := eventsWithSubject(obs.capturedEvents(), "gateway.request.completed")
 	if len(evts) != 1 {
 		t.Fatalf("expected 1 completed event, got %d", len(evts))
 	}
@@ -827,7 +827,7 @@ func TestGateway_Embed_FailurePathEmitsMetricsAndErrorEvent(t *testing.T) {
 		t.Error("expected span.SetError to be called")
 	}
 
-	evts := obs.capturedEvents()
+	evts := eventsWithSubject(obs.capturedEvents(), "gateway.request.failed")
 	if len(evts) != 1 {
 		t.Fatalf("expected 1 failed event, got %d", len(evts))
 	}

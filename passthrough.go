@@ -137,7 +137,7 @@ func (g *Gateway) RoutePassthrough(ctx context.Context, target, model, body stri
 	record, err := g.runPassthroughGovernance(ctx, span, start, passthroughParams{target: target, model: model, body: body, bodyInspectable: bodyInspectable}, forward)
 	latency := time.Since(start)
 	if err != nil {
-		safeErr := g.recordSurfaceError(ctx, span, obs, record.provider, model, err, latency, hooksEnabled, obsEventsActive)
+		safeErr := g.recordSurfaceError(ctx, span, obs, record.provider, model, record.abVariantLabel, record.hasABVariant, err, latency, hooksEnabled, obsEventsActive)
 		g.log.Ctx(ctx).Error("pass-through request failed", "target", target, "model", model, "error", safeErr)
 		return err
 	}
@@ -192,7 +192,7 @@ func (g *Gateway) RouteResponsesWithPricingProvider(ctx context.Context, target,
 	}, forward)
 	latency := time.Since(start)
 	if err != nil {
-		safeErr := g.recordSurfaceError(ctx, span, obs, record.provider, model, err, latency, hooksEnabled, obsEventsActive)
+		safeErr := g.recordSurfaceError(ctx, span, obs, record.provider, model, record.abVariantLabel, record.hasABVariant, err, latency, hooksEnabled, obsEventsActive)
 		g.log.Ctx(ctx).Error("responses request failed", "target", target, "model", model, "error", safeErr)
 		return err
 	}
@@ -238,7 +238,7 @@ func (g *Gateway) runPassthroughGovernance(
 		// answered, on failure who was asked. A pass-through failure that could
 		// not say which provider failed was the same blind spot the routed
 		// surfaces had.
-		record := surfaceRecord{provider: target, model: model}
+		record := surfaceRecord{provider: target, routedModel: model}
 		err := g.forwardUnderResilience(ctx, target, forward)
 		// Responses (RouteResponses) captures a real usage object off the forwarded
 		// body/stream, so this one pass-through endpoint IS priced on success —
@@ -247,7 +247,7 @@ func (g *Gateway) runPassthroughGovernance(
 		// and stays unpriced. Priced here, inside call, so both the plugin and the
 		// no-plugin path (which returns call directly) get it.
 		if err == nil && p.usage != nil && (p.usage.PromptTokens > 0 || p.usage.CompletionTokens > 0 || p.usage.TotalTokens > 0) {
-			record = g.priceSurface(routedTarget{key: target, priceProvider: p.priceProvider}, model, *p.usage, 0)
+			record = g.priceSurface(routedTarget{key: target, priceProvider: p.priceProvider, upstreamModel: model}, model, *p.usage, 0)
 		}
 		return record, err
 	}
@@ -358,8 +358,8 @@ func (g *Gateway) forwardUnderResilience(ctx context.Context, key string, forwar
 	lim := g.limiters[key]
 	g.mu.RUnlock()
 
-	_, err := callUnderResilience(ctx, key, nil, cb, lim, struct{}{},
-		func(ctx context.Context, _ providers.Provider, _ struct{}) (struct{}, error) {
+	_, err := callUnderResilience(ctx, key, nil, cb, lim, struct{}{}, "",
+		func(ctx context.Context, _ providers.Provider, _ struct{}, _ string) (struct{}, error) {
 			return struct{}{}, forward(ctx)
 		})
 	return err

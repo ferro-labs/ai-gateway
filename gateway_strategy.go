@@ -64,6 +64,7 @@ func (g *Gateway) getStrategy() (strategies.Strategy, error) {
 		targets[i] = strategies.Target{
 			VirtualKey: t.VirtualKey,
 			Weight:     t.Weight,
+			ModelMap:   t.ModelMap,
 		}
 	}
 

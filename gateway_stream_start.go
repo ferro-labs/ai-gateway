@@ -83,7 +83,8 @@ func streamCapable(p providers.Provider) bool {
 // that succeeds, so after a successful walk it holds the instance whose Allow()
 // admitted the live stream, which is the only instance its outcome may resolve.
 func startStreamOn(streamCtx context.Context, admitted **circuitbreaker.CircuitBreaker) targetCall[providers.Request, <-chan providers.StreamChunk] {
-	return func(attemptCtx context.Context, p providers.Provider, req providers.Request) (<-chan providers.StreamChunk, error) {
+	return func(attemptCtx context.Context, p providers.Provider, req providers.Request, upstreamModel string) (<-chan providers.StreamChunk, error) {
+		req.Model = upstreamModel
 		if cbp, ok := p.(*cbProvider); ok {
 			*admitted = cbp.cb
 		} else {

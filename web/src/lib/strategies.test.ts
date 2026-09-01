@@ -128,13 +128,10 @@ describe('readStrategy rules', () => {
     expect(state.rules[0]?.share).toBe(100)
   })
 
-  it('does not claim the variant label reaches telemetry', () => {
-    // Only the resolved target is recorded: SelectTargets returns target keys,
-    // and no label travels with them into logs, metrics or spans.
+  it('describes variant-label telemetry', () => {
     const summary = strategyInfo('ab-test')?.summary ?? ''
 
-    expect(summary).not.toMatch(/records the variant/i)
-    expect(summary).toMatch(/target/i)
+    expect(summary).toMatch(/records the variant label/i)
   })
 
   it('reads no rules for a mode that configures none', () => {

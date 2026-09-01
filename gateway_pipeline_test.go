@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -12,6 +13,8 @@ import (
 	"github.com/ferro-labs/ai-gateway/config"
 	"github.com/ferro-labs/ai-gateway/internal/apierror"
 	"github.com/ferro-labs/ai-gateway/pkg/circuitbreaker"
+	"github.com/ferro-labs/ai-gateway/pkg/metrics"
+	"github.com/ferro-labs/ai-gateway/plugin"
 	"github.com/ferro-labs/ai-gateway/providers"
 	"github.com/ferro-labs/ai-gateway/providers/core"
 	"github.com/prometheus/client_golang/prometheus"
@@ -377,6 +380,375 @@ func TestPipeline_FallbackAdvancesPastAFailingTarget(t *testing.T) {
 	}
 }
 
+func TestPipeline_PoolModesAdvanceOnlyOnSafeFailures(t *testing.T) {
+	poolModes := []config.StrategyMode{
+		config.ModeFallback,
+		config.ModeLoadBalance,
+		config.ModeLatency,
+		config.ModeCostOptimized,
+		config.ModeABTest,
+	}
+	failures := []struct {
+		name     string
+		err      error
+		attempts int64
+	}{
+		{name: "transport", err: errors.New("connection reset"), attempts: 2},
+		{name: "request timeout", err: core.StatusError("first", http.StatusRequestTimeout, "timeout"), attempts: 2},
+		{name: "rate limit", err: core.StatusError("first", http.StatusTooManyRequests, "limited"), attempts: 2},
+		{name: "server error", err: core.StatusError("first", http.StatusBadGateway, "bad gateway"), attempts: 2},
+		{name: "open circuit", err: fmt.Errorf("breaker: %w", circuitbreaker.ErrCircuitOpen), attempts: 1},
+		{name: "saturation", err: fmt.Errorf("limiter: %w", core.ErrProviderSaturated), attempts: 1},
+		// A target that accepted the connection and never answered ends the
+		// attempt through the provider transport's ResponseHeaderTimeout, whose
+		// error is a context.DeadlineExceeded the request never set. It is not
+		// retried on the same target — a hung target stays hung — but the pool
+		// must carry the request to a sibling: this is the failure failover
+		// exists for.
+		{name: "attempt timeout", err: transportHeaderTimeoutError(t), attempts: 1},
+		// Likewise a cancellation raised inside the target's own call while the
+		// request context is still live belongs to that target, not the caller.
+		{name: "target-side cancellation", err: fmt.Errorf("provider: %w", context.Canceled), attempts: 1},
+	}
+
+	for _, mode := range poolModes {
+		for _, failure := range failures {
+			t.Run(string(mode)+"/"+failure.name, func(t *testing.T) {
+				first := newCountingProvider("first", func() (*providers.Response, error) {
+					return nil, failure.err
+				})
+				second := newCountingProvider("second", func() (*providers.Response, error) {
+					return &providers.Response{ID: "ok", Model: pipelineModel}, nil
+				})
+				gw, err := newTestGateway(t, config.Config{Targets: []config.Target{
+					{VirtualKey: "first", Retry: &config.RetryConfig{Attempts: 2, InitialBackoffMs: 1}},
+					{VirtualKey: "second"},
+				}})
+				if err != nil {
+					t.Fatalf("new gateway: %v", err)
+				}
+				gw.RegisterProvider(first)
+				gw.RegisterProvider(second)
+
+				_, target, routeErr := routeTargets(context.Background(), gw, targetPlan{
+					keys: []string{"first", "second"}, model: pipelineModel, advance: advancesPastFailure(mode),
+				}, pipelineRequest(), nil, completeChat)
+				if routeErr != nil {
+					t.Fatalf("routeTargets: %v", routeErr)
+				}
+				if target.key != "second" || first.calls.Load() != failure.attempts || second.calls.Load() != 1 {
+					t.Errorf("target=%q calls=(%d,%d), want second and (%d,1)", target.key, first.calls.Load(), second.calls.Load(), failure.attempts)
+				}
+			})
+		}
+	}
+}
+
+func TestPipeline_PoolModesStopOnUnsafeFailures(t *testing.T) {
+	poolModes := []config.StrategyMode{
+		config.ModeFallback,
+		config.ModeLoadBalance,
+		config.ModeLatency,
+		config.ModeCostOptimized,
+		config.ModeABTest,
+	}
+	failures := []struct {
+		name string
+		err  error
+	}{
+		{name: "400", err: core.StatusError("first", http.StatusBadRequest, "bad request")},
+		{name: "401", err: core.StatusError("first", http.StatusUnauthorized, "unauthorized")},
+		{name: "403", err: core.StatusError("first", http.StatusForbidden, "forbidden")},
+		{name: "404", err: core.StatusError("first", http.StatusNotFound, "not found")},
+		{name: "422", err: core.StatusError("first", http.StatusUnprocessableEntity, "invalid")},
+	}
+
+	for _, mode := range poolModes {
+		for _, failure := range failures {
+			t.Run(string(mode)+"/"+failure.name, func(t *testing.T) {
+				first := newCountingProvider("first", func() (*providers.Response, error) {
+					return nil, failure.err
+				})
+				second := newCountingProvider("second", func() (*providers.Response, error) {
+					return &providers.Response{ID: "unexpected", Model: pipelineModel}, nil
+				})
+				gw, err := newTestGateway(t, config.Config{Targets: []config.Target{
+					{VirtualKey: "first"}, {VirtualKey: "second"},
+				}})
+				if err != nil {
+					t.Fatalf("new gateway: %v", err)
+				}
+				gw.RegisterProvider(first)
+				gw.RegisterProvider(second)
+
+				_, target, routeErr := routeTargets(context.Background(), gw, targetPlan{
+					keys: []string{"first", "second"}, model: pipelineModel, advance: advancesPastFailure(mode),
+				}, pipelineRequest(), nil, completeChat)
+				if routeErr == nil {
+					t.Fatal("routeTargets succeeded")
+				}
+				wantErr := fmt.Sprintf("target first: %v", failure.err)
+				if routeErr.Error() != wantErr {
+					t.Errorf("error = %q, want %q", routeErr, wantErr)
+				}
+				if target.key != "first" || first.calls.Load() != 1 || second.calls.Load() != 0 {
+					t.Errorf("target=%q calls=(%d,%d), want first and (1,0)", target.key, first.calls.Load(), second.calls.Load())
+				}
+			})
+		}
+	}
+}
+
+type sharedPolicyProvider struct {
+	mockProvider
+	err         error
+	chatCalls   atomic.Int64
+	streamCalls atomic.Int64
+	embedCalls  atomic.Int64
+}
+
+func (p *sharedPolicyProvider) Complete(context.Context, providers.Request) (*providers.Response, error) {
+	p.chatCalls.Add(1)
+	if p.err != nil {
+		return nil, p.err
+	}
+	return &providers.Response{Model: pipelineModel}, nil
+}
+
+func (p *sharedPolicyProvider) CompleteStream(context.Context, providers.Request) (<-chan providers.StreamChunk, error) {
+	p.streamCalls.Add(1)
+	if p.err != nil {
+		return nil, p.err
+	}
+	ch := make(chan providers.StreamChunk)
+	close(ch)
+	return ch, nil
+}
+
+func (p *sharedPolicyProvider) Embed(context.Context, providers.EmbeddingRequest) (*providers.EmbeddingResponse, error) {
+	p.embedCalls.Add(1)
+	if p.err != nil {
+		return nil, p.err
+	}
+	return &providers.EmbeddingResponse{Model: pipelineModel}, nil
+}
+
+func TestPipeline_SharedSurfacesApplySafeAdvanceAndUnsafeStop(t *testing.T) {
+	surfaces := []struct {
+		name  string
+		call  func(*Gateway) error
+		calls func(*sharedPolicyProvider) int64
+	}{
+		{name: "chat", call: func(g *Gateway) error {
+			_, err := g.Route(context.Background(), providers.Request{Model: pipelineModel})
+			return err
+		}, calls: func(p *sharedPolicyProvider) int64 { return p.chatCalls.Load() }},
+		{name: "stream-start", call: func(g *Gateway) error {
+			ch, err := g.RouteStream(context.Background(), providers.Request{Model: pipelineModel, Stream: true})
+			if err == nil {
+				for chunk := range ch {
+					_ = chunk
+				}
+			}
+			return err
+		}, calls: func(p *sharedPolicyProvider) int64 { return p.streamCalls.Load() }},
+		{name: "embeddings", call: func(g *Gateway) error {
+			_, err := g.Embed(context.Background(), providers.EmbeddingRequest{Model: pipelineModel, Input: "hi"})
+			return err
+		}, calls: func(p *sharedPolicyProvider) int64 { return p.embedCalls.Load() }},
+	}
+
+	for _, policy := range []struct {
+		name        string
+		err         error
+		wantSuccess bool
+		wantSecond  int64
+	}{
+		{name: "safe-503-advances", err: core.StatusError("first", http.StatusServiceUnavailable, "down"), wantSuccess: true, wantSecond: 1},
+		{name: "unsafe-400-stops", err: core.StatusError("first", http.StatusBadRequest, "bad request")},
+	} {
+		for _, surface := range surfaces {
+			t.Run(policy.name+"/"+surface.name, func(t *testing.T) {
+				first := &sharedPolicyProvider{mockProvider: mockProvider{name: "first", models: []string{pipelineModel}}, err: policy.err}
+				second := &sharedPolicyProvider{mockProvider: mockProvider{name: "second", models: []string{pipelineModel}}}
+				gw, err := newTestGateway(t, config.Config{
+					Strategy: config.StrategyConfig{Mode: config.ModeFallback},
+					Targets:  []config.Target{{VirtualKey: "first"}, {VirtualKey: "second"}},
+				})
+				if err != nil {
+					t.Fatalf("new gateway: %v", err)
+				}
+				gw.RegisterProvider(first)
+				gw.RegisterProvider(second)
+
+				callErr := surface.call(gw)
+				if (callErr == nil) != policy.wantSuccess {
+					t.Fatalf("error = %v, want success %v", callErr, policy.wantSuccess)
+				}
+				if got := surface.calls(first); got != 1 {
+					t.Errorf("first calls = %d, want 1", got)
+				}
+				if got := surface.calls(second); got != policy.wantSecond {
+					t.Errorf("second calls = %d, want %d", got, policy.wantSecond)
+				}
+			})
+		}
+	}
+}
+
+func TestPipeline_RetryAfterControlsRetryBeforeAdvancement(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		retryAfter time.Duration
+		wantCalls  int64
+	}{
+		{name: "short hint retries target", retryAfter: time.Millisecond, wantCalls: 2},
+		{name: "hint beyond cap abandons target", retryAfter: 31 * time.Second, wantCalls: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			first := newCountingProvider("first", func() (*providers.Response, error) {
+				return nil, (&core.HTTPStatusError{StatusCode: http.StatusTooManyRequests, Message: "limited", RetryAfter: tc.retryAfter})
+			})
+			second := newCountingProvider("second", func() (*providers.Response, error) {
+				return &providers.Response{Model: pipelineModel}, nil
+			})
+			gw, err := newTestGateway(t, config.Config{
+				Strategy: config.StrategyConfig{Mode: config.ModeFallback},
+				Targets: []config.Target{
+					{VirtualKey: "first", Retry: &config.RetryConfig{Attempts: 2, InitialBackoffMs: 1}},
+					{VirtualKey: "second"},
+				},
+			})
+			if err != nil {
+				t.Fatalf("new gateway: %v", err)
+			}
+			gw.RegisterProvider(first)
+			gw.RegisterProvider(second)
+			if _, err := gw.Route(context.Background(), pipelineRequest()); err != nil {
+				t.Fatalf("Route: %v", err)
+			}
+			if first.calls.Load() != tc.wantCalls || second.calls.Load() != 1 {
+				t.Errorf("calls = (%d, %d), want (%d, 1)", first.calls.Load(), second.calls.Load(), tc.wantCalls)
+			}
+		})
+	}
+}
+
+func TestPipeline_ExhaustedPoolReportsAggregateFailure(t *testing.T) {
+	firstErr := errors.New("first failed")
+	secondErr := errors.New("second failed")
+	first := newCountingProvider("first", func() (*providers.Response, error) { return nil, firstErr })
+	second := newCountingProvider("second", func() (*providers.Response, error) { return nil, secondErr })
+	gw, err := newTestGateway(t, config.Config{Targets: []config.Target{
+		{VirtualKey: "first"}, {VirtualKey: "second"},
+	}})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+	gw.RegisterProvider(first)
+	gw.RegisterProvider(second)
+
+	_, target, routeErr := routeTargets(context.Background(), gw, targetPlan{
+		keys: []string{"first", "second"}, model: pipelineModel, advance: true,
+	}, pipelineRequest(), nil, completeChat)
+	if routeErr == nil {
+		t.Fatal("routeTargets succeeded")
+	}
+	if want := "all providers failed: target second: second failed"; routeErr.Error() != want {
+		t.Errorf("error = %q, want %q", routeErr, want)
+	}
+	if target.key != "second" || first.calls.Load() != 1 || second.calls.Load() != 1 {
+		t.Errorf("target=%q calls=(%d,%d), want second and (1,1)", target.key, first.calls.Load(), second.calls.Load())
+	}
+}
+
+// Once the request's own context has ended there is nobody left to serve, so
+// the walk stops whatever the failing call reported — a transport error after
+// the client hung up, or the deadline itself.
+func TestPipeline_RequestContextEndStopsFailover(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// end brings the request context to its end from inside the first
+		// target's call and returns the error that call reports.
+		end func(t *testing.T) (context.Context, func() error)
+	}{
+		{
+			name: "client hangs up",
+			end: func(*testing.T) (context.Context, func() error) {
+				ctx, cancel := context.WithCancel(context.Background())
+				return ctx, func() error {
+					cancel()
+					return errors.New("connection reset")
+				}
+			},
+		},
+		{
+			name: "request deadline passes",
+			end: func(t *testing.T) (context.Context, func() error) {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+				t.Cleanup(cancel)
+				return ctx, func() error {
+					<-ctx.Done()
+					return fmt.Errorf("upstream: %w", ctx.Err())
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, fail := tc.end(t)
+			first := newCountingProvider("first", func() (*providers.Response, error) {
+				return nil, fail()
+			})
+			second := newCountingProvider("second", func() (*providers.Response, error) {
+				return &providers.Response{ID: "unexpected", Model: pipelineModel}, nil
+			})
+			gw, err := newTestGateway(t, config.Config{Targets: []config.Target{
+				{VirtualKey: "first"}, {VirtualKey: "second"},
+			}})
+			if err != nil {
+				t.Fatalf("new gateway: %v", err)
+			}
+			gw.RegisterProvider(first)
+			gw.RegisterProvider(second)
+
+			_, target, routeErr := routeTargets(ctx, gw, targetPlan{
+				keys: []string{"first", "second"}, model: pipelineModel, advance: true,
+			}, pipelineRequest(), nil, completeChat)
+			if routeErr == nil {
+				t.Fatal("routeTargets succeeded")
+			}
+			if second.calls.Load() != 0 {
+				t.Errorf("second target was attempted %d times after the request context ended", second.calls.Load())
+			}
+			if target.key != "first" {
+				t.Errorf("failed target = %q, want first", target.key)
+			}
+		})
+	}
+}
+
+// transportHeaderTimeoutError returns the error net/http hands a provider whose
+// target accepted the connection and never answered: the transport's
+// ResponseHeaderTimeout fired while the request's own context was still live.
+func transportHeaderTimeoutError(t *testing.T) error {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	t.Cleanup(srv.Close)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL, nil)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	client := &http.Client{Transport: &http.Transport{ResponseHeaderTimeout: 10 * time.Millisecond}}
+	resp, err := client.Do(req)
+	if err == nil {
+		_ = resp.Body.Close()
+		t.Fatal("expected the response header timeout to fire")
+	}
+	return err
+}
+
 // The pipeline records latency against the TARGET KEY, which is the key
 // LeastLatency reads its samples back by. Recording the provider's own reported
 // name instead would leave the tracker holding samples nothing ever queries.
@@ -590,5 +962,48 @@ func TestPipeline_NamedTargetModesDoNotReroute(t *testing.T) {
 				t.Errorf("healthy target was attempted %d times; the rule named \"dead\"", healthy.calls.Load())
 			}
 		})
+	}
+}
+
+// An after_request plugin that breaks fails a request the provider served. The
+// failure is still a request the gateway answered, so it is timed and counted
+// like any other — as a plugin failure, not as a provider error.
+func TestRoute_AfterRequestPluginFailureIsCountedAndTimed(t *testing.T) {
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets:  []config.Target{{VirtualKey: mockProviderName}},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+	gw.RegisterProvider(&mockProvider{
+		name:   mockProviderName,
+		models: []string{pipelineModel},
+		resp:   &providers.Response{ID: "ok", Model: pipelineModel},
+	})
+	if err := gw.RegisterPlugin(plugin.StageAfterRequest, &testPlugin{
+		name: "broken-guardrail",
+		typ:  plugin.TypeGuardrail,
+		execFn: func(context.Context, *plugin.Context) error {
+			return errors.New("boom")
+		},
+	}); err != nil {
+		t.Fatalf("register after plugin: %v", err)
+	}
+
+	labels := map[string]string{"provider": mockProviderName, "model": pipelineModel}
+	handles := metrics.ForRequest(mockProviderName, pipelineModel)
+	durationsBefore := durationSampleCount(t, labels)
+	errorsBefore := counterValue(t, handles.Error)
+
+	if _, err := gw.Route(context.Background(), pipelineRequest()); err == nil {
+		t.Fatal("expected the after_request failure to fail the route")
+	}
+
+	if delta := durationSampleCount(t, labels) - durationsBefore; delta != 1 {
+		t.Errorf("failed request added %d duration samples, want 1", delta)
+	}
+	if delta := counterValue(t, handles.Error) - errorsBefore; delta != 1 {
+		t.Errorf("failed request added %v to the error counter, want 1", delta)
 	}
 }

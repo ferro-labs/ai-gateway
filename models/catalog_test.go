@@ -887,3 +887,97 @@ func TestResolveCatalogFetchTimeout(t *testing.T) {
 		})
 	}
 }
+
+// The embedded fallback is parsed once per process and handed out as a copy:
+// two loads must never share a map, or one gateway's catalog refresh could
+// change what another one prices with.
+func TestLoadWithInfo_EmbeddedFallbackIsAnIndependentCopy(t *testing.T) {
+	t.Setenv(CatalogFetchTimeoutEnv, "0")
+	const key = "openai/gpt-4o-mini"
+
+	first, err := LoadWithInfo()
+	if err != nil {
+		t.Fatalf("first load: %v", err)
+	}
+	second, err := LoadWithInfo()
+	if err != nil {
+		t.Fatalf("second load: %v", err)
+	}
+	if first.Source != LoadSourceFallback || second.Source != LoadSourceFallback {
+		t.Fatalf("sources = %q/%q, want the embedded fallback for both", first.Source, second.Source)
+	}
+	if len(first.Catalog) == 0 || len(first.Catalog) != len(second.Catalog) {
+		t.Fatalf("catalog sizes = %d/%d, want two equal, non-empty catalogs", len(first.Catalog), len(second.Catalog))
+	}
+	if _, ok := first.Catalog[key]; !ok {
+		t.Fatalf("%q is not in the embedded catalog; pick another key for this test", key)
+	}
+
+	delete(first.Catalog, key)
+
+	if _, ok := second.Catalog[key]; !ok {
+		t.Fatal("deleting from one loaded catalog removed the entry from another")
+	}
+	third, err := LoadWithInfo()
+	if err != nil {
+		t.Fatalf("third load: %v", err)
+	}
+	if _, ok := third.Catalog[key]; !ok {
+		t.Fatal("a later load lost an entry another caller deleted from its own copy")
+	}
+}
+
+// BenchmarkLoadEmbedded is the cost every gateway pays to construct when no
+// remote catalog is reachable — once per tenant instance in an embedding
+// platform, once per test gateway in this repository.
+func BenchmarkLoadEmbedded(b *testing.B) {
+	b.Setenv(CatalogFetchTimeoutEnv, "0")
+	for b.Loop() {
+		if _, err := Load(); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// A loaded copy owns its pointer-valued fields too. Pricing and lifecycle
+// values are pointers, so a shallow copy of the cached catalog would let one
+// caller's edit change what every later fallback load prices with. The
+// reflection walk covers pointer fields added later without a test change.
+func TestLoadWithInfo_EmbeddedFallbackCopiesPointerFields(t *testing.T) {
+	t.Setenv(CatalogFetchTimeoutEnv, "0")
+	const key = "openai/gpt-4o-mini"
+
+	first, err := LoadWithInfo()
+	if err != nil {
+		t.Fatalf("first load: %v", err)
+	}
+	model, ok := first.Catalog[key]
+	if !ok || model.Pricing.InputPerMTokens == nil {
+		t.Fatalf("%q must be in the embedded catalog with an input price", key)
+	}
+	original := *model.Pricing.InputPerMTokens
+	*model.Pricing.InputPerMTokens = original + 1000
+
+	second, err := LoadWithInfo()
+	if err != nil {
+		t.Fatalf("second load: %v", err)
+	}
+	if got := *second.Catalog[key].Pricing.InputPerMTokens; got != original {
+		t.Fatalf("input price after another caller's edit = %v, want the catalog's %v", got, original)
+	}
+
+	for _, section := range []struct {
+		name          string
+		first, second reflect.Value
+	}{
+		{"Pricing", reflect.ValueOf(model.Pricing), reflect.ValueOf(second.Catalog[key].Pricing)},
+		{"Lifecycle", reflect.ValueOf(model.Lifecycle), reflect.ValueOf(second.Catalog[key].Lifecycle)},
+	} {
+		for i := 0; i < section.first.NumField(); i++ {
+			a, b := section.first.Field(i), section.second.Field(i)
+			if a.Kind() == reflect.Ptr && !a.IsNil() && a.Pointer() == b.Pointer() {
+				t.Errorf("%s.%s is shared between two loads", section.name, section.first.Type().Field(i).Name)
+			}
+		}
+	}
+}

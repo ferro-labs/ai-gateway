@@ -42,9 +42,13 @@ type Gateway struct {
 	// log is the gateway's own logger, injected via WithLogger and defaulted to
 	// logger.Default() in New. Set once at construction and never mutated, so it
 	// is read without holding mu.
-	log              *logger.Logger
-	constructionCtx  context.Context
-	config           config.Config
+	log             *logger.Logger
+	constructionCtx context.Context
+	config          config.Config
+	// modelMaps indexes targets[].model_map by virtual key so resolveTarget
+	// reads one entry per candidate instead of scanning the target list on
+	// every request. Derived from config: rebuilt wherever config is assigned.
+	modelMaps        map[string]map[string]string
 	catalog          models.Catalog
 	providers        map[string]providers.Provider
 	providerNames    []string
@@ -103,6 +107,13 @@ type Gateway struct {
 	// in SetObservability and read under g.mu (alongside g.obs) at the top of
 	// Route and RouteStream, so the same lock that guards g.obs guards it.
 	obsEventsActive bool
+
+	// obsAttemptsActive is true when the installed Provider also implements
+	// observability.RoutingAttemptRecordingProvider and RoutingAttemptsEnabled()
+	// returned true at the time SetObservability was called. Guarded like
+	// obsEventsActive and read by routeTargets, which records one event per
+	// physical provider call only while it is set.
+	obsAttemptsActive bool
 
 	// MCP fields — nil when no MCPServers are configured.
 	mcpRegistry *mcp.Registry
@@ -166,6 +177,7 @@ func New(cfg config.Config, opts ...Option) (*Gateway, error) {
 	}
 
 	gw.config = cfg
+	gw.modelMaps = targetModelMaps(cfg.Targets)
 	gw.catalog = catalog
 	gw.providers = make(map[string]providers.Provider)
 	gw.plugins = plugin.NewManager(gw.log)
@@ -213,10 +225,15 @@ func (g *Gateway) SetObservability(p observability.Provider) {
 	defer g.mu.Unlock()
 	g.obs = p
 	// Cache whether the provider will receive RecordEvent calls so the
-	// hot path can skip Event construction when nothing is listening.
+	// hot path can skip Event construction when nothing is listening, and
+	// whether it also wants the per-attempt events.
 	g.obsEventsActive = false
+	g.obsAttemptsActive = false
 	if er, ok := p.(observability.EventRecordingProvider); ok {
 		g.obsEventsActive = er.RecordingEnabled()
+	}
+	if ar, ok := p.(observability.RoutingAttemptRecordingProvider); ok {
+		g.obsAttemptsActive = g.obsEventsActive && ar.RoutingAttemptsEnabled()
 	}
 }
 
@@ -386,6 +403,7 @@ func (g *Gateway) ReloadConfig(ctx context.Context, cfg config.Config) error {
 	oldPlugins := g.plugins
 	oldTargets := g.config.Targets
 	g.config = cfg
+	g.modelMaps = targetModelMaps(cfg.Targets)
 	g.plugins = plugins
 	pluginsInstalled = true
 	// Rebuilding the model index also drops the built strategy, forcing a rebuild

@@ -6,6 +6,7 @@ import (
 	"runtime/trace"
 	"time"
 
+	"github.com/ferro-labs/ai-gateway/internal/apierror"
 	"github.com/ferro-labs/ai-gateway/internal/events"
 	"github.com/ferro-labs/ai-gateway/internal/redact"
 	"github.com/ferro-labs/ai-gateway/models"
@@ -17,16 +18,65 @@ import (
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
-// dispatchRequestEvent fans a request lifecycle event out to the async hook
-// workers and/or the observability provider, depending on which sinks are
-// active. Centralising the branching keeps Route/RouteStream readable and
-// keeps the two delivery paths in sync.
-func (g *Gateway) dispatchRequestEvent(ctx context.Context, obs observability.Provider, hooksEnabled, obsEventsActive bool, he events.HookEvent) {
+type routingAttempt struct {
+	target         routedTarget
+	routedModel    string
+	sequence       int
+	targetSequence int
+}
+
+func (g *Gateway) recordRoutingAttempt(ctx context.Context, obs observability.Provider, active bool, attempt routingAttempt, latency time.Duration, err error) {
+	if !active {
+		return
+	}
+
+	status := providers.ParseStatusCode(err)
+	if err == nil {
+		status = 200
+	} else if status == 0 {
+		status, _, _ = apierror.RouteErrorDetails(err)
+	}
+	outcome := observability.RoutingAttemptSuccess
+	errorMessage := ""
+	if err != nil {
+		outcome = observability.RoutingAttemptError
+		errorMessage = redact.ErrorMessage(err)
+	}
+	obs.RecordEvent(ctx, observability.Event{
+		Subject:   observability.SubjectRoutingAttempt,
+		TraceID:   logger.TraceIDFromContext(ctx),
+		Timestamp: time.Now(),
+		RoutingAttempt: &observability.RoutingAttempt{
+			TargetKey:      attempt.target.key,
+			Provider:       attempt.target.priceProvider,
+			RoutedModel:    attempt.routedModel,
+			UpstreamModel:  attempt.target.upstreamModel,
+			Sequence:       attempt.sequence,
+			TargetSequence: attempt.targetSequence,
+			LatencyMs:      latency.Milliseconds(),
+			Status:         status,
+			Outcome:        outcome,
+			Error:          errorMessage,
+		},
+		Attributes: abVariantAttributes(attempt.target.abVariantLabel, attempt.target.hasABVariant),
+	})
+}
+
+func abVariantAttributes(label string, present bool) map[string]any {
+	if !present {
+		return nil
+	}
+	return map[string]any{observability.AttrFerroRoutingABVariantLabel: label}
+}
+
+func (g *Gateway) dispatchRequestEventWithABVariant(ctx context.Context, obs observability.Provider, hooksEnabled, obsEventsActive bool, he events.HookEvent, label string, present bool) {
 	if hooksEnabled {
 		g.publishEvent(ctx, he)
 	}
 	if obsEventsActive {
-		obs.RecordEvent(ctx, obsEventFromHook(he))
+		event := obsEventFromHook(he)
+		event.Attributes = abVariantAttributes(label, present)
+		obs.RecordEvent(ctx, event)
 	}
 }
 
@@ -53,7 +103,7 @@ func recordProviderErrorCtx(ctx context.Context, provider string, err error) {
 // dispatches the failed lifecycle event. Shared by the initial provider call
 // and the MCP tool-call loop's follow-up provider calls so both error paths
 // stay in sync.
-func (g *Gateway) routeError(ctx context.Context, span observability.Span, obs observability.Provider, pctx *plugin.Context, plugins *plugin.Manager, provider, model string, err error, latency time.Duration, originalStream, hooksEnabled, obsEventsActive bool) {
+func (g *Gateway) routeError(ctx context.Context, span observability.Span, obs observability.Provider, pctx *plugin.Context, plugins *plugin.Manager, provider, model, abVariantLabel string, hasABVariant bool, err error, latency time.Duration, originalStream, hooksEnabled, obsEventsActive bool) {
 	if pctx != nil {
 		pctx.Error = err
 		// The one fact a failed request's record could not otherwise carry.
@@ -68,6 +118,14 @@ func (g *Gateway) routeError(ctx context.Context, span observability.Span, obs o
 		plugins.RunOnError(ctx, pctx)
 	}
 
+	g.recordFailureMetrics(ctx, provider, model, err, latency)
+	g.recordTerminalFailure(ctx, span, obs, provider, model, abVariantLabel, hasABVariant, err, latency, originalStream, hooksEnabled, obsEventsActive)
+}
+
+// recordFailureMetrics observes how long a failed request took and counts it
+// against the counter that says why: a plugin abort keeps its own tally, and
+// everything else is a provider error.
+func (g *Gateway) recordFailureMetrics(ctx context.Context, provider, model string, err error, latency time.Duration) {
 	// Bucket the label, not the log/span: model here is still the raw client
 	// value on the "no provider supports this model" path.
 	requestMetrics := metrics.ForRequest(provider, g.metricModel(model))
@@ -78,8 +136,18 @@ func (g *Gateway) routeError(ctx context.Context, span observability.Span, obs o
 	// fast are the requests that worked" and were read as "how fast is the
 	// gateway".
 	requestMetrics.Duration.Observe(latency.Seconds())
+	if isPluginAbort(err) {
+		recordPluginAbort(requestMetrics, err)
+		return
+	}
 	requestMetrics.Error.Inc()
 	recordProviderErrorCtx(ctx, provider, err)
+}
+
+// recordTerminalFailure emits the common failed-request span, log and lifecycle
+// signal after the caller has performed the appropriate provider or plugin
+// accounting.
+func (g *Gateway) recordTerminalFailure(ctx context.Context, span observability.Span, obs observability.Provider, provider, model, abVariantLabel string, hasABVariant bool, err error, latency time.Duration, originalStream, hooksEnabled, obsEventsActive bool) {
 
 	span.SetError(err)
 
@@ -98,7 +166,7 @@ func (g *Gateway) routeError(ctx context.Context, span observability.Span, obs o
 			latency,
 			originalStream,
 		)
-		g.dispatchRequestEvent(ctx, obs, hooksEnabled, obsEventsActive, he)
+		g.dispatchRequestEventWithABVariant(ctx, obs, hooksEnabled, obsEventsActive, he, abVariantLabel, hasABVariant)
 	}
 }
 
@@ -106,9 +174,9 @@ func (g *Gateway) routeError(ctx context.Context, span observability.Span, obs o
 // handing the stage what the gateway measured about the request. It returns the
 // response the plugins left behind, which may be one they substituted.
 //
-// A plugin failure here aborts the request: the stage is counted against the
-// counter that says why — a deliberate rejection and a broken plugin are
-// different faults — and the on_error stage runs before the error is returned.
+// A plugin failure here aborts the request: the on_error stage runs before the
+// error is returned, and the caller finishes the failed request's accounting —
+// recordFailureMetrics keeps a deliberate rejection and a broken plugin apart.
 func (g *Gateway) runAfterPlugins(
 	ctx context.Context,
 	plugins *plugin.Manager,
@@ -129,7 +197,6 @@ func (g *Gateway) runAfterPlugins(
 		err = plugins.RunAfter(ctx, pctx)
 	})
 	if err != nil {
-		recordPluginAbort(metrics.ForRequest(resp.Provider, g.metricModel(resp.Model)), err)
 		pctx.Error = err
 		plugins.RunOnError(ctx, pctx)
 		return nil, err
@@ -184,11 +251,11 @@ func cacheServedMeasurements(start time.Time) plugin.Measurements {
 // recordSuccess runs — the request logger persists it — and pricing a response
 // twice risks the persisted figure and the reported one disagreeing after a
 // catalog refresh lands between them.
-func (g *Gateway) calculateCost(resp *providers.Response, priceProvider string) models.CostResult {
+func (g *Gateway) calculateCost(resp *providers.Response, priceProvider, priceModel string) models.CostResult {
 	g.mu.RLock()
 	catalog := g.catalog
 	g.mu.RUnlock()
-	return models.Calculate(catalog, priceProvider+"/"+resp.Model, models.Usage{
+	return models.Calculate(catalog, priceProvider+"/"+priceModel, models.Usage{
 		PromptTokens:     resp.Usage.PromptTokens,
 		CompletionTokens: resp.Usage.CompletionTokens,
 		ReasoningTokens:  resp.Usage.ReasoningTokens,
@@ -198,8 +265,8 @@ func (g *Gateway) calculateCost(resp *providers.Response, priceProvider string) 
 }
 
 // recordSuccess records a request a provider served.
-func (g *Gateway) recordSuccess(ctx context.Context, span observability.Span, obs observability.Provider, resp *providers.Response, cost models.CostResult, latency time.Duration, originalStream, hooksEnabled, obsEventsActive bool) {
-	g.recordOutcome(ctx, span, obs, resp, cost, latency, resp.Provider, originalStream, hooksEnabled, obsEventsActive)
+func (g *Gateway) recordSuccess(ctx context.Context, span observability.Span, obs observability.Provider, resp *providers.Response, routedModel string, cost models.CostResult, latency time.Duration, abVariantLabel string, hasABVariant, originalStream, hooksEnabled, obsEventsActive bool) {
+	g.recordOutcome(ctx, span, obs, resp, routedModel, cost, latency, resp.Provider, abVariantLabel, hasABVariant, originalStream, hooksEnabled, obsEventsActive)
 }
 
 // recordCacheHit records a request the response cache served, which is the same
@@ -209,17 +276,16 @@ func (g *Gateway) recordSuccess(ctx context.Context, span observability.Span, ob
 // lifecycle event, the request-log row — still names the provider that produced
 // it. See metrics.CacheProviderLabel for why the two differ.
 func (g *Gateway) recordCacheHit(ctx context.Context, span observability.Span, obs observability.Provider, resp *providers.Response, latency time.Duration, originalStream, hooksEnabled, obsEventsActive bool) {
-	g.recordOutcome(ctx, span, obs, resp, cacheServedCost(), latency, metrics.CacheProviderLabel, originalStream, hooksEnabled, obsEventsActive)
+	g.recordOutcome(ctx, span, obs, resp, resp.Model, cacheServedCost(), latency, metrics.CacheProviderLabel, "", false, originalStream, hooksEnabled, obsEventsActive)
 }
 
 // recordOutcome emits Prometheus + cost metrics under metricProvider, stamps the
 // root span with the resolved provider/model/usage/cost, logs at debug level,
 // and dispatches the completed lifecycle event.
-func (g *Gateway) recordOutcome(ctx context.Context, span observability.Span, obs observability.Provider, resp *providers.Response, cost models.CostResult, latency time.Duration, metricProvider string, originalStream, hooksEnabled, obsEventsActive bool) {
-	// Bound the metric label; the raw resp.Model still reaches the span, the
-	// cost result and the lifecycle event below. Providers that accept any model
-	// ID echo the caller's string back on success, so an unbounded label here
-	// would let a client mint a new time series per request.
+func (g *Gateway) recordOutcome(ctx context.Context, span observability.Span, obs observability.Provider, resp *providers.Response, routedModel string, cost models.CostResult, latency time.Duration, metricProvider, abVariantLabel string, hasABVariant, originalStream, hooksEnabled, obsEventsActive bool) {
+	// Bound the metric label. Providers that accept any model ID echo the
+	// caller's string back on success, so an unbounded label here would let a
+	// client mint a new time series per request.
 	requestMetrics := metrics.ForRequest(metricProvider, g.metricModel(resp.Model))
 	requestMetrics.Duration.Observe(latency.Seconds())
 	requestMetrics.Success.Inc()
@@ -232,7 +298,7 @@ func (g *Gateway) recordOutcome(ctx context.Context, span observability.Span, ob
 
 	// Stamp final usage + cost + resolved provider/model on the root span.
 	span.SetAttribute(observability.AttrGenAISystem, resp.Provider)
-	span.SetAttribute(observability.AttrGenAIResponseModel, resp.Model)
+	span.SetAttribute(observability.AttrGenAIResponseModel, routedModel)
 	// Stamp the resolved target key (virtual key = provider name in this routing layer).
 	if resp.Provider != "" {
 		span.SetAttribute(observability.AttrFerroRoutingTargetKey, resp.Provider)
@@ -263,13 +329,13 @@ func (g *Gateway) recordOutcome(ctx context.Context, span observability.Span, ob
 		he := completedEventData(
 			logger.TraceIDFromContext(ctx),
 			resp.Provider,
-			resp.Model,
+			routedModel,
 			latency,
 			originalStream,
 			resp.Usage.PromptTokens,
 			resp.Usage.CompletionTokens,
 			cost,
 		)
-		g.dispatchRequestEvent(ctx, obs, hooksEnabled, obsEventsActive, he)
+		g.dispatchRequestEventWithABVariant(ctx, obs, hooksEnabled, obsEventsActive, he, abVariantLabel, hasABVariant)
 	}
 }

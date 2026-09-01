@@ -172,6 +172,75 @@ func TestSurfaceTargetOrder_UnpricedSkipIsNoCapableProvider(t *testing.T) {
 	}
 }
 
+func TestRankConfiguredSurfaceTargets_PricesMappedUpstreamModel(t *testing.T) {
+	priced := func(provider, model string, price float64) models.Model {
+		return models.Model{
+			Provider: provider,
+			ModelID:  model,
+			Mode:     models.ModeEmbedding,
+			Pricing:  models.Pricing{EmbeddingPerMTokens: ptrFloat64(price)},
+		}
+	}
+	first := &mockEmbeddingProvider{mockProvider: mockProvider{name: "first", models: []string{"expensive-upstream"}}}
+	second := &mockEmbeddingProvider{mockProvider: mockProvider{name: "second", models: []string{"cheap-upstream"}}}
+	targets := []config.Target{
+		{VirtualKey: "first", ModelMap: map[string]string{visibleMappedModel: "expensive-upstream"}},
+		{VirtualKey: "second", ModelMap: map[string]string{visibleMappedModel: "cheap-upstream"}},
+	}
+	providersByTarget := map[string]providers.Provider{"first": first, "second": second}
+	modelIndex := map[string][]string{visibleMappedModel: {"first", "second"}}
+	catalog := models.Catalog{
+		"first/expensive-upstream": priced("first", "expensive-upstream", 10),
+		"second/cheap-upstream":    priced("second", "cheap-upstream", 1),
+	}
+
+	t.Run("orders by each target upstream price", func(t *testing.T) {
+		gw := &Gateway{}
+		keys, err := gw.rankConfiguredSurfaceTargets(targets, providersByTarget, modelIndex, catalog, "", visibleMappedModel, surfaceEmbeddings, models.Usage{PromptTokens: 1_000_000}, config.ModeCostOptimized)
+		if err != nil {
+			t.Fatal(err)
+		}
+		requireKeys(t, keys, "second", "first")
+	})
+
+	t.Run("skip recognizes priced mapped upstream", func(t *testing.T) {
+		gw := &Gateway{}
+		keys, err := gw.rankConfiguredSurfaceTargets(targets[:1], providersByTarget, modelIndex, catalog, config.UnpricedStrategySkip, visibleMappedModel, surfaceEmbeddings, models.Usage{PromptTokens: 1}, config.ModeCostOptimized)
+		if err != nil {
+			t.Fatal(err)
+		}
+		requireKeys(t, keys, "first")
+	})
+}
+
+func TestGateway_Embed_CostOptimizedUsesMappedUpstreamPrice(t *testing.T) {
+	first := &mockEmbeddingProvider{mockProvider: mockProvider{name: "first", models: []string{"expensive-upstream"}}}
+	second := &mockEmbeddingProvider{mockProvider: mockProvider{name: "second", models: []string{"cheap-upstream"}}}
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeCostOptimized, UnpricedStrategy: config.UnpricedStrategySkip},
+		Targets: []config.Target{
+			{VirtualKey: "first", ModelMap: map[string]string{visibleMappedModel: "expensive-upstream"}},
+			{VirtualKey: "second", ModelMap: map[string]string{visibleMappedModel: "cheap-upstream"}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gw.catalog = models.Catalog{
+		"first/expensive-upstream": {Provider: "first", ModelID: "expensive-upstream", Mode: models.ModeEmbedding, Pricing: models.Pricing{EmbeddingPerMTokens: ptrFloat64(10)}},
+		"second/cheap-upstream":    {Provider: "second", ModelID: "cheap-upstream", Mode: models.ModeEmbedding, Pricing: models.Pricing{EmbeddingPerMTokens: ptrFloat64(1)}},
+	}
+	gw.RegisterProvider(first)
+	gw.RegisterProvider(second)
+
+	if _, err := gw.Embed(context.Background(), providers.EmbeddingRequest{Model: visibleMappedModel, Input: "hello"}); err != nil {
+		t.Fatal(err)
+	}
+	if first.calls != 0 || second.calls != 1 {
+		t.Fatalf("provider calls: first=%d second=%d, want the cheaper mapped target only", first.calls, second.calls)
+	}
+}
+
 // TestGateway_Embed_RejectionCountsAsRejected covers the counter half of a plugin
 // denial. The wire says 429; the counter used to say error, so a wave of
 // throttled callers read as a provider outage on these two surfaces alone.

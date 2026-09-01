@@ -39,7 +39,7 @@ plugins:                    # guardrails and middleware — see the plugin READM
 | Section | What it does | Reference |
 |---|---|---|
 | `strategy` | Target *ordering* — 8 modes in two families (pool vs named) | [`../internal/strategies/README.md`](../internal/strategies/README.md) |
-| `targets[]` | The provider allowlist; per-target `retry`, `concurrency`, `circuit_breaker`, `weight`, declared `models` | [`../config.example.yaml`](../config.example.yaml) |
+| `targets[]` | The provider allowlist; per-target `retry`, `concurrency`, `circuit_breaker`, `weight`, declared `models`, and `model_map` | [`../config.example.yaml`](../config.example.yaml) |
 | `aliases` | Model-name aliases, resolved before routing | — |
 | `plugins[]` | Guardrails, caching, rate limits, budgets, logging | [`../plugin/README.md`](../plugin/README.md) |
 | `mcp_servers[]` | MCP tool servers (stdio + Streamable HTTP) | [`../mcp/README.md`](../mcp/README.md) |
@@ -75,6 +75,28 @@ routing index and `/v1/models` alongside the automatic sources. The field is
 **additive only**: declaring one model never hides the others a target serves.
 Wildcards are rejected at load. The same id on two targets is how a model gets
 a fallback.
+
+## Cross-provider model mapping (`targets[].model_map`)
+
+Maps the model key visible after global alias resolution to the exact model ID
+sent to one target. The keys join both the routing index and `/v1/models`
+inventory; `targets[].models` remains additive and can still declare other
+models. Cost and pricing use the mapped upstream model, not the visible key.
+Responses name the visible key as their `model` on every surface, streamed
+chunks included; the upstream ID never reaches the client.
+
+For fallback, every target intended to participate for that visible model must
+contain the same key; unrelated configured targets need not. The client below
+always requests `smart`, while each provider receives its own model ID:
+
+```yaml
+strategy: { mode: fallback }
+targets:
+  - virtual_key: openai
+    model_map: { smart: gpt-5 }
+  - virtual_key: anthropic
+    model_map: { smart: claude-sonnet-4-6 }
+```
 
 ## Trusted proxies (`TRUSTED_PROXIES`)
 
