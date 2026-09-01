@@ -480,6 +480,19 @@ func (g *Gateway) admitModel(ctx context.Context, plugins *plugin.Manager, model
 	return errNoCapableTarget(model)
 }
 
+// targetModelMaps indexes targets[].model_map by virtual key. Config
+// validation rejects duplicate keys, so the index is unambiguous; a target
+// without a map has no entry, and indexing a missing entry yields nothing.
+func targetModelMaps(targets []config.Target) map[string]map[string]string {
+	index := make(map[string]map[string]string, len(targets))
+	for _, t := range targets {
+		if len(t.ModelMap) > 0 {
+			index[t.VirtualKey] = t.ModelMap
+		}
+	}
+	return index
+}
+
 // resolveTarget looks up one candidate and the resilience decorators configured
 // for it, in a single lock acquisition. It reports false when the target is not
 // registered, does not serve the model, or cannot serve this surface.
@@ -490,13 +503,8 @@ func (g *Gateway) resolveTarget(ctx context.Context, key, model string, gate cap
 	cb := g.circuitBreakers[key]
 	lim := g.limiters[key]
 	upstreamModel := model
-	for _, target := range g.config.Targets {
-		if target.VirtualKey == key {
-			if mapped := target.ModelMap[model]; mapped != "" {
-				upstreamModel = mapped
-			}
-			break
-		}
+	if mapped := g.modelMaps[key][model]; mapped != "" {
+		upstreamModel = mapped
 	}
 	g.mu.RUnlock()
 

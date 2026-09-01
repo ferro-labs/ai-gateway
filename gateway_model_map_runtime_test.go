@@ -528,3 +528,48 @@ func TestRoute_AliasResolvesBeforeTargetModelMapWithoutMutatingCaller(t *testing
 		t.Errorf("provider models = %v, want [%q]", provider.seen, upstream)
 	}
 }
+
+// A reload replaces the target model maps along with the config: the next
+// request is translated with the new mapping, not the one the gateway was
+// built with.
+func TestReloadConfig_AppliesTheNewModelMap(t *testing.T) {
+	const (
+		before = "vendor/before"
+		after  = "vendor/after"
+	)
+	configWith := func(upstream string) config.Config {
+		return config.Config{
+			Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+			Targets:  []config.Target{{VirtualKey: "mock", ModelMap: map[string]string{visibleMappedModel: upstream}}},
+		}
+	}
+	gw, err := newTestGateway(t, configWith(before))
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+	var providerInput string
+	gw.RegisterProvider(&mockProvider{
+		name: "mock", models: []string{before, after},
+		completeFn: func(_ context.Context, req providers.Request) (*providers.Response, error) {
+			providerInput = req.Model
+			return &providers.Response{Model: req.Model, Provider: "mock"}, nil
+		},
+	})
+
+	if _, err := gw.Route(context.Background(), providers.Request{Model: visibleMappedModel}); err != nil {
+		t.Fatalf("Route before reload: %v", err)
+	}
+	if providerInput != before {
+		t.Fatalf("provider input before reload = %q, want %q", providerInput, before)
+	}
+
+	if err := gw.ReloadConfig(context.Background(), configWith(after)); err != nil {
+		t.Fatalf("ReloadConfig: %v", err)
+	}
+	if _, err := gw.Route(context.Background(), providers.Request{Model: visibleMappedModel}); err != nil {
+		t.Fatalf("Route after reload: %v", err)
+	}
+	if providerInput != after {
+		t.Errorf("provider input after reload = %q, want the reloaded mapping %q", providerInput, after)
+	}
+}

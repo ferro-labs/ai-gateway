@@ -383,7 +383,7 @@ func Meter(ctx context.Context, src <-chan providers.StreamChunk, start time.Tim
 		}
 
 		// Success path: emit the same metrics as Gateway.Route().
-		finishStreamOnSuccess(ctx, meta, usage, resp.Model, ttftMs, ttltMs, latency, cost)
+		finishStreamOnSuccess(ctx, meta, usage, ttftMs, ttltMs, latency, cost)
 	}()
 
 	return out
@@ -515,7 +515,6 @@ func finishStreamOnSuccess(
 	ctx context.Context,
 	meta MeterMeta,
 	usage providers.Usage,
-	responseModel string,
 	ttftMs, ttltMs float64,
 	latency time.Duration,
 	cost models.CostResult,
@@ -556,7 +555,7 @@ func finishStreamOnSuccess(
 			Cost:        cost,
 			TTFTMs:      ttftMs,
 			TTLTMs:      ttltMs,
-			Model:       responseModel,
+			Model:       meta.Model,
 		})
 	}
 	if meta.CircuitBreakerOutcome != nil {
