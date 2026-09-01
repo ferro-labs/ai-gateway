@@ -95,6 +95,11 @@ test-integration-live:
 
 test-integration-all: test-integration test-integration-live
 
+# Every routing strategy over the real binary against scriptable mock upstreams
+# (scripts/mockllm) — no provider keys. E2E_SLOW=1 adds the hung-target cell.
+test-e2e-strategies:
+	scripts/strategy_e2e.sh
+
 bench:
 	go test -v -bench=. -benchmem $(GATEWAY_PACKAGES)
 

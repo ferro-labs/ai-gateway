@@ -22,6 +22,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A/B routing attempts and terminal events carry
   `ferro.routing.ab_variant_label`, preserving the initially drawn variant
   through retries and safe cross-target advancement.
+- A keyless end-to-end suite for the routing strategies, `make
+  test-e2e-strategies` (`scripts/strategy_e2e.sh`): three scriptable mock
+  upstreams stand in for real providers, and every mode is exercised over the
+  real binary and HTTP surfaces — failover classes, retries and `Retry-After`,
+  breaker open/half-open/closed, weight and variant distributions, `model_map`
+  on unary and stream, `/v1/models` and `/metrics` — with no credentials. The
+  mock (`scripts/mockllm`) gained scriptable scenarios (`POST /_mock/scenario`)
+  and SSE streaming; its demo behaviour is unchanged.
 - One-command install and package-manager distribution: `get.ferrolabs.ai`,
   `ferrogw` on npm and PyPI, a Homebrew cask and Scoop manifest, and GoReleaser
   platform archives (#412). Landed on `main` during the v1.4.x line without an

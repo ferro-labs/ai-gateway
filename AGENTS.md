@@ -1223,6 +1223,26 @@ Build tag headers on every integration test file:
 // +build integration
 ```
 
+### 3. Strategy end-to-end (no keys)
+
+`scripts/strategy_e2e.sh` runs every routing mode over the real `ferrogw` binary
+and its HTTP surfaces — unary, SSE, embeddings, `/v1/models`, `/metrics` —
+against three scriptable mock upstreams (`scripts/mockllm`) that stand in for
+groq, together and openai. Each scenario tells one mock to fail, rate-limit,
+slow down, fail mid-stream, or recover before the request is sent, and the
+response's `provider` field plus the mocks' call counters show what the
+strategy did. Failure classes, retries and `Retry-After`, breaker
+open/half-open/closed, weight and variant distributions, and `model_map` on
+unary and stream are all covered; nothing needs a credential.
+
+```bash
+make test-e2e-strategies              # about a minute; runs in CI
+E2E_SLOW=1 make test-e2e-strategies   # adds the hung-target cell (~15s more)
+```
+
+`scripts/strategy_smoke.sh` is the live counterpart against real providers and
+needs `GROQ_API_KEY` and `TOGETHER_API_KEY`.
+
 ### Additional checks
 
 - `go test ./internal/admin/...`

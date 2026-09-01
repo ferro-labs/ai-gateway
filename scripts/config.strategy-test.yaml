@@ -24,9 +24,11 @@ targets:
 #
 # single          → always the FIRST target (groq). A model the first target does
 #                   not serve is model_not_found; it never tries the second.
-# fallback        → first target, and on FAILURE the next one (the only mode that
-#                   retries a request on a different target). Point GROQ_BASE_URL
-#                   at a dead host and watch traffic land on together.
+# fallback        → first target, and after a failover-safe failure (transport,
+#                   timeout, 408, 429, 5xx, open circuit) the next one in order.
+#                   Point GROQ_BASE_URL at a dead host and watch traffic land on
+#                   together. The other pool modes fail over the same way; only
+#                   single, conditional and content-based stop at their target.
 # loadbalance     → splits across targets by weight (active above).
 # least-latency   → the target with the lower observed latency.
 # cost-optimized  → the cheapest priced target (deterministic). unpriced_strategy
