@@ -887,3 +887,54 @@ func TestResolveCatalogFetchTimeout(t *testing.T) {
 		})
 	}
 }
+
+// The embedded fallback is parsed once per process and handed out as a copy:
+// two loads must never share a map, or one gateway's catalog refresh could
+// change what another one prices with.
+func TestLoadWithInfo_EmbeddedFallbackIsAnIndependentCopy(t *testing.T) {
+	t.Setenv(CatalogFetchTimeoutEnv, "0")
+	const key = "openai/gpt-4o-mini"
+
+	first, err := LoadWithInfo()
+	if err != nil {
+		t.Fatalf("first load: %v", err)
+	}
+	second, err := LoadWithInfo()
+	if err != nil {
+		t.Fatalf("second load: %v", err)
+	}
+	if first.Source != LoadSourceFallback || second.Source != LoadSourceFallback {
+		t.Fatalf("sources = %q/%q, want the embedded fallback for both", first.Source, second.Source)
+	}
+	if len(first.Catalog) == 0 || len(first.Catalog) != len(second.Catalog) {
+		t.Fatalf("catalog sizes = %d/%d, want two equal, non-empty catalogs", len(first.Catalog), len(second.Catalog))
+	}
+	if _, ok := first.Catalog[key]; !ok {
+		t.Fatalf("%q is not in the embedded catalog; pick another key for this test", key)
+	}
+
+	delete(first.Catalog, key)
+
+	if _, ok := second.Catalog[key]; !ok {
+		t.Fatal("deleting from one loaded catalog removed the entry from another")
+	}
+	third, err := LoadWithInfo()
+	if err != nil {
+		t.Fatalf("third load: %v", err)
+	}
+	if _, ok := third.Catalog[key]; !ok {
+		t.Fatal("a later load lost an entry another caller deleted from its own copy")
+	}
+}
+
+// BenchmarkLoadEmbedded is the cost every gateway pays to construct when no
+// remote catalog is reachable — once per tenant instance in an embedding
+// platform, once per test gateway in this repository.
+func BenchmarkLoadEmbedded(b *testing.B) {
+	b.Setenv(CatalogFetchTimeoutEnv, "0")
+	for b.Loop() {
+		if _, err := Load(); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

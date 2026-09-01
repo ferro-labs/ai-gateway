@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
@@ -26,6 +27,33 @@ import (
 
 //go:embed catalog_backup.json
 var bundledCatalog []byte
+
+// embeddedCatalog parses catalog_backup.json once per process. The document is
+// the fallback for every gateway constructed without a reachable remote
+// catalog — one per tenant in an embedding platform, one per test gateway in
+// this repository — and decoding its 3 MB costs ~90 ms, ten times that under
+// the race detector. Callers never receive this map itself; see loadEmbedded.
+var embeddedCatalog = sync.OnceValues(func() (Catalog, error) {
+	var c Catalog
+	if err := json.Unmarshal(bundledCatalog, &c); err != nil {
+		return nil, fmt.Errorf("catalog parse: %w", err)
+	}
+	return c, nil
+})
+
+// loadEmbedded returns the embedded catalog as a shallow copy of the parsed
+// document, so no two callers share a map, and rebuilds the model-id index
+// from it exactly as a fresh parse would — the index always reflects the most
+// recent load.
+func loadEmbedded() (Catalog, error) {
+	parsed, err := embeddedCatalog()
+	if err != nil {
+		return nil, err
+	}
+	c := maps.Clone(parsed)
+	BuildIndex(c)
+	return c, nil
+}
 
 // CatalogURLEnv is the env var operators set to override the catalog source.
 // Useful for air-gapped deployments or enterprise custom pricing.
@@ -238,7 +266,7 @@ func LoadWithInfoContext(ctx context.Context) (LoadResult, error) {
 		logger.Default().Warn("model catalog remote fetch failed; using embedded fallback", "url", CatalogURLForLog(catalogURL), "error", catalogLoadErrorForLog(err, catalogURL)) // values are CR/LF-sanitized before logging.
 	}
 
-	c, err := parse(bundledCatalog)
+	c, err := loadEmbedded()
 	if err != nil {
 		return LoadResult{Source: LoadSourceFallback, URL: catalogURL}, err
 	}

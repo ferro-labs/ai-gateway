@@ -53,6 +53,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configuration loading rejects duplicate target keys, an empty
   `targets[].virtual_key`, and duplicate JSON object keys instead of accepting
   an ambiguous routing configuration.
+- The embedded model catalog is parsed once per process. Every gateway
+  constructed without a reachable remote catalog — one per tenant in an
+  embedding platform — previously decoded the 3 MB document again (~90 ms,
+  ten times that under the race detector); it now receives its own copy of the
+  parsed catalog in about 3 ms.
 - Configuration validation rejects duplicate `ab_variants[].target_key` entries.
 
 ### Fixed
