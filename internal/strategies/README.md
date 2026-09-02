@@ -84,6 +84,13 @@ targets:
   - { virtual_key: azure-openai, weight: 1 }
 ```
 
+`sticky: { on: user, ttl: 1h }` pins each request to the same target for the
+same `user` field — a stateless hash, so a conversation keeps its provider
+prompt cache without any shared state, and every replica with this config
+answers the same. A request with no `user` draws at random; `ttl` bounds how
+long a pin can hold. Also available under `ab-test`, where it keeps a session on
+its variant.
+
 ### least-latency
 Routes to the target with the lowest observed p50 latency, so traffic follows
 the currently-fastest backend. The sample is the time a target took to *begin*

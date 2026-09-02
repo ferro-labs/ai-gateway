@@ -20,6 +20,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pass-through proxy named a provider, and `/v1/chat/completions` named
   nothing. Embedders read the same values through
   `aigateway.WithRoutingAttribution`.
+- `strategy.sticky: { on: user, ttl: "1h" }` under `loadbalance` and `ab-test`
+  pins each request to the same target — or A/B variant — for the same `user`
+  field, so a conversation keeps its provider prompt cache and a multi-turn
+  session does not flip variants. It is a stateless hash: no shared state,
+  the same answer on every replica with the same config, a random draw for a
+  request without `user`, and an optional `ttl` after which a pin may move.
+  Refused under any other mode.
 - `targets[].timeout` bounds one physical attempt against a target, inside
   `request_timeout`, which stays authoritative for the request as a whole. A
   unary attempt is bounded through its response; a streaming attempt only

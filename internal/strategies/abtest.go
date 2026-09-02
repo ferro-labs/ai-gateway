@@ -38,6 +38,15 @@ type ABTest struct {
 	variants []ABTestVariant
 	targets  []Target
 	lookup   ProviderLookup
+	sticky   Sticky
+}
+
+// WithSticky pins each request's variant to a hash of its sticky key (see
+// Sticky), so a multi-turn session does not flip variants. Returns the
+// receiver so callers can chain it.
+func (ab *ABTest) WithSticky(s Sticky) *ABTest {
+	ab.sticky = s
+	return ab
 }
 
 // NewABTest creates an ABTest strategy.
@@ -117,9 +126,9 @@ func (ab *ABTest) WithRoutingTargets(targets []Target) *ABTest {
 // weightedPick draws from the top-level math/rand source, which is safe for
 // concurrent use, so no additional locking is required here.
 func (ab *ABTest) SelectTargets(req providers.Request) ([]string, error) {
-	v, ok := weightedPick(ab.eligibleVariants(req.Model), func(v ABTestVariant) float64 {
+	v, ok := weightedPickAt(ab.eligibleVariants(req.Model), func(v ABTestVariant) float64 {
 		return positiveWeight(v.Weight)
-	})
+	}, ab.sticky.unit(req.User))
 	if !ok {
 		// No variant is both eligible and positively weighted: either no variant
 		// serves this model, or every variant that does has been drained to zero.

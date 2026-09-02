@@ -8,6 +8,14 @@ import (
 type LoadBalance struct {
 	targets []Target
 	lookup  ProviderLookup
+	sticky  Sticky
+}
+
+// WithSticky pins each request's start target to a hash of its sticky key
+// (see Sticky). Returns the receiver so callers can chain it.
+func (lb *LoadBalance) WithSticky(s Sticky) *LoadBalance {
+	lb.sticky = s
+	return lb
 }
 
 // NewLoadBalance creates a new load balance strategy.
@@ -47,7 +55,7 @@ func (lb *LoadBalance) SelectTargets(req providers.Request) ([]string, error) {
 	if len(compatible) == 0 {
 		return nil, nil
 	}
-	startIdx, ok := weightedStartIndex(compatible)
+	startIdx, ok := weightedStartIndexAt(compatible, lb.sticky.unit(req.User))
 	if !ok {
 		return nil, nil
 	}

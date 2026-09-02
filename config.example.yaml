@@ -35,6 +35,13 @@ strategy:
   # still attempted and answered 503 — "everything that serves this model is
   # down" is a different answer from "nothing serves this model".
   #
+  # For loadbalance and ab-test only: pin a request to the same target for the
+  # same `user` field, so a conversation keeps its provider prompt cache and an
+  # A/B session keeps its variant. A stateless hash — no shared state, and the
+  # same answer on every replica with this config. A request with no `user`
+  # draws at random. `ttl` rotates pins: none outlives one window.
+  # sticky: { on: user, ttl: 1h }
+  #
   # For cost-optimized mode only: fallback (default) | skip | allow.
   # fallback prefers priced candidates, then first compatible unpriced target.
   # skip rejects unpriced candidates; allow treats missing prices as zero cost.

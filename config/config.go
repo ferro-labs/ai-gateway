@@ -232,7 +232,27 @@ type StrategyConfig struct {
 	ContentConditions []ContentCondition `json:"content_conditions,omitempty" yaml:"content_conditions,omitempty"`
 	// ABVariants defines the weighted variants for the ab-test strategy.
 	ABVariants []ABVariantConfig `json:"ab_variants,omitempty" yaml:"ab_variants,omitempty"`
+	// Sticky pins a request to the same target for the same key under
+	// loadbalance and ab-test, so a conversation keeps its provider prompt
+	// cache and a multi-turn A/B session keeps its variant. Stateless: a
+	// hash of the key decides the draw, so it needs no shared state.
+	Sticky *StickyConfig `json:"sticky,omitempty" yaml:"sticky,omitempty"`
 }
+
+// StickyConfig configures sticky hashing for loadbalance and ab-test.
+type StickyConfig struct {
+	// On names the request field hashed. Only "user" is supported: the
+	// request's `user` field, which is what provider prompt caches and a
+	// session are scoped by. A request without one draws at random.
+	On string `json:"on" yaml:"on"`
+	// TTL, a Go duration, rotates assignments: a pin lasts at most one TTL
+	// window, after which the key may hash to another target. Omitted means
+	// a pin holds for as long as the config does.
+	TTL string `json:"ttl,omitempty" yaml:"ttl,omitempty"`
+}
+
+// StickyOnUser is the one accepted StickyConfig.On value.
+const StickyOnUser = "user"
 
 // StrategyMode represents the routing strategy mode.
 type StrategyMode string

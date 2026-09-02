@@ -480,6 +480,9 @@ func validateNamedTarget(field, value string, targets []Target) error {
 }
 
 func validateStrategy(s StrategyConfig, targets []Target) error {
+	if err := validateSticky(s); err != nil {
+		return err
+	}
 	switch s.Mode {
 	case ModeSingle, ModeFallback, ModeLatency:
 	case ModeLoadBalance:
@@ -498,6 +501,31 @@ func validateStrategy(s StrategyConfig, targets []Target) error {
 		return validateABVariants(s.ABVariants, targets)
 	default:
 		return fmt.Errorf("unknown strategy mode: %q", s.Mode)
+	}
+	return nil
+}
+
+// validateSticky checks strategy.sticky: only the modes that draw a start
+// target (loadbalance, ab-test) can pin one, `on` is a closed set, and a TTL
+// is a positive duration.
+func validateSticky(s StrategyConfig) error {
+	if s.Sticky == nil {
+		return nil
+	}
+	if s.Mode != ModeLoadBalance && s.Mode != ModeABTest {
+		return fmt.Errorf("strategy.sticky applies to loadbalance and ab-test only, not %q", s.Mode)
+	}
+	if s.Sticky.On != StickyOnUser {
+		return fmt.Errorf("strategy.sticky.on must be %q, got %q", StickyOnUser, s.Sticky.On)
+	}
+	if s.Sticky.TTL != "" {
+		d, err := time.ParseDuration(s.Sticky.TTL)
+		if err != nil {
+			return fmt.Errorf("strategy.sticky.ttl %q is not a duration (use a Go duration such as \"1h\")", s.Sticky.TTL)
+		}
+		if d <= 0 {
+			return fmt.Errorf("strategy.sticky.ttl must be positive, got %s", s.Sticky.TTL)
+		}
 	}
 	return nil
 }

@@ -3,6 +3,7 @@ package aigateway
 import (
 	"fmt"
 	"maps"
+	"time"
 
 	"github.com/ferro-labs/ai-gateway/config"
 	"github.com/ferro-labs/ai-gateway/internal/latency"
@@ -121,7 +122,7 @@ func buildStrategy(
 	case config.ModeFallback:
 		return strategies.NewFallback(targets), nil
 	case config.ModeLoadBalance:
-		return strategies.NewLoadBalance(targets, lookup), nil
+		return strategies.NewLoadBalance(targets, lookup).WithSticky(stickyFrom(cfg.Sticky)), nil
 	case config.ModeLatency:
 		return strategies.NewLeastLatency(targets, lookup, tracker), nil
 	case config.ModeCostOptimized:
@@ -163,8 +164,18 @@ func buildStrategy(
 		if err != nil {
 			return nil, err
 		}
-		return abt.WithRoutingTargets(targets), nil
+		return abt.WithRoutingTargets(targets).WithSticky(stickyFrom(cfg.Sticky)), nil
 	default:
 		return nil, fmt.Errorf("unknown strategy mode: %s", cfg.Mode)
 	}
+}
+
+// stickyFrom maps strategy.sticky onto the strategies' value. The TTL was
+// validated at load, so a parse failure here reads as no TTL.
+func stickyFrom(cfg *config.StickyConfig) strategies.Sticky {
+	if cfg == nil {
+		return strategies.Sticky{}
+	}
+	ttl, _ := time.ParseDuration(cfg.TTL)
+	return strategies.Sticky{On: cfg.On, TTL: ttl}
 }
