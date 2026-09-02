@@ -38,6 +38,14 @@ func TestValidateStrategy_Sticky(t *testing.T) {
 			wantErr: "sticky.on must be \"user\"",
 		},
 		{
+			name: "sticky ttl of zero is refused",
+			cfg: Config{
+				Strategy: StrategyConfig{Mode: ModeLoadBalance, Sticky: &StickyConfig{On: StickyOnUser, TTL: "0s"}},
+				Targets:  []Target{{VirtualKey: "openai", Weight: 1}, {VirtualKey: "groq", Weight: 1}},
+			},
+			wantErr: "must be positive",
+		},
+		{
 			name: "sticky ttl must be a positive duration",
 			cfg: Config{
 				Strategy: StrategyConfig{Mode: ModeLoadBalance, Sticky: &StickyConfig{On: StickyOnUser, TTL: "soon"}},

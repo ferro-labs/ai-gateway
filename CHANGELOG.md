@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Attribution response headers on every routed surface — chat, streaming chat
   (written before the first chunk), legacy completions, embeddings, images,
-  rerank, moderations, transcriptions and speech: `X-Gateway-Provider` (the
+  rerank, moderations, transcriptions, translations and speech: `X-Gateway-Provider` (the
   serving target's canonical provider), `X-Gateway-Target` (its
   `targets[].virtual_key`), `X-Gateway-Model` (the upstream model sent to the
   provider, after `model_map`) and `X-Gateway-Attempts` (routing-layer

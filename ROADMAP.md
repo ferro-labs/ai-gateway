@@ -32,7 +32,7 @@ Everything below is available today.
 - Per-request model aliases, operator-declared `targets[].models`, and per-target `model_map` — one visible model key, a different upstream id on each provider (v1.5.1)
 - One `gateway.routing.attempt` observation per physical provider call and A/B variant attribution on every attempt, opt-in for exporters (v1.5.1)
 - One ranker for every surface, so a routing mode orders its targets the same way for chat, streams, embeddings, images, rerank, moderation, transcription and speech (v1.5.2)
-- Least-latency samples keyed by target and upstream model that expire, measure time to first byte, and keep exploring; cost-optimized ranking on input plus output price with weighted tie-break (v1.5.2)
+- Least-latency samples keyed by target and upstream model that expire, measure time to first chunk, and keep exploring; cost-optimized ranking on input plus output price with weighted tie-break (v1.5.2)
 - `targets[].timeout` per attempt, a `429` cooldown honouring `Retry-After`, a typed context-length failover class, and `strategy.failover_on_status_codes` (v1.5.2)
 - Sticky hashing on the request `user` for load balancing and A/B tests, rule `target_keys` chains with a hard boundary, and bounded conditional predicates (`user`, `stream`, `has_tools`, one metadata header) (v1.5.2)
 - `X-Gateway-Provider` / `-Target` / `-Model` / `-Attempts` attribution headers on every routed surface, `ferro.routing.attempt` on the request span, and `aigateway.WithCatalog` for a host-owned price catalog (v1.5.2)

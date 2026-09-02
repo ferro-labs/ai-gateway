@@ -17,10 +17,8 @@ const StickyOnUser = "user"
 // stateless hash — the key (and, with a TTL, the current TTL window) decides
 // the draw — so it needs no shared state and holds across gateway replicas
 // with the same config. A request with no key draws at random as before.
-//
-// ponytail: the hash maps into the weight-proportional rotation, not a ring;
-// changing weights or the target set re-maps a share of keys. A consistent
-// ring is the upgrade if target churn under stickiness turns out to matter.
+// The hash maps into the weight-proportional draw, so changing weights or the
+// target set re-maps a share of keys.
 type Sticky struct {
 	// On names the request field hashed. Only StickyOnUser is supported.
 	On string
