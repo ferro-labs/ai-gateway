@@ -5,7 +5,7 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.5.2] — 2026-09-02
+## [1.5.2] — 2026-09-03
 
 ### Added
 
@@ -91,8 +91,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   than served by a sibling the rule never named. `v1.5.1` borrowed a healthy
   sibling in that one case; a rule that wants a stand-in now says so with
   `target_keys`. On non-chat surfaces, where content rules cannot be
-  evaluated, `content-based` routes to the no-match target alone instead of
-  the first capable target in declared order.
+  evaluated, `content-based` routes to the first configured target that can serve
+  the surface, alone, instead of walking the declared order.
 - Configuration loading now refuses an `ab_variants[]` entry without a
   `label`: attribution keys on it, so an unlabelled variant was one nothing
   could report on. A `v1.5.1` config with an unlabelled variant no longer

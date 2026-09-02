@@ -89,9 +89,11 @@ func New(windowSize int, opts ...Option) *Tracker {
 // the TTL and, beyond that, the oldest past the window size are dropped, and
 // the memoized median is recomputed over what remains.
 func (t *Tracker) Record(target, model string, d time.Duration) {
-	now := t.now()
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	// Read the clock under the lock: liveFrom binary-searches the window on
+	// time, which holds only if samples are appended in clock order.
+	now := t.now()
 	key := sampleKey{target, model}
 	w := t.windows[key]
 	if w == nil {

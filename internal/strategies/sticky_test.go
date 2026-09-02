@@ -109,4 +109,11 @@ func TestABTest_StickyOnUserPinsTheVariant(t *testing.T) {
 	if len(seen) != 2 {
 		t.Fatalf("100 sessions landed only on %v; want both variants used", seen)
 	}
+	anonymous := map[string]bool{}
+	for range 200 {
+		anonymous[firstFor(t, ab, "")] = true
+	}
+	if len(anonymous) != 2 {
+		t.Fatalf("requests with no user landed only on %v; want a random draw", anonymous)
+	}
 }

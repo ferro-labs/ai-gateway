@@ -161,7 +161,9 @@ func parityGateway(t *testing.T, tc parityCase) *Gateway {
 		t.Fatalf("new gateway: %v", err)
 	}
 	if tc.catalog != nil {
+		gw.mu.Lock()
 		gw.catalog = tc.catalog
+		gw.mu.Unlock()
 	}
 	for _, target := range tc.targets {
 		model := parityModel

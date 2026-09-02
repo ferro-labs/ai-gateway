@@ -318,6 +318,9 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	})
 	providerDuration += time.Since(providerStart)
 	latency := time.Since(start)
+	// Stamped now for the plain case and again below when the MCP loop
+	// re-routes, so the span carries the attempt count of the target that
+	// actually answered.
 	if target.key != "" {
 		span.SetAttribute(observability.AttrFerroRoutingAttempt, target.attempts)
 	}
@@ -358,6 +361,9 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 			if pctx != nil {
 				pctx.Response = &providers.Response{Model: req.Model, Provider: loopTarget.key, Usage: loopUsage}
 			}
+			if loopTarget.key != "" {
+				span.SetAttribute(observability.AttrFerroRoutingAttempt, loopTarget.attempts)
+			}
 			g.routeError(ctx, span, obs, pctx, plugins, loopTarget.key, req.Model, loopTarget.abVariantLabel, loopTarget.hasABVariant, err, time.Since(start), originalStream, hooksEnabled, obsEventsActive)
 			return nil, err
 		}
@@ -366,6 +372,7 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 		// already applies to loopTarget.
 		if loopTarget.key != "" {
 			target = loopTarget
+			span.SetAttribute(observability.AttrFerroRoutingAttempt, target.attempts)
 		}
 	}
 	// Provider-returned model identifiers are upstream payload detail. The

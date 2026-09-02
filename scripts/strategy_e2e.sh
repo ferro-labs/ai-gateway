@@ -271,7 +271,7 @@ tally 100 "$SHARED"
 # internal/strategies/README.md), so the fast target serves about 90%; 100
 # draws keep the 80% bar clear of that draw's own variance.
 check "a slower sibling receives its profiling request and the exploration share; the fast target serves ≥ 80%" \
-  "$([ "$T_groq" -ge 80 ] && [ "$T_err" = 0 ] && echo 0 || echo 1)" "groq=$T_groq together=$T_together errors=$T_err"
+  "$([ "$T_groq" -ge 80 ] && [ "$T_together" -ge 1 ] && [ "$T_err" = 0 ] && echo 0 || echo 1)" "groq=$T_groq together=$T_together errors=$T_err"
 heal together; scenario groq '{"delay_ms":120}'
 tally 60 "$SHARED"
 # The leader's window is 100 samples, so 60 slow ones cannot turn it over here;

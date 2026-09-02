@@ -983,15 +983,23 @@ func (g *Gateway) surfaceTargetOrder(model, surface string) ([]string, error) {
 		// empty message set: it would match every embeddings/image request
 		// and win routing outright, regardless of what the rule actually
 		// says. No content rule can be meaningfully evaluated without a
-		// prompt, so the request takes the documented no-match answer — the
-		// first target, exactly — the same one a chat request with no matching
-		// rule takes.
+		// prompt, so the request takes the no-match answer: one target, the
+		// first configured one that can serve this surface at all — a rule
+		// list written for chat may well lead with a chat-only target — and
+		// the first target when none can, so the walk reports the same 404
+		// it would for any other unroutable request.
 		g.mu.Lock()
 		g.ensureCircuitBreakersLocked()
 		g.ensureProviderLimitersLocked()
-		keys := []string{g.config.Targets[0].VirtualKey}
+		key := g.config.Targets[0].VirtualKey
+		for _, t := range g.config.Targets {
+			if p, ok := g.providers[t.VirtualKey]; ok && providerSupportsSurface(p, surface) {
+				key = t.VirtualKey
+				break
+			}
+		}
 		g.mu.Unlock()
-		return keys, nil
+		return []string{key}, nil
 	}
 	strategy, err := g.strategyFor(surface)
 	if err != nil {

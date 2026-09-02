@@ -27,7 +27,9 @@ strategy:
   # circuits, target saturation, or a provider's own context-length overflow
   # error (recognised envelopes only). The request's own cancellation or
   # deadline and every other 4xx stop there.
-  # Named modes (single, conditional, content-based) do not advance after a call.
+  # single stops after its one target. A conditional or content-based rule walks
+  # its target_keys chain on the same classes and stops at its end; a rule with
+  # one target therefore stops after that target.
   #
   # Under EVERY mode a target whose circuit breaker is open is passed over when
   # the choice is made, so a dead backend stops taking traffic while a healthy

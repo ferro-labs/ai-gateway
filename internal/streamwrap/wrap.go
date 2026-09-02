@@ -283,7 +283,8 @@ func Meter(ctx context.Context, src <-chan providers.StreamChunk, start time.Tim
 			now := time.Now()
 			if firstChunkAt.IsZero() {
 				firstChunkAt = now
-				if meta.LatencyRecorder != nil && meta.Provider != "" {
+				// An error chunk is not the provider beginning to answer.
+				if chunk.Error == nil && meta.LatencyRecorder != nil && meta.Provider != "" {
 					meta.LatencyRecorder(meta.Provider, meta.PriceModel, now.Sub(start))
 				}
 			}
