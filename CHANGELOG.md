@@ -21,6 +21,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   than the full order. All of that is gone; the same config and the same
   health now produce the same candidate order on every surface, and a target
   that cannot serve a surface is simply not a candidate there.
+- `least-latency` keeps learning. Samples are keyed by target **and** upstream
+  model, so two models mapped onto one target rank on their own numbers;
+  they expire after five minutes, so a target nothing has measured recently
+  is treated as unseen and profiled again rather than ranked on a p50 from
+  before an incident; and one request in ten leads with a sampled non-leader,
+  so the fastest target can no longer lock in while a sibling that recovered
+  is never re-measured. A stream's sample is now its time to first chunk
+  rather than its whole drain, so a model that answers at length no longer
+  reads as a slow provider; a unary call's sample is unchanged. No new config.
 - `cost-optimized` scores each candidate on the catalog's price for the model's
   mode — per token for chat and embeddings, per image, per minute or character
   for audio — rather than on chat input price alone. Chat ordering is

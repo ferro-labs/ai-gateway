@@ -171,7 +171,7 @@ func parityGateway(t *testing.T, tc parityCase) *Gateway {
 		gw.RegisterProvider(&paritySurfaceProvider{mockProvider{name: target.VirtualKey, models: []string{model}}})
 	}
 	for key, d := range tc.latency {
-		gw.latencyTracker.Record(key, d)
+		gw.latencyTracker.Record(key, parityModel, d)
 	}
 	return gw
 }

@@ -495,8 +495,8 @@ func TestGateway_MultimodalHonorsLatencyAndCostStrategies(t *testing.T) {
 		})
 		gw.RegisterProvider(slow)
 		gw.RegisterProvider(fast)
-		gw.latencyTracker.Record("slow", 100*time.Millisecond)
-		gw.latencyTracker.Record("fast", time.Millisecond)
+		gw.latencyTracker.Record("slow", "embed-model", 100*time.Millisecond)
+		gw.latencyTracker.Record("fast", "embed-model", time.Millisecond)
 
 		if _, err := gw.Embed(context.Background(), providers.EmbeddingRequest{Model: "embed-model", Input: "hi"}); err != nil {
 			t.Fatalf("Embed: %v", err)

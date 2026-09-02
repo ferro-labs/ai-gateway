@@ -79,7 +79,13 @@ targets:
 
 ### least-latency
 Routes to the target with the lowest observed p50 latency, so traffic follows
-the currently-fastest backend.
+the currently-fastest backend. The sample is the time a target took to *begin*
+answering — a stream's first chunk, or a unary call's response — so a model with
+long answers does not read as a slow provider. Samples are kept per target and
+upstream model, expire after five minutes (a target nothing has measured
+recently is treated as unseen and measured again), and one request in ten leads
+with a sampled non-leader so a sibling that recovered is noticed. Health is
+per process; nothing is shared between gateway instances.
 
 ```yaml
 strategy: { mode: least-latency }

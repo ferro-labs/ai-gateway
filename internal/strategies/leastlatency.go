@@ -9,22 +9,29 @@ import (
 	"github.com/ferro-labs/ai-gateway/providers"
 )
 
+// explorationShare is the fraction of requests that lead with a random
+// sampled non-leader, so the ranking keeps learning after every target has a
+// window. Bounded, so the leader still takes the large majority.
+const explorationShare = 0.1
+
 // LeastLatency routes to whichever compatible provider has the lowest observed
-// p50 latency. Providers without recorded samples are candidates only when all
-// compatible providers are unseen; in that case one is selected at random.
+// p50 latency for the request's upstream model.
 //
-// The sample is total wall-clock for the request, so it measures how long a
-// completion took, not how fast the provider was. Generation time dominates it:
-// a provider that answers the same prompt at length reads as slower than a terse
-// one on identical hardware, and a model whose replies are simply longer will
-// lose to a model whose replies are shorter regardless of service speed.
+// The sample is the time the target took to BEGIN answering: for a stream,
+// until its first chunk; for a unary call, until the response returned, since
+// it arrives whole. It is not the time to finish, so a model whose replies are
+// long does not read as a slow provider. Samples are keyed by target and
+// upstream model, so two models mapped onto one target rank on their own
+// numbers, and they expire (latency.DefaultSampleTTL): a target nothing has
+// measured recently is unseen, not ranked on a p50 from before an incident.
 //
-// That is the intended trade. Wall-clock is what a caller waits, so ranking on
-// it optimises the number the caller actually experiences. Isolating service
-// speed would mean ranking on time-to-first-token, which says nothing about
-// when the response finishes. Choose this strategy when total response time is
-// the objective; do not read its ordering as a claim about provider health —
-// /health, /readyz and the circuit-breaker metric answer that.
+// Unseen targets lead so they get profiled; sampled ones follow by p50. Once
+// every target is sampled the leader would lock in — nothing but its own
+// samples changes, so a sibling that recovered is never seen — so
+// explorationShare of requests lead with a sampled non-leader instead.
+//
+// Do not read the ordering as a claim about provider health — /health,
+// /readyz and the circuit-breaker metric answer that.
 type LeastLatency struct {
 	targets []Target
 	lookup  ProviderLookup
@@ -44,11 +51,11 @@ type latencyOrderCandidate struct {
 }
 
 // SelectTargets orders model-compatible targets by observed p50 latency:
-// unseen providers (no samples yet) are shuffled to the front so cold-start
-// traffic profiles each of them, followed by sampled providers ascending by
-// p50. Remaining targets follow in declared order; this mode does not advance
-// past a failing target, so they stand in only when a preferred one is skipped
-// (see Strategy.SelectTargets).
+// unseen providers (no live samples for this upstream model) are shuffled to
+// the front so cold-start traffic profiles each of them, followed by sampled
+// providers ascending by p50 — with explorationShare of requests leading on a
+// random sampled non-leader. Remaining targets follow in declared order (see
+// Strategy.SelectTargets).
 //
 // When no target serves the model it returns nil rather than the declared
 // order, so the caller reports "nothing here can serve this" instead of
@@ -59,7 +66,7 @@ func (l *LeastLatency) SelectTargets(req providers.Request) ([]string, error) {
 		if !routableCandidate(l.lookup, t.VirtualKey, req.Model) {
 			continue
 		}
-		p50, hasSamples := l.tracker.Stats(t.VirtualKey)
+		p50, hasSamples := l.tracker.Stats(t.VirtualKey, upstreamModel(t, req.Model))
 		candidate := latencyOrderCandidate{key: t.VirtualKey, p50: p50, hasSamples: hasSamples}
 		if hasSamples {
 			sampled = append(sampled, candidate)
@@ -80,6 +87,10 @@ func (l *LeastLatency) SelectTargets(req providers.Request) ([]string, error) {
 	sort.SliceStable(sampled, func(i, j int) bool {
 		return sampled[i].p50 < sampled[j].p50
 	})
+	if len(unseen) == 0 && len(sampled) > 1 && rand.Float64() < explorationShare { //nolint:gosec // G404: exploration draw, not security-sensitive
+		i := 1 + rand.Intn(len(sampled)-1) //nolint:gosec // G404: as above
+		sampled[0], sampled[i] = sampled[i], sampled[0]
+	}
 
 	keys := make([]string, 0, len(l.targets))
 	for _, candidate := range unseen {
@@ -89,4 +100,13 @@ func (l *LeastLatency) SelectTargets(req providers.Request) ([]string, error) {
 		keys = appendUniqueKey(keys, candidate.key)
 	}
 	return appendRemainingTargetKeys(keys, l.targets), nil
+}
+
+// upstreamModel is the model the target is actually asked for: the model_map
+// translation when one exists, otherwise the visible name.
+func upstreamModel(t Target, model string) string {
+	if mapped := t.ModelMap[model]; mapped != "" {
+		return mapped
+	}
+	return model
 }

@@ -772,7 +772,7 @@ func TestPipeline_RecordsLatencyAgainstTheTargetKey(t *testing.T) {
 	if _, err := gw.Route(context.Background(), pipelineRequest()); err != nil {
 		t.Fatalf("Route: %v", err)
 	}
-	if _, seen := gw.latencyTracker.Stats(mockProviderName); !seen {
+	if _, seen := gw.latencyTracker.Stats(mockProviderName, pipelineModel); !seen {
 		t.Errorf("no latency sample recorded for target %q", mockProviderName)
 	}
 }

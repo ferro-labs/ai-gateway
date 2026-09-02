@@ -199,12 +199,12 @@ func routeTargets[Req, Resp any](
 		started := time.Now()
 		resp, err := attemptTarget(ctx, g, obs, attemptsActive, target, plan.model, &attemptSequence, p, cb, lim, req, upstreamModel, call)
 		if err == nil {
-			// Latency is recorded against the TARGET KEY and covers the provider
-			// call only. Both halves matter: least-latency reads its samples back
-			// by virtual key (LeastLatency.SelectTargets), and a measurement that
-			// included plugin and alias time would rank targets on work no target
-			// did.
-			g.latencyTracker.Record(key, time.Since(started))
+			// Latency is recorded against the TARGET KEY and upstream model, and
+			// covers the provider call only. All of it matters: least-latency
+			// reads its samples back by virtual key and upstream model
+			// (LeastLatency.SelectTargets), and a measurement that included
+			// plugin and alias time would rank targets on work no target did.
+			g.latencyTracker.Record(key, upstreamModel, time.Since(started))
 			return resp, target, nil
 		}
 		lastErr = fmt.Errorf("target %s: %w", key, err)

@@ -1254,8 +1254,8 @@ func TestGateway_RouteStream_LeastLatencyUsesObservedP50(t *testing.T) {
 	gw.RegisterProvider(&mockStreamProvider{
 		mockProvider: mockProvider{name: "fast", models: []string{"gpt-4o"}},
 	})
-	gw.latencyTracker.Record("slow", 120*time.Millisecond)
-	gw.latencyTracker.Record("fast", 10*time.Millisecond)
+	gw.latencyTracker.Record("slow", "gpt-4o", 120*time.Millisecond)
+	gw.latencyTracker.Record("fast", "gpt-4o", 10*time.Millisecond)
 
 	ch, err := gw.RouteStream(context.Background(), providers.Request{
 		Model:    "gpt-4o",
@@ -1544,7 +1544,7 @@ func TestGateway_StreamingLatencyOrderTriesUnseenBeforeSampled(t *testing.T) {
 	gw.RegisterProvider(&mockStreamProvider{
 		mockProvider: mockProvider{name: "unseen-b", models: []string{"gpt-4o"}},
 	})
-	gw.latencyTracker.Record("sampled", 10*time.Millisecond)
+	gw.latencyTracker.Record("sampled", "gpt-4o", 10*time.Millisecond)
 
 	got := streamTargetOrder(t, gw, providers.Request{Model: "gpt-4o"})
 	if got[2] != "sampled" {
@@ -1621,5 +1621,49 @@ func TestGateway_RouteStream_UnlistedProviderIsNotReachable(t *testing.T) {
 	}
 	if called {
 		t.Error("the unlisted provider was called — it is not a configured target")
+	}
+}
+
+// The least-latency sample for a stream is the time to its first chunk, not
+// the whole drain: a target whose answers are long is not a slow target, and
+// ranking on drain time made verbose models look like slow providers.
+func TestGateway_RouteStream_LatencySampleIsTimeToFirstChunk(t *testing.T) {
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeLatency},
+		Targets:  []config.Target{{VirtualKey: "stream"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const drain = 150 * time.Millisecond
+	gw.RegisterProvider(&mockStreamProvider{
+		mockProvider: mockProvider{name: "stream", models: []string{"gpt-4o"}},
+		streamFn: func(context.Context, providers.Request) (<-chan providers.StreamChunk, error) {
+			ch := make(chan providers.StreamChunk)
+			go func() {
+				defer close(ch)
+				ch <- providers.StreamChunk{ID: "first"}
+				time.Sleep(drain)
+				ch <- providers.StreamChunk{ID: "last"}
+			}()
+			return ch, nil
+		},
+	})
+
+	ch, err := gw.RouteStream(context.Background(), providers.Request{
+		Model:    "gpt-4o",
+		Messages: []providers.Message{{Role: "user", Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("RouteStream error = %v", err)
+	}
+	drainStream(t, ch)
+
+	p50, ok := gw.latencyTracker.Stats("stream", "gpt-4o")
+	if !ok {
+		t.Fatal("expected a latency sample for the stream")
+	}
+	if p50 >= drain {
+		t.Fatalf("sample = %v, want the time to the first chunk, well under the %v drain", p50, drain)
 	}
 }

@@ -81,8 +81,8 @@ func TestRoute_LeastLatency_SkipsOpenCircuitForHealthySibling(t *testing.T) {
 
 	// "fast" was genuinely the fastest, and nothing since has changed that
 	// number: its failures recorded no samples at all.
-	gw.latencyTracker.Record("fast", 1*time.Millisecond)
-	gw.latencyTracker.Record("slow", 900*time.Millisecond)
+	gw.latencyTracker.Record("fast", "gpt-4o", 1*time.Millisecond)
+	gw.latencyTracker.Record("slow", "gpt-4o", 900*time.Millisecond)
 	tripBreaker(t, gw, "fast")
 
 	resp, err := gw.Route(context.Background(), chatReq("gpt-4o"))
@@ -188,8 +188,8 @@ func TestAllModels_UnchangedWhenCircuitOpens(t *testing.T) {
 	gw.RegisterProvider(&mockProvider{name: "a", models: []string{"model-a"}})
 	gw.RegisterProvider(&mockProvider{name: "b", models: []string{"model-b"}})
 	// Samples pin the candidate order least-latency would otherwise shuffle.
-	gw.latencyTracker.Record("a", 1*time.Millisecond)
-	gw.latencyTracker.Record("b", 900*time.Millisecond)
+	gw.latencyTracker.Record("a", "model-a", 1*time.Millisecond)
+	gw.latencyTracker.Record("b", "model-b", 900*time.Millisecond)
 
 	ids := func() []string {
 		out := make([]string, 0, 4)
@@ -226,8 +226,8 @@ func TestReloadConfig_DropsLatencySamplesForRemovedTarget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new gateway: %v", err)
 	}
-	gw.latencyTracker.Record("keep", 10*time.Millisecond)
-	gw.latencyTracker.Record("drop", 20*time.Millisecond)
+	gw.latencyTracker.Record("keep", "m", 10*time.Millisecond)
+	gw.latencyTracker.Record("drop", "m", 20*time.Millisecond)
 
 	if err := gw.ReloadConfig(context.Background(), config.Config{
 		Strategy: config.StrategyConfig{Mode: config.ModeLatency},

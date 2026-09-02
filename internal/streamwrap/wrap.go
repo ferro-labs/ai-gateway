@@ -73,8 +73,11 @@ type MeterMeta struct {
 	PublishFn func(ctx context.Context, event events.HookEvent)
 	// TraceID is the per-request trace identifier, forwarded into events.
 	TraceID string
-	// LatencyRecorder, if non-nil, records successful stream latency for routing.
-	LatencyRecorder func(provider string, latency time.Duration)
+	// LatencyRecorder, if non-nil, records the stream's time to first chunk
+	// against Provider and PriceModel for least-latency routing. First chunk,
+	// not drain: the routing sample measures how quickly a target begins
+	// answering, so a long answer does not read as a slow provider.
+	LatencyRecorder func(provider, model string, latency time.Duration)
 	// SpanFinisher, if non-nil, is invoked exactly once when the stream
 	// completes (with final usage + cost + timings) or fails. The
 	// gateway uses this to stamp the observability root span with the
@@ -280,6 +283,9 @@ func Meter(ctx context.Context, src <-chan providers.StreamChunk, start time.Tim
 			now := time.Now()
 			if firstChunkAt.IsZero() {
 				firstChunkAt = now
+				if meta.LatencyRecorder != nil && meta.Provider != "" {
+					meta.LatencyRecorder(meta.Provider, meta.PriceModel, now.Sub(start))
+				}
 			}
 			lastChunkAt = now
 
@@ -341,10 +347,6 @@ func Meter(ctx context.Context, src <-chan providers.StreamChunk, start time.Tim
 				HasTTFT:    !firstChunkAt.IsZero(),
 			})
 			return
-		}
-
-		if meta.LatencyRecorder != nil && meta.Provider != "" {
-			meta.LatencyRecorder(meta.Provider, latency)
 		}
 
 		resp.Usage = usage
