@@ -31,10 +31,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rather than its whole drain, so a model that answers at length no longer
   reads as a slow provider; a unary call's sample is unchanged. No new config.
 - `cost-optimized` scores each candidate on the catalog's price for the model's
-  mode — per token for chat and embeddings, per image, per minute or character
-  for audio — rather than on chat input price alone. Chat ordering is
-  unchanged; embedding, image and audio models that previously tied at zero
-  now order by their real catalog rate.
+  mode — input **plus output** for chat, with the request's `max_tokens` /
+  `max_completion_tokens` (or 256) as the output estimate; per token for
+  embeddings; per image; per minute or character for audio — rather than on
+  chat input price alone. A target that is cheap to read and expensive to
+  write no longer wins a request with a large completion budget, and
+  embedding, image and audio models that previously tied at zero now order by
+  their real catalog rate. Equal-cost targets draw by `targets[].weight`
+  (equally when none is set) instead of tying on declaration order.
 
 ## [1.5.1] — 2026-09-01
 

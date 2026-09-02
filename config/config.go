@@ -350,8 +350,9 @@ type ABVariantConfig struct {
 type Target struct {
 	// VirtualKey is the unique identifier for the provider (or a virtual key in the vault).
 	VirtualKey string `json:"virtual_key" yaml:"virtual_key"`
-	// Weight is the target's relative share under mode: loadbalance, and is
-	// ignored by every other mode.
+	// Weight is the target's relative share under mode: loadbalance, and the
+	// tie-break among equal-cost targets under mode: cost-optimized. Every
+	// other mode ignores it.
 	//
 	// Zero means zero — see ABVariantConfig.Weight. Draining a target ahead of
 	// revoking its credential is the reason the value exists, so a zero that

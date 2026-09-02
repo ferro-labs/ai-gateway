@@ -93,11 +93,13 @@ strategy: { mode: least-latency }
 
 ### cost-optimized
 Routes to the cheapest catalog-priced target. Each candidate is priced from the
-catalog's rate for the model's mode — per input token for chat, per token for
-embeddings, per image, per minute or character for audio — against one small
-estimated usage, so the order is a comparison of list prices, not a prediction of
-what the request will cost. `unpriced_strategy` decides what happens for a target
-the catalog has no price for:
+catalog's rate for the model's mode — input plus output for chat (the output
+estimate is the request's `max_tokens` / `max_completion_tokens`, or 256), per
+token for embeddings, per image, per minute or character for audio — so the
+order is a comparison of list prices, not a prediction of what the request will
+cost. Targets that price the same draw by `weight`, equally when none is set.
+`unpriced_strategy` decides what happens for a target the catalog has no price
+for:
 
 | `unpriced_strategy` | Behaviour |
 |---|---|

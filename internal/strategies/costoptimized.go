@@ -2,6 +2,7 @@ package strategies
 
 import (
 	"fmt"
+	"math/rand"
 	"sort"
 
 	"github.com/ferro-labs/ai-gateway/models"
@@ -33,21 +34,33 @@ func NewCostOptimized(targets []Target, lookup ProviderLookup, catalog models.Ca
 	return &CostOptimized{targets: targets, lookup: lookup, catalog: catalog, unpricedStrategy: strategy}
 }
 
+// defaultRankingOutputTokens is the completion estimate when a request states
+// no ceiling of its own.
+const defaultRankingOutputTokens = 256
+
 // rankingUsage is the usage every candidate is priced against for ordering.
 //
-// The prompt is estimated at ~4 characters per token; every other billable
-// quantity is one unit. models.Calculate reads only the fields its catalog
-// mode bills off, so one Usage prices a chat model on its input rate, an
-// embedding model per token, an image model per image and an audio model per
-// minute or character, and the same request orders the same targets on every
-// surface. It is a routing heuristic only, not billing-accurate accounting.
+// The prompt is estimated at ~4 characters per token and the completion at
+// the request's own ceiling (max_tokens / max_completion_tokens) or a fixed
+// default, so a target that is cheap to read and expensive to write is priced
+// on both. Every other billable quantity is one unit: models.Calculate reads
+// only the fields its catalog mode bills off, so one Usage prices a chat
+// model on input plus output, an embedding model per token, an image model
+// per image and an audio model per minute or character, and the same request
+// orders the same targets on every surface. It is a routing heuristic only,
+// not billing-accurate accounting.
 func rankingUsage(req providers.Request) models.Usage {
 	promptChars := 0
 	for _, msg := range req.Messages {
 		promptChars += len(msg.Content)
 	}
+	outputTokens := defaultRankingOutputTokens
+	if ceiling, ok := req.EffectiveMaxTokens(); ok && ceiling > 0 {
+		outputTokens = ceiling
+	}
 	return models.Usage{
 		PromptTokens:     promptChars/4 + 1,
+		CompletionTokens: outputTokens,
 		ImageCount:       1,
 		AudioInputSecs:   60,
 		AudioOutputChars: 1000,
@@ -57,6 +70,7 @@ func rankingUsage(req providers.Request) models.Usage {
 // costOrderCandidate holds a candidate target with its estimated cost and
 // catalog-pricing flags.
 type costOrderCandidate struct {
+	target     Target
 	key        string
 	costUSD    float64
 	hasPrice   bool
@@ -64,7 +78,8 @@ type costOrderCandidate struct {
 }
 
 // SelectTargets orders model-compatible targets by estimated cost, cheapest
-// first. The unpriced strategy controls which cataloged-but-unpriced
+// first; a run of equal-cost candidates leads with one drawn by weight
+// (equally when no weight is set), since declaration order is not a contract. The unpriced strategy controls which cataloged-but-unpriced
 // candidates rank: allow ranks any model-found candidate, skip and fallback rank
 // only priced ones. Remaining targets follow in declared order; this mode does
 // not advance past a failing target, so they stand in only when a preferred one
@@ -92,6 +107,7 @@ func (c *CostOptimized) SelectTargets(req providers.Request) ([]string, error) {
 		}
 		result := models.Calculate(c.catalog, providers.CanonicalName(p)+"/"+model, usage)
 		candidates = append(candidates, costOrderCandidate{
+			target:     t,
 			key:        t.VirtualKey,
 			costUSD:    result.TotalUSD,
 			hasPrice:   result.Priced,
@@ -127,6 +143,7 @@ func (c *CostOptimized) SelectTargets(req providers.Request) ([]string, error) {
 	sort.SliceStable(ranked, func(i, j int) bool {
 		return ranked[i].costUSD < ranked[j].costUSD
 	})
+	breakTiesByWeight(ranked)
 
 	keys := make([]string, 0, len(c.targets))
 	for _, candidate := range ranked {
@@ -160,4 +177,30 @@ func (s unpricedStrategy) ranksUnpricedCandidates() bool {
 
 func (s unpricedStrategy) requiresPricedCandidate() bool {
 	return s == unpricedStrategySkip
+}
+
+// breakTiesByWeight rotates every run of equal-cost candidates in ranked (which
+// must already be sorted by cost) to start at a weight-drawn member. With no
+// positive weight in the run the draw is uniform. A zero weight among weighted
+// siblings never leads, as under loadbalance.
+func breakTiesByWeight(ranked []costOrderCandidate) {
+	for start := 0; start < len(ranked); {
+		end := start + 1
+		for end < len(ranked) && ranked[end].costUSD == ranked[start].costUSD {
+			end++
+		}
+		if run := ranked[start:end]; len(run) > 1 {
+			targets := make([]Target, len(run))
+			for i, c := range run {
+				targets[i] = c.target
+			}
+			lead, ok := weightedStartIndex(targets)
+			if !ok {
+				lead = rand.Intn(len(run)) //nolint:gosec // G404: tie-break draw, not security-sensitive
+			}
+			rotated := append(append(make([]costOrderCandidate, 0, len(run)), run[lead:]...), run[:lead]...)
+			copy(run, rotated)
+		}
+		start = end
+	}
 }
