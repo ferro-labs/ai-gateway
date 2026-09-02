@@ -42,8 +42,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is exposed to a rule; a malformed header is the caller's `400`.
 - `target_keys: [a, b]` on `conditions[]` and `content_conditions[]` names an
   ordered target chain for a rule; `target_key` stays as the one-entry form.
-  The walk tries the chain in order under the pool modes' failover-safe
-  classes, skips a member whose circuit is open or that is parked after a
+  The walk tries the chain in order — a conditional or content-based rule
+  advances on the same failover-safe failures a pool does — skips a member whose circuit is open or that is parked after a
   `429`, and never substitutes a target outside the chain. Exactly one of the
   two fields is set; entries must be declared targets and may not repeat.
 - `strategy.sticky: { on: user, ttl: "1h" }` under `loadbalance` and `ab-test`

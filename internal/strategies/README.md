@@ -97,6 +97,7 @@ long a pin can hold. Also available under `ab-test`, where it keeps a session on
 its variant.
 
 ### least-latency
+
 Routes to the target with the lowest observed p50 latency, so traffic follows
 the currently-fastest backend. The sample is the time a target took to *begin*
 answering — a stream's first chunk, or a unary call's response — so a model with
@@ -111,6 +112,7 @@ strategy: { mode: least-latency }
 ```
 
 ### cost-optimized
+
 Routes to the cheapest catalog-priced target. Each candidate is priced from the
 catalog's rate for the model's mode — input plus output for chat (the output
 estimate is the request's `max_tokens` / `max_completion_tokens`, or 256), per
@@ -153,7 +155,7 @@ strategy:
 ```
 
 `target_key` names one target; `target_keys` an ordered chain, tried in order
-under the pool modes' failover-safe classes and never left. Both are exact
+under the failover-safe classes above and never left. Both are exact
 about what they name.
 
 ### content-based

@@ -491,6 +491,14 @@ func validateStrategy(s StrategyConfig, targets []Target) error {
 	case ModeLoadBalance:
 		return validateWeights("target", targetWeights(targets))
 	case ModeCostOptimized:
+		// Weights break equal-cost ties here, so a negative one would silently
+		// drain a target; refuse it as loadbalance does. Zero and unset stay
+		// legal — an all-zero set means an equal draw, not an outage.
+		for _, w := range targetWeights(targets) {
+			if w.weight < 0 {
+				return fmt.Errorf("target %q has negative weight %v", w.name, w.weight)
+			}
+		}
 		switch s.UnpricedStrategy {
 		case "", UnpricedStrategyFallback, UnpricedStrategySkip, UnpricedStrategyAllow:
 		default:

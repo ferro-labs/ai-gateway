@@ -273,11 +273,13 @@ tally 100 "$SHARED"
 check "a slower sibling receives its profiling request and the exploration share; the fast target serves ≥ 80%" \
   "$([ "$T_groq" -ge 80 ] && [ "$T_together" -ge 1 ] && [ "$T_err" = 0 ] && echo 0 || echo 1)" "groq=$T_groq together=$T_together errors=$T_err"
 heal together; scenario groq '{"delay_ms":120}'
-tally 60 "$SHARED"
-# The leader's window is 100 samples, so 60 slow ones cannot turn it over here;
-# what this cell can prove is that the slowed leader no longer takes everything
-# — exploration keeps measuring the healed sibling, which is what lets the
-# flip happen (TestLeastLatency_SlowedLeaderLosesLeadership proves the flip).
+tally 100 "$SHARED"
+# The leader's window is 100 samples, so these slow ones cannot turn it over
+# here; what this cell can prove is that the slowed leader no longer takes
+# everything — exploration keeps measuring the healed sibling, which is what
+# lets the flip happen (TestLeastLatency_SlowedLeaderLosesLeadership proves the
+# flip). At a 10% draw over ~99 requests, fewer than 2 explorations happens
+# about 0.03% of the time, which is the accepted flake rate of this cell.
 check "a leader that slows down is still explored past: the healed sibling keeps receiving samples" \
   "$([ "$T_together" -ge 2 ] && [ "$T_err" = 0 ] && echo 0 || echo 1)" "groq=$T_groq together=$T_together errors=$T_err"
 stop_gw

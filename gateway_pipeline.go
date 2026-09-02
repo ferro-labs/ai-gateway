@@ -310,7 +310,7 @@ func shouldAdvanceTarget(ctx context.Context, err error, failoverOn []int) bool 
 // answers differ under exactly the modes that commit to one target, and while
 // only the walk knew the rule, /v1/models advertised what those modes refuse.
 func (g *Gateway) eligibleKeys(plan targetPlan, gate capabilityGate) []string {
-	keys := g.healthyKeys(plan)
+	keys := g.healthyKeys(plan, gate)
 	if plan.advance || len(keys) <= 1 {
 		return keys
 	}
@@ -370,7 +370,7 @@ func (g *Gateway) eligibleKeys(plan targetPlan, gate capabilityGate) []string {
 //
 // The common case allocates nothing: with no open circuit the caller's own
 // slice is returned untouched.
-func (g *Gateway) healthyKeys(plan targetPlan) []string {
+func (g *Gateway) healthyKeys(plan targetPlan, gate capabilityGate) []string {
 	if plan.ignoreCircuitState || len(plan.keys) <= 1 {
 		return plan.keys
 	}
@@ -405,7 +405,17 @@ func (g *Gateway) healthyKeys(plan targetPlan) []string {
 	if len(healthy) == 0 {
 		return plan.keys
 	}
-	return healthy
+	// "Something healthy remains" is only an answer if it can serve THIS
+	// request. A healthy sibling that serves a different model would leave
+	// the walk attempting nothing — a 404 for a model the open or parked
+	// target serves perfectly well — so fail open exactly as when every
+	// candidate is unavailable.
+	for _, key := range healthy {
+		if p, ok := g.providers[key]; ok && g.candidateLocked(key, p, plan.model, gate) {
+			return healthy
+		}
+	}
+	return plan.keys
 }
 
 // errNoCapableTarget is the refusal every routed surface reports when no
@@ -655,7 +665,7 @@ func attemptTarget[Req, Resp any](
 		resp, err := callUnderResilience(attemptCtx, target.key, p, cb, lim, req, upstreamModel, call)
 		cancelAttempt()
 		if err != nil && ctx.Err() == nil && errors.Is(context.Cause(attemptCtx), errAttemptTimeout) {
-			err = fmt.Errorf("target %s: attempt timed out after %s: %w", target.key, policy.attemptTimeout, err)
+			err = fmt.Errorf("target %s: attempt timed out after %s: %w: %w", target.key, policy.attemptTimeout, errAttemptTimeout, err)
 		}
 		(*attemptSequence)++
 		g.recordRoutingAttempt(ctx, obs, attemptsActive, routingAttempt{

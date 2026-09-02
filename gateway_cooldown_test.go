@@ -136,3 +136,20 @@ func TestPipeline_EveryTargetParkedStillAttempts(t *testing.T) {
 		t.Fatalf("second request: served by %q after %d calls; the only target must still be attempted", got, calls.Load())
 	}
 }
+
+// A healthy sibling only counts if it can serve the request. When the parked
+// target is the only one serving the model, the walk fails open to it rather
+// than attempting nothing and answering 404 for a model the gateway serves.
+func TestPipeline_ParkedOnlyServerOfTheModelIsStillAttempted(t *testing.T) {
+	limited, calls := rateLimitedOnce("limited", time.Minute)
+	gw, _ := cooldownGateway(t, []config.Target{{VirtualKey: "limited"}, {VirtualKey: "other-model"}})
+	gw.RegisterProvider(limited)
+	gw.RegisterProvider(&mockProvider{name: "other-model", models: []string{"some-other-model"}, resp: &providers.Response{ID: "wrong"}})
+
+	if _, err := gw.Route(context.Background(), pipelineRequest()); err == nil {
+		t.Fatal("first request succeeded, want the 429")
+	}
+	if got := routeServedBy(t, gw); got != "served-by-limited" || calls.Load() != 2 {
+		t.Fatalf("second request: served by %q after %d calls; the parked target is the only one serving the model and must be attempted", got, calls.Load())
+	}
+}

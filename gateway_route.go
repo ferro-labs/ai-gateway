@@ -363,6 +363,7 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 			}
 			if loopTarget.key != "" {
 				span.SetAttribute(observability.AttrFerroRoutingAttempt, loopTarget.attempts)
+				recordAttribution(ctx, loopTarget, loopTarget.attempts)
 			}
 			g.routeError(ctx, span, obs, pctx, plugins, loopTarget.key, req.Model, loopTarget.abVariantLabel, loopTarget.hasABVariant, err, time.Since(start), originalStream, hooksEnabled, obsEventsActive)
 			return nil, err
@@ -373,6 +374,7 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 		if loopTarget.key != "" {
 			target = loopTarget
 			span.SetAttribute(observability.AttrFerroRoutingAttempt, target.attempts)
+			recordAttribution(ctx, target, target.attempts)
 		}
 	}
 	// Provider-returned model identifiers are upstream payload detail. The
@@ -499,6 +501,10 @@ func (g *Gateway) runMCPLoop(ctx context.Context, mcpExecutorSnapshot *mcp.Execu
 	var err error
 	depth := 0
 	loopTarget := initialTarget
+	// Attempts accumulate across turns: an HTTP request that made three
+	// provider calls reports three, on the identity of the target that
+	// answered last.
+	attempts := initialTarget.attempts
 	// What this request has spent so far, fed to the per-turn budget check.
 	var (
 		spentUSD    float64
@@ -577,7 +583,9 @@ func (g *Gateway) runMCPLoop(ctx context.Context, mcpExecutorSnapshot *mcp.Execu
 			resp, target, err = g.routeChat(ctx, s, *req)
 			providerDuration += time.Since(callStart)
 			if target.key != "" {
+				attempts += target.attempts
 				loopTarget = target
+				loopTarget.attempts = attempts
 			}
 			if err != nil {
 				return

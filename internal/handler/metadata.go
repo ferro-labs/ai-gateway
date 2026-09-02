@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/ferro-labs/ai-gateway/internal/apierror"
 )
@@ -34,7 +35,9 @@ func routingMetadata(h http.Header) (map[string]string, error) {
 		return nil, fmt.Errorf("%s exceeds %d bytes", HeaderRoutingMetadata, maxRoutingMetadataBytes)
 	}
 	var object map[string]any
-	if err := json.Unmarshal([]byte(raw), &object); err != nil {
+	dec := json.NewDecoder(strings.NewReader(raw))
+	dec.UseNumber() // a large integer must compare as written, not rounded through float64
+	if err := dec.Decode(&object); err != nil || object == nil {
 		return nil, fmt.Errorf("%s is not a JSON object", HeaderRoutingMetadata)
 	}
 	if len(object) > maxRoutingMetadataKeys {
@@ -45,8 +48,8 @@ func routingMetadata(h http.Header) (map[string]string, error) {
 		switch v := value.(type) {
 		case string:
 			out[key] = v
-		case float64:
-			out[key] = strconv.FormatFloat(v, 'f', -1, 64)
+		case json.Number:
+			out[key] = v.String()
 		case bool:
 			out[key] = strconv.FormatBool(v)
 		default:

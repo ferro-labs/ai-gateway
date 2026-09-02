@@ -577,7 +577,7 @@ func TestStrategyMatrix_OpenCircuitIsSkippedUnderEveryMode(t *testing.T) {
 					t.Fatalf("%s names one target, so its open circuit must be refused; got err=%v", rm.mode, err)
 				}
 				if beta.calls.Load() != 0 {
-					t.Errorf("beta was called %d times under single", beta.calls.Load())
+					t.Errorf("beta was called %d times under %s", beta.calls.Load(), rm.mode)
 				}
 				return
 			}

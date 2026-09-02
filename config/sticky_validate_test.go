@@ -97,3 +97,16 @@ func TestValidateStrategy_FailoverOnStatusCodes(t *testing.T) {
 		})
 	}
 }
+
+// TestValidateStrategy_CostOptimizedWeights: weights break equal-cost ties, so
+// a negative one is refused; zero and unset remain legal.
+func TestValidateStrategy_CostOptimizedWeights(t *testing.T) {
+	legal := Config{Strategy: StrategyConfig{Mode: ModeCostOptimized}, Targets: []Target{{VirtualKey: "openai"}, {VirtualKey: "groq", Weight: 0}}}
+	if err := ValidateConfig(legal); err != nil {
+		t.Fatalf("ValidateConfig = %v, want nil for unset and zero weights", err)
+	}
+	negative := Config{Strategy: StrategyConfig{Mode: ModeCostOptimized}, Targets: []Target{{VirtualKey: "openai", Weight: -1}, {VirtualKey: "groq"}}}
+	if err := ValidateConfig(negative); err == nil || !strings.Contains(err.Error(), "negative weight") {
+		t.Fatalf("ValidateConfig = %v, want a negative-weight error", err)
+	}
+}
