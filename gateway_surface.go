@@ -984,16 +984,18 @@ func (g *Gateway) surfaceTargetOrder(model, surface string) ([]string, error) {
 		// and win routing outright, regardless of what the rule actually
 		// says. No content rule can be meaningfully evaluated without a
 		// prompt, so the request takes the no-match answer: one target, the
-		// first configured one that can serve this surface at all — a rule
-		// list written for chat may well lead with a chat-only target — and
-		// the first target when none can, so the walk reports the same 404
-		// it would for any other unroutable request.
+		// first configured one that is a candidate for this model on this
+		// surface by the pipeline's own test — a rule list written for chat
+		// may well lead with a chat-only target — and the first target when
+		// none is, so the walk reports the same 404 it would for any other
+		// unroutable request.
+		gate := func(p providers.Provider) bool { return providerSupportsSurface(p, surface) }
 		g.mu.Lock()
 		g.ensureCircuitBreakersLocked()
 		g.ensureProviderLimitersLocked()
 		key := g.config.Targets[0].VirtualKey
 		for _, t := range g.config.Targets {
-			if p, ok := g.providers[t.VirtualKey]; ok && providerSupportsSurface(p, surface) {
+			if p, ok := g.providers[t.VirtualKey]; ok && g.candidateLocked(t.VirtualKey, p, model, gate) {
 				key = t.VirtualKey
 				break
 			}

@@ -279,7 +279,7 @@ tally 60 "$SHARED"
 # — exploration keeps measuring the healed sibling, which is what lets the
 # flip happen (TestLeastLatency_SlowedLeaderLosesLeadership proves the flip).
 check "a leader that slows down is still explored past: the healed sibling keeps receiving samples" \
-  "$([ "$T_together" -ge 2 ] && echo 0 || echo 1)" "groq=$T_groq together=$T_together"
+  "$([ "$T_together" -ge 2 ] && [ "$T_err" = 0 ] && echo 0 || echo 1)" "groq=$T_groq together=$T_together errors=$T_err"
 stop_gw
 
 # ── 5. cost-optimized ────────────────────────────────────────────────────────────

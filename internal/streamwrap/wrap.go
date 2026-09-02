@@ -25,6 +25,7 @@
 package streamwrap
 
 import (
+	"cmp"
 	"context"
 	"time"
 
@@ -285,7 +286,7 @@ func Meter(ctx context.Context, src <-chan providers.StreamChunk, start time.Tim
 				firstChunkAt = now
 				// An error chunk is not the provider beginning to answer.
 				if chunk.Error == nil && meta.LatencyRecorder != nil && meta.Provider != "" {
-					meta.LatencyRecorder(meta.Provider, meta.PriceModel, now.Sub(start))
+					meta.LatencyRecorder(meta.Provider, cmp.Or(meta.PriceModel, meta.Model), now.Sub(start))
 				}
 			}
 			lastChunkAt = now

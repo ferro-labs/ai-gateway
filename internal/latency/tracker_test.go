@@ -187,3 +187,18 @@ func TestTracker_SamplesAreKeyedByModel(t *testing.T) {
 		t.Fatal("Retain(nil) must drop every model's window")
 	}
 }
+
+// One expired sample beside one live sample: the expired one must not shape
+// the median even though nothing has been recorded since it aged out.
+func TestTracker_StatsIgnoresExpiredSamplesBesideLiveOnes(t *testing.T) {
+	tr, clock := newClockedTracker(10, time.Minute)
+	tr.Record("p", "m", 500*time.Millisecond)
+	clock.now = clock.now.Add(45 * time.Second)
+	tr.Record("p", "m", 5*time.Millisecond)
+	clock.now = clock.now.Add(30 * time.Second) // the first sample is 75s old, the second 30s
+
+	p50, ok := tr.Stats("p", "m")
+	if !ok || p50 != 5*time.Millisecond {
+		t.Fatalf("Stats = (%v, %v), want (5ms, true): the expired 500ms sample must not count", p50, ok)
+	}
+}

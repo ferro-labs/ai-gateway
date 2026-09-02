@@ -172,7 +172,8 @@ func (t *Tracker) HasSamples(target string) bool {
 // window is live. A window whose newest sample is older than the TTL reads as
 // no samples at all: it is a number from before whatever changed, and the
 // strategy treats the target as unseen and measures it again. Samples that
-// aged out ahead of a newer one are pruned at the next Record.
+// aged out ahead of a newer one do not count either: the median is taken over
+// the live suffix until the next Record prunes them.
 func (t *Tracker) Stats(target, model string) (p50 time.Duration, hasSamples bool) {
 	now := t.now()
 	t.mu.RLock()
@@ -180,6 +181,13 @@ func (t *Tracker) Stats(target, model string) (p50 time.Duration, hasSamples boo
 	w := t.windows[sampleKey{target, model}]
 	if w == nil || !t.isLive(w, now) {
 		return 0, false
+	}
+	// The memoized median covers the whole window. When only some of it has
+	// aged out — no Record has run since — answer from the live suffix
+	// instead, so a target idle through most of the TTL is ranked on what it
+	// did recently. The allocation is confined to that stale case.
+	if from := t.liveFrom(w.samples, now); from > 0 {
+		return computeMedian(w.samples[from:]), true
 	}
 	return w.median, true
 }

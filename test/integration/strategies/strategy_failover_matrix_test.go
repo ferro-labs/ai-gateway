@@ -568,9 +568,13 @@ func TestStrategyMatrix_OpenCircuitIsSkippedUnderEveryMode(t *testing.T) {
 			if alpha.calls.Load() != beforeAlpha {
 				t.Errorf("alpha was called through an open circuit")
 			}
-			if rm.mode == config.ModeSingle {
+			// single names one target; a conditional or content-based rule with a
+			// single target_key names one just as exactly (v1.5.2). The open
+			// circuit is the corresponding error, never a sibling the rule did not
+			// name — a rule that wants a stand-in lists one in target_keys.
+			if rm.mode == config.ModeSingle || rm.mode == config.ModeConditional || rm.mode == config.ModeContentBased {
 				if !errors.Is(err, circuitbreaker.ErrCircuitOpen) {
-					t.Fatalf("single names one target, so its open circuit must be refused; got err=%v", err)
+					t.Fatalf("%s names one target, so its open circuit must be refused; got err=%v", rm.mode, err)
 				}
 				if beta.calls.Load() != 0 {
 					t.Errorf("beta was called %d times under single", beta.calls.Load())

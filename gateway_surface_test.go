@@ -863,3 +863,32 @@ func TestGateway_GenerateImage_UnpricedModelStaysUnpriced(t *testing.T) {
 		t.Errorf("CostUSD = %v, want 0", measured.CostUSD)
 	}
 }
+
+// Under content-based, a non-chat request takes the first configured target
+// that can serve the model on this surface — not the first target flat, which
+// a rule list written for chat may well make a chat-only or wrong-model one.
+func TestSurfaceTargetOrder_ContentBasedFallsToTheFirstCapableTarget(t *testing.T) {
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{
+			Mode:              config.ModeContentBased,
+			ContentConditions: []config.ContentCondition{{Type: config.ContentConditionPromptContains, Value: "code", TargetKey: "chat-only"}},
+		},
+		Targets: []config.Target{{VirtualKey: "chat-only"}, {VirtualKey: "other-model"}, {VirtualKey: "capable"}},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+	gw.RegisterProvider(&mockProvider{name: "chat-only", models: []string{"embed-model"}})
+	gw.RegisterProvider(&mockEmbeddingProvider{mockProvider: mockProvider{name: "other-model", models: []string{"another-model"}}})
+	capable := &mockEmbeddingProvider{mockProvider: mockProvider{name: "capable", models: []string{"embed-model"}}}
+	gw.RegisterProvider(capable)
+
+	keys, err := gw.surfaceTargetOrder("embed-model", surfaceEmbeddings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireKeys(t, keys, "capable")
+	if _, err := gw.Embed(context.Background(), providers.EmbeddingRequest{Model: "embed-model", Input: "hi"}); err != nil || capable.calls != 1 {
+		t.Fatalf("Embed err=%v capable.calls=%d, want the capable target to serve", err, capable.calls)
+	}
+}
