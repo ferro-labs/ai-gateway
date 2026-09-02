@@ -83,6 +83,7 @@ function TargetTable({ targets }: { targets: StrategyState['targets'] }) {
             <TableHead scope="col">Retry</TableHead>
             <TableHead scope="col">Concurrency</TableHead>
             <TableHead scope="col">Circuit breaker</TableHead>
+            <TableHead scope="col">Model map</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody className="max-sm:block">
@@ -125,6 +126,19 @@ function TargetTable({ targets }: { targets: StrategyState['targets'] }) {
                     <CircleSlash aria-hidden="true" size={14} />
                     Gateway default
                   </span>
+                )}
+              </TableCell>
+              <TableCell className={mobileCell} data-label="Model map">
+                {Object.keys(target.modelMap).length === 0 ? (
+                  <span className="text-muted-foreground">none</span>
+                ) : (
+                  <ul className="space-y-0.5 font-mono text-xs">
+                    {Object.entries(target.modelMap).map(([visible, upstream]) => (
+                      <li key={visible}>
+                        {visible} <span className="text-muted-foreground">→</span> {upstream}
+                      </li>
+                    ))}
+                  </ul>
                 )}
               </TableCell>
             </TableRow>

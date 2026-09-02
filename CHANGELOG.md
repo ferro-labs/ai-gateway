@@ -20,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pass-through proxy named a provider, and `/v1/chat/completions` named
   nothing. Embedders read the same values through
   `aigateway.WithRoutingAttribution`.
+- The embedded dashboard's strategy panel shows each target's `model_map`,
+  a rule's `target_keys` chain in order, and a `metadata` predicate by its
+  field; the mode cards describe the reworked least-latency, cost-optimized
+  and conditional behaviour.
 - `strategy.failover_on_status_codes: [409]` adds upstream statuses of the
   operator's own to the failover-safe classes, for an upstream whose "try
   elsewhere" answer the built-in classes do not cover. Validated as HTTP
