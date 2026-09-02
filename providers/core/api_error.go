@@ -147,6 +147,14 @@ type HTTPStatusError struct {
 	// to its own computed backoff, so a 429/503 is retried when the provider says
 	// it is ready rather than on a guess.
 	RetryAfter time.Duration
+	// Code is the provider's own error code from its envelope, when it sent
+	// one: OpenAI's error.code ("context_length_exceeded"), Gemini's
+	// error.status ("INVALID_ARGUMENT"). Preserved so a failure class can be
+	// decided on what the provider said rather than on its status alone.
+	Code string
+	// Type is the provider's own error type: OpenAI's and Anthropic's
+	// error.type ("invalid_request_error").
+	Type string
 }
 
 // Error implements error. It is the operator-facing rendering; the caller-facing
@@ -300,7 +308,7 @@ func RetryAfterFrom(err error) time.Duration {
 // APIError wherever the *http.Response is in hand, so throttling responses can
 // drive retry backoff instead of being guessed at.
 func APIErrorFromResponse(label string, resp *http.Response, body []byte) error {
-	return StatusError(label, resp.StatusCode, upstreamMessage(body)).WithRetryAfter(resp.Header)
+	return StatusError(label, resp.StatusCode, upstreamMessage(body)).withEnvelope(body).WithRetryAfter(resp.Header)
 }
 
 // APIError builds a provider error from a non-success HTTP response body,
@@ -309,7 +317,96 @@ func APIErrorFromResponse(label string, resp *http.Response, body []byte) error 
 // nothing — see StatusError for why. Prefer APIErrorFromResponse when the
 // *http.Response is in hand.
 func APIError(label string, status int, body []byte) error {
-	return StatusError(label, status, upstreamMessage(body))
+	return StatusError(label, status, upstreamMessage(body)).withEnvelope(body)
+}
+
+// withEnvelope records the provider's own code and type from body, when the
+// envelope carries them. Both are short identifiers the provider documents,
+// never free text, so they are safe to keep whole.
+func (e *HTTPStatusError) withEnvelope(body []byte) *HTTPStatusError {
+	e.Code, e.Type = upstreamCodeAndType(body)
+	return e
+}
+
+// upstreamCodeAndType reads the identifiers out of an object-shaped
+// {"error":{…}} envelope: code and type as OpenAI and Anthropic spell them,
+// with Gemini's status standing in for a code. A numeric code (Gemini repeats
+// the HTTP status there) is rendered as its digits.
+func upstreamCodeAndType(body []byte) (code, typ string) {
+	var e apiErrorEnvelope
+	if json.Unmarshal(body, &e) != nil || len(e.Error) == 0 {
+		return "", ""
+	}
+	var fields struct {
+		Code   json.RawMessage `json:"code"`
+		Type   string          `json:"type"`
+		Status string          `json:"status"`
+	}
+	if json.Unmarshal(e.Error, &fields) != nil {
+		return "", ""
+	}
+	if len(fields.Code) > 0 {
+		var asString string
+		if json.Unmarshal(fields.Code, &asString) == nil {
+			code = asString
+		} else {
+			// Numeric: Gemini repeats the HTTP status here, and its status
+			// string ("INVALID_ARGUMENT") is the identifier worth keeping.
+			var asNumber json.Number
+			if json.Unmarshal(fields.Code, &asNumber) == nil {
+				code = asNumber.String()
+			}
+		}
+	}
+	if fields.Status != "" && (code == "" || code == fields.Status || isDigits(code)) {
+		code = fields.Status
+	}
+	return truncateRunes(code, 64), truncateRunes(fields.Type, 64)
+}
+
+func isDigits(s string) bool {
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return s != ""
+}
+
+// IsContextLengthError reports whether err is a provider's own statement that
+// the request exceeded the model's context window — the one deterministic
+// 4xx that a different model can fix, and so the one a pool mode fails over
+// on. It recognises the envelopes the OpenAI-compatible, Anthropic and Gemini
+// families document; any other 4xx, including a 400 that merely resembles
+// one, is not this class and stops routing as before.
+func IsContextLengthError(err error) bool {
+	var statusErr *HTTPStatusError
+	if !errors.As(err, &statusErr) {
+		return false
+	}
+	if statusErr.StatusCode != http.StatusBadRequest && statusErr.StatusCode != http.StatusRequestEntityTooLarge {
+		return false
+	}
+	message := strings.ToLower(statusErr.Message)
+	switch {
+	// OpenAI, Azure OpenAI and the compatible providers that copy the code.
+	case statusErr.Code == "context_length_exceeded":
+		return true
+	// OpenAI-compatible providers that copy the message but send no code:
+	// "This model's maximum context length is N tokens. However, …".
+	case statusErr.Type == "invalid_request_error" && strings.Contains(message, "maximum context length"):
+		return true
+	// Anthropic: {"type":"error","error":{"type":"invalid_request_error",
+	// "message":"prompt is too long: 213462 tokens > 200000 maximum"}}.
+	case statusErr.Type == "invalid_request_error" && strings.Contains(message, "prompt is too long"):
+		return true
+	// Gemini: {"error":{"code":400,"status":"INVALID_ARGUMENT","message":"The
+	// input token count (1500000) exceeds the maximum number of tokens allowed
+	// (1048576)."}}.
+	case statusErr.Code == "INVALID_ARGUMENT" && strings.Contains(message, "token count") && strings.Contains(message, "exceeds"):
+		return true
+	}
+	return false
 }
 
 // UnsupportedParamError is returned by the reject compatibility mode when a

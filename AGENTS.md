@@ -804,9 +804,11 @@ the traffic — from targets the operator declared interchangeable. So the reque
 belongs to the pool, and carrying it to a sibling is what was asked for.
 
 Failover-safe failures are transport or no-status failures, an attempt that
-timed out waiting on the target, 408, 429, 5xx, open circuits, and target
-saturation. The request's own cancellation or deadline and every other 4xx stop
-at the current target.
+timed out waiting on the target, 408, 429, 5xx, open circuits, target
+saturation, and a provider's typed statement that the prompt exceeded its
+context window (`core.IsContextLengthError`: the OpenAI-compatible, Anthropic
+and Gemini envelopes; never a bare substring match on a 400). The request's own
+cancellation or deadline and every other 4xx stop at the current target.
 
 A named mode picks its head because something named that target specifically:
 `single` names it, and a `conditional` or `content-based` rule matched it.

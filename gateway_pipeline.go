@@ -255,6 +255,13 @@ func shouldAdvanceTarget(ctx context.Context, err error) bool {
 	if errors.Is(err, circuitbreaker.ErrCircuitOpen) || errors.Is(err, core.ErrProviderSaturated) {
 		return true
 	}
+	// Context overflow is the one deterministic 4xx a different target can
+	// fix — its model may simply have a larger window. It is typed, not a
+	// broad 400 retry: only the envelopes core.IsContextLengthError
+	// recognises qualify, and every other 4xx still stops here.
+	if core.IsContextLengthError(err) {
+		return true
+	}
 	code := providers.ParseStatusCode(err)
 	return code == 0 || code == http.StatusRequestTimeout ||
 		code == http.StatusTooManyRequests || code >= http.StatusInternalServerError

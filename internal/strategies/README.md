@@ -42,9 +42,12 @@ it, or a rule matched it), so serving from somewhere else would demote the rule
 to a suggestion.
 
 Failover-safe failures are transport failures, an attempt that timed out
-waiting on the target, 408, 429, 5xx, open circuits, and target saturation. The
-request's own cancellation or deadline and every other 4xx stop at the current
-target; named modes also stop after any provider-call failure.
+waiting on the target, 408, 429, 5xx, open circuits, target saturation, and a
+provider's own statement that the prompt exceeded its context window (the
+OpenAI-compatible, Anthropic and Gemini envelopes are recognised; a sibling's
+model may have a larger window). The request's own cancellation or deadline and
+every other 4xx stop at the current target; named modes also stop after any
+provider-call failure.
 
 Under **every** mode, a target whose **circuit breaker is open** is skipped when
 the choice is made, so a backend the gateway has already decided not to call

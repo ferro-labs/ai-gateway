@@ -24,8 +24,9 @@ strategy:
   mode: fallback  # single | fallback | loadbalance | conditional | content-based | ab-test | least-latency | cost-optimized
   # Pool modes (fallback, loadbalance, least-latency, cost-optimized, ab-test)
   # advance after transport failures, attempt timeouts, 408, 429, 5xx, open
-  # circuits, or target saturation. The request's own cancellation or deadline
-  # and every other 4xx stop there.
+  # circuits, target saturation, or a provider's own context-length overflow
+  # error (recognised envelopes only). The request's own cancellation or
+  # deadline and every other 4xx stop there.
   # Named modes (single, conditional, content-based) do not advance after a call.
   #
   # Under EVERY mode a target whose circuit breaker is open is passed over when

@@ -45,6 +45,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Pool modes also fail over on a provider's typed statement that the prompt
+  exceeded its context window — the OpenAI-compatible
+  (`code: context_length_exceeded`, or the documented message with no code),
+  Anthropic (`prompt is too long`) and Gemini (`INVALID_ARGUMENT` token-count)
+  envelopes — since a sibling's model may have a larger window. The provider
+  error now preserves the envelope's `code` and `type`
+  (`core.HTTPStatusError`), and `core.IsContextLengthError` is the one
+  classifier; every other 4xx still stops at the current target.
 - Configuration loading now refuses an `ab_variants[]` entry without a
   `label`: attribution keys on it, so an unlabelled variant was one nothing
   could report on. A `v1.5.1` config with an unlabelled variant no longer

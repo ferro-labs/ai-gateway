@@ -1104,3 +1104,49 @@ func TestPipeline_RequestTimeoutOutranksTargetTimeout(t *testing.T) {
 		t.Fatalf("sibling was asked %d times after the request deadline passed", alive.calls.Load())
 	}
 }
+
+// A provider's own statement that the prompt exceeded its context window
+// fails over to a sibling — whose model may have a larger window — while a
+// plain 400 from the same provider still stops, so a malformed request is not
+// re-sent to every target.
+func TestPipeline_ContextLengthOverflowFailsOverButAPlain400Stops(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		body         string
+		wantSibling  bool
+		wantSibCalls int64
+	}{
+		{"openai context_length_exceeded", `{"error":{"message":"This model's maximum context length is 8192 tokens.","type":"invalid_request_error","code":"context_length_exceeded"}}`, true, 1},
+		{"anthropic prompt is too long", `{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 213462 tokens > 200000 maximum"}}`, true, 1},
+		{"plain invalid request", `{"error":{"message":"Invalid value for 'temperature'","type":"invalid_request_error","code":null}}`, false, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			first := newCountingProvider("first", func() (*providers.Response, error) {
+				return nil, core.APIError("first", http.StatusBadRequest, []byte(tc.body))
+			})
+			second := newCountingProvider("second", func() (*providers.Response, error) {
+				return &providers.Response{ID: "served-by-second", Model: pipelineModel}, nil
+			})
+			gw, err := newTestGateway(t, config.Config{
+				Strategy: config.StrategyConfig{Mode: config.ModeFallback},
+				Targets:  []config.Target{{VirtualKey: "first"}, {VirtualKey: "second"}},
+			})
+			if err != nil {
+				t.Fatalf("new gateway: %v", err)
+			}
+			gw.RegisterProvider(first)
+			gw.RegisterProvider(second)
+
+			resp, err := gw.Route(context.Background(), pipelineRequest())
+			if tc.wantSibling && (err != nil || resp.ID != "served-by-second") {
+				t.Fatalf("resp=%v err=%v, want the sibling to serve", resp, err)
+			}
+			if !tc.wantSibling && err == nil {
+				t.Fatal("a plain 400 must reach the caller, not be covered by a sibling")
+			}
+			if second.calls.Load() != tc.wantSibCalls {
+				t.Fatalf("sibling calls = %d, want %d", second.calls.Load(), tc.wantSibCalls)
+			}
+		})
+	}
+}
