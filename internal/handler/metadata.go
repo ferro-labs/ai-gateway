@@ -2,7 +2,9 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -39,6 +41,11 @@ func routingMetadata(h http.Header) (map[string]string, error) {
 	dec.UseNumber() // a large integer must compare as written, not rounded through float64
 	if err := dec.Decode(&object); err != nil || object == nil {
 		return nil, fmt.Errorf("%s is not a JSON object", HeaderRoutingMetadata)
+	}
+	// One value and nothing after it: trailing text or a second document is
+	// not a header routing may read.
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("%s must be a single JSON object", HeaderRoutingMetadata)
 	}
 	if len(object) > maxRoutingMetadataKeys {
 		return nil, fmt.Errorf("%s has more than %d entries", HeaderRoutingMetadata, maxRoutingMetadataKeys)

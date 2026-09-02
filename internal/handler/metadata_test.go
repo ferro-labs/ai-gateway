@@ -20,6 +20,8 @@ func TestRoutingMetadata_Parses(t *testing.T) {
 		{"scalars", `{"tier":"gold","priority":3,"beta":true}`, map[string]string{"tier": "gold", "priority": "3", "beta": "true"}, ""},
 		{"not an object", `["gold"]`, nil, "not a JSON object"},
 		{"null is not an object", `null`, nil, "not a JSON object"},
+		{"trailing text", `{"tier":"gold"} trailing`, nil, "single JSON object"},
+		{"second document", `{"tier":"gold"}{"tier":"silver"}`, nil, "single JSON object"},
 		{"large integer kept exact", `{"account":12345678901234567890}`, map[string]string{"account": "12345678901234567890"}, ""},
 		{"nested", `{"tier":{"level":"gold"}}`, nil, "must be a string, number or boolean"},
 		{"too large", `{"k":"` + strings.Repeat("x", maxRoutingMetadataBytes) + `"}`, nil, "exceeds"},

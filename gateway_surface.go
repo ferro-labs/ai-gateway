@@ -975,10 +975,11 @@ func (g *Gateway) routeSpeech(ctx context.Context, req providers.SpeechRequest) 
 // question. Order is all this decides.
 func (g *Gateway) surfaceTargetOrder(req providers.Request, surface string) ([]string, error) {
 	model := req.Model
-	g.mu.RLock()
-	mode := g.config.Strategy.Mode
-	g.mu.RUnlock()
-	if mode == config.ModeContentBased {
+	// The mode is read and acted on under one hold of the lock, so a reload
+	// that switches modes in between cannot send one request down the path
+	// of a config no longer in force.
+	g.mu.Lock()
+	if g.config.Strategy.Mode == config.ModeContentBased {
 		// Content rules only look at req.Messages (prompt_contains /
 		// prompt_not_contains / prompt_regex), and this surface has none —
 		// Embed/GenerateImage requests carry no chat messages. prompt_contains
@@ -995,7 +996,6 @@ func (g *Gateway) surfaceTargetOrder(req providers.Request, surface string) ([]s
 		// none is, so the walk reports the same 404 it would for any other
 		// unroutable request.
 		gate := func(p providers.Provider) bool { return providerSupportsSurface(p, surface) }
-		g.mu.Lock()
 		g.ensureCircuitBreakersLocked()
 		g.ensureProviderLimitersLocked()
 		key := g.config.Targets[0].VirtualKey
@@ -1008,6 +1008,7 @@ func (g *Gateway) surfaceTargetOrder(req providers.Request, surface string) ([]s
 		g.mu.Unlock()
 		return []string{key}, nil
 	}
+	g.mu.Unlock()
 	strategy, err := g.strategyFor(surface)
 	if err != nil {
 		return nil, err

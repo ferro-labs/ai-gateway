@@ -139,10 +139,12 @@ Routes by the value of a request field. Rules are evaluated in order, first matc
 wins; when no rule matches, the request goes to the fallback target. Supported
 keys: `model`, `model_prefix`, `user` (the request's `user` field), `stream` and
 `has_tools` (`"true"` / `"false"`), and `metadata`, which reads one entry —
-named by `field` — of the single `X-Gateway-Metadata` request header, a small
-JSON object of scalar values. No other header is ever exposed to a rule. `user`
-also applies to embeddings and image requests, which carry the field; `stream`,
-`has_tools` and `metadata` are chat-only and match nothing elsewhere.
+named by `field` — of the single `X-Gateway-Metadata` request header: a JSON
+object of at most 32 string, number or boolean values within 4 KiB, accepted on
+`/v1/chat/completions` and `/v1/completions` and never forwarded to a provider.
+No other header is ever exposed to a rule. `user` also applies to embeddings and
+image requests, which carry the field; `stream` and `has_tools` are chat-only,
+and `metadata` matches nothing on the surfaces that do not accept the header.
 
 ```yaml
 strategy:
