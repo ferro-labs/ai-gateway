@@ -1092,3 +1092,30 @@ func TestValidateMultiStagePlugins_DuplicateEntries(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateConfig_TargetTimeout(t *testing.T) {
+	for _, tc := range []struct {
+		timeout string
+		wantErr string
+	}{
+		{"8s", ""},
+		{"", ""},
+		{"banana", "is not a duration"},
+		{"-1s", "must be positive"},
+		{"0s", "must be positive"},
+	} {
+		t.Run(tc.timeout, func(t *testing.T) {
+			cfg := config.Config{Strategy: config.StrategyConfig{Mode: config.ModeSingle}, Targets: []config.Target{{VirtualKey: "openai", Timeout: tc.timeout}}}
+			err := config.ValidateConfig(cfg)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("ValidateConfig = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("ValidateConfig = %v, want an error containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}

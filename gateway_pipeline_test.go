@@ -1034,3 +1034,73 @@ func TestPipeline_AttributionCountsEveryAttempt(t *testing.T) {
 		t.Fatalf("attribution = %+v, want %+v", *attribution, want)
 	}
 }
+
+// A hung primary must not consume the whole request budget: targets[].timeout
+// bounds one physical attempt, the walk advances, and the sibling answers.
+func TestPipeline_TargetTimeoutAdvancesPastAHungPrimary(t *testing.T) {
+	hungProvider := &mockProvider{name: "hung", models: []string{pipelineModel}, completeFn: func(ctx context.Context, _ providers.Request) (*providers.Response, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}}
+	alive := newCountingProvider("alive", func() (*providers.Response, error) {
+		return &providers.Response{ID: "served-by-alive", Model: pipelineModel}, nil
+	})
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeFallback},
+		Targets: []config.Target{
+			{VirtualKey: "hung", Timeout: "30ms"},
+			{VirtualKey: "alive"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+	gw.RegisterProvider(hungProvider)
+	gw.RegisterProvider(alive)
+
+	started := time.Now()
+	resp, err := gw.Route(context.Background(), pipelineRequest())
+	if err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	if resp.ID != "served-by-alive" {
+		t.Fatalf("served %q, want the sibling after the primary's attempt timed out", resp.ID)
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("took %v; the attempt timeout must have bounded the hung primary", elapsed)
+	}
+}
+
+// The end-to-end request_timeout stays authoritative: when it is shorter than
+// a target's attempt timeout the request ends there, answered 504, and no
+// sibling is asked.
+func TestPipeline_RequestTimeoutOutranksTargetTimeout(t *testing.T) {
+	hungProvider := &mockProvider{name: "hung", models: []string{pipelineModel}, completeFn: func(ctx context.Context, _ providers.Request) (*providers.Response, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}}
+	alive := newCountingProvider("alive", func() (*providers.Response, error) {
+		return &providers.Response{ID: "unexpected", Model: pipelineModel}, nil
+	})
+	gw, err := newTestGateway(t, config.Config{
+		RequestTimeout: "30ms",
+		Strategy:       config.StrategyConfig{Mode: config.ModeFallback},
+		Targets: []config.Target{
+			{VirtualKey: "hung", Timeout: "5s"},
+			{VirtualKey: "alive"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+	gw.RegisterProvider(hungProvider)
+	gw.RegisterProvider(alive)
+
+	_, err = gw.Route(context.Background(), pipelineRequest())
+	if status, _, _ := apierror.RouteErrorDetails(err); status != http.StatusGatewayTimeout {
+		t.Fatalf("status %d (%v), want 504 from the request deadline", status, err)
+	}
+	if alive.calls.Load() != 0 {
+		t.Fatalf("sibling was asked %d times after the request deadline passed", alive.calls.Load())
+	}
+}

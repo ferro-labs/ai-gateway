@@ -20,6 +20,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pass-through proxy named a provider, and `/v1/chat/completions` named
   nothing. Embedders read the same values through
   `aigateway.WithRoutingAttribution`.
+- `targets[].timeout` bounds one physical attempt against a target, inside
+  `request_timeout`, which stays authoritative for the request as a whole. A
+  unary attempt is bounded through its response; a streaming attempt only
+  until the provider answers, since a stream that has begun cannot be
+  replayed on another target. An attempt that times out is a failover-safe
+  failure, so a hung primary no longer consumes the whole request budget
+  before a pool mode moves on. Answered `504 gateway_timeout` when every
+  target times out.
 - `aigateway.WithCatalog(models.Catalog)`, an option to `aigateway.New`, hands
   the gateway the model catalog it prices and ranks with in place of the
   embedded or remote one, which is then neither loaded nor refreshed. A host

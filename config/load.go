@@ -258,6 +258,9 @@ func ValidateConfig(cfg Config) error {
 		if err := validateTargetModelMap(t, cfg.Aliases); err != nil {
 			return err
 		}
+		if err := validateTargetTimeout(t); err != nil {
+			return err
+		}
 		if err := validateTargetRetry(t); err != nil {
 			return err
 		}
@@ -694,6 +697,23 @@ func validateTargetRetry(t Target) error {
 	}
 	if t.Retry.InitialBackoffMs < 0 {
 		return fmt.Errorf("target %q: retry.initial_backoff_ms cannot be negative, got %d", t.VirtualKey, t.Retry.InitialBackoffMs)
+	}
+	return nil
+}
+
+// validateTargetTimeout checks targets[].timeout: a Go duration, positive when
+// set. Refused here for the same reason circuit_breaker.timeout is — a value
+// that cannot be honoured must not be silently substituted.
+func validateTargetTimeout(t Target) error {
+	if t.Timeout == "" {
+		return nil
+	}
+	d, err := time.ParseDuration(t.Timeout)
+	if err != nil {
+		return fmt.Errorf("target %q: timeout %q is not a duration (use a Go duration such as \"8s\")", t.VirtualKey, t.Timeout)
+	}
+	if d <= 0 {
+		return fmt.Errorf("target %q: timeout must be positive, got %s", t.VirtualKey, t.Timeout)
 	}
 	return nil
 }

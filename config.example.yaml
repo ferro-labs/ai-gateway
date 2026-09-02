@@ -96,6 +96,13 @@ targets:
     # weight must therefore be positive; an all-zero set and a negative weight
     # are both rejected at load.
     weight: 1.0
+    # Bound on ONE attempt against this target, inside request_timeout (which
+    # stays authoritative for the whole request). A unary attempt is bounded
+    # through its response; a streaming attempt only until the provider
+    # answers, because a stream that has begun cannot be replayed elsewhere. An
+    # attempt that times out is failover-safe: pool modes move on to the next
+    # target, so a hung primary no longer consumes the whole request budget.
+    # timeout: 8s
     # Retry is per target and applies under EVERY routing mode. Retry is how
     # many times ONE target is asked; pool modes may then advance as described
     # above, while named modes stop.

@@ -1667,3 +1667,53 @@ func TestGateway_RouteStream_LatencySampleIsTimeToFirstChunk(t *testing.T) {
 		t.Fatalf("sample = %v, want the time to the first chunk, well under the %v drain", p50, drain)
 	}
 }
+
+// targets[].timeout bounds a stream only until the provider answers. A stream
+// that started inside the timeout must not be cut off by it mid-stream, since
+// there is no replaying a half-delivered stream on another target.
+func TestGateway_RouteStream_TargetTimeoutBoundsOnlyTheStart(t *testing.T) {
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeFallback},
+		Targets:  []config.Target{{VirtualKey: "stream", Timeout: "20ms"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gw.RegisterProvider(&mockStreamProvider{
+		mockProvider: mockProvider{name: "stream", models: []string{"gpt-4o"}},
+		streamFn: func(ctx context.Context, _ providers.Request) (<-chan providers.StreamChunk, error) {
+			ch := make(chan providers.StreamChunk)
+			go func() {
+				defer close(ch)
+				for i := range 3 {
+					time.Sleep(30 * time.Millisecond) // each gap exceeds the attempt timeout
+					select {
+					case ch <- providers.StreamChunk{ID: fmt.Sprintf("c%d", i)}:
+					case <-ctx.Done():
+						ch <- providers.StreamChunk{Error: ctx.Err()}
+						return
+					}
+				}
+			}()
+			return ch, nil
+		},
+	})
+
+	ch, err := gw.RouteStream(context.Background(), providers.Request{
+		Model:    "gpt-4o",
+		Messages: []providers.Message{{Role: "user", Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("RouteStream error = %v", err)
+	}
+	var got int
+	for chunk := range ch {
+		if chunk.Error != nil {
+			t.Fatalf("stream cut off after %d chunks: %v", got, chunk.Error)
+		}
+		got++
+	}
+	if got != 3 {
+		t.Fatalf("received %d chunks, want 3", got)
+	}
+}

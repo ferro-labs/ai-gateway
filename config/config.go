@@ -387,6 +387,14 @@ type Target struct {
 	// Keys join the target's additive model inventory. Global aliases resolve
 	// before this mapping, so an alias name cannot be used as a key.
 	ModelMap map[string]string `json:"model_map,omitempty" yaml:"model_map,omitempty"`
+	// Timeout bounds one physical attempt against this target, as a Go
+	// duration ("8s"). A unary attempt is bounded through its response; a
+	// streaming attempt only until the provider answers, since a stream that
+	// has begun cannot be replayed elsewhere. It sits inside request_timeout,
+	// which stays authoritative for the request as a whole. An attempt that
+	// times out is a failover-safe failure: pool modes move to the next target.
+	// Omitted means no per-attempt bound beyond request_timeout.
+	Timeout string `json:"timeout,omitempty" yaml:"timeout,omitempty"`
 	// Retry configuration for this target.
 	Retry *RetryConfig `json:"retry,omitempty" yaml:"retry,omitempty"`
 	// CircuitBreaker configuration for this target (optional).

@@ -556,6 +556,11 @@ func (g *Gateway) servesSurface(key string, gate capabilityGate) bool {
 	return registered && gate(p)
 }
 
+// errAttemptTimeout is the cause placed on an attempt context whose
+// targets[].timeout elapsed. It wraps context.DeadlineExceeded so the error
+// classifies as the 504 an upstream that never answered already does.
+var errAttemptTimeout = fmt.Errorf("target attempt timeout: %w", context.DeadlineExceeded)
+
 // attemptTarget runs one target's retry policy, calling it under its breaker
 // and limiter on every try. attemptsActive is whether obs has opted into one
 // SubjectRoutingAttempt event per call; when it has not, no event is built.
@@ -600,7 +605,23 @@ func attemptTarget[Req, Resp any](
 			g.log.Ctx(ctx).Info("retrying target", "target", target.key, "attempt", attempt+1)
 		}
 		started := time.Now()
-		resp, err := callUnderResilience(ctx, target.key, p, cb, lim, req, upstreamModel, call)
+		// targets[].timeout bounds THIS attempt. The deadline lives on a child
+		// context, so the request's own deadline stays authoritative and an
+		// attempt that times out reads as a target failure — failover-safe,
+		// and never mistaken for the caller giving up (shouldAdvanceTarget
+		// consults the parent). For a stream the child bounds only the wait
+		// for the provider to answer: the stream itself runs on the context
+		// startStreamOn captured, so a stream that began in time is not cut
+		// off by its attempt deadline.
+		attemptCtx, cancelAttempt := ctx, func() {}
+		if policy.attemptTimeout > 0 {
+			attemptCtx, cancelAttempt = context.WithTimeoutCause(ctx, policy.attemptTimeout, errAttemptTimeout)
+		}
+		resp, err := callUnderResilience(attemptCtx, target.key, p, cb, lim, req, upstreamModel, call)
+		cancelAttempt()
+		if err != nil && ctx.Err() == nil && errors.Is(context.Cause(attemptCtx), errAttemptTimeout) {
+			err = fmt.Errorf("target %s: attempt timed out after %s: %w", target.key, policy.attemptTimeout, err)
+		}
 		(*attemptSequence)++
 		g.recordRoutingAttempt(ctx, obs, attemptsActive, routingAttempt{
 			target:         target,
