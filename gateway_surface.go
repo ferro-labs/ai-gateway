@@ -37,6 +37,7 @@ const (
 // rather than a union type wide enough to hold every surface's response.
 type surfaceRecord struct {
 	provider       string
+	attempts       int
 	routedModel    string
 	abVariantLabel string
 	hasABVariant   bool
@@ -83,7 +84,7 @@ func (r surfaceRecord) pluginView() *providers.Response {
 // they come to disagree when a catalog refresh lands between the two calls.
 // Chat splits calculateCost out of recordSuccess for the same reason.
 func (g *Gateway) priceSurface(target routedTarget, routedModel string, tokens providers.Usage, imageCount int) surfaceRecord {
-	record := surfaceRecord{provider: target.key, routedModel: routedModel, abVariantLabel: target.abVariantLabel, hasABVariant: target.hasABVariant, tokens: tokens, imageCount: imageCount}
+	record := surfaceRecord{provider: target.key, attempts: target.attempts, routedModel: routedModel, abVariantLabel: target.abVariantLabel, hasABVariant: target.hasABVariant, tokens: tokens, imageCount: imageCount}
 	g.mu.RLock()
 	catalog := g.catalog
 	g.mu.RUnlock()
@@ -337,7 +338,7 @@ func (g *Gateway) Embed(ctx context.Context, req providers.EmbeddingRequest) (*p
 		if routeErr != nil {
 			// target still names the last target attempted, which is what a
 			// per-provider error series needs to be worth anything.
-			return surfaceRecord{provider: target.key, routedModel: req.Model, abVariantLabel: target.abVariantLabel, hasABVariant: target.hasABVariant}, routeErr
+			return surfaceRecord{provider: target.key, attempts: target.attempts, routedModel: req.Model, abVariantLabel: target.abVariantLabel, hasABVariant: target.hasABVariant}, routeErr
 		}
 		resp = embedded
 		embedded.Model = req.Model
@@ -348,6 +349,9 @@ func (g *Gateway) Embed(ctx context.Context, req providers.EmbeddingRequest) (*p
 	})
 	latency := time.Since(start)
 	if err != nil {
+		if record.provider != "" {
+			span.SetAttribute(observability.AttrFerroRoutingAttempt, record.attempts)
+		}
 		safeErr := g.recordSurfaceError(ctx, span, obs, record.provider, req.Model, record.abVariantLabel, record.hasABVariant, err, latency, hooksEnabled, obsEventsActive)
 		log.Error("embedding request failed", "model", req.Model, "error", safeErr)
 		return nil, err
@@ -401,7 +405,7 @@ func (g *Gateway) GenerateImage(ctx context.Context, req providers.ImageRequest)
 		req.Model = model
 		generated, target, routeErr := g.routeImage(ctx, req)
 		if routeErr != nil {
-			return surfaceRecord{provider: target.key, routedModel: req.Model, abVariantLabel: target.abVariantLabel, hasABVariant: target.hasABVariant}, routeErr
+			return surfaceRecord{provider: target.key, attempts: target.attempts, routedModel: req.Model, abVariantLabel: target.abVariantLabel, hasABVariant: target.hasABVariant}, routeErr
 		}
 		resp = generated
 		// The provider's own token counts, not an empty literal: the gpt-image
@@ -413,6 +417,9 @@ func (g *Gateway) GenerateImage(ctx context.Context, req providers.ImageRequest)
 	})
 	latency := time.Since(start)
 	if err != nil {
+		if record.provider != "" {
+			span.SetAttribute(observability.AttrFerroRoutingAttempt, record.attempts)
+		}
 		safeErr := g.recordSurfaceError(ctx, span, obs, record.provider, req.Model, record.abVariantLabel, record.hasABVariant, err, latency, hooksEnabled, obsEventsActive)
 		log.Error("image generation request failed", "model", req.Model, "error", safeErr)
 		return nil, err
@@ -470,7 +477,7 @@ func (g *Gateway) Rerank(ctx context.Context, req providers.RerankRequest) (*pro
 		if routeErr != nil {
 			// target still names the last target attempted, which a per-provider
 			// error series needs to be worth anything.
-			return surfaceRecord{provider: target.key, routedModel: req.Model, abVariantLabel: target.abVariantLabel, hasABVariant: target.hasABVariant}, routeErr
+			return surfaceRecord{provider: target.key, attempts: target.attempts, routedModel: req.Model, abVariantLabel: target.abVariantLabel, hasABVariant: target.hasABVariant}, routeErr
 		}
 		resp = reranked
 		reranked.Model = req.Model
@@ -481,6 +488,9 @@ func (g *Gateway) Rerank(ctx context.Context, req providers.RerankRequest) (*pro
 	})
 	latency := time.Since(start)
 	if err != nil {
+		if record.provider != "" {
+			span.SetAttribute(observability.AttrFerroRoutingAttempt, record.attempts)
+		}
 		safeErr := g.recordSurfaceError(ctx, span, obs, record.provider, req.Model, record.abVariantLabel, record.hasABVariant, err, latency, hooksEnabled, obsEventsActive)
 		log.Error("rerank request failed", "model", req.Model, "error", safeErr)
 		return nil, err
@@ -529,7 +539,7 @@ func (g *Gateway) Moderate(ctx context.Context, req providers.ModerationRequest)
 		req.Model = model
 		moderated, target, routeErr := g.routeModeration(ctx, req)
 		if routeErr != nil {
-			return surfaceRecord{provider: target.key, routedModel: req.Model, abVariantLabel: target.abVariantLabel, hasABVariant: target.hasABVariant}, routeErr
+			return surfaceRecord{provider: target.key, attempts: target.attempts, routedModel: req.Model, abVariantLabel: target.abVariantLabel, hasABVariant: target.hasABVariant}, routeErr
 		}
 		resp = moderated
 		moderated.Model = req.Model
@@ -537,6 +547,9 @@ func (g *Gateway) Moderate(ctx context.Context, req providers.ModerationRequest)
 	})
 	latency := time.Since(start)
 	if err != nil {
+		if record.provider != "" {
+			span.SetAttribute(observability.AttrFerroRoutingAttempt, record.attempts)
+		}
 		safeErr := g.recordSurfaceError(ctx, span, obs, record.provider, req.Model, record.abVariantLabel, record.hasABVariant, err, latency, hooksEnabled, obsEventsActive)
 		log.Error("moderation request failed", "model", req.Model, "error", safeErr)
 		return nil, err
@@ -587,13 +600,16 @@ func (g *Gateway) Transcribe(ctx context.Context, req providers.TranscriptionReq
 		req.Model = model
 		transcribed, target, routeErr := g.routeTranscription(ctx, req)
 		if routeErr != nil {
-			return surfaceRecord{provider: target.key, routedModel: req.Model, abVariantLabel: target.abVariantLabel, hasABVariant: target.hasABVariant}, routeErr
+			return surfaceRecord{provider: target.key, attempts: target.attempts, routedModel: req.Model, abVariantLabel: target.abVariantLabel, hasABVariant: target.hasABVariant}, routeErr
 		}
 		resp = transcribed
 		return g.priceSurface(target, req.Model, providers.Usage{}, 0), nil
 	})
 	latency := time.Since(start)
 	if err != nil {
+		if record.provider != "" {
+			span.SetAttribute(observability.AttrFerroRoutingAttempt, record.attempts)
+		}
 		safeErr := g.recordSurfaceError(ctx, span, obs, record.provider, req.Model, record.abVariantLabel, record.hasABVariant, err, latency, hooksEnabled, obsEventsActive)
 		log.Error("transcription request failed", "model", req.Model, "error", safeErr)
 		return nil, err
@@ -644,13 +660,16 @@ func (g *Gateway) Speech(ctx context.Context, req providers.SpeechRequest) (*pro
 		req.Model = model
 		synthesized, target, routeErr := g.routeSpeech(ctx, req)
 		if routeErr != nil {
-			return surfaceRecord{provider: target.key, routedModel: req.Model, abVariantLabel: target.abVariantLabel, hasABVariant: target.hasABVariant}, routeErr
+			return surfaceRecord{provider: target.key, attempts: target.attempts, routedModel: req.Model, abVariantLabel: target.abVariantLabel, hasABVariant: target.hasABVariant}, routeErr
 		}
 		resp = synthesized
 		return g.priceSurface(target, req.Model, providers.Usage{}, 0), nil
 	})
 	latency := time.Since(start)
 	if err != nil {
+		if record.provider != "" {
+			span.SetAttribute(observability.AttrFerroRoutingAttempt, record.attempts)
+		}
 		safeErr := g.recordSurfaceError(ctx, span, obs, record.provider, req.Model, record.abVariantLabel, record.hasABVariant, err, latency, hooksEnabled, obsEventsActive)
 		log.Error("speech request failed", "model", req.Model, "error", safeErr)
 		return nil, err
@@ -691,6 +710,7 @@ func (g *Gateway) recordSurfaceSuccess(ctx context.Context, span observability.S
 	span.SetAttribute(observability.AttrGenAIResponseModel, record.routedModel)
 	if record.provider != "" {
 		span.SetAttribute(observability.AttrFerroRoutingTargetKey, record.provider)
+		span.SetAttribute(observability.AttrFerroRoutingAttempt, record.attempts)
 	}
 	span.SetTokens(record.tokens.PromptTokens, record.tokens.CompletionTokens, record.tokens.ReasoningTokens)
 	span.SetCost(observability.CostBreakdown{

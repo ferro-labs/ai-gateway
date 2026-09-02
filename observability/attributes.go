@@ -30,17 +30,20 @@ const (
 //
 // Planned: the following constants are part of the published schema surface
 // but are not yet wired into emitted spans — AttrFerroGatewayVersion,
-// AttrFerroRoutingAttempt, AttrFerroRoutingABVariantLabel, AttrFerroCacheHit,
+// AttrFerroRoutingABVariantLabel, AttrFerroCacheHit,
 // AttrFerroCacheKind, AttrFerroMCPDepth, AttrFerroCircuitBreakerState,
 // AttrFerroCircuitBreakerOpened, AttrFerroRequestAPIKeyID,
 // AttrFerroRequestTenantID, AttrFerroErrorUpstreamStatus,
 // AttrFerroErrorRetryCount, and AttrFerroForwardedParams.
 const (
-	AttrFerroSchemaVersion            = "ferro.schema.version"
-	AttrFerroGatewayTraceID           = "ferro.gateway.trace_id"
-	AttrFerroGatewayVersion           = "ferro.gateway.version"
-	AttrFerroRoutingStrategy          = "ferro.routing.strategy"
-	AttrFerroRoutingTargetKey         = "ferro.routing.target_key"
+	AttrFerroSchemaVersion    = "ferro.schema.version"
+	AttrFerroGatewayTraceID   = "ferro.gateway.trace_id"
+	AttrFerroGatewayVersion   = "ferro.gateway.version"
+	AttrFerroRoutingStrategy  = "ferro.routing.strategy"
+	AttrFerroRoutingTargetKey = "ferro.routing.target_key"
+	// AttrFerroRoutingAttempt is the routing-layer attempt count when the walk
+	// ended — provider calls plus local breaker/concurrency refusals, retries
+	// and failovers included — the same number X-Gateway-Attempts carries.
 	AttrFerroRoutingAttempt           = "ferro.routing.attempt"
 	AttrFerroRoutingABVariantLabel    = "ferro.routing.ab_variant_label"
 	AttrFerroCostUSD                  = "ferro.cost.usd"

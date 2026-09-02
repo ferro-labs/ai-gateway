@@ -266,6 +266,10 @@ func TestGateway_Route_StampsRoutingAttrs(t *testing.T) {
 	if s, ok := got.(string); !ok || s == "" {
 		t.Errorf("ferro.routing.target_key must be a non-empty string, got %T(%v)", got, got)
 	}
+	// ferro.routing.attempt carries the routing-layer attempt count — one here.
+	if attempts, ok := sp.attrs[observability.AttrFerroRoutingAttempt]; !ok || attempts != 1 {
+		t.Errorf("ferro.routing.attempt = %v (present %v), want 1", attempts, ok)
+	}
 }
 
 func TestGateway_RouteStream_StampsRoutingAttrs(t *testing.T) {

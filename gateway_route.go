@@ -318,6 +318,9 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	})
 	providerDuration += time.Since(providerStart)
 	latency := time.Since(start)
+	if target.key != "" {
+		span.SetAttribute(observability.AttrFerroRoutingAttempt, target.attempts)
+	}
 
 	if err != nil {
 		// target names the last target actually attempted. Reporting "" here

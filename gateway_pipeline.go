@@ -130,6 +130,9 @@ type routedTarget struct {
 	upstreamModel  string
 	abVariantLabel string
 	hasABVariant   bool
+	// attempts is the routing-layer attempt count when the walk ended: the
+	// value X-Gateway-Attempts and ferro.routing.attempt report.
+	attempts int
 }
 
 // routeTargets walks plan and returns the first target's answer.
@@ -210,6 +213,7 @@ func routeTargets[Req, Resp any](
 			// (LeastLatency.SelectTargets), and a measurement that included
 			// plugin and alias time would rank targets on work no target did.
 			g.latencyTracker.Record(key, upstreamModel, time.Since(started))
+			target.attempts = attemptSequence
 			recordAttribution(ctx, target, attemptSequence)
 			return resp, target, nil
 		}
@@ -234,6 +238,7 @@ func routeTargets[Req, Resp any](
 	if attempts == 0 {
 		return zero, routedTarget{}, errNoCapableTarget(plan.model)
 	}
+	lastTarget.attempts = attemptSequence
 	recordAttribution(ctx, lastTarget, attemptSequence)
 	if plan.advance && !stoppedEarly {
 		// Only a strategy that falls back can honestly claim this: it really did

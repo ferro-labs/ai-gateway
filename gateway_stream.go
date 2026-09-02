@@ -158,6 +158,7 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 	// Stamp the resolved target key (virtual key = provider name in this routing layer).
 	if providerName != "" {
 		span.SetAttribute(observability.AttrFerroRoutingTargetKey, providerName)
+		span.SetAttribute(observability.AttrFerroRoutingAttempt, target.attempts)
 	}
 	if err == nil && g.log.Enabled(ctx, logger.LevelDebug) {
 		g.log.Ctx(ctx).Debug("stream request started", "model", req.Model, "provider", providerName)

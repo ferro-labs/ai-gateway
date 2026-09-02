@@ -20,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pass-through proxy named a provider, and `/v1/chat/completions` named
   nothing. Embedders read the same values through
   `aigateway.WithRoutingAttribution`.
+- The request span carries `ferro.routing.attempt`, the routing-layer attempt
+  count when the walk ended (the same number as `X-Gateway-Attempts`), on
+  every routed surface. The attribute had been declared as planned since
+  `v1.1.0` and never emitted.
 - The embedded dashboard's strategy panel shows each target's `model_map`,
   a rule's `target_keys` chain in order, and a `metadata` predicate by its
   field; the mode cards describe the reworked least-latency, cost-optimized
