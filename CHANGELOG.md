@@ -48,7 +48,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   two fields is set; entries must be declared targets and may not repeat.
 - `strategy.sticky: { on: user, ttl: "1h" }` under `loadbalance` and `ab-test`
   pins each request to the same target — or A/B variant — for the same `user`
-  field, so a conversation keeps its provider prompt cache and a multi-turn
+  field — on chat, embeddings and images, the surfaces whose requests carry
+  one — so a conversation keeps its provider prompt cache and a multi-turn
   session does not flip variants. It is a stateless hash: no shared state,
   the same answer on every replica with the same config, a random draw for a
   request without `user`, and an optional `ttl` after which a pin may move.

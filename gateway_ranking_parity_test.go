@@ -188,7 +188,7 @@ func paritySurfaces() map[string]func(t *testing.T, gw *Gateway, model string) [
 	viaSurface := func(surface string) func(t *testing.T, gw *Gateway, model string) []string {
 		return func(t *testing.T, gw *Gateway, model string) []string {
 			t.Helper()
-			keys, err := gw.surfaceTargetOrder(model, surface)
+			keys, err := gw.surfaceTargetOrder(providers.Request{Model: model}, surface)
 			if err != nil {
 				t.Fatalf("surfaceTargetOrder: %v", err)
 			}

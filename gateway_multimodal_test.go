@@ -503,7 +503,7 @@ func TestGateway_MultimodalHonorsLatencyAndCostStrategies(t *testing.T) {
 		// would teach the tracker that "slow" is not slow at all.
 		leads := map[string]int{}
 		for range 200 {
-			keys, err := gw.surfaceTargetOrder("embed-model", surfaceEmbeddings)
+			keys, err := gw.surfaceTargetOrder(providers.Request{Model: "embed-model"}, surfaceEmbeddings)
 			if err != nil {
 				t.Fatalf("surfaceTargetOrder: %v", err)
 			}

@@ -76,7 +76,7 @@ func TestSurfaceTargetOrder_UnpricedSkipIsNoCapableProvider(t *testing.T) {
 	})
 	gw.RegisterProvider(ep)
 
-	_, err := gw.surfaceTargetOrder("unpriced-embed-model", surfaceEmbeddings)
+	_, err := gw.surfaceTargetOrder(providers.Request{Model: "unpriced-embed-model"}, surfaceEmbeddings)
 	if err == nil {
 		t.Fatal("expected skip mode with no priced candidate to fail")
 	}
@@ -883,7 +883,7 @@ func TestSurfaceTargetOrder_ContentBasedFallsToTheFirstCapableTarget(t *testing.
 	capable := &mockEmbeddingProvider{mockProvider: mockProvider{name: "capable", models: []string{"embed-model"}}}
 	gw.RegisterProvider(capable)
 
-	keys, err := gw.surfaceTargetOrder("embed-model", surfaceEmbeddings)
+	keys, err := gw.surfaceTargetOrder(providers.Request{Model: "embed-model"}, surfaceEmbeddings)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -891,4 +891,51 @@ func TestSurfaceTargetOrder_ContentBasedFallsToTheFirstCapableTarget(t *testing.
 	if _, err := gw.Embed(context.Background(), providers.EmbeddingRequest{Model: "embed-model", Input: "hi"}); err != nil || capable.calls != 1 {
 		t.Fatalf("Embed err=%v capable.calls=%d, want the capable target to serve", err, capable.calls)
 	}
+}
+
+// The caller's `user` reaches the strategy on the surfaces that carry one, so
+// sticky hashing pins an embeddings caller and a `key: user` rule matches an
+// image request exactly as they do on chat.
+func TestSurfaceTargetOrder_CarriesTheUserToTheStrategy(t *testing.T) {
+	t.Run("sticky pins an embeddings caller", func(t *testing.T) {
+		gw, err := newTestGateway(t, config.Config{
+			Strategy: config.StrategyConfig{Mode: config.ModeLoadBalance, Sticky: &config.StickyConfig{On: config.StickyOnUser}},
+			Targets:  []config.Target{{VirtualKey: "a", Weight: 1}, {VirtualKey: "b", Weight: 1}},
+		})
+		if err != nil {
+			t.Fatalf("new gateway: %v", err)
+		}
+		a := &mockEmbeddingProvider{mockProvider: mockProvider{name: "a", models: []string{"embed-model"}}}
+		b := &mockEmbeddingProvider{mockProvider: mockProvider{name: "b", models: []string{"embed-model"}}}
+		gw.RegisterProvider(a)
+		gw.RegisterProvider(b)
+		for range 30 {
+			if _, err := gw.Embed(context.Background(), providers.EmbeddingRequest{Model: "embed-model", Input: "hi", User: "alice"}); err != nil {
+				t.Fatalf("Embed: %v", err)
+			}
+		}
+		if a.calls != 0 && b.calls != 0 {
+			t.Fatalf("alice was spread a=%d b=%d; sticky on user must pin her to one target", a.calls, b.calls)
+		}
+	})
+
+	t.Run("a user rule matches an image request", func(t *testing.T) {
+		gw, err := newTestGateway(t, config.Config{
+			Strategy: config.StrategyConfig{Mode: config.ModeConditional, Conditions: []config.Condition{{Key: config.ConditionKeyUser, Value: "vip", TargetKey: "premium"}}},
+			Targets:  []config.Target{{VirtualKey: "standard"}, {VirtualKey: "premium"}},
+		})
+		if err != nil {
+			t.Fatalf("new gateway: %v", err)
+		}
+		standard := &mockImageProvider{mockProvider: mockProvider{name: "standard", models: []string{"image-model"}}}
+		premium := &mockImageProvider{mockProvider: mockProvider{name: "premium", models: []string{"image-model"}}}
+		gw.RegisterProvider(standard)
+		gw.RegisterProvider(premium)
+		if _, err := gw.GenerateImage(context.Background(), providers.ImageRequest{Model: "image-model", Prompt: "cat", User: "vip"}); err != nil {
+			t.Fatalf("GenerateImage: %v", err)
+		}
+		if premium.calls != 1 || standard.calls != 0 {
+			t.Fatalf("calls premium=%d standard=%d; the user rule must route the vip caller", premium.calls, standard.calls)
+		}
+	})
 }

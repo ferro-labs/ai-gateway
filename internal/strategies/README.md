@@ -138,9 +138,9 @@ wins; when no rule matches, the request goes to the fallback target. Supported
 keys: `model`, `model_prefix`, `user` (the request's `user` field), `stream` and
 `has_tools` (`"true"` / `"false"`), and `metadata`, which reads one entry —
 named by `field` — of the single `X-Gateway-Metadata` request header, a small
-JSON object of scalar values. No other header is ever exposed to a rule. The
-request-shaped keys are chat-only; on embeddings and the other surfaces they
-match nothing.
+JSON object of scalar values. No other header is ever exposed to a rule. `user`
+also applies to embeddings and image requests, which carry the field; `stream`,
+`has_tools` and `metadata` are chat-only and match nothing elsewhere.
 
 ```yaml
 strategy:
