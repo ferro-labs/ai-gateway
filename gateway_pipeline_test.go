@@ -1007,3 +1007,30 @@ func TestRoute_AfterRequestPluginFailureIsCountedAndTimed(t *testing.T) {
 		t.Errorf("failed request added %v to the error counter, want 1", delta)
 	}
 }
+
+// TestPipeline_AttributionCountsEveryAttempt: the attribution a handler reads
+// back names the target that answered and counts every routing-layer attempt
+// that preceded it, so a failover shows as two attempts on the response.
+func TestPipeline_AttributionCountsEveryAttempt(t *testing.T) {
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeFallback},
+		Targets:  []config.Target{{VirtualKey: "dead"}, {VirtualKey: "alive", ModelMap: map[string]string{pipelineModel: "alive-upstream"}}},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+	gw.RegisterProviderAs("dead", newCountingProvider("vendor-a", func() (*providers.Response, error) {
+		return nil, core.StatusError("dead", http.StatusServiceUnavailable, "down")
+	}))
+	gw.RegisterProviderAs("alive", &mockProvider{name: "vendor-b", models: []string{"alive-upstream"}, resp: &providers.Response{ID: "ok"}})
+
+	attribution := &RoutingAttribution{}
+	ctx := WithRoutingAttribution(context.Background(), attribution)
+	if _, err := gw.Route(ctx, pipelineRequest()); err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	want := RoutingAttribution{Provider: "vendor-b", Target: "alive", Model: "alive-upstream", Attempts: 2}
+	if *attribution != want {
+		t.Fatalf("attribution = %+v, want %+v", *attribution, want)
+	}
+}

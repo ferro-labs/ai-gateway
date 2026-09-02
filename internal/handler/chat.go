@@ -46,16 +46,21 @@ func ChatCompletions(gw *aigateway.Gateway) http.HandlerFunc {
 		// candidate for a streaming request, which is exactly what a target that
 		// cannot embed is for /v1/embeddings — and that surface has always
 		// reported it as model_not_found. One capability miss, one answer.
+		attribution := &aigateway.RoutingAttribution{}
+		ctx := aigateway.WithRoutingAttribution(r.Context(), attribution)
 		if req.Stream {
 			// The producer runs under a context this handler can cancel WITH A
 			// REASON. Without one, the only cancellation it ever saw was the
 			// request context dying as the handler returned, which says nothing
 			// about why — so the gateway's own idle bound firing on a stalled
 			// upstream was recorded as the caller hanging up.
-			streamCtx, cancelStream := context.WithCancelCause(r.Context())
+			streamCtx, cancelStream := context.WithCancelCause(ctx)
 			defer cancelStream(nil)
 
 			ch, err := gw.RouteStream(streamCtx, req)
+			// The pipeline has finished walking targets by the time the
+			// stream starts, so the headers are known before the first byte.
+			attribution.SetHeaders(w.Header())
 			if err != nil {
 				apierror.WriteRouteError(w, err)
 				return
@@ -65,7 +70,8 @@ func ChatCompletions(gw *aigateway.Gateway) http.HandlerFunc {
 		}
 
 		// --- Non-streaming path ---
-		resp, err := gw.Route(r.Context(), req)
+		resp, err := gw.Route(ctx, req)
+		attribution.SetHeaders(w.Header())
 		if err != nil {
 			apierror.WriteRouteError(w, err)
 			return

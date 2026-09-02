@@ -176,7 +176,9 @@ func Completions(gw *aigateway.Gateway) http.HandlerFunc {
 			User:             legacyReq.User,
 		}
 
-		chatResp, err := gw.Route(r.Context(), chatReq)
+		attribution := &aigateway.RoutingAttribution{}
+		chatResp, err := gw.Route(aigateway.WithRoutingAttribution(r.Context(), attribution), chatReq)
+		attribution.SetHeaders(w.Header())
 		if err != nil {
 			apierror.WriteRouteError(w, err)
 			return
@@ -207,9 +209,6 @@ func Completions(gw *aigateway.Gateway) http.HandlerFunc {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		if chatResp.Provider != "" {
-			w.Header().Set("X-Gateway-Provider", chatResp.Provider)
-		}
 		json.NewEncoder(w).Encode(legacy) //nolint:errcheck,gosec // response headers already committed; an encode error to the client cannot be reported
 	}
 }

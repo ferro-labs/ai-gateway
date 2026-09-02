@@ -205,6 +205,7 @@ func routeTargets[Req, Resp any](
 			// (LeastLatency.SelectTargets), and a measurement that included
 			// plugin and alias time would rank targets on work no target did.
 			g.latencyTracker.Record(key, upstreamModel, time.Since(started))
+			recordAttribution(ctx, target, attemptSequence)
 			return resp, target, nil
 		}
 		lastErr = fmt.Errorf("target %s: %w", key, err)
@@ -225,6 +226,7 @@ func routeTargets[Req, Resp any](
 	if attempts == 0 {
 		return zero, routedTarget{}, errNoCapableTarget(plan.model)
 	}
+	recordAttribution(ctx, lastTarget, attemptSequence)
 	if plan.advance && !stoppedEarly {
 		// Only a strategy that falls back can honestly claim this: it really did
 		// ask every candidate. A single-target mode asked one, and says so.
@@ -599,9 +601,7 @@ func attemptTarget[Req, Resp any](
 		}
 		started := time.Now()
 		resp, err := callUnderResilience(ctx, target.key, p, cb, lim, req, upstreamModel, call)
-		if attemptsActive {
-			(*attemptSequence)++
-		}
+		(*attemptSequence)++
 		g.recordRoutingAttempt(ctx, obs, attemptsActive, routingAttempt{
 			target:         target,
 			routedModel:    routedModel,

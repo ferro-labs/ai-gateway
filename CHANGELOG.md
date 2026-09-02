@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Attribution response headers on every routed surface — chat, streaming chat
+  (written before the first chunk), legacy completions, embeddings, images,
+  rerank, moderations, transcriptions and speech: `X-Gateway-Provider` (the
+  serving target's canonical provider), `X-Gateway-Target` (its
+  `targets[].virtual_key`), `X-Gateway-Model` (the upstream model sent to the
+  provider, after `model_map`) and `X-Gateway-Attempts` (routing-layer
+  attempts for the request, retries and failovers included). A failed request
+  carries the last target attempted. Previously only `/v1/completions` and the
+  pass-through proxy named a provider, and `/v1/chat/completions` named
+  nothing. Embedders read the same values through
+  `aigateway.WithRoutingAttribution`.
+
 ### Changed
 
 - Every routed surface ranks its targets through the one strategy

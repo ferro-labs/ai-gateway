@@ -897,6 +897,29 @@ The cost lands on the config editor: a withheld value comes back as
 anywhere rather than overwrite a live credential with the placeholder text.
 Replace it with the real value or a `${VAR}` reference before saving.
 
+### Attribution headers
+
+Every routed surface — `/v1/chat/completions` (streamed or not),
+`/v1/completions`, `/v1/embeddings`, `/v1/images/generations`, `/v1/rerank`,
+`/v1/moderations`, `/v1/audio/transcriptions`, `/v1/audio/translations` and
+`/v1/audio/speech` — answers with four headers naming the target that served
+it, or on failure the last one attempted:
+
+| Header | Value |
+|--------|-------|
+| `X-Gateway-Provider` | the serving target's canonical provider (`openai`) |
+| `X-Gateway-Target` | the target key as configured: `targets[].virtual_key` |
+| `X-Gateway-Model` | the upstream model sent to the provider, after `model_map` |
+| `X-Gateway-Attempts` | routing-layer attempts for the request: provider calls plus local breaker/concurrency refusals, retries and failovers included |
+
+On a stream they are written before the first chunk, because the pipeline has
+finished choosing by then. A request refused before any target was attempted —
+a plugin denial, a model nothing serves — carries none. The value is never a
+credential: the target key is the config string, not the key it names. An
+embedder reads the same data by passing a `*aigateway.RoutingAttribution`
+through `aigateway.WithRoutingAttribution` on the request context. The
+pass-through proxy (`/v1/*`) keeps emitting `X-Gateway-Provider` only.
+
 ### Legacy completions
 
 `/v1/completions` wraps the prompt as a single user message and routes it through
