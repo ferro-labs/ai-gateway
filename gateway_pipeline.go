@@ -210,6 +210,9 @@ func routeTargets[Req, Resp any](
 		}
 		lastErr = fmt.Errorf("target %s: %w", key, err)
 		maskedKey, maskedErr = key, err
+		if isRateLimitError(err) {
+			g.parkRateLimited(key, err)
+		}
 		if !plan.advance {
 			break
 		}
@@ -295,8 +298,8 @@ func (g *Gateway) eligibleKeys(plan targetPlan, gate capabilityGate) []string {
 	return keys[:1]
 }
 
-// healthyKeys drops the candidates whose circuit is OPEN, and does so under
-// every routing mode.
+// healthyKeys drops the candidates whose circuit is OPEN or that are parked
+// after a 429 (see parkRateLimited), and does so under every routing mode.
 //
 // The NAMED modes commit to one of the keys the strategy chose, and do not
 // advance past it (see advancesPastFailure). Selection itself was breaker-blind,
@@ -351,9 +354,17 @@ func (g *Gateway) healthyKeys(plan targetPlan) []string {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 
+	now := g.now()
 	var healthy []string
 	for i, key := range plan.keys {
+		open := false
 		if cb := g.circuitBreakers[key]; cb != nil && cb.State() == circuitbreaker.StateOpen {
+			open = true
+		}
+		if until, parked := g.cooldowns[key]; parked && until.After(now) {
+			open = true
+		}
+		if open {
 			if healthy == nil {
 				// First open target: copy what was kept so far, and only now.
 				healthy = make([]string, 0, len(plan.keys)-1)
@@ -833,3 +844,30 @@ func (g *Gateway) routeChat(ctx context.Context, s strategies.Strategy, req prov
 // interceptors wrap a ClientStream instead of post-processing a result: a hook
 // shaped like a unary return cannot observe a terminal status that arrives
 // later.
+
+const (
+	// defaultRateLimitCooldown parks a target that answered 429 with no usable
+	// Retry-After. Short on purpose: a rate limit is a "come back later", and
+	// the target is a healthy one the operator wants traffic on.
+	defaultRateLimitCooldown = 5 * time.Second
+	// maxRateLimitCooldown caps how long one Retry-After can park a target,
+	// so a single excessive header cannot take it out of rotation for an hour.
+	maxRateLimitCooldown = time.Minute
+)
+
+// parkRateLimited records that key answered 429 and must not be offered
+// traffic until its Retry-After has elapsed — bounded, and the default when
+// the hint is absent or unusable. Same-request retry already honours the
+// hint; without this the NEXT request still received its full share on the
+// throttled target and paid another 429. Only the offending target is parked,
+// and its breaker is untouched: a rate limit is not a failure of the target.
+func (g *Gateway) parkRateLimited(key string, err error) {
+	cooldown := providers.RetryAfterFrom(err)
+	if cooldown <= 0 {
+		cooldown = defaultRateLimitCooldown
+	}
+	cooldown = min(cooldown, maxRateLimitCooldown)
+	g.mu.Lock()
+	g.cooldowns[key] = g.now().Add(cooldown)
+	g.mu.Unlock()
+}

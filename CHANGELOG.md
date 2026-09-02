@@ -28,6 +28,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   failure, so a hung primary no longer consumes the whole request budget
   before a pool mode moves on. Answered `504 gateway_timeout` when every
   target times out.
+- A target that answers `429` is parked for its `Retry-After` — bounded to
+  one minute, five seconds when the hint is absent or unusable — so the next
+  request does not pay another `429` on it. Same-request retry already
+  honoured the hint; cross-request memory is new. Only the offending target
+  is parked, its circuit breaker is untouched, and when every target that
+  serves a model is parked the request is still attempted, as it is when
+  every circuit is open. The park is process-local, like breaker and latency
+  state.
 - `aigateway.WithCatalog(models.Catalog)`, an option to `aigateway.New`, hands
   the gateway the model catalog it prices and ranks with in place of the
   embedded or remote one, which is then neither loaded nor refreshed. A host

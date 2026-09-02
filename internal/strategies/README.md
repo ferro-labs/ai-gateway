@@ -49,7 +49,11 @@ target; named modes also stop after any provider-call failure.
 Under **every** mode, a target whose **circuit breaker is open** is skipped when
 the choice is made, so a backend the gateway has already decided not to call
 takes no traffic while a healthy target is configured. When every candidate's
-circuit is open the request is still attempted and answered `503`.
+circuit is open the request is still attempted and answered `503`. A target
+that answered `429` is skipped the same way until its `Retry-After` elapses
+(capped at a minute; five seconds when the header is missing), without its
+breaker counting the rate limit as a failure. Breaker, latency and cooldown
+state are all local to one gateway process.
 
 ## The strategies
 

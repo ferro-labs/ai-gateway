@@ -75,10 +75,16 @@ type Gateway struct {
 	// struct is the intended idiom here: it is created once in New, parents the
 	// gateway's background workers (hook dispatch, catalog refresh, MCP init), and
 	// is cancelled by Close() to signal shutdown. It is never a per-request context.
-	shutdownCtx      context.Context
-	shutdownCancel   context.CancelFunc
-	circuitBreakers  map[string]*circuitbreaker.CircuitBreaker
-	limiters         map[string]*providerLimiter
+	shutdownCtx     context.Context
+	shutdownCancel  context.CancelFunc
+	circuitBreakers map[string]*circuitbreaker.CircuitBreaker
+	limiters        map[string]*providerLimiter
+	// cooldowns parks a target that answered 429 until the instant recorded
+	// here (see parkRateLimited). Process-local, like every other health
+	// signal on this gateway. Guarded by mu.
+	cooldowns map[string]time.Time
+	// now is the clock cooldowns are measured on; tests replace it.
+	now              func() time.Time
 	discoveredModels map[string][]providers.ModelInfo
 
 	// catalogModels caches catalog.ModelsForProvider per registered provider.
@@ -201,6 +207,8 @@ func New(cfg config.Config, opts ...Option) (*Gateway, error) {
 	gw.plugins = plugin.NewManager(gw.log)
 	gw.circuitBreakers = make(map[string]*circuitbreaker.CircuitBreaker)
 	gw.limiters = make(map[string]*providerLimiter)
+	gw.cooldowns = make(map[string]time.Time)
+	gw.now = time.Now
 	gw.discoveredModels = make(map[string][]providers.ModelInfo)
 	gw.latencyTracker = latency.New(0) // default window size (100 samples)
 	gw.modelIndex = modelLookupIndex{
