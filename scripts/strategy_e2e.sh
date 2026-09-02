@@ -186,6 +186,9 @@ check "stream start fails over: the sibling's stream reaches the client and ends
   "code=$CODE content=$SCONTENT done=$SDONE"
 check "streamed chunks carry the routed model, not the upstream's" "$([ "$SMODEL" = "$SHARED" ] && echo 0 || echo 1)" "model=$SMODEL"
 
+# The 429 above parked groq for its Retry-After (1s); this cell needs groq to
+# serve, so wait the park out.
+sleep 1.2
 reset_mocks; scenario groq '{"stream_fail_after":1}'
 stream "$SHARED" hi
 check "a stream that fails after its first byte ends with an error frame and is not failed over" \
@@ -264,12 +267,14 @@ YAML
 )"
 scenario together '{"delay_ms":120}'
 tally 30 "$SHARED"
-check "a slower sibling receives only its profiling requests; the fast target serves ≥ 90%" \
-  "$([ "$T_groq" -ge 27 ] && [ "$T_err" = 0 ] && echo 0 || echo 1)" "groq=$T_groq together=$T_together errors=$T_err"
+# One request in ten explores a sampled non-leader (see least-latency in
+# internal/strategies/README.md), so the fast target serves about 90%.
+check "a slower sibling receives its profiling request and the exploration share; the fast target serves ≥ 80%" \
+  "$([ "$T_groq" -ge 24 ] && [ "$T_err" = 0 ] && echo 0 || echo 1)" "groq=$T_groq together=$T_together errors=$T_err"
 heal together; scenario groq '{"delay_ms":120}'
-tally 30 "$SHARED"
-check "(characterization) the leader keeps the traffic once it has slowed down — only the selected target records samples; rework is scheduled for v1.5.2" \
-  "$([ "$T_groq" -ge 24 ] && echo 0 || echo 1)" "groq=$T_groq together=$T_together"
+tally 100 "$SHARED"
+check "a leader that slows down loses leadership: the healed sibling takes a large share" \
+  "$([ "$T_together" -ge 30 ] && echo 0 || echo 1)" "groq=$T_groq together=$T_together"
 stop_gw
 
 # ── 5. cost-optimized ────────────────────────────────────────────────────────────

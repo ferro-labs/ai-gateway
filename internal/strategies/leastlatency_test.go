@@ -19,7 +19,11 @@ func TestLeastLatency_PicksFastest(t *testing.T) {
 	targets := []Target{{VirtualKey: "fast"}, {VirtualKey: "slow"}}
 	s := NewLeastLatency(targets, newLookup(fast, slow), tr)
 
-	assertLeadsWith(t, s, providers.Request{Model: "gpt-4o"}, "fast")
+	// Read through the exploration share: the fastest target leads the large
+	// majority of selections, not every one.
+	if leader := leaderOver(t, s, "gpt-4o", 200); leader != "fast" {
+		t.Fatalf("leader = %q, want fast", leader)
+	}
 }
 
 func TestLeastLatency_UnseenTargetsLeadSoTheyGetProfiled(t *testing.T) {
