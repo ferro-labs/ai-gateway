@@ -663,32 +663,6 @@ func TestGateway_Route_AfterPluginFailureEmitsOneABFailedTerminal(t *testing.T) 
 	}
 }
 
-func TestGateway_Route_AttributesConfiguredEmptyABVariant(t *testing.T) {
-	gw, err := newTestGateway(t, config.Config{
-		Strategy: config.StrategyConfig{Mode: config.ModeABTest, ABVariants: []config.ABVariantConfig{{TargetKey: "mock", Weight: 1}}},
-		Targets:  []config.Target{{VirtualKey: "mock"}},
-	})
-	if err != nil {
-		t.Fatalf("new gateway: %v", err)
-	}
-	ep := &eventCapturingProvider{recordingActive: true}
-	gw.SetObservability(ep)
-	gw.RegisterProvider(&mockProvider{name: "mock", models: []string{testModel}, resp: &providers.Response{ID: "ok", Provider: "mock", Model: testModel}})
-
-	if _, err := gw.Route(context.Background(), providers.Request{Model: testModel}); err != nil {
-		t.Fatalf("Route: %v", err)
-	}
-	for _, event := range ep.capturedEvents() {
-		if event.Subject != observability.SubjectRoutingAttempt && event.Subject != "gateway.request.completed" {
-			continue
-		}
-		got, ok := event.Attributes[observability.AttrFerroRoutingABVariantLabel]
-		if !ok || got != "" {
-			t.Errorf("%s variant label = %#v, present = %v; want present empty string", event.Subject, got, ok)
-		}
-	}
-}
-
 func TestGateway_RouteStream_AttributesABVariantOnTerminalEvents(t *testing.T) {
 	for _, tc := range []struct {
 		name        string

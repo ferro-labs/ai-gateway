@@ -67,6 +67,12 @@ func LoadConfig(path string) (*Config, error) {
 		logger.Default().Warn("config: unrecognized apiVersion; proceeding for forward compatibility",
 			"apiVersion", cfg.APIVersion, "expected", CurrentAPIVersion)
 	}
+	// A warning, not a refusal: an omitted strategy block defaults to single,
+	// so every multi-target config written without one is this config.
+	if cfg.Strategy.Mode == ModeSingle && len(cfg.Targets) > 1 {
+		logger.Default().Warn("config: strategy mode single asks only the first target; the others are never used",
+			"first", cfg.Targets[0].VirtualKey, "unused", len(cfg.Targets)-1)
+	}
 
 	return &cfg, nil
 }
@@ -540,15 +546,17 @@ func validateABVariants(variants []ABVariantConfig, targets []Target) error {
 		if err := requireDeclaredTarget(fmt.Sprintf("ab_variants[%d]", i), v.TargetKey, targets); err != nil {
 			return err
 		}
+		// Attribution keys on the label — ferro.routing.ab_variant_label, the
+		// routing.attempt event, the request log — so an unlabelled variant
+		// is one nothing can report on.
+		if v.Label == "" {
+			return fmt.Errorf("ab_variants[%d]: label is required", i)
+		}
 		if first, duplicate := seenTargets[v.TargetKey]; duplicate {
 			return fmt.Errorf("ab_variants[%d].target_key %q duplicates ab_variants[%d].target_key", i, v.TargetKey, first)
 		}
 		seenTargets[v.TargetKey] = i
-		name := v.Label
-		if name == "" {
-			name = v.TargetKey
-		}
-		weights = append(weights, namedWeight{name: name, weight: v.Weight})
+		weights = append(weights, namedWeight{name: v.Label, weight: v.Weight})
 	}
 	return validateWeights("ab_variant", weights)
 }

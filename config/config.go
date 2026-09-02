@@ -341,7 +341,7 @@ type ABVariantConfig struct {
 	// config error, and so is an all-zero set — with nothing left to select, the
 	// gateway would answer every request 404 while reporting itself ready.
 	Weight float64 `json:"weight" yaml:"weight"`
-	// Label is the value emitted as ferro.routing.ab_variant_label on every
+	// Label is required. It is the value emitted as ferro.routing.ab_variant_label on every
 	// routing attempt and terminal event for a request assigned to this variant.
 	Label string `json:"label" yaml:"label"`
 }

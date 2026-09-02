@@ -29,6 +29,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Configuration loading now refuses an `ab_variants[]` entry without a
+  `label`: attribution keys on it, so an unlabelled variant was one nothing
+  could report on. A `v1.5.1` config with an unlabelled variant no longer
+  loads until one is added. A `single` strategy with more than one target
+  now logs a warning at load naming the unused targets; it still loads, since
+  an omitted `strategy` block defaults to `single`.
 - Every routed surface ranks its targets through the one strategy
   implementation chat and streaming already used. Embeddings, images, rerank,
   moderation, transcription and speech previously ranked through a second copy
