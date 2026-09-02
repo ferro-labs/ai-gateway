@@ -85,8 +85,8 @@ func parityCases() []parityCase {
 			strategy: config.StrategyConfig{Mode: config.ModeConditional, Conditions: []config.Condition{{Key: config.ConditionKeyModel, Value: parityModel, TargetKey: "c"}}},
 			targets:  four,
 			model:    parityModel,
-			// The tail is the substitution set the pipeline uses before it commits.
-			wantOrder: []string{"c", "a", "b", "d"},
+			// The chain is the whole answer: nothing outside it is substituted.
+			wantOrder: []string{"c"},
 		},
 		{
 			// d serves a different model: it is a candidate nowhere, so it ends

@@ -759,7 +759,7 @@ What happens next depends on whether another target serves the model:
 
 | Other targets serve the model | Behaviour once the circuit opens |
 |-------------------------------|----------------------------------|
-| yes | the open target is skipped during selection, under **every** routing mode that offers a sibling, and traffic silently moves to it — including under `conditional` and `content-based`, where a rule named one target on purpose. `single` offers no sibling: its strategy selects exactly one target, so an open circuit there is refused with `503`, whatever else the config lists |
+| yes | the open target is skipped during selection, under **every** routing mode, among the candidates that mode offers — a pool's siblings, or a rule's `target_keys` chain. `single` and a rule with one target offer no sibling: the strategy selects exactly what was named, so an open circuit there is refused with `503`, whatever else the config lists |
 | no | the walk attempts it anyway (the filter fails open rather than answering a 404 for a model that plainly exists), the breaker refuses, and the caller gets `503 upstream_unavailable` |
 
 So the symptom an operator sees on the chat surface is either a routing shift
@@ -796,7 +796,7 @@ Modes split by what their leading candidate *means*
 | | Modes | On a failure |
 |---|---|---|
 | **Pool** | `fallback`, `loadbalance`, `least-latency`, `cost-optimized`, `ab-test` | the walk advances only after a failover-safe failure |
-| **Named** | `single`, `conditional`, `content-based` | the walk stops and reports the failure |
+| **Named** | `single`, `conditional`, `content-based` | the walk stays inside what was named: `single` stops; a rule walks its `target_keys` chain on the same failover-safe classes and stops at its end |
 
 A pool mode picks its head for a reason that is about the pool rather than
 about that target — spread the load, take the cheapest, take the fastest, split
@@ -812,10 +812,12 @@ cancellation or deadline and every other 4xx stop at the current target.
 
 A named mode picks its head because something named that target specifically:
 `single` names it, and a `conditional` or `content-based` rule matched it.
-Serving from somebody else would demote the rule to a suggestion, so these
-report the failure instead. They still move off a target whose **circuit is
-open**, because that is a target the gateway has already decided not to call —
-see the table above; the two rules are independent.
+Serving from somebody else would demote the rule to a suggestion. A rule may
+name an ordered chain (`target_keys`), which is a boundary: the walk advances
+within it on the failover-safe classes, skips a member whose circuit is open or
+that is parked after a `429`, and never substitutes a target outside it. A rule
+with one target (`target_key`) is exact — its circuit being open is a `503`,
+not a reason to borrow a sibling.
 
 Without a breaker the walk pays the dead target's connection timeout on every
 request before advancing. That is the cost the breaker removes, and the reason

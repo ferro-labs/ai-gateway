@@ -296,8 +296,16 @@ type Condition struct {
 	// rule's traffic to the fallback target instead.
 	Key   string `json:"key" yaml:"key"`
 	Value string `json:"value" yaml:"value"`
-	// TargetKey must name one of the configured targets[].virtual_key.
-	TargetKey string `json:"target_key" yaml:"target_key"`
+	// TargetKey names the one target this rule routes to; it must be a
+	// configured targets[].virtual_key. Sugar for a one-entry TargetKeys.
+	TargetKey string `json:"target_key,omitempty" yaml:"target_key,omitempty"`
+	// TargetKeys is the rule's ordered target chain. The walk tries them in
+	// order, advancing only on a failover-safe failure and skipping one whose
+	// circuit is open, that is saturated, or that is parked after a 429. The
+	// chain is a boundary: no target outside it is ever substituted, so a
+	// rule with one target is exact. Exactly one of TargetKey and TargetKeys
+	// is set.
+	TargetKeys []string `json:"target_keys,omitempty" yaml:"target_keys,omitempty"`
 }
 
 // ConditionKey* are the accepted values for Condition.Key. The set is closed:
@@ -327,8 +335,29 @@ type ContentCondition struct {
 	// Value is the substring or regex pattern to match against.
 	Value string `json:"value" yaml:"value"`
 	// TargetKey is the virtual_key of the provider to route to when this rule
-	// matches. It must name one of the configured targets.
-	TargetKey string `json:"target_key" yaml:"target_key"`
+	// matches. It must name one of the configured targets. Sugar for a
+	// one-entry TargetKeys.
+	TargetKey string `json:"target_key,omitempty" yaml:"target_key,omitempty"`
+	// TargetKeys is the rule's ordered target chain; see Condition.TargetKeys.
+	TargetKeys []string `json:"target_keys,omitempty" yaml:"target_keys,omitempty"`
+}
+
+// Chain returns the rule's target chain: TargetKeys, or TargetKey as a
+// one-entry chain.
+func (c Condition) Chain() []string { return ruleChain(c.TargetKey, c.TargetKeys) }
+
+// Chain returns the rule's target chain: TargetKeys, or TargetKey as a
+// one-entry chain.
+func (c ContentCondition) Chain() []string { return ruleChain(c.TargetKey, c.TargetKeys) }
+
+func ruleChain(targetKey string, targetKeys []string) []string {
+	if len(targetKeys) > 0 {
+		return targetKeys
+	}
+	if targetKey == "" {
+		return nil
+	}
+	return []string{targetKey}
 }
 
 // ContentConditionType* are the accepted values for ContentCondition.Type.

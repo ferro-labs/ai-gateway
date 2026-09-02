@@ -761,16 +761,24 @@ func (g *Gateway) planFor(model string, keys []string) targetPlan {
 // A breaker remains worth configuring, and does a different job: it stops the
 // walk from paying the dead target's connection timeout on every request. It is
 // what makes failover CHEAP; this is what makes it HAPPEN.
+//
+// A rule mode (`conditional`, `content-based`) sits between the two: its
+// strategy returns exactly the matched rule's target chain — a one-entry chain
+// for `target_key` — and nothing outside it, so the walk advances within the
+// chain under the same failover-safe classes a pool uses and can never reach
+// a target the rule did not name. Exactness comes from the candidate list
+// being the chain, not from refusing to advance.
 func advancesPastFailure(mode config.StrategyMode) bool {
 	switch mode {
 	case config.ModeFallback, config.ModeLoadBalance, config.ModeLatency,
-		config.ModeCostOptimized, config.ModeABTest:
+		config.ModeCostOptimized, config.ModeABTest,
+		config.ModeConditional, config.ModeContentBased:
 		return true
 	default:
-		// single, conditional, content-based — and anything added later, which
-		// stops at its head until this switch says otherwise. That is the safe
-		// default: a new mode that should advance fails a test, while one that
-		// should not would silently reroute.
+		// single — and anything added later, which stops at its head until
+		// this switch says otherwise. That is the safe default: a new mode
+		// that should advance fails a test, while one that should not would
+		// silently reroute.
 		return false
 	}
 }

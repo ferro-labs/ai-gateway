@@ -133,19 +133,19 @@ func TestSelectTargets_NamedTargetLeadsWhenAnotherTargetServesTheModel(t *testin
 	}{
 		{"conditional", func(*testing.T) Strategy {
 			return NewConditional(
-				[]ConditionRule{{Key: ConditionKeyModelPrefix, Value: "llama", Target: targets[0]}},
+				[]ConditionRule{{Key: ConditionKeyModelPrefix, Value: "llama", Targets: []Target{targets[0]}}},
 				targets[0],
-			).WithRoutingTargets(targets)
+			)
 		}},
 		{"content-based", func(t *testing.T) Strategy {
 			s, err := NewContentBased(
-				[]ContentRule{{Type: PromptContains, Value: "hi", Target: targets[0]}},
+				[]ContentRule{{Type: PromptContains, Value: "hi", Targets: []Target{targets[0]}}},
 				targets[0],
 			)
 			if err != nil {
 				t.Fatal(err)
 			}
-			return s.WithRoutingTargets(targets)
+			return s
 		}},
 	}
 
@@ -155,7 +155,10 @@ func TestSelectTargets_NamedTargetLeadsWhenAnotherTargetServesTheModel(t *testin
 			if err != nil {
 				t.Fatalf("SelectTargets = %v, want no error", err)
 			}
-			assertKeys(t, keys, "named", "other")
+			// The named target leads AND is the whole answer: the pipeline
+			// honours the decision, and a target the rule never named is
+			// not offered as a stand-in.
+			assertKeys(t, keys, "named")
 		})
 	}
 }

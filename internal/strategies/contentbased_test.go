@@ -26,7 +26,7 @@ func newContentBased(t *testing.T, rules []ContentRule, fallback string) *Conten
 
 func TestContentBased_PromptContains(t *testing.T) {
 	s := newContentBased(t, []ContentRule{
-		{Type: PromptContains, Value: "python", Target: Target{VirtualKey: "code-model"}},
+		{Type: PromptContains, Value: "python", Targets: []Target{{VirtualKey: "code-model"}}},
 	}, "general-model")
 
 	assertLeadsWith(t, s, req("write a python function"), "code-model")
@@ -34,7 +34,7 @@ func TestContentBased_PromptContains(t *testing.T) {
 
 func TestContentBased_FallbackWhenNoMatch(t *testing.T) {
 	s := newContentBased(t, []ContentRule{
-		{Type: PromptContains, Value: "python", Target: Target{VirtualKey: "code-model"}},
+		{Type: PromptContains, Value: "python", Targets: []Target{{VirtualKey: "code-model"}}},
 	}, "general-model")
 
 	assertLeadsWith(t, s, req("what is the weather today?"), "general-model")
@@ -42,7 +42,7 @@ func TestContentBased_FallbackWhenNoMatch(t *testing.T) {
 
 func TestContentBased_PromptCaseInsensitive(t *testing.T) {
 	s := newContentBased(t, []ContentRule{
-		{Type: PromptContains, Value: "Python", Target: Target{VirtualKey: "code-model"}},
+		{Type: PromptContains, Value: "Python", Targets: []Target{{VirtualKey: "code-model"}}},
 	}, "general-model")
 
 	assertLeadsWith(t, s, req("help me with PYTHON scripting"), "code-model")
@@ -51,7 +51,7 @@ func TestContentBased_PromptCaseInsensitive(t *testing.T) {
 func TestContentBased_PromptNotContains(t *testing.T) {
 	// Route everything that is NOT code-related to cheap-model.
 	s := newContentBased(t, []ContentRule{
-		{Type: PromptNotContains, Value: "code", Target: Target{VirtualKey: "cheap-model"}},
+		{Type: PromptNotContains, Value: "code", Targets: []Target{{VirtualKey: "cheap-model"}}},
 	}, "smart-model")
 
 	// No "code" → matches PromptNotContains → cheap-model.
@@ -62,7 +62,7 @@ func TestContentBased_PromptNotContains(t *testing.T) {
 
 func TestContentBased_PromptRegex(t *testing.T) {
 	s := newContentBased(t, []ContentRule{
-		{Type: PromptRegex, Value: `(?i)(python|golang|typescript)`, Target: Target{VirtualKey: "code-model"}},
+		{Type: PromptRegex, Value: `(?i)(python|golang|typescript)`, Targets: []Target{{VirtualKey: "code-model"}}},
 	}, "general-model")
 
 	tests := []struct {
@@ -82,7 +82,7 @@ func TestContentBased_PromptRegex(t *testing.T) {
 
 func TestContentBased_InvalidRegex(t *testing.T) {
 	rules := []ContentRule{
-		{Type: PromptRegex, Value: `[invalid`, Target: Target{VirtualKey: "any"}},
+		{Type: PromptRegex, Value: `[invalid`, Targets: []Target{{VirtualKey: "any"}}},
 	}
 	if _, err := NewContentBased(rules, Target{VirtualKey: "any"}); err == nil {
 		t.Fatal("expected error for invalid regex pattern")
@@ -92,8 +92,8 @@ func TestContentBased_InvalidRegex(t *testing.T) {
 func TestContentBased_FirstRuleWins(t *testing.T) {
 	// Both rules match — first rule should win.
 	s := newContentBased(t, []ContentRule{
-		{Type: PromptContains, Value: "python", Target: Target{VirtualKey: "model-a"}},
-		{Type: PromptContains, Value: "code", Target: Target{VirtualKey: "model-b"}},
+		{Type: PromptContains, Value: "python", Targets: []Target{{VirtualKey: "model-a"}}},
+		{Type: PromptContains, Value: "code", Targets: []Target{{VirtualKey: "model-b"}}},
 	}, "model-a")
 
 	assertLeadsWith(t, s, req("write python code"), "model-a")
@@ -101,7 +101,7 @@ func TestContentBased_FirstRuleWins(t *testing.T) {
 
 func TestContentBased_OnlyUserRoleMessagesChecked(t *testing.T) {
 	s := newContentBased(t, []ContentRule{
-		{Type: PromptContains, Value: "python", Target: Target{VirtualKey: "code-model"}},
+		{Type: PromptContains, Value: "python", Targets: []Target{{VirtualKey: "code-model"}}},
 	}, "general-model")
 
 	// "python" appears only in a system message → no match → fallback.
@@ -119,7 +119,7 @@ func TestContentBased_OnlyUserRoleMessagesChecked(t *testing.T) {
 // TestConditional_UnknownKeyNeverMatches.
 func TestContentBased_UnknownTypeNeverMatches(t *testing.T) {
 	s := newContentBased(t, []ContentRule{
-		{Type: "prompt_contain", Value: "python", Target: Target{VirtualKey: "code-model"}},
+		{Type: "prompt_contain", Value: "python", Targets: []Target{{VirtualKey: "code-model"}}},
 	}, "general-model")
 
 	assertLeadsWith(t, s, req("write python code"), "general-model")
@@ -130,7 +130,7 @@ func TestContentBased_UnknownTypeNeverMatches(t *testing.T) {
 // fallback rather than an empty list.
 func TestContentBased_SelectTargets_FallbackWithoutRoutingTargets(t *testing.T) {
 	s := newContentBased(t, []ContentRule{
-		{Type: PromptContains, Value: "python", Target: Target{VirtualKey: "code-model"}},
+		{Type: PromptContains, Value: "python", Targets: []Target{{VirtualKey: "code-model"}}},
 	}, "general-model")
 
 	keys, err := s.SelectTargets(req("what is the weather?"))
@@ -144,12 +144,12 @@ func TestContentBased_SelectTargets_FallbackWithoutRoutingTargets(t *testing.T) 
 // with the fallback appended, even without WithRoutingTargets.
 func TestContentBased_SelectTargets_MatchThenFallback(t *testing.T) {
 	s := newContentBased(t, []ContentRule{
-		{Type: PromptContains, Value: "python", Target: Target{VirtualKey: "code-model"}},
+		{Type: PromptContains, Value: "python", Targets: []Target{{VirtualKey: "code-model"}}},
 	}, "general-model")
 
 	keys, err := s.SelectTargets(req("write python code"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertKeys(t, keys, "code-model", "general-model")
+	assertKeys(t, keys, "code-model")
 }

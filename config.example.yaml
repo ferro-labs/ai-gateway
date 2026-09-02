@@ -57,12 +57,20 @@ strategy:
 #     - key: model
 #       value: claude-sonnet-4-6
 #       target_key: anthropic
+#     - key: model_prefix
+#       value: gemini
+#       target_keys: [gemini, vertex-ai]   # an ordered chain: gemini, then vertex-ai
 # Routes based on the value of a request field (e.g. "model").
-# The matched rule's target is the one asked, and no other: a request for a
-# model that target does not serve is answered model_not_found even when another
-# configured target serves it. Give such a model its own rule. `/v1/models`
-# lists only what the active mode would actually route, so a model missing from
-# it is the signal that a rule is needed.
+# A rule names its targets, and no other: `target_key` names one, `target_keys`
+# an ordered chain. The walk tries the chain in order, advancing only on a
+# failover-safe failure (see the pool modes above) and skipping a member whose
+# circuit is open or that is parked after a 429 — and never substitutes a
+# target outside the chain. A rule with one target is therefore exact: a request
+# for a model it does not serve, or a target whose circuit is open, is answered
+# with the corresponding error even when another configured target could
+# serve it. Give such a model its own rule, or a chain. `/v1/models` lists only
+# what the active mode would actually route, so a model missing from it is the
+# signal that a rule is needed.
 
 # --- content-based routing example ---
 # strategy:
@@ -78,7 +86,8 @@ strategy:
 #       value: "confidential"
 #       target_key: openai
 # First matching rule wins; falls back to the first target when no rule matches.
-# As with conditional routing, the matched target is the one asked and no other.
+# As with conditional routing, a rule may name a chain (`target_keys`), and the
+# matched chain is asked and no other.
 
 # --- A/B testing example ---
 # strategy:

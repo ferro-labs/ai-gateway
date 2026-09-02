@@ -131,26 +131,22 @@ func buildStrategy(
 		rules := make([]strategies.ConditionRule, 0, len(cfg.Conditions))
 		for _, cond := range cfg.Conditions {
 			rules = append(rules, strategies.ConditionRule{
-				Key:    cond.Key,
-				Value:  cond.Value,
-				Target: strategies.Target{VirtualKey: cond.TargetKey},
+				Key:     cond.Key,
+				Value:   cond.Value,
+				Targets: chainTargets(cond.Chain()),
 			})
 		}
-		return strategies.NewConditional(rules, targets[0]).WithRoutingTargets(targets), nil
+		return strategies.NewConditional(rules, targets[0]), nil
 	case config.ModeContentBased:
 		rules := make([]strategies.ContentRule, 0, len(cfg.ContentConditions))
 		for _, cc := range cfg.ContentConditions {
 			rules = append(rules, strategies.ContentRule{
-				Type:   strategies.ContentConditionType(cc.Type),
-				Value:  cc.Value,
-				Target: strategies.Target{VirtualKey: cc.TargetKey},
+				Type:    strategies.ContentConditionType(cc.Type),
+				Value:   cc.Value,
+				Targets: chainTargets(cc.Chain()),
 			})
 		}
-		cb, err := strategies.NewContentBased(rules, targets[0])
-		if err != nil {
-			return nil, err
-		}
-		return cb.WithRoutingTargets(targets), nil
+		return strategies.NewContentBased(rules, targets[0])
 	case config.ModeABTest:
 		variants := make([]strategies.ABTestVariant, 0, len(cfg.ABVariants))
 		for _, v := range cfg.ABVariants {
@@ -178,4 +174,13 @@ func stickyFrom(cfg *config.StickyConfig) strategies.Sticky {
 	}
 	ttl, _ := time.ParseDuration(cfg.TTL)
 	return strategies.Sticky{On: cfg.On, TTL: ttl}
+}
+
+// chainTargets maps a rule's target chain onto strategy targets.
+func chainTargets(keys []string) []strategies.Target {
+	chain := make([]strategies.Target, len(keys))
+	for i, key := range keys {
+		chain[i] = strategies.Target{VirtualKey: key}
+	}
+	return chain
 }

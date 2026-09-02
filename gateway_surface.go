@@ -963,15 +963,13 @@ func (g *Gateway) surfaceTargetOrder(model, surface string) ([]string, error) {
 		// empty message set: it would match every embeddings/image request
 		// and win routing outright, regardless of what the rule actually
 		// says. No content rule can be meaningfully evaluated without a
-		// prompt, so route in configured target order instead — exactly what
-		// strategy.SelectTargets already falls back to when no rule matches.
+		// prompt, so the request takes the documented no-match answer — the
+		// first target, exactly — the same one a chat request with no matching
+		// rule takes.
 		g.mu.Lock()
 		g.ensureCircuitBreakersLocked()
 		g.ensureProviderLimitersLocked()
-		keys := make([]string, len(g.config.Targets))
-		for i, t := range g.config.Targets {
-			keys[i] = t.VirtualKey
-		}
+		keys := []string{g.config.Targets[0].VirtualKey}
 		g.mu.Unlock()
 		return keys, nil
 	}

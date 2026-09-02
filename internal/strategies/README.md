@@ -33,13 +33,16 @@ What a strategy does when its chosen target *fails* splits the eight modes in tw
 | Family | Modes | On a failure |
 |---|---|---|
 | **Pool** | fallback, loadbalance, least-latency, cost-optimized, ab-test | the request advances only after a failover-safe failure |
-| **Named** | single, conditional, content-based | the request stops and the failure is returned |
+| **Named** | single, conditional, content-based | the request stays inside what was named: `single` stops; a rule walks its `target_keys` chain under the same failover-safe classes and stops at its end |
 
 A pool mode picks its target for a reason about the *pool* (spread load, take the
 cheapest, take the fastest, split traffic), so carrying a failed request to a
-sibling is what was asked for. A named mode picks a *specific* target (you named
-it, or a rule matched it), so serving from somewhere else would demote the rule
-to a suggestion.
+sibling is what was asked for. A named mode picks *specific* targets (you named
+it, or a rule matched it), so serving from anywhere else would demote the rule
+to a suggestion. A rule's chain is a boundary: members whose circuit is open or
+that are parked after a `429` are skipped for the next member, and a target the
+rule did not name is never substituted — a rule with one target is exact, and
+its target being down is the corresponding error.
 
 Failover-safe failures are transport failures, an attempt that timed out
 waiting on the target, 408, 429, 5xx, open circuits, target saturation, and a
@@ -51,7 +54,8 @@ provider-call failure.
 
 Under **every** mode, a target whose **circuit breaker is open** is skipped when
 the choice is made, so a backend the gateway has already decided not to call
-takes no traffic while a healthy target is configured. When every candidate's
+takes no traffic while a healthy target is configured — among the candidates the
+mode offers, which for a rule is its chain. When every candidate's
 circuit is open the request is still attempted and answered `503`. A target
 that answered `429` is skipped the same way until its `Retry-After` elapses
 (capped at a minute; five seconds when the header is missing), without its
@@ -137,8 +141,12 @@ strategy:
   mode: conditional
   conditions:
     - { key: model, value: gpt-4o, target_key: openai }
-    - { key: model_prefix, value: claude, target_key: anthropic }
+    - { key: model_prefix, value: claude, target_keys: [anthropic, bedrock] }
 ```
+
+`target_key` names one target; `target_keys` an ordered chain, tried in order
+under the pool modes' failover-safe classes and never left. Both are exact
+about what they name.
 
 ### content-based
 Routes by the textual content of the prompt. Rules evaluate in order, first match

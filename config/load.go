@@ -539,9 +539,34 @@ func validateConditions(conditions []Condition, targets []Target) error {
 			return fmt.Errorf("conditions[%d]: unknown key %q; valid keys: %s",
 				i, c.Key, strings.Join(ConditionKeys(), ", "))
 		}
-		if err := requireDeclaredTarget(fmt.Sprintf("conditions[%d]", i), c.TargetKey, targets); err != nil {
+		if err := validateRuleChain(fmt.Sprintf("conditions[%d]", i), c.TargetKey, c.TargetKeys, targets); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// validateRuleChain checks a rule's target_key / target_keys: exactly one of
+// the two is set, the chain is non-empty, every entry names a declared
+// target, and no target appears twice — a repeated entry would be asked
+// twice for one request.
+func validateRuleChain(where, targetKey string, targetKeys []string, targets []Target) error {
+	if targetKey != "" && len(targetKeys) > 0 {
+		return fmt.Errorf("%s: set target_key or target_keys, not both", where)
+	}
+	if targetKey == "" && len(targetKeys) == 0 {
+		return fmt.Errorf("%s: target_key is required", where)
+	}
+	chain := ruleChain(targetKey, targetKeys)
+	seen := make(map[string]struct{}, len(chain))
+	for i, key := range chain {
+		if err := requireDeclaredTarget(where, key, targets); err != nil {
+			return err
+		}
+		if _, dup := seen[key]; dup {
+			return fmt.Errorf("%s: target_keys[%d] %q repeats an earlier entry", where, i, key)
+		}
+		seen[key] = struct{}{}
 	}
 	return nil
 }
@@ -560,7 +585,7 @@ func validateContentConditions(conditions []ContentCondition, targets []Target) 
 				return fmt.Errorf("content_conditions[%d]: invalid regex %q: %w", i, c.Value, err)
 			}
 		}
-		if err := requireDeclaredTarget(fmt.Sprintf("content_conditions[%d]", i), c.TargetKey, targets); err != nil {
+		if err := validateRuleChain(fmt.Sprintf("content_conditions[%d]", i), c.TargetKey, c.TargetKeys, targets); err != nil {
 			return err
 		}
 	}

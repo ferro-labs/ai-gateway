@@ -4,12 +4,11 @@ import (
 	"testing"
 )
 
-// TestConditional_SelectTargets_FallbackWithoutRoutingTargets asserts that a
-// Conditional built without WithRoutingTargets still surfaces its fallback
-// target rather than an empty list.
-func TestConditional_SelectTargets_FallbackWithoutRoutingTargets(t *testing.T) {
+// TestConditional_SelectTargets_Fallback asserts an unmatched request resolves
+// to the fallback target rather than an empty list.
+func TestConditional_SelectTargets_Fallback(t *testing.T) {
 	rules := []ConditionRule{
-		{Key: ConditionKeyModel, Value: "claude-3", Target: Target{VirtualKey: "other"}},
+		{Key: ConditionKeyModel, Value: "claude-3", Targets: []Target{{VirtualKey: "other"}}},
 	}
 	c := NewConditional(rules, Target{VirtualKey: "fb"})
 
@@ -21,11 +20,12 @@ func TestConditional_SelectTargets_FallbackWithoutRoutingTargets(t *testing.T) {
 	assertKeys(t, keys, "fb")
 }
 
-// TestConditional_SelectTargets_MatchThenFallback asserts a matched rule leads,
-// with the fallback appended, even without WithRoutingTargets.
-func TestConditional_SelectTargets_MatchThenFallback(t *testing.T) {
+// TestConditional_SelectTargets_MatchIsTheWholeAnswer asserts a matched rule's
+// chain is the candidate list — the fallback is not appended, so nothing
+// outside the chain can be substituted.
+func TestConditional_SelectTargets_MatchIsTheWholeAnswer(t *testing.T) {
 	rules := []ConditionRule{
-		{Key: ConditionKeyModel, Value: "gpt-4o", Target: Target{VirtualKey: "other"}},
+		{Key: ConditionKeyModel, Value: "gpt-4o", Targets: []Target{{VirtualKey: "other"}}},
 	}
 	c := NewConditional(rules, Target{VirtualKey: "fb"})
 
@@ -33,23 +33,20 @@ func TestConditional_SelectTargets_MatchThenFallback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertKeys(t, keys, "other", "fb")
+	assertKeys(t, keys, "other")
 }
 
-// TestConditional_SelectTargets_UnmatchedModelLeadsWithFallback covers the one
-// ordering where reading targets[0] and asking matchTarget disagree: an
-// unmatched request must resolve to the DECLARED fallback, not to whatever
-// WithRoutingTargets happens to list first.
-func TestConditional_SelectTargets_UnmatchedModelLeadsWithFallback(t *testing.T) {
+// TestConditional_SelectTargets_UnmatchedModelIsTheFallbackAlone: an unmatched
+// request resolves to the declared fallback and nothing else.
+func TestConditional_SelectTargets_UnmatchedModelIsTheFallbackAlone(t *testing.T) {
 	rules := []ConditionRule{
-		{Key: ConditionKeyModel, Value: "claude-3", Target: Target{VirtualKey: "first"}},
+		{Key: ConditionKeyModel, Value: "claude-3", Targets: []Target{{VirtualKey: "first"}}},
 	}
-	c := NewConditional(rules, Target{VirtualKey: "fb"}).
-		WithRoutingTargets([]Target{{VirtualKey: "first"}, {VirtualKey: "fb"}})
+	c := NewConditional(rules, Target{VirtualKey: "fb"})
 
 	keys, err := c.SelectTargets(req("hi"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertKeys(t, keys, "fb", "first")
+	assertKeys(t, keys, "fb")
 }

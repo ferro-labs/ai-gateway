@@ -8,8 +8,8 @@ import (
 
 func TestConditional_MatchesModel(t *testing.T) {
 	rules := []ConditionRule{
-		{Key: ConditionKeyModel, Value: "gpt-4o", Target: Target{VirtualKey: "openai"}},
-		{Key: ConditionKeyModel, Value: "claude-3", Target: Target{VirtualKey: "anthropic"}},
+		{Key: ConditionKeyModel, Value: "gpt-4o", Targets: []Target{{VirtualKey: "openai"}}},
+		{Key: ConditionKeyModel, Value: "claude-3", Targets: []Target{{VirtualKey: "anthropic"}}},
 	}
 	c := NewConditional(rules, Target{VirtualKey: "openai"})
 
@@ -19,8 +19,8 @@ func TestConditional_MatchesModel(t *testing.T) {
 
 func TestConditional_ModelPrefix(t *testing.T) {
 	rules := []ConditionRule{
-		{Key: ConditionKeyModelPrefix, Value: "gpt-", Target: Target{VirtualKey: "openai"}},
-		{Key: ConditionKeyModelPrefix, Value: "claude-", Target: Target{VirtualKey: "anthropic"}},
+		{Key: ConditionKeyModelPrefix, Value: "gpt-", Targets: []Target{{VirtualKey: "openai"}}},
+		{Key: ConditionKeyModelPrefix, Value: "claude-", Targets: []Target{{VirtualKey: "anthropic"}}},
 	}
 	c := NewConditional(rules, Target{VirtualKey: "openai"})
 
@@ -29,7 +29,7 @@ func TestConditional_ModelPrefix(t *testing.T) {
 
 func TestConditional_Fallback(t *testing.T) {
 	rules := []ConditionRule{
-		{Key: ConditionKeyModel, Value: "gpt-4o", Target: Target{VirtualKey: "other"}},
+		{Key: ConditionKeyModel, Value: "gpt-4o", Targets: []Target{{VirtualKey: "other"}}},
 	}
 	c := NewConditional(rules, Target{VirtualKey: "fallback"})
 
@@ -44,7 +44,7 @@ func TestConditional_Fallback(t *testing.T) {
 // TestValidateConfig_RejectsUnknownConditionKey.
 func TestConditional_UnknownKeyNeverMatches(t *testing.T) {
 	rules := []ConditionRule{
-		{Key: "unknown_key", Value: "gpt-4o", Target: Target{VirtualKey: "other"}},
+		{Key: "unknown_key", Value: "gpt-4o", Targets: []Target{{VirtualKey: "other"}}},
 	}
 	c := NewConditional(rules, Target{VirtualKey: "fb"})
 
@@ -54,8 +54,8 @@ func TestConditional_UnknownKeyNeverMatches(t *testing.T) {
 func TestConditional_FirstRuleWins(t *testing.T) {
 	// Both rules match "gpt-4o" (exact and prefix). First should win.
 	rules := []ConditionRule{
-		{Key: ConditionKeyModel, Value: "gpt-4o", Target: Target{VirtualKey: "p1"}},
-		{Key: ConditionKeyModelPrefix, Value: "gpt-", Target: Target{VirtualKey: "p2"}},
+		{Key: ConditionKeyModel, Value: "gpt-4o", Targets: []Target{{VirtualKey: "p1"}}},
+		{Key: ConditionKeyModelPrefix, Value: "gpt-", Targets: []Target{{VirtualKey: "p2"}}},
 	}
 	c := NewConditional(rules, Target{VirtualKey: "p2"})
 

@@ -3,11 +3,13 @@ package aigateway
 import (
 	"context"
 	"errors"
+	"net/http"
 	"slices"
 	"testing"
 	"time"
 
 	"github.com/ferro-labs/ai-gateway/config"
+	"github.com/ferro-labs/ai-gateway/internal/apierror"
 	"github.com/ferro-labs/ai-gateway/pkg/circuitbreaker"
 	"github.com/ferro-labs/ai-gateway/providers"
 	"github.com/ferro-labs/ai-gateway/providers/core"
@@ -97,7 +99,11 @@ func TestRoute_LeastLatency_SkipsOpenCircuitForHealthySibling(t *testing.T) {
 // The same fix seen through an operator's explicit rule. `conditional` names a
 // target on purpose, so the filter must make that target preferred, not
 // exclusive: with it open the request still gets served.
-func TestRoute_Conditional_SkipsOpenCircuitForHealthySibling(t *testing.T) {
+// A rule that names one target is exact. Its circuit being open is the
+// corresponding gateway error — 503 — not a reason to borrow a sibling the rule
+// never named; a chain (target_keys) is how a rule says which siblings may
+// stand in.
+func TestRoute_Conditional_NamedTargetStaysExactWhenItsCircuitIsOpen(t *testing.T) {
 	gw, err := newTestGateway(t, config.Config{
 		Strategy: config.StrategyConfig{
 			Mode: config.ModeConditional,
@@ -114,18 +120,16 @@ func TestRoute_Conditional_SkipsOpenCircuitForHealthySibling(t *testing.T) {
 		name: "primary", models: []string{"gpt-4o"},
 		err: errors.New("upstream is dead"),
 	})
-	gw.RegisterProvider(&mockProvider{
+	secondary := &mockProvider{
 		name: "secondary", models: []string{"gpt-4o"},
 		resp: &providers.Response{ID: "served-by-secondary"},
-	})
+	}
+	gw.RegisterProvider(secondary)
 	tripBreaker(t, gw, "primary")
 
-	resp, err := gw.Route(context.Background(), chatReq("gpt-4o"))
-	if err != nil {
-		t.Fatalf("route: %v", err)
-	}
-	if resp.Provider != "secondary" {
-		t.Fatalf("served by %q, want %q", resp.Provider, "secondary")
+	_, err = gw.Route(context.Background(), chatReq("gpt-4o"))
+	if status, _, code := apierror.RouteErrorDetails(err); status != http.StatusServiceUnavailable || code != "upstream_unavailable" {
+		t.Fatalf("status %d code %q (%v), want 503 upstream_unavailable: the named target is exact", status, code, err)
 	}
 }
 

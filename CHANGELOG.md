@@ -20,6 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pass-through proxy named a provider, and `/v1/chat/completions` named
   nothing. Embedders read the same values through
   `aigateway.WithRoutingAttribution`.
+- `target_keys: [a, b]` on `conditions[]` and `content_conditions[]` names an
+  ordered target chain for a rule; `target_key` stays as the one-entry form.
+  The walk tries the chain in order under the pool modes' failover-safe
+  classes, skips a member whose circuit is open or that is parked after a
+  `429`, and never substitutes a target outside the chain. Exactly one of the
+  two fields is set; entries must be declared targets and may not repeat.
 - `strategy.sticky: { on: user, ttl: "1h" }` under `loadbalance` and `ab-test`
   pins each request to the same target — or A/B variant — for the same `user`
   field, so a conversation keeps its provider prompt cache and a multi-turn
@@ -60,6 +66,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   error now preserves the envelope's `code` and `type`
   (`core.HTTPStatusError`), and `core.IsContextLengthError` is the one
   classifier; every other 4xx still stops at the current target.
+- A `conditional` or `content-based` rule that names one target is now exact:
+  when that target's circuit is open the request is answered `503` rather
+  than served by a sibling the rule never named. `v1.5.1` borrowed a healthy
+  sibling in that one case; a rule that wants a stand-in now says so with
+  `target_keys`. On non-chat surfaces, where content rules cannot be
+  evaluated, `content-based` routes to the no-match target alone instead of
+  the first capable target in declared order.
 - Configuration loading now refuses an `ab_variants[]` entry without a
   `label`: attribution keys on it, so an unlabelled variant was one nothing
   could report on. A `v1.5.1` config with an unlabelled variant no longer

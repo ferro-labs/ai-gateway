@@ -26,11 +26,12 @@ const (
 	PromptRegex ContentConditionType = "prompt_regex"
 )
 
-// ContentRule associates a content-matching condition with a routing target.
+// ContentRule associates a content-matching condition with an ordered target
+// chain (see ConditionRule.Targets).
 type ContentRule struct {
-	Type   ContentConditionType
-	Value  string
-	Target Target
+	Type    ContentConditionType
+	Value   string
+	Targets []Target
 
 	// re is the compiled regex for PromptRegex rules; nil for all other types.
 	re *regexp.Regexp
@@ -46,7 +47,6 @@ type ContentRule struct {
 type ContentBased struct {
 	rules    []ContentRule
 	fallback Target
-	targets  []Target
 }
 
 // NewContentBased creates a ContentBased strategy.
@@ -66,42 +66,19 @@ func NewContentBased(rules []ContentRule, fallback Target) (*ContentBased, error
 			compiled[i].re = re
 		}
 	}
-	return &ContentBased{
-		rules:    compiled,
-		fallback: fallback,
-		// Seed with the fallback so, absent WithRoutingTargets, SelectTargets
-		// still returns the documented no-match target. WithRoutingTargets
-		// replaces it with the full ordered target list.
-		targets: []Target{fallback},
-	}, nil
+	return &ContentBased{rules: compiled, fallback: fallback}, nil
 }
 
-// WithRoutingTargets records the full ordered target list. SelectTargets appends
-// these after the matched content target. Returns the receiver so callers can
-// chain it after the constructor.
-func (c *ContentBased) WithRoutingTargets(targets []Target) *ContentBased {
-	c.targets = targets
-	return c
-}
-
-// SelectTargets returns the first matching rule's target followed by every
-// configured target. With no match it returns the targets in declared order
-// (targets[0] is the no-match fallback).
-//
-// The rest of the list is not tried on failure: this mode commits to the target
-// the matched rule named, with the same two consequences Conditional.SelectTargets
-// describes — a model the named target does not serve is model_not_found even
-// when another configured target serves it, while a named target whose circuit
-// is open is passed over for a healthy one.
+// SelectTargets returns the first matching rule's chain, or the no-match
+// fallback alone, with the boundary semantics Conditional.SelectTargets
+// describes: the chain is walked, nothing outside it is ever substituted.
 func (c *ContentBased) SelectTargets(req providers.Request) ([]string, error) {
 	for _, rule := range c.rules {
 		if c.matches(rule, req) {
-			keys := make([]string, 0, len(c.targets)+1)
-			keys = appendUniqueKey(keys, rule.Target.VirtualKey)
-			return appendRemainingTargetKeys(keys, c.targets), nil
+			return targetKeys(rule.Targets), nil
 		}
 	}
-	return targetKeys(c.targets), nil
+	return []string{c.fallback.VirtualKey}, nil
 }
 
 func (c *ContentBased) matches(rule ContentRule, req providers.Request) bool {
