@@ -29,9 +29,9 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-func newTestGateway(tb testing.TB, cfg config.Config) (*Gateway, error) {
+func newTestGateway(tb testing.TB, cfg config.Config, opts ...Option) (*Gateway, error) {
 	tb.Helper()
-	gw, err := New(cfg)
+	gw, err := New(cfg, opts...)
 	if err == nil {
 		tb.Cleanup(func() {
 			if closeErr := gw.Close(); closeErr != nil {

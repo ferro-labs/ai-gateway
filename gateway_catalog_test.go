@@ -275,3 +275,37 @@ func TestGateway_RefreshCatalog_AbortsOnCanceledContext(t *testing.T) {
 	cancel()
 	<-done // closed when refreshCatalog returns
 }
+
+// TestNew_WithCatalogUsesTheSuppliedCatalog: a host that owns its own price
+// catalog hands it to New and the gateway prices and ranks with it, loading
+// neither the embedded nor the remote one.
+func TestNew_WithCatalogUsesTheSuppliedCatalog(t *testing.T) {
+	supplied := models.Catalog{
+		"first/expensive-upstream": {Provider: "first", ModelID: "expensive-upstream", Mode: models.ModeEmbedding, Pricing: models.Pricing{EmbeddingPerMTokens: ptrFloat64(10)}},
+		"second/cheap-upstream":    {Provider: "second", ModelID: "cheap-upstream", Mode: models.ModeEmbedding, Pricing: models.Pricing{EmbeddingPerMTokens: ptrFloat64(1)}},
+	}
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeCostOptimized, UnpricedStrategy: config.UnpricedStrategySkip},
+		Targets: []config.Target{
+			{VirtualKey: "first", ModelMap: map[string]string{visibleMappedModel: "expensive-upstream"}},
+			{VirtualKey: "second", ModelMap: map[string]string{visibleMappedModel: "cheap-upstream"}},
+		},
+	}, WithCatalog(supplied))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := gw.Catalog(); len(got) != len(supplied) {
+		t.Fatalf("catalog has %d entries, want the %d supplied — the embedded catalog must not be loaded", len(got), len(supplied))
+	}
+
+	first := &mockEmbeddingProvider{mockProvider: mockProvider{name: "first", models: []string{"expensive-upstream"}}}
+	second := &mockEmbeddingProvider{mockProvider: mockProvider{name: "second", models: []string{"cheap-upstream"}}}
+	gw.RegisterProvider(first)
+	gw.RegisterProvider(second)
+	if _, err := gw.Embed(context.Background(), providers.EmbeddingRequest{Model: visibleMappedModel, Input: "hello"}); err != nil {
+		t.Fatal(err)
+	}
+	if first.calls != 0 || second.calls != 1 {
+		t.Fatalf("provider calls: first=%d second=%d, want the target the supplied catalog prices cheaper", first.calls, second.calls)
+	}
+}

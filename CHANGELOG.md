@@ -20,6 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pass-through proxy named a provider, and `/v1/chat/completions` named
   nothing. Embedders read the same values through
   `aigateway.WithRoutingAttribution`.
+- `aigateway.WithCatalog(models.Catalog)`, an option to `aigateway.New`, hands
+  the gateway the model catalog it prices and ranks with in place of the
+  embedded or remote one, which is then neither loaded nor refreshed. A host
+  with its own price list — per-tenant pricing, for instance — previously had
+  no way to make cost-optimized routing or request cost read it.
+  `gateway_catalog_loads_total` reports such a catalog as `source="supplied"`.
 
 ### Changed
 
