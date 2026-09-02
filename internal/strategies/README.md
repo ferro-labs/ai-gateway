@@ -49,8 +49,9 @@ waiting on the target, 408, 429, 5xx, open circuits, target saturation, and a
 provider's own statement that the prompt exceeded its context window (the
 OpenAI-compatible, Anthropic and Gemini envelopes are recognised; a sibling's
 model may have a larger window). The request's own cancellation or deadline and
-every other 4xx stop at the current target; named modes also stop after any
-provider-call failure.
+every other 4xx stop at the current target. `strategy.failover_on_status_codes`
+adds statuses of your own (`[409]`, say); it cannot add the caller's
+cancellation or deadline, nor 400, 401, 403, 404 or 422.
 
 Under **every** mode, a target whose **circuit breaker is open** is skipped when
 the choice is made, so a backend the gateway has already decided not to call

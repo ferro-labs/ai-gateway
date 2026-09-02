@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/ferro-labs/ai-gateway/config"
@@ -74,6 +75,10 @@ type targetPlan struct {
 	// single-target strategy means: an a/b variant that cannot serve the request
 	// is a 404, not a silent reroute to somebody else's target.
 	advance bool
+	// failoverOn is strategy.failover_on_status_codes: extra upstream
+	// statuses the walk treats as failover-safe, validated at load to exclude
+	// the protected deterministic client errors.
+	failoverOn []int
 	// abVariantLabel is the initially drawn A/B variant. It remains attached to
 	// the request when retries or safe advancement reach another target.
 	abVariantLabel string
@@ -216,7 +221,7 @@ func routeTargets[Req, Resp any](
 		if !plan.advance {
 			break
 		}
-		if !shouldAdvanceTarget(ctx, err) {
+		if !shouldAdvanceTarget(ctx, err, plan.failoverOn) {
 			stoppedEarly = true
 			break
 		}
@@ -248,7 +253,11 @@ func routeTargets[Req, Resp any](
 // provider transport's ResponseHeaderTimeout on a target that accepted the
 // connection and never answered — belongs to the attempt, carries no status,
 // and is the failure failover exists for.
-func shouldAdvanceTarget(ctx context.Context, err error) bool {
+//
+// failoverOn is the operator's addition (strategy.failover_on_status_codes).
+// It is consulted after the request's own context, which nothing overrides,
+// and cannot name a protected deterministic 4xx — validation refuses those.
+func shouldAdvanceTarget(ctx context.Context, err error, failoverOn []int) bool {
 	if ctx.Err() != nil {
 		return false
 	}
@@ -263,6 +272,9 @@ func shouldAdvanceTarget(ctx context.Context, err error) bool {
 		return true
 	}
 	code := providers.ParseStatusCode(err)
+	if code != 0 && slices.Contains(failoverOn, code) {
+		return true
+	}
 	return code == 0 || code == http.StatusRequestTimeout ||
 		code == http.StatusTooManyRequests || code >= http.StatusInternalServerError
 }
@@ -720,6 +732,7 @@ func (g *Gateway) planFor(model string, keys []string) targetPlan {
 	g.mu.RLock()
 	mode := g.config.Strategy.Mode
 	advance := advancesPastFailure(mode)
+	failoverOn := g.config.Strategy.FailoverOnStatusCodes
 	label := ""
 	hasABVariant := false
 	if mode == config.ModeABTest && len(keys) > 0 {
@@ -732,7 +745,7 @@ func (g *Gateway) planFor(model string, keys []string) targetPlan {
 		}
 	}
 	g.mu.RUnlock()
-	return targetPlan{keys: keys, model: model, advance: advance, abVariantLabel: label, hasABVariant: hasABVariant}
+	return targetPlan{keys: keys, model: model, advance: advance, failoverOn: failoverOn, abVariantLabel: label, hasABVariant: hasABVariant}
 }
 
 // advancesPastFailure splits the routing modes by what their leading candidate

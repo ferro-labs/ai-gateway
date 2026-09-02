@@ -809,6 +809,9 @@ saturation, and a provider's typed statement that the prompt exceeded its
 context window (`core.IsContextLengthError`: the OpenAI-compatible, Anthropic
 and Gemini envelopes; never a bare substring match on a 400). The request's own
 cancellation or deadline and every other 4xx stop at the current target.
+`strategy.failover_on_status_codes` adds operator-specific statuses to the safe
+classes; validation refuses 400, 401, 403, 404 and 422, and nothing overrides
+the request's own context.
 
 A named mode picks its head because something named that target specifically:
 `single` names it, and a `conditional` or `content-based` rule matched it.

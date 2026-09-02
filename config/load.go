@@ -483,6 +483,9 @@ func validateStrategy(s StrategyConfig, targets []Target) error {
 	if err := validateSticky(s); err != nil {
 		return err
 	}
+	if err := validateFailoverStatusCodes(s.FailoverOnStatusCodes); err != nil {
+		return err
+	}
 	switch s.Mode {
 	case ModeSingle, ModeFallback, ModeLatency:
 	case ModeLoadBalance:
@@ -501,6 +504,20 @@ func validateStrategy(s StrategyConfig, targets []Target) error {
 		return validateABVariants(s.ABVariants, targets)
 	default:
 		return fmt.Errorf("unknown strategy mode: %q", s.Mode)
+	}
+	return nil
+}
+
+// validateFailoverStatusCodes checks strategy.failover_on_status_codes: HTTP
+// statuses only, none of the protected deterministic client errors.
+func validateFailoverStatusCodes(codes []int) error {
+	for _, code := range codes {
+		if code < 100 || code > 599 {
+			return fmt.Errorf("strategy.failover_on_status_codes: %d is not an HTTP status code", code)
+		}
+		if slices.Contains(ProtectedFailoverStatusCodes(), code) {
+			return fmt.Errorf("strategy.failover_on_status_codes: %d is a deterministic client error and cannot be failed over", code)
+		}
 	}
 	return nil
 }

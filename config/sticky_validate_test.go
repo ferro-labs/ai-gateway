@@ -61,3 +61,31 @@ func TestValidateStrategy_Sticky(t *testing.T) {
 		})
 	}
 }
+
+// TestValidateStrategy_FailoverOnStatusCodes pins the operator list: HTTP
+// statuses only, never a protected deterministic client error.
+func TestValidateStrategy_FailoverOnStatusCodes(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		codes   []int
+		wantErr string
+	}{
+		{"legal", []int{409, 451}, ""},
+		{"not a status", []int{42}, "is not an HTTP status code"},
+		{"protected 401", []int{401}, "cannot be failed over"},
+		{"protected 404", []int{404}, "cannot be failed over"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateConfig(Config{Strategy: StrategyConfig{Mode: ModeFallback, FailoverOnStatusCodes: tc.codes}, Targets: twoTargets()})
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("ValidateConfig = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("ValidateConfig = %v, want an error containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}

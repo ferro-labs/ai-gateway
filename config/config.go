@@ -232,6 +232,15 @@ type StrategyConfig struct {
 	ContentConditions []ContentCondition `json:"content_conditions,omitempty" yaml:"content_conditions,omitempty"`
 	// ABVariants defines the weighted variants for the ab-test strategy.
 	ABVariants []ABVariantConfig `json:"ab_variants,omitempty" yaml:"ab_variants,omitempty"`
+	// FailoverOnStatusCodes adds upstream HTTP status codes a pool mode, or
+	// a rule chain, treats as failover-safe — for an operator-specific
+	// upstream whose "try elsewhere" answer is not one the built-in classes
+	// cover. Each code is an integer in 100–599. The protected classes cannot
+	// be added: the caller's cancellation or deadline always stops routing,
+	// and the deterministic client errors 400, 401, 403, 404 and 422 stay
+	// with the target that answered them, since re-sending a malformed or
+	// unauthorised request to every target changes nothing but the bill.
+	FailoverOnStatusCodes []int `json:"failover_on_status_codes,omitempty" yaml:"failover_on_status_codes,omitempty"`
 	// Sticky pins a request to the same target for the same key under
 	// loadbalance and ab-test, so a conversation keeps its provider prompt
 	// cache and a multi-turn A/B session keeps its variant. Stateless: a
@@ -250,6 +259,11 @@ type StickyConfig struct {
 	// a pin holds for as long as the config does.
 	TTL string `json:"ttl,omitempty" yaml:"ttl,omitempty"`
 }
+
+// ProtectedFailoverStatusCodes are the upstream statuses
+// StrategyConfig.FailoverOnStatusCodes may not add: deterministic client
+// errors that a different target cannot fix.
+func ProtectedFailoverStatusCodes() []int { return []int{400, 401, 403, 404, 422} }
 
 // StickyOnUser is the one accepted StickyConfig.On value.
 const StickyOnUser = "user"

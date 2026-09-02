@@ -35,6 +35,13 @@ strategy:
   # still attempted and answered 503 — "everything that serves this model is
   # down" is a different answer from "nothing serves this model".
   #
+  # Extra upstream statuses to treat as failover-safe, for an upstream whose
+  # "try elsewhere" answer is not one of the built-in classes. HTTP statuses
+  # only; the caller's own cancellation or deadline always stops routing, and
+  # 400, 401, 403, 404 and 422 cannot be listed — a different target cannot
+  # fix a malformed or unauthorised request.
+  # failover_on_status_codes: [409]
+  #
   # For loadbalance and ab-test only: pin a request to the same target for the
   # same `user` field, so a conversation keeps its provider prompt cache and an
   # A/B session keeps its variant. A stateless hash — no shared state, and the

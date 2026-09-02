@@ -1150,3 +1150,38 @@ func TestPipeline_ContextLengthOverflowFailsOverButAPlain400Stops(t *testing.T) 
 		})
 	}
 }
+
+// strategy.failover_on_status_codes adds an operator-specific status to the
+// failover-safe classes; without it the same status stops at the target.
+func TestPipeline_FailoverOnStatusCodesAddsAClass(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		failoverOn []int
+		wantSecond int64
+	}{
+		{"listed 409 fails over", []int{http.StatusConflict}, 1},
+		{"unlisted 409 stops", nil, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			first := newCountingProvider("first", func() (*providers.Response, error) {
+				return nil, core.StatusError("first", http.StatusConflict, "busy")
+			})
+			second := newCountingProvider("second", func() (*providers.Response, error) {
+				return &providers.Response{ID: "served-by-second", Model: pipelineModel}, nil
+			})
+			gw, err := newTestGateway(t, config.Config{
+				Strategy: config.StrategyConfig{Mode: config.ModeFallback, FailoverOnStatusCodes: tc.failoverOn},
+				Targets:  []config.Target{{VirtualKey: "first"}, {VirtualKey: "second"}},
+			})
+			if err != nil {
+				t.Fatalf("new gateway: %v", err)
+			}
+			gw.RegisterProvider(first)
+			gw.RegisterProvider(second)
+			_, _ = gw.Route(context.Background(), pipelineRequest())
+			if second.calls.Load() != tc.wantSecond {
+				t.Fatalf("second calls = %d, want %d", second.calls.Load(), tc.wantSecond)
+			}
+		})
+	}
+}

@@ -20,6 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pass-through proxy named a provider, and `/v1/chat/completions` named
   nothing. Embedders read the same values through
   `aigateway.WithRoutingAttribution`.
+- `strategy.failover_on_status_codes: [409]` adds upstream statuses of the
+  operator's own to the failover-safe classes, for an upstream whose "try
+  elsewhere" answer the built-in classes do not cover. Validated as HTTP
+  statuses; `400`, `401`, `403`, `404` and `422` are refused, and the
+  request's own cancellation or deadline still stops routing.
 - Conditional routing gains four bounded predicates: `key: user` (the
   request's `user` field), `key: stream` and `key: has_tools` (`"true"` /
   `"false"`), and `key: metadata` with `field: <entry>`, which reads one entry
