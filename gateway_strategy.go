@@ -13,13 +13,26 @@ import (
 
 // Strategy construction from Gateway config.
 
-// getStrategy lazily builds the strategy from config and registered providers.
-// Circuit breakers are built once and applied in the provider lookup closure.
+// getStrategy lazily builds the chat strategy from config and registered
+// providers. Circuit breakers are built once and applied in the provider
+// lookup closure.
 func (g *Gateway) getStrategy() (strategies.Strategy, error) {
+	return g.strategyFor("")
+}
+
+// strategyFor is getStrategy for one surface. It is the same strategy built
+// from the same config; only the provider lookup differs, and it differs by
+// exactly one rule: a target whose provider cannot serve this surface is not a
+// candidate. That keeps a chat-only target from winning a weighted draw it can
+// never serve — which would then hand its whole share to whichever capable
+// target follows it in the rotation — or from taking the cheapest or fastest
+// slot under a ranking mode. Model eligibility, order, and the tail are then
+// decided once, in internal/strategies, for chat and every other surface.
+func (g *Gateway) strategyFor(surface string) (strategies.Strategy, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.strategy != nil {
-		return g.strategy, nil
+	if s, ok := g.strategies[surface]; ok {
+		return s, nil
 	}
 
 	g.ensureCircuitBreakersLocked()
@@ -39,9 +52,12 @@ func (g *Gateway) getStrategy() (strategies.Strategy, error) {
 	// advertises — a provider's own SupportsModel is often much narrower.
 	// Building the views here rather than per lookup keeps the request path
 	// allocation-free, and the snapshot is rebuilt whenever the index is,
-	// because both are replaced under the same lock that clears g.strategy.
+	// because both are replaced under the same lock that clears g.strategies.
 	providerSnap := make(map[string]providers.Provider, len(g.providers))
 	for name, p := range g.providers {
+		if surface != "" && !providerSupportsSurface(p, surface) {
+			continue
+		}
 		providerSnap[name] = withIndexedModels(name, p, g.modelIndex.exactProviders)
 	}
 
@@ -72,7 +88,10 @@ func (g *Gateway) getStrategy() (strategies.Strategy, error) {
 	if err != nil {
 		return nil, err
 	}
-	g.strategy = s
+	if g.strategies == nil {
+		g.strategies = make(map[string]strategies.Strategy)
+	}
+	g.strategies[surface] = s
 	return s, nil
 }
 

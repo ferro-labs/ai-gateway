@@ -175,7 +175,7 @@ func (g *Gateway) modelsForRoutingLocked(name string, p providers.Provider) []st
 // on the superseded one while /v1/models and FindByModel already answer from
 // the new one. Caller must hold g.mu (write).
 func (g *Gateway) rebuildModelIndexesLocked() {
-	g.strategy = nil
+	g.strategies = nil
 
 	// Cache the catalog's per-provider lists before anything reads them.
 	// Catalog.ModelsForProvider walks all ~2,500 entries per call, so deriving

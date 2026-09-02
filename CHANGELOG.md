@@ -5,6 +5,28 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Every routed surface ranks its targets through the one strategy
+  implementation chat and streaming already used. Embeddings, images, rerank,
+  moderation, transcription and speech previously ranked through a second copy
+  that differed in six places: it drew load-balance starts from a different
+  random source, kept unseen least-latency targets in declared order instead of
+  profiling them in random order, priced cost-optimized candidates with a
+  different formula (and with no usage at all on rerank, moderation and audio,
+  so those surfaces ordered unpriced), placed `unpriced_strategy: allow`
+  candidates as a leading block, and returned only the ranked candidates rather
+  than the full order. All of that is gone; the same config and the same
+  health now produce the same candidate order on every surface, and a target
+  that cannot serve a surface is simply not a candidate there.
+- `cost-optimized` scores each candidate on the catalog's price for the model's
+  mode — per token for chat and embeddings, per image, per minute or character
+  for audio — rather than on chat input price alone. Chat ordering is
+  unchanged; embedding, image and audio models that previously tied at zero
+  now order by their real catalog rate.
+
 ## [1.5.1] — 2026-09-01
 
 ### Added

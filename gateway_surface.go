@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/ferro-labs/ai-gateway/config"
 	"github.com/ferro-labs/ai-gateway/internal/redact"
 	"github.com/ferro-labs/ai-gateway/models"
 	"github.com/ferro-labs/ai-gateway/observability"
@@ -886,7 +887,7 @@ func speak(ctx context.Context, p providers.Provider, req providers.SpeechReques
 // allowlist, so a provider that is registered but not listed never serves a
 // request, on this surface or any other.
 func (g *Gateway) routeEmbedding(ctx context.Context, req providers.EmbeddingRequest) (*providers.EmbeddingResponse, routedTarget, error) {
-	keys, err := g.surfaceTargetOrder(req.Model, surfaceEmbeddings, models.Usage{PromptTokens: 1})
+	keys, err := g.surfaceTargetOrder(req.Model, surfaceEmbeddings)
 	if err != nil {
 		return nil, routedTarget{}, err
 	}
@@ -896,11 +897,7 @@ func (g *Gateway) routeEmbedding(ctx context.Context, req providers.EmbeddingReq
 // routeImage is routeEmbedding's counterpart for image generation; see its doc
 // comment for the shared pipeline it attaches to.
 func (g *Gateway) routeImage(ctx context.Context, req providers.ImageRequest) (*providers.ImageResponse, routedTarget, error) {
-	imageCount := 1
-	if req.N != nil && *req.N > 0 {
-		imageCount = *req.N
-	}
-	keys, err := g.surfaceTargetOrder(req.Model, surfaceImages, models.Usage{ImageCount: imageCount})
+	keys, err := g.surfaceTargetOrder(req.Model, surfaceImages)
 	if err != nil {
 		return nil, routedTarget{}, err
 	}
@@ -910,7 +907,7 @@ func (g *Gateway) routeImage(ctx context.Context, req providers.ImageRequest) (*
 // routeRerank is routeEmbedding's counterpart for reranking; see its doc comment
 // for the shared pipeline it attaches to.
 func (g *Gateway) routeRerank(ctx context.Context, req providers.RerankRequest) (*providers.RerankResponse, routedTarget, error) {
-	keys, err := g.surfaceTargetOrder(req.Model, surfaceRerank, models.Usage{})
+	keys, err := g.surfaceTargetOrder(req.Model, surfaceRerank)
 	if err != nil {
 		return nil, routedTarget{}, err
 	}
@@ -920,7 +917,7 @@ func (g *Gateway) routeRerank(ctx context.Context, req providers.RerankRequest) 
 // routeModeration is routeEmbedding's counterpart for moderation; see its doc
 // comment for the shared pipeline it attaches to.
 func (g *Gateway) routeModeration(ctx context.Context, req providers.ModerationRequest) (*providers.ModerationResponse, routedTarget, error) {
-	keys, err := g.surfaceTargetOrder(req.Model, surfaceModeration, models.Usage{})
+	keys, err := g.surfaceTargetOrder(req.Model, surfaceModeration)
 	if err != nil {
 		return nil, routedTarget{}, err
 	}
@@ -930,7 +927,7 @@ func (g *Gateway) routeModeration(ctx context.Context, req providers.ModerationR
 // routeTranscription is routeEmbedding's counterpart for audio transcription;
 // see its doc comment for the shared pipeline it attaches to.
 func (g *Gateway) routeTranscription(ctx context.Context, req providers.TranscriptionRequest) (*providers.TranscriptionResponse, routedTarget, error) {
-	keys, err := g.surfaceTargetOrder(req.Model, surfaceTranscription, models.Usage{})
+	keys, err := g.surfaceTargetOrder(req.Model, surfaceTranscription)
 	if err != nil {
 		return nil, routedTarget{}, err
 	}
@@ -940,9 +937,72 @@ func (g *Gateway) routeTranscription(ctx context.Context, req providers.Transcri
 // routeSpeech is routeEmbedding's counterpart for text-to-speech; see its doc
 // comment for the shared pipeline it attaches to.
 func (g *Gateway) routeSpeech(ctx context.Context, req providers.SpeechRequest) (*providers.SpeechResponse, routedTarget, error) {
-	keys, err := g.surfaceTargetOrder(req.Model, surfaceSpeech, models.Usage{})
+	keys, err := g.surfaceTargetOrder(req.Model, surfaceSpeech)
 	if err != nil {
 		return nil, routedTarget{}, err
 	}
 	return routeTargets(ctx, g, g.planFor(req.Model, keys), req, speechCapable, speak)
+}
+
+// surfaceTargetOrder resolves the candidate order for one non-chat request
+// through the same strategy chat and streaming use, so a routing mode orders
+// its targets identically on every surface. The surface narrows candidacy to
+// the targets that can serve it (see strategyFor); whether the walk advances
+// past a failure is planFor's question. Order is all this decides.
+func (g *Gateway) surfaceTargetOrder(model, surface string) ([]string, error) {
+	g.mu.RLock()
+	mode := g.config.Strategy.Mode
+	g.mu.RUnlock()
+	if mode == config.ModeContentBased {
+		// Content rules only look at req.Messages (prompt_contains /
+		// prompt_not_contains / prompt_regex), and this surface has none —
+		// Embed/GenerateImage requests carry no chat messages. prompt_contains
+		// and prompt_regex correctly find no match against zero messages, but
+		// strategies.ContentBased's prompt_not_contains rule is
+		// `!anyUserMessageContains(...)`, which is vacuously TRUE over an
+		// empty message set: it would match every embeddings/image request
+		// and win routing outright, regardless of what the rule actually
+		// says. No content rule can be meaningfully evaluated without a
+		// prompt, so route in configured target order instead — exactly what
+		// strategy.SelectTargets already falls back to when no rule matches.
+		g.mu.Lock()
+		g.ensureCircuitBreakersLocked()
+		g.ensureProviderLimitersLocked()
+		keys := make([]string, len(g.config.Targets))
+		for i, t := range g.config.Targets {
+			keys[i] = t.VirtualKey
+		}
+		g.mu.Unlock()
+		return keys, nil
+	}
+	strategy, err := g.strategyFor(surface)
+	if err != nil {
+		return nil, err
+	}
+	return strategy.SelectTargets(providers.Request{Model: model})
+}
+
+func providerSupportsSurface(p providers.Provider, surface string) bool {
+	switch surface {
+	case surfaceEmbeddings:
+		_, ok := providers.As[providers.EmbeddingProvider](p)
+		return ok
+	case surfaceImages:
+		_, ok := providers.As[providers.ImageProvider](p)
+		return ok
+	case surfaceRerank:
+		_, ok := providers.As[providers.RerankProvider](p)
+		return ok
+	case surfaceModeration:
+		_, ok := providers.As[providers.ModerationProvider](p)
+		return ok
+	case surfaceTranscription:
+		_, ok := providers.As[providers.TranscriptionProvider](p)
+		return ok
+	case surfaceSpeech:
+		_, ok := providers.As[providers.SpeechProvider](p)
+		return ok
+	default:
+		return false
+	}
 }

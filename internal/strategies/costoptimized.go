@@ -9,8 +9,8 @@ import (
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
-// CostOptimized routes to the cheapest compatible provider based on estimated
-// input cost from the model catalog. By default, unpriced candidates are used
+// CostOptimized routes to the cheapest compatible provider based on the model
+// catalog's price for the request (see rankingUsage). By default, unpriced candidates are used
 // only when no compatible provider has known pricing.
 type CostOptimized struct {
 	targets          []Target
@@ -33,17 +33,28 @@ func NewCostOptimized(targets []Target, lookup ProviderLookup, catalog models.Ca
 	return &CostOptimized{targets: targets, lookup: lookup, catalog: catalog, unpricedStrategy: strategy}
 }
 
-// estimatePromptTokens approximates the prompt token count at ~4 characters per
-// token. It is a routing heuristic only, not billing-accurate accounting.
-func estimatePromptTokens(req providers.Request) int {
+// rankingUsage is the usage every candidate is priced against for ordering.
+//
+// The prompt is estimated at ~4 characters per token; every other billable
+// quantity is one unit. models.Calculate reads only the fields its catalog
+// mode bills off, so one Usage prices a chat model on its input rate, an
+// embedding model per token, an image model per image and an audio model per
+// minute or character, and the same request orders the same targets on every
+// surface. It is a routing heuristic only, not billing-accurate accounting.
+func rankingUsage(req providers.Request) models.Usage {
 	promptChars := 0
 	for _, msg := range req.Messages {
 		promptChars += len(msg.Content)
 	}
-	return promptChars/4 + 1
+	return models.Usage{
+		PromptTokens:     promptChars/4 + 1,
+		ImageCount:       1,
+		AudioInputSecs:   60,
+		AudioOutputChars: 1000,
+	}
 }
 
-// costOrderCandidate holds a candidate target with its estimated input cost and
+// costOrderCandidate holds a candidate target with its estimated cost and
 // catalog-pricing flags.
 type costOrderCandidate struct {
 	key        string
@@ -52,8 +63,8 @@ type costOrderCandidate struct {
 	modelFound bool
 }
 
-// SelectTargets orders model-compatible targets by estimated input cost,
-// cheapest first. The unpriced strategy controls which cataloged-but-unpriced
+// SelectTargets orders model-compatible targets by estimated cost, cheapest
+// first. The unpriced strategy controls which cataloged-but-unpriced
 // candidates rank: allow ranks any model-found candidate, skip and fallback rank
 // only priced ones. Remaining targets follow in declared order; this mode does
 // not advance past a failing target, so they stand in only when a preferred one
@@ -64,7 +75,7 @@ type costOrderCandidate struct {
 // candidates lead in declared order — the first COMPATIBLE target rather than
 // targets[0].
 func (c *CostOptimized) SelectTargets(req providers.Request) ([]string, error) {
-	estimatedPromptTokens := estimatePromptTokens(req)
+	usage := rankingUsage(req)
 	candidates := make([]costOrderCandidate, 0, len(c.targets))
 	for _, t := range c.targets {
 		p, ok := c.lookup(t.VirtualKey)
@@ -79,12 +90,10 @@ func (c *CostOptimized) SelectTargets(req providers.Request) ([]string, error) {
 		if mapped := t.ModelMap[req.Model]; mapped != "" {
 			model = mapped
 		}
-		result := models.Calculate(c.catalog, providers.CanonicalName(p)+"/"+model, models.Usage{
-			PromptTokens: estimatedPromptTokens,
-		})
+		result := models.Calculate(c.catalog, providers.CanonicalName(p)+"/"+model, usage)
 		candidates = append(candidates, costOrderCandidate{
 			key:        t.VirtualKey,
-			costUSD:    result.InputUSD,
+			costUSD:    result.TotalUSD,
 			hasPrice:   result.Priced,
 			modelFound: result.ModelFound,
 		})

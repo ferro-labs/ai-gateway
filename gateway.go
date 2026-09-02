@@ -52,7 +52,7 @@ type Gateway struct {
 	catalog          models.Catalog
 	providers        map[string]providers.Provider
 	providerNames    []string
-	strategy         strategies.Strategy
+	strategies       map[string]strategies.Strategy // built lazily, keyed by surface ("" is chat)
 	plugins          *plugin.Manager
 	requestLogWriter requestlog.Writer
 	closeOnce        sync.Once
@@ -362,7 +362,7 @@ func (g *Gateway) RegisterProviderAs(name string, p providers.Provider) {
 	}
 	g.providers[name] = p
 	g.rebuildModelIndexesLocked()
-	g.strategy = nil // force strategy rebuild
+	g.strategies = nil // force strategy rebuild
 }
 
 // RegisterPlugin registers a plugin at the given lifecycle stage.

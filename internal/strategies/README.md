@@ -9,7 +9,12 @@ request may go, while the retry policy and circuit breaker hang off the route an
 the cluster.)
 
 Pick a strategy with `strategy.mode`. Every target names a `virtual_key` (a
-provider), and a request routes only to targets that serve its model. See
+provider), and a request routes only to targets that serve its model. One
+ranking serves every surface: chat, streaming, embeddings, images, rerank,
+moderation, transcription and speech order the same targets the same way for the
+same config and health, with one difference — a target whose provider cannot
+serve the surface at all is not a candidate there, so a chat-only target never
+takes an embeddings request's share of a weighted draw. See
 [`../../config.example.yaml`](../../config.example.yaml) for the full config
 reference with inline comments.
 
@@ -81,8 +86,12 @@ strategy: { mode: least-latency }
 ```
 
 ### cost-optimized
-Routes to the cheapest catalog-priced target. `unpriced_strategy` decides what
-happens for a target the catalog has no price for:
+Routes to the cheapest catalog-priced target. Each candidate is priced from the
+catalog's rate for the model's mode — per input token for chat, per token for
+embeddings, per image, per minute or character for audio — against one small
+estimated usage, so the order is a comparison of list prices, not a prediction of
+what the request will cost. `unpriced_strategy` decides what happens for a target
+the catalog has no price for:
 
 | `unpriced_strategy` | Behaviour |
 |---|---|

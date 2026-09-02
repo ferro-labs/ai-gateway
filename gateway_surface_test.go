@@ -3,7 +3,6 @@ package aigateway
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"testing"
 
@@ -17,81 +16,6 @@ import (
 	"github.com/ferro-labs/ai-gateway/providers"
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
-
-// TestActiveSurfaceCandidates_ZeroDrains covers the drain contract. weight: 0
-// used to map to weight 1, so a target an operator had taken out of rotation
-// kept receiving live traffic — measured at 3 of 200 embedding requests — at
-// exactly the moment its credential was about to be revoked.
-func TestActiveSurfaceCandidates_ZeroDrains(t *testing.T) {
-	tests := []struct {
-		name      string
-		weights   []float64
-		weighted  bool
-		wantKeys  []string
-		wantTotal float64
-	}{
-		{
-			name:      "zero takes no share",
-			weights:   []float64{0, 100},
-			weighted:  true,
-			wantKeys:  []string{"t1"},
-			wantTotal: 100,
-		},
-		{
-			name:      "a weightless config still shares equally",
-			weights:   []float64{0, 0, 0},
-			weighted:  false,
-			wantKeys:  []string{"t0", "t1", "t2"},
-			wantTotal: 3,
-		},
-		{
-			name:      "negative is drained like zero",
-			weights:   []float64{-5, 2},
-			weighted:  true,
-			wantKeys:  []string{"t1"},
-			wantTotal: 2,
-		},
-		{
-			name:      "every candidate drained leaves nothing to route to",
-			weights:   []float64{0, 0},
-			weighted:  true,
-			wantKeys:  nil,
-			wantTotal: 0,
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			candidates := make([]surfaceRankCandidate, len(tc.weights))
-			for i, w := range tc.weights {
-				candidates[i] = surfaceRankCandidate{key: fmt.Sprintf("t%d", i), weight: w}
-			}
-			active, total := activeSurfaceCandidates(candidates, tc.weighted)
-			if total != tc.wantTotal {
-				t.Errorf("total = %v, want %v", total, tc.wantTotal)
-			}
-			if len(active) != len(tc.wantKeys) {
-				t.Fatalf("survivors = %d, want %d", len(active), len(tc.wantKeys))
-			}
-			for i, want := range tc.wantKeys {
-				if active[i].key != want {
-					t.Errorf("survivor[%d] = %q, want %q", i, active[i].key, want)
-				}
-			}
-		})
-	}
-}
-
-// TestAnyWeightExpressed is the discriminator that lets 0 mean 0 without failing
-// every config that never mentions weight at all.
-func TestAnyWeightExpressed(t *testing.T) {
-	if anyWeightExpressed([]config.Target{{VirtualKey: "a"}, {VirtualKey: "b"}}) {
-		t.Error("a config that names no weight must not be read as draining everything")
-	}
-	if !anyWeightExpressed([]config.Target{{VirtualKey: "a"}, {VirtualKey: "b", Weight: 100}}) {
-		t.Error("a config that names one weight expresses weights")
-	}
-}
 
 // TestGateway_Embed_LoadBalanceDrainsZeroWeight is the drain contract end to
 // end: a target weighted 0 must receive no embedding traffic while a weighted
@@ -152,7 +76,7 @@ func TestSurfaceTargetOrder_UnpricedSkipIsNoCapableProvider(t *testing.T) {
 	})
 	gw.RegisterProvider(ep)
 
-	_, err := gw.surfaceTargetOrder("unpriced-embed-model", surfaceEmbeddings, models.Usage{PromptTokens: 1})
+	_, err := gw.surfaceTargetOrder("unpriced-embed-model", surfaceEmbeddings)
 	if err == nil {
 		t.Fatal("expected skip mode with no priced candidate to fail")
 	}
@@ -170,47 +94,6 @@ func TestSurfaceTargetOrder_UnpricedSkipIsNoCapableProvider(t *testing.T) {
 	if ep.calls != 0 {
 		t.Errorf("provider was called %d times; skip mode must contact nobody", ep.calls)
 	}
-}
-
-func TestRankConfiguredSurfaceTargets_PricesMappedUpstreamModel(t *testing.T) {
-	priced := func(provider, model string, price float64) models.Model {
-		return models.Model{
-			Provider: provider,
-			ModelID:  model,
-			Mode:     models.ModeEmbedding,
-			Pricing:  models.Pricing{EmbeddingPerMTokens: ptrFloat64(price)},
-		}
-	}
-	first := &mockEmbeddingProvider{mockProvider: mockProvider{name: "first", models: []string{"expensive-upstream"}}}
-	second := &mockEmbeddingProvider{mockProvider: mockProvider{name: "second", models: []string{"cheap-upstream"}}}
-	targets := []config.Target{
-		{VirtualKey: "first", ModelMap: map[string]string{visibleMappedModel: "expensive-upstream"}},
-		{VirtualKey: "second", ModelMap: map[string]string{visibleMappedModel: "cheap-upstream"}},
-	}
-	providersByTarget := map[string]providers.Provider{"first": first, "second": second}
-	modelIndex := map[string][]string{visibleMappedModel: {"first", "second"}}
-	catalog := models.Catalog{
-		"first/expensive-upstream": priced("first", "expensive-upstream", 10),
-		"second/cheap-upstream":    priced("second", "cheap-upstream", 1),
-	}
-
-	t.Run("orders by each target upstream price", func(t *testing.T) {
-		gw := &Gateway{}
-		keys, err := gw.rankConfiguredSurfaceTargets(targets, providersByTarget, modelIndex, catalog, "", visibleMappedModel, surfaceEmbeddings, models.Usage{PromptTokens: 1_000_000}, config.ModeCostOptimized)
-		if err != nil {
-			t.Fatal(err)
-		}
-		requireKeys(t, keys, "second", "first")
-	})
-
-	t.Run("skip recognizes priced mapped upstream", func(t *testing.T) {
-		gw := &Gateway{}
-		keys, err := gw.rankConfiguredSurfaceTargets(targets[:1], providersByTarget, modelIndex, catalog, config.UnpricedStrategySkip, visibleMappedModel, surfaceEmbeddings, models.Usage{PromptTokens: 1}, config.ModeCostOptimized)
-		if err != nil {
-			t.Fatal(err)
-		}
-		requireKeys(t, keys, "first")
-	})
 }
 
 func TestGateway_Embed_CostOptimizedUsesMappedUpstreamPrice(t *testing.T) {
