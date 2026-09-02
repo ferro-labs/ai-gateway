@@ -81,3 +81,24 @@ func assertLeadsWith(t *testing.T, s Strategy, req providers.Request, want strin
 		t.Errorf("SelectTargets leads with %q, want %q (full order %v)", keys[0], want, keys)
 	}
 }
+
+// TestConditional_BoundedPredicates covers the request-shaped keys: user,
+// stream, has_tools and one metadata entry. Each is exact; an absent value
+// matches nothing.
+func TestConditional_BoundedPredicates(t *testing.T) {
+	rules := []ConditionRule{
+		{Key: ConditionKeyUser, Value: "vip", Targets: []Target{{VirtualKey: "premium"}}},
+		{Key: ConditionKeyMetadata, Field: "tier", Value: "gold", Targets: []Target{{VirtualKey: "gold"}}},
+		{Key: ConditionKeyHasTools, Value: "true", Targets: []Target{{VirtualKey: "tools"}}},
+		{Key: ConditionKeyStream, Value: "true", Targets: []Target{{VirtualKey: "streamer"}}},
+	}
+	c := NewConditional(rules, Target{VirtualKey: "fb"})
+
+	assertLeadsWith(t, c, providers.Request{Model: "m", User: "vip"}, "premium")
+	assertLeadsWith(t, c, providers.Request{Model: "m", User: "other"}, "fb")
+	assertLeadsWith(t, c, providers.Request{Model: "m", RoutingMetadata: map[string]string{"tier": "gold"}}, "gold")
+	assertLeadsWith(t, c, providers.Request{Model: "m", RoutingMetadata: map[string]string{"tier": "silver"}}, "fb")
+	assertLeadsWith(t, c, providers.Request{Model: "m", Tools: []providers.Tool{{Type: "function"}}}, "tools")
+	assertLeadsWith(t, c, providers.Request{Model: "m", Stream: true}, "streamer")
+	assertLeadsWith(t, c, providers.Request{Model: "m"}, "fb")
+}

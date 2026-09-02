@@ -134,7 +134,12 @@ strategy:
 ### conditional
 Routes by the value of a request field. Rules are evaluated in order, first match
 wins; when no rule matches, the request goes to the fallback target. Supported
-keys: `model`, `model_prefix`.
+keys: `model`, `model_prefix`, `user` (the request's `user` field), `stream` and
+`has_tools` (`"true"` / `"false"`), and `metadata`, which reads one entry —
+named by `field` — of the single `X-Gateway-Metadata` request header, a small
+JSON object of scalar values. No other header is ever exposed to a rule. The
+request-shaped keys are chat-only; on embeddings and the other surfaces they
+match nothing.
 
 ```yaml
 strategy:
@@ -142,6 +147,8 @@ strategy:
   conditions:
     - { key: model, value: gpt-4o, target_key: openai }
     - { key: model_prefix, value: claude, target_keys: [anthropic, bedrock] }
+    - { key: metadata, field: tier, value: gold, target_key: openai }
+    - { key: has_tools, value: "true", target_key: openai }
 ```
 
 `target_key` names one target; `target_keys` an ordered chain, tried in order

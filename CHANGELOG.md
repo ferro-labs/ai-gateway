@@ -20,6 +20,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pass-through proxy named a provider, and `/v1/chat/completions` named
   nothing. Embedders read the same values through
   `aigateway.WithRoutingAttribution`.
+- Conditional routing gains four bounded predicates: `key: user` (the
+  request's `user` field), `key: stream` and `key: has_tools` (`"true"` /
+  `"false"`), and `key: metadata` with `field: <entry>`, which reads one entry
+  of the new `X-Gateway-Metadata` request header — a JSON object of at most
+  32 scalar values within 4 KiB, accepted on `/v1/chat/completions` and
+  `/v1/completions`, never forwarded to a provider. No other request header
+  is exposed to a rule; a malformed header is the caller's `400`.
 - `target_keys: [a, b]` on `conditions[]` and `content_conditions[]` names an
   ordered target chain for a rule; `target_key` stays as the one-entry form.
   The walk tries the chain in order under the pool modes' failover-safe

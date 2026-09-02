@@ -296,6 +296,9 @@ type Condition struct {
 	// rule's traffic to the fallback target instead.
 	Key   string `json:"key" yaml:"key"`
 	Value string `json:"value" yaml:"value"`
+	// Field names the metadata entry a `key: metadata` rule reads; required
+	// there and refused elsewhere.
+	Field string `json:"field,omitempty" yaml:"field,omitempty"`
 	// TargetKey names the one target this rule routes to; it must be a
 	// configured targets[].virtual_key. Sugar for a one-entry TargetKeys.
 	TargetKey string `json:"target_key,omitempty" yaml:"target_key,omitempty"`
@@ -311,14 +314,30 @@ type Condition struct {
 // ConditionKey* are the accepted values for Condition.Key. The set is closed:
 // internal/strategies.Conditional matches on exactly these and nothing resolves
 // at runtime, so a value outside the set can only ever be a typo.
+//
+// The set is bounded on purpose. `user`, `stream` and `has_tools` are fields
+// every chat request already carries; `metadata` reads one entry of the
+// single allow-listed X-Gateway-Metadata header. Arbitrary request headers
+// are never exposed to a predicate.
 const (
 	ConditionKeyModel       = "model"
 	ConditionKeyModelPrefix = "model_prefix"
+	// ConditionKeyUser matches the request's `user` field exactly.
+	ConditionKeyUser = "user"
+	// ConditionKeyStream matches whether the request streams: value "true"
+	// or "false".
+	ConditionKeyStream = "stream"
+	// ConditionKeyHasTools matches whether the request carries tools: value
+	// "true" or "false".
+	ConditionKeyHasTools = "has_tools"
+	// ConditionKeyMetadata matches one entry of the X-Gateway-Metadata
+	// header, named by Condition.Field, against Value.
+	ConditionKeyMetadata = "metadata"
 )
 
 // ConditionKeys returns the accepted Condition.Key values in a stable order.
 func ConditionKeys() []string {
-	return []string{ConditionKeyModel, ConditionKeyModelPrefix}
+	return []string{ConditionKeyModel, ConditionKeyModelPrefix, ConditionKeyUser, ConditionKeyStream, ConditionKeyHasTools, ConditionKeyMetadata}
 }
 
 // ContentCondition maps a prompt-content matching rule to a routing target.

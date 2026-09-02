@@ -133,6 +133,7 @@ func buildStrategy(
 			rules = append(rules, strategies.ConditionRule{
 				Key:     cond.Key,
 				Value:   cond.Value,
+				Field:   cond.Field,
 				Targets: chainTargets(cond.Chain()),
 			})
 		}

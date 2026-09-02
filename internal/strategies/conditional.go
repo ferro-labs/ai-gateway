@@ -1,6 +1,7 @@
 package strategies
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/ferro-labs/ai-gateway/providers"
@@ -13,12 +14,18 @@ import (
 const (
 	ConditionKeyModel       = "model"
 	ConditionKeyModelPrefix = "model_prefix"
+	ConditionKeyUser        = "user"
+	ConditionKeyStream      = "stream"
+	ConditionKeyHasTools    = "has_tools"
+	ConditionKeyMetadata    = "metadata"
 )
 
 // ConditionRule maps a condition to an ordered target chain.
 type ConditionRule struct {
 	Key   string // one of ConditionKey*
 	Value string
+	// Field names the metadata entry a ConditionKeyMetadata rule reads.
+	Field string
 	// Targets is the chain the rule routes to, most preferred first. A
 	// one-entry chain is an exact target.
 	Targets []Target
@@ -69,6 +76,15 @@ func (c *Conditional) matches(rule ConditionRule, req providers.Request) bool {
 		return req.Model == rule.Value
 	case ConditionKeyModelPrefix:
 		return strings.HasPrefix(req.Model, rule.Value)
+	case ConditionKeyUser:
+		return req.User != "" && req.User == rule.Value
+	case ConditionKeyStream:
+		return strconv.FormatBool(req.Stream) == rule.Value
+	case ConditionKeyHasTools:
+		return strconv.FormatBool(len(req.Tools) > 0) == rule.Value
+	case ConditionKeyMetadata:
+		got, ok := req.RoutingMetadata[rule.Field]
+		return ok && got == rule.Value
 	default:
 		// Unreachable for a validated config: an unknown key is a load error.
 		// Kept because a false here is the only honest answer a matcher can give

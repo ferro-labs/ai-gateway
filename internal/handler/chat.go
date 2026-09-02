@@ -30,6 +30,10 @@ func ChatCompletions(gw *aigateway.Gateway) http.HandlerFunc {
 			apierror.WriteOpenAI(w, http.StatusBadRequest, err.Error(), "invalid_request_error", "invalid_request")
 			return
 		}
+		if req.RoutingMetadata, err = routingMetadata(r.Header); err != nil {
+			writeRoutingMetadataError(w, err)
+			return
+		}
 
 		// --- Streaming path ---
 		//

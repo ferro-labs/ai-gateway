@@ -927,6 +927,12 @@ embedder reads the same data by passing a `*aigateway.RoutingAttribution`
 through `aigateway.WithRoutingAttribution` on the request context. The
 pass-through proxy (`/v1/*`) keeps emitting `X-Gateway-Provider` only.
 
+One request header goes the other way. `X-Gateway-Metadata`, a JSON object of
+at most 32 scalar values within 4 KiB, is the single header conditional
+routing may read (`key: metadata`, `field: <entry>`), on `/v1/chat/completions`
+and `/v1/completions`. It never reaches a provider, and no other header is
+exposed to a rule; a malformed value is the caller's `400`.
+
 ### Legacy completions
 
 `/v1/completions` wraps the prompt as a single user message and routes it through

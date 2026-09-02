@@ -175,6 +175,12 @@ func Completions(gw *aigateway.Gateway) http.HandlerFunc {
 			Seed:             legacyReq.Seed,
 			User:             legacyReq.User,
 		}
+		metadata, err := routingMetadata(r.Header)
+		if err != nil {
+			writeRoutingMetadataError(w, err)
+			return
+		}
+		chatReq.RoutingMetadata = metadata
 
 		attribution := &aigateway.RoutingAttribution{}
 		chatResp, err := gw.Route(aigateway.WithRoutingAttribution(r.Context(), attribution), chatReq)

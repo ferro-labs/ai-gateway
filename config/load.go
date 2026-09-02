@@ -539,6 +539,18 @@ func validateConditions(conditions []Condition, targets []Target) error {
 			return fmt.Errorf("conditions[%d]: unknown key %q; valid keys: %s",
 				i, c.Key, strings.Join(ConditionKeys(), ", "))
 		}
+		switch c.Key {
+		case ConditionKeyStream, ConditionKeyHasTools:
+			if c.Value != "true" && c.Value != "false" {
+				return fmt.Errorf("conditions[%d]: key %q takes value \"true\" or \"false\", got %q", i, c.Key, c.Value)
+			}
+		}
+		if c.Key == ConditionKeyMetadata && c.Field == "" {
+			return fmt.Errorf("conditions[%d]: key metadata requires field", i)
+		}
+		if c.Key != ConditionKeyMetadata && c.Field != "" {
+			return fmt.Errorf("conditions[%d]: field applies to key metadata only", i)
+		}
 		if err := validateRuleChain(fmt.Sprintf("conditions[%d]", i), c.TargetKey, c.TargetKeys, targets); err != nil {
 			return err
 		}

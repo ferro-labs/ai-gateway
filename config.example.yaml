@@ -60,7 +60,13 @@ strategy:
 #     - key: model_prefix
 #       value: gemini
 #       target_keys: [gemini, vertex-ai]   # an ordered chain: gemini, then vertex-ai
-# Routes based on the value of a request field (e.g. "model").
+#     - key: metadata               # one entry of the X-Gateway-Metadata request
+#       field: tier                 # header, a small JSON object of scalar values
+#       value: gold
+#       target_key: openai
+# Routes based on the value of a request field. Keys: model, model_prefix, user
+# (the request's `user`), stream and has_tools ("true"/"false"), and metadata
+# (`field` names the entry). No other request header reaches a rule.
 # A rule names its targets, and no other: `target_key` names one, `target_keys`
 # an ordered chain. The walk tries the chain in order, advancing only on a
 # failover-safe failure (see the pool modes above) and skipping a member whose
