@@ -617,7 +617,11 @@ func (m *GatewayConfigManager) Close() error {
 }
 
 // rejectStdioMCPChanges enforces ErrStdioMCPPinned: every stdio server in next
-// must appear in initial with the same name, command, args and env.
+// must appear in initial with the same name, command, args and env, and an
+// allowed_tools list no wider than the pinned one. An empty list exposes every
+// discovered tool, so clearing or widening it would hand back through the tool
+// loop what pinning the command takes away; narrowing is an operator
+// tightening a server and stays allowed.
 func rejectStdioMCPChanges(initial, next config.Config) error {
 	for _, server := range next.MCPServers {
 		if server.Command == "" {
@@ -631,6 +635,26 @@ func rejectStdioMCPChanges(initial, next config.Config) error {
 		if pinned.Command != server.Command || !slices.Equal(pinned.Args, server.Args) || !maps.Equal(pinned.Env, server.Env) {
 			return fmt.Errorf("mcp server %q: %w", server.Name, ErrStdioMCPPinned)
 		}
+		if widensAllowedTools(pinned.AllowedTools, server.AllowedTools) {
+			return fmt.Errorf("mcp server %q: allowed_tools may only be narrowed: %w", server.Name, ErrStdioMCPPinned)
+		}
 	}
 	return nil
+}
+
+// widensAllowedTools reports whether next exposes a tool pinned does not. An
+// empty pinned list already allows everything, so nothing can widen it.
+func widensAllowedTools(pinned, next []string) bool {
+	if len(pinned) == 0 {
+		return false
+	}
+	if len(next) == 0 {
+		return true
+	}
+	for _, tool := range next {
+		if !slices.Contains(pinned, tool) {
+			return true
+		}
+	}
+	return false
 }

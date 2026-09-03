@@ -410,8 +410,9 @@ plugins:
 #   • Streamable HTTP (MCP 2025-11-25) — set url; command must be omitted.
 #   • stdio                            — set command; url must be omitted.
 #   Stdio servers are pinned to this file: a config sent through the admin API
-#   may keep or remove one, but cannot add a stdio server or change its
-#   command, args or env. That would let an admin key run commands on the host.
+#   may keep or remove one, or narrow its allowed_tools, but cannot add a stdio
+#   server, change its command, args or env, or widen allowed_tools. Any of
+#   those would let an admin key run commands on the host.
 mcp_servers:
   # ── HTTP transport examples ──────────────────────────────────────────────────
 
