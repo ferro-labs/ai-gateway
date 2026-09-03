@@ -5,6 +5,29 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.3] — 2026-09-03
+
+Security fixes. No API or configuration changes for deployments that declare
+their MCP servers in the config file.
+
+### Security
+
+- Stdio MCP servers are pinned to the boot-time config file. A config sent
+  through the admin API may keep or remove a stdio server but can no longer
+  add one or change its `command`, `args` or `env`; the request fails with
+  `stdio mcp servers can only be declared in the gateway config file`. A
+  stdio server is a command the gateway process executes, so accepting one
+  from the API turned an admin key into arbitrary command execution on the
+  host. A persisted config that violates the rule is refused at start-up
+  rather than adopted.
+- `google.golang.org/grpc` 1.82.1 → 1.83.2, closing GHSA-vp52-pcj8-j9qc
+  (heap exhaustion via HTTP/2 DATA-frame fragmentation). Reachable only when
+  the OTLP gRPC trace exporter is enabled.
+- Dashboard build dependencies: `fast-uri` → 3.1.7 (GHSA-fph4-wmhf-6fwf,
+  GHSA-5jgf-p345-68v8) and `browserslist` → 4.28.8 (GHSA-73wf-gq98-2v4g)
+  through `overrides` in `web/package.json`. Both are build-time only and
+  never ship in the bundle.
+
 ## [1.5.2] — 2026-09-03
 
 ### Added
