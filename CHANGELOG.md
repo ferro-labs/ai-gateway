@@ -14,7 +14,7 @@ their MCP servers in the config file.
 
 - Stdio MCP servers are pinned to the boot-time config file. A config sent
   through the admin API may keep or remove a stdio server but can no longer
-  add one, change its `command`, `args` or `env`, or widen its
+  add one, change its `command`, `args` or `env`, or widen or clear its
   `allowed_tools` (narrowing stays allowed); the request fails with
   `stdio mcp servers can only be declared in the gateway config file`. A
   stdio server is a command the gateway process executes, so accepting one

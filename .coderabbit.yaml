@@ -1,8 +1,9 @@
 # yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
-# Repository review configuration. Takes precedence over the CodeRabbit UI
-# settings for this repository and the organization. CLAUDE.md and AGENTS.md
-# are picked up automatically as review guidelines; CONTRIBUTING.md is added
-# below because it holds the commit and test conventions.
+# Repository review configuration. Ranks above the repository and organization
+# UI settings; only organization global overrides set in the UI rank above it.
+# CLAUDE.md and AGENTS.md are picked up automatically as review guidelines;
+# CONTRIBUTING.md is added below because it holds the commit and test
+# conventions.
 
 language: en-US
 tone_instructions: >-
