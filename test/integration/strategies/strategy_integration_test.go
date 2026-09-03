@@ -261,7 +261,11 @@ func TestStrategy_LeastLatency_LocksOntoFastestSeen(t *testing.T) {
 	fastTotal.Store(0)
 	slowTotal.Store(0)
 
-	const n = 20
+	// explorationShare (10%) sends a random non-leader one request in ten, so
+	// the slow target is expected to serve n/10. At n=20 the 80% bar tolerates
+	// only four such draws and five or more happens about one run in twenty;
+	// at n=200 the same bar sits five standard deviations above the mean.
+	const n = 200
 	for i := range n {
 		if _, err := gw.Route(t.Context(), req); err != nil {
 			t.Fatalf("measurement request %d failed: %v", i, err)
