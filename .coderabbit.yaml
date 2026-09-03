@@ -1,0 +1,219 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# Repository review configuration. Takes precedence over the CodeRabbit UI
+# settings for this repository and the organization. CLAUDE.md and AGENTS.md
+# are picked up automatically as review guidelines; CONTRIBUTING.md is added
+# below because it holds the commit and test conventions.
+
+language: en-US
+tone_instructions: >-
+  Be direct and concise. Lead with correctness, concurrency, security and
+  API-compatibility findings. Do not repeat what golangci-lint or eslint
+  already report, and do not comment on formatting.
+
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: true
+  high_level_summary_in_walkthrough: true
+  review_status: true
+  commit_status: true
+  collapse_walkthrough: true
+  changed_files_summary: true
+  sequence_diagrams: false
+  estimate_code_review_effort: true
+  assess_linked_issues: true
+  related_issues: true
+  related_prs: true
+  suggested_labels: true
+  auto_apply_labels: false
+  suggested_reviewers: false
+  auto_assign_reviewers: false
+  in_progress_fortune: false
+  poem: false
+  enable_prompt_for_ai_agents: true
+  abort_on_close: true
+
+  # Generated, vendored or data-only paths carry no review signal.
+  path_filters:
+    - "!go.sum"
+    - "!web/package-lock.json"
+    - "!web/dist/**"
+    - "!models/**"
+    - "!dogfood-data/**"
+    - "!coverage.out"
+    - "!**/*.svg"
+    - "!**/*.png"
+    - "!**/*.gif"
+    - "!**/*.db"
+
+  path_instructions:
+    - path: "**/*.go"
+      instructions: >-
+        Standard-library idioms only. Every error is handled or returned with
+        context; nothing is silently dropped. Flag goroutine leaks, missing
+        context propagation, unbounded channels or buffers, data races on
+        shared state, and any lock held across I/O. Exported identifiers keep
+        a brief godoc with no meta-commentary. Public packages (root,
+        providers/, plugin/, pkg/, mcp/, config/) are a stable API: call out
+        any breaking change to an exported signature.
+    - path: "internal/admin/**"
+      instructions: >-
+        Trust boundary. Check that every request value is validated and
+        bounded before use, that responses never echo secrets or provider
+        error text unfiltered, that audit entries are recorded for mutations,
+        and that a config reached through the API cannot escalate to command
+        execution or file access on the host.
+    - path: "internal/handler/**"
+      instructions: >-
+        Request hot path. Watch allocations, per-request goroutines, body
+        size limits, streaming write ordering (headers before the first
+        chunk), and that failures map to the documented error envelope.
+    - path: "providers/**"
+      instructions: >-
+        Each provider translates to and from the OpenAI-compatible shape.
+        Check request field mapping, streaming chunk parsing, token usage
+        extraction, and that upstream errors are classified for retry and
+        circuit-breaker decisions consistently with the other providers.
+    - path: "plugin/**"
+      instructions: >-
+        Plugins run inside the request pipeline. Verify they respect context
+        cancellation, never block on unbounded work, and keep state
+        concurrency-safe. Metadata keys are shared across plugins; a rename is
+        a breaking change.
+    - path: "config/**"
+      instructions: >-
+        Validation runs at load and on every admin reload. Each new field
+        needs a bound or an enum check, a documented default in
+        config.example.yaml, and an error message that names the target or
+        server it belongs to.
+    - path: "**/*_test.go"
+      instructions: >-
+        Tests use the standard testing package with no assertion framework,
+        are named after the code under test, sit beside it, and use table
+        driven subtests when cases share setup. Flag sleeps used for
+        synchronisation, tests that depend on wall-clock time, and tests
+        that pass without asserting the behaviour in their name.
+    - path: "web/**/*.{ts,tsx}"
+      instructions: >-
+        React and TypeScript dashboard served same-origin by the gateway.
+        Check that secrets never reach localStorage, that every fetch handles
+        the error envelope, that components stay accessible (labels, focus,
+        keyboard), and that no new runtime dependency is added for something
+        the existing stack already covers.
+    - path: ".github/workflows/**"
+      instructions: >-
+        Actions are pinned to a commit SHA with a version comment. Check
+        permissions are least-privilege per job, that secrets are not
+        exposed to pull_request_target or fork builds, and that release jobs
+        are not reachable from untrusted triggers.
+    - path: "{CHANGELOG.md,README*.md,docs/**/*.md}"
+      instructions: >-
+        Public-facing text stays neutral and outcome-focused: describe what
+        changed and why it matters to users. Flag references to internal
+        tooling, review services or how a change was produced, and any
+        claim that the code does not back.
+
+  auto_review:
+    enabled: true
+    auto_incremental_review: true
+    drafts: false
+    ignore_title_keywords:
+      - "wip"
+      - "do not review"
+    base_branches:
+      - "^release/.*"
+      - "^development$"
+
+  finishing_touches:
+    docstrings:
+      enabled: false
+    unit_tests:
+      enabled: true
+
+  pre_merge_checks:
+    docstrings:
+      mode: "off"
+    title:
+      mode: warning
+      requirements: >-
+        Conventional Commits form: type(optional scope): imperative summary.
+        Allowed types are feat, fix, perf, docs, test, chore, refactor, ci
+        and build. A breaking change adds "!" after the type. Keep the summary
+        under 72 characters and free of trailing punctuation.
+    description:
+      mode: warning
+    issue_assessment:
+      mode: warning
+    custom_checks:
+      - name: "Changelog entry"
+        mode: warning
+        instructions: >-
+          Pass when the PR is docs-only, test-only, CI-only or a dependency
+          bump with no user-visible effect, or when CHANGELOG.md gained an
+          entry describing the change. Fail when a user-visible behaviour,
+          configuration field, endpoint, header or CLI flag changed and
+          CHANGELOG.md is untouched.
+      - name: "Neutral public wording"
+        mode: warning
+        instructions: >-
+          Fail when the PR title, description, commit messages, CHANGELOG.md,
+          or any godoc in the diff mentions an AI assistant, a code review
+          service, internal tooling, or how the change was produced. Pass
+          otherwise.
+
+  tools:
+    golangci-lint:
+      enabled: true
+      config_file: .golangci.yml
+    eslint:
+      enabled: true
+    gitleaks:
+      enabled: true
+    trufflehog:
+      enabled: true
+    osvScanner:
+      enabled: true
+    semgrep:
+      enabled: true
+    actionlint:
+      enabled: true
+    zizmor:
+      enabled: true
+    hadolint:
+      enabled: true
+    shellcheck:
+      enabled: true
+    yamllint:
+      enabled: true
+    checkmake:
+      enabled: true
+    dotenvLint:
+      enabled: true
+    github-checks:
+      enabled: true
+    # Prose linters produce noise on release notes and docs without adding
+    # signal; the path instruction above covers what matters in them.
+    markdownlint:
+      enabled: false
+    languagetool:
+      enabled: false
+
+chat:
+  auto_reply: true
+  art: false
+  allow_non_org_members: true
+
+knowledge_base:
+  opt_out: false
+  web_search:
+    enabled: true
+  code_guidelines:
+    enabled: true
+    filePatterns:
+      - "CONTRIBUTING.md"
+  learnings:
+    scope: local
+  issues:
+    scope: local
+  pull_requests:
+    scope: local
