@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"reflect"
 	"slices"
 	"sync"
@@ -17,6 +18,7 @@ import (
 	"github.com/ferro-labs/ai-gateway/internal/admin/model"
 	"github.com/ferro-labs/ai-gateway/internal/migrations"
 	"github.com/ferro-labs/ai-gateway/internal/sqldb"
+	"github.com/ferro-labs/ai-gateway/mcp"
 	"github.com/ferro-labs/ai-gateway/pkg/logger"
 )
 
@@ -43,6 +45,14 @@ type ConfigHistoryLoader interface {
 }
 
 var errConfigValidation = errors.New("config validation failed")
+
+// ErrStdioMCPPinned is returned when a runtime config tries to add or alter a
+// stdio MCP server. Such a server is a command this process executes, so
+// accepting one from the admin API would turn an admin key into arbitrary
+// command execution on the host. Stdio servers are therefore pinned to the
+// boot-time file config: a runtime config may keep or drop them, never
+// introduce or change them.
+var ErrStdioMCPPinned = errors.New("stdio mcp servers can only be declared in the gateway config file; the admin API may keep or remove them, not add or change them")
 
 // ErrConfigPersistence wraps a failure to persist an already-validated config to
 // the store. Handlers use errors.Is to distinguish it (reported as 500) from a
@@ -343,6 +353,13 @@ func NewGatewayConfigManager(gw *aigateway.Gateway, store ConfigStore) (*Gateway
 			return nil, err
 		}
 		if ok {
+			// Fail closed: a stored config that names a stdio server the file
+			// config does not was written through the admin API, which this
+			// guard exists to stop. Adopting it here would reopen that path at
+			// the next restart.
+			if err := rejectStdioMCPChanges(m.initial, persisted); err != nil {
+				return nil, fmt.Errorf("persisted config: %w", err)
+			}
 			if err := gw.ReloadConfig(context.Background(), persisted); err != nil {
 				return nil, fmt.Errorf("reload persisted config: %w", err)
 			}
@@ -402,6 +419,9 @@ func (m *GatewayConfigManager) Ping(ctx context.Context) error {
 // ReloadConfig validates/applies config and persists it when a store is configured.
 func (m *GatewayConfigManager) ReloadConfig(ctx context.Context, cfg config.Config) error {
 	if err := config.ValidateConfig(cfg); err != nil {
+		return errors.Join(errConfigValidation, err)
+	}
+	if err := rejectStdioMCPChanges(m.initial, cfg); err != nil {
 		return errors.Join(errConfigValidation, err)
 	}
 
@@ -594,4 +614,47 @@ func (m *GatewayConfigManager) Close() error {
 		return nil
 	}
 	return closer.Close()
+}
+
+// rejectStdioMCPChanges enforces ErrStdioMCPPinned: every stdio server in next
+// must appear in initial with the same name, command, args and env, and an
+// allowed_tools list no wider than the pinned one. An empty list exposes every
+// discovered tool, so clearing or widening it would hand back through the tool
+// loop what pinning the command takes away; narrowing is an operator
+// tightening a server and stays allowed.
+func rejectStdioMCPChanges(initial, next config.Config) error {
+	for _, server := range next.MCPServers {
+		if server.Command == "" {
+			continue
+		}
+		i := slices.IndexFunc(initial.MCPServers, func(s mcp.ServerConfig) bool { return s.Name == server.Name })
+		if i < 0 {
+			return fmt.Errorf("mcp server %q: %w", server.Name, ErrStdioMCPPinned)
+		}
+		pinned := initial.MCPServers[i]
+		if pinned.Command != server.Command || !slices.Equal(pinned.Args, server.Args) || !maps.Equal(pinned.Env, server.Env) {
+			return fmt.Errorf("mcp server %q: %w", server.Name, ErrStdioMCPPinned)
+		}
+		if widensAllowedTools(pinned.AllowedTools, server.AllowedTools) {
+			return fmt.Errorf("mcp server %q: allowed_tools may only be narrowed: %w", server.Name, ErrStdioMCPPinned)
+		}
+	}
+	return nil
+}
+
+// widensAllowedTools reports whether next exposes a tool pinned does not. An
+// empty pinned list already allows everything, so nothing can widen it.
+func widensAllowedTools(pinned, next []string) bool {
+	if len(pinned) == 0 {
+		return false
+	}
+	if len(next) == 0 {
+		return true
+	}
+	for _, tool := range next {
+		if !slices.Contains(pinned, tool) {
+			return true
+		}
+	}
+	return false
 }
