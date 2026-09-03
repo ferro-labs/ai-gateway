@@ -3,7 +3,6 @@ package aigateway
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"testing"
 
@@ -17,81 +16,6 @@ import (
 	"github.com/ferro-labs/ai-gateway/providers"
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
-
-// TestActiveSurfaceCandidates_ZeroDrains covers the drain contract. weight: 0
-// used to map to weight 1, so a target an operator had taken out of rotation
-// kept receiving live traffic — measured at 3 of 200 embedding requests — at
-// exactly the moment its credential was about to be revoked.
-func TestActiveSurfaceCandidates_ZeroDrains(t *testing.T) {
-	tests := []struct {
-		name      string
-		weights   []float64
-		weighted  bool
-		wantKeys  []string
-		wantTotal float64
-	}{
-		{
-			name:      "zero takes no share",
-			weights:   []float64{0, 100},
-			weighted:  true,
-			wantKeys:  []string{"t1"},
-			wantTotal: 100,
-		},
-		{
-			name:      "a weightless config still shares equally",
-			weights:   []float64{0, 0, 0},
-			weighted:  false,
-			wantKeys:  []string{"t0", "t1", "t2"},
-			wantTotal: 3,
-		},
-		{
-			name:      "negative is drained like zero",
-			weights:   []float64{-5, 2},
-			weighted:  true,
-			wantKeys:  []string{"t1"},
-			wantTotal: 2,
-		},
-		{
-			name:      "every candidate drained leaves nothing to route to",
-			weights:   []float64{0, 0},
-			weighted:  true,
-			wantKeys:  nil,
-			wantTotal: 0,
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			candidates := make([]surfaceRankCandidate, len(tc.weights))
-			for i, w := range tc.weights {
-				candidates[i] = surfaceRankCandidate{key: fmt.Sprintf("t%d", i), weight: w}
-			}
-			active, total := activeSurfaceCandidates(candidates, tc.weighted)
-			if total != tc.wantTotal {
-				t.Errorf("total = %v, want %v", total, tc.wantTotal)
-			}
-			if len(active) != len(tc.wantKeys) {
-				t.Fatalf("survivors = %d, want %d", len(active), len(tc.wantKeys))
-			}
-			for i, want := range tc.wantKeys {
-				if active[i].key != want {
-					t.Errorf("survivor[%d] = %q, want %q", i, active[i].key, want)
-				}
-			}
-		})
-	}
-}
-
-// TestAnyWeightExpressed is the discriminator that lets 0 mean 0 without failing
-// every config that never mentions weight at all.
-func TestAnyWeightExpressed(t *testing.T) {
-	if anyWeightExpressed([]config.Target{{VirtualKey: "a"}, {VirtualKey: "b"}}) {
-		t.Error("a config that names no weight must not be read as draining everything")
-	}
-	if !anyWeightExpressed([]config.Target{{VirtualKey: "a"}, {VirtualKey: "b", Weight: 100}}) {
-		t.Error("a config that names one weight expresses weights")
-	}
-}
 
 // TestGateway_Embed_LoadBalanceDrainsZeroWeight is the drain contract end to
 // end: a target weighted 0 must receive no embedding traffic while a weighted
@@ -152,7 +76,7 @@ func TestSurfaceTargetOrder_UnpricedSkipIsNoCapableProvider(t *testing.T) {
 	})
 	gw.RegisterProvider(ep)
 
-	_, err := gw.surfaceTargetOrder("unpriced-embed-model", surfaceEmbeddings, models.Usage{PromptTokens: 1})
+	_, err := gw.surfaceTargetOrder(providers.Request{Model: "unpriced-embed-model"}, surfaceEmbeddings)
 	if err == nil {
 		t.Fatal("expected skip mode with no priced candidate to fail")
 	}
@@ -170,47 +94,6 @@ func TestSurfaceTargetOrder_UnpricedSkipIsNoCapableProvider(t *testing.T) {
 	if ep.calls != 0 {
 		t.Errorf("provider was called %d times; skip mode must contact nobody", ep.calls)
 	}
-}
-
-func TestRankConfiguredSurfaceTargets_PricesMappedUpstreamModel(t *testing.T) {
-	priced := func(provider, model string, price float64) models.Model {
-		return models.Model{
-			Provider: provider,
-			ModelID:  model,
-			Mode:     models.ModeEmbedding,
-			Pricing:  models.Pricing{EmbeddingPerMTokens: ptrFloat64(price)},
-		}
-	}
-	first := &mockEmbeddingProvider{mockProvider: mockProvider{name: "first", models: []string{"expensive-upstream"}}}
-	second := &mockEmbeddingProvider{mockProvider: mockProvider{name: "second", models: []string{"cheap-upstream"}}}
-	targets := []config.Target{
-		{VirtualKey: "first", ModelMap: map[string]string{visibleMappedModel: "expensive-upstream"}},
-		{VirtualKey: "second", ModelMap: map[string]string{visibleMappedModel: "cheap-upstream"}},
-	}
-	providersByTarget := map[string]providers.Provider{"first": first, "second": second}
-	modelIndex := map[string][]string{visibleMappedModel: {"first", "second"}}
-	catalog := models.Catalog{
-		"first/expensive-upstream": priced("first", "expensive-upstream", 10),
-		"second/cheap-upstream":    priced("second", "cheap-upstream", 1),
-	}
-
-	t.Run("orders by each target upstream price", func(t *testing.T) {
-		gw := &Gateway{}
-		keys, err := gw.rankConfiguredSurfaceTargets(targets, providersByTarget, modelIndex, catalog, "", visibleMappedModel, surfaceEmbeddings, models.Usage{PromptTokens: 1_000_000}, config.ModeCostOptimized)
-		if err != nil {
-			t.Fatal(err)
-		}
-		requireKeys(t, keys, "second", "first")
-	})
-
-	t.Run("skip recognizes priced mapped upstream", func(t *testing.T) {
-		gw := &Gateway{}
-		keys, err := gw.rankConfiguredSurfaceTargets(targets[:1], providersByTarget, modelIndex, catalog, config.UnpricedStrategySkip, visibleMappedModel, surfaceEmbeddings, models.Usage{PromptTokens: 1}, config.ModeCostOptimized)
-		if err != nil {
-			t.Fatal(err)
-		}
-		requireKeys(t, keys, "first")
-	})
 }
 
 func TestGateway_Embed_CostOptimizedUsesMappedUpstreamPrice(t *testing.T) {
@@ -979,4 +862,80 @@ func TestGateway_GenerateImage_UnpricedModelStaysUnpriced(t *testing.T) {
 	if measured.CostUSD != 0 {
 		t.Errorf("CostUSD = %v, want 0", measured.CostUSD)
 	}
+}
+
+// Under content-based, a non-chat request takes the first configured target
+// that can serve the model on this surface — not the first target flat, which
+// a rule list written for chat may well make a chat-only or wrong-model one.
+func TestSurfaceTargetOrder_ContentBasedFallsToTheFirstCapableTarget(t *testing.T) {
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{
+			Mode:              config.ModeContentBased,
+			ContentConditions: []config.ContentCondition{{Type: config.ContentConditionPromptContains, Value: "code", TargetKey: "chat-only"}},
+		},
+		Targets: []config.Target{{VirtualKey: "chat-only"}, {VirtualKey: "other-model"}, {VirtualKey: "capable"}},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+	gw.RegisterProvider(&mockProvider{name: "chat-only", models: []string{"embed-model"}})
+	gw.RegisterProvider(&mockEmbeddingProvider{mockProvider: mockProvider{name: "other-model", models: []string{"another-model"}}})
+	capable := &mockEmbeddingProvider{mockProvider: mockProvider{name: "capable", models: []string{"embed-model"}}}
+	gw.RegisterProvider(capable)
+
+	keys, err := gw.surfaceTargetOrder(providers.Request{Model: "embed-model"}, surfaceEmbeddings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireKeys(t, keys, "capable")
+	if _, err := gw.Embed(context.Background(), providers.EmbeddingRequest{Model: "embed-model", Input: "hi"}); err != nil || capable.calls != 1 {
+		t.Fatalf("Embed err=%v capable.calls=%d, want the capable target to serve", err, capable.calls)
+	}
+}
+
+// The caller's `user` reaches the strategy on the surfaces that carry one, so
+// sticky hashing pins an embeddings caller and a `key: user` rule matches an
+// image request exactly as they do on chat.
+func TestSurfaceTargetOrder_CarriesTheUserToTheStrategy(t *testing.T) {
+	t.Run("sticky pins an embeddings caller", func(t *testing.T) {
+		gw, err := newTestGateway(t, config.Config{
+			Strategy: config.StrategyConfig{Mode: config.ModeLoadBalance, Sticky: &config.StickyConfig{On: config.StickyOnUser}},
+			Targets:  []config.Target{{VirtualKey: "a", Weight: 1}, {VirtualKey: "b", Weight: 1}},
+		})
+		if err != nil {
+			t.Fatalf("new gateway: %v", err)
+		}
+		a := &mockEmbeddingProvider{mockProvider: mockProvider{name: "a", models: []string{"embed-model"}}}
+		b := &mockEmbeddingProvider{mockProvider: mockProvider{name: "b", models: []string{"embed-model"}}}
+		gw.RegisterProvider(a)
+		gw.RegisterProvider(b)
+		for range 30 {
+			if _, err := gw.Embed(context.Background(), providers.EmbeddingRequest{Model: "embed-model", Input: "hi", User: "alice"}); err != nil {
+				t.Fatalf("Embed: %v", err)
+			}
+		}
+		if a.calls != 0 && b.calls != 0 {
+			t.Fatalf("alice was spread a=%d b=%d; sticky on user must pin her to one target", a.calls, b.calls)
+		}
+	})
+
+	t.Run("a user rule matches an image request", func(t *testing.T) {
+		gw, err := newTestGateway(t, config.Config{
+			Strategy: config.StrategyConfig{Mode: config.ModeConditional, Conditions: []config.Condition{{Key: config.ConditionKeyUser, Value: "vip", TargetKey: "premium"}}},
+			Targets:  []config.Target{{VirtualKey: "standard"}, {VirtualKey: "premium"}},
+		})
+		if err != nil {
+			t.Fatalf("new gateway: %v", err)
+		}
+		standard := &mockImageProvider{mockProvider: mockProvider{name: "standard", models: []string{"image-model"}}}
+		premium := &mockImageProvider{mockProvider: mockProvider{name: "premium", models: []string{"image-model"}}}
+		gw.RegisterProvider(standard)
+		gw.RegisterProvider(premium)
+		if _, err := gw.GenerateImage(context.Background(), providers.ImageRequest{Model: "image-model", Prompt: "cat", User: "vip"}); err != nil {
+			t.Fatalf("GenerateImage: %v", err)
+		}
+		if premium.calls != 1 || standard.calls != 0 {
+			t.Fatalf("calls premium=%d standard=%d; the user rule must route the vip caller", premium.calls, standard.calls)
+		}
+	})
 }

@@ -2,6 +2,7 @@ package aigateway
 
 import (
 	"github.com/ferro-labs/ai-gateway/internal/strategies"
+	"time"
 )
 
 // retryPolicy is one target's resolved retry configuration.
@@ -9,6 +10,9 @@ type retryPolicy struct {
 	attempts         int
 	onStatusCodes    []int
 	initialBackoffMs int
+	// attemptTimeout bounds one physical attempt (targets[].timeout); zero
+	// means no bound beyond the request's own deadline.
+	attemptTimeout time.Duration
 }
 
 // retryPolicyFor resolves targetKey's `retry` block.
@@ -30,9 +34,10 @@ type retryPolicy struct {
 func (g *Gateway) retryPolicyFor(targetKey string) retryPolicy {
 	g.mu.RLock()
 	var (
-		attempts      int
-		onStatusCodes []int
-		backoffMs     int
+		attempts       int
+		onStatusCodes  []int
+		backoffMs      int
+		attemptTimeout time.Duration
 	)
 	for i := range g.config.Targets {
 		if g.config.Targets[i].VirtualKey != targetKey {
@@ -42,6 +47,13 @@ func (g *Gateway) retryPolicyFor(targetKey string) retryPolicy {
 			attempts = r.Attempts
 			onStatusCodes = r.OnStatusCodes
 			backoffMs = r.InitialBackoffMs
+		}
+		// Parsed only when set: ParseDuration("") allocates an error, and this
+		// runs per attempt. Validated at load, so a parse failure here is a
+		// programmatic Config that skipped ValidateConfig; it reads as no
+		// bound rather than a panic.
+		if t := g.config.Targets[i].Timeout; t != "" {
+			attemptTimeout, _ = time.ParseDuration(t)
 		}
 		break
 	}
@@ -54,5 +66,6 @@ func (g *Gateway) retryPolicyFor(targetKey string) retryPolicy {
 		attempts:         attempts,
 		onStatusCodes:    onStatusCodes,
 		initialBackoffMs: strategies.NormalizeBackoffMs(backoffMs),
+		attemptTimeout:   max(attemptTimeout, 0),
 	}
 }

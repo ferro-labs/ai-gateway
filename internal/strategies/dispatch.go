@@ -11,6 +11,11 @@ import (
 // boundary comparison: with weight 0 its cumulative contribution is nothing, so
 // an element that follows a drained one must never be attributed to it.
 func weightedPick[T any](items []T, weight func(T) float64) (T, bool) {
+	return weightedPickAt(items, weight, rand.Float64()) //nolint:gosec // G404: math/rand is fine for load-balancing weight selection, not security-sensitive
+}
+
+// weightedPickAt is weightedPick with the draw supplied as unit in [0, 1).
+func weightedPickAt[T any](items []T, weight func(T) float64, unit float64) (T, bool) {
 	total := 0.0
 	for _, it := range items {
 		total += weight(it)
@@ -20,7 +25,7 @@ func weightedPick[T any](items []T, weight func(T) float64) (T, bool) {
 		return zero, false
 	}
 
-	r := rand.Float64() * total //nolint:gosec // G404: math/rand is fine for load-balancing weight selection, not security-sensitive
+	r := unit * total
 	cumulative := 0.0
 	var last T
 	for _, it := range items {

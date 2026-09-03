@@ -318,6 +318,12 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	})
 	providerDuration += time.Since(providerStart)
 	latency := time.Since(start)
+	// Stamped now for the plain case and again below when the MCP loop
+	// re-routes, so the span carries the attempt count of the target that
+	// actually answered.
+	if target.key != "" {
+		span.SetAttribute(observability.AttrFerroRoutingAttempt, target.attempts)
+	}
 
 	if err != nil {
 		// target names the last target actually attempted. Reporting "" here
@@ -355,6 +361,10 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 			if pctx != nil {
 				pctx.Response = &providers.Response{Model: req.Model, Provider: loopTarget.key, Usage: loopUsage}
 			}
+			if loopTarget.key != "" {
+				span.SetAttribute(observability.AttrFerroRoutingAttempt, loopTarget.attempts)
+				recordAttribution(ctx, loopTarget, loopTarget.attempts)
+			}
 			g.routeError(ctx, span, obs, pctx, plugins, loopTarget.key, req.Model, loopTarget.abVariantLabel, loopTarget.hasABVariant, err, time.Since(start), originalStream, hooksEnabled, obsEventsActive)
 			return nil, err
 		}
@@ -363,6 +373,8 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 		// already applies to loopTarget.
 		if loopTarget.key != "" {
 			target = loopTarget
+			span.SetAttribute(observability.AttrFerroRoutingAttempt, target.attempts)
+			recordAttribution(ctx, target, target.attempts)
 		}
 	}
 	// Provider-returned model identifiers are upstream payload detail. The
@@ -489,6 +501,10 @@ func (g *Gateway) runMCPLoop(ctx context.Context, mcpExecutorSnapshot *mcp.Execu
 	var err error
 	depth := 0
 	loopTarget := initialTarget
+	// Attempts accumulate across turns: an HTTP request that made three
+	// provider calls reports three, on the identity of the target that
+	// answered last.
+	attempts := initialTarget.attempts
 	// What this request has spent so far, fed to the per-turn budget check.
 	var (
 		spentUSD    float64
@@ -567,7 +583,9 @@ func (g *Gateway) runMCPLoop(ctx context.Context, mcpExecutorSnapshot *mcp.Execu
 			resp, target, err = g.routeChat(ctx, s, *req)
 			providerDuration += time.Since(callStart)
 			if target.key != "" {
+				attempts += target.attempts
 				loopTarget = target
+				loopTarget.attempts = attempts
 			}
 			if err != nil {
 				return

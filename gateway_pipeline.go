@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/ferro-labs/ai-gateway/config"
@@ -74,6 +75,10 @@ type targetPlan struct {
 	// single-target strategy means: an a/b variant that cannot serve the request
 	// is a 404, not a silent reroute to somebody else's target.
 	advance bool
+	// failoverOn is strategy.failover_on_status_codes: extra upstream
+	// statuses the walk treats as failover-safe, validated at load to exclude
+	// the protected deterministic client errors.
+	failoverOn []int
 	// abVariantLabel is the initially drawn A/B variant. It remains attached to
 	// the request when retries or safe advancement reach another target.
 	abVariantLabel string
@@ -125,6 +130,9 @@ type routedTarget struct {
 	upstreamModel  string
 	abVariantLabel string
 	hasABVariant   bool
+	// attempts is the routing-layer attempt count when the walk ended: the
+	// value X-Gateway-Attempts and ferro.routing.attempt report.
+	attempts int
 }
 
 // routeTargets walks plan and returns the first target's answer.
@@ -199,20 +207,25 @@ func routeTargets[Req, Resp any](
 		started := time.Now()
 		resp, err := attemptTarget(ctx, g, obs, attemptsActive, target, plan.model, &attemptSequence, p, cb, lim, req, upstreamModel, call)
 		if err == nil {
-			// Latency is recorded against the TARGET KEY and covers the provider
-			// call only. Both halves matter: least-latency reads its samples back
-			// by virtual key (LeastLatency.SelectTargets), and a measurement that
-			// included plugin and alias time would rank targets on work no target
-			// did.
-			g.latencyTracker.Record(key, time.Since(started))
+			// Latency is recorded against the TARGET KEY and upstream model, and
+			// covers the provider call only. All of it matters: least-latency
+			// reads its samples back by virtual key and upstream model
+			// (LeastLatency.SelectTargets), and a measurement that included
+			// plugin and alias time would rank targets on work no target did.
+			g.latencyTracker.Record(key, upstreamModel, time.Since(started))
+			target.attempts = attemptSequence
+			recordAttribution(ctx, target, attemptSequence)
 			return resp, target, nil
 		}
 		lastErr = fmt.Errorf("target %s: %w", key, err)
 		maskedKey, maskedErr = key, err
+		if isRateLimitError(err) {
+			g.parkRateLimited(key, err)
+		}
 		if !plan.advance {
 			break
 		}
-		if !shouldAdvanceTarget(ctx, err) {
+		if !shouldAdvanceTarget(ctx, err, plan.failoverOn) {
 			stoppedEarly = true
 			break
 		}
@@ -225,6 +238,8 @@ func routeTargets[Req, Resp any](
 	if attempts == 0 {
 		return zero, routedTarget{}, errNoCapableTarget(plan.model)
 	}
+	lastTarget.attempts = attemptSequence
+	recordAttribution(ctx, lastTarget, attemptSequence)
 	if plan.advance && !stoppedEarly {
 		// Only a strategy that falls back can honestly claim this: it really did
 		// ask every candidate. A single-target mode asked one, and says so.
@@ -243,14 +258,28 @@ func routeTargets[Req, Resp any](
 // provider transport's ResponseHeaderTimeout on a target that accepted the
 // connection and never answered — belongs to the attempt, carries no status,
 // and is the failure failover exists for.
-func shouldAdvanceTarget(ctx context.Context, err error) bool {
+//
+// failoverOn is the operator's addition (strategy.failover_on_status_codes).
+// It is consulted after the request's own context, which nothing overrides,
+// and cannot name a protected deterministic 4xx — validation refuses those.
+func shouldAdvanceTarget(ctx context.Context, err error, failoverOn []int) bool {
 	if ctx.Err() != nil {
 		return false
 	}
 	if errors.Is(err, circuitbreaker.ErrCircuitOpen) || errors.Is(err, core.ErrProviderSaturated) {
 		return true
 	}
+	// Context overflow is the one deterministic 4xx a different target can
+	// fix — its model may simply have a larger window. It is typed, not a
+	// broad 400 retry: only the envelopes core.IsContextLengthError
+	// recognises qualify, and every other 4xx still stops here.
+	if core.IsContextLengthError(err) {
+		return true
+	}
 	code := providers.ParseStatusCode(err)
+	if code != 0 && slices.Contains(failoverOn, code) {
+		return true
+	}
 	return code == 0 || code == http.StatusRequestTimeout ||
 		code == http.StatusTooManyRequests || code >= http.StatusInternalServerError
 }
@@ -281,7 +310,7 @@ func shouldAdvanceTarget(ctx context.Context, err error) bool {
 // answers differ under exactly the modes that commit to one target, and while
 // only the walk knew the rule, /v1/models advertised what those modes refuse.
 func (g *Gateway) eligibleKeys(plan targetPlan, gate capabilityGate) []string {
-	keys := g.healthyKeys(plan)
+	keys := g.healthyKeys(plan, gate)
 	if plan.advance || len(keys) <= 1 {
 		return keys
 	}
@@ -293,8 +322,8 @@ func (g *Gateway) eligibleKeys(plan targetPlan, gate capabilityGate) []string {
 	return keys[:1]
 }
 
-// healthyKeys drops the candidates whose circuit is OPEN, and does so under
-// every routing mode.
+// healthyKeys drops the candidates whose circuit is OPEN or that are parked
+// after a 429 (see parkRateLimited), and does so under every routing mode.
 //
 // The NAMED modes commit to one of the keys the strategy chose, and do not
 // advance past it (see advancesPastFailure). Selection itself was breaker-blind,
@@ -341,7 +370,7 @@ func (g *Gateway) eligibleKeys(plan targetPlan, gate capabilityGate) []string {
 //
 // The common case allocates nothing: with no open circuit the caller's own
 // slice is returned untouched.
-func (g *Gateway) healthyKeys(plan targetPlan) []string {
+func (g *Gateway) healthyKeys(plan targetPlan, gate capabilityGate) []string {
 	if plan.ignoreCircuitState || len(plan.keys) <= 1 {
 		return plan.keys
 	}
@@ -349,9 +378,17 @@ func (g *Gateway) healthyKeys(plan targetPlan) []string {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 
+	now := g.now()
 	var healthy []string
 	for i, key := range plan.keys {
+		open := false
 		if cb := g.circuitBreakers[key]; cb != nil && cb.State() == circuitbreaker.StateOpen {
+			open = true
+		}
+		if until, parked := g.cooldowns[key]; parked && until.After(now) {
+			open = true
+		}
+		if open {
 			if healthy == nil {
 				// First open target: copy what was kept so far, and only now.
 				healthy = make([]string, 0, len(plan.keys)-1)
@@ -368,7 +405,17 @@ func (g *Gateway) healthyKeys(plan targetPlan) []string {
 	if len(healthy) == 0 {
 		return plan.keys
 	}
-	return healthy
+	// "Something healthy remains" is only an answer if it can serve THIS
+	// request. A healthy sibling that serves a different model would leave
+	// the walk attempting nothing — a 404 for a model the open or parked
+	// target serves perfectly well — so fail open exactly as when every
+	// candidate is unavailable.
+	for _, key := range healthy {
+		if p, ok := g.providers[key]; ok && g.candidateLocked(key, p, plan.model, gate) {
+			return healthy
+		}
+	}
+	return plan.keys
 }
 
 // errNoCapableTarget is the refusal every routed surface reports when no
@@ -554,6 +601,11 @@ func (g *Gateway) servesSurface(key string, gate capabilityGate) bool {
 	return registered && gate(p)
 }
 
+// errAttemptTimeout is the cause placed on an attempt context whose
+// targets[].timeout elapsed. It wraps context.DeadlineExceeded so the error
+// classifies as the 504 an upstream that never answered already does.
+var errAttemptTimeout = fmt.Errorf("target attempt timeout: %w", context.DeadlineExceeded)
+
 // attemptTarget runs one target's retry policy, calling it under its breaker
 // and limiter on every try. attemptsActive is whether obs has opted into one
 // SubjectRoutingAttempt event per call; when it has not, no event is built.
@@ -598,10 +650,24 @@ func attemptTarget[Req, Resp any](
 			g.log.Ctx(ctx).Info("retrying target", "target", target.key, "attempt", attempt+1)
 		}
 		started := time.Now()
-		resp, err := callUnderResilience(ctx, target.key, p, cb, lim, req, upstreamModel, call)
-		if attemptsActive {
-			(*attemptSequence)++
+		// targets[].timeout bounds THIS attempt. The deadline lives on a child
+		// context, so the request's own deadline stays authoritative and an
+		// attempt that times out reads as a target failure — failover-safe,
+		// and never mistaken for the caller giving up (shouldAdvanceTarget
+		// consults the parent). For a stream the child bounds only the wait
+		// for the provider to answer: the stream itself runs on the context
+		// startStreamOn captured, so a stream that began in time is not cut
+		// off by its attempt deadline.
+		attemptCtx, cancelAttempt := ctx, func() {}
+		if policy.attemptTimeout > 0 {
+			attemptCtx, cancelAttempt = context.WithTimeoutCause(ctx, policy.attemptTimeout, errAttemptTimeout)
 		}
+		resp, err := callUnderResilience(attemptCtx, target.key, p, cb, lim, req, upstreamModel, call)
+		cancelAttempt()
+		if err != nil && ctx.Err() == nil && errors.Is(context.Cause(attemptCtx), errAttemptTimeout) {
+			err = fmt.Errorf("target %s: attempt timed out after %s: %w: %w", target.key, policy.attemptTimeout, errAttemptTimeout, err)
+		}
+		(*attemptSequence)++
 		g.recordRoutingAttempt(ctx, obs, attemptsActive, routingAttempt{
 			target:         target,
 			routedModel:    routedModel,
@@ -681,6 +747,7 @@ func (g *Gateway) planFor(model string, keys []string) targetPlan {
 	g.mu.RLock()
 	mode := g.config.Strategy.Mode
 	advance := advancesPastFailure(mode)
+	failoverOn := g.config.Strategy.FailoverOnStatusCodes
 	label := ""
 	hasABVariant := false
 	if mode == config.ModeABTest && len(keys) > 0 {
@@ -693,7 +760,7 @@ func (g *Gateway) planFor(model string, keys []string) targetPlan {
 		}
 	}
 	g.mu.RUnlock()
-	return targetPlan{keys: keys, model: model, advance: advance, abVariantLabel: label, hasABVariant: hasABVariant}
+	return targetPlan{keys: keys, model: model, advance: advance, failoverOn: failoverOn, abVariantLabel: label, hasABVariant: hasABVariant}
 }
 
 // advancesPastFailure splits the routing modes by what their leading candidate
@@ -722,16 +789,24 @@ func (g *Gateway) planFor(model string, keys []string) targetPlan {
 // A breaker remains worth configuring, and does a different job: it stops the
 // walk from paying the dead target's connection timeout on every request. It is
 // what makes failover CHEAP; this is what makes it HAPPEN.
+//
+// A rule mode (`conditional`, `content-based`) sits between the two: its
+// strategy returns exactly the matched rule's target chain — a one-entry chain
+// for `target_key` — and nothing outside it, so the walk advances within the
+// chain under the same failover-safe classes a pool uses and can never reach
+// a target the rule did not name. Exactness comes from the candidate list
+// being the chain, not from refusing to advance.
 func advancesPastFailure(mode config.StrategyMode) bool {
 	switch mode {
 	case config.ModeFallback, config.ModeLoadBalance, config.ModeLatency,
-		config.ModeCostOptimized, config.ModeABTest:
+		config.ModeCostOptimized, config.ModeABTest,
+		config.ModeConditional, config.ModeContentBased:
 		return true
 	default:
-		// single, conditional, content-based — and anything added later, which
-		// stops at its head until this switch says otherwise. That is the safe
-		// default: a new mode that should advance fails a test, while one that
-		// should not would silently reroute.
+		// single — and anything added later, which stops at its head until
+		// this switch says otherwise. That is the safe default: a new mode
+		// that should advance fails a test, while one that should not would
+		// silently reroute.
 		return false
 	}
 }
@@ -812,3 +887,30 @@ func (g *Gateway) routeChat(ctx context.Context, s strategies.Strategy, req prov
 // interceptors wrap a ClientStream instead of post-processing a result: a hook
 // shaped like a unary return cannot observe a terminal status that arrives
 // later.
+
+const (
+	// defaultRateLimitCooldown parks a target that answered 429 with no usable
+	// Retry-After. Short on purpose: a rate limit is a "come back later", and
+	// the target is a healthy one the operator wants traffic on.
+	defaultRateLimitCooldown = 5 * time.Second
+	// maxRateLimitCooldown caps how long one Retry-After can park a target,
+	// so a single excessive header cannot take it out of rotation for an hour.
+	maxRateLimitCooldown = time.Minute
+)
+
+// parkRateLimited records that key answered 429 and must not be offered
+// traffic until its Retry-After has elapsed — bounded, and the default when
+// the hint is absent or unusable. Same-request retry already honours the
+// hint; without this the NEXT request still received its full share on the
+// throttled target and paid another 429. Only the offending target is parked,
+// and its breaker is untouched: a rate limit is not a failure of the target.
+func (g *Gateway) parkRateLimited(key string, err error) {
+	cooldown := providers.RetryAfterFrom(err)
+	if cooldown <= 0 {
+		cooldown = defaultRateLimitCooldown
+	}
+	cooldown = min(cooldown, maxRateLimitCooldown)
+	g.mu.Lock()
+	g.cooldowns[key] = g.now().Add(cooldown)
+	g.mu.Unlock()
+}

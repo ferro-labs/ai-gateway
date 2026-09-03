@@ -31,7 +31,10 @@ func Rerank(gw *aigateway.Gateway) http.HandlerFunc {
 			return
 		}
 
-		resp, err := gw.Rerank(r.Context(), req)
+		attribution := &aigateway.RoutingAttribution{}
+		ctx := aigateway.WithRoutingAttribution(r.Context(), attribution)
+		resp, err := gw.Rerank(ctx, req)
+		attribution.SetHeaders(w.Header())
 		if err != nil {
 			apierror.WriteRouteError(w, err)
 			return

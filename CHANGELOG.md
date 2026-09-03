@@ -5,6 +5,132 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.2] — 2026-09-03
+
+### Added
+
+- Attribution response headers on every routed surface — chat, streaming chat
+  (written before the first chunk), legacy completions, embeddings, images,
+  rerank, moderations, transcriptions, translations and speech: `X-Gateway-Provider` (the
+  serving target's canonical provider), `X-Gateway-Target` (its
+  `targets[].virtual_key`), `X-Gateway-Model` (the upstream model sent to the
+  provider, after `model_map`) and `X-Gateway-Attempts` (routing-layer
+  attempts for the request, retries and failovers included). A failed request
+  carries the last target attempted. Previously only `/v1/completions` and the
+  pass-through proxy named a provider, and `/v1/chat/completions` named
+  nothing. Embedders read the same values through
+  `aigateway.WithRoutingAttribution`.
+- The request span carries `ferro.routing.attempt`, the routing-layer attempt
+  count when the walk ended (the same number as `X-Gateway-Attempts`), on
+  every routed surface. The attribute had been declared as planned since
+  `v1.1.0` and never emitted.
+- The embedded dashboard's strategy panel shows each target's `model_map`,
+  a rule's `target_keys` chain in order, and a `metadata` predicate by its
+  field; the mode cards describe the reworked least-latency, cost-optimized
+  and conditional behaviour.
+- `strategy.failover_on_status_codes: [409]` adds upstream statuses of the
+  operator's own to the failover-safe classes, for an upstream whose "try
+  elsewhere" answer the built-in classes do not cover. Validated as HTTP
+  statuses; `400`, `401`, `403`, `404` and `422` are refused, and the
+  request's own cancellation or deadline still stops routing.
+- Conditional routing gains four bounded predicates: `key: user` (the
+  request's `user` field), `key: stream` and `key: has_tools` (`"true"` /
+  `"false"`), and `key: metadata` with `field: <entry>`, which reads one entry
+  of the new `X-Gateway-Metadata` request header — a JSON object of at most
+  32 scalar values within 4 KiB, accepted on `/v1/chat/completions` and
+  `/v1/completions`, never forwarded to a provider. No other request header
+  is exposed to a rule; a malformed header is the caller's `400`.
+- `target_keys: [a, b]` on `conditions[]` and `content_conditions[]` names an
+  ordered target chain for a rule; `target_key` stays as the one-entry form.
+  The walk tries the chain in order — a conditional or content-based rule
+  advances on the same failover-safe failures a pool does — skips a member whose circuit is open or that is parked after a
+  `429`, and never substitutes a target outside the chain. Exactly one of the
+  two fields is set; entries must be declared targets and may not repeat.
+- `strategy.sticky: { on: user, ttl: "1h" }` under `loadbalance` and `ab-test`
+  pins each request to the same target — or A/B variant — for the same `user`
+  field — on chat, embeddings and images, the surfaces whose requests carry
+  one — so a conversation keeps its provider prompt cache and a multi-turn
+  session does not flip variants. It is a stateless hash: no shared state,
+  the same answer on every replica with the same config, a random draw for a
+  request without `user`, and an optional `ttl` after which a pin may move.
+  Refused under any other mode.
+- `targets[].timeout` bounds one physical attempt against a target, inside
+  `request_timeout`, which stays authoritative for the request as a whole. A
+  unary attempt is bounded through its response; a streaming attempt only
+  until the provider answers, since a stream that has begun cannot be
+  replayed on another target. An attempt that times out is a failover-safe
+  failure, so a hung primary no longer consumes the whole request budget
+  before a pool mode moves on. Answered `504 gateway_timeout` when every
+  target times out.
+- A target that answers `429` is parked for its `Retry-After` — bounded to
+  one minute, five seconds when the hint is absent or unusable — so the next
+  request does not pay another `429` on it. Same-request retry already
+  honoured the hint; cross-request memory is new. Only the offending target
+  is parked, its circuit breaker is untouched, and when every target that
+  serves a model is parked the request is still attempted, as it is when
+  every circuit is open. The park is process-local, like breaker and latency
+  state.
+- `aigateway.WithCatalog(models.Catalog)`, an option to `aigateway.New`, hands
+  the gateway the model catalog it prices and ranks with in place of the
+  embedded or remote one, which is then neither loaded nor refreshed. A host
+  with its own price list — per-tenant pricing, for instance — previously had
+  no way to make cost-optimized routing or request cost read it.
+  `gateway_catalog_loads_total` reports such a catalog as `source="supplied"`.
+
+### Changed
+
+- Pool modes also fail over on a provider's typed statement that the prompt
+  exceeded its context window — the OpenAI-compatible
+  (`code: context_length_exceeded`, or the documented message with no code),
+  Anthropic (`prompt is too long`) and Gemini (`INVALID_ARGUMENT` token-count)
+  envelopes — since a sibling's model may have a larger window. The provider
+  error now preserves the envelope's `code` and `type`
+  (`core.HTTPStatusError`), and `core.IsContextLengthError` is the one
+  classifier; every other 4xx still stops at the current target.
+- A `conditional` or `content-based` rule that names one target is now exact:
+  when that target's circuit is open the request is answered `503` rather
+  than served by a sibling the rule never named. `v1.5.1` borrowed a healthy
+  sibling in that one case; a rule that wants a stand-in now says so with
+  `target_keys`. On non-chat surfaces, where content rules cannot be
+  evaluated, `content-based` routes to the first configured target that can serve
+  the surface, alone, instead of walking the declared order.
+- Configuration loading now refuses an `ab_variants[]` entry without a
+  `label`: attribution keys on it, so an unlabelled variant was one nothing
+  could report on. A `v1.5.1` config with an unlabelled variant no longer
+  loads until one is added. A `single` strategy with more than one target
+  now logs a warning at load naming the unused targets; it still loads, since
+  an omitted `strategy` block defaults to `single`.
+- Every routed surface ranks its targets through the one strategy
+  implementation chat and streaming already used. Embeddings, images, rerank,
+  moderation, transcription and speech previously ranked through a second copy
+  that differed in six places: it drew load-balance starts from a different
+  random source, kept unseen least-latency targets in declared order instead of
+  profiling them in random order, priced cost-optimized candidates with a
+  different formula (and with no usage at all on rerank, moderation and audio,
+  so those surfaces ordered unpriced), placed `unpriced_strategy: allow`
+  candidates as a leading block, and returned only the ranked candidates rather
+  than the full order. All of that is gone; the same config and the same
+  health now produce the same candidate order on every surface, and a target
+  that cannot serve a surface is simply not a candidate there.
+- `least-latency` keeps learning. Samples are keyed by target **and** upstream
+  model, so two models mapped onto one target rank on their own numbers;
+  they expire after five minutes, so a target nothing has measured recently
+  is treated as unseen and profiled again rather than ranked on a p50 from
+  before an incident; and one request in ten leads with a sampled non-leader,
+  so the fastest target can no longer lock in while a sibling that recovered
+  is never re-measured. A stream's sample is now its time to first chunk
+  rather than its whole drain, so a model that answers at length no longer
+  reads as a slow provider; a unary call's sample is unchanged. No new config.
+- `cost-optimized` scores each candidate on the catalog's price for the model's
+  mode — input **plus output** for chat, with the request's `max_tokens` /
+  `max_completion_tokens` (or 256) as the output estimate; per token for
+  embeddings; per image; per minute or character for audio — rather than on
+  chat input price alone. A target that is cheap to read and expensive to
+  write no longer wins a request with a large completion budget, and
+  embedding, image and audio models that previously tied at zero now order by
+  their real catalog rate. Equal-cost targets draw by `targets[].weight`
+  (equally when none is set) instead of tying on declaration order.
+
 ## [1.5.1] — 2026-09-01
 
 ### Added

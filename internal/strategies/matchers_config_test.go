@@ -22,7 +22,7 @@ import (
 func TestConditionKeysMatchConfig(t *testing.T) {
 	assertSameSet(t, "condition key",
 		config.ConditionKeys(),
-		[]string{ConditionKeyModel, ConditionKeyModelPrefix})
+		[]string{ConditionKeyModel, ConditionKeyModelPrefix, ConditionKeyUser, ConditionKeyStream, ConditionKeyHasTools, ConditionKeyMetadata})
 }
 
 func TestContentConditionTypesMatchConfig(t *testing.T) {

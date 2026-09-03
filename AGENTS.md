@@ -759,7 +759,7 @@ What happens next depends on whether another target serves the model:
 
 | Other targets serve the model | Behaviour once the circuit opens |
 |-------------------------------|----------------------------------|
-| yes | the open target is skipped during selection, under **every** routing mode that offers a sibling, and traffic silently moves to it — including under `conditional` and `content-based`, where a rule named one target on purpose. `single` offers no sibling: its strategy selects exactly one target, so an open circuit there is refused with `503`, whatever else the config lists |
+| yes | the open target is skipped during selection, under **every** routing mode, among the candidates that mode offers — a pool's siblings, or a rule's `target_keys` chain. `single` and a rule with one target offer no sibling: the strategy selects exactly what was named, so an open circuit there is refused with `503`, whatever else the config lists |
 | no | the walk attempts it anyway (the filter fails open rather than answering a 404 for a model that plainly exists), the breaker refuses, and the caller gets `503 upstream_unavailable` |
 
 So the symptom an operator sees on the chat surface is either a routing shift
@@ -773,7 +773,10 @@ failing. Both `/health` and `/readyz` report the target as `circuit: "open"`, an
 Not everything counts toward opening it. A `429`, a client disconnect, a
 caller-supplied deadline, an unsupported-parameter rejection and a shed under
 `targets[].concurrency` are all excluded — none is evidence the upstream is
-unhealthy. A redirect, a `5xx`, a connection failure, and the gateway's own
+unhealthy. A `429` instead parks the target for its `Retry-After` (capped at a
+minute, five seconds when absent), so the next request is not offered to it;
+the park is process-local and filters like an open circuit, never refusing a
+request outright. A redirect, a `5xx`, a connection failure, and the gateway's own
 `request_timeout` or stream idle bound elapsing all do count.
 
 There are no per-surface breakers. If one surface of a target is expected to be
@@ -793,7 +796,7 @@ Modes split by what their leading candidate *means*
 | | Modes | On a failure |
 |---|---|---|
 | **Pool** | `fallback`, `loadbalance`, `least-latency`, `cost-optimized`, `ab-test` | the walk advances only after a failover-safe failure |
-| **Named** | `single`, `conditional`, `content-based` | the walk stops and reports the failure |
+| **Named** | `single`, `conditional`, `content-based` | the walk stays inside what was named: `single` stops; a rule walks its `target_keys` chain on the same failover-safe classes and stops at its end |
 
 A pool mode picks its head for a reason that is about the pool rather than
 about that target — spread the load, take the cheapest, take the fastest, split
@@ -801,16 +804,23 @@ the traffic — from targets the operator declared interchangeable. So the reque
 belongs to the pool, and carrying it to a sibling is what was asked for.
 
 Failover-safe failures are transport or no-status failures, an attempt that
-timed out waiting on the target, 408, 429, 5xx, open circuits, and target
-saturation. The request's own cancellation or deadline and every other 4xx stop
-at the current target.
+timed out waiting on the target, 408, 429, 5xx, open circuits, target
+saturation, and a provider's typed statement that the prompt exceeded its
+context window (`core.IsContextLengthError`: the OpenAI-compatible, Anthropic
+and Gemini envelopes; never a bare substring match on a 400). The request's own
+cancellation or deadline and every other 4xx stop at the current target.
+`strategy.failover_on_status_codes` adds operator-specific statuses to the safe
+classes; validation refuses 400, 401, 403, 404 and 422, and nothing overrides
+the request's own context.
 
 A named mode picks its head because something named that target specifically:
 `single` names it, and a `conditional` or `content-based` rule matched it.
-Serving from somebody else would demote the rule to a suggestion, so these
-report the failure instead. They still move off a target whose **circuit is
-open**, because that is a target the gateway has already decided not to call —
-see the table above; the two rules are independent.
+Serving from somebody else would demote the rule to a suggestion. A rule may
+name an ordered chain (`target_keys`), which is a boundary: the walk advances
+within it on the failover-safe classes, skips a member whose circuit is open or
+that is parked after a `429`, and never substitutes a target outside it. A rule
+with one target (`target_key`) is exact — its circuit being open is a `503`,
+not a reason to borrow a sibling.
 
 Without a breaker the walk pays the dead target's connection timeout on every
 request before advancing. That is the cost the breaker removes, and the reason
@@ -896,6 +906,35 @@ The cost lands on the config editor: a withheld value comes back as
 `[REDACTED]`, and `PUT /admin/config` refuses a body carrying that marker
 anywhere rather than overwrite a live credential with the placeholder text.
 Replace it with the real value or a `${VAR}` reference before saving.
+
+### Attribution headers
+
+Every routed surface — `/v1/chat/completions` (streamed or not),
+`/v1/completions`, `/v1/embeddings`, `/v1/images/generations`, `/v1/rerank`,
+`/v1/moderations`, `/v1/audio/transcriptions`, `/v1/audio/translations` and
+`/v1/audio/speech` — answers with four headers naming the target that served
+it, or on failure the last one attempted:
+
+| Header | Value |
+|--------|-------|
+| `X-Gateway-Provider` | the serving target's canonical provider (`openai`) |
+| `X-Gateway-Target` | the target key as configured: `targets[].virtual_key` |
+| `X-Gateway-Model` | the upstream model sent to the provider, after `model_map` |
+| `X-Gateway-Attempts` | routing-layer attempts for the request: provider calls plus local breaker/concurrency refusals, retries and failovers included |
+
+On a stream they are written before the first chunk, because the pipeline has
+finished choosing by then. A request refused before any target was attempted —
+a plugin denial, a model nothing serves — carries none. The value is never a
+credential: the target key is the config string, not the key it names. An
+embedder reads the same data by passing a `*aigateway.RoutingAttribution`
+through `aigateway.WithRoutingAttribution` on the request context. The
+pass-through proxy (`/v1/*`) keeps emitting `X-Gateway-Provider` only.
+
+One request header goes the other way. `X-Gateway-Metadata`, a JSON object of
+at most 32 scalar values within 4 KiB, is the single header conditional
+routing may read (`key: metadata`, `field: <entry>`), on `/v1/chat/completions`
+and `/v1/completions`. It never reaches a provider, and no other header is
+exposed to a rule; a malformed value is the caller's `400`.
 
 ### Legacy completions
 

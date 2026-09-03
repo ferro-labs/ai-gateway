@@ -12,14 +12,14 @@ func BenchmarkP50(b *testing.B) {
 	tr := New(100)
 	// Fill the window so a naive implementation would sort 100 samples per call.
 	for i := 0; i < 100; i++ {
-		tr.Record("openai", time.Duration(100-i)*time.Millisecond)
+		tr.Record("openai", "m", time.Duration(100-i)*time.Millisecond)
 	}
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	var sink time.Duration
 	for i := 0; i < b.N; i++ {
-		sink = tr.P50("openai")
+		sink, _ = tr.Stats("openai", "m")
 	}
 	_ = sink
 }
@@ -29,12 +29,12 @@ func BenchmarkP50(b *testing.B) {
 func BenchmarkStats(b *testing.B) {
 	tr := New(100)
 	for i := 0; i < 100; i++ {
-		tr.Record("openai", time.Duration(100-i)*time.Millisecond)
+		tr.Record("openai", "m", time.Duration(100-i)*time.Millisecond)
 	}
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = tr.Stats("openai")
+		_, _ = tr.Stats("openai", "m")
 	}
 }

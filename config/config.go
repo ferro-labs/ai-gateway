@@ -232,7 +232,41 @@ type StrategyConfig struct {
 	ContentConditions []ContentCondition `json:"content_conditions,omitempty" yaml:"content_conditions,omitempty"`
 	// ABVariants defines the weighted variants for the ab-test strategy.
 	ABVariants []ABVariantConfig `json:"ab_variants,omitempty" yaml:"ab_variants,omitempty"`
+	// FailoverOnStatusCodes adds upstream HTTP status codes a pool mode, or
+	// a rule chain, treats as failover-safe — for an operator-specific
+	// upstream whose "try elsewhere" answer is not one the built-in classes
+	// cover. Each code is an integer in 100–599. The protected classes cannot
+	// be added: the caller's cancellation or deadline always stops routing,
+	// and the deterministic client errors 400, 401, 403, 404 and 422 stay
+	// with the target that answered them, since re-sending a malformed or
+	// unauthorised request to every target changes nothing but the bill.
+	FailoverOnStatusCodes []int `json:"failover_on_status_codes,omitempty" yaml:"failover_on_status_codes,omitempty"`
+	// Sticky pins a request to the same target for the same key under
+	// loadbalance and ab-test, so a conversation keeps its provider prompt
+	// cache and a multi-turn A/B session keeps its variant. Stateless: a
+	// hash of the key decides the draw, so it needs no shared state.
+	Sticky *StickyConfig `json:"sticky,omitempty" yaml:"sticky,omitempty"`
 }
+
+// StickyConfig configures sticky hashing for loadbalance and ab-test.
+type StickyConfig struct {
+	// On names the request field hashed. Only "user" is supported: the
+	// request's `user` field, which is what provider prompt caches and a
+	// session are scoped by. A request without one draws at random.
+	On string `json:"on" yaml:"on"`
+	// TTL, a Go duration, rotates assignments: a pin lasts at most one TTL
+	// window, after which the key may hash to another target. Omitted means
+	// a pin holds for as long as the config does.
+	TTL string `json:"ttl,omitempty" yaml:"ttl,omitempty"`
+}
+
+// ProtectedFailoverStatusCodes are the upstream statuses
+// StrategyConfig.FailoverOnStatusCodes may not add: deterministic client
+// errors that a different target cannot fix.
+func ProtectedFailoverStatusCodes() []int { return []int{400, 401, 403, 404, 422} }
+
+// StickyOnUser is the one accepted StickyConfig.On value.
+const StickyOnUser = "user"
 
 // StrategyMode represents the routing strategy mode.
 type StrategyMode string
@@ -276,21 +310,48 @@ type Condition struct {
 	// rule's traffic to the fallback target instead.
 	Key   string `json:"key" yaml:"key"`
 	Value string `json:"value" yaml:"value"`
-	// TargetKey must name one of the configured targets[].virtual_key.
-	TargetKey string `json:"target_key" yaml:"target_key"`
+	// Field names the metadata entry a `key: metadata` rule reads; required
+	// there and refused elsewhere.
+	Field string `json:"field,omitempty" yaml:"field,omitempty"`
+	// TargetKey names the one target this rule routes to; it must be a
+	// configured targets[].virtual_key. Sugar for a one-entry TargetKeys.
+	TargetKey string `json:"target_key,omitempty" yaml:"target_key,omitempty"`
+	// TargetKeys is the rule's ordered target chain. The walk tries them in
+	// order, advancing only on a failover-safe failure and skipping one whose
+	// circuit is open, that is saturated, or that is parked after a 429. The
+	// chain is a boundary: no target outside it is ever substituted, so a
+	// rule with one target is exact. Exactly one of TargetKey and TargetKeys
+	// is set.
+	TargetKeys []string `json:"target_keys,omitempty" yaml:"target_keys,omitempty"`
 }
 
 // ConditionKey* are the accepted values for Condition.Key. The set is closed:
 // internal/strategies.Conditional matches on exactly these and nothing resolves
 // at runtime, so a value outside the set can only ever be a typo.
+//
+// The set is bounded on purpose. `user`, `stream` and `has_tools` are fields
+// every chat request already carries; `metadata` reads one entry of the
+// single allow-listed X-Gateway-Metadata header. Arbitrary request headers
+// are never exposed to a predicate.
 const (
 	ConditionKeyModel       = "model"
 	ConditionKeyModelPrefix = "model_prefix"
+	// ConditionKeyUser matches the request's `user` field exactly.
+	ConditionKeyUser = "user"
+	// ConditionKeyStream matches whether the request streams: value "true"
+	// or "false".
+	ConditionKeyStream = "stream"
+	// ConditionKeyHasTools matches whether the request carries tools: value
+	// "true" or "false".
+	ConditionKeyHasTools = "has_tools"
+	// ConditionKeyMetadata matches one entry of the X-Gateway-Metadata
+	// header, named by Condition.Field, against Value.
+	ConditionKeyMetadata = "metadata"
 )
 
 // ConditionKeys returns the accepted Condition.Key values in a stable order.
 func ConditionKeys() []string {
-	return []string{ConditionKeyModel, ConditionKeyModelPrefix}
+	return []string{ConditionKeyModel, ConditionKeyModelPrefix, ConditionKeyUser, ConditionKeyStream, ConditionKeyHasTools, ConditionKeyMetadata}
 }
 
 // ContentCondition maps a prompt-content matching rule to a routing target.
@@ -307,8 +368,29 @@ type ContentCondition struct {
 	// Value is the substring or regex pattern to match against.
 	Value string `json:"value" yaml:"value"`
 	// TargetKey is the virtual_key of the provider to route to when this rule
-	// matches. It must name one of the configured targets.
-	TargetKey string `json:"target_key" yaml:"target_key"`
+	// matches. It must name one of the configured targets. Sugar for a
+	// one-entry TargetKeys.
+	TargetKey string `json:"target_key,omitempty" yaml:"target_key,omitempty"`
+	// TargetKeys is the rule's ordered target chain; see Condition.TargetKeys.
+	TargetKeys []string `json:"target_keys,omitempty" yaml:"target_keys,omitempty"`
+}
+
+// Chain returns the rule's target chain: TargetKeys, or TargetKey as a
+// one-entry chain.
+func (c Condition) Chain() []string { return ruleChain(c.TargetKey, c.TargetKeys) }
+
+// Chain returns the rule's target chain: TargetKeys, or TargetKey as a
+// one-entry chain.
+func (c ContentCondition) Chain() []string { return ruleChain(c.TargetKey, c.TargetKeys) }
+
+func ruleChain(targetKey string, targetKeys []string) []string {
+	if len(targetKeys) > 0 {
+		return targetKeys
+	}
+	if targetKey == "" {
+		return nil
+	}
+	return []string{targetKey}
 }
 
 // ContentConditionType* are the accepted values for ContentCondition.Type.
@@ -341,7 +423,7 @@ type ABVariantConfig struct {
 	// config error, and so is an all-zero set — with nothing left to select, the
 	// gateway would answer every request 404 while reporting itself ready.
 	Weight float64 `json:"weight" yaml:"weight"`
-	// Label is the value emitted as ferro.routing.ab_variant_label on every
+	// Label is required. It is the value emitted as ferro.routing.ab_variant_label on every
 	// routing attempt and terminal event for a request assigned to this variant.
 	Label string `json:"label" yaml:"label"`
 }
@@ -350,8 +432,9 @@ type ABVariantConfig struct {
 type Target struct {
 	// VirtualKey is the unique identifier for the provider (or a virtual key in the vault).
 	VirtualKey string `json:"virtual_key" yaml:"virtual_key"`
-	// Weight is the target's relative share under mode: loadbalance, and is
-	// ignored by every other mode.
+	// Weight is the target's relative share under mode: loadbalance, and the
+	// tie-break among equal-cost targets under mode: cost-optimized. Every
+	// other mode ignores it.
 	//
 	// Zero means zero — see ABVariantConfig.Weight. Draining a target ahead of
 	// revoking its credential is the reason the value exists, so a zero that
@@ -386,6 +469,14 @@ type Target struct {
 	// Keys join the target's additive model inventory. Global aliases resolve
 	// before this mapping, so an alias name cannot be used as a key.
 	ModelMap map[string]string `json:"model_map,omitempty" yaml:"model_map,omitempty"`
+	// Timeout bounds one physical attempt against this target, as a Go
+	// duration ("8s"). A unary attempt is bounded through its response; a
+	// streaming attempt only until the provider answers, since a stream that
+	// has begun cannot be replayed elsewhere. It sits inside request_timeout,
+	// which stays authoritative for the request as a whole. An attempt that
+	// times out is a failover-safe failure: pool modes move to the next target.
+	// Omitted means no per-attempt bound beyond request_timeout.
+	Timeout string `json:"timeout,omitempty" yaml:"timeout,omitempty"`
 	// Retry configuration for this target.
 	Retry *RetryConfig `json:"retry,omitempty" yaml:"retry,omitempty"`
 	// CircuitBreaker configuration for this target (optional).

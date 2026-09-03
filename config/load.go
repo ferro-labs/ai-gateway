@@ -67,6 +67,12 @@ func LoadConfig(path string) (*Config, error) {
 		logger.Default().Warn("config: unrecognized apiVersion; proceeding for forward compatibility",
 			"apiVersion", cfg.APIVersion, "expected", CurrentAPIVersion)
 	}
+	// A warning, not a refusal: an omitted strategy block defaults to single,
+	// so every multi-target config written without one is this config.
+	if cfg.Strategy.Mode == ModeSingle && len(cfg.Targets) > 1 {
+		logger.Default().Warn("config: strategy mode single asks only the first target; the others are never used",
+			"first", cfg.Targets[0].VirtualKey, "unused", len(cfg.Targets)-1)
+	}
 
 	return &cfg, nil
 }
@@ -250,6 +256,9 @@ func ValidateConfig(cfg Config) error {
 			return err
 		}
 		if err := validateTargetModelMap(t, cfg.Aliases); err != nil {
+			return err
+		}
+		if err := validateTargetTimeout(t); err != nil {
 			return err
 		}
 		if err := validateTargetRetry(t); err != nil {
@@ -471,11 +480,25 @@ func validateNamedTarget(field, value string, targets []Target) error {
 }
 
 func validateStrategy(s StrategyConfig, targets []Target) error {
+	if err := validateSticky(s); err != nil {
+		return err
+	}
+	if err := validateFailoverStatusCodes(s.FailoverOnStatusCodes); err != nil {
+		return err
+	}
 	switch s.Mode {
 	case ModeSingle, ModeFallback, ModeLatency:
 	case ModeLoadBalance:
 		return validateWeights("target", targetWeights(targets))
 	case ModeCostOptimized:
+		// Weights break equal-cost ties here, so a negative one would silently
+		// drain a target; refuse it as loadbalance does. Zero and unset stay
+		// legal — an all-zero set means an equal draw, not an outage.
+		for _, w := range targetWeights(targets) {
+			if w.weight < 0 {
+				return fmt.Errorf("target %q has negative weight %v", w.name, w.weight)
+			}
+		}
 		switch s.UnpricedStrategy {
 		case "", UnpricedStrategyFallback, UnpricedStrategySkip, UnpricedStrategyAllow:
 		default:
@@ -493,6 +516,45 @@ func validateStrategy(s StrategyConfig, targets []Target) error {
 	return nil
 }
 
+// validateFailoverStatusCodes checks strategy.failover_on_status_codes: HTTP
+// statuses only, none of the protected deterministic client errors.
+func validateFailoverStatusCodes(codes []int) error {
+	for _, code := range codes {
+		if code < 100 || code > 599 {
+			return fmt.Errorf("strategy.failover_on_status_codes: %d is not an HTTP status code", code)
+		}
+		if slices.Contains(ProtectedFailoverStatusCodes(), code) {
+			return fmt.Errorf("strategy.failover_on_status_codes: %d is a deterministic client error and cannot be failed over", code)
+		}
+	}
+	return nil
+}
+
+// validateSticky checks strategy.sticky: only the modes that draw a start
+// target (loadbalance, ab-test) can pin one, `on` is a closed set, and a TTL
+// is a positive duration.
+func validateSticky(s StrategyConfig) error {
+	if s.Sticky == nil {
+		return nil
+	}
+	if s.Mode != ModeLoadBalance && s.Mode != ModeABTest {
+		return fmt.Errorf("strategy.sticky applies to loadbalance and ab-test only, not %q", s.Mode)
+	}
+	if s.Sticky.On != StickyOnUser {
+		return fmt.Errorf("strategy.sticky.on must be %q, got %q", StickyOnUser, s.Sticky.On)
+	}
+	if s.Sticky.TTL != "" {
+		d, err := time.ParseDuration(s.Sticky.TTL)
+		if err != nil {
+			return fmt.Errorf("strategy.sticky.ttl %q is not a duration (use a Go duration such as \"1h\")", s.Sticky.TTL)
+		}
+		if d <= 0 {
+			return fmt.Errorf("strategy.sticky.ttl must be positive, got %s", s.Sticky.TTL)
+		}
+	}
+	return nil
+}
+
 func validateConditions(conditions []Condition, targets []Target) error {
 	if len(conditions) == 0 {
 		return fmt.Errorf("conditional strategy requires at least one condition")
@@ -502,9 +564,46 @@ func validateConditions(conditions []Condition, targets []Target) error {
 			return fmt.Errorf("conditions[%d]: unknown key %q; valid keys: %s",
 				i, c.Key, strings.Join(ConditionKeys(), ", "))
 		}
-		if err := requireDeclaredTarget(fmt.Sprintf("conditions[%d]", i), c.TargetKey, targets); err != nil {
+		switch c.Key {
+		case ConditionKeyStream, ConditionKeyHasTools:
+			if c.Value != "true" && c.Value != "false" {
+				return fmt.Errorf("conditions[%d]: key %q takes value \"true\" or \"false\", got %q", i, c.Key, c.Value)
+			}
+		}
+		if c.Key == ConditionKeyMetadata && c.Field == "" {
+			return fmt.Errorf("conditions[%d]: key metadata requires field", i)
+		}
+		if c.Key != ConditionKeyMetadata && c.Field != "" {
+			return fmt.Errorf("conditions[%d]: field applies to key metadata only", i)
+		}
+		if err := validateRuleChain(fmt.Sprintf("conditions[%d]", i), c.TargetKey, c.TargetKeys, targets); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// validateRuleChain checks a rule's target_key / target_keys: exactly one of
+// the two is set, the chain is non-empty, every entry names a declared
+// target, and no target appears twice — a repeated entry would be asked
+// twice for one request.
+func validateRuleChain(where, targetKey string, targetKeys []string, targets []Target) error {
+	if targetKey != "" && len(targetKeys) > 0 {
+		return fmt.Errorf("%s: set target_key or target_keys, not both", where)
+	}
+	if targetKey == "" && len(targetKeys) == 0 {
+		return fmt.Errorf("%s: target_key is required", where)
+	}
+	chain := ruleChain(targetKey, targetKeys)
+	seen := make(map[string]struct{}, len(chain))
+	for i, key := range chain {
+		if err := requireDeclaredTarget(where, key, targets); err != nil {
+			return err
+		}
+		if _, dup := seen[key]; dup {
+			return fmt.Errorf("%s: target_keys[%d] %q repeats an earlier entry", where, i, key)
+		}
+		seen[key] = struct{}{}
 	}
 	return nil
 }
@@ -523,7 +622,7 @@ func validateContentConditions(conditions []ContentCondition, targets []Target) 
 				return fmt.Errorf("content_conditions[%d]: invalid regex %q: %w", i, c.Value, err)
 			}
 		}
-		if err := requireDeclaredTarget(fmt.Sprintf("content_conditions[%d]", i), c.TargetKey, targets); err != nil {
+		if err := validateRuleChain(fmt.Sprintf("content_conditions[%d]", i), c.TargetKey, c.TargetKeys, targets); err != nil {
 			return err
 		}
 	}
@@ -540,15 +639,17 @@ func validateABVariants(variants []ABVariantConfig, targets []Target) error {
 		if err := requireDeclaredTarget(fmt.Sprintf("ab_variants[%d]", i), v.TargetKey, targets); err != nil {
 			return err
 		}
+		// Attribution keys on the label — ferro.routing.ab_variant_label, the
+		// routing.attempt event, the request log — so an unlabelled variant
+		// is one nothing can report on.
+		if v.Label == "" {
+			return fmt.Errorf("ab_variants[%d]: label is required", i)
+		}
 		if first, duplicate := seenTargets[v.TargetKey]; duplicate {
 			return fmt.Errorf("ab_variants[%d].target_key %q duplicates ab_variants[%d].target_key", i, v.TargetKey, first)
 		}
 		seenTargets[v.TargetKey] = i
-		name := v.Label
-		if name == "" {
-			name = v.TargetKey
-		}
-		weights = append(weights, namedWeight{name: name, weight: v.Weight})
+		weights = append(weights, namedWeight{name: v.Label, weight: v.Weight})
 	}
 	return validateWeights("ab_variant", weights)
 }
@@ -686,6 +787,23 @@ func validateTargetRetry(t Target) error {
 	}
 	if t.Retry.InitialBackoffMs < 0 {
 		return fmt.Errorf("target %q: retry.initial_backoff_ms cannot be negative, got %d", t.VirtualKey, t.Retry.InitialBackoffMs)
+	}
+	return nil
+}
+
+// validateTargetTimeout checks targets[].timeout: a Go duration, positive when
+// set. Refused here for the same reason circuit_breaker.timeout is — a value
+// that cannot be honoured must not be silently substituted.
+func validateTargetTimeout(t Target) error {
+	if t.Timeout == "" {
+		return nil
+	}
+	d, err := time.ParseDuration(t.Timeout)
+	if err != nil {
+		return fmt.Errorf("target %q: timeout %q is not a duration (use a Go duration such as \"8s\")", t.VirtualKey, t.Timeout)
+	}
+	if d <= 0 {
+		return fmt.Errorf("target %q: timeout must be positive, got %s", t.VirtualKey, t.Timeout)
 	}
 	return nil
 }

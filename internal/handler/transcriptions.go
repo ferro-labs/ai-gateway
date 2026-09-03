@@ -69,7 +69,10 @@ func Transcriptions(gw *aigateway.Gateway, translate bool) http.HandlerFunc {
 			}
 		}
 
-		resp, err := gw.Transcribe(r.Context(), req)
+		attribution := &aigateway.RoutingAttribution{}
+		ctx := aigateway.WithRoutingAttribution(r.Context(), attribution)
+		resp, err := gw.Transcribe(ctx, req)
+		attribution.SetHeaders(w.Header())
 		if err != nil {
 			apierror.WriteRouteError(w, err)
 			return

@@ -24,15 +24,32 @@ strategy:
   mode: fallback  # single | fallback | loadbalance | conditional | content-based | ab-test | least-latency | cost-optimized
   # Pool modes (fallback, loadbalance, least-latency, cost-optimized, ab-test)
   # advance after transport failures, attempt timeouts, 408, 429, 5xx, open
-  # circuits, or target saturation. The request's own cancellation or deadline
-  # and every other 4xx stop there.
-  # Named modes (single, conditional, content-based) do not advance after a call.
+  # circuits, target saturation, or a provider's own context-length overflow
+  # error (recognised envelopes only). The request's own cancellation or
+  # deadline and every other 4xx stop there.
+  # single stops after its one target. A conditional or content-based rule walks
+  # its target_keys chain on the same classes and stops at its end; a rule with
+  # one target therefore stops after that target.
   #
   # Under EVERY mode a target whose circuit breaker is open is passed over when
   # the choice is made, so a dead backend stops taking traffic while a healthy
   # one is configured. When every candidate's circuit is open the request is
   # still attempted and answered 503 — "everything that serves this model is
   # down" is a different answer from "nothing serves this model".
+  #
+  # Extra upstream statuses to treat as failover-safe, for an upstream whose
+  # "try elsewhere" answer is not one of the built-in classes. HTTP statuses
+  # only; the caller's own cancellation or deadline always stops routing, and
+  # 400, 401, 403, 404 and 422 cannot be listed — a different target cannot
+  # fix a malformed or unauthorised request.
+  # failover_on_status_codes: [409]
+  #
+  # For loadbalance and ab-test only: pin a request to the same target for the
+  # same `user` field, so a conversation keeps its provider prompt cache and an
+  # A/B session keeps its variant. A stateless hash — no shared state, and the
+  # same answer on every replica with this config. A request with no `user`
+  # draws at random. `ttl` rotates pins: none outlives one window.
+  # sticky: { on: user, ttl: 1h }
   #
   # For cost-optimized mode only: fallback (default) | skip | allow.
   # fallback prefers priced candidates, then first compatible unpriced target.
@@ -49,12 +66,26 @@ strategy:
 #     - key: model
 #       value: claude-sonnet-4-6
 #       target_key: anthropic
-# Routes based on the value of a request field (e.g. "model").
-# The matched rule's target is the one asked, and no other: a request for a
-# model that target does not serve is answered model_not_found even when another
-# configured target serves it. Give such a model its own rule. `/v1/models`
-# lists only what the active mode would actually route, so a model missing from
-# it is the signal that a rule is needed.
+#     - key: model_prefix
+#       value: gemini
+#       target_keys: [gemini, vertex-ai]   # an ordered chain: gemini, then vertex-ai
+#     - key: metadata               # one entry of the X-Gateway-Metadata request
+#       field: tier                 # header, a small JSON object of scalar values
+#       value: gold
+#       target_key: openai
+# Routes based on the value of a request field. Keys: model, model_prefix, user
+# (the request's `user`), stream and has_tools ("true"/"false"), and metadata
+# (`field` names the entry). No other request header reaches a rule.
+# A rule names its targets, and no other: `target_key` names one, `target_keys`
+# an ordered chain. The walk tries the chain in order, advancing only on a
+# failover-safe failure (see the pool modes above) and skipping a member whose
+# circuit is open or that is parked after a 429 — and never substitutes a
+# target outside the chain. A rule with one target is therefore exact: a request
+# for a model it does not serve, or a target whose circuit is open, is answered
+# with the corresponding error even when another configured target could
+# serve it. Give such a model its own rule, or a chain. `/v1/models` lists only
+# what the active mode would actually route, so a model missing from it is the
+# signal that a rule is needed.
 
 # --- content-based routing example ---
 # strategy:
@@ -70,7 +101,8 @@ strategy:
 #       value: "confidential"
 #       target_key: openai
 # First matching rule wins; falls back to the first target when no rule matches.
-# As with conditional routing, the matched target is the one asked and no other.
+# As with conditional routing, a rule may name a chain (`target_keys`), and the
+# matched chain is asked and no other.
 
 # --- A/B testing example ---
 # strategy:
@@ -96,6 +128,13 @@ targets:
     # weight must therefore be positive; an all-zero set and a negative weight
     # are both rejected at load.
     weight: 1.0
+    # Bound on ONE attempt against this target, inside request_timeout (which
+    # stays authoritative for the whole request). A unary attempt is bounded
+    # through its response; a streaming attempt only until the provider
+    # answers, because a stream that has begun cannot be replayed elsewhere. An
+    # attempt that times out is failover-safe: pool modes move on to the next
+    # target, so a hung primary no longer consumes the whole request budget.
+    # timeout: 8s
     # Retry is per target and applies under EVERY routing mode. Retry is how
     # many times ONE target is asked; pool modes may then advance as described
     # above, while named modes stop.

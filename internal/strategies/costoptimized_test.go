@@ -376,3 +376,55 @@ func TestCostOptimized_AliasPricing(t *testing.T) {
 		})
 	}
 }
+
+// Ranking on input price alone sent a request with a large completion budget to
+// the target that was cheap to read and expensive to write. The score is input
+// plus output, with the request's own completion ceiling as the output estimate.
+func TestCostOptimized_RanksOnInputPlusOutputPrice(t *testing.T) {
+	cheapIn := &mockProvider{name: "cheap-in", models: []string{"gpt-4o"}}
+	cheapOut := &mockProvider{name: "cheap-out", models: []string{"gpt-4o"}}
+	catalog := models.Catalog{
+		"cheap-in/gpt-4o":  {Provider: "cheap-in", ModelID: "gpt-4o", Mode: models.ModeChat, Pricing: models.Pricing{InputPerMTokens: ptrF(1), OutputPerMTokens: ptrF(100)}},
+		"cheap-out/gpt-4o": {Provider: "cheap-out", ModelID: "gpt-4o", Mode: models.ModeChat, Pricing: models.Pricing{InputPerMTokens: ptrF(5), OutputPerMTokens: ptrF(1)}},
+	}
+	targets := []Target{{VirtualKey: "cheap-in"}, {VirtualKey: "cheap-out"}}
+	s := NewCostOptimized(targets, newLookup(cheapIn, cheapOut), catalog)
+
+	maxTokens := 1000
+	request := req("hi")
+	request.MaxTokens = &maxTokens
+	assertLeadsWith(t, s, request, "cheap-out")
+}
+
+// Equal-cost targets used to tie on declaration order, which is not a
+// contract anyone can rely on; they now draw by weight, and equally when no
+// weight is set.
+func TestCostOptimized_EqualCostTieBreaksByWeight(t *testing.T) {
+	a := &mockProvider{name: "a", models: []string{"gpt-4o"}}
+	b := &mockProvider{name: "b", models: []string{"gpt-4o"}}
+	same := models.Model{Mode: models.ModeChat, Pricing: models.Pricing{InputPerMTokens: ptrF(1), OutputPerMTokens: ptrF(1)}}
+	catalog := models.Catalog{"a/gpt-4o": same, "b/gpt-4o": same}
+
+	leadShare := func(targets []Target) float64 {
+		s := NewCostOptimized(targets, newLookup(a, b), catalog)
+		const draws = 2000
+		aLeads := 0
+		for range draws {
+			keys, err := s.SelectTargets(req("hi"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if keys[0] == "a" {
+				aLeads++
+			}
+		}
+		return float64(aLeads) / draws
+	}
+
+	if share := leadShare([]Target{{VirtualKey: "a", Weight: 90}, {VirtualKey: "b", Weight: 10}}); share < 0.82 || share > 0.97 {
+		t.Fatalf("a led %.1f%% of equal-cost draws, want about 90%%", share*100)
+	}
+	if share := leadShare([]Target{{VirtualKey: "a"}, {VirtualKey: "b"}}); share < 0.38 || share > 0.62 {
+		t.Fatalf("a led %.1f%% of weightless equal-cost draws, want about 50%%", share*100)
+	}
+}

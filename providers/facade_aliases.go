@@ -202,3 +202,7 @@ var CanonicalName = core.CanonicalName
 func As[T any](p Provider) (T, bool) {
 	return core.As[T](p)
 }
+
+// IsContextLengthError reports whether err is a provider's own statement that
+// the request exceeded the model's context window. See core.IsContextLengthError.
+func IsContextLengthError(err error) bool { return core.IsContextLengthError(err) }

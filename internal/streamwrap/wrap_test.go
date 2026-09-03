@@ -477,3 +477,38 @@ func TestMeter_LeavesChunkModelWithoutARoutedModel(t *testing.T) {
 		}
 	}
 }
+
+// The latency sample is recorded at the first content chunk, against the
+// upstream model — or the routed model when no upstream id was supplied —
+// and never from an error chunk.
+func TestMeter_RecordsLatencyAtFirstChunkAgainstTheModel(t *testing.T) {
+	type sample struct {
+		provider, model string
+	}
+	var got []sample
+	recorder := func(provider, model string, _ time.Duration) {
+		got = append(got, sample{provider, model})
+	}
+	drain := func(meta MeterMeta, chunks ...providers.StreamChunk) {
+		out := Meter(context.Background(), feed(chunks...), time.Now(), meta)
+		for range out { //nolint:revive // drain to completion; the chunks are not the assertion
+		}
+	}
+
+	drain(MeterMeta{Provider: "t", Model: "visible", PriceModel: "upstream", MetricModel: "visible", Catalog: models.Catalog{}, LatencyRecorder: recorder},
+		providers.StreamChunk{ID: "1"}, providers.StreamChunk{ID: "2"})
+	drain(MeterMeta{Provider: "t", Model: "visible", MetricModel: "visible", Catalog: models.Catalog{}, LatencyRecorder: recorder},
+		providers.StreamChunk{ID: "1"})
+	drain(MeterMeta{Provider: "t", Model: "visible", PriceModel: "upstream", MetricModel: "visible", Catalog: models.Catalog{}, LatencyRecorder: recorder},
+		providers.StreamChunk{Error: errors.New("boom")})
+
+	want := []sample{{"t", "upstream"}, {"t", "visible"}}
+	if len(got) != len(want) {
+		t.Fatalf("samples = %v, want %v (one per stream that began, none for the error-first stream)", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("sample %d = %v, want %v", i, got[i], want[i])
+		}
+	}
+}

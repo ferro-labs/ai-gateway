@@ -495,14 +495,28 @@ func TestGateway_MultimodalHonorsLatencyAndCostStrategies(t *testing.T) {
 		})
 		gw.RegisterProvider(slow)
 		gw.RegisterProvider(fast)
-		gw.latencyTracker.Record("slow", 100*time.Millisecond)
-		gw.latencyTracker.Record("fast", time.Millisecond)
+		gw.latencyTracker.Record("slow", "embed-model", 100*time.Millisecond)
+		gw.latencyTracker.Record("fast", "embed-model", time.Millisecond)
 
+		// The ranking is read through the exploration share, and before any
+		// call is made: both mocks answer instantly, so a served request
+		// would teach the tracker that "slow" is not slow at all.
+		leads := map[string]int{}
+		for range 200 {
+			keys, err := gw.surfaceTargetOrder(providers.Request{Model: "embed-model"}, surfaceEmbeddings)
+			if err != nil {
+				t.Fatalf("surfaceTargetOrder: %v", err)
+			}
+			leads[keys[0]]++
+		}
+		if leads["fast"] < 150 {
+			t.Fatalf("fast led %d of 200 embedding selections, want the large majority", leads["fast"])
+		}
 		if _, err := gw.Embed(context.Background(), providers.EmbeddingRequest{Model: "embed-model", Input: "hi"}); err != nil {
 			t.Fatalf("Embed: %v", err)
 		}
-		if slow.calls != 0 || fast.calls != 1 {
-			t.Fatalf("latency strategy calls slow=%d fast=%d, want 0/1", slow.calls, fast.calls)
+		if slow.calls+fast.calls != 1 {
+			t.Fatalf("calls slow=%d fast=%d, want exactly one embedding call", slow.calls, fast.calls)
 		}
 	})
 

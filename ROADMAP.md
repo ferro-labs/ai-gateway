@@ -7,7 +7,6 @@ see [CHANGELOG.md](CHANGELOG.md).
 
 What's next, roughly in priority order:
 
-- **Routing depth** — per-target timeouts, `429` cooldown that honours `Retry-After`, context-length failover, sticky hashing for load balancing and A/B tests, rule target chains, input+output cost ranking, and least-latency samples that decay.
 - **Plugin SDK & vendor observability bridges** — external guardrail and transform plugins, plus bridges for LangSmith, Langfuse, Datadog, New Relic, Honeycomb, Grafana, and more, shipped from a companion `ai-gateway-plugins` repo so the core binary stays slim.
 - **Webhook notifications** — configurable alerts for budget limits, error spikes, and circuit-breaker events.
 - **Semantic & Redis-backed caching** — beyond the built-in in-memory cache.
@@ -32,6 +31,11 @@ Everything below is available today.
 - Per-target retry (jittered backoff, status-code filters) honoured under every routing mode; provider failover in the pool modes, which move to a sibling only after a failover-safe failure (v1.5.1)
 - Per-request model aliases, operator-declared `targets[].models`, and per-target `model_map` — one visible model key, a different upstream id on each provider (v1.5.1)
 - One `gateway.routing.attempt` observation per physical provider call and A/B variant attribution on every attempt, opt-in for exporters (v1.5.1)
+- One ranker for every surface, so a routing mode orders its targets the same way for chat, streams, embeddings, images, rerank, moderation, transcription and speech (v1.5.2)
+- Least-latency samples keyed by target and upstream model that expire, measure time to first chunk, and keep exploring; cost-optimized ranking on input plus output price with weighted tie-break (v1.5.2)
+- `targets[].timeout` per attempt, a `429` cooldown honouring `Retry-After`, a typed context-length failover class, and `strategy.failover_on_status_codes` (v1.5.2)
+- Sticky hashing on the request `user` for load balancing and A/B tests, rule `target_keys` chains with a hard boundary, and bounded conditional predicates (`user`, `stream`, `has_tools`, one metadata header) (v1.5.2)
+- `X-Gateway-Provider` / `-Target` / `-Model` / `-Attempts` attribution headers on every routed surface, `ferro.routing.attempt` on the request span, and `aigateway.WithCatalog` for a host-owned price catalog (v1.5.2)
 - Per-target concurrency limits with a bounded queue and 429 shedding
 - Per-provider circuit breaker shared across every surface
 

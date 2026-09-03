@@ -186,6 +186,9 @@ check "stream start fails over: the sibling's stream reaches the client and ends
   "code=$CODE content=$SCONTENT done=$SDONE"
 check "streamed chunks carry the routed model, not the upstream's" "$([ "$SMODEL" = "$SHARED" ] && echo 0 || echo 1)" "model=$SMODEL"
 
+# The 429 above parked groq for its Retry-After (1s); this cell needs groq to
+# serve, so wait the park out.
+sleep 1.2
 reset_mocks; scenario groq '{"stream_fail_after":1}'
 stream "$SHARED" hi
 check "a stream that fails after its first byte ends with an error frame and is not failed over" \
@@ -263,13 +266,22 @@ targets: [ { virtual_key: groq }, { virtual_key: together } ]
 YAML
 )"
 scenario together '{"delay_ms":120}'
-tally 30 "$SHARED"
-check "a slower sibling receives only its profiling requests; the fast target serves ≥ 90%" \
-  "$([ "$T_groq" -ge 27 ] && [ "$T_err" = 0 ] && echo 0 || echo 1)" "groq=$T_groq together=$T_together errors=$T_err"
+tally 100 "$SHARED"
+# One request in ten explores a sampled non-leader (see least-latency in
+# internal/strategies/README.md), so the fast target serves about 90%; 100
+# draws keep the 80% bar clear of that draw's own variance.
+check "a slower sibling receives its profiling request and the exploration share; the fast target serves ≥ 80%" \
+  "$([ "$T_groq" -ge 80 ] && [ "$T_together" -ge 1 ] && [ "$T_err" = 0 ] && echo 0 || echo 1)" "groq=$T_groq together=$T_together errors=$T_err"
 heal together; scenario groq '{"delay_ms":120}'
-tally 30 "$SHARED"
-check "(characterization) the leader keeps the traffic once it has slowed down — only the selected target records samples; rework is scheduled for v1.5.2" \
-  "$([ "$T_groq" -ge 24 ] && echo 0 || echo 1)" "groq=$T_groq together=$T_together"
+tally 100 "$SHARED"
+# The leader's window is 100 samples, so these slow ones cannot turn it over
+# here; what this cell can prove is that the slowed leader no longer takes
+# everything — exploration keeps measuring the healed sibling, which is what
+# lets the flip happen (TestLeastLatency_SlowedLeaderLosesLeadership proves the
+# flip). At a 10% draw over ~99 requests, fewer than 2 explorations happens
+# about 0.03% of the time, which is the accepted flake rate of this cell.
+check "a leader that slows down is still explored past: the healed sibling keeps receiving samples" \
+  "$([ "$T_together" -ge 2 ] && [ "$T_err" = 0 ] && echo 0 || echo 1)" "groq=$T_groq together=$T_together errors=$T_err"
 stop_gw
 
 # ── 5. cost-optimized ────────────────────────────────────────────────────────────

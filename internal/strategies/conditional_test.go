@@ -8,8 +8,8 @@ import (
 
 func TestConditional_MatchesModel(t *testing.T) {
 	rules := []ConditionRule{
-		{Key: ConditionKeyModel, Value: "gpt-4o", Target: Target{VirtualKey: "openai"}},
-		{Key: ConditionKeyModel, Value: "claude-3", Target: Target{VirtualKey: "anthropic"}},
+		{Key: ConditionKeyModel, Value: "gpt-4o", Targets: []Target{{VirtualKey: "openai"}}},
+		{Key: ConditionKeyModel, Value: "claude-3", Targets: []Target{{VirtualKey: "anthropic"}}},
 	}
 	c := NewConditional(rules, Target{VirtualKey: "openai"})
 
@@ -19,8 +19,8 @@ func TestConditional_MatchesModel(t *testing.T) {
 
 func TestConditional_ModelPrefix(t *testing.T) {
 	rules := []ConditionRule{
-		{Key: ConditionKeyModelPrefix, Value: "gpt-", Target: Target{VirtualKey: "openai"}},
-		{Key: ConditionKeyModelPrefix, Value: "claude-", Target: Target{VirtualKey: "anthropic"}},
+		{Key: ConditionKeyModelPrefix, Value: "gpt-", Targets: []Target{{VirtualKey: "openai"}}},
+		{Key: ConditionKeyModelPrefix, Value: "claude-", Targets: []Target{{VirtualKey: "anthropic"}}},
 	}
 	c := NewConditional(rules, Target{VirtualKey: "openai"})
 
@@ -29,7 +29,7 @@ func TestConditional_ModelPrefix(t *testing.T) {
 
 func TestConditional_Fallback(t *testing.T) {
 	rules := []ConditionRule{
-		{Key: ConditionKeyModel, Value: "gpt-4o", Target: Target{VirtualKey: "other"}},
+		{Key: ConditionKeyModel, Value: "gpt-4o", Targets: []Target{{VirtualKey: "other"}}},
 	}
 	c := NewConditional(rules, Target{VirtualKey: "fallback"})
 
@@ -44,7 +44,7 @@ func TestConditional_Fallback(t *testing.T) {
 // TestValidateConfig_RejectsUnknownConditionKey.
 func TestConditional_UnknownKeyNeverMatches(t *testing.T) {
 	rules := []ConditionRule{
-		{Key: "unknown_key", Value: "gpt-4o", Target: Target{VirtualKey: "other"}},
+		{Key: "unknown_key", Value: "gpt-4o", Targets: []Target{{VirtualKey: "other"}}},
 	}
 	c := NewConditional(rules, Target{VirtualKey: "fb"})
 
@@ -54,8 +54,8 @@ func TestConditional_UnknownKeyNeverMatches(t *testing.T) {
 func TestConditional_FirstRuleWins(t *testing.T) {
 	// Both rules match "gpt-4o" (exact and prefix). First should win.
 	rules := []ConditionRule{
-		{Key: ConditionKeyModel, Value: "gpt-4o", Target: Target{VirtualKey: "p1"}},
-		{Key: ConditionKeyModelPrefix, Value: "gpt-", Target: Target{VirtualKey: "p2"}},
+		{Key: ConditionKeyModel, Value: "gpt-4o", Targets: []Target{{VirtualKey: "p1"}}},
+		{Key: ConditionKeyModelPrefix, Value: "gpt-", Targets: []Target{{VirtualKey: "p2"}}},
 	}
 	c := NewConditional(rules, Target{VirtualKey: "p2"})
 
@@ -80,4 +80,25 @@ func assertLeadsWith(t *testing.T, s Strategy, req providers.Request, want strin
 	if keys[0] != want {
 		t.Errorf("SelectTargets leads with %q, want %q (full order %v)", keys[0], want, keys)
 	}
+}
+
+// TestConditional_BoundedPredicates covers the request-shaped keys: user,
+// stream, has_tools and one metadata entry. Each is exact; an absent value
+// matches nothing.
+func TestConditional_BoundedPredicates(t *testing.T) {
+	rules := []ConditionRule{
+		{Key: ConditionKeyUser, Value: "vip", Targets: []Target{{VirtualKey: "premium"}}},
+		{Key: ConditionKeyMetadata, Field: "tier", Value: "gold", Targets: []Target{{VirtualKey: "gold"}}},
+		{Key: ConditionKeyHasTools, Value: "true", Targets: []Target{{VirtualKey: "tools"}}},
+		{Key: ConditionKeyStream, Value: "true", Targets: []Target{{VirtualKey: "streamer"}}},
+	}
+	c := NewConditional(rules, Target{VirtualKey: "fb"})
+
+	assertLeadsWith(t, c, providers.Request{Model: "m", User: "vip"}, "premium")
+	assertLeadsWith(t, c, providers.Request{Model: "m", User: "other"}, "fb")
+	assertLeadsWith(t, c, providers.Request{Model: "m", RoutingMetadata: map[string]string{"tier": "gold"}}, "gold")
+	assertLeadsWith(t, c, providers.Request{Model: "m", RoutingMetadata: map[string]string{"tier": "silver"}}, "fb")
+	assertLeadsWith(t, c, providers.Request{Model: "m", Tools: []providers.Tool{{Type: "function"}}}, "tools")
+	assertLeadsWith(t, c, providers.Request{Model: "m", Stream: true}, "streamer")
+	assertLeadsWith(t, c, providers.Request{Model: "m"}, "fb")
 }

@@ -59,6 +59,13 @@ func appendRemainingTargetKeys(keys []string, targets []Target) []string {
 // when the positively-weighted targets were filtered out for some other reason —
 // most often because none of them serves the requested model.
 func weightedStartIndex(targets []Target) (int, bool) {
+	return weightedStartIndexAt(targets, rand.Float64()) //nolint:gosec // G404: math/rand is fine for load-balancing weight selection, not security-sensitive
+}
+
+// weightedStartIndexAt is weightedStartIndex with the draw supplied: unit in
+// [0, 1) selects the target whose cumulative weight share contains it, so a
+// sticky hash lands the same key on the same target every time.
+func weightedStartIndexAt(targets []Target, unit float64) (int, bool) {
 	totalWeight := 0.0
 	for _, t := range targets {
 		totalWeight += positiveWeight(t.Weight)
@@ -66,7 +73,7 @@ func weightedStartIndex(targets []Target) (int, bool) {
 	if totalWeight <= 0 {
 		return 0, false
 	}
-	r := rand.Float64() * totalWeight //nolint:gosec // G404: math/rand is fine for load-balancing weight selection, not security-sensitive
+	r := unit * totalWeight
 	cumulative := 0.0
 	last := 0
 	for i, t := range targets {

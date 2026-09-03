@@ -51,6 +51,21 @@ func TestValidateStrategy(t *testing.T) {
 			},
 		},
 		{
+			// Attribution — ferro.routing.ab_variant_label, the routing.attempt
+			// event and the request log — keys on the label, so a variant
+			// without one is unattributable. Required, as the v1.5.1 contract
+			// stated and the loader did not enforce.
+			name: "ab-test unlabelled variant",
+			cfg: Config{
+				Strategy: StrategyConfig{Mode: ModeABTest, ABVariants: []ABVariantConfig{
+					{TargetKey: "openai", Weight: 80, Label: "control"},
+					{TargetKey: "groq", Weight: 20},
+				}},
+				Targets: twoTargets(),
+			},
+			wantErr: "ab_variants[1]: label is required",
+		},
+		{
 			name: "ab-test duplicate target",
 			cfg: Config{
 				Strategy: StrategyConfig{Mode: ModeABTest, ABVariants: []ABVariantConfig{

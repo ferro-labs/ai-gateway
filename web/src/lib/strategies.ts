@@ -58,21 +58,23 @@ export const STRATEGIES: readonly StrategyInfo[] = [
     id: 'least-latency',
     label: 'Least latency',
     icon: GaugeCircle,
-    summary: 'Picks the capable target with the lowest observed p50. Unmeasured targets are chosen only when none has been measured.',
+    summary:
+      'Picks the capable target with the lowest observed time to first byte per upstream model; unmeasured targets are profiled first, samples expire, and one request in ten explores a sampled sibling.',
     configures: '',
   },
   {
     id: 'cost-optimized',
     label: 'Cost optimized',
     icon: CircleDollarSign,
-    summary: 'Picks the cheapest capable target using model-catalog pricing, estimated on input tokens.',
+    summary: 'Picks the cheapest capable target using model-catalog pricing on input plus output; equal-cost targets draw by weight.',
     configures: 'strategy.unpriced_strategy',
   },
   {
     id: 'conditional',
     label: 'Conditional',
     icon: GitBranch,
-    summary: 'Matches the requested model — exactly or by prefix — against rules in order and routes to the first that matches.',
+    summary:
+      'Matches the model, the user, streaming, tool use or a metadata entry against rules in order and routes to the first rule’s target chain.',
     configures: 'strategy.conditions',
   },
   {
@@ -116,6 +118,8 @@ export interface StrategyTarget {
   maxConcurrency?: number
   queueSize?: number
   circuitBreaker: boolean
+  /** `targets[].model_map`: visible model → the upstream model this target is sent. Empty when unset. */
+  modelMap: Record<string, string>
 }
 
 /**
@@ -160,8 +164,31 @@ function readTargets(config: Record<string, unknown>): StrategyTarget[] {
       maxConcurrency: typeof concurrency?.max_concurrency === 'number' ? concurrency.max_concurrency : undefined,
       queueSize: typeof concurrency?.queue_size === 'number' ? concurrency.queue_size : undefined,
       circuitBreaker: isRecord(target.circuit_breaker),
+      modelMap: readModelMap(target.model_map),
     }
   })
+}
+
+function readModelMap(value: unknown): Record<string, string> {
+  if (!isRecord(value)) return {}
+  const out: Record<string, string> = {}
+  for (const [visible, upstream] of Object.entries(value)) {
+    if (typeof upstream === 'string') out[visible] = upstream
+  }
+  return out
+}
+
+/** A rule's target chain: `target_keys` in order, or `target_key` alone. */
+function ruleChain(rule: Record<string, unknown>): string {
+  const keys = Array.isArray(rule.target_keys) ? rule.target_keys.filter((key) => typeof key === 'string') : []
+  return keys.length > 0 ? keys.join(' → ') : text(rule.target_key)
+}
+
+/** A conditional rule's match: `metadata.tier = gold`, `has_tools = true`, `model_prefix = gpt-4`. */
+function conditionMatch(rule: Record<string, unknown>): string {
+  const key = text(rule.key) || 'model'
+  const field = text(rule.field)
+  return `${key === 'metadata' && field ? `metadata.${field}` : key} = ${text(rule.value)}`
 }
 
 function readRules(mode: string, strategy: Record<string, unknown>): { rules: StrategyRule[]; ruleLabel: string } {
@@ -169,8 +196,8 @@ function readRules(mode: string, strategy: Record<string, unknown>): { rules: St
     return {
       ruleLabel: 'Conditions',
       rules: records(strategy.conditions).map((rule) => ({
-        match: `${text(rule.key) || 'model'} = ${text(rule.value)}`,
-        target: text(rule.target_key),
+        match: conditionMatch(rule),
+        target: ruleChain(rule),
       })),
     }
   }
@@ -179,7 +206,7 @@ function readRules(mode: string, strategy: Record<string, unknown>): { rules: St
       ruleLabel: 'Content conditions',
       rules: records(strategy.content_conditions).map((rule) => ({
         match: `${text(rule.type)} ${JSON.stringify(text(rule.value))}`,
-        target: text(rule.target_key),
+        target: ruleChain(rule),
       })),
     }
   }

@@ -772,7 +772,7 @@ func TestPipeline_RecordsLatencyAgainstTheTargetKey(t *testing.T) {
 	if _, err := gw.Route(context.Background(), pipelineRequest()); err != nil {
 		t.Fatalf("Route: %v", err)
 	}
-	if _, seen := gw.latencyTracker.Stats(mockProviderName); !seen {
+	if _, seen := gw.latencyTracker.Stats(mockProviderName, pipelineModel); !seen {
 		t.Errorf("no latency sample recorded for target %q", mockProviderName)
 	}
 }
@@ -1005,5 +1005,183 @@ func TestRoute_AfterRequestPluginFailureIsCountedAndTimed(t *testing.T) {
 	}
 	if delta := counterValue(t, handles.Error) - errorsBefore; delta != 1 {
 		t.Errorf("failed request added %v to the error counter, want 1", delta)
+	}
+}
+
+// TestPipeline_AttributionCountsEveryAttempt: the attribution a handler reads
+// back names the target that answered and counts every routing-layer attempt
+// that preceded it, so a failover shows as two attempts on the response.
+func TestPipeline_AttributionCountsEveryAttempt(t *testing.T) {
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeFallback},
+		Targets:  []config.Target{{VirtualKey: "dead"}, {VirtualKey: "alive", ModelMap: map[string]string{pipelineModel: "alive-upstream"}}},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+	gw.RegisterProviderAs("dead", newCountingProvider("vendor-a", func() (*providers.Response, error) {
+		return nil, core.StatusError("dead", http.StatusServiceUnavailable, "down")
+	}))
+	gw.RegisterProviderAs("alive", &mockProvider{name: "vendor-b", models: []string{"alive-upstream"}, resp: &providers.Response{ID: "ok"}})
+
+	attribution := &RoutingAttribution{}
+	ctx := WithRoutingAttribution(context.Background(), attribution)
+	if _, err := gw.Route(ctx, pipelineRequest()); err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	want := RoutingAttribution{Provider: "vendor-b", Target: "alive", Model: "alive-upstream", Attempts: 2}
+	if *attribution != want {
+		t.Fatalf("attribution = %+v, want %+v", *attribution, want)
+	}
+}
+
+// A hung primary must not consume the whole request budget: targets[].timeout
+// bounds one physical attempt, the walk advances, and the sibling answers.
+func TestPipeline_TargetTimeoutAdvancesPastAHungPrimary(t *testing.T) {
+	hungProvider := &mockProvider{name: "hung", models: []string{pipelineModel}, completeFn: func(ctx context.Context, _ providers.Request) (*providers.Response, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}}
+	alive := newCountingProvider("alive", func() (*providers.Response, error) {
+		return &providers.Response{ID: "served-by-alive", Model: pipelineModel}, nil
+	})
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeFallback},
+		Targets: []config.Target{
+			{VirtualKey: "hung", Timeout: "30ms"},
+			{VirtualKey: "alive"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+	gw.RegisterProvider(hungProvider)
+	gw.RegisterProvider(alive)
+
+	started := time.Now()
+	resp, err := gw.Route(context.Background(), pipelineRequest())
+	if err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	if resp.ID != "served-by-alive" {
+		t.Fatalf("served %q, want the sibling after the primary's attempt timed out", resp.ID)
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("took %v; the attempt timeout must have bounded the hung primary", elapsed)
+	}
+}
+
+// The end-to-end request_timeout stays authoritative: when it is shorter than
+// a target's attempt timeout the request ends there, answered 504, and no
+// sibling is asked.
+func TestPipeline_RequestTimeoutOutranksTargetTimeout(t *testing.T) {
+	hungProvider := &mockProvider{name: "hung", models: []string{pipelineModel}, completeFn: func(ctx context.Context, _ providers.Request) (*providers.Response, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}}
+	alive := newCountingProvider("alive", func() (*providers.Response, error) {
+		return &providers.Response{ID: "unexpected", Model: pipelineModel}, nil
+	})
+	gw, err := newTestGateway(t, config.Config{
+		RequestTimeout: "30ms",
+		Strategy:       config.StrategyConfig{Mode: config.ModeFallback},
+		Targets: []config.Target{
+			{VirtualKey: "hung", Timeout: "5s"},
+			{VirtualKey: "alive"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+	gw.RegisterProvider(hungProvider)
+	gw.RegisterProvider(alive)
+
+	_, err = gw.Route(context.Background(), pipelineRequest())
+	if status, _, _ := apierror.RouteErrorDetails(err); status != http.StatusGatewayTimeout {
+		t.Fatalf("status %d (%v), want 504 from the request deadline", status, err)
+	}
+	if alive.calls.Load() != 0 {
+		t.Fatalf("sibling was asked %d times after the request deadline passed", alive.calls.Load())
+	}
+}
+
+// A provider's own statement that the prompt exceeded its context window
+// fails over to a sibling — whose model may have a larger window — while a
+// plain 400 from the same provider still stops, so a malformed request is not
+// re-sent to every target.
+func TestPipeline_ContextLengthOverflowFailsOverButAPlain400Stops(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		body         string
+		wantSibling  bool
+		wantSibCalls int64
+	}{
+		{"openai context_length_exceeded", `{"error":{"message":"This model's maximum context length is 8192 tokens.","type":"invalid_request_error","code":"context_length_exceeded"}}`, true, 1},
+		{"anthropic prompt is too long", `{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 213462 tokens > 200000 maximum"}}`, true, 1},
+		{"plain invalid request", `{"error":{"message":"Invalid value for 'temperature'","type":"invalid_request_error","code":null}}`, false, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			first := newCountingProvider("first", func() (*providers.Response, error) {
+				return nil, core.APIError("first", http.StatusBadRequest, []byte(tc.body))
+			})
+			second := newCountingProvider("second", func() (*providers.Response, error) {
+				return &providers.Response{ID: "served-by-second", Model: pipelineModel}, nil
+			})
+			gw, err := newTestGateway(t, config.Config{
+				Strategy: config.StrategyConfig{Mode: config.ModeFallback},
+				Targets:  []config.Target{{VirtualKey: "first"}, {VirtualKey: "second"}},
+			})
+			if err != nil {
+				t.Fatalf("new gateway: %v", err)
+			}
+			gw.RegisterProvider(first)
+			gw.RegisterProvider(second)
+
+			resp, err := gw.Route(context.Background(), pipelineRequest())
+			if tc.wantSibling && (err != nil || resp.ID != "served-by-second") {
+				t.Fatalf("resp=%v err=%v, want the sibling to serve", resp, err)
+			}
+			if !tc.wantSibling && err == nil {
+				t.Fatal("a plain 400 must reach the caller, not be covered by a sibling")
+			}
+			if second.calls.Load() != tc.wantSibCalls {
+				t.Fatalf("sibling calls = %d, want %d", second.calls.Load(), tc.wantSibCalls)
+			}
+		})
+	}
+}
+
+// strategy.failover_on_status_codes adds an operator-specific status to the
+// failover-safe classes; without it the same status stops at the target.
+func TestPipeline_FailoverOnStatusCodesAddsAClass(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		failoverOn []int
+		wantSecond int64
+	}{
+		{"listed 409 fails over", []int{http.StatusConflict}, 1},
+		{"unlisted 409 stops", nil, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			first := newCountingProvider("first", func() (*providers.Response, error) {
+				return nil, core.StatusError("first", http.StatusConflict, "busy")
+			})
+			second := newCountingProvider("second", func() (*providers.Response, error) {
+				return &providers.Response{ID: "served-by-second", Model: pipelineModel}, nil
+			})
+			gw, err := newTestGateway(t, config.Config{
+				Strategy: config.StrategyConfig{Mode: config.ModeFallback, FailoverOnStatusCodes: tc.failoverOn},
+				Targets:  []config.Target{{VirtualKey: "first"}, {VirtualKey: "second"}},
+			})
+			if err != nil {
+				t.Fatalf("new gateway: %v", err)
+			}
+			gw.RegisterProvider(first)
+			gw.RegisterProvider(second)
+			_, _ = gw.Route(context.Background(), pipelineRequest())
+			if second.calls.Load() != tc.wantSecond {
+				t.Fatalf("second calls = %d, want %d", second.calls.Load(), tc.wantSecond)
+			}
+		})
 	}
 }

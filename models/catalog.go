@@ -127,6 +127,9 @@ const (
 	LoadSourceRemote LoadSource = "remote"
 	// LoadSourceFallback means the embedded backup catalog was used.
 	LoadSourceFallback LoadSource = "fallback"
+	// LoadSourceSupplied is a catalog the embedding host handed to the gateway
+	// (aigateway.WithCatalog); nothing was loaded.
+	LoadSourceSupplied LoadSource = "supplied"
 )
 
 // LoadResult describes a completed catalog load.

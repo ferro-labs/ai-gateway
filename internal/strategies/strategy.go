@@ -35,19 +35,19 @@ type Strategy interface {
 	// try for req, most-preferred first, followed by the remaining configured
 	// targets. Every routed surface walks this one ordering.
 	//
-	// What the pipeline does with the keys after the first depends on the routing
-	// mode, and the two behaviours are worth keeping apart. Pool modes
+	// The keys are exactly the candidates the walk may attempt, and the walk
+	// treats them alike under every mode: it advances past a failover-safe
+	// failure, skips a key whose circuit is open or that is parked after a
+	// 429, and never reaches a key this method did not return. Pool modes
 	// (`fallback`, `loadbalance`, `least-latency`, `cost-optimized`, `ab-test`)
-	// may advance after a failover-safe failure. Named-target modes (`single`,
-	// `conditional`, `content-based`) commit to their selected key, so a provider
-	// failure there is the request's answer however many keys this method returned —
-	// `targets[].retry` still asks that one target repeatedly, under every mode.
+	// return their whole ordered pool. A rule mode (`conditional`,
+	// `content-based`) returns the matched rule's `target_keys` chain — a
+	// one-entry chain for `target_key` — and nothing else, so a rule that names
+	// one target is exact. `single` returns its one target. `targets[].retry`
+	// asks each key repeatedly before the walk moves on, under every mode.
 	//
-	// Under a committing mode the tail is not dead weight: it is the set the
-	// pipeline substitutes from BEFORE it commits. A key whose circuit is open,
-	// or whose provider cannot serve the requested surface at all, is passed over
-	// in favour of the next one. Model support is not such a reason — a target
-	// the strategy named while holding the request is a decision the pipeline
+	// Model support is not a reason for the walk to skip a key — a target the
+	// strategy named while holding the request is a decision the pipeline
 	// honours. See Gateway.eligibleKeys.
 	//
 	// A nil slice means no configured target serves the model at all, which the

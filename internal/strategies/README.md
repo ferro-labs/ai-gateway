@@ -9,7 +9,12 @@ request may go, while the retry policy and circuit breaker hang off the route an
 the cluster.)
 
 Pick a strategy with `strategy.mode`. Every target names a `virtual_key` (a
-provider), and a request routes only to targets that serve its model. See
+provider), and a request routes only to targets that serve its model. One
+ranking serves every surface: chat, streaming, embeddings, images, rerank,
+moderation, transcription and speech order the same targets the same way for the
+same config and health, with one difference — a target whose provider cannot
+serve the surface at all is not a candidate there, so a chat-only target never
+takes an embeddings request's share of a weighted draw. See
 [`../../config.example.yaml`](../../config.example.yaml) for the full config
 reference with inline comments.
 
@@ -28,23 +33,35 @@ What a strategy does when its chosen target *fails* splits the eight modes in tw
 | Family | Modes | On a failure |
 |---|---|---|
 | **Pool** | fallback, loadbalance, least-latency, cost-optimized, ab-test | the request advances only after a failover-safe failure |
-| **Named** | single, conditional, content-based | the request stops and the failure is returned |
+| **Named** | single, conditional, content-based | the request stays inside what was named: `single` stops; a rule walks its `target_keys` chain under the same failover-safe classes and stops at its end |
 
 A pool mode picks its target for a reason about the *pool* (spread load, take the
 cheapest, take the fastest, split traffic), so carrying a failed request to a
-sibling is what was asked for. A named mode picks a *specific* target (you named
-it, or a rule matched it), so serving from somewhere else would demote the rule
-to a suggestion.
+sibling is what was asked for. A named mode picks *specific* targets (you named
+it, or a rule matched it), so serving from anywhere else would demote the rule
+to a suggestion. A rule's chain is a boundary: members whose circuit is open or
+that are parked after a `429` are skipped for the next member, and a target the
+rule did not name is never substituted — a rule with one target is exact, and
+its target being down is the corresponding error.
 
 Failover-safe failures are transport failures, an attempt that timed out
-waiting on the target, 408, 429, 5xx, open circuits, and target saturation. The
-request's own cancellation or deadline and every other 4xx stop at the current
-target; named modes also stop after any provider-call failure.
+waiting on the target, 408, 429, 5xx, open circuits, target saturation, and a
+provider's own statement that the prompt exceeded its context window (the
+OpenAI-compatible, Anthropic and Gemini envelopes are recognised; a sibling's
+model may have a larger window). The request's own cancellation or deadline and
+every other 4xx stop at the current target. `strategy.failover_on_status_codes`
+adds statuses of your own (`[409]`, say); it cannot add the caller's
+cancellation or deadline, nor 400, 401, 403, 404 or 422.
 
 Under **every** mode, a target whose **circuit breaker is open** is skipped when
 the choice is made, so a backend the gateway has already decided not to call
-takes no traffic while a healthy target is configured. When every candidate's
-circuit is open the request is still attempted and answered `503`.
+takes no traffic while a healthy target is configured — among the candidates the
+mode offers, which for a rule is its chain. When every candidate's
+circuit is open the request is still attempted and answered `503`. A target
+that answered `429` is skipped the same way until its `Retry-After` elapses
+(capped at a minute; five seconds when the header is missing), without its
+breaker counting the rate limit as a failure. Breaker, latency and cooldown
+state are all local to one gateway process.
 
 ## The strategies
 
@@ -72,17 +89,38 @@ targets:
   - { virtual_key: azure-openai, weight: 1 }
 ```
 
+`sticky: { on: user, ttl: 1h }` pins each request to the same target for the
+same `user` field — a stateless hash, so a conversation keeps its provider
+prompt cache without any shared state, and every replica with this config
+answers the same. A request with no `user` draws at random; `ttl` bounds how
+long a pin can hold. Also available under `ab-test`, where it keeps a session on
+its variant.
+
 ### least-latency
+
 Routes to the target with the lowest observed p50 latency, so traffic follows
-the currently-fastest backend.
+the currently-fastest backend. The sample is the time a target took to *begin*
+answering — a stream's first chunk, or a unary call's response — so a model with
+long answers does not read as a slow provider. Samples are kept per target and
+upstream model, expire after five minutes (a target nothing has measured
+recently is treated as unseen and measured again), and one request in ten leads
+with a sampled non-leader so a sibling that recovered is noticed. Health is
+per process; nothing is shared between gateway instances.
 
 ```yaml
 strategy: { mode: least-latency }
 ```
 
 ### cost-optimized
-Routes to the cheapest catalog-priced target. `unpriced_strategy` decides what
-happens for a target the catalog has no price for:
+
+Routes to the cheapest catalog-priced target. Each candidate is priced from the
+catalog's rate for the model's mode — input plus output for chat (the output
+estimate is the request's `max_tokens` / `max_completion_tokens`, or 256), per
+token for embeddings, per image, per minute or character for audio — so the
+order is a comparison of list prices, not a prediction of what the request will
+cost. Targets that price the same draw by `weight`, equally when none is set.
+`unpriced_strategy` decides what happens for a target the catalog has no price
+for:
 
 | `unpriced_strategy` | Behaviour |
 |---|---|
@@ -99,15 +137,28 @@ strategy:
 ### conditional
 Routes by the value of a request field. Rules are evaluated in order, first match
 wins; when no rule matches, the request goes to the fallback target. Supported
-keys: `model`, `model_prefix`.
+keys: `model`, `model_prefix`, `user` (the request's `user` field), `stream` and
+`has_tools` (`"true"` / `"false"`), and `metadata`, which reads one entry —
+named by `field` — of the single `X-Gateway-Metadata` request header: a JSON
+object of at most 32 string, number or boolean values within 4 KiB, accepted on
+`/v1/chat/completions` and `/v1/completions` and never forwarded to a provider.
+No other header is ever exposed to a rule. `user` also applies to embeddings and
+image requests, which carry the field; `stream` and `has_tools` are chat-only,
+and `metadata` matches nothing on the surfaces that do not accept the header.
 
 ```yaml
 strategy:
   mode: conditional
   conditions:
     - { key: model, value: gpt-4o, target_key: openai }
-    - { key: model_prefix, value: claude, target_key: anthropic }
+    - { key: model_prefix, value: claude, target_keys: [anthropic, bedrock] }
+    - { key: metadata, field: tier, value: gold, target_key: openai }
+    - { key: has_tools, value: "true", target_key: openai }
 ```
+
+`target_key` names one target; `target_keys` an ordered chain, tried in order
+under the failover-safe classes above and never left. Both are exact
+about what they name.
 
 ### content-based
 Routes by the textual content of the prompt. Rules evaluate in order, first match

@@ -220,6 +220,12 @@ type Request struct {
 	// Misc
 	User      string             `json:"user,omitempty"`
 	LogitBias map[string]float64 `json:"logit_bias,omitempty"`
+
+	// RoutingMetadata is the caller's routing hints, read by the HTTP layer
+	// from the one allow-listed request header (X-Gateway-Metadata, a small
+	// JSON object of scalar values) and consulted only by conditional
+	// routing's `metadata` predicate. It never travels to a provider.
+	RoutingMetadata map[string]string `json:"-"`
 }
 
 // StreamOptions carries the OpenAI stream_options object. IncludeUsage requests a

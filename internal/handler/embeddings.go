@@ -34,7 +34,10 @@ func Embeddings(gw *aigateway.Gateway) http.HandlerFunc {
 		// "base64" is accepted rather than refused.
 		req.EncodingFormat = core.NormalizeEncodingFormat(req.EncodingFormat)
 
-		resp, err := gw.Embed(r.Context(), req)
+		attribution := &aigateway.RoutingAttribution{}
+		ctx := aigateway.WithRoutingAttribution(r.Context(), attribution)
+		resp, err := gw.Embed(ctx, req)
+		attribution.SetHeaders(w.Header())
 		if err != nil {
 			apierror.WriteRouteError(w, err)
 			return

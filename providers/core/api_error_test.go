@@ -301,3 +301,52 @@ func TestWithRetryAfter_RateLimitResetFallback(t *testing.T) {
 		})
 	}
 }
+
+func TestAPIError_PreservesCodeAndType(t *testing.T) {
+	err := APIError("openai", 400, []byte(`{"error":{"message":"too long","type":"invalid_request_error","code":"context_length_exceeded"}}`))
+	var statusErr *HTTPStatusError
+	if !errors.As(err, &statusErr) {
+		t.Fatal("not an *HTTPStatusError")
+	}
+	if statusErr.Code != "context_length_exceeded" || statusErr.Type != "invalid_request_error" {
+		t.Fatalf("code=%q type=%q, want the envelope's own identifiers", statusErr.Code, statusErr.Type)
+	}
+	gemini := APIError("gemini", 400, []byte(`{"error":{"code":400,"message":"x","status":"INVALID_ARGUMENT"}}`))
+	errors.As(gemini, &statusErr)
+	if statusErr.Code != "INVALID_ARGUMENT" {
+		t.Fatalf("gemini code = %q, want the status to stand in for a code", statusErr.Code)
+	}
+}
+
+// TestIsContextLengthError pins the accepted envelopes for the three families
+// and the near-miss 400s that must NOT fail over: an unknown 4xx still stops.
+func TestIsContextLengthError(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		body   string
+		want   bool
+	}{
+		{"openai code", 400, `{"error":{"message":"This model's maximum context length is 8192 tokens. However, your messages resulted in 9000 tokens.","type":"invalid_request_error","param":"messages","code":"context_length_exceeded"}}`, true},
+		{"openai-compatible message with null code", 400, `{"error":{"message":"This model's maximum context length is 32768 tokens. However, you requested 40000 tokens.","type":"invalid_request_error","code":null}}`, true},
+		{"anthropic", 400, `{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 213462 tokens > 200000 maximum"}}`, true},
+		{"gemini", 400, `{"error":{"code":400,"message":"The input token count (1500000) exceeds the maximum number of tokens allowed (1048576).","status":"INVALID_ARGUMENT"}}`, true},
+		{"413 with the openai code", 413, `{"error":{"message":"Request too large","type":"invalid_request_error","code":"context_length_exceeded"}}`, true},
+		{"openai other invalid_request_error", 400, `{"error":{"message":"Invalid value for 'temperature': must be between 0 and 2.","type":"invalid_request_error","code":null}}`, false},
+		{"openai bad key", 401, `{"error":{"message":"Incorrect API key provided","type":"invalid_request_error","code":"invalid_api_key"}}`, false},
+		{"anthropic other invalid request", 400, `{"type":"error","error":{"type":"invalid_request_error","message":"messages: at least one message is required"}}`, false},
+		{"gemini other invalid argument", 400, `{"error":{"code":400,"message":"Invalid JSON payload received. Unknown name \"foo\".","status":"INVALID_ARGUMENT"}}`, false},
+		{"context code on a 5xx is not this class", 500, `{"error":{"message":"x","code":"context_length_exceeded"}}`, false},
+		{"unrecognised body", 400, `<html>too large</html>`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsContextLengthError(APIError("p", tc.status, []byte(tc.body))); got != tc.want {
+				t.Fatalf("IsContextLengthError = %v, want %v", got, tc.want)
+			}
+		})
+	}
+	if IsContextLengthError(errors.New("plain")) {
+		t.Fatal("a non-status error is never a context-length error")
+	}
+}

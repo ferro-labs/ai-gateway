@@ -49,6 +49,7 @@ describe('readStrategy targets', () => {
       maxConcurrency: 32,
       queueSize: 500,
       circuitBreaker: false,
+      modelMap: {},
     })
     expect(state.targets[1]).toEqual({
       virtualKey: 'anthropic',
@@ -57,7 +58,16 @@ describe('readStrategy targets', () => {
       maxConcurrency: undefined,
       queueSize: undefined,
       circuitBreaker: true,
+      modelMap: {},
     })
+  })
+
+  it('reads model_map, the upstream model each visible model is sent as', () => {
+    const state = readStrategy({
+      strategy: { mode: 'fallback' },
+      targets: [{ virtual_key: 'together', model_map: { 'support-chat': 'meta-llama/Llama-3.1-8B', bad: 7 } }],
+    })
+    expect(state.targets[0]?.modelMap).toEqual({ 'support-chat': 'meta-llama/Llama-3.1-8B' })
   })
 
   it('survives a document with no targets at all', () => {
@@ -77,6 +87,23 @@ describe('readStrategy rules', () => {
 
     expect(state.ruleLabel).toBe('Conditions')
     expect(state.rules).toEqual([{ match: 'model_prefix = gpt-4', target: 'openai' }])
+  })
+
+  it('shows a rule target chain in order, and a metadata predicate by its field', () => {
+    const state = readStrategy({
+      strategy: {
+        mode: 'conditional',
+        conditions: [
+          { key: 'model_prefix', value: 'claude', target_keys: ['anthropic', 'bedrock'] },
+          { key: 'metadata', field: 'tier', value: 'gold', target_key: 'openai' },
+        ],
+      },
+      targets: [],
+    })
+    expect(state.rules).toEqual([
+      { match: 'model_prefix = claude', target: 'anthropic → bedrock' },
+      { match: 'metadata.tier = gold', target: 'openai' },
+    ])
   })
 
   it('quotes a content-based value, so trailing space in a pattern is visible', () => {

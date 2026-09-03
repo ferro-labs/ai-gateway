@@ -38,8 +38,8 @@ plugins:                    # guardrails and middleware — see the plugin READM
 
 | Section | What it does | Reference |
 |---|---|---|
-| `strategy` | Target *ordering* — 8 modes in two families (pool vs named) | [`../internal/strategies/README.md`](../internal/strategies/README.md) |
-| `targets[]` | The provider allowlist; per-target `retry`, `concurrency`, `circuit_breaker`, `weight`, declared `models`, and `model_map` | [`../config.example.yaml`](../config.example.yaml) |
+| `strategy` | Target *ordering* — 8 modes in two families (pool vs named); `sticky` (loadbalance, ab-test), `failover_on_status_codes`, and rule `target_keys` chains | [`../internal/strategies/README.md`](../internal/strategies/README.md) |
+| `targets[]` | The provider allowlist; per-target `timeout` (one attempt), `retry`, `concurrency`, `circuit_breaker`, `weight`, declared `models`, and `model_map` | [`../config.example.yaml`](../config.example.yaml) |
 | `aliases` | Model-name aliases, resolved before routing | — |
 | `plugins[]` | Guardrails, caching, rate limits, budgets, logging | [`../plugin/README.md`](../plugin/README.md) |
 | `mcp_servers[]` | MCP tool servers (stdio + Streamable HTTP) | [`../mcp/README.md`](../mcp/README.md) |

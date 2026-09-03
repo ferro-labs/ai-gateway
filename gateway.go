@@ -48,11 +48,14 @@ type Gateway struct {
 	// modelMaps indexes targets[].model_map by virtual key so resolveTarget
 	// reads one entry per candidate instead of scanning the target list on
 	// every request. Derived from config: rebuilt wherever config is assigned.
-	modelMaps        map[string]map[string]string
-	catalog          models.Catalog
+	modelMaps map[string]map[string]string
+	catalog   models.Catalog
+	// suppliedCatalog is the catalog WithCatalog handed in, kept so New knows
+	// to skip loading and refreshing. nil when the gateway loads its own.
+	suppliedCatalog  models.Catalog
 	providers        map[string]providers.Provider
 	providerNames    []string
-	strategy         strategies.Strategy
+	strategies       map[string]strategies.Strategy // built lazily, keyed by surface ("" is chat)
 	plugins          *plugin.Manager
 	requestLogWriter requestlog.Writer
 	closeOnce        sync.Once
@@ -72,10 +75,16 @@ type Gateway struct {
 	// struct is the intended idiom here: it is created once in New, parents the
 	// gateway's background workers (hook dispatch, catalog refresh, MCP init), and
 	// is cancelled by Close() to signal shutdown. It is never a per-request context.
-	shutdownCtx      context.Context
-	shutdownCancel   context.CancelFunc
-	circuitBreakers  map[string]*circuitbreaker.CircuitBreaker
-	limiters         map[string]*providerLimiter
+	shutdownCtx     context.Context
+	shutdownCancel  context.CancelFunc
+	circuitBreakers map[string]*circuitbreaker.CircuitBreaker
+	limiters        map[string]*providerLimiter
+	// cooldowns parks a target that answered 429 until the instant recorded
+	// here (see parkRateLimited). Process-local, like every other health
+	// signal on this gateway. Guarded by mu.
+	cooldowns map[string]time.Time
+	// now is the clock cooldowns are measured on; tests replace it.
+	now              func() time.Time
 	discoveredModels map[string][]providers.ModelInfo
 
 	// catalogModels caches catalog.ModelsForProvider per registered provider.
@@ -140,6 +149,16 @@ func WithContext(ctx context.Context) Option {
 	return func(g *Gateway) { g.constructionCtx = ctx }
 }
 
+// WithCatalog supplies the model catalog the gateway prices and ranks with —
+// cost-optimized ordering, request cost, and the pricing /v1/models reports —
+// in place of the embedded or remote one, which is then neither loaded nor
+// refreshed. For a host that owns its own price list, such as a platform with
+// per-tenant pricing. The catalog is used as given: pass a copy if the host
+// keeps mutating its own. A nil catalog keeps the default load.
+func WithCatalog(c models.Catalog) Option {
+	return func(g *Gateway) { g.suppliedCatalog = c }
+}
+
 // New creates a new Gateway instance with the given configuration.
 // It validates cfg with ValidateConfig before initialising any resources,
 // returning an error immediately if the config is invalid. This matches the
@@ -163,17 +182,22 @@ func New(cfg config.Config, opts ...Option) (*Gateway, error) {
 	}
 
 	constructionCtx := gw.constructionCtx
-	catalogResult, err := models.LoadWithInfoContext(constructionCtx)
 	gw.constructionCtx = nil
-	if err := constructionCtx.Err(); err != nil {
-		return nil, err
-	}
-	recordCatalogLoad(catalogResult.Source, err)
-	catalog := catalogResult.Catalog
-	if err != nil {
-		// Non-fatal: operate without model metadata (no enrichment / cost reporting).
-		gw.log.Error("model catalog unavailable; continuing without catalog metadata", "url", catalogResult.URLForLog(), "error", err)
-		catalog = models.Catalog{}
+	catalog := gw.suppliedCatalog
+	if catalog != nil {
+		recordCatalogLoad(models.LoadSourceSupplied, nil)
+	} else {
+		catalogResult, err := models.LoadWithInfoContext(constructionCtx)
+		if err := constructionCtx.Err(); err != nil {
+			return nil, err
+		}
+		recordCatalogLoad(catalogResult.Source, err)
+		catalog = catalogResult.Catalog
+		if err != nil {
+			// Non-fatal: operate without model metadata (no enrichment / cost reporting).
+			gw.log.Error("model catalog unavailable; continuing without catalog metadata", "url", catalogResult.URLForLog(), "error", err)
+			catalog = models.Catalog{}
+		}
 	}
 
 	gw.config = cfg
@@ -183,6 +207,8 @@ func New(cfg config.Config, opts ...Option) (*Gateway, error) {
 	gw.plugins = plugin.NewManager(gw.log)
 	gw.circuitBreakers = make(map[string]*circuitbreaker.CircuitBreaker)
 	gw.limiters = make(map[string]*providerLimiter)
+	gw.cooldowns = make(map[string]time.Time)
+	gw.now = time.Now
 	gw.discoveredModels = make(map[string][]providers.ModelInfo)
 	gw.latencyTracker = latency.New(0) // default window size (100 samples)
 	gw.modelIndex = modelLookupIndex{
@@ -195,7 +221,9 @@ func New(cfg config.Config, opts ...Option) (*Gateway, error) {
 	gw.obs = observability.NoOp()
 	gw.shutdownCtx, gw.shutdownCancel = context.WithCancel(context.Background()) //nolint:gosec // canceled by Gateway.Close()
 	gw.hooks.start(gw.shutdownCtx)
-	gw.startCatalogRefresh()
+	if gw.suppliedCatalog == nil {
+		gw.startCatalogRefresh()
+	}
 
 	// Wire MCP from config. In New the gateway is not yet published, so no lock
 	// is held here; the field writes are safe.
@@ -362,7 +390,7 @@ func (g *Gateway) RegisterProviderAs(name string, p providers.Provider) {
 	}
 	g.providers[name] = p
 	g.rebuildModelIndexesLocked()
-	g.strategy = nil // force strategy rebuild
+	g.strategies = nil // force strategy rebuild
 }
 
 // RegisterPlugin registers a plugin at the given lifecycle stage.
