@@ -73,12 +73,16 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 	// the one every later read in this function (the meter meta, the span
 	// finisher, the failure path) inherits from ctx.
 	ctx = logger.EnsureTraceID(ctx)
+	ctx, identity := requestIdentity(ctx, req.User)
 	ctx, span := obs.StartRequestSpan(ctx, observability.RequestAttrs{
 		Operation:       "chat",
 		RequestModel:    req.Model,
 		IsStream:        true,
 		TraceID:         logger.TraceIDFromContext(ctx),
 		RoutingStrategy: strategyMode,
+		User:            identity.User,
+		SessionID:       identity.SessionID,
+		Metadata:        identity.Metadata,
 	})
 	streamEnded := false
 	defer func() {

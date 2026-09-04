@@ -126,11 +126,15 @@ func (g *Gateway) RoutePassthrough(ctx context.Context, target, model, body stri
 	// See Route: this is an exported entry point, so it seeds its own trace ID
 	// rather than assuming HTTP middleware ran above it.
 	ctx = logger.EnsureTraceID(ctx)
+	ctx, identity := requestIdentity(ctx, "")
 	ctx, span := obs.StartRequestSpan(ctx, observability.RequestAttrs{
 		Operation:       surfacePassthrough,
 		RequestModel:    model,
 		TraceID:         logger.TraceIDFromContext(ctx),
 		RoutingStrategy: strategyMode,
+		User:            identity.User,
+		SessionID:       identity.SessionID,
+		Metadata:        identity.Metadata,
 	})
 	defer span.End()
 
@@ -178,11 +182,15 @@ func (g *Gateway) RouteResponsesWithPricingProvider(ctx context.Context, target,
 	defer cancelDeadline()
 
 	ctx = logger.EnsureTraceID(ctx)
+	ctx, identity := requestIdentity(ctx, "")
 	ctx, span := obs.StartRequestSpan(ctx, observability.RequestAttrs{
 		Operation:       surfaceResponses,
 		RequestModel:    model,
 		TraceID:         logger.TraceIDFromContext(ctx),
 		RoutingStrategy: strategyMode,
+		User:            identity.User,
+		SessionID:       identity.SessionID,
+		Metadata:        identity.Metadata,
 	})
 	defer span.End()
 

@@ -171,3 +171,73 @@ func TestGateway_Route_FailedEventCarriesRequestIdentity(t *testing.T) {
 	}
 	assertEventIdentity(t, "failed event", failed[0].User, failed[0].SessionID, failed[0].Metadata)
 }
+
+func TestGateway_Route_RootSpanCarriesContextIdentity(t *testing.T) {
+	gw, err := newTestGateway(t, config.Config{Targets: []config.Target{{VirtualKey: "mock"}}})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+	fp := &fakeProvider{}
+	gw.SetObservability(fp)
+	gw.RegisterProvider(&mockProvider{name: "mock", models: []string{testModel},
+		resp: &providers.Response{ID: "ok", Provider: "mock", Model: testModel}})
+
+	if _, err := gw.Route(identityContext(t), providers.Request{Model: testModel, Messages: []providers.Message{{Role: "user", Content: "hi"}}}); err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	assertEventIdentity(t, "root span attrs", fp.attrs.User, fp.attrs.SessionID, fp.attrs.Metadata)
+}
+
+func TestGateway_Route_BodyUserOutranksContextUser(t *testing.T) {
+	gw, err := newTestGateway(t, config.Config{Targets: []config.Target{{VirtualKey: "mock"}}})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+	fp := &fakeProvider{}
+	gw.SetObservability(fp)
+	gw.RegisterProvider(&mockProvider{name: "mock", models: []string{testModel},
+		resp: &providers.Response{ID: "ok", Provider: "mock", Model: testModel}})
+
+	req := providers.Request{Model: testModel, User: "body-user", Messages: []providers.Message{{Role: "user", Content: "hi"}}}
+	if _, err := gw.Route(identityContext(t), req); err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	if fp.attrs.User != "body-user" {
+		t.Errorf("root span user = %q, want the body's %q", fp.attrs.User, "body-user")
+	}
+	if fp.attrs.SessionID != testIdentity.SessionID {
+		t.Errorf("root span session = %q, want the context's %q kept", fp.attrs.SessionID, testIdentity.SessionID)
+	}
+}
+
+func TestGateway_Route_BodyUserAloneIsRecorded(t *testing.T) {
+	gw, err := newTestGateway(t, config.Config{Targets: []config.Target{{VirtualKey: "mock"}}})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+	fp := &fakeProvider{}
+	gw.SetObservability(fp)
+	gw.RegisterProvider(&mockProvider{name: "mock", models: []string{testModel},
+		resp: &providers.Response{ID: "ok", Provider: "mock", Model: testModel}})
+
+	req := providers.Request{Model: testModel, User: "body-user", Messages: []providers.Message{{Role: "user", Content: "hi"}}}
+	if _, err := gw.Route(context.Background(), req); err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	if fp.attrs.User != "body-user" || fp.attrs.SessionID != "" || fp.attrs.Metadata != nil {
+		t.Errorf("root span identity = %q/%q/%v, want body-user with nothing else", fp.attrs.User, fp.attrs.SessionID, fp.attrs.Metadata)
+	}
+}
+
+func TestGateway_Embed_RootSpanCarriesContextIdentity(t *testing.T) {
+	gw, err := newTestGateway(t, config.Config{Targets: []config.Target{{VirtualKey: "mock"}}})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+	fp := &fakeProvider{}
+	gw.SetObservability(fp)
+	gw.RegisterProvider(&mockEmbeddingProvider{mockProvider: mockProvider{name: "mock", models: []string{testModel}}})
+
+	_, _ = gw.Embed(identityContext(t), providers.EmbeddingRequest{Model: testModel, Input: []string{"hi"}})
+	assertEventIdentity(t, "embed root span attrs", fp.attrs.User, fp.attrs.SessionID, fp.attrs.Metadata)
+}
