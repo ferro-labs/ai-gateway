@@ -14,10 +14,11 @@ const (
 	testSpanID      = "b7ad6b7169203331"
 	wantTraceparent = "00-" + testTraceID + "-" + testSpanID + "-01"
 
-	// proxiedPath is a path the generic /v1/* pass-through actually serves.
-	// Files and batches have their own fixed-target handler, so naming one here
-	// would describe coverage these tests do not have.
-	proxiedPath = "/v1/models"
+	// proxiedPath is a path only the generic /v1/* pass-through serves. Files,
+	// batches and the responses id sub-routes have their own fixed-target
+	// handler, and /v1/models is its own static route (router.go), so naming
+	// any of those here would describe coverage these tests do not have.
+	proxiedPath = "/v1/assistants"
 )
 
 // tracedRequest returns a request for path whose context carries a sampled span

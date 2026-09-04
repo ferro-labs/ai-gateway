@@ -471,10 +471,14 @@ type passthroughTracePolicy interface {
 
 // propagatesTrace takes any of this package's source interfaces (the generic
 // pass-through's providers.ProviderSource, or the narrower BatchSource /
-// ResponsesSource) — all it needs is the optional passthroughTracePolicy
-// type assertion, so the parameter stays untyped rather than widening every
-// caller's source interface to carry methods it does not otherwise need.
-func propagatesTrace(src any) bool {
+// ResponsesSource) — all of them resolve a provider by name, and that is the
+// only method this needs to compile against. It is narrowed to that single
+// method, rather than left as `any`, so a call site passing the wrong value
+// fails to build instead of silently type-asserting to false and propagating
+// trace context an operator disabled.
+func propagatesTrace(src interface {
+	Get(name string) (providers.Provider, bool)
+}) bool {
 	policy, ok := src.(passthroughTracePolicy)
 	return !ok || policy.PropagatesPassthroughTrace()
 }
