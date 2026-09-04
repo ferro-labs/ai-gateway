@@ -26,22 +26,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   child span, `gateway.routing.attempt`, per routing-layer attempt — retries
   and failovers included — carrying `ferro.routing.target_key`,
   `ferro.routing.sequence` and `ferro.routing.outcome`. The provider's HTTP
-  span nests beneath it, so a trace shows which targets were tried and in
+  span nests beneath it on the unary surfaces; on a streamed request the
+  attempt span ends when the stream starts, so the HTTP span is its sibling
+  rather than its child. A trace still shows which targets were tried and in
   what order without an exporter opting into attempt events. Backends plug in
   through the optional `observability.AttemptSpanProvider` interface; the
   built-in OTLP provider implements it.
-- The `/v1/*` pass-through forwards the W3C `traceparent` (and `tracestate`)
-  upstream, so a provider that records traces joins the gateway's trace.
-  `observability.tracing.propagate_passthrough: false` (default `true`)
-  restores the previous behaviour. The inbound `baggage`, `X-User-ID` and
+- The `/v1/*` pass-through and the fixed-target forwards (`/v1/files`,
+  `/v1/batches`, the `/v1/responses` id sub-routes) forward the W3C
+  `traceparent` (and `tracestate`) upstream, so a provider that records
+  traces joins the gateway's trace. `observability.tracing.propagate_passthrough`
+  (default `true`) governs both proxy paths; setting it to `false` restores
+  the previous behaviour on both. The inbound `baggage`, `X-User-ID` and
   `X-Session-ID` headers address the gateway, not the provider, and are
-  always stripped before forwarding, regardless of this setting.
+  always stripped before forwarding on every pass-through and fixed-target
+  surface, regardless of this setting.
 
 ### Changed
 
-- `observability.RoutingAttempt` gains a `Metadata` map and is therefore no
-  longer comparable with `==`; compare with `reflect.DeepEqual`. Code that
-  reads its fields is unaffected.
+- `observability.RoutingAttempt` and `observability.RequestAttrs` each gain a
+  `Metadata` map and are therefore no longer comparable with `==`; compare
+  with `reflect.DeepEqual`. Code that reads their fields is unaffected.
 
 ## [1.5.3] — 2026-09-03
 

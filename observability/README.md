@@ -163,6 +163,11 @@ on every `gateway.request.completed` / `gateway.request.failed` /
 rows (`user_id`, `session_id` in `GET /admin/logs`). Nothing is inferred: a
 request that states no identity records none.
 
+`X-User-ID`, `X-Session-ID` and the `baggage` entries are caller-asserted and
+unauthenticated — the gateway does not verify that the caller is who it
+claims, so treat them as a label for grouping and attribution, not as an
+access-control signal.
+
 | Field | Read from (first non-empty wins) | Recorded as |
 |---|---|---|
 | end-user id | OpenAI body `user` · `X-User-ID` header · `baggage` entry `user.id` | `enduser.id`, `user_id` |

@@ -226,10 +226,14 @@ type TracingConfig struct {
 	// several, and a dashboard counting spans per request would over-count.
 	AttemptSpans bool `json:"attempt_spans,omitempty" yaml:"attempt_spans,omitempty"`
 	// PropagatePassthrough injects the W3C traceparent (and tracestate) into
-	// requests the /v1/* pass-through forwards upstream, so a provider that
-	// records traces joins the gateway's. Baggage is never forwarded. A
+	// requests the /v1/* pass-through and the fixed-target forwards (Files,
+	// Batches, the Responses id sub-routes) forward upstream, so a provider
+	// that records traces joins the gateway's. The caller's baggage,
+	// X-User-ID and X-Session-ID headers address the gateway, not the
+	// provider, and are always stripped before forwarding regardless of this
+	// setting — it is never a pass-through of the caller's own headers. A
 	// pointer so the default is true when the key is omitted; set false to
-	// forward exactly the caller's headers.
+	// stop injecting trace context.
 	PropagatePassthrough *bool `json:"propagate_passthrough,omitempty" yaml:"propagate_passthrough,omitempty"`
 }
 

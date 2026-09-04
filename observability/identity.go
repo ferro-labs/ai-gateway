@@ -10,8 +10,9 @@ import "context"
 // caller supplied nothing.
 type RequestIdentity struct {
 	// User is the end-user id, recorded as the enduser.id span attribute. The
-	// HTTP layer reads it from the OpenAI `user` field, the X-User-ID header
-	// or the baggage entry user.id, in that order of precedence.
+	// HTTP layer reads it from the X-User-ID header or the baggage entry
+	// user.id; the gateway core then overlays the OpenAI body `user` field
+	// on top, so a body value always outranks either header.
 	User string
 	// SessionID groups the requests of one conversation, recorded as
 	// session.id. Read from X-Session-ID or the baggage entry session.id.
