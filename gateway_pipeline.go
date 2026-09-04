@@ -10,6 +10,7 @@ import (
 
 	"github.com/ferro-labs/ai-gateway/config"
 	"github.com/ferro-labs/ai-gateway/internal/strategies"
+	"github.com/ferro-labs/ai-gateway/observability"
 	"github.com/ferro-labs/ai-gateway/pkg/circuitbreaker"
 	"github.com/ferro-labs/ai-gateway/plugin"
 	"github.com/ferro-labs/ai-gateway/providers"
@@ -180,6 +181,10 @@ func routeTargets[Req, Resp any](
 	)
 	g.mu.RLock()
 	obs, attemptsActive := g.obs, g.obsAttemptsActive
+	var spanner observability.AttemptSpanProvider
+	if g.config.Observability.Tracing.AttemptSpans {
+		spanner = g.attemptSpanner
+	}
 	g.mu.RUnlock()
 	for _, key := range keys {
 		p, cb, lim, upstreamModel, ok := g.resolveTarget(ctx, key, plan.model, gate)
@@ -204,7 +209,7 @@ func routeTargets[Req, Resp any](
 		lastTarget = target
 
 		started := time.Now()
-		resp, err := attemptTarget(ctx, g, obs, attemptsActive, target, plan.model, &attemptSequence, p, cb, lim, req, upstreamModel, call)
+		resp, err := attemptTarget(ctx, g, obs, attemptsActive, spanner, target, plan.model, &attemptSequence, p, cb, lim, req, upstreamModel, call)
 		if err == nil {
 			// Latency is recorded against the TARGET KEY and upstream model, and
 			// covers the provider call only. All of it matters: least-latency

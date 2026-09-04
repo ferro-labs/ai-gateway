@@ -450,5 +450,20 @@ var (
 	_ observability.Provider                        = (*otelProvider)(nil)
 	_ observability.EventRecordingProvider          = (*otelProvider)(nil)
 	_ observability.RoutingAttemptRecordingProvider = (*otelProvider)(nil)
+	_ observability.AttemptSpanProvider             = (*otelProvider)(nil)
 	_ observability.Span                            = (*otelSpan)(nil)
 )
+
+// StartAttemptSpan opens the per-attempt CLIENT span under whatever span ctx
+// carries — the request span on every routed surface — pre-stamped with the
+// target key and the attempt's sequence number.
+func (p *otelProvider) StartAttemptSpan(ctx context.Context, targetKey string, sequence int) (context.Context, observability.Span) {
+	ctx, attempt := p.tracer.Start(ctx, observability.SpanNameRoutingAttempt,
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(
+			attribute.String(observability.AttrFerroRoutingTargetKey, targetKey),
+			attribute.Int(observability.AttrFerroRoutingSequence, sequence),
+		),
+	)
+	return ctx, &otelSpan{span: attempt, redactor: p.redactor, privacy: p.privacyLevel}
+}

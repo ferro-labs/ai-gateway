@@ -44,7 +44,16 @@ const (
 	// AttrFerroRoutingAttempt is the routing-layer attempt count when the walk
 	// ended — provider calls plus local breaker/concurrency refusals, retries
 	// and failovers included — the same number X-Gateway-Attempts carries.
-	AttrFerroRoutingAttempt           = "ferro.routing.attempt"
+	AttrFerroRoutingAttempt = "ferro.routing.attempt"
+	// AttrFerroRoutingSequence is the 1-based position of one attempt within
+	// its request and AttrFerroRoutingOutcome is "success" or "error"; both
+	// sit on the optional SpanNameRoutingAttempt span, next to the target key.
+	AttrFerroRoutingSequence = "ferro.routing.sequence"
+	AttrFerroRoutingOutcome  = "ferro.routing.outcome"
+	// SpanNameRoutingAttempt names the per-attempt CLIENT span opened when
+	// observability.tracing.attempt_spans is set. Same value as
+	// SubjectRoutingAttempt (one literal, not two).
+	SpanNameRoutingAttempt            = SubjectRoutingAttempt
 	AttrFerroRoutingABVariantLabel    = "ferro.routing.ab_variant_label"
 	AttrFerroCostUSD                  = "ferro.cost.usd"
 	AttrFerroCostInputUSD             = "ferro.cost.input_usd"

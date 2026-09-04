@@ -124,6 +124,13 @@ type Gateway struct {
 	// physical provider call only while it is set.
 	obsAttemptsActive bool
 
+	// attemptSpanner is the installed Provider when it also implements
+	// observability.AttemptSpanProvider, nil otherwise. Guarded like obs. The
+	// walk consults it only while observability.tracing.attempt_spans is set,
+	// reading the flag under the same lock so a config reload takes effect on
+	// the next request.
+	attemptSpanner observability.AttemptSpanProvider
+
 	// MCP fields — nil when no MCPServers are configured.
 	mcpRegistry *mcp.Registry
 	mcpExecutor *mcp.Executor
@@ -263,6 +270,10 @@ func (g *Gateway) SetObservability(p observability.Provider) {
 	if ar, ok := p.(observability.RoutingAttemptRecordingProvider); ok {
 		g.obsAttemptsActive = g.obsEventsActive && ar.RoutingAttemptsEnabled()
 	}
+	// Attempt spans are independent of the event path: a provider can open them
+	// with no exporter attached at all. NoOp implements neither, so the
+	// tracing-off hot path builds nothing.
+	g.attemptSpanner, _ = p.(observability.AttemptSpanProvider)
 }
 
 // SetRequestLogWriter installs the shared request-log store that logging

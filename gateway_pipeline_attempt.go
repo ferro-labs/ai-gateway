@@ -20,11 +20,14 @@ var errAttemptTimeout = fmt.Errorf("target attempt timeout: %w", context.Deadlin
 // attemptTarget runs one target's retry policy, calling it under its breaker
 // and limiter on every try. attemptsActive is whether obs has opted into one
 // SubjectRoutingAttempt event per call; when it has not, no event is built.
+// spanner, when non-nil, opens one SpanNameRoutingAttempt span per call and
+// the provider call runs under it, so the outbound HTTP span nests beneath.
 func attemptTarget[Req, Resp any](
 	ctx context.Context,
 	g *Gateway,
 	obs observability.Provider,
 	attemptsActive bool,
+	spanner observability.AttemptSpanProvider,
 	target routedTarget,
 	routedModel string,
 	attemptSequence *int,
@@ -73,10 +76,18 @@ func attemptTarget[Req, Resp any](
 		if policy.attemptTimeout > 0 {
 			attemptCtx, cancelAttempt = context.WithTimeoutCause(ctx, policy.attemptTimeout, errAttemptTimeout)
 		}
-		resp, err := callUnderResilience(attemptCtx, target.key, p, cb, lim, req, upstreamModel, call)
+		callCtx := attemptCtx
+		var attemptSpan observability.Span
+		if spanner != nil {
+			callCtx, attemptSpan = spanner.StartAttemptSpan(attemptCtx, target.key, *attemptSequence+1)
+		}
+		resp, err := callUnderResilience(callCtx, target.key, p, cb, lim, req, upstreamModel, call)
 		cancelAttempt()
 		if err != nil && ctx.Err() == nil && errors.Is(context.Cause(attemptCtx), errAttemptTimeout) {
 			err = fmt.Errorf("target %s: attempt timed out after %s: %w: %w", target.key, policy.attemptTimeout, errAttemptTimeout, err)
+		}
+		if attemptSpan != nil {
+			endAttemptSpan(attemptSpan, err)
 		}
 		(*attemptSequence)++
 		g.recordRoutingAttempt(ctx, obs, attemptsActive, routingAttempt{
@@ -94,6 +105,21 @@ func attemptTarget[Req, Resp any](
 		}
 	}
 	return zero, lastErr
+}
+
+// endAttemptSpan closes one attempt's span with its outcome. The error goes
+// through Span.SetError, so the provider's privacy level and redaction apply
+// exactly as they do on the request span. For a stream the attempt ends when
+// the stream starts, matching RoutingAttempt: a failure after the first byte
+// belongs to the request span.
+func endAttemptSpan(span observability.Span, err error) {
+	outcome := observability.RoutingAttemptSuccess
+	if err != nil {
+		outcome = observability.RoutingAttemptError
+		span.SetError(err)
+	}
+	span.SetAttribute(observability.AttrFerroRoutingOutcome, string(outcome))
+	span.End()
 }
 
 // callUnderResilience performs one attempt with the target's circuit breaker

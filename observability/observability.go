@@ -104,6 +104,22 @@ type RoutingAttemptRecordingProvider interface {
 	RoutingAttemptsEnabled() bool
 }
 
+// AttemptSpanProvider is an optional interface a Provider implements to open
+// one child span per routing-layer attempt — SpanNameRoutingAttempt, CLIENT
+// kind — under the request span carried by ctx. The gateway calls it only
+// while observability.tracing.attempt_spans is set. NoOp does not implement
+// it, so with the option off, or tracing off, no attempt span is ever built.
+type AttemptSpanProvider interface {
+	Provider
+	// StartAttemptSpan opens the span for the attempt about to be made against
+	// targetKey, the sequence-th routing-layer attempt of this request
+	// (1-based, the same numbering RoutingAttempt.Sequence uses). The returned
+	// context carries the span and MUST be the one the provider call runs
+	// under, so the outbound HTTP span nests beneath it. The caller stamps
+	// AttrFerroRoutingOutcome, records any error, and ends the span.
+	StartAttemptSpan(ctx context.Context, targetKey string, sequence int) (context.Context, Span)
+}
+
 // Exporter is implemented by every observability plugin in the
 // ai-gateway-plugins repository (langsmith, langfuse, phoenix,
 // datadog, newrelic, sentry, helicone, honeycomb, grafana, …).
