@@ -86,3 +86,17 @@ const SchemaVersion = "1.0.0-draft"
 
 // SubjectRoutingAttempt identifies one physical routing attempt.
 const SubjectRoutingAttempt = "gateway.routing.attempt"
+
+// Group C — request identity. Standard OpenTelemetry names are used where one
+// exists (enduser.id, session.id); metadata uses the ferro.* namespace.
+const (
+	// AttrEndUserID is the end-user id the caller supplied: the OpenAI `user`
+	// field, the X-User-ID header, or the baggage entry user.id.
+	AttrEndUserID = "enduser.id"
+	// AttrSessionID groups the requests of one conversation: the X-Session-ID
+	// header or the baggage entry session.id.
+	AttrSessionID = "session.id"
+	// AttrFerroRequestMetadataPrefix prefixes one attribute per
+	// RequestIdentity.Metadata entry: ferro.request.metadata.<key>.
+	AttrFerroRequestMetadataPrefix = "ferro.request.metadata."
+)
