@@ -5,6 +5,44 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.4] — 2026-09-04
+
+### Added
+
+- Request identity on every observability surface. A request can name the
+  end user and session it belongs to — the OpenAI `user` field, the
+  `X-User-ID` and `X-Session-ID` request headers, or the W3C `baggage`
+  entries `user.id` / `session.id` — and embedders can set request metadata
+  through `observability.ContextWithRequestIdentity`. The identity is
+  recorded as `enduser.id`, `session.id` and `ferro.request.metadata.<key>`
+  on the request span; as `User`, `SessionID` and `Metadata` on
+  `observability.RequestAttrs`, `Event` and `RoutingAttempt`; and as
+  `user_id` / `session_id` on request-log rows (`GET /admin/logs`, request-log
+  schema migration 6). Previously `user` reached the provider but no span,
+  event or log row, so nothing the gateway emitted could be grouped by user
+  or conversation. A request that states no identity records none; nothing is
+  inferred. Unknown JSON body fields are still accepted.
+- `observability.tracing.attempt_spans` (default `false`) opens one `CLIENT`
+  child span, `gateway.routing.attempt`, per routing-layer attempt — retries
+  and failovers included — carrying `ferro.routing.target_key`,
+  `ferro.routing.sequence` and `ferro.routing.outcome`. The provider's HTTP
+  span nests beneath it, so a trace shows which targets were tried and in
+  what order without an exporter opting into attempt events. Backends plug in
+  through the optional `observability.AttemptSpanProvider` interface; the
+  built-in OTLP provider implements it.
+- The `/v1/*` pass-through forwards the W3C `traceparent` (and `tracestate`)
+  upstream, so a provider that records traces joins the gateway's trace.
+  `observability.tracing.propagate_passthrough: false` (default `true`)
+  restores the previous behaviour. The inbound `baggage`, `X-User-ID` and
+  `X-Session-ID` headers address the gateway, not the provider, and are
+  always stripped before forwarding, regardless of this setting.
+
+### Changed
+
+- `observability.RoutingAttempt` gains a `Metadata` map and is therefore no
+  longer comparable with `==`; compare with `reflect.DeepEqual`. Code that
+  reads its fields is unaffected.
+
 ## [1.5.3] — 2026-09-03
 
 Security fixes. No API or configuration changes for deployments that declare
