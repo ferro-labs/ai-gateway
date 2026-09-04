@@ -91,8 +91,23 @@ func (p *otelProvider) StartRequestSpan(ctx context.Context, attrs observability
 	if attrs.ResponseModel != "" {
 		span.SetAttributes(attribute.String(observability.AttrGenAIResponseModel, attrs.ResponseModel))
 	}
+	stampIdentity(span, attrs.User, attrs.SessionID, attrs.Metadata)
 
 	return ctx, &otelSpan{span: span, redactor: p.redactor, privacy: p.privacyLevel}
+}
+
+// stampIdentity records the request identity attributes, skipping the ones
+// the caller left empty so an anonymous request carries none of them.
+func stampIdentity(span trace.Span, user, sessionID string, metadata map[string]string) {
+	if user != "" {
+		span.SetAttributes(attribute.String(observability.AttrEndUserID, user))
+	}
+	if sessionID != "" {
+		span.SetAttributes(attribute.String(observability.AttrSessionID, sessionID))
+	}
+	for key, value := range metadata {
+		span.SetAttributes(attribute.String(observability.AttrFerroRequestMetadataPrefix+key, value))
+	}
 }
 
 // RecordEvent enqueues an event for asynchronous delivery to every registered

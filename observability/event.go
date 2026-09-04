@@ -26,6 +26,12 @@ type RequestAttrs struct {
 	// trace_id when OTel is active; equal to logger.TraceIDFromContext
 	// in all cases).
 	TraceID string
+	// User, SessionID and Metadata are the request identity the gateway
+	// resolved (see RequestIdentity): empty when the caller supplied none.
+	// Recorded as enduser.id, session.id and ferro.request.metadata.<key>.
+	User      string
+	SessionID string
+	Metadata  map[string]string
 }
 
 // CostBreakdown maps to ferro.cost.* span attributes and to the cost
