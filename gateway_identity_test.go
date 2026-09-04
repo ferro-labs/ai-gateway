@@ -74,6 +74,84 @@ func TestGateway_Route_EventsCarryRequestIdentity(t *testing.T) {
 	}
 }
 
+func TestGateway_Route_EventsDoNotShareMetadataMap(t *testing.T) {
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeFallback},
+		Targets: []config.Target{
+			{VirtualKey: "primary", Retry: &config.RetryConfig{Attempts: 2, InitialBackoffMs: 1}},
+			{VirtualKey: "secondary"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+	ep := &eventCapturingProvider{recordingActive: true}
+	gw.SetObservability(ep)
+	gw.RegisterProvider(&mockProvider{name: "primary", models: []string{testModel},
+		err: core.StatusError("primary", http.StatusServiceUnavailable, "down")})
+	gw.RegisterProvider(&mockProvider{name: "secondary", models: []string{testModel},
+		resp: &providers.Response{ID: "ok", Provider: "secondary", Model: testModel}})
+
+	if _, err := gw.Route(identityContext(t), providers.Request{Model: testModel, Messages: []providers.Message{{Role: "user", Content: "hi"}}}); err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+
+	events := ep.capturedEvents()
+	attempts := eventsWithSubject(events, observability.SubjectRoutingAttempt)
+	if len(attempts) < 2 {
+		t.Fatalf("attempt events = %d, want at least 2", len(attempts))
+	}
+
+	// Mutate the first attempt's envelope Metadata and confirm no sibling
+	// event — including its own RoutingAttempt payload and other attempts —
+	// observes the change.
+	attempts[0].Metadata["team"] = "mutated"
+	if attempts[0].RoutingAttempt.Metadata["team"] == "mutated" {
+		// Same-event envelope/payload sharing one copy is allowed by the
+		// fix, so this is expected — assert it explicitly for clarity, not
+		// as a bug.
+		t.Log("envelope and payload of the same event intentionally share one copy")
+	}
+	for i := 1; i < len(attempts); i++ {
+		if attempts[i].Metadata["team"] == "mutated" {
+			t.Errorf("attempt %d Metadata observed mutation of a sibling event's map", i)
+		}
+		if attempts[i].RoutingAttempt.Metadata["team"] == "mutated" {
+			t.Errorf("attempt %d RoutingAttempt.Metadata observed mutation of a sibling event's map", i)
+		}
+	}
+	completed := eventsWithSubject(events, "gateway.request.completed")
+	if len(completed) != 1 {
+		t.Fatalf("completed events = %d, want 1", len(completed))
+	}
+	if completed[0].Metadata["team"] == "mutated" {
+		t.Error("completed event Metadata observed mutation of a routing-attempt event's map")
+	}
+}
+
+func TestGateway_Route_AnonymousEventHasNilMetadata(t *testing.T) {
+	gw, err := newTestGateway(t, config.Config{Targets: []config.Target{{VirtualKey: "mock"}}})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+	ep := &eventCapturingProvider{recordingActive: true}
+	gw.SetObservability(ep)
+	gw.RegisterProvider(&mockProvider{name: "mock", models: []string{testModel},
+		resp: &providers.Response{ID: "ok", Provider: "mock", Model: testModel}})
+
+	if _, err := gw.Route(context.Background(), providers.Request{Model: testModel, Messages: []providers.Message{{Role: "user", Content: "hi"}}}); err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+
+	completed := eventsWithSubject(ep.capturedEvents(), "gateway.request.completed")
+	if len(completed) != 1 {
+		t.Fatalf("completed events = %d, want 1", len(completed))
+	}
+	if completed[0].Metadata != nil {
+		t.Errorf("completed event Metadata = %#v, want nil for an anonymous request", completed[0].Metadata)
+	}
+}
+
 func TestGateway_Route_FailedEventCarriesRequestIdentity(t *testing.T) {
 	gw, err := newTestGateway(t, config.Config{Targets: []config.Target{{VirtualKey: "mock"}}})
 	if err != nil {

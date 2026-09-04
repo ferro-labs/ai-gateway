@@ -77,7 +77,8 @@ type RoutingAttempt struct {
 	Error          string
 	// User, SessionID and Metadata are the request identity this attempt was
 	// made under (see RequestIdentity); the same values sit on the enclosing
-	// Event, so a consumer reading only the payload still has them.
+	// Event, so a consumer reading only the payload still has them. Metadata
+	// is owned by this event; an Exporter must treat it as read-only.
 	User      string
 	SessionID string
 	Metadata  map[string]string
@@ -97,7 +98,9 @@ type Event struct {
 	// TraceID is the gateway request trace ID.
 	TraceID string
 	// User, SessionID and Metadata are the request identity the request was
-	// recorded under (see RequestIdentity). Empty when the caller supplied none.
+	// recorded under (see RequestIdentity). Empty when the caller supplied
+	// none. Metadata is owned by this event; an Exporter must treat it as
+	// read-only.
 	User      string
 	SessionID string
 	Metadata  map[string]string
