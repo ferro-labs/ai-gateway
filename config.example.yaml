@@ -539,6 +539,13 @@ observability:
     sample_ratio: 1.0
     privacy_level: metadata  # none | metadata | full
     shutdown_grace: 10s      # per OTel shutdown stage; total can take up to 2x this value
+    # One CLIENT child span per routing-layer attempt (retries and failovers
+    # included), named gateway.routing.attempt with the target key, the
+    # attempt's sequence number and its outcome. Off by default.
+    attempt_spans: false
+    # Inject the W3C traceparent into /v1/* pass-through forwards so an
+    # upstream that records traces joins this one. Baggage is never forwarded.
+    propagate_passthrough: true
     # headers:                       # OTLP export headers (e.g. vendor API keys)
     #   dd-api-key: "${DATADOG_API_KEY}"   # values support ${ENV_VAR} references
 

@@ -218,6 +218,25 @@ type TracingConfig struct {
 	// standard OTEL_EXPORTER_OTLP_HEADERS environment variable also applies per
 	// OTel convention.
 	Headers map[string]string `json:"headers,omitempty" yaml:"headers,omitempty"`
+	// AttemptSpans opens one CLIENT child span, gateway.routing.attempt, per
+	// routing-layer attempt — retries and failovers included — carrying
+	// ferro.routing.target_key, ferro.routing.sequence and
+	// ferro.routing.outcome, so a trace shows which targets a request tried
+	// and in what order. Off by default: a request that retried produces
+	// several, and a dashboard counting spans per request would over-count.
+	AttemptSpans bool `json:"attempt_spans,omitempty" yaml:"attempt_spans,omitempty"`
+	// PropagatePassthrough injects the W3C traceparent (and tracestate) into
+	// requests the /v1/* pass-through forwards upstream, so a provider that
+	// records traces joins the gateway's. Baggage is never forwarded. A
+	// pointer so the default is true when the key is omitted; set false to
+	// forward exactly the caller's headers.
+	PropagatePassthrough *bool `json:"propagate_passthrough,omitempty" yaml:"propagate_passthrough,omitempty"`
+}
+
+// PropagatesPassthrough reports whether the pass-through proxy injects trace
+// context upstream: true unless propagate_passthrough is explicitly false.
+func (t TracingConfig) PropagatesPassthrough() bool {
+	return t.PropagatePassthrough == nil || *t.PropagatePassthrough
 }
 
 // StrategyConfig defines the routing strategy.
