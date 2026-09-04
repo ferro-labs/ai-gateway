@@ -82,7 +82,13 @@ type Entry struct {
 	//
 	// Empty for a request that carried no credential, which is every request on
 	// a gateway running without key auth.
-	APIKeyID         string    `json:"api_key_id" yaml:"api_key_id"`
+	APIKeyID string `json:"api_key_id" yaml:"api_key_id"`
+	// UserID and SessionID are the request identity the gateway recorded the
+	// request under (observability.RequestIdentity): the caller's end-user id
+	// and conversation id. Empty when the caller supplied none; NULL on rows
+	// written before the columns existed, which List reads back as "".
+	UserID           string    `json:"user_id" yaml:"user_id"`
+	SessionID        string    `json:"session_id" yaml:"session_id"`
 	Provider         string    `json:"provider" yaml:"provider"`
 	PromptTokens     int       `json:"prompt_tokens" yaml:"prompt_tokens"`
 	CompletionTokens int       `json:"completion_tokens" yaml:"completion_tokens"`
@@ -343,8 +349,8 @@ func (w *SQLWriter) Write(ctx context.Context, entry Entry) error {
 	// including one added later — cannot durably store a credential.
 	entry.ErrorMessage = redact.String(entry.ErrorMessage)
 
-	query := sqldb.Bind(w.dialect, `INSERT INTO request_logs(trace_id, stage, model, provider, api_key_id, prompt_tokens, completion_tokens, total_tokens, error_message, created_at, duration_ms, ttft_ms, cost_usd)
-	VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	query := sqldb.Bind(w.dialect, `INSERT INTO request_logs(trace_id, stage, model, provider, api_key_id, user_id, session_id, prompt_tokens, completion_tokens, total_tokens, error_message, created_at, duration_ms, ttft_ms, cost_usd)
+	VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 
 	// #nosec G701 -- query is a fixed literal routed through sqldb.Bind; every value is a bound parameter.
 	_, err := w.db.ExecContext(ctx, query,
@@ -353,6 +359,8 @@ func (w *SQLWriter) Write(ctx context.Context, entry Entry) error {
 		entry.Model,
 		entry.Provider,
 		entry.APIKeyID,
+		entry.UserID,
+		entry.SessionID,
 		entry.PromptTokens,
 		entry.CompletionTokens,
 		entry.TotalTokens,
@@ -467,7 +475,7 @@ func (w *SQLWriter) List(ctx context.Context, query Query) (ListResult, error) {
 	// because created_at alone leaves their order to the planner, which can
 	// repeat one row on one page and drop another.
 	// #nosec G202 -- whereSQL is built only from fixed predicates and bound placeholders.
-	listQuery := sqldb.Bind(w.dialect, "SELECT trace_id, stage, model, provider, api_key_id, prompt_tokens, completion_tokens, total_tokens, error_message, created_at, duration_ms, ttft_ms, cost_usd FROM request_logs"+whereSQL+" ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?")
+	listQuery := sqldb.Bind(w.dialect, "SELECT trace_id, stage, model, provider, api_key_id, user_id, session_id, prompt_tokens, completion_tokens, total_tokens, error_message, created_at, duration_ms, ttft_ms, cost_usd FROM request_logs"+whereSQL+" ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?")
 	listArgs := make([]any, 0, len(args)+2)
 	listArgs = append(listArgs, args...)
 	listArgs = append(listArgs, query.Limit, query.Offset)
@@ -489,17 +497,25 @@ func (w *SQLWriter) List(ctx context.Context, query Query) (ListResult, error) {
 			model      sql.NullString
 			provider   sql.NullString
 			apiKeyID   sql.NullString
+			userID     sql.NullString
+			sessionID  sql.NullString
 			errMsg     sql.NullString
 			durationMs sql.NullFloat64
 			ttftMs     sql.NullFloat64
 			costUSD    sql.NullFloat64
 		)
-		if err := rows.Scan(&traceID, &e.Stage, &model, &provider, &apiKeyID, &e.PromptTokens, &e.CompletionTokens, &e.TotalTokens, &errMsg, &e.CreatedAt,
+		if err := rows.Scan(&traceID, &e.Stage, &model, &provider, &apiKeyID, &userID, &sessionID, &e.PromptTokens, &e.CompletionTokens, &e.TotalTokens, &errMsg, &e.CreatedAt,
 			&durationMs, &ttftMs, &costUSD); err != nil {
 			return ListResult{}, fmt.Errorf("scan request log row: %w", err)
 		}
 		if apiKeyID.Valid {
 			e.APIKeyID = apiKeyID.String
+		}
+		if userID.Valid {
+			e.UserID = userID.String
+		}
+		if sessionID.Valid {
+			e.SessionID = sessionID.String
 		}
 		e.DurationMs = nullableFloat(durationMs)
 		e.TTFTMs = nullableFloat(ttftMs)
