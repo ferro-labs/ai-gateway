@@ -42,9 +42,13 @@ func (g *Gateway) recordRoutingAttempt(ctx context.Context, obs observability.Pr
 		outcome = observability.RoutingAttemptError
 		errorMessage = redact.ErrorMessage(err)
 	}
+	id := observability.RequestIdentityFromContext(ctx)
 	obs.RecordEvent(ctx, observability.Event{
 		Subject:   observability.SubjectRoutingAttempt,
 		TraceID:   logger.TraceIDFromContext(ctx),
+		User:      id.User,
+		SessionID: id.SessionID,
+		Metadata:  id.Metadata,
 		Timestamp: time.Now(),
 		RoutingAttempt: &observability.RoutingAttempt{
 			TargetKey:      attempt.target.key,
@@ -57,6 +61,9 @@ func (g *Gateway) recordRoutingAttempt(ctx context.Context, obs observability.Pr
 			Status:         status,
 			Outcome:        outcome,
 			Error:          errorMessage,
+			User:           id.User,
+			SessionID:      id.SessionID,
+			Metadata:       id.Metadata,
 		},
 		Attributes: abVariantAttributes(attempt.target.abVariantLabel, attempt.target.hasABVariant),
 	})
@@ -74,7 +81,7 @@ func (g *Gateway) dispatchRequestEventWithABVariant(ctx context.Context, obs obs
 		g.publishEvent(ctx, he)
 	}
 	if obsEventsActive {
-		event := obsEventFromHook(he)
+		event := obsEventFromHook(ctx, he)
 		event.Attributes = abVariantAttributes(label, present)
 		obs.RecordEvent(ctx, event)
 	}

@@ -207,12 +207,17 @@ func completedEventData(traceID, provider, model string, latency time.Duration, 
 
 // obsEventFromHook converts an internal HookEvent into the public
 // observability.Event that is broadcast to plugin Exporters via
-// Provider.RecordEvent. No prompt or response content is included —
-// only request metadata and usage/cost numbers.
-func obsEventFromHook(e events.HookEvent) observability.Event {
+// Provider.RecordEvent. No prompt or response content is included — only
+// request metadata, the request identity carried by ctx, and usage/cost
+// numbers.
+func obsEventFromHook(ctx context.Context, e events.HookEvent) observability.Event {
+	id := observability.RequestIdentityFromContext(ctx)
 	return observability.Event{
 		Subject:   e.Subject,
 		TraceID:   e.TraceID,
+		User:      id.User,
+		SessionID: id.SessionID,
+		Metadata:  id.Metadata,
 		Provider:  e.Provider,
 		Model:     e.Model,
 		Status:    e.Status,

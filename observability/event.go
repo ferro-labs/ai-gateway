@@ -75,6 +75,12 @@ type RoutingAttempt struct {
 	Status         int
 	Outcome        RoutingAttemptOutcome
 	Error          string
+	// User, SessionID and Metadata are the request identity this attempt was
+	// made under (see RequestIdentity); the same values sit on the enclosing
+	// Event, so a consumer reading only the payload still has them.
+	User      string
+	SessionID string
+	Metadata  map[string]string
 }
 
 // Event is the payload broadcast to all registered Exporter plugins
@@ -90,6 +96,11 @@ type Event struct {
 	Subject string
 	// TraceID is the gateway request trace ID.
 	TraceID string
+	// User, SessionID and Metadata are the request identity the request was
+	// recorded under (see RequestIdentity). Empty when the caller supplied none.
+	User      string
+	SessionID string
+	Metadata  map[string]string
 	// Provider is the resolved provider name.
 	Provider string
 	// Model is the resolved model name.
