@@ -10,6 +10,7 @@ import (
 
 	"github.com/ferro-labs/ai-gateway/internal/redact"
 	"github.com/ferro-labs/ai-gateway/internal/requestlog"
+	"github.com/ferro-labs/ai-gateway/observability"
 	"github.com/ferro-labs/ai-gateway/pkg/logger"
 	"github.com/ferro-labs/ai-gateway/plugin"
 )
@@ -189,6 +190,7 @@ func (l *RequestLogger) recordLateFailure(ctx context.Context, log *logger.Logge
 // facts, and a cache hit is where they come apart.
 func (l *RequestLogger) Execute(ctx context.Context, pctx *plugin.Context) error {
 	log := logger.Ctx(ctx)
+	identity := observability.RequestIdentityFromContext(ctx)
 	if pctx.Stage == plugin.StageBeforeRequest && pctx.Request != nil {
 		now := time.Now().UTC()
 		log.Log(ctx, l.logLevel, "gateway request",
@@ -202,6 +204,8 @@ func (l *RequestLogger) Execute(ctx context.Context, pctx *plugin.Context) error
 			Stage:     string(plugin.StageBeforeRequest),
 			Model:     pctx.Request.Model,
 			APIKeyID:  apiKeyID(pctx),
+			UserID:    identity.User,
+			SessionID: identity.SessionID,
 			CreatedAt: now,
 		})
 	}
@@ -227,6 +231,8 @@ func (l *RequestLogger) Execute(ctx context.Context, pctx *plugin.Context) error
 			// questions and a cache hit is where they diverge.
 			Provider:         pctx.Response.Provider,
 			APIKeyID:         apiKeyID(pctx),
+			UserID:           identity.User,
+			SessionID:        identity.SessionID,
 			PromptTokens:     pctx.Response.Usage.PromptTokens,
 			CompletionTokens: pctx.Response.Usage.CompletionTokens,
 			TotalTokens:      pctx.Response.Usage.TotalTokens,
@@ -270,6 +276,8 @@ func (l *RequestLogger) Execute(ctx context.Context, pctx *plugin.Context) error
 			// is the same column the after_request row fills from the response.
 			Provider:     pctx.Target,
 			APIKeyID:     apiKeyID(pctx),
+			UserID:       identity.User,
+			SessionID:    identity.SessionID,
 			ErrorMessage: errMsg,
 			CreatedAt:    now,
 			// A failed request still took time, and how long it took to fail is
