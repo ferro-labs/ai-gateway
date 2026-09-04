@@ -140,8 +140,10 @@ upstream. The `/v1/*` pass-through forwards `traceparent` too (turn it off with
   `CLIENT` span per routing-layer attempt — retries and failovers included —
   under the request span, carrying `ferro.routing.target_key`,
   `ferro.routing.sequence` (1-based) and `ferro.routing.outcome`
-  (`success` | `error`). The provider's HTTP span nests beneath it, so a trace
-  shows which targets were tried and in what order. Off by default because a
+  (`success` | `error`). On chat, embeddings and images the provider's HTTP
+  span nests beneath it; on a streamed request the attempt span ends when the
+  stream starts, so the HTTP span is its sibling — see `AttemptSpanProvider`.
+  Either way a trace shows which targets were tried and in what order. Off by default because a
   request that retried produces several, and a dashboard that counts spans
   per request would over-count.
 - **Unified trace ID**: the OTel `trace_id`, the `X-Request-ID` response header,
