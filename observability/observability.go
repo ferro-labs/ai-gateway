@@ -113,10 +113,20 @@ type AttemptSpanProvider interface {
 	Provider
 	// StartAttemptSpan opens the span for the attempt about to be made against
 	// targetKey, the sequence-th routing-layer attempt of this request
-	// (1-based, the same numbering RoutingAttempt.Sequence uses). The returned
-	// context carries the span and MUST be the one the provider call runs
-	// under, so the outbound HTTP span nests beneath it. The caller stamps
-	// AttrFerroRoutingOutcome, records any error, and ends the span.
+	// (1-based, the same numbering RoutingAttempt.Sequence uses). The caller
+	// stamps AttrFerroRoutingOutcome, records any error, and ends the span.
+	//
+	// The returned context carries the span, and what runs under it depends on
+	// the surface. On the unary surfaces — chat, embeddings, images — the
+	// provider call runs on that context, so an outbound HTTP span nests
+	// beneath the attempt span. Streaming deliberately does not: the channel
+	// the call returns outlives the attempt, so the call runs on a context
+	// that outlives it too and the attempt span ends when the stream starts —
+	// leaving an outbound HTTP span a SIBLING of the attempt span under the
+	// request span rather than its child.
+	//
+	// So an implementation MUST NOT assume the attempt span is the parent of
+	// anything, and MUST NOT hold state on it past End.
 	StartAttemptSpan(ctx context.Context, targetKey string, sequence int) (context.Context, Span)
 }
 

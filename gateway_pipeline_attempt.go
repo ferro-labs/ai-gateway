@@ -21,7 +21,11 @@ var errAttemptTimeout = fmt.Errorf("target attempt timeout: %w", context.Deadlin
 // and limiter on every try. attemptsActive is whether obs has opted into one
 // SubjectRoutingAttempt event per call; when it has not, no event is built.
 // spanner, when non-nil, opens one SpanNameRoutingAttempt span per call and
-// the provider call runs under it, so the outbound HTTP span nests beneath.
+// hands that span's context to the call. On the unary surfaces the provider
+// call therefore runs under it and an outbound HTTP span nests beneath the
+// attempt span. Streaming does not: startStreamOn runs CompleteStream on the
+// stream context it captured, because the channel outlives the attempt, so
+// there an outbound HTTP span is the attempt span's SIBLING, not its child.
 func attemptTarget[Req, Resp any](
 	ctx context.Context,
 	g *Gateway,
