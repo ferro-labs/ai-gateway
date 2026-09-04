@@ -374,9 +374,10 @@ func (g *Gateway) forwardUnderResilience(ctx context.Context, key string, forwar
 }
 
 // PropagatesPassthroughTrace reports observability.tracing.propagate_passthrough,
-// true when the key is omitted. The pass-through proxy consults it when it is
-// built, so a value changed by a config reload applies to routes built after
-// the reload.
+// true when the key is omitted. The pass-through and fixed-target proxies
+// (/v1/*, /v1/responses, /v1/files, /v1/batches) read it fresh on every
+// request, so a value changed by a config reload takes effect on the next
+// request, with no restart and no stale routes built before the reload.
 func (g *Gateway) PropagatesPassthroughTrace() bool {
 	g.mu.RLock()
 	defer g.mu.RUnlock()

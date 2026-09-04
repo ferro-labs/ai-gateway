@@ -32,8 +32,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   what order without an exporter opting into attempt events. Backends plug in
   through the optional `observability.AttemptSpanProvider` interface; the
   built-in OTLP provider implements it.
-- The `/v1/*` pass-through and the fixed-target forwards (`/v1/files`,
-  `/v1/batches`, the `/v1/responses` id sub-routes) forward the W3C
+- The `/v1/*` pass-through and the fixed-target forwards (`/v1/responses`
+  create and its id sub-routes, `/v1/files`, `/v1/batches`) forward the W3C
   `traceparent` (and `tracestate`) upstream, so a provider that records
   traces joins the gateway's trace. `observability.tracing.propagate_passthrough`
   (default `true`) governs both proxy paths; setting it to `false` restores

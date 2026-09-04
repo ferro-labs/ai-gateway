@@ -124,8 +124,10 @@ generated traffic in one command — see [`../deploy/compose.fullstack.yaml`](..
 
 Every routed request produces a `gateway.request` root span (`SERVER` kind) and a
 `CLIENT` child span per outbound provider call, which carries `traceparent`
-upstream. The `/v1/*` pass-through forwards `traceparent` too (turn it off with
-`propagate_passthrough: false`); it emits no extra span of its own.
+upstream. The `/v1/*` pass-through and the fixed-target forwards
+(`/v1/responses` create and its id sub-routes, `/v1/files`, `/v1/batches`)
+forward `traceparent` too (turn it off with `propagate_passthrough: false`);
+neither emits an extra span of its own.
 
 - **GenAI semantic conventions**: `gen_ai.system`, `gen_ai.operation.name`,
   `gen_ai.request.model`, `gen_ai.response.model`,
