@@ -13,11 +13,16 @@ const (
 	testTraceID     = "0af7651916cd43dd8448eb211c80319c"
 	testSpanID      = "b7ad6b7169203331"
 	wantTraceparent = "00-" + testTraceID + "-" + testSpanID + "-01"
+
+	// proxiedPath is a path the generic /v1/* pass-through actually serves.
+	// Files and batches have their own fixed-target handler, so naming one here
+	// would describe coverage these tests do not have.
+	proxiedPath = "/v1/models"
 )
 
-// tracedRequest returns a pass-through request whose context carries a sampled
-// span context, as it does after the gateway has opened the request span.
-func tracedRequest(t *testing.T) *http.Request {
+// tracedRequest returns a request for path whose context carries a sampled span
+// context, as it does after the gateway has opened the request span.
+func tracedRequest(t *testing.T, path string) *http.Request {
 	t.Helper()
 	traceID, err := trace.TraceIDFromHex(testTraceID)
 	if err != nil {
@@ -28,7 +33,7 @@ func tracedRequest(t *testing.T) *http.Request {
 		t.Fatal(err)
 	}
 	sc := trace.NewSpanContext(trace.SpanContextConfig{TraceID: traceID, SpanID: spanID, TraceFlags: trace.FlagsSampled})
-	req := httptest.NewRequestWithContext(trace.ContextWithSpanContext(t.Context(), sc), http.MethodPost, "/v1/files", nil)
+	req := httptest.NewRequestWithContext(trace.ContextWithSpanContext(t.Context(), sc), http.MethodPost, path, nil)
 	req.Header.Set("X-Provider", providerOpenAI)
 	return req
 }
@@ -48,7 +53,7 @@ func TestProxyHandler_InjectsTraceparentUpstream(t *testing.T) {
 	upstream, seen := upstreamCapturingTraceHeaders(t)
 	handler := Handler(buildTestRegistry(t, upstream.URL))
 
-	handler(httptest.NewRecorder(), tracedRequest(t))
+	handler(httptest.NewRecorder(), tracedRequest(t, proxiedPath))
 
 	if got := seen.Get("traceparent"); got != wantTraceparent {
 		t.Errorf("upstream traceparent = %q, want %q", got, wantTraceparent)
@@ -65,7 +70,7 @@ func TestProxyHandler_StripsCallerIdentityHeaders(t *testing.T) {
 	upstream, seen := upstreamCapturingTraceHeaders(t)
 	handler := Handler(buildTestRegistry(t, upstream.URL))
 
-	req := tracedRequest(t)
+	req := tracedRequest(t, proxiedPath)
 	req.Header.Set("baggage", "user.id=alice,session.id=xyz")
 	req.Header.Set("X-User-ID", "alice")
 	req.Header.Set("X-Session-ID", "xyz")
@@ -95,7 +100,7 @@ func TestProxyHandler_TraceparentInjectionCanBeTurnedOff(t *testing.T) {
 	upstream, seen := upstreamCapturingTraceHeaders(t)
 	handler := Handler(noTracePolicySource{buildTestRegistry(t, upstream.URL)})
 
-	handler(httptest.NewRecorder(), tracedRequest(t))
+	handler(httptest.NewRecorder(), tracedRequest(t, proxiedPath))
 
 	if got := seen.Get("traceparent"); got != "" {
 		t.Errorf("upstream traceparent = %q, want none with propagate_passthrough off", got)
@@ -106,7 +111,7 @@ func TestProxyHandler_NoSpanContextInjectsNothing(t *testing.T) {
 	upstream, seen := upstreamCapturingTraceHeaders(t)
 	handler := Handler(buildTestRegistry(t, upstream.URL))
 
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/files", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, proxiedPath, nil)
 	req.Header.Set("X-Provider", providerOpenAI)
 	handler(httptest.NewRecorder(), req)
 

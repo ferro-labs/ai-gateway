@@ -151,8 +151,11 @@ func Handler(src providers.ProviderSource) http.HandlerFunc {
 }
 
 func passThroughHandler(src providers.ProviderSource) http.HandlerFunc {
-	propagateTrace := propagatesTrace(src)
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Read per request, not once at Handler construction, so a live
+		// ReloadConfig flip of observability.tracing.propagate_passthrough
+		// takes effect on the next request rather than needing a restart.
+		propagateTrace := propagatesTrace(src)
 		p, model, ok := ResolveProvider(r, src)
 		if !ok {
 			// The caller named a provider explicitly. Telling them to set the
@@ -458,15 +461,20 @@ type passthroughGovernor interface {
 	RoutePassthrough(ctx context.Context, target, model, body string, bodyInspectable bool, forward func(context.Context) error) error
 }
 
-// passthroughTracePolicy is a ProviderSource that says whether forwards carry
-// the gateway's trace context upstream. *Gateway implements it from
+// passthroughTracePolicy is a source that says whether forwards carry the
+// gateway's trace context upstream. *Gateway implements it from
 // observability.tracing.propagate_passthrough. A source that does not — a bare
 // *providers.Registry — propagates, which is the configured default.
 type passthroughTracePolicy interface {
 	PropagatesPassthroughTrace() bool
 }
 
-func propagatesTrace(src providers.ProviderSource) bool {
+// propagatesTrace takes any of this package's source interfaces (the generic
+// pass-through's providers.ProviderSource, or the narrower BatchSource /
+// ResponsesSource) — all it needs is the optional passthroughTracePolicy
+// type assertion, so the parameter stays untyped rather than widening every
+// caller's source interface to carry methods it does not otherwise need.
+func propagatesTrace(src any) bool {
 	policy, ok := src.(passthroughTracePolicy)
 	return !ok || policy.PropagatesPassthroughTrace()
 }

@@ -90,7 +90,7 @@ func ResponsesCreate(src ResponsesSource) http.HandlerFunc {
 		forwarded := false
 		forward := func(ctx context.Context) error {
 			forwarded = true
-			status, ferr := forwardFixedTarget(w, r.WithContext(ctx), target, authHeaders, providerName, wrapBody)
+			status, ferr := forwardFixedTarget(w, r.WithContext(ctx), target, authHeaders, providerName, propagatesTrace(src), wrapBody)
 			if ferr != nil {
 				return ferr
 			}
@@ -153,7 +153,7 @@ func ResponsesIDs(src ResponsesSource) http.HandlerFunc {
 
 		// The id sub-routes are a straight forward like Files/Batches: no
 		// governance to score, so the reported status/error are unused.
-		_, _ = forwardFixedTarget(w, r, target, pp.AuthHeaders(), p.Name(), nil)
+		_, _ = forwardFixedTarget(w, r, target, pp.AuthHeaders(), p.Name(), propagatesTrace(src), nil)
 	}
 }
 

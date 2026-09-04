@@ -79,7 +79,9 @@ func BatchHandler(src BatchSource) http.HandlerFunc {
 		}
 
 		// Files/Batches are a straight forward: no governance to score, so the
-		// upstream status/error the forwarder reports are unused.
-		_, _ = forwardFixedTarget(w, r, target, bp.BatchAuthHeaders(), p.Name(), nil)
+		// upstream status/error the forwarder reports are unused. Trace policy is
+		// read per request (see passThroughHandler) so a live config reload of
+		// propagate_passthrough takes effect on the next call.
+		_, _ = forwardFixedTarget(w, r, target, bp.BatchAuthHeaders(), p.Name(), propagatesTrace(src), nil)
 	}
 }
