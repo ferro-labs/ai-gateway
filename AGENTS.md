@@ -33,6 +33,7 @@
 - **One completion ceiling (Unreleased)** — `max_tokens` and `max_completion_tokens` are resolved to a single value at every entry point, `max_completion_tokens` winning when both are present, so a guardrail and the provider read the same number. See [Completion length](#completion-length-max_tokens-and-max_completion_tokens).
 - **Declared models (Unreleased)** — `targets[].models` lets an operator name the models a target serves, joined into the routing index alongside the catalog and live discovery and advertised by `/v1/models`. It is provider-agnostic and additive: it needs no `/models` endpoint, works offline, and never narrows what a target already serves. See [Declared models](#declared-models-targetsmodels).
 - **Strategy validation at load (Unreleased)** — every strategy is validated by `config.ValidateConfig`, so an invalid one is a `ferrogw validate` / startup error rather than a request-time 500. Unknown `conditions[].key` and `content_conditions[].type` values are load errors; `weight: 0` means zero traffic, a negative weight is an error, and an all-zero weight set is an error.
+- **Request identity (Unreleased)** — `observability.RequestIdentity` (end-user id, session id, request metadata) is set on the request context by `internal/otel.Middleware` from `X-User-ID`, `X-Session-ID` and the W3C `baggage` entries `user.id` / `session.id`, or by an embedder through `observability.ContextWithRequestIdentity`; the gateway overlays the OpenAI body `user`. It is recorded as `enduser.id` / `session.id` / `ferro.request.metadata.<key>` on the request span, on `RequestAttrs`, `Event` and `RoutingAttempt`, and as `user_id` / `session_id` on request-log rows. `observability.tracing.attempt_spans` opens one `gateway.routing.attempt` CLIENT span per routing attempt through the optional `observability.AttemptSpanProvider`; `observability.tracing.propagate_passthrough` (default true) injects `traceparent` on `/v1/*` forwards. Nothing is inferred and no identity is a body field other than `user`.
 
 ---
 
@@ -306,6 +307,8 @@ observability:
     sample_ratio: 1.0        # head sampler 0.0–1.0, wrapped in ParentBased
     privacy_level: metadata  # none | metadata (redacted, default) | full (raw error text)
     shutdown_grace: 10s      # max drain time for in-flight OTel exports on shutdown
+    attempt_spans: false     # one gateway.routing.attempt CLIENT span per routing attempt (default false)
+    propagate_passthrough: true  # inject traceparent on /v1/* pass-through forwards (default true)
   exporters:                 # plugin exporters receiving completed/failed events; none ship in-repo
     - name: langsmith
       enabled: false
