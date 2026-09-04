@@ -29,7 +29,7 @@ jobs:
       # this is the workflow that most needs it not to be: it holds
       # contents: write plus pull-requests: write, and it runs unattended on a
       # cron with nobody watching the diff it opens.
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
