@@ -320,7 +320,7 @@ func (g *Gateway) Embed(ctx context.Context, req providers.EmbeddingRequest) (*p
 	// See Route: exported entry point, so it seeds its own trace ID rather than
 	// assuming HTTP middleware ran above it.
 	ctx = logger.EnsureTraceID(ctx)
-	ctx, identity := requestIdentity(ctx, "")
+	ctx, identity := requestIdentity(ctx, req.User)
 	ctx, span := obs.StartRequestSpan(ctx, observability.RequestAttrs{
 		Operation:       surfaceEmbeddings,
 		RequestModel:    req.Model,
@@ -393,7 +393,7 @@ func (g *Gateway) GenerateImage(ctx context.Context, req providers.ImageRequest)
 	// See Route: exported entry point, so it seeds its own trace ID rather than
 	// assuming HTTP middleware ran above it.
 	ctx = logger.EnsureTraceID(ctx)
-	ctx, identity := requestIdentity(ctx, "")
+	ctx, identity := requestIdentity(ctx, req.User)
 	ctx, span := obs.StartRequestSpan(ctx, observability.RequestAttrs{
 		Operation:       "images.generate",
 		RequestModel:    req.Model,

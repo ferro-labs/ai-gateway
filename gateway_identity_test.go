@@ -241,3 +241,58 @@ func TestGateway_Embed_RootSpanCarriesContextIdentity(t *testing.T) {
 	_, _ = gw.Embed(identityContext(t), providers.EmbeddingRequest{Model: testModel, Input: []string{"hi"}})
 	assertEventIdentity(t, "embed root span attrs", fp.attrs.User, fp.attrs.SessionID, fp.attrs.Metadata)
 }
+
+// The body's `user` is the gateway core's own overlay onto RequestIdentity —
+// EmbeddingRequest.User, not any HTTP header — so it must reach the request
+// span exactly as chat's does (TestGateway_Route_BodyUserOutranksContextUser).
+func TestGateway_Embed_BodyUserOutranksContextUser(t *testing.T) {
+	gw, err := newTestGateway(t, config.Config{Targets: []config.Target{{VirtualKey: "mock"}}})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+	fp := &fakeProvider{}
+	gw.SetObservability(fp)
+	gw.RegisterProvider(&mockEmbeddingProvider{mockProvider: mockProvider{name: "mock", models: []string{testModel}}})
+
+	_, _ = gw.Embed(identityContext(t), providers.EmbeddingRequest{Model: testModel, Input: []string{"hi"}, User: "body-user"})
+	if fp.attrs.User != "body-user" {
+		t.Errorf("embed root span user = %q, want the body's %q", fp.attrs.User, "body-user")
+	}
+	if fp.attrs.SessionID != testIdentity.SessionID {
+		t.Errorf("embed root span session = %q, want the context's %q kept", fp.attrs.SessionID, testIdentity.SessionID)
+	}
+}
+
+func TestGateway_GenerateImage_RootSpanCarriesContextIdentity(t *testing.T) {
+	gw, err := newTestGateway(t, config.Config{Targets: []config.Target{{VirtualKey: "mock"}}})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+	fp := &fakeProvider{}
+	gw.SetObservability(fp)
+	gw.RegisterProvider(&mockImageProvider{mockProvider: mockProvider{name: "mock", models: []string{testModel}}})
+
+	_, _ = gw.GenerateImage(identityContext(t), providers.ImageRequest{Model: testModel, Prompt: "cat"})
+	assertEventIdentity(t, "generate image root span attrs", fp.attrs.User, fp.attrs.SessionID, fp.attrs.Metadata)
+}
+
+// The body's `user` is the gateway core's own overlay onto RequestIdentity —
+// ImageRequest.User, not any HTTP header — so it must reach the request span
+// exactly as chat's does (TestGateway_Route_BodyUserOutranksContextUser).
+func TestGateway_GenerateImage_BodyUserOutranksContextUser(t *testing.T) {
+	gw, err := newTestGateway(t, config.Config{Targets: []config.Target{{VirtualKey: "mock"}}})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+	fp := &fakeProvider{}
+	gw.SetObservability(fp)
+	gw.RegisterProvider(&mockImageProvider{mockProvider: mockProvider{name: "mock", models: []string{testModel}}})
+
+	_, _ = gw.GenerateImage(identityContext(t), providers.ImageRequest{Model: testModel, Prompt: "cat", User: "body-user"})
+	if fp.attrs.User != "body-user" {
+		t.Errorf("generate image root span user = %q, want the body's %q", fp.attrs.User, "body-user")
+	}
+	if fp.attrs.SessionID != testIdentity.SessionID {
+		t.Errorf("generate image root span session = %q, want the context's %q kept", fp.attrs.SessionID, testIdentity.SessionID)
+	}
+}
