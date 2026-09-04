@@ -53,8 +53,36 @@ func TestProxyHandler_InjectsTraceparentUpstream(t *testing.T) {
 	if got := seen.Get("traceparent"); got != wantTraceparent {
 		t.Errorf("upstream traceparent = %q, want %q", got, wantTraceparent)
 	}
+}
+
+// TestProxyHandler_StripsCallerIdentityHeaders proves the gateway-facing
+// identity headers never reach the provider, even though ReverseProxy clones
+// every inbound header into the outbound request before Rewrite runs. Without
+// the explicit deletes in Rewrite, an inbound baggage/X-User-ID/X-Session-ID
+// header would travel upstream verbatim — the identity leak trace-context
+// injection is meant not to introduce.
+func TestProxyHandler_StripsCallerIdentityHeaders(t *testing.T) {
+	upstream, seen := upstreamCapturingTraceHeaders(t)
+	handler := Handler(buildTestRegistry(t, upstream.URL))
+
+	req := tracedRequest(t)
+	req.Header.Set("baggage", "user.id=alice,session.id=xyz")
+	req.Header.Set("X-User-ID", "alice")
+	req.Header.Set("X-Session-ID", "xyz")
+
+	handler(httptest.NewRecorder(), req)
+
 	if got := seen.Get("baggage"); got != "" {
-		t.Errorf("upstream received baggage %q; only trace context is forwarded", got)
+		t.Errorf("upstream received baggage %q; caller identity headers must not be forwarded", got)
+	}
+	if got := seen.Get("X-User-ID"); got != "" {
+		t.Errorf("upstream received X-User-ID %q; caller identity headers must not be forwarded", got)
+	}
+	if got := seen.Get("X-Session-ID"); got != "" {
+		t.Errorf("upstream received X-Session-ID %q; caller identity headers must not be forwarded", got)
+	}
+	if got := seen.Get("traceparent"); got != wantTraceparent {
+		t.Errorf("upstream traceparent = %q, want %q", got, wantTraceparent)
 	}
 }
 
