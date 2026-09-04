@@ -22,6 +22,7 @@ import (
 	"github.com/ferro-labs/ai-gateway/pkg/logger"
 	"github.com/ferro-labs/ai-gateway/providers"
 	"github.com/ferro-labs/ai-gateway/providers/core"
+	"go.opentelemetry.io/otel/propagation"
 )
 
 // proxyFlushInterval forces the reverse proxy to flush buffered bytes to the
@@ -109,6 +110,7 @@ func Handler(src providers.ProviderSource) http.HandlerFunc {
 }
 
 func passThroughHandler(src providers.ProviderSource) http.HandlerFunc {
+	propagateTrace := propagatesTrace(src)
 	return func(w http.ResponseWriter, r *http.Request) {
 		p, model, ok := ResolveProvider(r, src)
 		if !ok {
@@ -210,11 +212,11 @@ func passThroughHandler(src providers.ProviderSource) http.HandlerFunc {
 		secrets := injectedSecrets(authHeaders)
 
 		// Use the raw SSE-tuned transport (no ResponseHeaderTimeout) so slow or
-		// streaming pass-through endpoints are not cut off at 30s while waiting
-		// for the upstream's first response header. The raw transport (not the
-		// otelhttp-wrapped client RoundTripper) keeps this a transparent proxy:
-		// no traceparent/tracestate injected into upstream requests and no extra
-		// OTel CLIENT span per proxied call.
+		// streaming pass-through endpoints are not cut off while waiting for the
+		// upstream's first response header. The raw transport, not the
+		// otelhttp-wrapped client, so no extra OTel CLIENT span is emitted per
+		// proxied call; trace context is injected explicitly in Rewrite below,
+		// governed by observability.tracing.propagate_passthrough.
 		//
 		// Providers requiring per-request signing (e.g. AWS SigV4) wrap that
 		// transport so the fully-formed outbound request is signed; a signing
@@ -257,6 +259,7 @@ func passThroughHandler(src providers.ProviderSource) http.HandlerFunc {
 					pr.Out.Header.Set(k, v)
 				}
 				pr.SetXForwarded()
+				injectTraceContext(propagateTrace, pr)
 			},
 			ModifyResponse: func(resp *http.Response) error {
 				// Recorded, not acted on: returning an error here would make the
@@ -428,6 +431,30 @@ func isHex(b byte) bool {
 // Gateway.RoutePassthrough.
 type passthroughGovernor interface {
 	RoutePassthrough(ctx context.Context, target, model, body string, bodyInspectable bool, forward func(context.Context) error) error
+}
+
+// passthroughTracePolicy is a ProviderSource that says whether forwards carry
+// the gateway's trace context upstream. *Gateway implements it from
+// observability.tracing.propagate_passthrough. A source that does not — a bare
+// *providers.Registry — propagates, which is the configured default.
+type passthroughTracePolicy interface {
+	PropagatesPassthroughTrace() bool
+}
+
+func propagatesTrace(src providers.ProviderSource) bool {
+	policy, ok := src.(passthroughTracePolicy)
+	return !ok || policy.PropagatesPassthroughTrace()
+}
+
+// injectTraceContext writes the outbound request's W3C trace context header
+// when propagation is enabled. Trace context only — the composite propagator
+// would also forward baggage, and baggage carries the caller's user and
+// session ids, which a provider has no need of.
+func injectTraceContext(propagate bool, pr *httputil.ProxyRequest) {
+	if !propagate {
+		return
+	}
+	propagation.TraceContext{}.Inject(pr.Out.Context(), propagation.HeaderCarrier(pr.Out.Header))
 }
 
 // signingRoundTripper signs each outbound proxied request via a provider's
