@@ -47,8 +47,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - `observability.RoutingAttempt` and `observability.RequestAttrs` each gain a
-  `Metadata` map and are therefore no longer comparable with `==`; compare
-  with `reflect.DeepEqual`. Code that reads their fields is unaffected.
+  `Metadata` map, alongside `User` and `SessionID`. Three consequences for
+  code that constructs or compares them: an unkeyed composite literal no
+  longer compiles, so use keyed fields; neither type can serve as a map key,
+  because a struct holding a map is not comparable; and `==` is likewise
+  unavailable, so compare with `reflect.DeepEqual`. Code that only reads their
+  fields is unaffected.
 
 ### Fixed
 
@@ -60,6 +64,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Browser clients on a configured allowed origin can send `X-User-ID`,
   `X-Session-ID` and `baggage`. The identity headers this release introduces
   were absent from the CORS allowlist, so a preflight blocked them.
+- The fixed-target forwards (`/v1/files`, `/v1/batches`, the `/v1/responses`
+  id sub-routes) no longer hand a provider the caller's own trace context.
+  Those routes open no gateway span, so the context available to inject was
+  the one extracted from the caller's inbound headers; trace context is now
+  injected only when the gateway owns the span it describes.
+- The OpenAI body `user` field is bounded like the identity headers are —
+  trimmed, at most 256 bytes, no control characters — so a value that cannot
+  be an id is left out rather than stored on every request-log row and span.
+- `observability.RequestIdentity.Metadata` is bounded to 32 entries of at most
+  128-byte keys and 256-byte values. An embedder forwarding caller-supplied
+  context verbatim could otherwise stamp unbounded span attributes, once per
+  routing attempt. What exceeds a limit is dropped deterministically.
+- An attempt span is ended, and its attempt-scoped context cancelled, when a
+  provider panics. `observability.tracing.attempt_spans` previously lost the
+  span for exactly the failed attempt it exists to show.
 
 ## [1.5.3] — 2026-09-03
 
