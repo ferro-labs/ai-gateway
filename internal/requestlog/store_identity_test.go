@@ -50,7 +50,15 @@ func TestSQLiteWriter_WritesAndListsIdentity(t *testing.T) {
 		t.Errorf("with-identity row = user %q session %q, want user-42 / sess-7", e.UserID, e.SessionID)
 	}
 	for _, id := range []string{"anonymous", "legacy"} {
-		if e := got[id]; e.UserID != "" || e.SessionID != "" {
+		// Presence first: a missing row yields the zero Entry, whose empty
+		// UserID/SessionID would satisfy the emptiness check below and let a
+		// dropped row pass as a correctly-migrated one.
+		e, ok := got[id]
+		if !ok {
+			t.Errorf("%s row missing from List result", id)
+			continue
+		}
+		if e.UserID != "" || e.SessionID != "" {
 			t.Errorf("%s row = user %q session %q, want empty", id, e.UserID, e.SessionID)
 		}
 	}

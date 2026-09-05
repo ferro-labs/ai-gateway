@@ -108,6 +108,51 @@ func TestProxyHandler_TraceparentInjectionCanBeTurnedOff(t *testing.T) {
 	}
 }
 
+// TestProxyHandler_TurnedOffDropsInboundTraceHeaders proves propagation-off
+// means no trace context reaches the provider, not merely that the gateway
+// declines to add its own. ReverseProxy clones every inbound header into the
+// outbound request before Rewrite runs, so a caller's own traceparent survives
+// unless Rewrite deletes it — which would forward the caller's trace context
+// upstream through a setting the operator turned off.
+func TestProxyHandler_TurnedOffDropsInboundTraceHeaders(t *testing.T) {
+	upstream, seen := upstreamCapturingTraceHeaders(t)
+	handler := Handler(noTracePolicySource{buildTestRegistry(t, upstream.URL)})
+
+	req := tracedRequest(t, proxiedPath)
+	req.Header.Set("traceparent", "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+	req.Header.Set("tracestate", "vendor=opaque")
+
+	handler(httptest.NewRecorder(), req)
+
+	if got := seen.Get("traceparent"); got != "" {
+		t.Errorf("upstream traceparent = %q, want none: the caller's own header must not pass through with propagate_passthrough off", got)
+	}
+	if got := seen.Get("tracestate"); got != "" {
+		t.Errorf("upstream tracestate = %q, want none: the caller's own header must not pass through with propagate_passthrough off", got)
+	}
+}
+
+// TestProxyHandler_InboundTraceHeadersReplacedNotAppended proves the gateway's
+// own trace context replaces the caller's rather than joining it, so the
+// provider sees one traceparent — this gateway's — and never the caller's.
+func TestProxyHandler_InboundTraceHeadersReplacedNotAppended(t *testing.T) {
+	upstream, seen := upstreamCapturingTraceHeaders(t)
+	handler := Handler(buildTestRegistry(t, upstream.URL))
+
+	req := tracedRequest(t, proxiedPath)
+	req.Header.Set("traceparent", "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+	req.Header.Set("tracestate", "vendor=opaque")
+
+	handler(httptest.NewRecorder(), req)
+
+	if got := seen.Values("traceparent"); len(got) != 1 || got[0] != wantTraceparent {
+		t.Errorf("upstream traceparent = %q, want exactly [%q]", got, wantTraceparent)
+	}
+	if got := seen.Get("tracestate"); got == "vendor=opaque" {
+		t.Errorf("upstream tracestate = %q; the caller's tracestate must not be forwarded verbatim", got)
+	}
+}
+
 func TestProxyHandler_NoSpanContextInjectsNothing(t *testing.T) {
 	upstream, seen := upstreamCapturingTraceHeaders(t)
 	handler := Handler(buildTestRegistry(t, upstream.URL))

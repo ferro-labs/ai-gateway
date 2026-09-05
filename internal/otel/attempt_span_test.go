@@ -60,4 +60,10 @@ func TestProvider_StartAttemptSpan_NestsUnderRequestSpan(t *testing.T) {
 			}
 		}
 	}
+	// The status description is the other place the error message lands:
+	// recordSpanError sets it alongside the event, from the same text.
+	// Checking only the event would miss a leak on this half.
+	if strings.Contains(attemptSpan.Status.Description, "account@example.com") {
+		t.Errorf("attempt span status leaked the unredacted error: %q", attemptSpan.Status.Description)
+	}
 }

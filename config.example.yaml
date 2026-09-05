@@ -545,7 +545,10 @@ observability:
     attempt_spans: false
     # Inject the W3C traceparent into /v1/* pass-through and fixed-target
     # (/v1/responses, /v1/files, /v1/batches) forwards so an upstream that
-    # records traces joins this one. Baggage is never forwarded.
+    # records traces joins this one. Defaults to true when the key is omitted;
+    # set false to stop injecting. Either way the caller's own traceparent,
+    # tracestate and baggage are dropped before forwarding — a provider sees
+    # this gateway's trace context or none, never the caller's.
     propagate_passthrough: true
     # headers:                       # OTLP export headers (e.g. vendor API keys)
     #   dd-api-key: "${DATADOG_API_KEY}"   # values support ${ENV_VAR} references

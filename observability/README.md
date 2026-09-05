@@ -127,7 +127,9 @@ Every routed request produces a `gateway.request` root span (`SERVER` kind) and 
 upstream. The `/v1/*` pass-through and the fixed-target forwards
 (`/v1/responses` create and its id sub-routes, `/v1/files`, `/v1/batches`)
 forward `traceparent` too (turn it off with `propagate_passthrough: false`);
-neither emits an extra span of its own.
+neither emits an extra span of its own. A caller's own `traceparent` and
+`tracestate` are dropped before forwarding either way, so a provider sees this
+gateway's trace context or none, never the caller's.
 
 - **GenAI semantic conventions**: `gen_ai.system`, `gen_ai.operation.name`,
   `gen_ai.request.model`, `gen_ai.response.model`,
@@ -177,10 +179,10 @@ access-control signal.
 | metadata | embedders only, via `observability.ContextWithRequestIdentity` | `ferro.request.metadata.<key>` |
 
 Request metadata is set by embedders through `ContextWithRequestIdentity`; the
-HTTP layer reads no metadata header or body field in this release —
+HTTP layer reads no metadata header or body field in this release.
 `X-Gateway-Metadata` is a separate, existing header read only by conditional
-routing (see [Attribution headers](../AGENTS.md#attribution-headers)), not trace metadata,
-and this plan does not wire it into `RequestIdentity`.
+routing (see [Attribution headers](../AGENTS.md#attribution-headers)); it is not
+trace metadata and does not populate `RequestIdentity`.
 
 A header value longer than 256 bytes, or carrying a control character, is
 ignored. Unknown JSON body fields are still accepted and ignored, as OpenAI

@@ -36,11 +36,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   create and its id sub-routes, `/v1/files`, `/v1/batches`) forward the W3C
   `traceparent` (and `tracestate`) upstream, so a provider that records
   traces joins the gateway's trace. `observability.tracing.propagate_passthrough`
-  (default `true`) governs both proxy paths; setting it to `false` restores
-  the previous behaviour on both. The inbound `baggage`, `X-User-ID` and
-  `X-Session-ID` headers address the gateway, not the provider, and are
-  always stripped before forwarding on every pass-through and fixed-target
-  surface, regardless of this setting.
+  (default `true`) governs both proxy paths; setting it to `false` stops the
+  injection on both. The inbound `baggage`, `X-User-ID` and `X-Session-ID`
+  headers address the gateway rather than the provider, and an inbound
+  `traceparent`/`tracestate` belongs to a trace the provider is not part of;
+  all five are stripped before forwarding on every pass-through and
+  fixed-target surface, regardless of this setting. A provider therefore
+  receives this gateway's trace context or none — never the caller's.
 
 ### Changed
 

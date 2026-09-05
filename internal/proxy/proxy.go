@@ -487,7 +487,17 @@ func propagatesTrace(src interface {
 // when propagation is enabled. Trace context only — the composite propagator
 // would also forward baggage, and baggage carries the caller's user and
 // session ids, which a provider has no need of.
+//
+// The caller's own traceparent/tracestate are deleted first, unconditionally.
+// ReverseProxy clones every inbound header into the outbound request before
+// Rewrite runs, so without the deletes: with propagation off the caller's
+// trace context would travel upstream through a setting the operator turned
+// off, and with it on the caller's tracestate would ride alongside a
+// traceparent from a different trace. What reaches a provider is this
+// gateway's trace context or none, never the caller's.
 func injectTraceContext(propagate bool, pr *httputil.ProxyRequest) {
+	pr.Out.Header.Del("traceparent")
+	pr.Out.Header.Del("tracestate")
 	if !propagate {
 		return
 	}
