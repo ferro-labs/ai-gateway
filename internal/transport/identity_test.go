@@ -46,7 +46,9 @@ func TestClientsPropagateTraceWithoutIdentityBaggage(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_ = resp.Body.Close()
+			if err := resp.Body.Close(); err != nil {
+				t.Errorf("close response body: %v", err)
+			}
 			headers := <-seen
 			if got := headers.Get("baggage"); got != "" {
 				t.Errorf("identity baggage reached provider: %q", got)

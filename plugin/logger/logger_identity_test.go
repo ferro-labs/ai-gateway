@@ -22,7 +22,11 @@ func TestRequestLogger_RowsCarryRequestIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new request log store: %v", err)
 	}
-	t.Cleanup(func() { _ = store.Close() })
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("close request log store: %v", err)
+		}
+	})
 
 	l := &RequestLogger{}
 	l.SetRequestLogWriter(store)
