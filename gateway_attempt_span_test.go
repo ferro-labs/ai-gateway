@@ -210,6 +210,47 @@ func TestGateway_RouteStream_AttemptSpansAreSiblingsOfTheProviderCall(t *testing
 	}
 }
 
+// TestGateway_Route_PanicEndsAttemptSpanAndPropagates pins the panic path
+// through attemptTarget: callUnderResilience can re-panic (the circuit
+// breaker treats a panicking provider as a failure and re-raises), and that
+// must still end the attempt span with an error identifying the panic, and
+// still let the original panic value reach the caller unchanged.
+func TestGateway_Route_PanicEndsAttemptSpanAndPropagates(t *testing.T) {
+	gw, err := newTestGateway(t, config.Config{
+		Strategy:      config.StrategyConfig{Mode: config.ModeSingle},
+		Targets:       []config.Target{{VirtualKey: "primary"}},
+		Observability: config.ObservabilityConfig{Tracing: config.TracingConfig{AttemptSpans: true}},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+	rec := &attemptSpanRecorder{}
+	gw.SetObservability(rec)
+	gw.RegisterProvider(&mockProvider{name: "primary", models: []string{testModel},
+		completeFn: func(context.Context, providers.Request) (*providers.Response, error) {
+			panic("provider exploded")
+		}})
+
+	var recovered any
+	func() {
+		defer func() { recovered = recover() }()
+		_, _ = gw.Route(context.Background(), providers.Request{Model: testModel, Messages: []providers.Message{{Role: "user", Content: "hi"}}})
+	}()
+
+	if recovered != "provider exploded" {
+		t.Fatalf("recovered = %v, want the original panic value to propagate unchanged", recovered)
+	}
+	if len(rec.attempts) != 1 {
+		t.Fatalf("attempt spans = %d, want 1", len(rec.attempts))
+	}
+	if !rec.attempts[0].ended {
+		t.Error("attempt span was never ended on the panic path")
+	}
+	if rec.attempts[0].err == nil {
+		t.Error("attempt span error was not set on the panic path")
+	}
+}
+
 func TestGateway_Route_AttemptSpansOffByDefault(t *testing.T) {
 	gw, rec := failoverGatewayWithAttemptSpans(t, false)
 

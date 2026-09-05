@@ -85,7 +85,26 @@ func attemptTarget[Req, Resp any](
 		if spanner != nil {
 			callCtx, attemptSpan = spanner.StartAttemptSpan(attemptCtx, target.key, *attemptSequence+1)
 		}
-		resp, err := callUnderResilience(callCtx, target.key, p, cb, lim, req, upstreamModel, call)
+		// callUnderResilience can re-panic: the circuit breaker treats a
+		// panicking provider as a failure and re-raises it so the half-open
+		// probe logic still sees it. Both cleanups below must therefore run
+		// on the panic path too, exactly once each, with the panic value
+		// unchanged. A named return plus a single deferred closure gets both
+		// without double-calling cancelAttempt on the normal path (where it
+		// still also runs inline further down, before the retry/backoff
+		// logic needs it released).
+		resp, err := func() (resp Resp, err error) {
+			defer func() {
+				if r := recover(); r != nil {
+					cancelAttempt()
+					if attemptSpan != nil {
+						endAttemptSpan(attemptSpan, fmt.Errorf("target %s: panic: %v", target.key, r))
+					}
+					panic(r)
+				}
+			}()
+			return callUnderResilience(callCtx, target.key, p, cb, lim, req, upstreamModel, call)
+		}()
 		cancelAttempt()
 		if err != nil && ctx.Err() == nil && errors.Is(context.Cause(attemptCtx), errAttemptTimeout) {
 			err = fmt.Errorf("target %s: attempt timed out after %s: %w: %w", target.key, policy.attemptTimeout, errAttemptTimeout, err)
