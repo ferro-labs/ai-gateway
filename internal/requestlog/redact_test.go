@@ -23,7 +23,11 @@ func TestSQLWriterRedactsErrorMessage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open writer: %v", err)
 	}
-	defer func() { _ = w.Close() }()
+	defer func() {
+		if err := w.Close(); err != nil {
+			t.Errorf("close request log writer: %v", err)
+		}
+	}()
 
 	raw := "all providers failed: provider mistral attempt 1: mistral API error (401): invalid api_key: " + key
 	// Written without any redaction call, exactly as an unaware caller would.

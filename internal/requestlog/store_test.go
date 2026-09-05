@@ -35,7 +35,11 @@ func TestSQLiteWriter_MigrationSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new sqlite writer: %v", err)
 	}
-	t.Cleanup(func() { _ = w.Close() })
+	t.Cleanup(func() {
+		if err := w.Close(); err != nil {
+			t.Errorf("close request log writer: %v", err)
+		}
+	})
 
 	for _, name := range []string{requestLogLedger, "request_logs", createdAtIndex} {
 		if !sqliteObjectExists(t, w.db, name) {
@@ -82,7 +86,11 @@ CREATE TABLE request_logs (
 	if err != nil {
 		t.Fatalf("open writer on legacy db: %v", err)
 	}
-	t.Cleanup(func() { _ = w.Close() })
+	t.Cleanup(func() {
+		if err := w.Close(); err != nil {
+			t.Errorf("close request log writer: %v", err)
+		}
+	})
 
 	result, err := w.List(context.Background(), Query{Limit: 10})
 	if err != nil {
@@ -102,7 +110,11 @@ func TestNewSQLiteWriter_FilePermissions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new sqlite writer: %v", err)
 	}
-	t.Cleanup(func() { _ = w.Close() })
+	t.Cleanup(func() {
+		if err := w.Close(); err != nil {
+			t.Errorf("close request log writer: %v", err)
+		}
+	})
 
 	info, err := os.Stat(path)
 	if err != nil {
@@ -120,7 +132,9 @@ func TestSQLiteWriter_WriteListDelete(t *testing.T) {
 		t.Fatalf("new sqlite writer: %v", err)
 	}
 	t.Cleanup(func() {
-		_ = w.Close()
+		if err := w.Close(); err != nil {
+			t.Errorf("close request log writer: %v", err)
+		}
 	})
 
 	now := time.Now().UTC()
@@ -217,7 +231,9 @@ func TestPostgresWriterContract(t *testing.T) {
 		// t.Context() is already canceled by the time Cleanup runs; use a
 		// fresh context for this cleanup query.
 		_, _ = w.db.ExecContext(context.Background(), "DELETE FROM request_logs")
-		_ = w.Close()
+		if err := w.Close(); err != nil {
+			t.Errorf("close postgres writer: %v", err)
+		}
 	})
 
 	_, _ = w.db.ExecContext(t.Context(), "DELETE FROM request_logs")
@@ -264,7 +280,9 @@ func TestSQLiteWriter_DefaultDSNAndZeroCreatedAt(t *testing.T) {
 		t.Fatalf("new sqlite writer with default dsn: %v", err)
 	}
 	t.Cleanup(func() {
-		_ = w.Close()
+		if err := w.Close(); err != nil {
+			t.Errorf("close request log writer: %v", err)
+		}
 	})
 
 	if _, err := os.Stat("ferrogw-requests.db"); err != nil {
@@ -297,7 +315,9 @@ func TestSQLiteWriter_ListDefaultsAndSinceFilter(t *testing.T) {
 		t.Fatalf("new sqlite writer: %v", err)
 	}
 	t.Cleanup(func() {
-		_ = w.Close()
+		if err := w.Close(); err != nil {
+			t.Errorf("close request log writer: %v", err)
+		}
 	})
 
 	base := time.Now().UTC().Add(-10 * time.Minute)
@@ -350,7 +370,9 @@ func TestDeleteRequiresBefore(t *testing.T) {
 		t.Fatalf("new sqlite writer: %v", err)
 	}
 	t.Cleanup(func() {
-		_ = w.Close()
+		if err := w.Close(); err != nil {
+			t.Errorf("close request log writer: %v", err)
+		}
 	})
 
 	_, err = w.Delete(context.Background(), MaintenanceQuery{})
@@ -411,7 +433,11 @@ func newStatsFixture(t *testing.T) (*SQLWriter, time.Time) {
 	if err != nil {
 		t.Fatalf("new sqlite writer: %v", err)
 	}
-	t.Cleanup(func() { _ = w.Close() })
+	t.Cleanup(func() {
+		if err := w.Close(); err != nil {
+			t.Errorf("close request log writer: %v", err)
+		}
+	})
 
 	base := time.Now().UTC().Truncate(time.Second)
 	// (stage, model, provider, errMsg, tokens, createdAt)
@@ -511,7 +537,11 @@ func TestSQLiteWriter_Stats_EmptyTable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new sqlite writer: %v", err)
 	}
-	t.Cleanup(func() { _ = w.Close() })
+	t.Cleanup(func() {
+		if err := w.Close(); err != nil {
+			t.Errorf("close request log writer: %v", err)
+		}
+	})
 
 	got, err := w.Stats(context.Background(), Query{})
 	if err != nil {
@@ -536,7 +566,11 @@ func TestSQLiteWriter_CreatedAtIndexExists(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new sqlite writer: %v", err)
 	}
-	t.Cleanup(func() { _ = w.Close() })
+	t.Cleanup(func() {
+		if err := w.Close(); err != nil {
+			t.Errorf("close request log writer: %v", err)
+		}
+	})
 
 	var name string
 	err = w.db.QueryRowContext(context.Background(),
@@ -583,7 +617,11 @@ func TestSQLiteWriter_Stats_Series(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new sqlite writer: %v", err)
 	}
-	t.Cleanup(func() { _ = w.Close() })
+	t.Cleanup(func() {
+		if err := w.Close(); err != nil {
+			t.Errorf("close request log writer: %v", err)
+		}
+	})
 
 	now := time.Now().UTC()
 	seriesFixture(t, w, now, 10, 5) // 10 requests, every 5th fails => 2 failures
@@ -644,7 +682,11 @@ func TestSQLiteWriter_Stats_SeriesTruncationClampsWindow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new sqlite writer: %v", err)
 	}
-	t.Cleanup(func() { _ = w.Close() })
+	t.Cleanup(func() {
+		if err := w.Close(); err != nil {
+			t.Errorf("close request log writer: %v", err)
+		}
+	})
 
 	original := seriesScanLimit
 	seriesScanLimit = 4
@@ -678,7 +720,11 @@ func TestSQLiteWriter_Stats_TopErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new sqlite writer: %v", err)
 	}
-	t.Cleanup(func() { _ = w.Close() })
+	t.Cleanup(func() {
+		if err := w.Close(); err != nil {
+			t.Errorf("close request log writer: %v", err)
+		}
+	})
 
 	now := time.Now().UTC()
 	for range 3 {
@@ -734,7 +780,11 @@ func TestSQLiteWriter_Write_NormalisesTimestampToUTC(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new sqlite writer: %v", err)
 	}
-	t.Cleanup(func() { _ = w.Close() })
+	t.Cleanup(func() {
+		if err := w.Close(); err != nil {
+			t.Errorf("close request log writer: %v", err)
+		}
+	})
 
 	// A row written with a +05:30 offset has to land in the same window as one
 	// written in UTC. The driver stores a time.Time as text and range filters
@@ -777,7 +827,11 @@ func TestSQLiteWriter_Stats_Cost(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new sqlite writer: %v", err)
 	}
-	t.Cleanup(func() { _ = w.Close() })
+	t.Cleanup(func() {
+		if err := w.Close(); err != nil {
+			t.Errorf("close request log writer: %v", err)
+		}
+	})
 
 	now := time.Now().UTC()
 	write := func(model string, cost *float64) {
@@ -822,7 +876,11 @@ func TestSQLiteWriter_Stats_LatencyPercentiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new sqlite writer: %v", err)
 	}
-	t.Cleanup(func() { _ = w.Close() })
+	t.Cleanup(func() {
+		if err := w.Close(); err != nil {
+			t.Errorf("close request log writer: %v", err)
+		}
+	})
 
 	now := time.Now().UTC()
 	// 1..100ms, and only the first ten carry a time to first token — the rest
@@ -894,7 +952,11 @@ func TestSQLiteWriter_Write_PreservesNullMeasurements(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new sqlite writer: %v", err)
 	}
-	t.Cleanup(func() { _ = w.Close() })
+	t.Cleanup(func() {
+		if err := w.Close(); err != nil {
+			t.Errorf("close request log writer: %v", err)
+		}
+	})
 
 	if err := w.Write(context.Background(), Entry{
 		Stage: "after_request", Model: "m", Provider: "p",
@@ -928,7 +990,11 @@ func TestSQLiteWriter_APIKeyRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new sqlite writer: %v", err)
 	}
-	t.Cleanup(func() { _ = w.Close() })
+	t.Cleanup(func() {
+		if err := w.Close(); err != nil {
+			t.Errorf("close request log writer: %v", err)
+		}
+	})
 
 	zero := 0.0
 	cases := []struct {

@@ -78,7 +78,9 @@ func BenchmarkTransportConcurrent(b *testing.B) {
 			b.Fatal(err)
 		}
 		_, _ = io.Copy(io.Discard, resp.Body)
-		_ = resp.Body.Close()
+		if err := resp.Body.Close(); err != nil {
+			b.Errorf("close response body: %v", err)
+		}
 	}
 
 	b.ResetTimer()
@@ -90,7 +92,9 @@ func BenchmarkTransportConcurrent(b *testing.B) {
 				b.Fatal(err)
 			}
 			_, _ = io.Copy(io.Discard, resp.Body)
-			_ = resp.Body.Close()
+			if err := resp.Body.Close(); err != nil {
+				b.Errorf("close response body: %v", err)
+			}
 		}
 	})
 }
