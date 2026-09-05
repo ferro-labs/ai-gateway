@@ -210,7 +210,18 @@ func (w *SQLWriter) topErrors(ctx context.Context, whereSQL string, args []any, 
 //
 // See seriesScanLimit for why this is not a SQL GROUP BY on a date expression.
 func (w *SQLWriter) appendSeries(ctx context.Context, result *StatsResult, whereSQL string, args []any, query Query) error {
-	buckets := min(query.SeriesBuckets, maxSeriesBuckets)
+	// Clamp here rather than trusting the caller. Stats gates this call on
+	// SeriesBuckets > 0, but that guard sits one level up and a second caller
+	// would silently lose it: zero divides by zero deriving the bucket width
+	// below, and a negative panics in make. SeriesBuckets is request-supplied,
+	// so the bound belongs where the value is used.
+	buckets := query.SeriesBuckets
+	if buckets < 1 {
+		buckets = 1
+	}
+	if buckets > maxSeriesBuckets {
+		buckets = maxSeriesBuckets
+	}
 
 	// #nosec G201 -- whereSQL is assembled from fixed predicates; every value is a bound placeholder.
 	seriesQuery := sqldb.Bind(w.dialect, fmt.Sprintf(seriesQueryTemplate, whereSQL))
