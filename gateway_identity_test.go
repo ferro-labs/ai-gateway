@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/ferro-labs/ai-gateway/config"
@@ -279,6 +280,48 @@ func TestGateway_GenerateImage_RootSpanCarriesContextIdentity(t *testing.T) {
 // The body's `user` is the gateway core's own overlay onto RequestIdentity —
 // ImageRequest.User, not any HTTP header — so it must reach the request span
 // exactly as chat's does (TestGateway_Route_BodyUserOutranksContextUser).
+func TestRequestIdentity_OverlongBodyUserIsIgnored(t *testing.T) {
+	ctx := context.Background()
+	bodyUser := strings.Repeat("a", 257)
+	newCtx, id := requestIdentity(ctx, bodyUser)
+	if id.User != "" {
+		t.Errorf("id.User = %q, want empty for an overlong body user", id.User)
+	}
+	if newCtx != ctx {
+		t.Error("context reallocated for a rejected body user, want unchanged")
+	}
+}
+
+func TestRequestIdentity_ControlCharacterBodyUserIsIgnored(t *testing.T) {
+	ctx := context.Background()
+	newCtx, id := requestIdentity(ctx, "user\x00name")
+	if id.User != "" {
+		t.Errorf("id.User = %q, want empty for a body user with a control character", id.User)
+	}
+	if newCtx != ctx {
+		t.Error("context reallocated for a rejected body user, want unchanged")
+	}
+}
+
+func TestRequestIdentity_WhitespaceOnlyBodyUserIsIgnored(t *testing.T) {
+	ctx := context.Background()
+	newCtx, id := requestIdentity(ctx, "   ")
+	if id.User != "" {
+		t.Errorf("id.User = %q, want empty for a whitespace-only body user", id.User)
+	}
+	if newCtx != ctx {
+		t.Error("context reallocated for a rejected body user, want unchanged")
+	}
+}
+
+func TestRequestIdentity_ValidBodyUserOverlaysContext(t *testing.T) {
+	ctx := observability.ContextWithRequestIdentity(context.Background(), observability.RequestIdentity{User: "ctx-user"})
+	_, id := requestIdentity(ctx, "body-user")
+	if id.User != "body-user" {
+		t.Errorf("id.User = %q, want %q", id.User, "body-user")
+	}
+}
+
 func TestGateway_GenerateImage_BodyUserOutranksContextUser(t *testing.T) {
 	gw, err := newTestGateway(t, config.Config{Targets: []config.Target{{VirtualKey: "mock"}}})
 	if err != nil {
