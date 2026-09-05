@@ -32,25 +32,29 @@ const (
 // tracing is enabled — the identity feeds the request log too.
 func requestIdentityFromHeaders(ctx context.Context, h http.Header) observability.RequestIdentity {
 	id := observability.RequestIdentity{
-		User:      identityValue(h.Get(userIDHeader)),
-		SessionID: identityValue(h.Get(sessionIDHeader)),
+		User:      IdentityValue(h.Get(userIDHeader)),
+		SessionID: IdentityValue(h.Get(sessionIDHeader)),
 	}
 	if (id.User != "" && id.SessionID != "") || h.Get(baggageHeader) == "" {
 		return id
 	}
 	bag := baggage.FromContext(propagation.Baggage{}.Extract(ctx, propagation.HeaderCarrier(h)))
 	if id.User == "" {
-		id.User = identityValue(bag.Member(baggageUserKey).Value())
+		id.User = IdentityValue(bag.Member(baggageUserKey).Value())
 	}
 	if id.SessionID == "" {
-		id.SessionID = identityValue(bag.Member(baggageSessionKey).Value())
+		id.SessionID = IdentityValue(bag.Member(baggageSessionKey).Value())
 	}
 	return id
 }
 
-// identityValue returns v trimmed, or "" when v cannot be an id: empty, longer
-// than maxIdentityValueLen, or carrying a control character.
-func identityValue(v string) string {
+// IdentityValue returns v trimmed, or "" when v cannot be an id: empty, longer
+// than maxIdentityValueLen, or carrying a control character. It is the one
+// rule applied to every identity input — the HTTP headers here and the
+// gateway core's own overlay of the OpenAI body `user` field — so a value a
+// caller cannot get past a header can not reach the same field through the
+// body either.
+func IdentityValue(v string) string {
 	v = strings.TrimSpace(v)
 	if v == "" || len(v) > maxIdentityValueLen {
 		return ""
