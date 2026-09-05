@@ -23,6 +23,7 @@ import (
 	"github.com/ferro-labs/ai-gateway/providers"
 	"github.com/ferro-labs/ai-gateway/providers/core"
 	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // gatewayIdentityHeaders address the gateway, not the provider. ReverseProxy
@@ -484,21 +485,34 @@ func propagatesTrace(src interface {
 }
 
 // injectTraceContext writes the outbound request's W3C trace context header
-// when propagation is enabled. Trace context only — the composite propagator
-// would also forward baggage, and baggage carries the caller's user and
-// session ids, which a provider has no need of.
+// when propagation is enabled and the request context carries a span this
+// gateway opened. Trace context only — the composite propagator would also
+// forward baggage, and baggage carries the caller's user and session ids,
+// which a provider has no need of.
 //
 // The caller's own traceparent/tracestate are deleted first, unconditionally.
 // ReverseProxy clones every inbound header into the outbound request before
 // Rewrite runs, so without the deletes: with propagation off the caller's
 // trace context would travel upstream through a setting the operator turned
 // off, and with it on the caller's tracestate would ride alongside a
-// traceparent from a different trace. What reaches a provider is this
-// gateway's trace context or none, never the caller's.
+// traceparent from a different trace.
+//
+// Injection itself only fires for a valid, non-remote span context. Some
+// routes (the fixed-target Files/Batches/Responses-id forwarders) open no
+// gateway span; the only span context reachable there is the one
+// internal/otel.Middleware extracted from the caller's own inbound headers,
+// which trace.SpanContextFromContext reports as remote. Injecting that back
+// would hand the provider the caller's own trace context under this
+// gateway's name. What reaches a provider is this gateway's trace context or
+// none, never the caller's.
 func injectTraceContext(propagate bool, pr *httputil.ProxyRequest) {
 	pr.Out.Header.Del("traceparent")
 	pr.Out.Header.Del("tracestate")
 	if !propagate {
+		return
+	}
+	sc := trace.SpanContextFromContext(pr.Out.Context())
+	if !sc.IsValid() || sc.IsRemote() {
 		return
 	}
 	propagation.TraceContext{}.Inject(pr.Out.Context(), propagation.HeaderCarrier(pr.Out.Header))

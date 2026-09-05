@@ -233,9 +233,12 @@ type TracingConfig struct {
 	// address the gateway, not the provider, and their own traceparent and
 	// tracestate belong to a trace the provider is not part of; all five are
 	// always stripped before forwarding regardless of this setting — it is
-	// never a pass-through of the caller's own headers. A pointer so the
-	// default is true when the key is omitted; set false to stop injecting
-	// trace context.
+	// never a pass-through of the caller's own headers. Injection itself only
+	// happens when the request carries a span this gateway opened; the
+	// fixed-target forwards open none, so those routes forward no trace
+	// context at all — never the caller's own, even with this on. A pointer
+	// so the default is true when the key is omitted; set false to stop
+	// injecting trace context.
 	PropagatePassthrough *bool `json:"propagate_passthrough,omitempty" yaml:"propagate_passthrough,omitempty"`
 }
 
