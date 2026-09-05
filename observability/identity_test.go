@@ -47,31 +47,38 @@ func TestRequestIdentity_MetadataEntryCountIsCapped(t *testing.T) {
 	}
 }
 
-func TestRequestIdentity_MetadataKeyTooLongIsDropped(t *testing.T) {
-	longKey := strings.Repeat("k", maxMetadataKeyLen+1)
-	ctx := ContextWithRequestIdentity(context.Background(), RequestIdentity{
-		Metadata: map[string]string{longKey: "v", "ok": "v"},
-	})
-	got := RequestIdentityFromContext(ctx).Metadata
-	if _, present := got[longKey]; present {
-		t.Error("an over-long metadata key was stored, want dropped")
-	}
-	if got["ok"] != "v" {
-		t.Error("a valid sibling entry was dropped alongside the over-long key")
-	}
-}
-
-func TestRequestIdentity_MetadataValueTooLongIsDropped(t *testing.T) {
-	longValue := strings.Repeat("v", maxMetadataValueLen+1)
-	ctx := ContextWithRequestIdentity(context.Background(), RequestIdentity{
-		Metadata: map[string]string{"bad": longValue, "ok": "v"},
-	})
-	got := RequestIdentityFromContext(ctx).Metadata
-	if _, present := got["bad"]; present {
-		t.Error("an entry with an over-long value was stored, want dropped")
-	}
-	if got["ok"] != "v" {
-		t.Error("a valid sibling entry was dropped alongside the over-long value")
+func TestRequestIdentity_OversizedMetadataEntryIsDropped(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		key     string
+		value   string
+		dropped string
+	}{
+		{
+			name:    "key over the length limit",
+			key:     strings.Repeat("k", maxMetadataKeyLen+1),
+			value:   "v",
+			dropped: strings.Repeat("k", maxMetadataKeyLen+1),
+		},
+		{
+			name:    "value over the length limit",
+			key:     "bad",
+			value:   strings.Repeat("v", maxMetadataValueLen+1),
+			dropped: "bad",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := ContextWithRequestIdentity(context.Background(), RequestIdentity{
+				Metadata: map[string]string{tc.key: tc.value, "ok": "v"},
+			})
+			got := RequestIdentityFromContext(ctx).Metadata
+			if _, present := got[tc.dropped]; present {
+				t.Error("an oversized metadata entry was stored, want dropped")
+			}
+			if got["ok"] != "v" {
+				t.Error("a valid sibling entry was dropped alongside the oversized one")
+			}
+		})
 	}
 }
 

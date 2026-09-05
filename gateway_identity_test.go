@@ -280,37 +280,25 @@ func TestGateway_GenerateImage_RootSpanCarriesContextIdentity(t *testing.T) {
 // The body's `user` is the gateway core's own overlay onto RequestIdentity —
 // ImageRequest.User, not any HTTP header — so it must reach the request span
 // exactly as chat's does (TestGateway_Route_BodyUserOutranksContextUser).
-func TestRequestIdentity_OverlongBodyUserIsIgnored(t *testing.T) {
-	ctx := context.Background()
-	bodyUser := strings.Repeat("a", 257)
-	newCtx, id := requestIdentity(ctx, bodyUser)
-	if id.User != "" {
-		t.Errorf("id.User = %q, want empty for an overlong body user", id.User)
-	}
-	if newCtx != ctx {
-		t.Error("context reallocated for a rejected body user, want unchanged")
-	}
-}
-
-func TestRequestIdentity_ControlCharacterBodyUserIsIgnored(t *testing.T) {
-	ctx := context.Background()
-	newCtx, id := requestIdentity(ctx, "user\x00name")
-	if id.User != "" {
-		t.Errorf("id.User = %q, want empty for a body user with a control character", id.User)
-	}
-	if newCtx != ctx {
-		t.Error("context reallocated for a rejected body user, want unchanged")
-	}
-}
-
-func TestRequestIdentity_WhitespaceOnlyBodyUserIsIgnored(t *testing.T) {
-	ctx := context.Background()
-	newCtx, id := requestIdentity(ctx, "   ")
-	if id.User != "" {
-		t.Errorf("id.User = %q, want empty for a whitespace-only body user", id.User)
-	}
-	if newCtx != ctx {
-		t.Error("context reallocated for a rejected body user, want unchanged")
+func TestRequestIdentity_UnusableBodyUserIsIgnored(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		bodyUser string
+	}{
+		{name: "longer than the id limit", bodyUser: strings.Repeat("a", 257)},
+		{name: "carrying a control character", bodyUser: "user\x00name"},
+		{name: "whitespace only", bodyUser: "   "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			newCtx, id := requestIdentity(ctx, tc.bodyUser)
+			if id.User != "" {
+				t.Errorf("id.User = %q, want empty for a body user %s", id.User, tc.name)
+			}
+			if newCtx != ctx {
+				t.Error("context reallocated for a rejected body user, want unchanged")
+			}
+		})
 	}
 }
 

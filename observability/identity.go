@@ -56,10 +56,9 @@ type identityKey struct{}
 // from request headers; an embedder calls it before Route, RouteStream or any
 // other gateway entry point.
 //
-// id.Metadata is bounded before it is stored — see RequestIdentity.Metadata —
-// so every reader downstream (span attributes, routing-attempt and lifecycle
-// events, request-log rows) sees an already-bounded map without bounding it
-// again itself.
+// id.Metadata is stored bounded — see RequestIdentity.Metadata — so a caller
+// passing more entries, or longer ones, than the limits allow gets the excess
+// dropped rather than an error.
 func ContextWithRequestIdentity(ctx context.Context, id RequestIdentity) context.Context {
 	id.Metadata = boundedMetadata(id.Metadata)
 	return context.WithValue(ctx, identityKey{}, id)
