@@ -320,11 +320,15 @@ func (g *Gateway) Embed(ctx context.Context, req providers.EmbeddingRequest) (*p
 	// See Route: exported entry point, so it seeds its own trace ID rather than
 	// assuming HTTP middleware ran above it.
 	ctx = logger.EnsureTraceID(ctx)
+	ctx, identity := requestIdentity(ctx, req.User)
 	ctx, span := obs.StartRequestSpan(ctx, observability.RequestAttrs{
 		Operation:       surfaceEmbeddings,
 		RequestModel:    req.Model,
 		TraceID:         logger.TraceIDFromContext(ctx),
 		RoutingStrategy: strategyMode,
+		User:            identity.User,
+		SessionID:       identity.SessionID,
+		Metadata:        identity.Metadata,
 	})
 	defer span.End()
 
@@ -389,11 +393,15 @@ func (g *Gateway) GenerateImage(ctx context.Context, req providers.ImageRequest)
 	// See Route: exported entry point, so it seeds its own trace ID rather than
 	// assuming HTTP middleware ran above it.
 	ctx = logger.EnsureTraceID(ctx)
+	ctx, identity := requestIdentity(ctx, req.User)
 	ctx, span := obs.StartRequestSpan(ctx, observability.RequestAttrs{
 		Operation:       "images.generate",
 		RequestModel:    req.Model,
 		TraceID:         logger.TraceIDFromContext(ctx),
 		RoutingStrategy: strategyMode,
+		User:            identity.User,
+		SessionID:       identity.SessionID,
+		Metadata:        identity.Metadata,
 	})
 	defer span.End()
 
@@ -452,11 +460,15 @@ func (g *Gateway) Rerank(ctx context.Context, req providers.RerankRequest) (*pro
 	// See Route: exported entry point, so it seeds its own trace ID rather than
 	// assuming HTTP middleware ran above it.
 	ctx = logger.EnsureTraceID(ctx)
+	ctx, identity := requestIdentity(ctx, "")
 	ctx, span := obs.StartRequestSpan(ctx, observability.RequestAttrs{
 		Operation:       surfaceRerank,
 		RequestModel:    req.Model,
 		TraceID:         logger.TraceIDFromContext(ctx),
 		RoutingStrategy: strategyMode,
+		User:            identity.User,
+		SessionID:       identity.SessionID,
+		Metadata:        identity.Metadata,
 	})
 	defer span.End()
 
@@ -523,11 +535,15 @@ func (g *Gateway) Moderate(ctx context.Context, req providers.ModerationRequest)
 	// See Route: exported entry point, so it seeds its own trace ID rather than
 	// assuming HTTP middleware ran above it.
 	ctx = logger.EnsureTraceID(ctx)
+	ctx, identity := requestIdentity(ctx, "")
 	ctx, span := obs.StartRequestSpan(ctx, observability.RequestAttrs{
 		Operation:       surfaceModeration,
 		RequestModel:    req.Model,
 		TraceID:         logger.TraceIDFromContext(ctx),
 		RoutingStrategy: strategyMode,
+		User:            identity.User,
+		SessionID:       identity.SessionID,
+		Metadata:        identity.Metadata,
 	})
 	defer span.End()
 
@@ -584,11 +600,15 @@ func (g *Gateway) Transcribe(ctx context.Context, req providers.TranscriptionReq
 	// See Route: exported entry point, so it seeds its own trace ID rather than
 	// assuming HTTP middleware ran above it.
 	ctx = logger.EnsureTraceID(ctx)
+	ctx, identity := requestIdentity(ctx, "")
 	ctx, span := obs.StartRequestSpan(ctx, observability.RequestAttrs{
 		Operation:       surfaceTranscription,
 		RequestModel:    req.Model,
 		TraceID:         logger.TraceIDFromContext(ctx),
 		RoutingStrategy: strategyMode,
+		User:            identity.User,
+		SessionID:       identity.SessionID,
+		Metadata:        identity.Metadata,
 	})
 	defer span.End()
 
@@ -644,11 +664,15 @@ func (g *Gateway) Speech(ctx context.Context, req providers.SpeechRequest) (*pro
 	// See Route: exported entry point, so it seeds its own trace ID rather than
 	// assuming HTTP middleware ran above it.
 	ctx = logger.EnsureTraceID(ctx)
+	ctx, identity := requestIdentity(ctx, "")
 	ctx, span := obs.StartRequestSpan(ctx, observability.RequestAttrs{
 		Operation:       surfaceSpeech,
 		RequestModel:    req.Model,
 		TraceID:         logger.TraceIDFromContext(ctx),
 		RoutingStrategy: strategyMode,
+		User:            identity.User,
+		SessionID:       identity.SessionID,
+		Metadata:        identity.Metadata,
 	})
 	defer span.End()
 

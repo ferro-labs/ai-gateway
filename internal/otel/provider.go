@@ -91,8 +91,23 @@ func (p *otelProvider) StartRequestSpan(ctx context.Context, attrs observability
 	if attrs.ResponseModel != "" {
 		span.SetAttributes(attribute.String(observability.AttrGenAIResponseModel, attrs.ResponseModel))
 	}
+	stampIdentity(span, attrs.User, attrs.SessionID, attrs.Metadata)
 
 	return ctx, &otelSpan{span: span, redactor: p.redactor, privacy: p.privacyLevel}
+}
+
+// stampIdentity records the request identity attributes, skipping the ones
+// the caller left empty so an anonymous request carries none of them.
+func stampIdentity(span trace.Span, user, sessionID string, metadata map[string]string) {
+	if user != "" {
+		span.SetAttributes(attribute.String(observability.AttrEndUserID, user))
+	}
+	if sessionID != "" {
+		span.SetAttributes(attribute.String(observability.AttrSessionID, sessionID))
+	}
+	for key, value := range metadata {
+		span.SetAttributes(attribute.String(observability.AttrFerroRequestMetadataPrefix+key, value))
+	}
 }
 
 // RecordEvent enqueues an event for asynchronous delivery to every registered
@@ -435,5 +450,20 @@ var (
 	_ observability.Provider                        = (*otelProvider)(nil)
 	_ observability.EventRecordingProvider          = (*otelProvider)(nil)
 	_ observability.RoutingAttemptRecordingProvider = (*otelProvider)(nil)
+	_ observability.AttemptSpanProvider             = (*otelProvider)(nil)
 	_ observability.Span                            = (*otelSpan)(nil)
 )
+
+// StartAttemptSpan opens the per-attempt CLIENT span under whatever span ctx
+// carries — the request span on every routed surface — pre-stamped with the
+// target key and the attempt's sequence number.
+func (p *otelProvider) StartAttemptSpan(ctx context.Context, targetKey string, sequence int) (context.Context, observability.Span) {
+	ctx, attempt := p.tracer.Start(ctx, observability.SpanNameRoutingAttempt,
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(
+			attribute.String(observability.AttrFerroRoutingTargetKey, targetKey),
+			attribute.Int(observability.AttrFerroRoutingSequence, sequence),
+		),
+	)
+	return ctx, &otelSpan{span: attempt, redactor: p.redactor, privacy: p.privacyLevel}
+}

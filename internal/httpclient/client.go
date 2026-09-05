@@ -50,10 +50,10 @@ func New(timeout time.Duration) *http.Client {
 }
 
 // SharedStreamingTransport exposes the raw SSE-tuned transport (no
-// ResponseHeaderTimeout) WITHOUT the otelhttp wrapper. Use for transparent
-// pass-through (e.g. the proxy) that needs the streaming tuning but must not
-// inject traceparent headers or emit an extra OTel CLIENT span. Callers that
-// want OTel propagation should use SharedStreaming instead.
+// ResponseHeaderTimeout) WITHOUT the otelhttp wrapper, so a caller emits no
+// extra OTel CLIENT span per call. The pass-through proxy uses it and injects
+// trace context itself. Callers that want the CLIENT span as well should use
+// SharedStreaming instead.
 func SharedStreamingTransport() *http.Transport {
 	return manager.StreamTransport()
 }

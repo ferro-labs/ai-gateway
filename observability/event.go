@@ -26,6 +26,12 @@ type RequestAttrs struct {
 	// trace_id when OTel is active; equal to logger.TraceIDFromContext
 	// in all cases).
 	TraceID string
+	// User, SessionID and Metadata are the request identity the gateway
+	// resolved (see RequestIdentity): empty when the caller supplied none.
+	// Recorded as enduser.id, session.id and ferro.request.metadata.<key>.
+	User      string
+	SessionID string
+	Metadata  map[string]string
 }
 
 // CostBreakdown maps to ferro.cost.* span attributes and to the cost
@@ -69,6 +75,13 @@ type RoutingAttempt struct {
 	Status         int
 	Outcome        RoutingAttemptOutcome
 	Error          string
+	// User, SessionID and Metadata are the request identity this attempt was
+	// made under (see RequestIdentity); the same values sit on the enclosing
+	// Event, so a consumer reading only the payload still has them. Metadata
+	// is owned by this event; an Exporter must treat it as read-only.
+	User      string
+	SessionID string
+	Metadata  map[string]string
 }
 
 // Event is the payload broadcast to all registered Exporter plugins
@@ -84,6 +97,13 @@ type Event struct {
 	Subject string
 	// TraceID is the gateway request trace ID.
 	TraceID string
+	// User, SessionID and Metadata are the request identity the request was
+	// recorded under (see RequestIdentity). Empty when the caller supplied
+	// none. Metadata is owned by this event; an Exporter must treat it as
+	// read-only.
+	User      string
+	SessionID string
+	Metadata  map[string]string
 	// Provider is the resolved provider name.
 	Provider string
 	// Model is the resolved model name.

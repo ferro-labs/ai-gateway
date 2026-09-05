@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
-	"strings"
 	"time"
 
 	"github.com/ferro-labs/ai-gateway/internal/apierror"
@@ -19,11 +18,13 @@ import (
 // API root `target` with `authHeaders` injected — and streams the response back.
 // It is the shared core of the surfaces that forward to a single configured
 // backend rather than routing by model (Files/Batches and the Responses id
-// sub-routes), and it reuses the /v1/* proxy's security machinery: the gateway's
-// own /v1 prefix is stripped so the operation hangs beneath the root, the client
-// credential is replaced by the provider's, an upstream that echoes the injected
-// credential is redacted (bounded by sanitizeScanBudget), and the streaming idle
-// bound replaces the WriteTimeout that WrapResponseWriter clears. The caller has
+// sub-routes), and it reuses the /v1/* proxy's security machinery: it shares
+// buildRewrite, so the gateway's own /v1 prefix is stripped, the client
+// credential is replaced by the provider's, the caller-identity headers that
+// address the gateway are dropped, and trace context is injected when
+// propagateTrace is set. An upstream that echoes the injected credential is
+// redacted (bounded by sanitizeScanBudget), and the streaming idle bound
+// replaces the WriteTimeout that WrapResponseWriter clears. The caller has
 // already validated the path (unsafeProxyPath) and resolved target/authHeaders.
 //
 // wrapBody, when non-nil, wraps the response body just before it streams to the
@@ -35,7 +36,7 @@ import (
 // the ErrorHandler has already written the client's response in that case). A
 // governed caller uses these to score the circuit breaker and record the
 // outcome; a straight caller (Files/Batches) ignores them.
-func forwardFixedTarget(w http.ResponseWriter, r *http.Request, target *url.URL, authHeaders map[string]string, providerName string, wrapBody func(*http.Response)) (upstreamStatus int, forwardErr error) {
+func forwardFixedTarget(w http.ResponseWriter, r *http.Request, target *url.URL, authHeaders map[string]string, providerName string, propagateTrace bool, wrapBody func(*http.Response)) (upstreamStatus int, forwardErr error) {
 	secrets := injectedSecrets(authHeaders)
 
 	upstreamCtx, cancelUpstream := context.WithCancel(r.Context())
@@ -45,19 +46,7 @@ func forwardFixedTarget(w http.ResponseWriter, r *http.Request, target *url.URL,
 	proxy := &httputil.ReverseProxy{
 		Transport:     httpclient.SharedStreamingTransport(),
 		FlushInterval: proxyFlushInterval,
-		Rewrite: func(pr *httputil.ProxyRequest) {
-			pr.Out.URL.Path = strings.TrimPrefix(pr.Out.URL.Path, "/v1")
-			if pr.Out.URL.RawPath != "" {
-				pr.Out.URL.RawPath = strings.TrimPrefix(pr.Out.URL.RawPath, "/v1")
-			}
-			pr.SetURL(target)
-			pr.Out.Header.Del("Authorization")
-			pr.Out.Header.Del("X-Provider")
-			for k, v := range authHeaders {
-				pr.Out.Header.Set(k, v)
-			}
-			pr.SetXForwarded()
-		},
+		Rewrite:       buildRewrite(target, authHeaders, propagateTrace),
 		ModifyResponse: func(resp *http.Response) error {
 			upstreamStatus = resp.StatusCode
 			resp.Header.Set("X-Gateway-Provider", providerName)

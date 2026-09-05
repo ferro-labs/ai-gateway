@@ -205,14 +205,33 @@ func completedEventData(traceID, provider, model string, latency time.Duration, 
 	return events.CompletedRequest(traceID, provider, model, latency, stream, tokensIn, tokensOut, cost, true)
 }
 
+// cloneMetadata returns a fresh copy of m, or nil when m is empty, so that two
+// events sharing one RequestIdentity never alias the same map — an exporter
+// mutating one event's Metadata must not corrupt a sibling event's.
+func cloneMetadata(m map[string]string) map[string]string {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
 // obsEventFromHook converts an internal HookEvent into the public
 // observability.Event that is broadcast to plugin Exporters via
-// Provider.RecordEvent. No prompt or response content is included —
-// only request metadata and usage/cost numbers.
-func obsEventFromHook(e events.HookEvent) observability.Event {
+// Provider.RecordEvent. No prompt or response content is included — only
+// request metadata, the request identity carried by ctx, and usage/cost
+// numbers.
+func obsEventFromHook(ctx context.Context, e events.HookEvent) observability.Event {
+	id := observability.RequestIdentityFromContext(ctx)
 	return observability.Event{
 		Subject:   e.Subject,
 		TraceID:   e.TraceID,
+		User:      id.User,
+		SessionID: id.SessionID,
+		Metadata:  cloneMetadata(id.Metadata),
 		Provider:  e.Provider,
 		Model:     e.Model,
 		Status:    e.Status,

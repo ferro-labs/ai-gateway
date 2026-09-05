@@ -22,7 +22,50 @@ import (
 	"github.com/ferro-labs/ai-gateway/pkg/logger"
 	"github.com/ferro-labs/ai-gateway/providers"
 	"github.com/ferro-labs/ai-gateway/providers/core"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
+
+// gatewayIdentityHeaders address the gateway, not the provider. ReverseProxy
+// clones every inbound header into the outbound request before Rewrite runs,
+// so left alone these travel upstream verbatim, carrying whatever a caller
+// put in them — including baggage-encoded user/session ids, which is exactly
+// the identity leak trace-context injection is meant not to introduce.
+var gatewayIdentityHeaders = []string{"baggage", "X-User-ID", "X-Session-ID"}
+
+// stripGatewayIdentityHeaders deletes the caller-identity headers from the
+// outbound request. See gatewayIdentityHeaders for why they must not travel
+// upstream.
+func stripGatewayIdentityHeaders(pr *httputil.ProxyRequest) {
+	for _, h := range gatewayIdentityHeaders {
+		pr.Out.Header.Del(h)
+	}
+}
+
+// buildRewrite returns the ReverseProxy.Rewrite func for one resolved
+// pass-through: point the request at target, drop headers that address the
+// gateway rather than the provider, install the provider's own credential,
+// and inject trace context when propagateTrace is set.
+func buildRewrite(target *url.URL, authHeaders map[string]string, propagateTrace bool) func(*httputil.ProxyRequest) {
+	return func(pr *httputil.ProxyRequest) {
+		// Path and RawPath are trimmed of the same literal so the two
+		// stay consistent for SetURL's escaping-aware join; /v1 contains
+		// nothing that escapes, so both carry it verbatim.
+		pr.Out.URL.Path = strings.TrimPrefix(pr.Out.URL.Path, "/v1")
+		if pr.Out.URL.RawPath != "" {
+			pr.Out.URL.RawPath = strings.TrimPrefix(pr.Out.URL.RawPath, "/v1")
+		}
+		pr.SetURL(target)
+		pr.Out.Header.Del("X-Provider")
+		pr.Out.Header.Del("Authorization")
+		stripGatewayIdentityHeaders(pr)
+		for k, v := range authHeaders {
+			pr.Out.Header.Set(k, v)
+		}
+		pr.SetXForwarded()
+		injectTraceContext(propagateTrace, pr)
+	}
+}
 
 // proxyFlushInterval forces the reverse proxy to flush buffered bytes to the
 // client immediately after each write. A negative value disables write
@@ -110,6 +153,10 @@ func Handler(src providers.ProviderSource) http.HandlerFunc {
 
 func passThroughHandler(src providers.ProviderSource) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Read per request, not once at Handler construction, so a live
+		// ReloadConfig flip of observability.tracing.propagate_passthrough
+		// takes effect on the next request rather than needing a restart.
+		propagateTrace := propagatesTrace(src)
 		p, model, ok := ResolveProvider(r, src)
 		if !ok {
 			// The caller named a provider explicitly. Telling them to set the
@@ -210,11 +257,11 @@ func passThroughHandler(src providers.ProviderSource) http.HandlerFunc {
 		secrets := injectedSecrets(authHeaders)
 
 		// Use the raw SSE-tuned transport (no ResponseHeaderTimeout) so slow or
-		// streaming pass-through endpoints are not cut off at 30s while waiting
-		// for the upstream's first response header. The raw transport (not the
-		// otelhttp-wrapped client RoundTripper) keeps this a transparent proxy:
-		// no traceparent/tracestate injected into upstream requests and no extra
-		// OTel CLIENT span per proxied call.
+		// streaming pass-through endpoints are not cut off while waiting for the
+		// upstream's first response header. The raw transport, not the
+		// otelhttp-wrapped client, so no extra OTel CLIENT span is emitted per
+		// proxied call; trace context is injected explicitly in Rewrite below,
+		// governed by observability.tracing.propagate_passthrough.
 		//
 		// Providers requiring per-request signing (e.g. AWS SigV4) wrap that
 		// transport so the fully-formed outbound request is signed; a signing
@@ -242,22 +289,7 @@ func passThroughHandler(src providers.ProviderSource) http.HandlerFunc {
 		proxy := &httputil.ReverseProxy{
 			Transport:     transport,
 			FlushInterval: proxyFlushInterval,
-			Rewrite: func(pr *httputil.ProxyRequest) {
-				// Path and RawPath are trimmed of the same literal so the two
-				// stay consistent for SetURL's escaping-aware join; /v1 contains
-				// nothing that escapes, so both carry it verbatim.
-				pr.Out.URL.Path = strings.TrimPrefix(pr.Out.URL.Path, "/v1")
-				if pr.Out.URL.RawPath != "" {
-					pr.Out.URL.RawPath = strings.TrimPrefix(pr.Out.URL.RawPath, "/v1")
-				}
-				pr.SetURL(target)
-				pr.Out.Header.Del("X-Provider")
-				pr.Out.Header.Del("Authorization")
-				for k, v := range authHeaders {
-					pr.Out.Header.Set(k, v)
-				}
-				pr.SetXForwarded()
-			},
+			Rewrite:       buildRewrite(target, authHeaders, propagateTrace),
 			ModifyResponse: func(resp *http.Response) error {
 				// Recorded, not acted on: returning an error here would make the
 				// reverse proxy swallow the upstream's own response and answer
@@ -428,6 +460,62 @@ func isHex(b byte) bool {
 // Gateway.RoutePassthrough.
 type passthroughGovernor interface {
 	RoutePassthrough(ctx context.Context, target, model, body string, bodyInspectable bool, forward func(context.Context) error) error
+}
+
+// passthroughTracePolicy is a source that says whether forwards carry the
+// gateway's trace context upstream. *Gateway implements it from
+// observability.tracing.propagate_passthrough. A source that does not — a bare
+// *providers.Registry — propagates, which is the configured default.
+type passthroughTracePolicy interface {
+	PropagatesPassthroughTrace() bool
+}
+
+// propagatesTrace takes any of this package's source interfaces (the generic
+// pass-through's providers.ProviderSource, or the narrower BatchSource /
+// ResponsesSource) — all of them resolve a provider by name, and that is the
+// only method this needs to compile against. It is narrowed to that single
+// method, rather than left as `any`, so a call site passing the wrong value
+// fails to build instead of silently type-asserting to false and propagating
+// trace context an operator disabled.
+func propagatesTrace(src interface {
+	Get(name string) (providers.Provider, bool)
+}) bool {
+	policy, ok := src.(passthroughTracePolicy)
+	return !ok || policy.PropagatesPassthroughTrace()
+}
+
+// injectTraceContext writes the outbound request's W3C trace context header
+// when propagation is enabled and the request context carries a span this
+// gateway opened. Trace context only — the composite propagator would also
+// forward baggage, and baggage carries the caller's user and session ids,
+// which a provider has no need of.
+//
+// The caller's own traceparent/tracestate are deleted first, unconditionally.
+// ReverseProxy clones every inbound header into the outbound request before
+// Rewrite runs, so without the deletes: with propagation off the caller's
+// trace context would travel upstream through a setting the operator turned
+// off, and with it on the caller's tracestate would ride alongside a
+// traceparent from a different trace.
+//
+// Injection itself only fires for a valid, non-remote span context. Some
+// routes (the fixed-target Files/Batches/Responses-id forwarders) open no
+// gateway span; the only span context reachable there is the one
+// internal/otel.Middleware extracted from the caller's own inbound headers,
+// which trace.SpanContextFromContext reports as remote. Injecting that back
+// would hand the provider the caller's own trace context under this
+// gateway's name. What reaches a provider is this gateway's trace context or
+// none, never the caller's.
+func injectTraceContext(propagate bool, pr *httputil.ProxyRequest) {
+	pr.Out.Header.Del("traceparent")
+	pr.Out.Header.Del("tracestate")
+	if !propagate {
+		return
+	}
+	sc := trace.SpanContextFromContext(pr.Out.Context())
+	if !sc.IsValid() || sc.IsRemote() {
+		return
+	}
+	propagation.TraceContext{}.Inject(pr.Out.Context(), propagation.HeaderCarrier(pr.Out.Header))
 }
 
 // signingRoundTripper signs each outbound proxied request via a provider's

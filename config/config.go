@@ -218,6 +218,34 @@ type TracingConfig struct {
 	// standard OTEL_EXPORTER_OTLP_HEADERS environment variable also applies per
 	// OTel convention.
 	Headers map[string]string `json:"headers,omitempty" yaml:"headers,omitempty"`
+	// AttemptSpans opens one CLIENT child span, gateway.routing.attempt, per
+	// routing-layer attempt — retries and failovers included — carrying
+	// ferro.routing.target_key, ferro.routing.sequence and
+	// ferro.routing.outcome, so a trace shows which targets a request tried
+	// and in what order. Off by default: a request that retried produces
+	// several, and a dashboard counting spans per request would over-count.
+	AttemptSpans bool `json:"attempt_spans,omitempty" yaml:"attempt_spans,omitempty"`
+	// PropagatePassthrough injects the W3C traceparent (and tracestate) into
+	// requests the /v1/* pass-through and the fixed-target forwards
+	// (/v1/responses create and its id sub-routes, /v1/files, /v1/batches)
+	// forward upstream, so a provider that records traces joins the
+	// gateway's. The caller's baggage, X-User-ID and X-Session-ID headers
+	// address the gateway, not the provider, and their own traceparent and
+	// tracestate belong to a trace the provider is not part of; all five are
+	// always stripped before forwarding regardless of this setting — it is
+	// never a pass-through of the caller's own headers. Injection itself only
+	// happens when the request carries a span this gateway opened; the
+	// fixed-target forwards open none, so those routes forward no trace
+	// context at all — never the caller's own, even with this on. A pointer
+	// so the default is true when the key is omitted; set false to stop
+	// injecting trace context.
+	PropagatePassthrough *bool `json:"propagate_passthrough,omitempty" yaml:"propagate_passthrough,omitempty"`
+}
+
+// PropagatesPassthrough reports whether the pass-through proxy injects trace
+// context upstream: true unless propagate_passthrough is explicitly false.
+func (t TracingConfig) PropagatesPassthrough() bool {
+	return t.PropagatePassthrough == nil || *t.PropagatePassthrough
 }
 
 // StrategyConfig defines the routing strategy.

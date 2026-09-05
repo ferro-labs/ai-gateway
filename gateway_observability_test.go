@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -576,7 +577,7 @@ func TestGateway_Route_RecordsEachRetryAndFailoverAttempt(t *testing.T) {
 			t.Errorf("attempt %d latency = %d, want non-negative", i+1, got.LatencyMs)
 		}
 		got.LatencyMs = 0
-		if got != want[i] {
+		if !reflect.DeepEqual(got, want[i]) {
 			t.Errorf("attempt %d = %#v, want %#v", i+1, got, want[i])
 		}
 	}

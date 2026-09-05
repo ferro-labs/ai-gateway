@@ -39,6 +39,8 @@ observability:
     sample_ratio: 1.0          # head sampler (0.0–1.0), wrapped in ParentBased
     privacy_level: metadata    # none | metadata | full
     shutdown_grace: 10s        # per shutdown stage
+    attempt_spans: false       # one gateway.routing.attempt span per routing attempt
+    propagate_passthrough: true # traceparent on /v1/* pass-through forwards
 ```
 
 Either the config `endpoint` or an `OTEL_EXPORTER_OTLP_*` variable switches
@@ -122,20 +124,86 @@ generated traffic in one command — see [`../deploy/compose.fullstack.yaml`](..
 
 Every routed request produces a `gateway.request` root span (`SERVER` kind) and a
 `CLIENT` child span per outbound provider call, which carries `traceparent`
-upstream.
+upstream. The `/v1/*` pass-through and the fixed-target forwards
+(`/v1/responses` create and its id sub-routes, `/v1/files`, `/v1/batches`)
+forward `traceparent` too (turn it off with `propagate_passthrough: false`);
+neither emits an extra span of its own. A caller's own `traceparent` and
+`tracestate` are dropped before forwarding either way, so a provider sees this
+gateway's trace context or none, never the caller's.
 
 - **GenAI semantic conventions**: `gen_ai.system`, `gen_ai.operation.name`,
   `gen_ai.request.model`, `gen_ai.response.model`,
   `gen_ai.usage.{input,output}_tokens`.
+- **Request identity**: `enduser.id`, `session.id`, and one
+  `ferro.request.metadata.<key>` per metadata entry — see
+  [Request identity](#request-identity).
 - **`ferro.*` extensions**: `ferro.cost.*` (per-request USD cost),
-  `ferro.routing.{strategy,target_key}`, `ferro.stream.time_to_{first,last}_token_ms`,
+  `ferro.routing.{strategy,target_key,attempt}`, `ferro.stream.time_to_{first,last}_token_ms`,
   `ferro.plugin.*`, `ferro.mcp.*`, `ferro.gateway.trace_id`.
+- **Per-attempt spans** (`attempt_spans: true`): one `gateway.routing.attempt`
+  `CLIENT` span per routing-layer attempt — retries and failovers included —
+  under the request span, carrying `ferro.routing.target_key`,
+  `ferro.routing.sequence` (1-based) and `ferro.routing.outcome`
+  (`success` | `error`). On chat, embeddings and images the provider's HTTP
+  span nests beneath it; on a streamed request the attempt span ends when the
+  stream starts, so the HTTP span is its sibling — see `AttemptSpanProvider`.
+  Either way a trace shows which targets were tried and in what order. Off by default because a
+  request that retried produces several, and a dashboard that counts spans
+  per request would over-count.
 - **Unified trace ID**: the OTel `trace_id`, the `X-Request-ID` response header,
   and the `trace_id` on every log line are equal for a request served through the
-  gateway's HTTP stack.
+  gateway's HTTP stack. A 32-hex `X-Request-ID` sent by the caller is adopted
+  unchanged.
 - **Sampling**: `sample_ratio` governs the spans the gateway starts. The sampler
   is `ParentBased`, so an inbound sampled `traceparent` is always followed — a
   ratio below 1.0 never splits a distributed trace.
+
+## Request identity
+
+A request can say who it is for. The gateway records that on the request span,
+on every `gateway.request.completed` / `gateway.request.failed` /
+`gateway.routing.attempt` event (`Event.User`, `Event.SessionID`,
+`Event.Metadata`, and the same fields on `RoutingAttempt`), and on request-log
+rows (`user_id`, `session_id` in `GET /admin/logs`). Nothing is inferred: a
+request that states no identity records none.
+
+`X-User-ID`, `X-Session-ID` and the `baggage` entries are caller-asserted and
+unauthenticated — the gateway does not verify that the caller is who it
+claims, so treat them as a label for grouping and attribution, not as an
+access-control signal.
+
+| Field | Read from (first non-empty wins) | Recorded as |
+|---|---|---|
+| end-user id | OpenAI body `user` · `X-User-ID` header · `baggage` entry `user.id` | `enduser.id`, `user_id` |
+| session id | `X-Session-ID` header · `baggage` entry `session.id` | `session.id`, `session_id` |
+| metadata | embedders only, via `observability.ContextWithRequestIdentity` | `ferro.request.metadata.<key>` |
+
+Request metadata is set by embedders through `ContextWithRequestIdentity`; the
+HTTP layer reads no metadata header or body field in this release.
+`X-Gateway-Metadata` is a separate, existing header read only by conditional
+routing (see [Attribution headers](../AGENTS.md#attribution-headers)); it is not
+trace metadata and does not populate `RequestIdentity`.
+
+A header value longer than 256 bytes, or carrying a control character, is
+ignored. Unknown JSON body fields are still accepted and ignored, as OpenAI
+clients expect; `session_id` and `metadata` are not body fields on this surface.
+
+Embedders set or read the identity on the context:
+
+```go
+ctx = observability.ContextWithRequestIdentity(ctx, observability.RequestIdentity{
+    User:      "user-42",
+    SessionID: "sess-7",
+    Metadata:  map[string]string{"team": "search"},
+})
+resp, err := gw.Route(ctx, req)
+// …and in an Exporter:
+id := observability.RequestIdentityFromContext(ctx)
+```
+
+Identity is never forwarded to a provider by the gateway beyond what the
+caller's own request already carried (the OpenAI `user` field). Baggage is not
+propagated upstream.
 
 ## Privacy levels
 

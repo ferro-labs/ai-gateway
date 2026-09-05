@@ -3,6 +3,7 @@ package middleware
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -254,11 +255,43 @@ func TestCORS_StandardHeaders_AlwaysSet(t *testing.T) {
 	if got := w.Header().Get("Access-Control-Allow-Methods"); got != "GET, POST, PUT, DELETE, OPTIONS" {
 		t.Fatalf("unexpected Allow-Methods: %q", got)
 	}
-	if got := w.Header().Get("Access-Control-Allow-Headers"); got != "Content-Type, Authorization, X-Provider" {
+	if got := w.Header().Get("Access-Control-Allow-Headers"); got != "Content-Type, Authorization, X-Provider, X-User-ID, X-Session-ID, Baggage" {
 		t.Fatalf("unexpected Allow-Headers: %q", got)
 	}
 	if got := w.Header().Get("Access-Control-Max-Age"); got != "86400" {
 		t.Fatalf("unexpected Max-Age: %q", got)
+	}
+}
+
+func TestCORS_IdentityHeadersPreflight(t *testing.T) {
+	for _, origin := range []string{"https://app.example", "https://untrusted.example"} {
+		t.Run(origin, func(t *testing.T) {
+			handler := CORS("https://app.example")(dummyHandler)
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodOptions, "/v1/chat/completions", nil)
+			req.Header.Set("Origin", origin)
+			req.Header.Set("Access-Control-Request-Method", "POST")
+			req.Header.Set("Access-Control-Request-Headers", "x-user-id,x-session-id,baggage")
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusNoContent {
+				t.Fatalf("status = %d, want 204", rec.Code)
+			}
+			if origin != "https://app.example" {
+				if rec.Header().Get("Access-Control-Allow-Origin") != "" || rec.Header().Get("Access-Control-Allow-Headers") != "" {
+					t.Fatal("untrusted origin received CORS permission")
+				}
+				return
+			}
+			allowed := make(map[string]bool)
+			for _, header := range strings.Split(rec.Header().Get("Access-Control-Allow-Headers"), ",") {
+				allowed[strings.ToLower(strings.TrimSpace(header))] = true
+			}
+			for _, header := range []string{"x-user-id", "x-session-id", "baggage"} {
+				if !allowed[header] {
+					t.Errorf("preflight does not allow %s", header)
+				}
+			}
+		})
 	}
 }
 

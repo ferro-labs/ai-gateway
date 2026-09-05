@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel/propagation"
 )
 
 // Config holds transport configuration.
@@ -192,7 +193,9 @@ func (m *Manager) buildClient(cfg Config, streaming bool) (*http.Client, *http.T
 	}
 
 	return &http.Client{
-		Transport: otelhttp.NewTransport(t),
+		// Inbound baggage includes gateway-only user and session identity.
+		// Keep outbound trace linkage without re-injecting that baggage.
+		Transport: otelhttp.NewTransport(t, otelhttp.WithPropagators(propagation.TraceContext{})),
 		// No global Timeout — use context.WithTimeout per request.
 		// LLM streaming responses can legitimately take 60-120s.
 		CheckRedirect: noRedirect,

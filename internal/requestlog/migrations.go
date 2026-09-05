@@ -46,6 +46,7 @@ func requestLogSteps(dialect sqldb.Dialect) []migrations.Step {
 		{Version: 3, Name: "request_logs_timing_and_cost", Fn: addTimingAndCostColumns(dialect)},
 		{Version: 4, Name: "request_logs_widen_timing_and_cost", Fn: widenTimingAndCostColumns(dialect)},
 		{Version: 5, Name: "request_logs_api_key", Fn: addAPIKeyColumn(dialect)},
+		{Version: 6, Name: "request_logs_identity", Fn: addIdentityColumns(dialect)},
 	}
 }
 
@@ -71,6 +72,33 @@ func addAPIKeyColumn(dialect sqldb.Dialect) func(context.Context, *sql.Tx) error
 		}
 		if _, err := tx.ExecContext(ctx, "ALTER TABLE request_logs ADD COLUMN api_key_id TEXT"); err != nil {
 			return fmt.Errorf("add request log column api_key_id: %w", err)
+		}
+		return nil
+	}
+}
+
+// addIdentityColumns adds the end-user id and session id a request was
+// recorded under.
+//
+// Nullable, never backfilled: a row written before the columns existed makes
+// no claim about who the request was for, and "" would read as "the caller
+// supplied none", which is a different and checkable fact. Each column is
+// probed before it is added, for the reason addAPIKeyColumn gives: a table
+// restored without its ledger replays this step against columns it already
+// has, and a bare ALTER would wedge every start after that.
+func addIdentityColumns(dialect sqldb.Dialect) func(context.Context, *sql.Tx) error {
+	return func(ctx context.Context, tx *sql.Tx) error {
+		for _, column := range []string{"user_id", "session_id"} {
+			exists, err := columnExists(ctx, tx, dialect, "request_logs", column)
+			if err != nil {
+				return err
+			}
+			if exists {
+				continue
+			}
+			if _, err := tx.ExecContext(ctx, "ALTER TABLE request_logs ADD COLUMN "+column+" TEXT"); err != nil {
+				return fmt.Errorf("add request log column %s: %w", column, err)
+			}
 		}
 		return nil
 	}

@@ -24,7 +24,11 @@ func listOrderWriters(t *testing.T) map[string]*SQLWriter {
 	if err != nil {
 		t.Fatalf("new sqlite writer: %v", err)
 	}
-	t.Cleanup(func() { _ = sqlite.Close() })
+	t.Cleanup(func() {
+		if err := sqlite.Close(); err != nil {
+			t.Errorf("close sqlite writer: %v", err)
+		}
+	})
 	writers["sqlite"] = sqlite
 
 	dsn := os.Getenv("FERROGW_TEST_POSTGRES_DSN")
@@ -38,7 +42,11 @@ func listOrderWriters(t *testing.T) map[string]*SQLWriter {
 	if _, err := pg.db.ExecContext(t.Context(), "DELETE FROM request_logs"); err != nil {
 		t.Fatalf("reset request_logs: %v", err)
 	}
-	t.Cleanup(func() { _ = pg.Close() })
+	t.Cleanup(func() {
+		if err := pg.Close(); err != nil {
+			t.Errorf("close postgres writer: %v", err)
+		}
+	})
 	writers["postgres"] = pg
 	return writers
 }

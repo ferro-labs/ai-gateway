@@ -126,11 +126,15 @@ func (g *Gateway) RoutePassthrough(ctx context.Context, target, model, body stri
 	// See Route: this is an exported entry point, so it seeds its own trace ID
 	// rather than assuming HTTP middleware ran above it.
 	ctx = logger.EnsureTraceID(ctx)
+	ctx, identity := requestIdentity(ctx, "")
 	ctx, span := obs.StartRequestSpan(ctx, observability.RequestAttrs{
 		Operation:       surfacePassthrough,
 		RequestModel:    model,
 		TraceID:         logger.TraceIDFromContext(ctx),
 		RoutingStrategy: strategyMode,
+		User:            identity.User,
+		SessionID:       identity.SessionID,
+		Metadata:        identity.Metadata,
 	})
 	defer span.End()
 
@@ -178,11 +182,15 @@ func (g *Gateway) RouteResponsesWithPricingProvider(ctx context.Context, target,
 	defer cancelDeadline()
 
 	ctx = logger.EnsureTraceID(ctx)
+	ctx, identity := requestIdentity(ctx, "")
 	ctx, span := obs.StartRequestSpan(ctx, observability.RequestAttrs{
 		Operation:       surfaceResponses,
 		RequestModel:    model,
 		TraceID:         logger.TraceIDFromContext(ctx),
 		RoutingStrategy: strategyMode,
+		User:            identity.User,
+		SessionID:       identity.SessionID,
+		Metadata:        identity.Metadata,
 	})
 	defer span.End()
 
@@ -363,4 +371,15 @@ func (g *Gateway) forwardUnderResilience(ctx context.Context, key string, forwar
 			return struct{}{}, forward(ctx)
 		})
 	return err
+}
+
+// PropagatesPassthroughTrace reports observability.tracing.propagate_passthrough,
+// true when the key is omitted. The pass-through and fixed-target proxies
+// (/v1/*, /v1/responses, /v1/files, /v1/batches) read it fresh on every
+// request, so a value changed by a config reload takes effect on the next
+// request, with no restart and no stale routes built before the reload.
+func (g *Gateway) PropagatesPassthroughTrace() bool {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.config.Observability.Tracing.PropagatesPassthrough()
 }

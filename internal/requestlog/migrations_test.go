@@ -67,7 +67,11 @@ CREATE TABLE request_logs (
 	if err != nil {
 		t.Fatalf("open writer on a migrated database with no ledger: %v", err)
 	}
-	t.Cleanup(func() { _ = w.Close() })
+	t.Cleanup(func() {
+		if err := w.Close(); err != nil {
+			t.Errorf("close request log writer: %v", err)
+		}
+	})
 
 	result, err := w.List(context.Background(), Query{Limit: 10})
 	if err != nil {
@@ -89,7 +93,11 @@ func TestTimingAndCostColumnsAreDoublePrecision(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new sqlite writer: %v", err)
 	}
-	t.Cleanup(func() { _ = w.Close() })
+	t.Cleanup(func() {
+		if err := w.Close(); err != nil {
+			t.Errorf("close request log writer: %v", err)
+		}
+	})
 
 	// Spelled out rather than compared against doubleType, which would pass for
 	// whatever that constant happens to say.

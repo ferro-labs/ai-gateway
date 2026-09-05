@@ -157,6 +157,11 @@ type HTTPStatusError struct {
 	Type string
 }
 
+// typeInvalidRequest is the error.type OpenAI and Anthropic both send for a
+// malformed or unacceptable request, including the over-long prompt that
+// IsContextLengthError classifies.
+const typeInvalidRequest = "invalid_request_error"
+
 // Error implements error. It is the operator-facing rendering; the caller-facing
 // text is Message.
 func (e *HTTPStatusError) Error() string {
@@ -394,11 +399,11 @@ func IsContextLengthError(err error) bool {
 		return true
 	// OpenAI-compatible providers that copy the message but send no code:
 	// "This model's maximum context length is N tokens. However, …".
-	case statusErr.Type == "invalid_request_error" && strings.Contains(message, "maximum context length"):
+	case statusErr.Type == typeInvalidRequest && strings.Contains(message, "maximum context length"):
 		return true
 	// Anthropic: {"type":"error","error":{"type":"invalid_request_error",
 	// "message":"prompt is too long: 213462 tokens > 200000 maximum"}}.
-	case statusErr.Type == "invalid_request_error" && strings.Contains(message, "prompt is too long"):
+	case statusErr.Type == typeInvalidRequest && strings.Contains(message, "prompt is too long"):
 		return true
 	// Gemini: {"error":{"code":400,"status":"INVALID_ARGUMENT","message":"The
 	// input token count (1500000) exceeds the maximum number of tokens allowed

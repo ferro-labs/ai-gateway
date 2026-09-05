@@ -60,7 +60,11 @@ func TestRequestLogger_CompletedThenFailedWritesOneTerminalRow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new request log store: %v", err)
 	}
-	t.Cleanup(func() { _ = store.Close() })
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("close request log store: %v", err)
+		}
+	})
 
 	ctx, _ := completedThenFailed(t, store)
 
@@ -127,7 +131,11 @@ func TestSQLWriter_AnnotateErrorIgnoresABlankTraceID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new request log store: %v", err)
 	}
-	t.Cleanup(func() { _ = store.Close() })
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("close request log store: %v", err)
+		}
+	})
 
 	ctx := context.Background()
 	if err := store.Write(ctx, requestlog.Entry{Stage: "after_request", Model: "gpt-4"}); err != nil {

@@ -16,7 +16,11 @@ func writerWithTraffic(t *testing.T) *SQLWriter {
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
-	t.Cleanup(func() { _ = w.Close() })
+	t.Cleanup(func() {
+		if err := w.Close(); err != nil {
+			t.Errorf("close request log writer: %v", err)
+		}
+	})
 
 	base := time.Now().UTC().Add(-time.Hour)
 	write := func(trace, stage string, tokens int, errMessage string, at time.Time) {

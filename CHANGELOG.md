@@ -5,6 +5,81 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.4] — 2026-09-05
+
+### Added
+
+- Request identity on every observability surface. A request can name the
+  end user and session it belongs to — the OpenAI `user` field, the
+  `X-User-ID` and `X-Session-ID` request headers, or the W3C `baggage`
+  entries `user.id` / `session.id` — and embedders can set request metadata
+  through `observability.ContextWithRequestIdentity`. The identity is
+  recorded as `enduser.id`, `session.id` and `ferro.request.metadata.<key>`
+  on the request span; as `User`, `SessionID` and `Metadata` on
+  `observability.RequestAttrs`, `Event` and `RoutingAttempt`; and as
+  `user_id` / `session_id` on request-log rows (`GET /admin/logs`, request-log
+  schema migration 6). Previously `user` reached the provider but no span,
+  event or log row, so nothing the gateway emitted could be grouped by user
+  or conversation. A request that states no identity records none; nothing is
+  inferred. Unknown JSON body fields are still accepted.
+- `observability.tracing.attempt_spans` (default `false`) opens one `CLIENT`
+  child span, `gateway.routing.attempt`, per routing-layer attempt — retries
+  and failovers included — carrying `ferro.routing.target_key`,
+  `ferro.routing.sequence` and `ferro.routing.outcome`. The provider's HTTP
+  span nests beneath it on the unary surfaces; on a streamed request the
+  attempt span ends when the stream starts, so the HTTP span is its sibling
+  rather than its child. A trace still shows which targets were tried and in
+  what order without an exporter opting into attempt events. Backends plug in
+  through the optional `observability.AttemptSpanProvider` interface; the
+  built-in OTLP provider implements it.
+- The `/v1/*` pass-through and the fixed-target forwards (`/v1/responses`
+  create and its id sub-routes, `/v1/files`, `/v1/batches`) forward the W3C
+  `traceparent` (and `tracestate`) upstream, so a provider that records
+  traces joins the gateway's trace. `observability.tracing.propagate_passthrough`
+  (default `true`) governs both proxy paths; setting it to `false` stops the
+  injection on both. The inbound `baggage`, `X-User-ID` and `X-Session-ID`
+  headers address the gateway rather than the provider, and an inbound
+  `traceparent`/`tracestate` belongs to a trace the provider is not part of;
+  all five are stripped before forwarding on every pass-through and
+  fixed-target surface, regardless of this setting. A provider therefore
+  receives this gateway's trace context or none — never the caller's.
+
+### Changed
+
+- `observability.RoutingAttempt` and `observability.RequestAttrs` each gain a
+  `Metadata` map, alongside `User` and `SessionID`. Three consequences for
+  code that constructs or compares them: an unkeyed composite literal no
+  longer compiles, so use keyed fields; neither type can serve as a map key,
+  because a struct holding a map is not comparable; and `==` is likewise
+  unavailable, so compare with `reflect.DeepEqual`. Code that only reads their
+  fields is unaffected.
+
+### Fixed
+
+- Provider HTTP clients no longer propagate inbound baggage upstream. The
+  tracing transport injects W3C trace context only, so the `user.id` and
+  `session.id` entries a caller may send — and that this release reads as
+  end-user identity — stay inside the gateway. Trace linkage is unchanged for
+  unary and streaming calls.
+- Browser clients on a configured allowed origin can send `X-User-ID`,
+  `X-Session-ID` and `baggage`. The identity headers this release introduces
+  were absent from the CORS allowlist, so a preflight blocked them.
+- The fixed-target forwards (`/v1/files`, `/v1/batches`, the `/v1/responses`
+  id sub-routes) no longer hand a provider the caller's own trace context.
+  Those routes open no gateway span, so the context available to inject was
+  the one extracted from the caller's inbound headers; trace context is now
+  injected only when the gateway owns the span it describes.
+- The OpenAI body `user` field is bounded like the identity headers are —
+  trimmed, at most 256 bytes, no control characters — so a value that cannot
+  be an id is left out rather than stored on every request-log row and span.
+- `observability.RequestIdentity.Metadata` is bounded to 32 entries of at most
+  128-byte keys and 256-byte values. An embedder forwarding caller-supplied
+  context verbatim could otherwise stamp unbounded span attributes, once per
+  routing attempt. What exceeds a limit is dropped deterministically.
+- An attempt span is ended, and its attempt-scoped context cancelled, when a
+  provider panics. `observability.tracing.attempt_spans` previously lost the
+  span for exactly the failed attempt it exists to show.
+
 ## [1.5.3] — 2026-09-03
 
 Security fixes. No API or configuration changes for deployments that declare

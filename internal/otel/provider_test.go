@@ -447,3 +447,42 @@ func counterValue(t *testing.T, c prometheus.Counter) float64 {
 	}
 	return m.GetCounter().GetValue()
 }
+
+func TestProvider_StartRequestSpan_StampsIdentity(t *testing.T) {
+	prov, exp := newTestProvider(t)
+
+	_, span := prov.StartRequestSpan(context.Background(), observability.RequestAttrs{
+		Operation:    "chat",
+		RequestModel: "gpt-4o",
+		User:         "user-42",
+		SessionID:    "sess-7",
+		Metadata:     map[string]string{"team": "search", "env": "staging"},
+	})
+	span.End()
+
+	got := exp.GetSpans()
+	if len(got) != 1 {
+		t.Fatalf("expected 1 span, got %d", len(got))
+	}
+	assertAttrs(t, got[0].Attributes, map[string]attribute.Value{
+		observability.AttrEndUserID:                           attribute.StringValue("user-42"),
+		observability.AttrSessionID:                           attribute.StringValue("sess-7"),
+		observability.AttrFerroRequestMetadataPrefix + "team": attribute.StringValue("search"),
+		observability.AttrFerroRequestMetadataPrefix + "env":  attribute.StringValue("staging"),
+	})
+}
+
+func TestProvider_StartRequestSpan_OmitsIdentityWhenEmpty(t *testing.T) {
+	prov, exp := newTestProvider(t)
+
+	_, span := prov.StartRequestSpan(context.Background(), observability.RequestAttrs{Operation: "chat", RequestModel: "gpt-4o"})
+	span.End()
+
+	for _, kv := range exp.GetSpans()[0].Attributes {
+		key := string(kv.Key)
+		if key == observability.AttrEndUserID || key == observability.AttrSessionID ||
+			strings.HasPrefix(key, observability.AttrFerroRequestMetadataPrefix) {
+			t.Errorf("anonymous request carries identity attribute %q", key)
+		}
+	}
+}

@@ -74,14 +74,16 @@ linters:
       - path: _test\.go
         linters:
           - unparam
-      # otelSpan.StartChild is a span factory: it returns the child span
-      # (wrapped in otelSpan) for the caller to end via End, per the
-      # observability.Span contract. spancheck cannot follow the span through
-      # the wrapper, so it wrongly reports a leak on the child span here.
+      # otelSpan.StartChild and otelProvider.StartAttemptSpan are span
+      # factories: each returns the span (wrapped in otelSpan) for the caller
+      # to end via End, per the observability.Span contract. spancheck cannot
+      # follow the span through the wrapper, so it wrongly reports a leak on
+      # the child and attempt spans here. Scoped to those two span variables,
+      # so an unrelated leak in this file is still reported.
       - path: internal/otel/provider\.go
         linters:
           - spancheck
-        text: "child.End"
+        text: "(child|attempt).End"
       # Test fixtures legitimately repeat literals (tool names, IDs, JSON
       # fragments); enforce the constant rule on production code only.
       - path: _test\.go

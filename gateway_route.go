@@ -213,12 +213,16 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	// carried an empty trace ID. A request that came through Middleware already
 	// carries a canonical one and this is a no-op.
 	ctx = logger.EnsureTraceID(ctx)
+	ctx, identity := requestIdentity(ctx, req.User)
 	ctx, span := obs.StartRequestSpan(ctx, observability.RequestAttrs{
 		Operation:       "chat",
 		RequestModel:    req.Model,
 		IsStream:        req.Stream,
 		TraceID:         logger.TraceIDFromContext(ctx),
 		RoutingStrategy: strategyMode,
+		User:            identity.User,
+		SessionID:       identity.SessionID,
+		Metadata:        identity.Metadata,
 	})
 	defer span.End()
 

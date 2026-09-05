@@ -16,7 +16,11 @@ func writerWithResolvedModels(t *testing.T, requests int) *SQLWriter {
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
-	t.Cleanup(func() { _ = w.Close() })
+	t.Cleanup(func() {
+		if err := w.Close(); err != nil {
+			t.Errorf("close request log writer: %v", err)
+		}
+	})
 
 	base := time.Now().UTC().Add(-time.Hour)
 	for i := range requests {

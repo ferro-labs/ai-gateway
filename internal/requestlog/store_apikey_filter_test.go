@@ -21,7 +21,11 @@ func TestSQLiteWriter_ListFiltersByAPIKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new sqlite writer: %v", err)
 	}
-	t.Cleanup(func() { _ = w.Close() })
+	t.Cleanup(func() {
+		if err := w.Close(); err != nil {
+			t.Errorf("close request log writer: %v", err)
+		}
+	})
 
 	base := time.Date(2026, 7, 20, 9, 0, 0, 0, time.UTC)
 	written := []Entry{
