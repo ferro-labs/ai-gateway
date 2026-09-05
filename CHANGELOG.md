@@ -5,6 +5,17 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Provider HTTP clients no longer propagate inbound baggage containing user
+  and session identity. Their tracing transport now injects only W3C trace
+  context, preserving trace linkage for unary and streaming calls.
+- Cross-origin browser requests from configured allowed origins can now send
+  `X-User-ID`, `X-Session-ID`, and `baggage`. These identity headers were missing
+  from the CORS allowlist, causing browser preflight checks to block requests.
+
 ## [1.5.4] — 2026-09-04
 
 ### Added
