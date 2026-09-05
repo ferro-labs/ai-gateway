@@ -308,9 +308,13 @@ func (w *SQLWriter) appendSeries(ctx context.Context, result *StatsResult, where
 		width = time.Second
 	}
 
-	points := make([]SeriesPoint, buckets)
-	for i := range points {
-		points[i].Start = start.Add(time.Duration(i) * width)
+	// Allocated at the constant ceiling, then filled to the clamped count, so
+	// the allocation size is a compile-time constant rather than anything
+	// derived from the request. buckets is already bounded above by
+	// maxSeriesBuckets, so the append never grows this beyond its capacity.
+	points := make([]SeriesPoint, 0, maxSeriesBuckets)
+	for i := range buckets {
+		points = append(points, SeriesPoint{Start: start.Add(time.Duration(i) * width)})
 	}
 	for _, e := range events {
 		index := int(e.at.Sub(start) / width)
