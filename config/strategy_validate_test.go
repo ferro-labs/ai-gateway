@@ -302,7 +302,7 @@ func TestValidateStrategy_ValueShape(t *testing.T) {
 				}},
 				Targets: twoTargets(),
 			},
-			wantErr: `conditions[0]: key "model_prefix" requires a value; an empty model_prefix matches every model`,
+			wantErr: `conditions[0]: key "model_prefix" requires a non-empty value with no surrounding whitespace, got ""; an empty model_prefix matches every model`,
 		},
 		{
 			name: "conditional empty model",
@@ -312,7 +312,30 @@ func TestValidateStrategy_ValueShape(t *testing.T) {
 				}},
 				Targets: twoTargets(),
 			},
-			wantErr: `conditions[0]: key "model" requires a value`,
+			wantErr: `conditions[0]: key "model" requires a non-empty value with no surrounding whitespace, got "  "`,
+		},
+		{
+			// Review on #435: Conditional.matches compares verbatim, so a
+			// padded value loads clean and matches nothing — the same dead
+			// rule, one whitespace over. Same idiom as targets[].models.
+			name: "conditional padded model",
+			cfg: Config{
+				Strategy: StrategyConfig{Mode: ModeConditional, Conditions: []Condition{
+					{Key: ConditionKeyModel, Value: " gpt-4o", TargetKey: "groq"},
+				}},
+				Targets: twoTargets(),
+			},
+			wantErr: `conditions[0]: key "model" requires a non-empty value with no surrounding whitespace, got " gpt-4o"`,
+		},
+		{
+			name: "conditional padded model_prefix",
+			cfg: Config{
+				Strategy: StrategyConfig{Mode: ModeConditional, Conditions: []Condition{
+					{Key: ConditionKeyModelPrefix, Value: "claude ", TargetKey: "groq"},
+				}},
+				Targets: twoTargets(),
+			},
+			wantErr: `conditions[0]: key "model_prefix" requires a non-empty value with no surrounding whitespace, got "claude "`,
 		},
 		{
 			name: "conditional empty user",
@@ -322,7 +345,7 @@ func TestValidateStrategy_ValueShape(t *testing.T) {
 				}},
 				Targets: twoTargets(),
 			},
-			wantErr: `conditions[0]: key "user" requires a value`,
+			wantErr: `conditions[0]: key "user" requires a non-empty value with no surrounding whitespace, got ""`,
 		},
 		// ── v1.5.5 · two arms carrying one label split traffic correctly and
 		// are indistinguishable in every record attribution writes. Compared
@@ -338,6 +361,19 @@ func TestValidateStrategy_ValueShape(t *testing.T) {
 				Targets: twoTargets(),
 			},
 			wantErr: `ab_variants[1].label "Control" duplicates ab_variants[0].label`,
+		},
+		{
+			// Review on #435: strings.ToLower is not Unicode case folding —
+			// "σς" and "ΣΣ" lower to different strings and fold to the same one.
+			name: "ab-test duplicate label under Unicode folding",
+			cfg: Config{
+				Strategy: StrategyConfig{Mode: ModeABTest, ABVariants: []ABVariantConfig{
+					{TargetKey: "openai", Weight: 80, Label: "σς"},
+					{TargetKey: "groq", Weight: 20, Label: "ΣΣ"},
+				}},
+				Targets: twoTargets(),
+			},
+			wantErr: `ab_variants[1].label "ΣΣ" duplicates ab_variants[0].label`,
 		},
 	})
 }
