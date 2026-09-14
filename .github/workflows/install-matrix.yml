@@ -880,6 +880,11 @@ jobs:
       EXPECTED_VERSION: ${{ needs.resolve.outputs.version }}
       ARMED: ${{ vars.INSTALL_MATRIX_NPM_LIVE }}
       NO_COLOR: "1"
+      # 10 x 30 s: five minutes covers the registry propagation seen on every
+      # release since v1.5.2 with room to spare, and is short enough that a
+      # genuinely missing version fails inside the run rather than hiding it.
+      MAX_ATTEMPTS: "10"
+      RETRY_DELAY: "30"
     steps:
       - name: Gate status
         shell: bash
@@ -902,13 +907,28 @@ jobs:
       - name: npx ferrogw version
         shell: bash
         run: |
-          set -uo pipefail
-          raw="$(npx --yes --ignore-scripts "ferrogw@${EXPECTED_VERSION}" version 2>&1)"; rc=$?
-          if [ "$rc" -ne 0 ]; then
-            echo "::error title=npx ferrogw failed on ${RUNNER_OS}::npx exited ${rc} for ferrogw@${EXPECTED_VERSION} (with --ignore-scripts)"
-            printf '%s\n' "$raw"
-            exit 1
-          fi
+          # `shell: bash` runs under `bash -e`; `set -uo pipefail` alone does
+          # not clear it, so a failing capture below used to abort the step
+          # before its own diagnostic printed (the v1.5.4 run failed with no
+          # output at all). Errors are handled explicitly here.
+          set -uo pipefail; set +e
+          # A fresh publish takes a few minutes to reach every registry edge;
+          # every release since v1.5.2 failed this step on attempt 1 and passed
+          # on rerun. Bounded, so a version that never appears still fails,
+          # and with its output this time.
+          attempt=1
+          while :; do
+            raw="$(npx --yes --ignore-scripts "ferrogw@${EXPECTED_VERSION}" version 2>&1)"; rc=$?
+            [ "$rc" -eq 0 ] && break
+            if [ "$attempt" -ge "$MAX_ATTEMPTS" ]; then
+              echo "::error title=npx ferrogw failed on ${RUNNER_OS}::npx exited ${rc} for ferrogw@${EXPECTED_VERSION} (with --ignore-scripts) after ${attempt} attempts"
+              printf '%s\n' "$raw"
+              exit 1
+            fi
+            echo "attempt ${attempt}/${MAX_ATTEMPTS}: npx exited ${rc}; retrying in ${RETRY_DELAY}s (registry propagation)"
+            attempt=$((attempt + 1))
+            sleep "$RETRY_DELAY"
+          done
           got="$(printf '%s\n' "$raw" | awk '$1 == "Version" { print $2; exit }')"
           if [ "$got" != "$EXPECTED_VERSION" ]; then
             echo "::error title=npx version mismatch on ${RUNNER_OS}::expected ferrogw version '${EXPECTED_VERSION}', got '${got:-<no Version line in output>}'"
@@ -930,6 +950,11 @@ jobs:
       EXPECTED_VERSION: ${{ needs.resolve.outputs.version }}
       ARMED: ${{ vars.INSTALL_MATRIX_PYPI_LIVE }}
       NO_COLOR: "1"
+      # 10 x 30 s: five minutes covers the registry propagation seen on every
+      # release since v1.5.2 with room to spare, and is short enough that a
+      # genuinely missing version fails inside the run rather than hiding it.
+      MAX_ATTEMPTS: "10"
+      RETRY_DELAY: "30"
     steps:
       - name: Gate status
         shell: bash
@@ -952,13 +977,28 @@ jobs:
       - name: uvx ferrogw version
         shell: bash
         run: |
-          set -uo pipefail
-          raw="$(uvx --from "ferrogw==${EXPECTED_VERSION}" ferrogw version 2>&1)"; rc=$?
-          if [ "$rc" -ne 0 ]; then
-            echo "::error title=uvx ferrogw failed on ${RUNNER_OS}::uvx exited ${rc} for ferrogw==${EXPECTED_VERSION}"
-            printf '%s\n' "$raw"
-            exit 1
-          fi
+          # `shell: bash` runs under `bash -e`; `set -uo pipefail` alone does
+          # not clear it, so a failing capture below used to abort the step
+          # before its own diagnostic printed (the v1.5.4 run failed with no
+          # output at all). Errors are handled explicitly here.
+          set -uo pipefail; set +e
+          # A fresh publish takes a few minutes to reach every registry edge;
+          # every release since v1.5.2 failed this step on attempt 1 and passed
+          # on rerun. Bounded, so a version that never appears still fails,
+          # and with its output this time.
+          attempt=1
+          while :; do
+            raw="$(uvx --from "ferrogw==${EXPECTED_VERSION}" ferrogw version 2>&1)"; rc=$?
+            [ "$rc" -eq 0 ] && break
+            if [ "$attempt" -ge "$MAX_ATTEMPTS" ]; then
+              echo "::error title=uvx ferrogw failed on ${RUNNER_OS}::uvx exited ${rc} for ferrogw==${EXPECTED_VERSION} after ${attempt} attempts"
+              printf '%s\n' "$raw"
+              exit 1
+            fi
+            echo "attempt ${attempt}/${MAX_ATTEMPTS}: uvx exited ${rc}; retrying in ${RETRY_DELAY}s (registry propagation)"
+            attempt=$((attempt + 1))
+            sleep "$RETRY_DELAY"
+          done
           got="$(printf '%s\n' "$raw" | awk '$1 == "Version" { print $2; exit }')"
           if [ "$got" != "$EXPECTED_VERSION" ]; then
             echo "::error title=uvx version mismatch on ${RUNNER_OS}::expected ferrogw version '${EXPECTED_VERSION}', got '${got:-<no Version line in output>}'"
