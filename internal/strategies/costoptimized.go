@@ -182,7 +182,7 @@ func (s unpricedStrategy) requiresPricedCandidate() bool {
 // breakTiesByWeight rotates every run of equal-cost candidates in ranked (which
 // must already be sorted by cost) to start at a weight-drawn member. With no
 // positive weight in the run the draw is uniform. A zero weight among weighted
-// siblings never leads, as under loadbalance.
+// siblings never leads, as under load-balance.
 func breakTiesByWeight(ranked []costOrderCandidate) {
 	for start := 0; start < len(ranked); {
 		end := start + 1

@@ -111,6 +111,11 @@ func ResolveActiveConfig(
 //
 // Identical configs are not a divergence and stay silent.
 func warnConfigSourceDivergence(fileCfg, active config.Config, configStoreBackend string) {
+	// Compare meaning, not representation: the installed config is always
+	// normalised (New and ReloadConfig do it), so a file config that has not
+	// been — a defaulted api_version, the legacy load-balance spelling — would
+	// otherwise read as a divergence the operator never made.
+	fileCfg.Normalize()
 	if reflect.DeepEqual(fileCfg, active) {
 		return
 	}

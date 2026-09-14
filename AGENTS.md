@@ -261,7 +261,7 @@ Config is loaded from YAML or JSON (auto-detected). Path defaults from env var `
 
 ```yaml
 strategy:
-  mode: fallback  # single | fallback | loadbalance | conditional
+  mode: fallback  # single | fallback | load-balance | conditional
 
 targets:
   - virtual_key: openai
@@ -798,7 +798,7 @@ Modes split by what their leading candidate *means*
 
 | | Modes | On a failure |
 |---|---|---|
-| **Pool** | `fallback`, `loadbalance`, `least-latency`, `cost-optimized`, `ab-test` | the walk advances only after a failover-safe failure |
+| **Pool** | `fallback`, `load-balance`, `least-latency`, `cost-optimized`, `ab-test` | the walk advances only after a failover-safe failure |
 | **Named** | `single`, `conditional`, `content-based` | the walk stays inside what was named: `single` stops; a rule walks its `target_keys` chain on the same failover-safe classes and stops at its end |
 
 A pool mode picks its head for a reason that is about the pool rather than

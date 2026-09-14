@@ -135,7 +135,7 @@ test('a saved configuration reaches the gateway and comes back as the active doc
   const editor = page.getByLabel('Gateway configuration JSON')
   await editor.fill(JSON.stringify({
     apiVersion: 'ferro.dev/v1',
-    strategy: { mode: 'loadbalance' },
+    strategy: { mode: 'load-balance' },
     targets: [{ virtual_key: 'openai' }, { virtual_key: 'anthropic' }],
   }, null, 2))
   await page.getByRole('button', { name: 'Save and apply' }).click()
@@ -144,7 +144,7 @@ test('a saved configuration reaches the gateway and comes back as the active doc
   // Read back from the gateway, not from the editor that was just typed into:
   // this is the assertion a save that never left the browser fails.
   await expect(page.getByRole('button', { name: 'Edit JSON' })).toBeVisible()
-  await expect(page.getByText('"mode": "loadbalance"')).toBeVisible()
+  await expect(page.getByText('"mode": "load-balance"')).toBeVisible()
   // The gateway recorded it as a version, which is the only route back.
   await expect(page.getByRole('tab', { name: /History/ })).toContainText('3')
 })

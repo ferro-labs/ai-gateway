@@ -219,6 +219,9 @@ func (s *SQLConfigStore) LoadHistory(ctx context.Context) ([]model.PersistedConf
 		if err := json.Unmarshal([]byte(raw), &rec.Config); err != nil {
 			return nil, fmt.Errorf("decode config history: %w", err)
 		}
+		// Same as Load: a snapshot written before v1.5.6 spells the mode
+		// "loadbalance", and history is served, not only rolled back.
+		rec.Config.Normalize()
 		history = append(history, rec)
 	}
 	if err := rows.Err(); err != nil {
@@ -246,6 +249,10 @@ func (s *SQLConfigStore) Load(ctx context.Context) (config.Config, bool, error) 
 	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
 		return config.Config{}, false, fmt.Errorf("decode config: %w", err)
 	}
+	// A row written before v1.5.6 may spell the mode "loadbalance". Every
+	// persisted config passes through here, so canonicalise once on the way out
+	// rather than in each consumer.
+	cfg.Normalize()
 	return cfg, true, nil
 }
 
@@ -418,6 +425,7 @@ func (m *GatewayConfigManager) Ping(ctx context.Context) error {
 
 // ReloadConfig validates/applies config and persists it when a store is configured.
 func (m *GatewayConfigManager) ReloadConfig(ctx context.Context, cfg config.Config) error {
+	cfg.Normalize() // persisted and served in canonical form, not just validated in it.
 	if err := config.ValidateConfig(cfg); err != nil {
 		return errors.Join(errConfigValidation, err)
 	}

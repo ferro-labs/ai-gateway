@@ -524,7 +524,7 @@ func (g *Gateway) runMCPLoop(ctx context.Context, mcpExecutorSnapshot *mcp.Execu
 	// the turn the caller already made before entering the loop.
 	//
 	// summed here and priced once by the caller, at the final turn's
-	// provider rate. Under loadbalance or least-latency an intermediate turn can
+	// provider rate. Under load-balance or least-latency an intermediate turn can
 	// land on a differently-priced provider, so the total is approximate to that
 	// extent — a known ceiling, and a far smaller error than dropping the turn
 	// entirely. Per-turn pricing is not reachable from this file: the budget
@@ -603,7 +603,7 @@ func (g *Gateway) runMCPLoop(ctx context.Context, mcpExecutorSnapshot *mcp.Execu
 
 			// Priced per turn rather than once at the end, because the budget
 			// check above needs it before the NEXT call is made. Under
-			// loadbalance or least-latency consecutive turns can land on
+			// load-balance or least-latency consecutive turns can land on
 			// differently-priced providers, and pricing each against the provider
 			// that served it is strictly better than pricing the total at the
 			// last one's rate.

@@ -2,6 +2,7 @@ package config_test
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -1036,6 +1037,59 @@ func TestValidateConfig_TargetCircuitBreakerBounds(t *testing.T) {
 			err := config.ValidateConfig(cfg)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("ValidateConfig error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestLoadConfig_TargetCircuitBreakerDistinguishesOmittedFromZero(t *testing.T) {
+	tests := []struct {
+		name    string
+		file    string
+		body    string
+		wantErr bool
+	}{
+		{name: "json empty block", file: "config.json", body: `{"strategy":{"mode":"single"},"targets":[{"virtual_key":"openai","circuit_breaker":{}}]}`},
+		{name: "json zero failure threshold", file: "config.json", body: `{"strategy":{"mode":"single"},"targets":[{"virtual_key":"openai","circuit_breaker":{"failure_threshold":0}}]}`, wantErr: true},
+		{name: "json zero success threshold", file: "config.json", body: `{"strategy":{"mode":"single"},"targets":[{"virtual_key":"openai","circuit_breaker":{"success_threshold":0}}]}`, wantErr: true},
+		{name: "json empty timeout", file: "config.json", body: `{"strategy":{"mode":"single"},"targets":[{"virtual_key":"openai","circuit_breaker":{"timeout":""}}]}`, wantErr: true},
+		{name: "json zero timeout", file: "config.json", body: `{"strategy":{"mode":"single"},"targets":[{"virtual_key":"openai","circuit_breaker":{"timeout":"0s"}}]}`, wantErr: true},
+		{name: "yaml empty block", file: "config.yaml", body: "strategy: {mode: single}\ntargets:\n  - virtual_key: openai\n    circuit_breaker: {}\n"},
+		{name: "yaml zero failure threshold", file: "config.yaml", body: "strategy: {mode: single}\ntargets:\n  - virtual_key: openai\n    circuit_breaker: {failure_threshold: 0}\n", wantErr: true},
+		{name: "yaml zero success threshold", file: "config.yaml", body: "strategy: {mode: single}\ntargets:\n  - virtual_key: openai\n    circuit_breaker: {success_threshold: 0}\n", wantErr: true},
+		{name: "yaml zero timeout", file: "config.yaml", body: "strategy: {mode: single}\ntargets:\n  - virtual_key: openai\n    circuit_breaker: {timeout: 0s}\n", wantErr: true},
+		// max_half_threshold went through the same decoders but its presence was
+		// never stored, so a written zero fell back to "!= 0" and read as omitted.
+		{name: "json zero max half threshold", file: "config.json", body: `{"strategy":{"mode":"single"},"targets":[{"virtual_key":"openai","circuit_breaker":{"max_half_threshold":0}}]}`, wantErr: true},
+		{name: "yaml zero max half threshold", file: "config.yaml", body: "strategy: {mode: single}\ntargets:\n  - virtual_key: openai\n    circuit_breaker: {max_half_threshold: 0}\n", wantErr: true},
+		{name: "json positive max half threshold", file: "config.json", body: `{"strategy":{"mode":"single"},"targets":[{"virtual_key":"openai","circuit_breaker":{"max_half_threshold":2}}]}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := config.LoadConfig(writeTempFile(t, tt.file, tt.body))
+			if err == nil {
+				err = config.ValidateConfig(*cfg)
+			}
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("load and validate error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestLoadConfig_LoadBalanceModeCanonicalizesLegacySpelling(t *testing.T) {
+	for _, mode := range []string{"load-balance", "loadbalance"} {
+		t.Run(mode, func(t *testing.T) {
+			body := fmt.Sprintf(`{"strategy":{"mode":%q},"targets":[{"virtual_key":"openai","weight":1}]}`, mode)
+			cfg, err := config.LoadConfig(writeTempFile(t, "config.json", body))
+			if err != nil {
+				t.Fatalf("LoadConfig: %v", err)
+			}
+			if cfg.Strategy.Mode != config.ModeLoadBalance || string(cfg.Strategy.Mode) != "load-balance" {
+				t.Fatalf("mode = %q, want canonical load-balance", cfg.Strategy.Mode)
+			}
+			if err := config.ValidateConfig(*cfg); err != nil {
+				t.Fatalf("ValidateConfig: %v", err)
 			}
 		})
 	}

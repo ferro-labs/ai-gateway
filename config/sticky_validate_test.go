@@ -27,7 +27,7 @@ func TestValidateStrategy_Sticky(t *testing.T) {
 				Strategy: StrategyConfig{Mode: ModeFallback, Sticky: &StickyConfig{On: StickyOnUser}},
 				Targets:  twoTargets(),
 			},
-			wantErr: "sticky applies to loadbalance and ab-test only",
+			wantErr: "sticky applies to load-balance and ab-test only",
 		},
 		{
 			name: "sticky on an unsupported key is refused",
