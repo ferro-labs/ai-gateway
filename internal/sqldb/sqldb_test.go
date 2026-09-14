@@ -124,7 +124,13 @@ func TestWithBusyTimeout(t *testing.T) {
 // measured at half of the writes below — rather than waiting the microseconds
 // the other transaction needs.
 func TestOpen_SQLiteSharedFileWritersWait(t *testing.T) {
-	dsn := filepath.Join(t.TempDir(), "shared.db")
+	// #429: under a full -race run the host disk is shared with the other
+	// SQLite-heavy packages, and 100 queued commits can outlast the 5 s
+	// default (9 of 100 failed once at ~55 s). The property under test is
+	// that writers queue rather than fail, not the default's duration —
+	// that DSN rewrite is TestWithBusyTimeout's — so open with a timeout no
+	// loaded CI disk reaches.
+	dsn := filepath.Join(t.TempDir(), "shared.db") + "?_pragma=busy_timeout(120000)"
 	ctx := context.Background()
 
 	first, err := Open(ctx, SQLite, dsn, "")
