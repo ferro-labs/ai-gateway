@@ -591,7 +591,11 @@ CREATE TABLE gateway_config (
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
-	t.Cleanup(func() { _ = store.Close() })
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	})
 
 	loaded, ok, err := store.Load(context.Background())
 	if err != nil || !ok {
@@ -602,5 +606,67 @@ CREATE TABLE gateway_config (
 	}
 	if err := config.ValidateConfig(loaded); err != nil {
 		t.Fatalf("validate loaded legacy config: %v", err)
+	}
+}
+
+// History rows are decoded separately from the active row, so normalising
+// Load alone left /admin/config/history serving "loadbalance" for every
+// snapshot written before v1.5.6 while the active config read canonical.
+func TestSQLConfigStore_LoadHistoryNormalizesLegacyLoadBalanceMode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy-history.db")
+
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open raw sqlite: %v", err)
+	}
+	if _, err := raw.ExecContext(context.Background(), `
+CREATE TABLE gateway_config (
+	id INTEGER PRIMARY KEY,
+	config_json TEXT NOT NULL,
+	updated_at TIMESTAMP NOT NULL
+)`); err != nil {
+		t.Fatalf("create gateway_config: %v", err)
+	}
+	if _, err := raw.ExecContext(context.Background(), `
+CREATE TABLE config_history (
+	version INTEGER PRIMARY KEY,
+	config_json TEXT NOT NULL,
+	updated_at TIMESTAMP NOT NULL,
+	actor TEXT NOT NULL DEFAULT ''
+)`); err != nil {
+		t.Fatalf("create config_history: %v", err)
+	}
+	const legacy = `{"strategy":{"mode":"loadbalance"},"targets":[{"virtual_key":"openai","weight":3},{"virtual_key":"anthropic","weight":1}]}`
+	if _, err := raw.ExecContext(context.Background(),
+		"INSERT INTO gateway_config(id, config_json, updated_at) VALUES(1, ?, datetime('now'))", legacy); err != nil {
+		t.Fatalf("seed active row: %v", err)
+	}
+	if _, err := raw.ExecContext(context.Background(),
+		"INSERT INTO config_history(version, config_json, updated_at, actor) VALUES(1, ?, datetime('now'), 'operator')", legacy); err != nil {
+		t.Fatalf("seed history row: %v", err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatalf("close raw sqlite: %v", err)
+	}
+
+	store, err := NewSQLiteConfigStore(t.Context(), path)
+	if err != nil {
+		t.Fatalf("open store with legacy history: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	})
+
+	history, err := store.LoadHistory(context.Background())
+	if err != nil {
+		t.Fatalf("load history: %v", err)
+	}
+	if len(history) != 1 {
+		t.Fatalf("history length = %d, want 1", len(history))
+	}
+	if got := history[0].Config.Strategy.Mode; got != config.ModeLoadBalance {
+		t.Fatalf("history mode = %q, want canonical %q", got, config.ModeLoadBalance)
 	}
 }

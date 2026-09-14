@@ -219,6 +219,9 @@ func (s *SQLConfigStore) LoadHistory(ctx context.Context) ([]model.PersistedConf
 		if err := json.Unmarshal([]byte(raw), &rec.Config); err != nil {
 			return nil, fmt.Errorf("decode config history: %w", err)
 		}
+		// Same as Load: a snapshot written before v1.5.6 spells the mode
+		// "loadbalance", and history is served, not only rolled back.
+		rec.Config.Normalize()
 		history = append(history, rec)
 	}
 	if err := rows.Err(); err != nil {
