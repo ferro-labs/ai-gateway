@@ -984,6 +984,13 @@ func TestValidateConfig_TargetRetryBounds(t *testing.T) {
 		{name: "zero is an omitted field", retry: &config.RetryConfig{}},
 		{name: "negative attempts rejected", retry: &config.RetryConfig{Attempts: -1}, wantErr: true},
 		{name: "negative backoff rejected", retry: &config.RetryConfig{Attempts: 2, InitialBackoffMs: -50}, wantErr: true},
+		// v1.5.5 · on_status_codes was never range-checked, so a collapsed
+		// "429, 500, 503" → 429500503 loaded and matched no response: a retry
+		// policy that could not fire on any HTTP status, and nothing said so.
+		{name: "status codes 429 500 503 accepted", retry: &config.RetryConfig{Attempts: 3, OnStatusCodes: []int{429, 500, 503}}},
+		{name: "status code out of range rejected", retry: &config.RetryConfig{Attempts: 3, OnStatusCodes: []int{429500503}}, wantErr: true},
+		{name: "status code below 100 rejected", retry: &config.RetryConfig{Attempts: 3, OnStatusCodes: []int{429, 0}}, wantErr: true},
+		{name: "protected failover codes are legal for same-target retry", retry: &config.RetryConfig{Attempts: 2, OnStatusCodes: []int{400, 404}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

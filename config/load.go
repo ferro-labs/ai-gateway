@@ -569,6 +569,27 @@ func validateConditions(conditions []Condition, targets []Target) error {
 			if c.Value != "true" && c.Value != "false" {
 				return fmt.Errorf("conditions[%d]: key %q takes value \"true\" or \"false\", got %q", i, c.Key, c.Value)
 			}
+		case ConditionKeyUser:
+			// Only the empty value is dead: Conditional.matches reads the
+			// body `user` verbatim (observability trims its copy, routing
+			// does not), so a padded rule matches a padded caller today and
+			// must keep loading.
+			if c.Value == "" {
+				return fmt.Errorf("conditions[%d]: key %q requires a value", i, c.Key)
+			}
+		case ConditionKeyModel, ConditionKeyModelPrefix:
+			// A model id never carries surrounding whitespace (targets[].models
+			// refuses it), so an empty or padded value is a rule that can match
+			// no request. Same idiom as targets[].models. A zero-length
+			// model_prefix is the worse case: it matches every model and
+			// swallows every rule below it.
+			if c.Value == "" || strings.TrimSpace(c.Value) != c.Value {
+				why := ""
+				if c.Key == ConditionKeyModelPrefix && c.Value == "" {
+					why = "; an empty model_prefix matches every model"
+				}
+				return fmt.Errorf("conditions[%d]: key %q requires a non-empty value with no surrounding whitespace, got %q%s", i, c.Key, c.Value, why)
+			}
 		}
 		if c.Key == ConditionKeyMetadata && c.Field == "" {
 			return fmt.Errorf("conditions[%d]: key metadata requires field", i)
@@ -635,6 +656,7 @@ func validateABVariants(variants []ABVariantConfig, targets []Target) error {
 	}
 	weights := make([]namedWeight, 0, len(variants))
 	seenTargets := make(map[string]int, len(variants))
+	seenLabels := make([]string, 0, len(variants))
 	for i, v := range variants {
 		if err := requireDeclaredTarget(fmt.Sprintf("ab_variants[%d]", i), v.TargetKey, targets); err != nil {
 			return err
@@ -649,6 +671,16 @@ func validateABVariants(variants []ABVariantConfig, targets []Target) error {
 			return fmt.Errorf("ab_variants[%d].target_key %q duplicates ab_variants[%d].target_key", i, v.TargetKey, first)
 		}
 		seenTargets[v.TargetKey] = i
+		// Case-insensitive under Unicode folding (EqualFold, not ToLower):
+		// `control` and `Control` are one arm to anyone reading a trace, and
+		// two arms with one label cannot be told apart in any record
+		// attribution writes. Linear scan: variants are a handful.
+		for first, seen := range seenLabels {
+			if strings.EqualFold(seen, v.Label) {
+				return fmt.Errorf("ab_variants[%d].label %q duplicates ab_variants[%d].label; attribution keys on the label", i, v.Label, first)
+			}
+		}
+		seenLabels = append(seenLabels, v.Label)
 		weights = append(weights, namedWeight{name: v.Label, weight: v.Weight})
 	}
 	return validateWeights("ab_variant", weights)
@@ -787,6 +819,14 @@ func validateTargetRetry(t Target) error {
 	}
 	if t.Retry.InitialBackoffMs < 0 {
 		return fmt.Errorf("target %q: retry.initial_backoff_ms cannot be negative, got %d", t.VirtualKey, t.Retry.InitialBackoffMs)
+	}
+	// Same range as validateFailoverStatusCodes, without its protected set:
+	// retrying a deterministic client error on the same target is wasteful,
+	// not incoherent, and this repository has never refused it.
+	for _, code := range t.Retry.OnStatusCodes {
+		if code < 100 || code > 599 {
+			return fmt.Errorf("target %q: retry.on_status_codes: %d is not an HTTP status code", t.VirtualKey, code)
+		}
 	}
 	return nil
 }

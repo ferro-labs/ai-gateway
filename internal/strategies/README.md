@@ -158,7 +158,12 @@ strategy:
 
 `target_key` names one target; `target_keys` an ordered chain, tried in order
 under the failover-safe classes above and never left. Both are exact
-about what they name.
+about what they name. `model` and `model_prefix` require a non-empty `value`
+with no surrounding whitespace, and `user` a non-empty one — matching is
+verbatim, so a padded or empty `model` can match nothing, an empty `user` never
+matches, and an empty `model_prefix` would match every model and swallow every
+rule below it. A padded `user` value is legal: the request's `user` is compared
+as sent.
 
 ### content-based
 Routes by the textual content of the prompt. Rules evaluate in order, first match
@@ -185,6 +190,9 @@ strategy:
     - { target_key: openai, weight: 70, label: control }
     - { target_key: anthropic, weight: 30, label: challenger }
 ```
+
+Labels are required and unique (case-insensitively — `control` and `Control`
+are one arm to anyone reading a trace).
 
 The label names the variant the request was *drawn* for and stays with the
 request through same-target retries and failover, so an experiment is segmented
