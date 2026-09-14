@@ -171,6 +171,10 @@ func WithCatalog(c models.Catalog) Option {
 // returning an error immediately if the config is invalid. This matches the
 // fail-fast behaviour already present in ReloadConfig and the CLI.
 func New(cfg config.Config, opts ...Option) (*Gateway, error) {
+	// ValidateConfig normalises only its own copy; the copy installed here must
+	// carry the canonical spelling too, or a legacy "loadbalance" config passes
+	// validation and fails in the strategy factory on the first request.
+	cfg.Normalize()
 	if err := config.ValidateConfig(cfg); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
@@ -418,6 +422,7 @@ func (g *Gateway) RegisterPlugin(stage plugin.Stage, p plugin.Plugin) error {
 // parented on the gateway shutdown context), so ctx is accepted but not used here.
 func (g *Gateway) ReloadConfig(ctx context.Context, cfg config.Config) error {
 	_ = ctx
+	cfg.Normalize() // same reason as New: install the canonical spelling.
 	if err := config.ValidateConfig(cfg); err != nil {
 		return fmt.Errorf("invalid config: %w", err)
 	}

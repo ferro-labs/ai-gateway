@@ -7,8 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.5.6] — 2026-09-14
 
-Two routing-config corrections. No new config keys, no API surface change,
-no change to any request that routes today.
+Two routing-config corrections. No endpoint or configuration key is added
+and no request that routes today changes. `GET /admin/config` and the config
+history now report the canonical `load-balance` spelling for any config
+that was normalised on load or apply.
 
 ### Changed
 
@@ -26,7 +28,9 @@ no change to any request that routes today.
   `failure_threshold`, `success_threshold` or `max_half_threshold` must now
   be positive, and a written `timeout` (including `""`) must be a positive
   duration; an omitted field keeps its default (5 / 1 / 1 / `30s`). Unknown
-  fields in the block are still refused. Applies to JSON and YAML alike.
+  fields in the block are still refused. Applies to JSON and YAML alike, and
+  an omitted field stays omitted when the config is persisted or served, so
+  a config accepted once is accepted again after a restart or rollback.
 
 A stored config carrying an explicit zero threshold or a zero or empty
 breaker timeout no longer loads or re-activates; the message names the

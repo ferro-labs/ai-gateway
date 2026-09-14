@@ -567,27 +567,33 @@ type RetryConfig struct {
 type CircuitBreakerConfig struct {
 	// FailureThreshold is the number of consecutive failures before the circuit
 	// opens. Defaults to 5.
-	FailureThreshold int `json:"failure_threshold" yaml:"failure_threshold"`
+	FailureThreshold int `json:"failure_threshold,omitempty" yaml:"failure_threshold,omitempty"`
 	// SuccessThreshold is the number of consecutive successes in half-open state
 	// required to close the circuit. Defaults to 1.
-	SuccessThreshold int `json:"success_threshold" yaml:"success_threshold"`
+	SuccessThreshold int `json:"success_threshold,omitempty" yaml:"success_threshold,omitempty"`
 	// MaxHalfThreshold is the maximum number of concurrent in-flight probes
-	// allowed while the circuit is half-open. Zero or negative values default to 1.
-	MaxHalfThreshold int `json:"max_half_threshold" yaml:"max_half_threshold"`
+	// allowed while the circuit is half-open. Omitted defaults to 1; a written
+	// value must be positive.
+	MaxHalfThreshold int `json:"max_half_threshold,omitempty" yaml:"max_half_threshold,omitempty"`
 	// Timeout is the duration the circuit stays open before transitioning to
 	// half-open (e.g. "30s"). Defaults to "30s".
-	Timeout string `json:"timeout" yaml:"timeout"`
+	Timeout string `json:"timeout,omitempty" yaml:"timeout,omitempty"`
 
+	// Presence, recorded by the decoders so validation can tell a written zero
+	// from an omitted field. Every field is omitempty on the way out for the
+	// same reason: SQLConfigStore.Save is json.Marshal, and a zero written for
+	// an omitted field would read back as present and refuse on reload.
 	failureThresholdSet bool
 	successThresholdSet bool
+	maxHalfThresholdSet bool
 	timeoutSet          bool
 }
 
 type circuitBreakerWire struct {
-	FailureThreshold int    `json:"failure_threshold" yaml:"failure_threshold"`
-	SuccessThreshold int    `json:"success_threshold" yaml:"success_threshold"`
-	MaxHalfThreshold int    `json:"max_half_threshold" yaml:"max_half_threshold"`
-	Timeout          string `json:"timeout" yaml:"timeout"`
+	FailureThreshold int    `json:"failure_threshold,omitempty" yaml:"failure_threshold,omitempty"`
+	SuccessThreshold int    `json:"success_threshold,omitempty" yaml:"success_threshold,omitempty"`
+	MaxHalfThreshold int    `json:"max_half_threshold,omitempty" yaml:"max_half_threshold,omitempty"`
+	Timeout          string `json:"timeout,omitempty" yaml:"timeout,omitempty"`
 }
 
 // UnmarshalJSON preserves whether defaultable circuit-breaker fields were
@@ -603,7 +609,12 @@ func (c *CircuitBreakerConfig) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &fields); err != nil {
 		return err
 	}
-	c.setCircuitBreakerWire(wire, fields["failure_threshold"] != nil, fields["success_threshold"] != nil, fields["timeout"] != nil)
+	c.setCircuitBreakerWire(wire, circuitBreakerPresence{
+		failureThreshold: fields["failure_threshold"] != nil,
+		successThreshold: fields["success_threshold"] != nil,
+		maxHalfThreshold: fields["max_half_threshold"] != nil,
+		timeout:          fields["timeout"] != nil,
+	})
 	return nil
 }
 
@@ -627,18 +638,35 @@ func (c *CircuitBreakerConfig) UnmarshalYAML(node *yaml.Node) error {
 	if err := node.Decode(&wire); err != nil {
 		return err
 	}
-	c.setCircuitBreakerWire(wire, present["failure_threshold"], present["success_threshold"], present["timeout"])
+	c.setCircuitBreakerWire(wire, circuitBreakerPresence{
+		failureThreshold: present["failure_threshold"],
+		successThreshold: present["success_threshold"],
+		maxHalfThreshold: present["max_half_threshold"],
+		timeout:          present["timeout"],
+	})
 	return nil
 }
 
-func (c *CircuitBreakerConfig) setCircuitBreakerWire(w circuitBreakerWire, failureSet, successSet, timeoutSet bool) {
+// circuitBreakerPresence says which breaker fields the document wrote. A
+// named struct rather than four positional bools: the earlier positional form
+// is how max_half_threshold's presence got computed by both decoders and then
+// dropped on the floor between them and the setter.
+type circuitBreakerPresence struct {
+	failureThreshold bool
+	successThreshold bool
+	maxHalfThreshold bool
+	timeout          bool
+}
+
+func (c *CircuitBreakerConfig) setCircuitBreakerWire(w circuitBreakerWire, present circuitBreakerPresence) {
 	c.FailureThreshold = w.FailureThreshold
 	c.SuccessThreshold = w.SuccessThreshold
 	c.MaxHalfThreshold = w.MaxHalfThreshold
 	c.Timeout = w.Timeout
-	c.failureThresholdSet = failureSet
-	c.successThresholdSet = successSet
-	c.timeoutSet = timeoutSet
+	c.failureThresholdSet = present.failureThreshold
+	c.successThresholdSet = present.successThreshold
+	c.maxHalfThresholdSet = present.maxHalfThreshold
+	c.timeoutSet = present.timeout
 }
 
 // PluginConfig holds plugin configuration. String values in Config may

@@ -870,7 +870,7 @@ func validateTargetCircuitBreaker(t Target) error {
 	}{
 		{"failure_threshold", cb.FailureThreshold, cb.failureThresholdSet || cb.FailureThreshold != 0},
 		{"success_threshold", cb.SuccessThreshold, cb.successThresholdSet || cb.SuccessThreshold != 0},
-		{"max_half_threshold", cb.MaxHalfThreshold, cb.MaxHalfThreshold != 0},
+		{"max_half_threshold", cb.MaxHalfThreshold, cb.maxHalfThresholdSet || cb.MaxHalfThreshold != 0},
 	} {
 		if f.set && f.value <= 0 {
 			return fmt.Errorf("target %q: circuit_breaker.%s must be positive, got %d (omit the field to take the default)", t.VirtualKey, f.name, f.value)

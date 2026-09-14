@@ -557,3 +557,50 @@ func TestSQLConfigStore_LoadHistoryBoundsRowsRead(t *testing.T) {
 		t.Fatalf("config_history has %d rows, want %d: rows must never be deleted", total, seeded)
 	}
 }
+
+// A config persisted before v1.5.6 carries the legacy "loadbalance" spelling.
+// Load handed it back verbatim, so the admin API served and history recorded
+// a mode the strategy factory no longer recognises; the store is the one
+// place every persisted config passes through, so it canonicalises on the
+// way out.
+func TestSQLConfigStore_LoadNormalizesLegacyLoadBalanceMode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy-mode.db")
+
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open raw sqlite: %v", err)
+	}
+	if _, err := raw.ExecContext(context.Background(), `
+CREATE TABLE gateway_config (
+	id INTEGER PRIMARY KEY,
+	config_json TEXT NOT NULL,
+	updated_at TIMESTAMP NOT NULL
+)`); err != nil {
+		t.Fatalf("create legacy table: %v", err)
+	}
+	const legacy = `{"strategy":{"mode":"loadbalance"},"targets":[{"virtual_key":"openai","weight":3},{"virtual_key":"anthropic","weight":1}]}`
+	if _, err := raw.ExecContext(context.Background(),
+		"INSERT INTO gateway_config(id, config_json, updated_at) VALUES(1, ?, datetime('now'))", legacy); err != nil {
+		t.Fatalf("seed legacy row: %v", err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatalf("close raw sqlite: %v", err)
+	}
+
+	store, err := NewSQLiteConfigStore(t.Context(), path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	loaded, ok, err := store.Load(context.Background())
+	if err != nil || !ok {
+		t.Fatalf("load legacy config: ok=%v err=%v", ok, err)
+	}
+	if loaded.Strategy.Mode != config.ModeLoadBalance {
+		t.Fatalf("loaded mode = %q, want canonical %q", loaded.Strategy.Mode, config.ModeLoadBalance)
+	}
+	if err := config.ValidateConfig(loaded); err != nil {
+		t.Fatalf("validate loaded legacy config: %v", err)
+	}
+}

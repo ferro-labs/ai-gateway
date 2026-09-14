@@ -1058,6 +1058,11 @@ func TestLoadConfig_TargetCircuitBreakerDistinguishesOmittedFromZero(t *testing.
 		{name: "yaml zero failure threshold", file: "config.yaml", body: "strategy: {mode: single}\ntargets:\n  - virtual_key: openai\n    circuit_breaker: {failure_threshold: 0}\n", wantErr: true},
 		{name: "yaml zero success threshold", file: "config.yaml", body: "strategy: {mode: single}\ntargets:\n  - virtual_key: openai\n    circuit_breaker: {success_threshold: 0}\n", wantErr: true},
 		{name: "yaml zero timeout", file: "config.yaml", body: "strategy: {mode: single}\ntargets:\n  - virtual_key: openai\n    circuit_breaker: {timeout: 0s}\n", wantErr: true},
+		// max_half_threshold went through the same decoders but its presence was
+		// never stored, so a written zero fell back to "!= 0" and read as omitted.
+		{name: "json zero max half threshold", file: "config.json", body: `{"strategy":{"mode":"single"},"targets":[{"virtual_key":"openai","circuit_breaker":{"max_half_threshold":0}}]}`, wantErr: true},
+		{name: "yaml zero max half threshold", file: "config.yaml", body: "strategy: {mode: single}\ntargets:\n  - virtual_key: openai\n    circuit_breaker: {max_half_threshold: 0}\n", wantErr: true},
+		{name: "json positive max half threshold", file: "config.json", body: `{"strategy":{"mode":"single"},"targets":[{"virtual_key":"openai","circuit_breaker":{"max_half_threshold":2}}]}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
