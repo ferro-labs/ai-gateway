@@ -35,7 +35,7 @@ Everything below is available today.
 - Least-latency samples keyed by target and upstream model that expire, measure time to first chunk, and keep exploring; cost-optimized ranking on input plus output price with weighted tie-break (v1.5.2)
 - `targets[].timeout` per attempt, a `429` cooldown honouring `Retry-After`, a typed context-length failover class, and `strategy.failover_on_status_codes` (v1.5.2)
 - Sticky hashing on the request `user` for load balancing and A/B tests, rule `target_keys` chains with a hard boundary, and bounded conditional predicates (`user`, `stream`, `has_tools`, one metadata header) (v1.5.2)
-- Routing configs that loaded and silently misbehaved are refused at load: out-of-range `retry.on_status_codes`, empty or padded `model` / `model_prefix` / `user` condition values, duplicate A/B variant labels under Unicode case folding (v1.5.5)
+- Routing configs that loaded and silently misbehaved are refused at load: out-of-range `retry.on_status_codes`, empty or padded `model` / `model_prefix` and empty `user` condition values, duplicate A/B variant labels under Unicode case folding (v1.5.5)
 - `X-Gateway-Provider` / `-Target` / `-Model` / `-Attempts` attribution headers on every routed surface, `ferro.routing.attempt` on the request span, and `aigateway.WithCatalog` for a host-owned price catalog (v1.5.2)
 - Per-target concurrency limits with a bounded queue and 429 shedding
 - Per-provider circuit breaker shared across every surface

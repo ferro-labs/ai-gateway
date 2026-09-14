@@ -23,9 +23,11 @@ now a `ferrogw validate` / startup / admin-API error.
   codes (400, 401, 403, 404, 422) remain legal here: retrying a client error
   on the same target is wasteful, not incoherent, and never refused.
 - `strategy.conditions[].value` must be non-empty with no surrounding
-  whitespace for `model`, `model_prefix` and `user` — matching is verbatim, so
-  a padded `" gpt-4o"` is as dead as an empty one. An empty `model` or `user`
-  is a rule that can match nothing; an empty `model_prefix` is a zero-length prefix that matched every model and
+  whitespace for `model` and `model_prefix`, and non-empty for `user` —
+  matching is verbatim, so a padded `" gpt-4o"` is as dead as an empty one,
+  while a padded `user` still matches a caller who sends it padded and keeps
+  loading. An empty `model` or `user` is a rule that can match nothing; an
+  empty `model_prefix` is a zero-length prefix that matched every model and
   swallowed every rule below it, collapsing the route to one target with
   nothing in the config, logs or traces saying why.
 - `strategy.ab_variants[].label` must be unique, compared case-insensitively

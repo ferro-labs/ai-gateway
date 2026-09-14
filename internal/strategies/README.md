@@ -158,10 +158,12 @@ strategy:
 
 `target_key` names one target; `target_keys` an ordered chain, tried in order
 under the failover-safe classes above and never left. Both are exact
-about what they name. `model`, `model_prefix` and `user` require a non-empty
-`value` with no surrounding whitespace — matching is verbatim, so a padded or
-empty `model` / `user` can match nothing, and an empty `model_prefix` would
-match every model and swallow every rule below it.
+about what they name. `model` and `model_prefix` require a non-empty `value`
+with no surrounding whitespace, and `user` a non-empty one — matching is
+verbatim, so a padded or empty `model` can match nothing, an empty `user` never
+matches, and an empty `model_prefix` would match every model and swallow every
+rule below it. A padded `user` value is legal: the request's `user` is compared
+as sent.
 
 ### content-based
 Routes by the textual content of the prompt. Rules evaluate in order, first match

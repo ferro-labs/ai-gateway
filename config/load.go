@@ -569,11 +569,20 @@ func validateConditions(conditions []Condition, targets []Target) error {
 			if c.Value != "true" && c.Value != "false" {
 				return fmt.Errorf("conditions[%d]: key %q takes value \"true\" or \"false\", got %q", i, c.Key, c.Value)
 			}
-		case ConditionKeyModel, ConditionKeyModelPrefix, ConditionKeyUser:
-			// Conditional.matches compares verbatim, so an empty or padded
-			// value is a rule that can match no request. Same idiom as
-			// targets[].models. A zero-length model_prefix is the worse case:
-			// it matches every model and swallows every rule below it.
+		case ConditionKeyUser:
+			// Only the empty value is dead: Conditional.matches reads the
+			// body `user` verbatim (observability trims its copy, routing
+			// does not), so a padded rule matches a padded caller today and
+			// must keep loading.
+			if c.Value == "" {
+				return fmt.Errorf("conditions[%d]: key %q requires a value", i, c.Key)
+			}
+		case ConditionKeyModel, ConditionKeyModelPrefix:
+			// A model id never carries surrounding whitespace (targets[].models
+			// refuses it), so an empty or padded value is a rule that can match
+			// no request. Same idiom as targets[].models. A zero-length
+			// model_prefix is the worse case: it matches every model and
+			// swallows every rule below it.
 			if c.Value == "" || strings.TrimSpace(c.Value) != c.Value {
 				why := ""
 				if c.Key == ConditionKeyModelPrefix && c.Value == "" {

@@ -345,7 +345,19 @@ func TestValidateStrategy_ValueShape(t *testing.T) {
 				}},
 				Targets: twoTargets(),
 			},
-			wantErr: `conditions[0]: key "user" requires a non-empty value with no surrounding whitespace, got ""`,
+			wantErr: `conditions[0]: key "user" requires a value`,
+		},
+		{
+			// Review on #435: the strategy reads the body `user` verbatim
+			// (only observability trims it), so a padded rule matches a padded
+			// caller today and the refusal set must not take that away.
+			name: "conditional padded user is legal",
+			cfg: Config{
+				Strategy: StrategyConfig{Mode: ModeConditional, Conditions: []Condition{
+					{Key: ConditionKeyUser, Value: " customer-42 ", TargetKey: "groq"},
+				}},
+				Targets: twoTargets(),
+			},
 		},
 		// ── v1.5.5 · two arms carrying one label split traffic correctly and
 		// are indistinguishable in every record attribution writes. Compared
