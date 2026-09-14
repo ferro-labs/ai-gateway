@@ -569,6 +569,17 @@ func validateConditions(conditions []Condition, targets []Target) error {
 			if c.Value != "true" && c.Value != "false" {
 				return fmt.Errorf("conditions[%d]: key %q takes value \"true\" or \"false\", got %q", i, c.Key, c.Value)
 			}
+		case ConditionKeyModel, ConditionKeyUser:
+			// An empty value can match no request: a dead rule.
+			if strings.TrimSpace(c.Value) == "" {
+				return fmt.Errorf("conditions[%d]: key %q requires a value", i, c.Key)
+			}
+		case ConditionKeyModelPrefix:
+			// A zero-length prefix matches every model and swallows every
+			// rule below it, so the route quietly collapses to one target.
+			if strings.TrimSpace(c.Value) == "" {
+				return fmt.Errorf("conditions[%d]: key %q requires a value; an empty model_prefix matches every model", i, c.Key)
+			}
 		}
 		if c.Key == ConditionKeyMetadata && c.Field == "" {
 			return fmt.Errorf("conditions[%d]: key metadata requires field", i)
@@ -635,6 +646,7 @@ func validateABVariants(variants []ABVariantConfig, targets []Target) error {
 	}
 	weights := make([]namedWeight, 0, len(variants))
 	seenTargets := make(map[string]int, len(variants))
+	seenLabels := make(map[string]int, len(variants))
 	for i, v := range variants {
 		if err := requireDeclaredTarget(fmt.Sprintf("ab_variants[%d]", i), v.TargetKey, targets); err != nil {
 			return err
@@ -649,6 +661,13 @@ func validateABVariants(variants []ABVariantConfig, targets []Target) error {
 			return fmt.Errorf("ab_variants[%d].target_key %q duplicates ab_variants[%d].target_key", i, v.TargetKey, first)
 		}
 		seenTargets[v.TargetKey] = i
+		// Case-insensitive: `control` and `Control` are one arm to anyone
+		// reading a trace, and two arms with one label cannot be told apart
+		// in any record attribution writes.
+		if first, duplicate := seenLabels[strings.ToLower(v.Label)]; duplicate {
+			return fmt.Errorf("ab_variants[%d].label %q duplicates ab_variants[%d].label; attribution keys on the label", i, v.Label, first)
+		}
+		seenLabels[strings.ToLower(v.Label)] = i
 		weights = append(weights, namedWeight{name: v.Label, weight: v.Weight})
 	}
 	return validateWeights("ab_variant", weights)
@@ -787,6 +806,14 @@ func validateTargetRetry(t Target) error {
 	}
 	if t.Retry.InitialBackoffMs < 0 {
 		return fmt.Errorf("target %q: retry.initial_backoff_ms cannot be negative, got %d", t.VirtualKey, t.Retry.InitialBackoffMs)
+	}
+	// Same range as validateFailoverStatusCodes, without its protected set:
+	// retrying a deterministic client error on the same target is wasteful,
+	// not incoherent, and this repository has never refused it.
+	for _, code := range t.Retry.OnStatusCodes {
+		if code < 100 || code > 599 {
+			return fmt.Errorf("target %q: retry.on_status_codes: %d is not an HTTP status code", t.VirtualKey, code)
+		}
 	}
 	return nil
 }

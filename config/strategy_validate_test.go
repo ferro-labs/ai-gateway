@@ -10,12 +10,35 @@ func twoTargets() []Target {
 	return []Target{{VirtualKey: "openai", Weight: 1}, {VirtualKey: "groq", Weight: 1}}
 }
 
+type strategyCase struct {
+	name    string
+	cfg     Config
+	wantErr string // substring; empty means the config must be accepted
+}
+
+func runStrategyCases(t *testing.T, tests []strategyCase) {
+	t.Helper()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateConfig(tt.cfg)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("ValidateConfig = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("ValidateConfig = nil, want an error containing %q", tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("ValidateConfig = %v, want an error containing %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestValidateStrategy(t *testing.T) {
-	tests := []struct {
-		name    string
-		cfg     Config
-		wantErr string // substring; empty means the config must be accepted
-	}{
+	tests := []strategyCase{
 		// ── F15 · a negative ab-test weight used to start clean and 500 every
 		// request, with the reason in no log line and no response body.
 		{
@@ -76,7 +99,6 @@ func TestValidateStrategy(t *testing.T) {
 			},
 			wantErr: `ab_variants[1].target_key "openai" duplicates ab_variants[0].target_key`,
 		},
-
 		// ── F16 · a typo in a condition key or content-condition type used to be
 		// accepted and route 100% of that rule's traffic to targets[0], HTTP 200,
 		// no warning.
@@ -240,24 +262,7 @@ func TestValidateStrategy(t *testing.T) {
 			cfg:  Config{Targets: twoTargets()},
 		},
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := ValidateConfig(tt.cfg)
-			if tt.wantErr == "" {
-				if err != nil {
-					t.Fatalf("ValidateConfig = %v, want nil", err)
-				}
-				return
-			}
-			if err == nil {
-				t.Fatalf("ValidateConfig = nil, want an error containing %q", tt.wantErr)
-			}
-			if !strings.Contains(err.Error(), tt.wantErr) {
-				t.Fatalf("ValidateConfig = %v, want an error containing %q", err, tt.wantErr)
-			}
-		})
-	}
+	runStrategyCases(t, tests)
 }
 
 // TestValidateStrategy_ErrorNamesTheOffender: a rejection an operator cannot act
@@ -279,4 +284,60 @@ func TestValidateStrategy_ErrorNamesTheOffender(t *testing.T) {
 			t.Errorf("error %q does not mention %q", err, want)
 		}
 	}
+}
+
+// TestValidateStrategy_ValueShape · v1.5.5: rules whose *value* is wrong in a
+// way the runtime cannot report on — a dead condition, a prefix that matches
+// everything, two A/B arms that attribution cannot tell apart.
+func TestValidateStrategy_ValueShape(t *testing.T) {
+	runStrategyCases(t, []strategyCase{
+		// ── v1.5.5 · an empty value was accepted for the string keys. Empty
+		// `model` / `user` is a dead rule; empty `model_prefix` is a zero-length
+		// prefix that matches every model and swallows every rule below it.
+		{
+			name: "conditional empty model_prefix",
+			cfg: Config{
+				Strategy: StrategyConfig{Mode: ModeConditional, Conditions: []Condition{
+					{Key: ConditionKeyModelPrefix, Value: "", TargetKey: "groq"},
+				}},
+				Targets: twoTargets(),
+			},
+			wantErr: `conditions[0]: key "model_prefix" requires a value; an empty model_prefix matches every model`,
+		},
+		{
+			name: "conditional empty model",
+			cfg: Config{
+				Strategy: StrategyConfig{Mode: ModeConditional, Conditions: []Condition{
+					{Key: ConditionKeyModel, Value: "  ", TargetKey: "groq"},
+				}},
+				Targets: twoTargets(),
+			},
+			wantErr: `conditions[0]: key "model" requires a value`,
+		},
+		{
+			name: "conditional empty user",
+			cfg: Config{
+				Strategy: StrategyConfig{Mode: ModeConditional, Conditions: []Condition{
+					{Key: ConditionKeyUser, Value: "", TargetKey: "groq"},
+				}},
+				Targets: twoTargets(),
+			},
+			wantErr: `conditions[0]: key "user" requires a value`,
+		},
+		// ── v1.5.5 · two arms carrying one label split traffic correctly and
+		// are indistinguishable in every record attribution writes. Compared
+		// case-insensitively: `control` and `Control` are one arm to anyone
+		// reading a trace.
+		{
+			name: "ab-test duplicate label",
+			cfg: Config{
+				Strategy: StrategyConfig{Mode: ModeABTest, ABVariants: []ABVariantConfig{
+					{TargetKey: "openai", Weight: 80, Label: "control"},
+					{TargetKey: "groq", Weight: 20, Label: "Control"},
+				}},
+				Targets: twoTargets(),
+			},
+			wantErr: `ab_variants[1].label "Control" duplicates ab_variants[0].label`,
+		},
+	})
 }
