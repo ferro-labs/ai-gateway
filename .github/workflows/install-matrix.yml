@@ -883,11 +883,12 @@ jobs:
       EXPECTED_VERSION: ${{ needs.resolve.outputs.version }}
       ARMED: ${{ vars.INSTALL_MATRIX_NPM_LIVE }}
       NO_COLOR: "1"
-      # 10 x 30 s: five minutes covers the registry propagation seen on every
-      # release since v1.5.2 with room to spare, and is short enough that a
-      # genuinely missing version fails inside the run rather than hiding it.
-      MAX_ATTEMPTS: "10"
-      RETRY_DELAY: "30"
+      # 20 x 45 s: fifteen minutes. v1.5.5 published all six platform packages
+      # successfully and npm's read path still took ~16 min to expose them,
+      # so the five-minute budget sized on earlier releases failed the run.
+      # Still bounded: a genuinely missing version fails inside the run.
+      MAX_ATTEMPTS: "20"
+      RETRY_DELAY: "45"
       # A cold runner downloads the platform binary on the first attempt; 120 s
       # bounds a stalled fetch without cutting a slow but honest one short.
       PER_ATTEMPT_TIMEOUT: "120"
@@ -937,11 +938,12 @@ jobs:
       EXPECTED_VERSION: ${{ needs.resolve.outputs.version }}
       ARMED: ${{ vars.INSTALL_MATRIX_PYPI_LIVE }}
       NO_COLOR: "1"
-      # 10 x 30 s: five minutes covers the registry propagation seen on every
-      # release since v1.5.2 with room to spare, and is short enough that a
-      # genuinely missing version fails inside the run rather than hiding it.
-      MAX_ATTEMPTS: "10"
-      RETRY_DELAY: "30"
+      # 20 x 45 s: fifteen minutes. v1.5.5 published all six platform packages
+      # successfully and npm's read path still took ~16 min to expose them,
+      # so the five-minute budget sized on earlier releases failed the run.
+      # Still bounded: a genuinely missing version fails inside the run.
+      MAX_ATTEMPTS: "20"
+      RETRY_DELAY: "45"
       # A cold runner downloads the platform binary on the first attempt; 120 s
       # bounds a stalled fetch without cutting a slow but honest one short.
       PER_ATTEMPT_TIMEOUT: "120"
