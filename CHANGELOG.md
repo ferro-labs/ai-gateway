@@ -5,6 +5,36 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Routing config validation. No new config keys, no API change, no change to
+any request that routes today — only the set of configs `ValidateConfig`
+refuses. Three shapes that loaded on `v1.5.4` and silently misbehaved are
+now a `ferrogw validate` / startup / admin-API error.
+
+### Changed
+
+- `targets[].retry.on_status_codes` entries must be HTTP status codes
+  (100–599). Previously any integer loaded; a value such as `429500503` (a
+  comma-separated dashboard field that collapsed to one number) matched no
+  response, so the policy never fired on a status — and, because a non-empty
+  list replaces the default retryable set, it was worse than omitting the
+  field. Transport-level failures still retried. The protected failover
+  codes (400, 401, 403, 404, 422) remain legal here: retrying a client error
+  on the same target is wasteful, not incoherent, and never refused.
+- `strategy.conditions[].value` must be non-empty for `model`, `model_prefix`
+  and `user`. An empty `model` or `user` is a rule that can match nothing; an
+  empty `model_prefix` is a zero-length prefix that matched every model and
+  swallowed every rule below it, collapsing the route to one target with
+  nothing in the config, logs or traces saying why.
+- `strategy.ab_variants[].label` must be unique, compared case-insensitively.
+  Two arms carrying `control` (or `control` / `Control`) split traffic
+  correctly and were indistinguishable in `ferro.routing.ab_variant_label`,
+  the `gateway.routing.attempt` event and the request-log row.
+
+A stored config carrying any of these no longer loads or re-activates.
+Fix the value; the messages name the target, rule index or variant index.
+
 ## [1.5.4] — 2026-09-05
 
 ### Added

@@ -158,7 +158,9 @@ strategy:
 
 `target_key` names one target; `target_keys` an ordered chain, tried in order
 under the failover-safe classes above and never left. Both are exact
-about what they name.
+about what they name. `model`, `model_prefix` and `user` require a non-empty
+`value`: an empty `model` or `user` can match nothing, and an empty
+`model_prefix` would match every model and swallow every rule below it.
 
 ### content-based
 Routes by the textual content of the prompt. Rules evaluate in order, first match
@@ -186,7 +188,8 @@ strategy:
     - { target_key: anthropic, weight: 30, label: challenger }
 ```
 
-The label names the variant the request was *drawn* for and stays with the
+Labels are required and unique (case-insensitively — `control` and `Control`
+are one arm to anyone reading a trace). The label names the variant the request was *drawn* for and stays with the
 request through same-target retries and failover, so an experiment is segmented
 by intent. Which target actually served is on every `gateway.routing.attempt`
 event and on the terminal event's provider — read it when a variant's circuit is

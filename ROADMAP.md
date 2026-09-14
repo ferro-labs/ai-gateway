@@ -7,6 +7,7 @@ see [CHANGELOG.md](CHANGELOG.md).
 
 What's next, roughly in priority order:
 
+- **Config validation hardening** — refuse at load the routing configs that load today and silently misbehave: out-of-range `retry.on_status_codes`, empty `model` / `model_prefix` / `user` condition values, duplicate A/B variant labels.
 - **Plugin SDK & vendor observability bridges** — external guardrail and transform plugins, plus bridges for LangSmith, Langfuse, Datadog, New Relic, Honeycomb, Grafana, and more, shipped from a companion `ai-gateway-plugins` repo so the core binary stays slim.
 - **Webhook notifications** — configurable alerts for budget limits, error spikes, and circuit-breaker events.
 - **Semantic & Redis-backed caching** — beyond the built-in in-memory cache.

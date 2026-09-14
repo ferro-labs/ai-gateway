@@ -140,9 +140,10 @@ targets:
     # above, while named modes stop.
     retry:
       attempts: 3
-      # Only retry on these HTTP status codes. Omit to use the default policy:
-      # transport errors plus 408, 429 and 5xx. Other 4xx are deterministic client
-      # errors and are never retried.
+      # Only retry on these HTTP status codes (each 100–599; the config refuses
+      # anything else). Omit to use the default policy: transport errors plus
+      # 408, 429 and 5xx. Other 4xx are deterministic client errors and are never
+      # retried by default.
       on_status_codes: [429, 502, 503]
       # Base backoff in ms for exponential back-off with full jitter: the wait is
       # picked uniformly from [0, initial_backoff_ms * 2^(attempt-1)). An upstream
