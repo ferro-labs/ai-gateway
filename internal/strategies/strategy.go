@@ -39,7 +39,7 @@ type Strategy interface {
 	// treats them alike under every mode: it advances past a failover-safe
 	// failure, skips a key whose circuit is open or that is parked after a
 	// 429, and never reaches a key this method did not return. Pool modes
-	// (`fallback`, `loadbalance`, `least-latency`, `cost-optimized`, `ab-test`)
+	// (`fallback`, `load-balance`, `least-latency`, `cost-optimized`, `ab-test`)
 	// return their whole ordered pool. A rule mode (`conditional`,
 	// `content-based`) returns the matched rule's `target_keys` chain — a
 	// one-entry chain for `target_key` — and nothing else, so a rule that names

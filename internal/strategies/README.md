@@ -32,7 +32,7 @@ What a strategy does when its chosen target *fails* splits the eight modes in tw
 
 | Family | Modes | On a failure |
 |---|---|---|
-| **Pool** | fallback, loadbalance, least-latency, cost-optimized, ab-test | the request advances only after a failover-safe failure |
+| **Pool** | fallback, load-balance, least-latency, cost-optimized, ab-test | the request advances only after a failover-safe failure |
 | **Named** | single, conditional, content-based | the request stays inside what was named: `single` stops; a rule walks its `target_keys` chain under the same failover-safe classes and stops at its end |
 
 A pool mode picks its target for a reason about the *pool* (spread load, take the
@@ -78,12 +78,12 @@ failure.
 strategy: { mode: fallback }
 ```
 
-### loadbalance
+### load-balance
 Distributes requests across targets by `weight`. A weight of `0` drains a target
 (no traffic) without removing it; at least one weight must be positive.
 
 ```yaml
-strategy: { mode: loadbalance }
+strategy: { mode: load-balance }
 targets:
   - { virtual_key: openai, weight: 3 }
   - { virtual_key: azure-openai, weight: 1 }

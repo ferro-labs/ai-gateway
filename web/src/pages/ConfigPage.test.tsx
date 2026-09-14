@@ -124,11 +124,11 @@ describe('ConfigPage save', () => {
     })
     const editor = await openEditor()
 
-    fireEvent.change(editor, { target: { value: JSON.stringify({ strategy: { mode: 'loadbalance' }, targets: [{ virtual_key: 'openai' }] }, null, 2) } })
+    fireEvent.change(editor, { target: { value: JSON.stringify({ strategy: { mode: 'load-balance' }, targets: [{ virtual_key: 'openai' }] }, null, 2) } })
     await userEvent.click(saveButton())
 
     expect(await screen.findByText('Configuration saved and applied.')).toBeInTheDocument()
-    expect(JSON.parse(applied[0] ?? '{}')).toEqual({ strategy: { mode: 'loadbalance' }, targets: [{ virtual_key: 'openai' }] })
+    expect(JSON.parse(applied[0] ?? '{}')).toEqual({ strategy: { mode: 'load-balance' }, targets: [{ virtual_key: 'openai' }] })
     // Back to the read-only view: leaving the textarea open would invite a
     // second Save of a document the gateway has already moved past.
     expect(screen.getByRole('button', { name: 'Edit JSON' })).toBeInTheDocument()
@@ -237,7 +237,7 @@ describe('ConfigPage unsaved edits', () => {
     expect(editor.value).toContain('"mode": "fallback"')
 
     // Somebody else applied a change while this editor was open.
-    served = { ...activeConfig, strategy: { mode: 'loadbalance' } }
+    served = { ...activeConfig, strategy: { mode: 'load-balance' } }
     await userEvent.click(screen.getByRole('button', { name: 'Refresh configuration' }))
     await waitFor(() => expect(loads).toBe(2))
 
@@ -248,7 +248,7 @@ describe('ConfigPage unsaved edits', () => {
     // The load did land, though: closing the editor shows what the gateway is
     // actually running now.
     await userEvent.click(screen.getByRole('button', { name: 'Cancel' }))
-    expect(viewer()).toHaveTextContent(/"mode": "loadbalance"/)
+    expect(viewer()).toHaveTextContent(/"mode": "load-balance"/)
   })
 })
 

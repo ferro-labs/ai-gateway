@@ -8,7 +8,7 @@ describe('STRATEGIES', () => {
     expect(STRATEGIES.map((strategy) => strategy.id)).toEqual([
       'single',
       'fallback',
-      'loadbalance',
+      'load-balance',
       'least-latency',
       'cost-optimized',
       'conditional',

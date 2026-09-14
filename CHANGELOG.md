@@ -5,6 +5,33 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.6] — 2026-09-14
+
+Two routing-config corrections. No new config keys, no API surface change,
+no change to any request that routes today.
+
+### Changed
+
+- `strategy.mode` for weighted load balancing is spelled `load-balance`,
+  matching the other seven modes. The previous `loadbalance` is still
+  accepted and is normalised on load (`config.Normalize`), so every existing
+  config keeps loading; the canonical spelling is what `GET /admin/config`,
+  the config history and the operations dashboard now emit. Embedders that
+  compare against the literal string rather than `config.ModeLoadBalance`
+  must accept both.
+- `targets[].circuit_breaker` distinguishes an omitted field from a written
+  zero. Previously both decoded to `0`, so `failure_threshold: 0` or
+  `timeout: "0s"` loaded and validated as a breaker that took the default —
+  a breaker the operator had written as one that could never trip. A written
+  `failure_threshold`, `success_threshold` or `max_half_threshold` must now
+  be positive, and a written `timeout` (including `""`) must be a positive
+  duration; an omitted field keeps its default (5 / 1 / 1 / `30s`). Unknown
+  fields in the block are still refused. Applies to JSON and YAML alike.
+
+A stored config carrying an explicit zero threshold or a zero or empty
+breaker timeout no longer loads or re-activates; the message names the
+target and field. Omit the field to take the default.
+
 ## [1.5.5] — 2026-09-14
 
 Routing config validation. No new config keys, no API change, no change to

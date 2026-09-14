@@ -21,8 +21,8 @@ apiVersion: v1
 # request_timeout: 60s
 
 strategy:
-  mode: fallback  # single | fallback | loadbalance | conditional | content-based | ab-test | least-latency | cost-optimized
-  # Pool modes (fallback, loadbalance, least-latency, cost-optimized, ab-test)
+  mode: fallback  # single | fallback | load-balance | conditional | content-based | ab-test | least-latency | cost-optimized
+  # Pool modes (fallback, load-balance, least-latency, cost-optimized, ab-test)
   # advance after transport failures, attempt timeouts, 408, 429, 5xx, open
   # circuits, target saturation, or a provider's own context-length overflow
   # error (recognised envelopes only). The request's own cancellation or
@@ -44,7 +44,7 @@ strategy:
   # fix a malformed or unauthorised request.
   # failover_on_status_codes: [409]
   #
-  # For loadbalance and ab-test only: pin a request to the same target for the
+  # For load-balance and ab-test only: pin a request to the same target for the
   # same `user` field, so a conversation keeps its provider prompt cache and an
   # A/B session keeps its variant. A stateless hash — no shared state, and the
   # same answer on every replica with this config. A request with no `user`
@@ -122,7 +122,7 @@ strategy:
 
 targets:
   - virtual_key: openai
-    # Relative share under mode: loadbalance; ignored by every other mode.
+    # Relative share under mode: load-balance; ignored by every other mode.
     # Zero means zero — a zero-weight target receives none of the load, which is
     # how you drain one ahead of revoking its credential. At least one target's
     # weight must therefore be positive; an all-zero set and a negative weight

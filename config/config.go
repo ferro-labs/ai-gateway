@@ -5,7 +5,14 @@
 // config.Config.
 package config
 
-import "github.com/ferro-labs/ai-gateway/mcp"
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+
+	"github.com/ferro-labs/ai-gateway/mcp"
+	"go.yaml.in/yaml/v3"
+)
 
 // DefaultMaxRequestBytes is the default per-request body-size cap (10 MiB).
 // Operators may lower or raise this via Config.MaxRequestBytes.
@@ -23,7 +30,7 @@ type Config struct {
 	// is preserved and only logged as a warning so newer config files remain
 	// forward-compatible with older binaries. It never causes a load to fail.
 	APIVersion string `json:"apiVersion,omitempty" yaml:"apiVersion,omitempty"`
-	// Strategy defines how requests are routed (e.g., single, fallback, loadbalance).
+	// Strategy defines how requests are routed (e.g., single, fallback, load-balance).
 	Strategy StrategyConfig `json:"strategy" yaml:"strategy"`
 	// Targets is a list of provider targets to route requests to.
 	Targets []Target `json:"targets" yaml:"targets"`
@@ -120,8 +127,11 @@ func (c *Config) Normalize() {
 	if c.APIVersion == "" {
 		c.APIVersion = CurrentAPIVersion
 	}
-	if c.Strategy.Mode == "" {
+	switch c.Strategy.Mode {
+	case "":
 		c.Strategy.Mode = ModeSingle
+	case modeLoadBalanceLegacy:
+		c.Strategy.Mode = ModeLoadBalance
 	}
 }
 
@@ -270,13 +280,13 @@ type StrategyConfig struct {
 	// unauthorised request to every target changes nothing but the bill.
 	FailoverOnStatusCodes []int `json:"failover_on_status_codes,omitempty" yaml:"failover_on_status_codes,omitempty"`
 	// Sticky pins a request to the same target for the same key under
-	// loadbalance and ab-test, so a conversation keeps its provider prompt
+	// load-balance and ab-test, so a conversation keeps its provider prompt
 	// cache and a multi-turn A/B session keeps its variant. Stateless: a
 	// hash of the key decides the draw, so it needs no shared state.
 	Sticky *StickyConfig `json:"sticky,omitempty" yaml:"sticky,omitempty"`
 }
 
-// StickyConfig configures sticky hashing for loadbalance and ab-test.
+// StickyConfig configures sticky hashing for load-balance and ab-test.
 type StickyConfig struct {
 	// On names the request field hashed. Only "user" is supported: the
 	// request's `user` field, which is what provider prompt caches and a
@@ -303,13 +313,15 @@ type StrategyMode string
 const (
 	ModeSingle        StrategyMode = "single"
 	ModeFallback      StrategyMode = "fallback"
-	ModeLoadBalance   StrategyMode = "loadbalance"
+	ModeLoadBalance   StrategyMode = "load-balance"
 	ModeConditional   StrategyMode = "conditional"
 	ModeLatency       StrategyMode = "least-latency"
 	ModeCostOptimized StrategyMode = "cost-optimized"
 	ModeContentBased  StrategyMode = "content-based"
 	ModeABTest        StrategyMode = "ab-test"
 )
+
+const modeLoadBalanceLegacy StrategyMode = "loadbalance"
 
 // UnpricedStrategy* are the accepted values for StrategyConfig.UnpricedStrategy,
 // controlling how cost-optimized routing treats providers with missing catalog
@@ -460,7 +472,7 @@ type ABVariantConfig struct {
 type Target struct {
 	// VirtualKey is the unique identifier for the provider (or a virtual key in the vault).
 	VirtualKey string `json:"virtual_key" yaml:"virtual_key"`
-	// Weight is the target's relative share under mode: loadbalance, and the
+	// Weight is the target's relative share under mode: load-balance, and the
 	// tie-break among equal-cost targets under mode: cost-optimized. Every
 	// other mode ignores it.
 	//
@@ -565,6 +577,68 @@ type CircuitBreakerConfig struct {
 	// Timeout is the duration the circuit stays open before transitioning to
 	// half-open (e.g. "30s"). Defaults to "30s".
 	Timeout string `json:"timeout" yaml:"timeout"`
+
+	failureThresholdSet bool
+	successThresholdSet bool
+	timeoutSet          bool
+}
+
+type circuitBreakerWire struct {
+	FailureThreshold int    `json:"failure_threshold" yaml:"failure_threshold"`
+	SuccessThreshold int    `json:"success_threshold" yaml:"success_threshold"`
+	MaxHalfThreshold int    `json:"max_half_threshold" yaml:"max_half_threshold"`
+	Timeout          string `json:"timeout" yaml:"timeout"`
+}
+
+// UnmarshalJSON preserves whether defaultable circuit-breaker fields were
+// omitted while retaining strict rejection of unknown fields.
+func (c *CircuitBreakerConfig) UnmarshalJSON(data []byte) error {
+	var wire circuitBreakerWire
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&wire); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	c.setCircuitBreakerWire(wire, fields["failure_threshold"] != nil, fields["success_threshold"] != nil, fields["timeout"] != nil)
+	return nil
+}
+
+// UnmarshalYAML preserves whether defaultable circuit-breaker fields were
+// omitted while retaining strict rejection of unknown fields.
+func (c *CircuitBreakerConfig) UnmarshalYAML(node *yaml.Node) error {
+	known := map[string]bool{"failure_threshold": true, "success_threshold": true, "max_half_threshold": true, "timeout": true}
+	present := make(map[string]bool, len(node.Content)/2)
+	var unknown []string
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		key := node.Content[i]
+		present[key.Value] = true
+		if !known[key.Value] {
+			unknown = append(unknown, fmt.Sprintf("line %d: field %s not found in type config.circuitBreakerWire", key.Line, key.Value))
+		}
+	}
+	if len(unknown) > 0 {
+		return &yaml.TypeError{Errors: unknown}
+	}
+	var wire circuitBreakerWire
+	if err := node.Decode(&wire); err != nil {
+		return err
+	}
+	c.setCircuitBreakerWire(wire, present["failure_threshold"], present["success_threshold"], present["timeout"])
+	return nil
+}
+
+func (c *CircuitBreakerConfig) setCircuitBreakerWire(w circuitBreakerWire, failureSet, successSet, timeoutSet bool) {
+	c.FailureThreshold = w.FailureThreshold
+	c.SuccessThreshold = w.SuccessThreshold
+	c.MaxHalfThreshold = w.MaxHalfThreshold
+	c.Timeout = w.Timeout
+	c.failureThresholdSet = failureSet
+	c.successThresholdSet = successSet
+	c.timeoutSet = timeoutSet
 }
 
 // PluginConfig holds plugin configuration. String values in Config may

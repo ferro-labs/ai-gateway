@@ -11,7 +11,7 @@
 # cannot serve, so they are intentionally omitted here.
 
 strategy:
-  mode: loadbalance
+  mode: load-balance
 
 targets:
 

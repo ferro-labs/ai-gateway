@@ -492,7 +492,7 @@ func validateStrategy(s StrategyConfig, targets []Target) error {
 		return validateWeights("target", targetWeights(targets))
 	case ModeCostOptimized:
 		// Weights break equal-cost ties here, so a negative one would silently
-		// drain a target; refuse it as loadbalance does. Zero and unset stay
+		// drain a target; refuse it as load-balance does. Zero and unset stay
 		// legal — an all-zero set means an equal draw, not an outage.
 		for _, w := range targetWeights(targets) {
 			if w.weight < 0 {
@@ -531,14 +531,14 @@ func validateFailoverStatusCodes(codes []int) error {
 }
 
 // validateSticky checks strategy.sticky: only the modes that draw a start
-// target (loadbalance, ab-test) can pin one, `on` is a closed set, and a TTL
+// target (load-balance, ab-test) can pin one, `on` is a closed set, and a TTL
 // is a positive duration.
 func validateSticky(s StrategyConfig) error {
 	if s.Sticky == nil {
 		return nil
 	}
 	if s.Mode != ModeLoadBalance && s.Mode != ModeABTest {
-		return fmt.Errorf("strategy.sticky applies to loadbalance and ab-test only, not %q", s.Mode)
+		return fmt.Errorf("strategy.sticky applies to load-balance and ab-test only, not %q", s.Mode)
 	}
 	if s.Sticky.On != StickyOnUser {
 		return fmt.Errorf("strategy.sticky.on must be %q, got %q", StickyOnUser, s.Sticky.On)
@@ -856,10 +856,8 @@ func validateTargetTimeout(t Target) error {
 // nobody configured. The gateway warns when it builds one, which is a line in a
 // startup log an operator reads once; validation is where they were looking.
 //
-// A negative duration is refused for the same reason a negative threshold is:
-// it cannot be honoured, so it can only be substituted, and substituting a
-// written value silently is the failure being fixed. Zero remains legal — it is
-// what an omitted field decodes to.
+// Omitted values retain the runtime defaults. Written thresholds and timeouts
+// must be positive so an explicit zero is not silently treated as omission.
 func validateTargetCircuitBreaker(t Target) error {
 	cb := t.CircuitBreaker
 	if cb == nil {
@@ -868,24 +866,25 @@ func validateTargetCircuitBreaker(t Target) error {
 	for _, f := range []struct {
 		name  string
 		value int
+		set   bool
 	}{
-		{"failure_threshold", cb.FailureThreshold},
-		{"success_threshold", cb.SuccessThreshold},
-		{"max_half_threshold", cb.MaxHalfThreshold},
+		{"failure_threshold", cb.FailureThreshold, cb.failureThresholdSet || cb.FailureThreshold != 0},
+		{"success_threshold", cb.SuccessThreshold, cb.successThresholdSet || cb.SuccessThreshold != 0},
+		{"max_half_threshold", cb.MaxHalfThreshold, cb.MaxHalfThreshold != 0},
 	} {
-		if f.value < 0 {
-			return fmt.Errorf("target %q: circuit_breaker.%s cannot be negative, got %d (omit the field to take the default)", t.VirtualKey, f.name, f.value)
+		if f.set && f.value <= 0 {
+			return fmt.Errorf("target %q: circuit_breaker.%s must be positive, got %d (omit the field to take the default)", t.VirtualKey, f.name, f.value)
 		}
 	}
-	if cb.Timeout == "" {
+	if !cb.timeoutSet && cb.Timeout == "" {
 		return nil
 	}
 	d, err := time.ParseDuration(cb.Timeout)
 	if err != nil {
 		return fmt.Errorf("target %q: invalid circuit_breaker.timeout %q: %w", t.VirtualKey, cb.Timeout, err)
 	}
-	if d < 0 {
-		return fmt.Errorf("target %q: circuit_breaker.timeout cannot be negative, got %q", t.VirtualKey, cb.Timeout)
+	if d <= 0 {
+		return fmt.Errorf("target %q: circuit_breaker.timeout must be positive, got %q", t.VirtualKey, cb.Timeout)
 	}
 	return nil
 }

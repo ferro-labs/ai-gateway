@@ -48,7 +48,7 @@ export const STRATEGIES: readonly StrategyInfo[] = [
     configures: 'targets[].retry',
   },
   {
-    id: 'loadbalance',
+    id: 'load-balance',
     label: 'Load balance',
     icon: Scale,
     summary: 'Spreads requests across targets by weighted random choice, skipping any that cannot serve the model.',
@@ -94,7 +94,11 @@ export const STRATEGIES: readonly StrategyInfo[] = [
 ] as const
 
 export function strategyInfo(mode: string): StrategyInfo | undefined {
-  return STRATEGIES.find((strategy) => strategy.id === mode)
+  // Pre-v1.5.6 configs spell load balancing `loadbalance`; the gateway
+  // normalises it on load (config.Normalize) and so must the picker, or a
+  // pasted or stored legacy config shows as an unrecognised mode.
+  const canonical = mode === 'loadbalance' ? 'load-balance' : mode
+  return STRATEGIES.find((strategy) => strategy.id === canonical)
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -48,7 +48,7 @@ func appendRemainingTargetKeys(keys []string, targets []Target) []string {
 // available as fallbacks.
 //
 // A zero weight means zero: that target is never the start index, so under
-// loadbalance — where the pipeline commits to the first key — it receives no
+// load-balance — where the pipeline commits to the first key — it receives no
 // traffic at all. That is the whole point of the value; draining a target ahead
 // of revoking its credential is what it is for.
 //
