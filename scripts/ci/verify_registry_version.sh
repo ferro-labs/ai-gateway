@@ -20,12 +20,13 @@
 #
 # Each attempt is bounded too: a stalled fetch would otherwise turn "10 x 30 s"
 # into an unbounded wait. GNU coreutils `timeout` is on the Linux and Windows
-# (Git Bash) runners; the macOS image ships it as `gtimeout` via Homebrew.
-# Without either, attempts run unbounded and say so.
+# (Git Bash) runners; the macOS image has neither it nor `gtimeout`, so perl's
+# alarm(2) stands in there. TIMEOUT_BIN forces one for testing.
 #
 # Deliberately not `set -e`: GitHub's `shell: bash` wrapper already runs this
 # under `bash -e`, which is what used to abort the step before its own
-# diagnostic printed. Errors are handled explicitly.
+# diagnostic printed. Errors are handled explicitly. No arrays either: the
+# macOS runner's /bin/bash is 3.2, where an empty array is "unbound" under -u.
 set -uo pipefail
 set +e
 
@@ -40,21 +41,31 @@ retry_delay="${RETRY_DELAY:-30}"
 per_attempt="${PER_ATTEMPT_TIMEOUT:-120}"
 os="${RUNNER_OS:-$(uname -s)}"
 
-if command -v timeout >/dev/null 2>&1; then
-  bound=(timeout "$per_attempt")
-elif command -v gtimeout >/dev/null 2>&1; then
-  bound=(gtimeout "$per_attempt")
-else
-  echo "::notice title=no timeout binary on ${os}::each ${label} attempt runs unbounded"
-  bound=()
+timeout_bin="${TIMEOUT_BIN:-}"
+if [ -z "$timeout_bin" ]; then
+  for candidate in timeout gtimeout perl; do
+    if command -v "$candidate" >/dev/null 2>&1; then timeout_bin="$candidate"; break; fi
+  done
 fi
+if [ -z "$timeout_bin" ]; then
+  echo "::notice title=no timeout binary on ${os}::each ${label} attempt runs unbounded"
+fi
+
+bounded() {
+  case "$timeout_bin" in
+    timeout|gtimeout) "$timeout_bin" "$per_attempt" "$@" ;;
+    perl) perl -e 'alarm shift; exec @ARGV' "$per_attempt" "$@" ;;
+    *) "$@" ;;
+  esac
+}
 
 attempt=1
 while :; do
-  raw="$("${bound[@]}" "$@" 2>&1)"
+  raw="$(bounded "$@" 2>&1)"
   rc=$?
   [ "$rc" -eq 0 ] && break
-  if [ "$rc" -eq 124 ]; then
+  # 124: coreutils timeout. 142: killed by SIGALRM under the perl fallback.
+  if [ "$rc" -eq 124 ] || [ "$rc" -eq 142 ]; then
     reason="timed out after ${per_attempt}s"
   else
     reason="exited ${rc}"
