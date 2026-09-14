@@ -49,6 +49,7 @@ on:
   pull_request:
     paths:
       - "scripts/install/**"
+      - "scripts/ci/**"
       - "scripts/check_distribution_workflows.py"
       - "packaging/**"
       - ".goreleaser.yaml"
@@ -218,6 +219,8 @@ jobs:
       # constructs the container jobs below then fail on.
       - name: shellcheck (POSIX sh)
         run: shellcheck --shell=sh --severity=style scripts/install/install.sh
+      - name: shellcheck (registry verifier)
+        run: shellcheck --severity=style scripts/ci/verify_registry_version.sh
 
       - name: Verify truncated install.sh prefixes are inert
         run: |
@@ -885,6 +888,9 @@ jobs:
       # genuinely missing version fails inside the run rather than hiding it.
       MAX_ATTEMPTS: "10"
       RETRY_DELAY: "30"
+      # A cold runner downloads the platform binary on the first attempt; 120 s
+      # bounds a stalled fetch without cutting a slow but honest one short.
+      PER_ATTEMPT_TIMEOUT: "120"
     steps:
       - name: Gate status
         shell: bash
@@ -895,47 +901,28 @@ jobs:
             echo "::warning title=npm smoke tests are NOT ARMED::set INSTALL_MATRIX_NPM_LIVE=true when ferrogw is published to npm."
           fi
 
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
       - name: Set up Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22"
 
+      # The retry loop lives in scripts/ci/verify_registry_version.sh, shared
+      # with the uvx job. --prefer-online: npm caches the packument, so a
+      # retry could otherwise re-read the miss the first attempt cached instead
+      # of asking the registry again.
+      #
       # --ignore-scripts is not incidental: spec §6 requires the npm path to
       # work under it, because it is increasingly the corporate default and it
       # is exactly what a postinstall-downloader package would fail. The
       # optionalDependencies design in §4.4 exists to satisfy this line.
       - name: npx ferrogw version
         shell: bash
-        run: |
-          # `shell: bash` runs under `bash -e`; `set -uo pipefail` alone does
-          # not clear it, so a failing capture below used to abort the step
-          # before its own diagnostic printed (the v1.5.4 run failed with no
-          # output at all). Errors are handled explicitly here.
-          set -uo pipefail; set +e
-          # A fresh publish takes a few minutes to reach every registry edge;
-          # every release since v1.5.2 failed this step on attempt 1 and passed
-          # on rerun. Bounded, so a version that never appears still fails,
-          # and with its output this time.
-          attempt=1
-          while :; do
-            raw="$(npx --yes --ignore-scripts "ferrogw@${EXPECTED_VERSION}" version 2>&1)"; rc=$?
-            [ "$rc" -eq 0 ] && break
-            if [ "$attempt" -ge "$MAX_ATTEMPTS" ]; then
-              echo "::error title=npx ferrogw failed on ${RUNNER_OS}::npx exited ${rc} for ferrogw@${EXPECTED_VERSION} (with --ignore-scripts) after ${attempt} attempts"
-              printf '%s\n' "$raw"
-              exit 1
-            fi
-            echo "attempt ${attempt}/${MAX_ATTEMPTS}: npx exited ${rc}; retrying in ${RETRY_DELAY}s (registry propagation)"
-            attempt=$((attempt + 1))
-            sleep "$RETRY_DELAY"
-          done
-          got="$(printf '%s\n' "$raw" | awk '$1 == "Version" { print $2; exit }')"
-          if [ "$got" != "$EXPECTED_VERSION" ]; then
-            echo "::error title=npx version mismatch on ${RUNNER_OS}::expected ferrogw version '${EXPECTED_VERSION}', got '${got:-<no Version line in output>}'"
-            printf 'full output:\n%s\n' "$raw"
-            exit 1
-          fi
-          echo "OK npx on ${RUNNER_OS}: ferrogw ${got}"
+        run: >-
+          scripts/ci/verify_registry_version.sh npx --
+          npx --yes --ignore-scripts --prefer-online "ferrogw@${EXPECTED_VERSION}" version
 
   packages-pypi:
     name: uvx (${{ matrix.os }})
@@ -955,6 +942,9 @@ jobs:
       # genuinely missing version fails inside the run rather than hiding it.
       MAX_ATTEMPTS: "10"
       RETRY_DELAY: "30"
+      # A cold runner downloads the platform binary on the first attempt; 120 s
+      # bounds a stalled fetch without cutting a slow but honest one short.
+      PER_ATTEMPT_TIMEOUT: "120"
     steps:
       - name: Gate status
         shell: bash
@@ -974,38 +964,18 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
 
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # Same shared loop as the npx job. --refresh-package: uv caches the
+      # Simple-index page under PyPI's cache headers, so every retry could
+      # otherwise reuse the first attempt's "no such version" instead of
+      # asking again.
       - name: uvx ferrogw version
         shell: bash
-        run: |
-          # `shell: bash` runs under `bash -e`; `set -uo pipefail` alone does
-          # not clear it, so a failing capture below used to abort the step
-          # before its own diagnostic printed (the v1.5.4 run failed with no
-          # output at all). Errors are handled explicitly here.
-          set -uo pipefail; set +e
-          # A fresh publish takes a few minutes to reach every registry edge;
-          # every release since v1.5.2 failed this step on attempt 1 and passed
-          # on rerun. Bounded, so a version that never appears still fails,
-          # and with its output this time.
-          attempt=1
-          while :; do
-            raw="$(uvx --from "ferrogw==${EXPECTED_VERSION}" ferrogw version 2>&1)"; rc=$?
-            [ "$rc" -eq 0 ] && break
-            if [ "$attempt" -ge "$MAX_ATTEMPTS" ]; then
-              echo "::error title=uvx ferrogw failed on ${RUNNER_OS}::uvx exited ${rc} for ferrogw==${EXPECTED_VERSION} after ${attempt} attempts"
-              printf '%s\n' "$raw"
-              exit 1
-            fi
-            echo "attempt ${attempt}/${MAX_ATTEMPTS}: uvx exited ${rc}; retrying in ${RETRY_DELAY}s (registry propagation)"
-            attempt=$((attempt + 1))
-            sleep "$RETRY_DELAY"
-          done
-          got="$(printf '%s\n' "$raw" | awk '$1 == "Version" { print $2; exit }')"
-          if [ "$got" != "$EXPECTED_VERSION" ]; then
-            echo "::error title=uvx version mismatch on ${RUNNER_OS}::expected ferrogw version '${EXPECTED_VERSION}', got '${got:-<no Version line in output>}'"
-            printf 'full output:\n%s\n' "$raw"
-            exit 1
-          fi
-          echo "OK uvx on ${RUNNER_OS}: ferrogw ${got}"
+        run: >-
+          scripts/ci/verify_registry_version.sh uvx --
+          uvx --refresh-package ferrogw --from "ferrogw==${EXPECTED_VERSION}" ferrogw version
 
   packages-homebrew:
     name: brew install (macos-latest)
