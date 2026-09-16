@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 
 	"github.com/ferro-labs/ai-gateway/pkg/logger"
@@ -20,6 +21,10 @@ import (
 // typeInteger is the one JSON Schema type name no decoded value ever reports,
 // because encoding/json has no integer type to report.
 const typeInteger = "integer"
+
+// schemaTypes are JSON Schema's seven fundamental types, which is the closed
+// set a "type" keyword may name.
+var schemaTypes = []string{"null", "boolean", "object", "array", "number", "string", typeInteger}
 
 func init() {
 	plugin.RegisterFactory("schema-guard", func() plugin.Plugin {
@@ -74,7 +79,68 @@ func (g *SchemaGuard) Init(config map[string]any) error {
 	if !ok {
 		return fmt.Errorf("schema-guard: schema is required and must be an object")
 	}
+	if err := validateSchema(schema, "schema"); err != nil {
+		return fmt.Errorf("schema-guard: %w", err)
+	}
 	g.schema = schema
+	return nil
+}
+
+// validateSchema checks the keywords this plugin enforces, recursively.
+//
+// A malformed SUPPORTED keyword is a load error. Ignoring it — which is what a
+// validator that only type-asserts at match time does — leaves the keyword
+// unenforced: `schema: {required: "name"}` is one keystroke from the list that
+// was meant, reads identically in the config, and produced a plugin that
+// started, reported itself enabled and approved every response.
+//
+// An UNSUPPORTED keyword is still ignored in silence. That is the documented
+// contract and the reason this subset is usable at all: a schema pasted in from
+// elsewhere carries "minimum", "pattern" and the rest, and rejecting those
+// would refuse the configs this plugin exists to serve.
+func validateSchema(schema map[string]any, path string) error {
+	if raw, present := schema["type"]; present {
+		name, ok := raw.(string)
+		if !ok {
+			return fmt.Errorf("%s: type must be a single type name, got %T", path, raw)
+		}
+		// A misspelled name is not an unsupported keyword: it is this keyword,
+		// written so that no value can ever satisfy it, which under the default
+		// action rejects every response.
+		if !slices.Contains(schemaTypes, name) {
+			return fmt.Errorf("%s: unrecognized type %q: must be one of %q", path, name, schemaTypes)
+		}
+	}
+
+	if raw, present := schema["required"]; present {
+		list, ok := raw.([]any)
+		if !ok {
+			return fmt.Errorf("%s: required must be a list of field names, got %T", path, raw)
+		}
+		for i, entry := range list {
+			if _, ok := entry.(string); !ok {
+				return fmt.Errorf("%s: required[%d] must be a field name, got %T", path, i, entry)
+			}
+		}
+	}
+
+	raw, present := schema["properties"]
+	if !present {
+		return nil
+	}
+	properties, ok := raw.(map[string]any)
+	if !ok {
+		return fmt.Errorf("%s: properties must map field names to schemas, got %T", path, raw)
+	}
+	for name, sub := range properties {
+		mapped, ok := sub.(map[string]any)
+		if !ok {
+			return fmt.Errorf("%s.%s must be a schema object, got %T", path, name, sub)
+		}
+		if err := validateSchema(mapped, path+"."+name); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

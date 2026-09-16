@@ -308,6 +308,96 @@ func TestInit_RejectsANonStringAction(t *testing.T) {
 	}
 }
 
+// A malformed supported keyword must fail the load. Ignored, it produced a
+// plugin that started, reported itself enabled and approved every response —
+// `required: "name"` is one keystroke from the list that was meant and reads
+// identically in the config.
+func TestInit_RejectsAMalformedSupportedKeyword(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		schema map[string]any
+		want   string
+	}{
+		{
+			name:   "required written as a bare name",
+			schema: map[string]any{"type": "object", "required": "name"},
+			want:   "required",
+		},
+		{
+			name:   "a required entry that is not a field name",
+			schema: map[string]any{"type": "object", "required": []any{"name", 7}},
+			want:   "required",
+		},
+		{
+			name:   "type written as a list of type names",
+			schema: map[string]any{"type": []any{"object", "null"}},
+			want:   "type",
+		},
+		{
+			name:   "a misspelled type name, which nothing could ever satisfy",
+			schema: map[string]any{"type": "objekt"},
+			want:   "objekt",
+		},
+		{
+			name:   "properties written as a bare name",
+			schema: map[string]any{"type": "object", "properties": "name"},
+			want:   "properties",
+		},
+		{
+			name:   "a property subschema that is not a schema",
+			schema: map[string]any{"type": "object", "properties": map[string]any{"name": "string"}},
+			want:   "name",
+		},
+		{
+			name: "a malformed keyword nested inside a property subschema",
+			schema: map[string]any{"type": "object", "properties": map[string]any{
+				"user": map[string]any{"type": "object", "required": "email"},
+			}},
+			want: "user",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := &SchemaGuard{}
+			err := g.Init(map[string]any{"schema": tc.schema})
+
+			if err == nil {
+				t.Fatal("Init accepted a malformed schema keyword; the plugin loads and approves every response")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error %q does not name %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// The other half of the contract, and it must not change: a keyword this
+// plugin does not implement is ignored, so a schema copied in from elsewhere
+// still validates the part that is understood rather than failing the load.
+func TestInit_IgnoresAnUnsupportedKeyword(t *testing.T) {
+	g := &SchemaGuard{}
+	schema := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"required":             []any{"score"},
+		"properties": map[string]any{
+			"score": map[string]any{"type": "number", "minimum": 0, "maximum": 10},
+			"name":  map[string]any{"type": "string", "pattern": "^[a-z]+$"},
+		},
+	}
+
+	if err := g.Init(map[string]any{"schema": schema}); err != nil {
+		t.Fatalf("Init rejected an unsupported keyword; a schema from elsewhere must still load: %v", err)
+	}
+
+	pctx := newResponse(`{"name":"ada","score":9.5}`)
+	if err := g.Execute(context.Background(), pctx); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if pctx.Reject {
+		t.Fatalf("a response conforming to the supported keywords was rejected: %q", pctx.Reason)
+	}
+}
+
 func TestExecute_IgnoresBeforeRequest(t *testing.T) {
 	g := &SchemaGuard{}
 	if err := g.Init(map[string]any{"schema": objectSchema()}); err != nil {

@@ -214,7 +214,10 @@ Validates the model's response against a JSON Schema subset — `type`,
 would be a large addition for the question this answers: did the model return
 the object shape the caller is about to unmarshal. An unsupported keyword is
 ignored, so a schema copied in from elsewhere still validates the part this
-plugin understands. `type: integer` is a whole number — JSON carries one number
+plugin understands. A **supported** keyword written wrong is a load error
+instead — `required: "name"` rather than `required: ["name"]`, a `type` that
+names no JSON Schema type, a property whose subschema is not an object — because
+an ignored `required` is a plugin that starts and approves everything. `type: integer` is a whole number — JSON carries one number
 type, so `42` satisfies it and `42.5` does not, while `type: number` accepts
 both. Runs at `after_request` only: on a streamed response the
 tokens are already delivered, so it can report a violation but not unsend it.

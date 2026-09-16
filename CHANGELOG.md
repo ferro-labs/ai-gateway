@@ -89,6 +89,14 @@ model asked to act rather than answer puts its output in those fields, and a
 client replaying a conversation sends them back, so a credential or a matched
 pattern there is now screened where it previously passed.
 
+`schema-guard` checks its `schema` block at load, recursively. A malformed
+**supported** keyword — `required` written as a bare name, a `type` naming no
+JSON Schema type, a `properties` map whose subschema is not an object — is a
+startup error, because an ignored `required` is a guardrail that starts and
+approves every response. An **unsupported** keyword is still ignored in
+silence: a schema copied in from elsewhere keeps loading and keeps being
+validated for the part this plugin understands.
+
 `schema-guard` validates **one assembled document per choice**. A response
 split across content parts is judged whole instead of as several invalid
 fragments, a collapsed message is no longer validated twice against its own
