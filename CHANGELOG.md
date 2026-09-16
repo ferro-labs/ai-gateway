@@ -123,6 +123,20 @@ error for it. A caller hanging up is not a plugin fault: returning the context's
 error would answer 500, count against the target's circuit breaker and record a
 failure the gateway did not have.
 
+`ferrogw validate` and `ferrogw doctor` now report **everything** a content
+guardrail's startup would refuse — an uncompilable pattern, an unrecognised
+entity, kind or category, a malformed rule or schema keyword — not only a
+misspelled `action`. A block carrying a `${VAR}` reference anywhere is still
+judged on its `action` alone, since the rest cannot be read before the
+environment is available; startup checks the resolved values as before.
+
+`secret-scan`'s `private_key` kind matches OpenPGP armor, whose header ends in
+`PRIVATE KEY BLOCK`, alongside the forms ending in `PRIVATE KEY`.
+
+`pii-redact` inserts `redact_placeholder` into a tool call's arguments in its
+JSON-escaped form, so a placeholder carrying a quote or a backslash keeps the
+argument object valid JSON; everywhere else it is inserted as written.
+
 `secret-scan`'s `github_token` kind matches fine-grained personal access
 tokens (`github_pat_…`) as well as the classic prefixes. The fine-grained
 format is the one GitHub now issues by default, and it was passing screening in
