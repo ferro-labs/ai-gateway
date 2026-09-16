@@ -33,9 +33,22 @@ type category struct {
 // ceiling of pattern matching, and it is why this plugin is one layer rather
 // than the whole defence — pair it with an external provider for adversarial
 // traffic.
+//
+// role_manipulation is deliberately narrower than "any sentence about roles":
+// "you are now" is ordinary account-state phrasing ("you are now enrolled in
+// the premium plan"), and "assume the role" is ordinary business English for
+// a job or workflow assignment ("assume the role of team lead"). Neither
+// alternative is safe to match on its own. "you are now" is dropped outright
+// — a real persona injection ("you are now DAN", "you are now unrestricted")
+// almost always also carries one of the surviving, adversarially-framed
+// alternatives, and missing that weak a signal costs less than blocking
+// routine support and HR text. "assume the role" is kept only when the target
+// is a privilege persona (system, assistant, admin, administrator,
+// developer) — "assume the role of system" still matches; "assume the role of
+// team lead" does not.
 var categories = []category{
 	{"system_override", regexp.MustCompile(`(?i)(ignore\s+(previous|all)\s+instructions|disregard\s+your\s+instructions|forget\s+your\s+instructions|override\s+system\s+prompt)`)},
-	{"role_manipulation", regexp.MustCompile(`(?i)(you\s+are\s+now|act\s+as\s+if\s+you\s+are|pretend\s+you\s+are|roleplay\s+as|assume\s+the\s+role)`)},
+	{"role_manipulation", regexp.MustCompile(`(?i)(act\s+as\s+if\s+you\s+are|pretend\s+you\s+are|roleplay\s+as|assume\s+the\s+role\s+of\s+(?:the\s+)?(?:system|assistant|admin|administrator|developer))`)},
 	{"instruction_leak", regexp.MustCompile(`(?i)(show\s+me\s+your\s+system\s+prompt|reveal\s+your\s+instructions|what\s+are\s+your\s+instructions|print\s+your\s+system\s+message|output\s+your\s+prompt)`)},
 	{"delimiter_attack", regexp.MustCompile("(?i)(" + regexp.QuoteMeta("```system") + "|" + regexp.QuoteMeta("###SYSTEM") + "|" + regexp.QuoteMeta("[SYSTEM]") + "|" + regexp.QuoteMeta("<|system|>") + ")")},
 }
