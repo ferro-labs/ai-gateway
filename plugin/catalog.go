@@ -76,6 +76,12 @@ var builtins = []BuiltinPlugin{
 		Settings: []string{"spend_limit_usd", "input_per_m_tokens", "output_per_m_tokens", "cache_read_per_m_tokens", "cache_write_per_m_tokens", "max_keys", "store_id"},
 	},
 	{
+		Name:     "regex-guard",
+		Type:     TypeGuardrail,
+		Summary:  "Rejects or flags content matching named regular expressions; screens the request at before_request and the response at after_request according to each rule's apply_to.",
+		Settings: []string{"rules", "action"},
+	},
+	{
 		Name:     "response-cache",
 		Type:     TypeTransform,
 		Summary:  "Serves an identical request from memory instead of calling a provider again, scoped to the API key that primed it — one credential's response is never served to another.",

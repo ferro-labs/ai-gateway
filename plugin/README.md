@@ -61,6 +61,7 @@ gateway refuses to start if they disagree.
 | Plugin | Type | Stage(s) | What it does |
 |---|---|---|---|
 | **word-filter** | guardrail | before_request (and after_request to screen the response) | Rejects a request whose text contains a blocked entry as a substring. |
+| **regex-guard** | guardrail | before_request (and after_request to screen the response) | Rejects or flags content matching named regular expressions, per rule's `apply_to`. |
 | **max-token** | guardrail | before_request | Rejects a request that declares a completion ceiling above the limit, or exceeds the message-count / input-length limit. It never *imposes* a ceiling. |
 | **rate-limit** | ratelimit | before_request | Bounds request rate globally and per API key or user, independently of the per-IP HTTP limiter. |
 | **budget** | ratelimit | before_request + after_request | Tracks estimated spend per API key and refuses requests once the budget is exhausted. |
@@ -76,6 +77,23 @@ listed at `after_request` it screens the response too.
 config:
   blocked_words: ["password", "secret"]
   case_sensitive: false
+```
+
+### regex-guard
+
+Screens content against named regular expressions, each independently scoped
+to the request, the response, or both via `apply_to`. Patterns compile once at
+load — an uncompilable pattern fails the load rather than silently matching
+nothing.
+
+```yaml
+config:
+  action: block          # default action for a rule that omits one
+  rules:
+    - name: ssn
+      pattern: '\d{3}-\d{2}-\d{4}'
+      apply_to: input     # input (default) | output | both
+      action: block        # block | warn (warn never rejects)
 ```
 
 ### max-token
