@@ -279,6 +279,44 @@ func TestInit_RejectsAKindsValueThatIsNotAList(t *testing.T) {
 	}
 }
 
+// A plugin runs inside the request pipeline, so it stops when the request is
+// abandoned rather than scanning content nobody is waiting for.
+//
+// It returns nil, not the context's error: an error from Execute means the
+// plugin BROKE, which the gateway reports as a 500 and counts against the
+// target's circuit breaker. A caller hanging up is not a server fault.
+func TestExecute_StopsOnACancelledContext(t *testing.T) {
+	s := &SecretScan{}
+	if err := s.Init(map[string]any{}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	for _, tc := range []struct {
+		name string
+		pctx *plugin.Context
+	}{
+		{name: "request", pctx: newRequest("my key is AKIAIOSFODNN7EXAMPLE")}, // #nosec G101 -- AWS's own published example key, not a live credential.
+		{name: "response", pctx: &plugin.Context{
+			Stage:    plugin.StageAfterRequest,
+			Metadata: map[string]any{},
+			Response: &providers.Response{
+				Choices: []providers.Choice{{Message: providers.Message{Content: "sure: AKIAIOSFODNN7EXAMPLE"}}}, // #nosec G101 -- AWS's own published example key, not a live credential.
+			},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := s.Execute(ctx, tc.pctx); err != nil {
+				t.Fatalf("Execute returned the caller's cancellation as a plugin fault: %v", err)
+			}
+			if tc.pctx.Reject {
+				t.Fatal("the screening loop ran to completion on an abandoned request")
+			}
+		})
+	}
+}
+
 // A scalar written where a string belongs is a different fact from an absent
 // key, and only one of them is a configuration. Discarding the type
 // assertion's second result reads `action: 1` as "not set", so the plugin

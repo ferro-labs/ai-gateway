@@ -158,6 +158,14 @@ func (s *PromptShield) Execute(ctx context.Context, pctx *plugin.Context) error 
 	}
 
 	for text := range plugin.RequestText(pctx.Request) {
+		// The caller has gone: stop screening rather than walk the rest of a
+		// prompt nobody is waiting for. Returning nil and not the context's
+		// error is the whole point — an error from Execute means the plugin
+		// broke, which the gateway answers 500 and the target's circuit breaker
+		// counts as a fault. A caller hanging up is neither.
+		if ctx.Err() != nil {
+			return nil
+		}
 		for _, c := range s.enabled {
 			if !c.re.MatchString(text) {
 				continue

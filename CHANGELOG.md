@@ -89,6 +89,11 @@ model asked to act rather than answer puts its output in those fields, and a
 client replaying a conversation sends them back, so a credential or a matched
 pattern there is now screened where it previously passed.
 
+All five plugins stop screening when the request is cancelled, and report no
+error for it. A caller hanging up is not a plugin fault: returning the context's
+error would answer 500, count against the target's circuit breaker and record a
+failure the gateway did not have.
+
 `secret-scan`'s `github_token` kind matches fine-grained personal access
 tokens (`github_pat_…`) as well as the classic prefixes. The fine-grained
 format is the one GitHub now issues by default, and it was passing screening in

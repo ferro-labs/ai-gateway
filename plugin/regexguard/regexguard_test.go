@@ -259,6 +259,46 @@ func TestInit_RejectsAnEmptyRulesList(t *testing.T) {
 	}
 }
 
+// A plugin runs inside the request pipeline, so it stops when the request is
+// abandoned rather than matching content nobody is waiting for.
+//
+// It returns nil, not the context's error: an error from Execute means the
+// plugin BROKE, which the gateway reports as a 500 and counts against the
+// target's circuit breaker. A caller hanging up is not a server fault.
+func TestExecute_StopsOnACancelledContext(t *testing.T) {
+	g := &RegexGuard{}
+	if err := g.Init(map[string]any{
+		"rules": []any{map[string]any{"name": "ssn", "pattern": `\d{3}-\d{2}-\d{4}`, "apply_to": "both"}},
+	}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	for _, tc := range []struct {
+		name string
+		pctx *plugin.Context
+	}{
+		{name: "request", pctx: newRequest("my ssn is 123-45-6789")},
+		{name: "response", pctx: &plugin.Context{
+			Stage:    plugin.StageAfterRequest,
+			Metadata: map[string]any{},
+			Response: &providers.Response{
+				Choices: []providers.Choice{{Message: providers.Message{Content: "it is 123-45-6789"}}},
+			},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := g.Execute(ctx, tc.pctx); err != nil {
+				t.Fatalf("Execute returned the caller's cancellation as a plugin fault: %v", err)
+			}
+			if tc.pctx.Reject {
+				t.Fatal("the screening loop ran to completion on an abandoned request")
+			}
+		})
+	}
+}
+
 // A scalar written where a string belongs is a different fact from an absent
 // key, and only one of them is a configuration. Discarding the type
 // assertion's second result reads `action: 1` as "not set", so the plugin

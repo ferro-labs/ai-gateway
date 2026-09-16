@@ -126,6 +126,9 @@ func (s *SecretScan) Execute(ctx context.Context, pctx *plugin.Context) error {
 
 	if pctx.Stage == plugin.StageAfterRequest {
 		for text := range plugin.ResponseText(pctx.Response) {
+			if ctx.Err() != nil {
+				return nil
+			}
 			if s.screen(ctx, pctx, text, "response") {
 				return nil
 			}
@@ -137,6 +140,14 @@ func (s *SecretScan) Execute(ctx context.Context, pctx *plugin.Context) error {
 		return nil
 	}
 	for text := range plugin.RequestText(pctx.Request) {
+		// The caller has gone: stop scanning rather than walk the rest of a body
+		// nobody is waiting for. Returning nil and not the context's error is
+		// the whole point — an error from Execute means the plugin broke, which
+		// the gateway answers 500 and the target's circuit breaker counts as a
+		// fault. A caller hanging up is neither.
+		if ctx.Err() != nil {
+			return nil
+		}
 		if s.screen(ctx, pctx, text, "request") {
 			return nil
 		}

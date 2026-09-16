@@ -159,6 +159,14 @@ func (p *PIIRedact) Execute(ctx context.Context, pctx *plugin.Context) error {
 	}
 
 	for text := range plugin.RequestText(pctx.Request) {
+		// The caller has gone: stop screening rather than walk the rest of a
+		// body nobody is waiting for. Returning nil and not the context's error
+		// is the whole point — an error from Execute means the plugin broke,
+		// which the gateway answers 500 and the target's circuit breaker counts
+		// as a fault. A caller hanging up is neither.
+		if ctx.Err() != nil {
+			return nil
+		}
 		if name, found := p.detect(text); found {
 			logger.Ctx(ctx).Info("pii-redact: blocked request", "entity", name)
 			pctx.Reject = true
@@ -191,6 +199,11 @@ func (p *PIIRedact) Close() error { return nil }
 // while redact mode reports a sanitization the provider never received.
 func (p *PIIRedact) redactRequest(ctx context.Context, req *providers.Request) {
 	for i := range req.Messages {
+		// The caller has gone, so the rewritten request will never be sent:
+		// stop rather than rewrite the rest of it.
+		if ctx.Err() != nil {
+			return
+		}
 		msg := &req.Messages[i]
 		msg.Content = p.redact(ctx, msg.Content)
 		msg.ReasoningContent = p.redact(ctx, msg.ReasoningContent)
