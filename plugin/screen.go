@@ -23,6 +23,11 @@ import (
 // Part.ImageURL is deliberately not yielded. A content policy is a policy about
 // prose, and a data URI is base64 in which any short word appears by chance.
 // Screening image text is OCR, not string matching.
+//
+// A consumer that finds ctx.Err() set between texts should stop and return nil,
+// not the context's error: an error from Execute means the plugin broke, which
+// the gateway answers 500 and the target's circuit breaker counts as a fault.
+// A caller hanging up is neither.
 func RequestText(req *providers.Request) iter.Seq[string] {
 	return func(yield func(string) bool) {
 		if req == nil {

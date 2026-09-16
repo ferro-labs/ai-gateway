@@ -99,15 +99,11 @@ func (s *PromptShield) SupportedStages() []plugin.Stage {
 	return []plugin.Stage{plugin.StageBeforeRequest}
 }
 
-// actions are the actions this plugin can honour, read by Init and by
-// ValidateConfig so the two cannot disagree about the set.
+// actions is the closed set this plugin honours; see plugin.NormalizeAction.
 var actions = []string{plugin.ActionBlock, plugin.ActionWarn, plugin.ActionLog}
 
-// ValidateConfig checks the action without building anything, so `ferrogw
-// validate` and `ferrogw doctor` reject a misspelled one rather than leaving it
-// to the startup or the config reload that follows. See plugin.ConfigValidator,
-// and plugin.ValidateAction for why a ${VAR} reference is passed. The
-// categories list is checked at Init, where every value is resolved.
+// ValidateConfig checks the action at config-load time; see plugin.ValidateAction.
+// Everything else is checked at Init, where every value is resolved.
 func (s *PromptShield) ValidateConfig(config map[string]any) error {
 	if err := plugin.ValidateAction(config["action"], plugin.ActionBlock, actions...); err != nil {
 		return fmt.Errorf("prompt-shield: %w", err)
@@ -184,11 +180,7 @@ func (s *PromptShield) Execute(ctx context.Context, pctx *plugin.Context) error 
 	}
 
 	for text := range plugin.RequestText(pctx.Request) {
-		// The caller has gone: stop screening rather than walk the rest of a
-		// prompt nobody is waiting for. Returning nil and not the context's
-		// error is the whole point — an error from Execute means the plugin
-		// broke, which the gateway answers 500 and the target's circuit breaker
-		// counts as a fault. A caller hanging up is neither.
+		// The caller has gone; see plugin.RequestText for why this is not an error.
 		if ctx.Err() != nil {
 			return nil
 		}

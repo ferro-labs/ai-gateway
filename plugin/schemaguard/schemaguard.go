@@ -73,15 +73,11 @@ func (g *SchemaGuard) SupportedStages() []plugin.Stage {
 	return []plugin.Stage{plugin.StageAfterRequest}
 }
 
-// actions are the actions this plugin can honour, read by Init and by
-// ValidateConfig so the two cannot disagree about the set.
+// actions is the closed set this plugin honours; see plugin.NormalizeAction.
 var actions = []string{plugin.ActionBlock, plugin.ActionWarn, plugin.ActionLog}
 
-// ValidateConfig checks the action without building anything, so `ferrogw
-// validate` and `ferrogw doctor` reject a misspelled one rather than leaving it
-// to the startup or the config reload that follows. See plugin.ConfigValidator,
-// and plugin.ValidateAction for why a ${VAR} reference is passed. The schema
-// block is checked at Init, where every value is resolved.
+// ValidateConfig checks the action at config-load time; see plugin.ValidateAction.
+// Everything else is checked at Init, where every value is resolved.
 func (g *SchemaGuard) ValidateConfig(config map[string]any) error {
 	if err := plugin.ValidateAction(config["action"], plugin.ActionBlock, actions...); err != nil {
 		return fmt.Errorf("schema-guard: %w", err)
@@ -180,11 +176,7 @@ func (g *SchemaGuard) Execute(ctx context.Context, pctx *plugin.Context) error {
 	}
 
 	for _, choice := range pctx.Response.Choices {
-		// The caller has gone: stop validating rather than parse the remaining
-		// choices of a response nobody is waiting for. Returning nil and not the
-		// context's error is the whole point — an error from Execute means the
-		// plugin broke, which the gateway answers 500 and the target's circuit
-		// breaker counts as a fault. A caller hanging up is neither.
+		// The caller has gone; see plugin.RequestText for why this is not an error.
 		if ctx.Err() != nil {
 			return nil
 		}
@@ -328,7 +320,7 @@ func satisfiesType(v any, want string) bool {
 
 // jsonType names a decoded JSON value's type in JSON Schema's vocabulary. Every
 // number is reported as "number"; "integer" is a constraint on a number's
-// value, applied by validateAgainst through isWholeNumber.
+// value, applied by satisfiesType.
 func jsonType(v any) string {
 	switch v.(type) {
 	case nil:

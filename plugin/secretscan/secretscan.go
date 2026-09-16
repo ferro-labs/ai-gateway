@@ -76,15 +76,11 @@ func (s *SecretScan) Name() string { return "secret-scan" }
 // Type returns the plugin lifecycle hook type.
 func (s *SecretScan) Type() plugin.PluginType { return plugin.TypeGuardrail }
 
-// actions are the actions this plugin can honour, read by Init and by
-// ValidateConfig so the two cannot disagree about the set.
+// actions is the closed set this plugin honours; see plugin.NormalizeAction.
 var actions = []string{plugin.ActionBlock, plugin.ActionWarn, plugin.ActionLog}
 
-// ValidateConfig checks the action without compiling anything, so `ferrogw
-// validate` and `ferrogw doctor` reject a misspelled one rather than leaving it
-// to the startup or the config reload that follows. See plugin.ConfigValidator,
-// and plugin.ValidateAction for why a ${VAR} reference is passed. The kinds and
-// patterns lists are checked at Init, where every value is resolved.
+// ValidateConfig checks the action at config-load time; see plugin.ValidateAction.
+// Everything else is checked at Init, where every value is resolved.
 func (s *SecretScan) ValidateConfig(config map[string]any) error {
 	if err := plugin.ValidateAction(config["action"], plugin.ActionBlock, actions...); err != nil {
 		return fmt.Errorf("secret-scan: %w", err)
@@ -167,11 +163,7 @@ func (s *SecretScan) Execute(ctx context.Context, pctx *plugin.Context) error {
 		return nil
 	}
 	for text := range plugin.RequestText(pctx.Request) {
-		// The caller has gone: stop scanning rather than walk the rest of a body
-		// nobody is waiting for. Returning nil and not the context's error is
-		// the whole point — an error from Execute means the plugin broke, which
-		// the gateway answers 500 and the target's circuit breaker counts as a
-		// fault. A caller hanging up is neither.
+		// The caller has gone; see plugin.RequestText for why this is not an error.
 		if ctx.Err() != nil {
 			return nil
 		}
