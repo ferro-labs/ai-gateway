@@ -1,6 +1,64 @@
 package plugin
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
+
+// stageRestrictedMock is a plugin that enforces at one stage only — the shape
+// prompt-shield, pii-redact and schema-guard have.
+type stageRestrictedMock struct {
+	mockPlugin
+	stages []Stage
+}
+
+func (s *stageRestrictedMock) SupportedStages() []Stage { return s.stages }
+
+// A plugin registered where it cannot act validates, registers, logs "plugin
+// registered" and then returns early from every Execute — configured, reported
+// enabled, enforcing nothing. Binding a stage is where that becomes knowable,
+// so it is where it is refused.
+func TestRegister_RefusesAStageThePluginCannotEnforceAt(t *testing.T) {
+	m := NewManager(nil)
+	p := &stageRestrictedMock{
+		mockPlugin: mockPlugin{name: "prompt-shield", typ: TypeGuardrail},
+		stages:     []Stage{StageBeforeRequest},
+	}
+
+	err := m.Register(StageAfterRequest, p)
+
+	if err == nil {
+		t.Fatal("Register accepted a stage the plugin enforces nothing at")
+	}
+	for _, want := range []string{"prompt-shield", string(StageAfterRequest), string(StageBeforeRequest)} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not name %q", err, want)
+		}
+	}
+}
+
+func TestRegister_AcceptsADeclaredStage(t *testing.T) {
+	m := NewManager(nil)
+	p := &stageRestrictedMock{
+		mockPlugin: mockPlugin{name: "schema-guard", typ: TypeGuardrail},
+		stages:     []Stage{StageAfterRequest},
+	}
+
+	if err := m.Register(StageAfterRequest, p); err != nil {
+		t.Fatalf("Register refused a declared stage: %v", err)
+	}
+}
+
+// The declaration is opt-in: a plugin that says nothing — every plugin built
+// outside this repository — keeps registering at any stage it is given.
+func TestRegister_AcceptsAnyStageFromAPluginThatDeclaresNone(t *testing.T) {
+	m := NewManager(nil)
+	for _, stage := range []Stage{StageBeforeRequest, StageAfterRequest, StageOnError} {
+		if err := m.Register(stage, &mockPlugin{name: "out-of-tree", typ: TypeGuardrail}); err != nil {
+			t.Fatalf("Register(%s) refused a plugin declaring no stages: %v", stage, err)
+		}
+	}
+}
 
 // contentAgnosticMock is a guardrail that declares it reaches its verdict
 // without reading request content — the shape max-token has when

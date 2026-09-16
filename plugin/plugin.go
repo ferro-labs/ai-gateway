@@ -62,6 +62,8 @@ package plugin
 
 import (
 	"context"
+	"fmt"
+	"slices"
 	"sync"
 
 	"github.com/ferro-labs/ai-gateway/observability"
@@ -203,6 +205,48 @@ type ContentAgnostic interface {
 	// deriving a verdict from Request.Messages is a bug: the gateway will then
 	// serve a request this plugin never actually screened.
 	IgnoresRequestContent() bool
+}
+
+// StageRestricted is implemented by a plugin that can only do its job at some
+// of the lifecycle stages.
+//
+// Init receives the config block alone, so a plugin learns its stage only when
+// Execute is already running — by which time the only thing left to do is
+// return early. A plugin listed where it cannot act therefore loaded, logged
+// "plugin registered", was reported enabled by the catalog, and enforced
+// nothing on every request. For a guardrail that is the failure this framework
+// exists to prevent, and it is silent.
+//
+// Declaring the stages moves the answer to where a stage is BOUND to a plugin:
+// Manager.Register refuses the rest, so the mistake fails the load, and
+// `ferrogw validate` reports it before the deploy.
+//
+// It is an opt-IN, the opposite polarity to ModelPreserving and
+// ContentAgnostic, and for the same reason those are opt-outs: the safe answer
+// for a plugin that says nothing is the permissive one. A plugin built outside
+// this repository cannot know to declare anything, and refusing to register it
+// would take down a deployment that works.
+type StageRestricted interface {
+	Plugin
+	// SupportedStages lists every stage at which this plugin does something.
+	// Listing a stage its Execute returns early from is the bug this exists to
+	// catch, one level up.
+	SupportedStages() []Stage
+}
+
+// ValidateStage reports whether a plugin can be registered at a stage, naming
+// the stages it does support when it cannot. A plugin implementing no
+// declaration is accepted at every stage.
+func ValidateStage(p Plugin, stage Stage) error {
+	restricted, ok := p.(StageRestricted)
+	if !ok {
+		return nil
+	}
+	stages := restricted.SupportedStages()
+	if slices.Contains(stages, stage) {
+		return nil
+	}
+	return fmt.Errorf("plugin %s enforces nothing at stage %s; it runs at %v", p.Name(), stage, stages)
 }
 
 // Context provides access to request/response data for plugins.

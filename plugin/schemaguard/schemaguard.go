@@ -50,6 +50,13 @@ func (g *SchemaGuard) Name() string { return "schema-guard" }
 // Type returns the plugin lifecycle hook type.
 func (g *SchemaGuard) Type() plugin.PluginType { return plugin.TypeGuardrail }
 
+// SupportedStages reports that this plugin validates responses only. There is
+// nothing to validate before the provider has answered, so an entry at another
+// stage would enforce nothing and is refused at load instead.
+func (g *SchemaGuard) SupportedStages() []plugin.Stage {
+	return []plugin.Stage{plugin.StageAfterRequest}
+}
+
 // Init stores the schema and the action.
 func (g *SchemaGuard) Init(config map[string]any) error {
 	rawAction, err := plugin.StringSetting(config["action"], "action")

@@ -22,6 +22,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `plugin.NormalizeAction` — canonicalises a configured `action` against the
   closed set the calling plugin can honour, and rejects anything outside it,
   the caller's fallback included.
+- `plugin.StageRestricted` / `plugin.ValidateStage` — a plugin may declare the
+  stages it can act at, and `Manager.Register` refuses the rest. Opt-in: a
+  plugin that declares nothing registers at any stage exactly as before.
+- `plugin.StringSetting` / `plugin.ListSetting` — read one optional config key,
+  keeping an absent key (take the default) apart from one written with the
+  wrong kind of value (fail the load).
 
 ### Changed
 
@@ -68,6 +74,14 @@ behaves identically everywhere.
 
 `schema-guard` runs at `after_request` only — on a streamed response it can
 report a violation but cannot withhold output already delivered.
+
+A plugin listed at a stage it does nothing at now **fails the load** and is
+reported by `ferrogw validate`, instead of registering and returning early on
+every request. `pii-redact` and `prompt-shield` screen the prompt, so they take
+`before_request`; `schema-guard` validates the answer, so it takes
+`after_request`. `regex-guard` and `secret-scan` genuinely act at both and are
+unchanged. A plugin registered outside this repository declares nothing and
+keeps registering at any stage, as before.
 
 Every content guardrail screens a message's reasoning content and its tool
 calls' arguments as well as its body and content parts, in both directions. A

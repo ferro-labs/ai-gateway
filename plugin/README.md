@@ -56,6 +56,14 @@ Each stage is **one `plugins[]` entry**, and the entries for one plugin **must
 carry identical `config`** so they resolve to a single shared instance. The
 gateway refuses to start if they disagree.
 
+A plugin that can only act at some stages is **refused at the others**, by
+`ferrogw validate` and at startup. `pii-redact` and `prompt-shield` screen the
+prompt, so they run at `before_request`; `schema-guard` validates the answer, so
+it runs at `after_request`. Listing one anywhere else used to load a plugin that
+reported itself enabled and did nothing. `regex-guard`, `secret-scan`,
+`word-filter` and the multi-stage plugins above are unaffected: they act at
+every stage they name.
+
 ## Built-in plugins
 
 | Plugin | Type | Stage(s) | What it does |

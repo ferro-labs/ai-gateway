@@ -81,6 +81,14 @@ func (s *PromptShield) Name() string { return "prompt-shield" }
 // Type returns the plugin lifecycle hook type.
 func (s *PromptShield) Type() plugin.PluginType { return plugin.TypeGuardrail }
 
+// SupportedStages reports that this plugin screens the request only. An
+// injection attempt is something a caller sends: by after_request the model has
+// already acted on it, so an entry there would enforce nothing and is refused
+// at load instead.
+func (s *PromptShield) SupportedStages() []plugin.Stage {
+	return []plugin.Stage{plugin.StageBeforeRequest}
+}
+
 // Init selects the enabled categories and the action.
 func (s *PromptShield) Init(config map[string]any) error {
 	rawAction, err := plugin.StringSetting(config["action"], "action")

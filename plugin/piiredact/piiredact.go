@@ -73,6 +73,14 @@ func (p *PIIRedact) Name() string { return "pii-redact" }
 // Type returns the plugin lifecycle hook type.
 func (p *PIIRedact) Type() plugin.PluginType { return plugin.TypeGuardrail }
 
+// SupportedStages reports that this plugin screens the request only. Its
+// redact mode rewrites the request the gateway is about to route, which has no
+// meaning once the provider has answered, so an entry at another stage would
+// enforce nothing and is refused at load instead.
+func (p *PIIRedact) SupportedStages() []plugin.Stage {
+	return []plugin.Stage{plugin.StageBeforeRequest}
+}
+
 // Init selects the entity set and the action.
 func (p *PIIRedact) Init(config map[string]any) error {
 	rawAction, err := plugin.StringSetting(config["action"], "action")
