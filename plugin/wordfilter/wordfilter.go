@@ -10,7 +10,6 @@ import (
 
 	"github.com/ferro-labs/ai-gateway/pkg/logger"
 	"github.com/ferro-labs/ai-gateway/plugin"
-	"github.com/ferro-labs/ai-gateway/providers"
 )
 
 func init() {
@@ -87,67 +86,23 @@ func (w *WordFilter) Execute(ctx context.Context, pctx *plugin.Context) error {
 	}
 
 	if pctx.Stage == plugin.StageAfterRequest {
-		if pctx.Response == nil {
-			return nil
-		}
-		for _, choice := range pctx.Response.Choices {
-			if w.screen(ctx, pctx, choice.Message, "response") {
+		for text := range plugin.ResponseText(pctx.Response) {
+			if w.reject(ctx, pctx, text, "response") {
 				return nil
 			}
 		}
 		return nil
 	}
 
-	if pctx.Request == nil {
+	if plugin.RejectUninspectable(pctx) {
 		return nil
 	}
-	if uninspectable, _ := pctx.Metadata[plugin.MetadataUninspectableContent].(bool); uninspectable &&
-		pctx.Stage == plugin.StageBeforeRequest {
-		// Content this filter was required to screen and could not read: an
-		// embeddings input sent as token IDs, which is the same text a blocked
-		// word is written in, merely encoded. Passing it would make the whole
-		// blocklist evadable by one tokenizer call on the client — every
-		// comparable policy engine denies here rather than fails open.
-		//
-		// A verdict, not an error: this plugin reached a decision, so the caller
-		// gets a 4xx and not a 500. It says the content could not be read and no
-		// more, which leaks nothing about the blocklist while still telling the
-		// caller the one thing that fixes the request — send text.
-		pctx.Reject = true
-		pctx.Reason = "request blocked by content policy: content is not inspectable text"
-		return nil
-	}
-	for _, msg := range pctx.Request.Messages {
-		if w.screen(ctx, pctx, msg, "request") {
+	for text := range plugin.RequestText(pctx.Request) {
+		if w.reject(ctx, pctx, text, "request") {
 			return nil
 		}
 	}
 	return nil
-}
-
-// screen checks every piece of text one message carries to the provider:
-// Content, and the text of each content part.
-//
-// Both, because neither alone is the whole message. Message.UnmarshalJSON
-// collapses only parts typed "text" into Content, so a blocked word in a part
-// of any other type left no trace in Content and was forwarded upstream with a
-// 200 — while a message built in Go rather than decoded from JSON has parts and
-// an empty Content. Re-scanning the collapsed text costs a second pass over
-// bytes already in cache and cannot produce a wrong answer; missing a part can.
-//
-// Part.ImageURL is deliberately not screened: a blocklist is a policy about
-// prose, and a data URI is base64 in which any three-letter word appears by
-// chance. Screening image text is OCR, not string matching.
-func (w *WordFilter) screen(ctx context.Context, pctx *plugin.Context, msg providers.Message, subject string) bool {
-	if w.reject(ctx, pctx, msg.Content, subject) {
-		return true
-	}
-	for _, part := range msg.ContentParts {
-		if w.reject(ctx, pctx, part.Text, subject) {
-			return true
-		}
-	}
-	return false
 }
 
 // reject screens one piece of content and, on a match, records the verdict.
