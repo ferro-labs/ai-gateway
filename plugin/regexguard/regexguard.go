@@ -60,8 +60,12 @@ func (g *RegexGuard) Type() plugin.PluginType { return plugin.TypeGuardrail }
 // Init compiles the configured rules.
 func (g *RegexGuard) Init(config map[string]any) error {
 	defaultAction := actionBlock
-	if a, ok := config["action"].(string); ok && strings.TrimSpace(a) != "" {
-		defaultAction = strings.ToLower(strings.TrimSpace(a))
+	if a, ok := config["action"].(string); ok {
+		normalized, err := plugin.NormalizeAction(a, actionBlock, plugin.ActionBlock, plugin.ActionWarn, plugin.ActionLog)
+		if err != nil {
+			return fmt.Errorf("regex-guard: action: %w", err)
+		}
+		defaultAction = normalized
 	}
 
 	raw, ok := config["rules"].([]any)
@@ -90,8 +94,12 @@ func (g *RegexGuard) Init(config map[string]any) error {
 		}
 
 		action := defaultAction
-		if a, ok := mapped["action"].(string); ok && strings.TrimSpace(a) != "" {
-			action = strings.ToLower(strings.TrimSpace(a))
+		if a, ok := mapped["action"].(string); ok {
+			normalized, err := plugin.NormalizeAction(a, defaultAction, plugin.ActionBlock, plugin.ActionWarn, plugin.ActionLog)
+			if err != nil {
+				return fmt.Errorf("regex-guard: rules[%d]: action: %w", i, err)
+			}
+			action = normalized
 		}
 
 		applyTo, _ := mapped["apply_to"].(string)

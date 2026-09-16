@@ -138,3 +138,26 @@ func TestExecute_DeniesUninspectableContent(t *testing.T) {
 		t.Fatal("uninspectable content was forwarded unscreened — the policy is evadable by one tokenizer call")
 	}
 }
+
+func TestInit_RejectsAnUnrecognisedTopLevelAction(t *testing.T) {
+	g := &RegexGuard{}
+	err := g.Init(map[string]any{
+		"action": "blockk",
+		"rules":  []any{map[string]any{"name": "ssn", "pattern": `\d{3}-\d{2}-\d{4}`}},
+	})
+
+	if err == nil {
+		t.Fatal("Init accepted an unrecognized top-level action; a misspelling must fail the load, not silently stop enforcing")
+	}
+}
+
+func TestInit_RejectsAnUnrecognisedRuleAction(t *testing.T) {
+	g := &RegexGuard{}
+	err := g.Init(map[string]any{
+		"rules": []any{map[string]any{"name": "ssn", "pattern": `\d{3}-\d{2}-\d{4}`, "action": "blockk"}},
+	})
+
+	if err == nil {
+		t.Fatal("Init accepted an unrecognized rule action; a misspelling must fail the load, not silently stop enforcing")
+	}
+}

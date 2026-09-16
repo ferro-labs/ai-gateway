@@ -1,7 +1,9 @@
 package plugin
 
 import (
+	"fmt"
 	"iter"
+	"strings"
 
 	"github.com/ferro-labs/ai-gateway/providers"
 )
@@ -91,4 +93,39 @@ func RejectUninspectable(pctx *Context) bool {
 	pctx.Reject = true
 	pctx.Reason = "request blocked by content policy: content is not inspectable text"
 	return true
+}
+
+// Action names what a guardrail does when its check matches. Shared spellings
+// so plugins with the same concept do not each invent their own strings.
+const (
+	ActionBlock  = "block"
+	ActionWarn   = "warn"
+	ActionLog    = "log"
+	ActionRedact = "redact"
+)
+
+// NormalizeAction canonicalises a configured action against the set of actions
+// the calling plugin can actually honour, and rejects anything outside it.
+//
+// The allowed set is the caller's because it differs per plugin: a filter
+// blocks, warns or logs, while a redactor blocks or redacts and has no
+// non-blocking observe mode. Accepting an action a plugin then ignores is the
+// same failure as accepting a misspelled one — a guardrail the operator
+// configured, the catalog reports as enabled, and which does not do what it
+// says.
+//
+// A misspelling must fail the load rather than degrade to the nearest
+// non-blocking behaviour. An empty value is not a misspelling: it means the key
+// was not set, so it takes fallback.
+func NormalizeAction(raw, fallback string, allowed ...string) (string, error) {
+	action := strings.ToLower(strings.TrimSpace(raw))
+	if action == "" {
+		return fallback, nil
+	}
+	for _, a := range allowed {
+		if action == strings.ToLower(strings.TrimSpace(a)) {
+			return action, nil
+		}
+	}
+	return "", fmt.Errorf("unrecognized action %q: must be one of %q", raw, allowed)
 }
