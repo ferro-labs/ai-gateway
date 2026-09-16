@@ -2,6 +2,7 @@ package piiredact
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -306,16 +307,21 @@ func TestInit_RejectsAnUncompilableCustomPattern(t *testing.T) {
 // request under redact. An empty entry in a list is a typo — a trailing comma,
 // a blank list item — never a policy.
 func TestInit_RejectsAnEmptyCustomPattern(t *testing.T) {
-	for _, pattern := range []string{"", "   "} {
-		p := &PIIRedact{}
-		err := p.Init(map[string]any{"patterns": []any{pattern}})
+	for _, tc := range []struct {
+		name    string
+		pattern string
+	}{{"empty", ""}, {"whitespace", "   "}} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &PIIRedact{}
+			err := p.Init(map[string]any{"patterns": []any{tc.pattern}})
 
-		if err == nil {
-			t.Fatalf("Init accepted the empty pattern %q; it matches every request", pattern)
-		}
-		if !strings.Contains(err.Error(), "patterns[0]") {
-			t.Fatalf("error does not name the entry: %v", err)
-		}
+			if err == nil {
+				t.Fatalf("Init accepted the empty pattern %q; it matches every request", tc.pattern)
+			}
+			if !strings.Contains(err.Error(), "patterns[0]") {
+				t.Fatalf("error does not name the entry: %v", err)
+			}
+		})
 	}
 }
 
@@ -495,5 +501,59 @@ func TestValidateConfig_CatchesAMisspelledActionAndPassesAnEnvReference(t *testi
 	}
 	if err := plugin.ValidateConfigFor("pii-redact", map[string]any{"action": "${GUARDRAIL_ACTION}"}); err != nil {
 		t.Fatalf("an env reference was rejected at load, where it is not yet resolved: %v", err)
+	}
+}
+
+func TestValidateConfig_RejectsWhatInitRejects(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		config map[string]any
+		want   string
+	}{
+		{"unknown entity", map[string]any{"entities": []any{"passport"}}, "passport"},
+		{"empty entities and no patterns", map[string]any{"entities": []any{}}, "entities"},
+		{"uncompilable pattern", map[string]any{"patterns": []any{"("}}, "patterns[0]"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := (&PIIRedact{}).ValidateConfig(tc.config)
+			if err == nil {
+				t.Fatal("ValidateConfig accepted a config Init rejects")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error %q does not name %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// A tool call's arguments are a JSON document. The placeholder is inserted
+// there in its JSON-escaped form, so a placeholder carrying a quote, a
+// backslash or a control character cannot turn a valid argument object into
+// one the provider fails to parse; the decoded value is still the placeholder
+// as written.
+func TestExecute_RedactKeepsToolCallArgumentsValidJSON(t *testing.T) {
+	p := &PIIRedact{}
+	if err := p.Init(map[string]any{"action": "redact", "redact_placeholder": `say "no" \ ok`}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	pctx := newRequest("")
+	pctx.Request.Messages[0].ToolCalls = []providers.ToolCall{
+		{Function: providers.FunctionCall{Name: "lookup", Arguments: `{"ssn":"123-45-6789","note":"keep"}`}},
+	}
+
+	if err := p.Execute(context.Background(), pctx); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	got := pctx.Request.Messages[0].ToolCalls[0].Function.Arguments
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(got), &decoded); err != nil {
+		t.Fatalf("arguments are no longer valid JSON: %v\n%s", err, got)
+	}
+	if decoded["ssn"] != `say "no" \ ok` || decoded["note"] != "keep" {
+		t.Fatalf("decoded arguments = %v", decoded)
+	}
+	if pctx.Request.Messages[0].Content != "" {
+		t.Fatalf("Content = %q, want untouched", pctx.Request.Messages[0].Content)
 	}
 }

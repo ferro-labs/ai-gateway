@@ -7,6 +7,7 @@ package piiredact
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"slices"
@@ -101,6 +102,9 @@ type PIIRedact struct {
 	entities    []entity
 	action      string
 	placeholder string
+	// jsonPlaceholder is placeholder as it reads inside a JSON string, for the
+	// one field that is a JSON document: a tool call's arguments.
+	jsonPlaceholder string
 }
 
 // Name returns the plugin identifier.
@@ -120,13 +124,10 @@ func (p *PIIRedact) SupportedStages() []plugin.Stage {
 // actions is the closed set this plugin honours; see plugin.NormalizeAction.
 var actions = []string{plugin.ActionBlock, plugin.ActionRedact}
 
-// ValidateConfig checks the action at config-load time; see plugin.ValidateAction.
-// Everything else is checked at Init, where every value is resolved.
+// ValidateConfig runs the same checks Init runs, so a misconfiguration is a
+// `ferrogw validate` error rather than a failed start; see plugin.ValidateViaInit.
 func (p *PIIRedact) ValidateConfig(config map[string]any) error {
-	if err := plugin.ValidateAction(config["action"], plugin.ActionBlock, actions...); err != nil {
-		return fmt.Errorf("pii-redact: %w", err)
-	}
-	return nil
+	return plugin.ValidateViaInit("pii-redact", config, plugin.ActionBlock, actions...)
 }
 
 // Init selects the entity set and the action.
@@ -149,6 +150,11 @@ func (p *PIIRedact) Init(config map[string]any) error {
 	if strings.TrimSpace(placeholder) != "" {
 		p.placeholder = placeholder
 	}
+	escaped, err := json.Marshal(p.placeholder)
+	if err != nil {
+		return fmt.Errorf("pii-redact: redact_placeholder: %w", err)
+	}
+	p.jsonPlaceholder = string(escaped[1 : len(escaped)-1])
 
 	entities, present := config["entities"]
 	selected, err := selectEntities(entities, present)
@@ -261,7 +267,10 @@ func (p *PIIRedact) redactRequest(ctx context.Context, req *providers.Request) {
 			msg.ContentParts[j].Text = p.redact(ctx, msg.ContentParts[j].Text)
 		}
 		for j := range msg.ToolCalls {
-			msg.ToolCalls[j].Function.Arguments = p.redact(ctx, msg.ToolCalls[j].Function.Arguments)
+			// The arguments are a JSON document, so the placeholder goes in
+			// JSON-escaped: a quote or a backslash in it would otherwise turn a
+			// valid argument object into one the provider cannot parse.
+			msg.ToolCalls[j].Function.Arguments = p.redactWith(ctx, msg.ToolCalls[j].Function.Arguments, p.jsonPlaceholder)
 		}
 	}
 }
@@ -275,6 +284,10 @@ func (p *PIIRedact) redactRequest(ctx context.Context, req *providers.Request) {
 // carrying a dollar sign reached the provider as something other than what the
 // operator wrote. Replacing through a function inserts the string as given.
 func (p *PIIRedact) redact(ctx context.Context, text string) string {
+	return p.redactWith(ctx, text, p.placeholder)
+}
+
+func (p *PIIRedact) redactWith(ctx context.Context, text, placeholder string) string {
 	for _, e := range p.entities {
 		if !e.matches(text) {
 			continue
@@ -284,7 +297,7 @@ func (p *PIIRedact) redact(ctx context.Context, text string) string {
 			if e.verify != nil && !e.verify(match) {
 				return match
 			}
-			return p.placeholder
+			return placeholder
 		})
 	}
 	return text
