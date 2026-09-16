@@ -36,6 +36,16 @@ unrecognised name in `pii-redact`'s `entities`, `secret-scan`'s `kinds` or
 `prompt-shield`'s `categories` are all startup errors naming the value and the
 accepted set. Omitting any of those keys keeps its default.
 
+A selector that is **present but empty** is a startup error too — `rules: []`,
+`entities: []`, `kinds: []` and `categories: []` each describe a plugin that
+would load, report itself enabled and screen nothing. So is one written as a
+scalar or a mapping rather than a list, which previously widened the selection
+to every built-in. Omitting the key still means what it always did: every
+built-in for `entities`, `kinds` and `categories`, and a no-op for `rules`.
+`entities: []` or `kinds: []` **alongside a non-empty `patterns` list is
+legal** — that selects the custom patterns and none of the built-ins, and the
+plugin still has something to screen for.
+
 `pii-redact` with `action: "redact"` rewrites the request in place and lets it
 continue; with `action: "block"` it denies. **Redaction takes effect on the
 chat-shaped surfaces** — `/v1/chat/completions` (streamed or not) and
@@ -53,6 +63,13 @@ report a violation but cannot withhold output already delivered.
 A `regex-guard` rule's `apply_to` and the plugin entry's `stage` are separate
 settings that must agree: one `plugins[]` entry registers one stage, so an
 `output` or `both` rule needs the plugin listed at `after_request` as well.
+`secret-scan` has the same stage requirement for the direction it screens: a
+`before_request`-only entry screens the prompt, and the model's response is
+screened only when the plugin is also listed at `after_request`.
+
+On `regex-guard`, `secret-scan` and `prompt-shield`, only `action: block`
+rejects. Under `warn` or `log` the match is detected and recorded and the
+content is forwarded, which is what those actions are for.
 
 ## [1.5.6] — 2026-09-14
 

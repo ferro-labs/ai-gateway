@@ -84,19 +84,19 @@ var builtins = []BuiltinPlugin{
 	{
 		Name:     "pii-redact",
 		Type:     TypeGuardrail,
-		Summary:  "Detects personally identifiable information and either denies the request or rewrites it with the values replaced by a placeholder.",
+		Summary:  "Detects personally identifiable information and either denies the request or rewrites it with the values replaced by a placeholder; redact applies on the chat-shaped surfaces, and a detection on any other surface is denied instead.",
 		Settings: []string{"entities", "patterns", "action", "redact_placeholder"},
 	},
 	{
 		Name:     "secret-scan",
 		Type:     TypeGuardrail,
-		Summary:  "Rejects content carrying credentials — cloud keys, tokens, private keys — in the request and in the model's response.",
+		Summary:  "Detects credentials — cloud keys, tokens, private keys — in the request and applies the configured action, only block rejecting it; screens the model's response when also listed at after_request.",
 		Settings: []string{"kinds", "patterns", "action"},
 	},
 	{
 		Name:     "prompt-shield",
 		Type:     TypeGuardrail,
-		Summary:  "Rejects requests carrying prompt-injection and jailbreak attempts, matched by category over common written forms.",
+		Summary:  "Detects prompt-injection and jailbreak attempts by category over common written forms and applies the configured action, only block rejecting the request.",
 		Settings: []string{"categories", "action"},
 	},
 	{

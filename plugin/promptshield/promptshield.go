@@ -1,6 +1,7 @@
-// Package promptshield provides a prompt-shield guardrail plugin that rejects
+// Package promptshield provides a prompt-shield guardrail plugin that detects
 // prompt-injection and jailbreak attempts, matched by category over the common
-// written forms. Register it with a blank import:
+// written forms, and applies the configured action. Register it with a blank
+// import:
 //
 //	_ "github.com/ferro-labs/ai-gateway/plugin/promptshield"
 package promptshield
@@ -62,7 +63,9 @@ var categories = []category{
 	{"delimiter_attack", regexp.MustCompile("(?i)(" + regexp.QuoteMeta("```system") + "|" + regexp.QuoteMeta("###SYSTEM") + "|" + regexp.QuoteMeta("[SYSTEM]") + "|" + regexp.QuoteMeta("<|system|>") + ")")},
 }
 
-// PromptShield rejects requests carrying prompt-injection attempts.
+// PromptShield detects prompt-injection attempts and applies the configured
+// action. Only "block" rejects the request; under "warn" and "log" the
+// detection is recorded by category and the prompt reaches the model.
 //
 // It screens the request only. An injection attempt is something a caller
 // sends; by after_request the model has already acted on it, and on a
@@ -87,11 +90,23 @@ func (s *PromptShield) Init(config map[string]any) error {
 	}
 	s.action = action
 
-	list, ok := config["categories"].([]any)
-	if !ok {
+	// An ABSENT key selects every category. A key that is present says something
+	// about the selection, so a value that cannot express one — a scalar, a
+	// mapping — is a load error rather than a silent widening: an operator who
+	// asked for one category and got four is enforcing patterns they never
+	// opted into.
+	raw, present := config["categories"]
+	if !present {
 		s.enabled = make([]category, len(categories))
 		copy(s.enabled, categories)
 		return nil
+	}
+	list, ok := raw.([]any)
+	if !ok {
+		return fmt.Errorf("prompt-shield: categories must be a list of category names")
+	}
+	if len(list) == 0 {
+		return fmt.Errorf("prompt-shield: categories is empty: omit the key to select every category, or name at least one")
 	}
 
 	known := make([]string, len(categories))

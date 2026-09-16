@@ -155,3 +155,47 @@ func TestExecute_DeniesUninspectableContent(t *testing.T) {
 		t.Fatal("uninspectable content was forwarded unscanned")
 	}
 }
+
+func TestInit_RejectsAnEmptyKindsListWithNoCustomPatterns(t *testing.T) {
+	s := &SecretScan{}
+	// Present and empty is not the same as absent. An absent key selects every
+	// curated kind; an empty list with nothing to fall back on yields a scanner
+	// the catalog reports as enabled that scans for nothing.
+	err := s.Init(map[string]any{"kinds": []any{}})
+
+	if err == nil {
+		t.Fatal("Init accepted an empty kinds list; it yields a guardrail that enforces nothing")
+	}
+}
+
+func TestInit_EmptyKindsIsLegalAlongsideCustomPatterns(t *testing.T) {
+	s := &SecretScan{}
+	// "Scan for my patterns and none of the curated kinds" is a real policy, and
+	// the plugin ends up with a detector, so it must load and enforce.
+	if err := s.Init(map[string]any{
+		"kinds":    []any{},
+		"patterns": []any{`\bACME-KEY-[0-9]{8}\b`},
+	}); err != nil {
+		t.Fatalf("Init rejected an empty kinds list carrying a custom pattern; that config screens something: %v", err)
+	}
+
+	pctx := newRequest("the key is ACME-KEY-12345678")
+	if err := s.Execute(context.Background(), pctx); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	if !pctx.Reject {
+		t.Fatal("a custom pattern did not screen with kinds explicitly empty")
+	}
+}
+
+func TestInit_RejectsAKindsValueThatIsNotAList(t *testing.T) {
+	s := &SecretScan{}
+	// One name written without the list syntax. Widening it to every curated
+	// kind enables patterns the operator never asked for.
+	err := s.Init(map[string]any{"kinds": "aws_access_key"})
+
+	if err == nil {
+		t.Fatal("Init accepted a kinds value that is not a list; a scalar must fail the load, not silently select every kind")
+	}
+}

@@ -367,7 +367,8 @@ plugins:
     enabled: false
     config:
       # Omit `entities` for all built-ins: email, phone, ssn, credit_card.
-      # An unrecognised name fails the load rather than selecting nothing.
+      # An unrecognised name fails the load rather than selecting nothing, and
+      # so does an empty list with no `patterns` to fall back on.
       entities: ["ssn", "credit_card"]
       # block denies the request; redact rewrites it and lets it through.
       #
@@ -386,9 +387,11 @@ plugins:
     config:
       # Omit `kinds` for every curated credential kind (aws_access_key,
       # github_token, slack_token, openai_key, google_api_key, stripe_key,
-      # private_key, jwt); an unrecognised name fails the load. List this
-      # plugin at after_request as well to screen what the model reads back
-      # out.
+      # private_key, jwt); an unrecognised name, and an empty list with no
+      # `patterns` to fall back on, both fail the load. List this plugin at
+      # after_request as well to screen what the model reads back out —
+      # a before_request-only entry screens the prompt and nothing else.
+      # Only action: block rejects; warn and log detect and forward.
       action: block
 
   - name: prompt-shield
@@ -397,8 +400,10 @@ plugins:
     enabled: false
     config:
       # Omit `categories` for all four: system_override, role_manipulation,
-      # instruction_leak, delimiter_attack. An unrecognised name fails the
-      # load rather than enabling no category at all.
+      # instruction_leak, delimiter_attack. An unrecognised name, an empty
+      # list, and a value that is not a list all fail the load rather than
+      # enabling no category or silently enabling every one.
+      # Only action: block rejects; warn and log detect and forward.
       action: block
 
   - name: schema-guard

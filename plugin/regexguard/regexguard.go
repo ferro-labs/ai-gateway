@@ -87,6 +87,13 @@ func (g *RegexGuard) Init(config map[string]any) error {
 	if !ok {
 		return fmt.Errorf("regex-guard: rules must be a list of rule objects")
 	}
+	// Present and empty is a different statement from absent, and only one of
+	// them is a configuration. Absent means the plugin was not set up; an empty
+	// list is an operator who set out to name rules, and accepting it yields the
+	// same enabled-and-inert guardrail a mapping would.
+	if len(raw) == 0 {
+		return fmt.Errorf("regex-guard: rules is empty: omit the key to disable the plugin, or name at least one rule")
+	}
 
 	for i, entry := range raw {
 		mapped, ok := entry.(map[string]any)

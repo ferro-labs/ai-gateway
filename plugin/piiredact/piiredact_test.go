@@ -200,3 +200,49 @@ func TestExecute_DeniesUninspectableContent(t *testing.T) {
 		t.Fatal("uninspectable content was forwarded unscreened")
 	}
 }
+
+func TestInit_RejectsAnEmptyEntitiesListWithNoCustomPatterns(t *testing.T) {
+	p := &PIIRedact{}
+	// Present and empty is not the same as absent. An absent key selects every
+	// built-in entity; an empty list with nothing to fall back on yields a
+	// plugin the catalog reports as enabled that detects nothing.
+	err := p.Init(map[string]any{"entities": []any{}})
+
+	if err == nil {
+		t.Fatal("Init accepted an empty entities list; it yields a guardrail that enforces nothing")
+	}
+}
+
+func TestInit_EmptyEntitiesIsLegalAlongsideCustomPatterns(t *testing.T) {
+	p := &PIIRedact{}
+	// "Screen my patterns and none of the built-ins" is a real policy, and the
+	// plugin ends up with a detector, so it must load and enforce.
+	if err := p.Init(map[string]any{
+		"action":   "block",
+		"entities": []any{},
+		"patterns": []any{`\bACME-\d{6}\b`},
+	}); err != nil {
+		t.Fatalf("Init rejected an empty entities list carrying a custom pattern; that config screens something: %v", err)
+	}
+
+	pctx := newRequest("the record is ACME-123456")
+	if err := p.Execute(context.Background(), pctx); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	if !pctx.Reject {
+		t.Fatal("a custom pattern did not screen with entities explicitly empty")
+	}
+}
+
+func TestInit_RejectsAnEntitiesValueThatIsNotAList(t *testing.T) {
+	p := &PIIRedact{}
+	// One name written without the list syntax. Widening it to every built-in
+	// enables detectors the operator never asked for — credit_card matches any
+	// sixteen-digit order number.
+	err := p.Init(map[string]any{"entities": "ssn"})
+
+	if err == nil {
+		t.Fatal("Init accepted an entities value that is not a list; a scalar must fail the load, not silently select every entity")
+	}
+}

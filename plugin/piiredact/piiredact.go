@@ -87,26 +87,34 @@ func (p *PIIRedact) Init(config map[string]any) error {
 		p.placeholder = ph
 	}
 
-	selected, err := selectEntities(config["entities"])
+	entities, present := config["entities"]
+	selected, err := selectEntities(entities, present)
 	if err != nil {
 		return err
 	}
 	p.entities = selected
 
-	custom, ok := config["patterns"].([]any)
-	if !ok {
-		return nil
+	if custom, ok := config["patterns"].([]any); ok {
+		for i, v := range custom {
+			s, ok := v.(string)
+			if !ok {
+				return fmt.Errorf("pii-redact: patterns[%d] must be a string", i)
+			}
+			re, err := regexp.Compile(s)
+			if err != nil {
+				return fmt.Errorf("pii-redact: patterns[%d]: %w", i, err)
+			}
+			p.entities = append(p.entities, entity{name: fmt.Sprintf("custom_%d", i+1), re: re})
+		}
 	}
-	for i, v := range custom {
-		s, ok := v.(string)
-		if !ok {
-			return fmt.Errorf("pii-redact: patterns[%d] must be a string", i)
-		}
-		re, err := regexp.Compile(s)
-		if err != nil {
-			return fmt.Errorf("pii-redact: patterns[%d]: %w", i, err)
-		}
-		p.entities = append(p.entities, entity{name: fmt.Sprintf("custom_%d", i+1), re: re})
+
+	// Checked after the custom patterns are appended, because an empty entities
+	// list alongside patterns is a real policy — screen mine and none of the
+	// built-ins. Only a plugin left with no detector at all is the defect:
+	// enabled in the catalog, detecting nothing. Unreachable with the key
+	// absent, which selects every built-in entity.
+	if len(p.entities) == 0 {
+		return fmt.Errorf("pii-redact: entities is empty: omit the key to select every entity, or name at least one")
 	}
 	return nil
 }
@@ -189,12 +197,21 @@ func (p *PIIRedact) detect(text string) (string, bool) {
 	return "", false
 }
 
-func selectEntities(raw any) ([]entity, error) {
-	list, ok := raw.([]any)
-	if !ok {
+// selectEntities resolves the entities selector. An ABSENT key selects every
+// built-in entity. A key that is present says something about the selection, so
+// a value that cannot express one — a scalar, a mapping — is a load error rather
+// than a silent widening: an operator who asked for ssn and got all four also
+// got credit_card, which matches any sixteen-digit order number and starts
+// denying traffic they never opted into.
+func selectEntities(raw any, present bool) ([]entity, error) {
+	if !present {
 		out := make([]entity, len(builtinEntities))
 		copy(out, builtinEntities)
 		return out, nil
+	}
+	list, ok := raw.([]any)
+	if !ok {
+		return nil, fmt.Errorf("pii-redact: entities must be a list of entity names")
 	}
 
 	known := make([]string, len(builtinEntities))

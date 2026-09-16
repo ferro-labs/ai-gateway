@@ -231,3 +231,26 @@ func TestExecute_DeniesUninspectableContent(t *testing.T) {
 		t.Fatal("uninspectable content was forwarded unscreened")
 	}
 }
+
+func TestInit_RejectsAnEmptyCategoriesList(t *testing.T) {
+	s := &PromptShield{}
+	// Present and empty is not the same as absent. An absent key selects every
+	// category; an empty list is an operator who meant to name some, and loading
+	// it yields a shield the catalog reports as enabled that screens nothing.
+	err := s.Init(map[string]any{"categories": []any{}})
+
+	if err == nil {
+		t.Fatal("Init accepted an empty categories list; it yields a guardrail that enforces nothing")
+	}
+}
+
+func TestInit_RejectsACategoriesValueThatIsNotAList(t *testing.T) {
+	s := &PromptShield{}
+	// One name written without the list syntax. Widening it to every category
+	// enables patterns the operator never asked for.
+	err := s.Init(map[string]any{"categories": "system_override"})
+
+	if err == nil {
+		t.Fatal("Init accepted a categories value that is not a list; a scalar must fail the load, not silently select every category")
+	}
+}

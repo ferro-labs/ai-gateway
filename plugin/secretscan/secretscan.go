@@ -1,7 +1,12 @@
-// Package secretscan provides a secret-scan guardrail plugin that rejects
-// content carrying credentials. Register it with a blank import:
+// Package secretscan provides a secret-scan guardrail plugin that detects
+// content carrying credentials and applies the configured action. Register it
+// with a blank import:
 //
 //	_ "github.com/ferro-labs/ai-gateway/plugin/secretscan"
+//
+// One plugins[] entry registers one stage, so a before_request-only entry
+// screens the request alone: the model's response is screened only when this
+// plugin is ALSO listed at after_request.
 package secretscan
 
 import (
@@ -43,11 +48,14 @@ var curated = []secret{
 	{"jwt", regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b`)},
 }
 
-// SecretScan rejects content carrying credentials, in either direction.
+// SecretScan detects content carrying credentials, in either direction, and
+// applies the configured action. Only "block" rejects; under "warn" and "log"
+// the detection is recorded and the content is forwarded.
 //
-// It screens the response as well as the request: a model asked to "show me the
-// config" will happily read a credential back out of its context, and a
-// guardrail that only watched the prompt would miss it.
+// It can screen the response as well as the request — a model asked to "show me
+// the config" will happily read a credential back out of its context, and a
+// guardrail that only watched the prompt would miss it — but that direction
+// needs its own after_request plugins[] entry, since one entry is one stage.
 type SecretScan struct {
 	secrets []secret
 	action  string
@@ -68,26 +76,34 @@ func (s *SecretScan) Init(config map[string]any) error {
 	}
 	s.action = action
 
-	selected, err := selectCurated(config["kinds"])
+	kinds, present := config["kinds"]
+	selected, err := selectCurated(kinds, present)
 	if err != nil {
 		return err
 	}
 	s.secrets = selected
 
-	custom, ok := config["patterns"].([]any)
-	if !ok {
-		return nil
+	if custom, ok := config["patterns"].([]any); ok {
+		for i, v := range custom {
+			str, ok := v.(string)
+			if !ok {
+				return fmt.Errorf("secret-scan: patterns[%d] must be a string", i)
+			}
+			re, err := regexp.Compile(str)
+			if err != nil {
+				return fmt.Errorf("secret-scan: patterns[%d]: %w", i, err)
+			}
+			s.secrets = append(s.secrets, secret{name: fmt.Sprintf("custom_%d", i+1), re: re})
+		}
 	}
-	for i, v := range custom {
-		str, ok := v.(string)
-		if !ok {
-			return fmt.Errorf("secret-scan: patterns[%d] must be a string", i)
-		}
-		re, err := regexp.Compile(str)
-		if err != nil {
-			return fmt.Errorf("secret-scan: patterns[%d]: %w", i, err)
-		}
-		s.secrets = append(s.secrets, secret{name: fmt.Sprintf("custom_%d", i+1), re: re})
+
+	// Checked after the custom patterns are appended, because an empty kinds
+	// list alongside patterns is a real policy — scan for mine and none of the
+	// curated ones. Only a plugin left with no pattern at all is the defect:
+	// enabled in the catalog, scanning for nothing. Unreachable with the key
+	// absent, which selects every curated kind.
+	if len(s.secrets) == 0 {
+		return fmt.Errorf("secret-scan: kinds is empty: omit the key to select every kind, or name at least one")
 	}
 	return nil
 }
@@ -141,12 +157,20 @@ func (s *SecretScan) screen(ctx context.Context, pctx *plugin.Context, content, 
 	return false
 }
 
-func selectCurated(raw any) ([]secret, error) {
-	list, ok := raw.([]any)
-	if !ok {
+// selectCurated resolves the kinds selector. An ABSENT key selects every
+// curated kind. A key that is present says something about the selection, so a
+// value that cannot express one — a scalar, a mapping — is a load error rather
+// than a silent widening: an operator who asked for one kind and got eight is
+// scanning for patterns they never opted into.
+func selectCurated(raw any, present bool) ([]secret, error) {
+	if !present {
 		out := make([]secret, len(curated))
 		copy(out, curated)
 		return out, nil
+	}
+	list, ok := raw.([]any)
+	if !ok {
+		return nil, fmt.Errorf("secret-scan: kinds must be a list of kind names")
 	}
 
 	known := make([]string, len(curated))

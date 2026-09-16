@@ -239,3 +239,16 @@ func TestInit_RejectsAnUnrecognisedRuleAction(t *testing.T) {
 		t.Fatal("Init accepted an unrecognized rule action; a misspelling must fail the load, not silently stop enforcing")
 	}
 }
+
+func TestInit_RejectsAnEmptyRulesList(t *testing.T) {
+	g := &RegexGuard{}
+	// Present and empty is not the same as absent. An absent key means the
+	// plugin was not configured; an empty list is an operator who meant to name
+	// rules, and loading it yields a guardrail the catalog reports as enabled
+	// that screens nothing.
+	err := g.Init(map[string]any{"rules": []any{}})
+
+	if err == nil {
+		t.Fatal("Init accepted an empty rules list; it yields a guardrail that enforces nothing")
+	}
+}

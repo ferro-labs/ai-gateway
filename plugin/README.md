@@ -63,8 +63,8 @@ gateway refuses to start if they disagree.
 | **word-filter** | guardrail | before_request (and after_request to screen the response) | Rejects a request whose text contains a blocked entry as a substring. |
 | **regex-guard** | guardrail | before_request (and after_request to screen the response) | Rejects or flags content matching named regular expressions, per rule's `apply_to`. |
 | **pii-redact** | guardrail | before_request | Detects personally identifiable information and either denies the request or rewrites it in place with the values replaced by a placeholder, letting it continue. Rewriting applies to the chat-shaped surfaces; elsewhere a detection is denied. |
-| **secret-scan** | guardrail | before_request (and after_request to screen the response) | Rejects content carrying credentials — cloud keys, tokens, private keys — in either direction, so a model asked to read one back out of its context is screened too. |
-| **prompt-shield** | guardrail | before_request | Rejects requests carrying prompt-injection and jailbreak attempts, matched by category over common written forms. |
+| **secret-scan** | guardrail | before_request (and after_request to screen the response) | Detects content carrying credentials — cloud keys, tokens, private keys — and applies the configured action; only `block` rejects. The response is screened only when this plugin is **also** listed at `after_request`. |
+| **prompt-shield** | guardrail | before_request | Detects prompt-injection and jailbreak attempts, matched by category over common written forms, and applies the configured action; only `block` rejects. |
 | **schema-guard** | guardrail | after_request | Validates the model's response against a JSON Schema subset — `type`, `required`, `properties`. |
 | **max-token** | guardrail | before_request | Rejects a request that declares a completion ceiling above the limit, or exceeds the message-count / input-length limit. It never *imposes* a ceiling. |
 | **rate-limit** | ratelimit | before_request | Bounds request rate globally and per API key or user, independently of the per-IP HTTP limiter. |
@@ -95,6 +95,8 @@ and both must agree: one `plugins[]` entry registers one stage, so a rule with
 `apply_to: output` or `both` only fires when this plugin is **also** listed at
 `after_request`. An unrecognised `apply_to` fails the load rather than
 defaulting to `input` — screening the prompt is not the rule that was written.
+Omitting `rules` entirely is a silent no-op; writing `rules: []` is a load
+error, because an empty list is an operator who set out to name some.
 
 ```yaml
 config:
@@ -129,8 +131,12 @@ config:
   action: redact              # block | redact (no observe-only mode: a redactor
                                # that only warned would mean forwarding the PII)
   entities: ["email", "ssn"]  # optional; default is every built-in entity.
-                               # An unrecognised name fails the load
-  patterns: ['\bACME-\d{6}\b'] # optional custom regexes, compiled at load
+                               # An unrecognised name fails the load, and so
+                               # does an empty list with no `patterns` to fall
+                               # back on
+  patterns: ['\bACME-\d{6}\b'] # optional custom regexes, compiled at load.
+                               # `entities: []` alongside these screens your
+                               # patterns and none of the built-ins
   redact_placeholder: "[REDACTED]"
 ```
 
@@ -144,18 +150,31 @@ request. It screens the response as well as the request: a model asked to
 guardrail that only watched the prompt would miss it. The matched kind (e.g.
 `aws_access_key`) is logged and reported; the credential itself never is.
 
+**Response screening needs its own `plugins[]` entry.** One entry registers one
+stage, so a `before_request`-only entry screens the prompt and nothing else —
+list this plugin at `after_request` as well to screen what the model reads back
+out, with identical `config` on both entries.
+
+Only `action: block` rejects. Under `warn` or `log` a detected credential is
+recorded by kind and the content is **forwarded anyway** — that is the point of
+those actions, and it means `warn` is an observation mode, not enforcement.
+
 ```yaml
 config:
-  action: block                # block | warn | log
+  action: block                # block | warn | log (only block rejects)
   kinds: ["aws_access_key", "private_key"]  # optional; default is every curated
                                              # kind. An unrecognised name fails
-                                             # the load
-  patterns: ['\bACME-KEY-[0-9]{8}\b']        # optional custom regexes, compiled at load
+                                             # the load, and so does an empty
+                                             # list with no `patterns` to fall
+                                             # back on
+  patterns: ['\bACME-KEY-[0-9]{8}\b']        # optional custom regexes, compiled at load.
+                                             # `kinds: []` alongside these scans for
+                                             # your patterns and no curated kind
 ```
 
 ### prompt-shield
 
-Rejects requests carrying prompt-injection and jailbreak attempts, matched by
+Detects prompt-injection and jailbreak attempts, matched by
 category (`system_override`, `role_manipulation`, `instruction_leak`,
 `delimiter_attack`) over the common written forms. Screens the request only:
 by `after_request` the model has already acted on an injection, and on a
@@ -167,12 +186,17 @@ not the whole defence. The denial reason names the category, never the
 matched phrase — quoting the match would let an attacker binary-search the
 pattern.
 
+Only `action: block` rejects. Under `warn` or `log` a detected attempt is
+recorded by category and the prompt **reaches the model anyway** — those
+actions are for measuring a pattern's false-positive rate before enforcing it.
+
 ```yaml
 config:
-  action: block       # block | warn | log
+  action: block       # block | warn | log (only block rejects)
   categories: ["system_override", "instruction_leak"]  # optional; default is every
                                                         # category. An unrecognised
-                                                        # name fails the load
+                                                        # name fails the load, and an
+                                                        # empty list is refused
 ```
 
 ### schema-guard
