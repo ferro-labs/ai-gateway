@@ -102,13 +102,10 @@ func (s *PromptShield) SupportedStages() []plugin.Stage {
 // actions is the closed set this plugin honours; see plugin.NormalizeAction.
 var actions = []string{plugin.ActionBlock, plugin.ActionWarn, plugin.ActionLog}
 
-// ValidateConfig checks the action at config-load time; see plugin.ValidateAction.
-// Everything else is checked at Init, where every value is resolved.
+// ValidateConfig runs the same checks Init runs, so a misconfiguration is a
+// `ferrogw validate` error rather than a failed start; see plugin.ValidateViaInit.
 func (s *PromptShield) ValidateConfig(config map[string]any) error {
-	if err := plugin.ValidateAction(config["action"], plugin.ActionBlock, actions...); err != nil {
-		return fmt.Errorf("prompt-shield: %w", err)
-	}
-	return nil
+	return plugin.ValidateViaInit("prompt-shield", config, plugin.ActionBlock, actions...)
 }
 
 // Init selects the enabled categories and the action.

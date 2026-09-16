@@ -441,3 +441,40 @@ func TestValidateConfig_CatchesAMisspelledActionAndPassesAnEnvReference(t *testi
 		t.Fatalf("an env reference was rejected at load, where it is not yet resolved: %v", err)
 	}
 }
+
+// plugin.ConfigValidator: ValidateConfig rejects every config Init rejects, so
+// a malformed rule is a `ferrogw validate` error rather than a failed start.
+func TestValidateConfig_RejectsWhatInitRejects(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		config map[string]any
+		want   string
+	}{
+		{"misspelled rule action", map[string]any{"rules": []any{map[string]any{"pattern": "x", "action": "blockk"}}}, "action"},
+		{"uncompilable pattern", map[string]any{"rules": []any{map[string]any{"pattern": "("}}}, "rules[0]"},
+		{"rules not a list", map[string]any{"rules": "x"}, "rules"},
+		{"rules absent", map[string]any{}, "rules"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := (&RegexGuard{}).ValidateConfig(tc.config)
+			if err == nil {
+				t.Fatal("ValidateConfig accepted a config Init rejects")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error %q does not name %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// A ${VAR} anywhere in the block cannot be judged before the environment is
+// available, so the block passes on everything but its resolved-independent
+// action; Init still checks the resolved value at startup.
+func TestValidateConfig_PassesABlockCarryingAnEnvReference(t *testing.T) {
+	err := (&RegexGuard{}).ValidateConfig(map[string]any{
+		"rules": []any{map[string]any{"pattern": "${TICKET_PATTERN}"}},
+	})
+	if err != nil {
+		t.Fatalf("ValidateConfig rejected a block whose pattern is an env reference: %v", err)
+	}
+}

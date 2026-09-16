@@ -490,3 +490,25 @@ func TestExecute_IgnoresBeforeRequest(t *testing.T) {
 		t.Fatal("schema-guard screened the request; it validates responses only")
 	}
 }
+
+func TestValidateConfig_RejectsWhatInitRejects(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		config map[string]any
+		want   string
+	}{
+		{"schema absent", map[string]any{}, "schema"},
+		{"required not a list", map[string]any{"schema": map[string]any{"required": "name"}}, "required"},
+		{"unrecognised type", map[string]any{"schema": map[string]any{"type": "objekt"}}, "objekt"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := (&SchemaGuard{}).ValidateConfig(tc.config)
+			if err == nil {
+				t.Fatal("ValidateConfig accepted a config Init rejects")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error %q does not name %q", err, tc.want)
+			}
+		})
+	}
+}

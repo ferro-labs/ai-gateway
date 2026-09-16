@@ -192,6 +192,26 @@ func ValidateAction(raw any, fallback string, allowed ...string) error {
 	return nil
 }
 
+// ValidateViaInit is a ConfigValidator body for a plugin whose Init is pure —
+// no I/O, no environment — so the two share one parser as the contract asks:
+// the block is handed to a fresh instance's Init and its verdict is the
+// validator's. A block carrying a ${VAR} reference anywhere cannot be judged
+// before the environment is available, so only its action is checked and the
+// rest waits for Init at startup, where every value is resolved.
+func ValidateViaInit(name string, config map[string]any, fallback string, allowed ...string) error {
+	if envref.HasReferenceIn(config) {
+		if err := ValidateAction(config["action"], fallback, allowed...); err != nil {
+			return fmt.Errorf("%s: %w", name, err)
+		}
+		return nil
+	}
+	factory, ok := GetFactory(name)
+	if !ok {
+		return fmt.Errorf("%s: plugin is not registered", name)
+	}
+	return factory().Init(config)
+}
+
 func permitted(value string, allowed []string) bool {
 	value = strings.ToLower(strings.TrimSpace(value))
 	for _, a := range allowed {

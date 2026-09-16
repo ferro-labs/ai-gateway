@@ -308,3 +308,24 @@ func TestValidateConfig_CatchesAMisspelledActionAndPassesAnEnvReference(t *testi
 		t.Fatalf("an env reference was rejected at load, where it is not yet resolved: %v", err)
 	}
 }
+
+func TestValidateConfig_RejectsWhatInitRejects(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		config map[string]any
+		want   string
+	}{
+		{"unknown category", map[string]any{"categories": []any{"nope"}}, "nope"},
+		{"empty categories", map[string]any{"categories": []any{}}, "categories"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := (&PromptShield{}).ValidateConfig(tc.config)
+			if err == nil {
+				t.Fatal("ValidateConfig accepted a config Init rejects")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error %q does not name %q", err, tc.want)
+			}
+		})
+	}
+}

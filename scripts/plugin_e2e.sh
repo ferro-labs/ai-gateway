@@ -357,33 +357,47 @@ YAML
 check "serve refuses an output-only regex-guard listed at before_request" \
   "$([ "$REFUSED" -eq 0 ] && has "enforces nothing" "$REFUSAL" && echo 0 || echo 1)" "refused=$REFUSED log=$REFUSAL"
 
-refused "$(config emptyentities <<YAML
+validate "$(config emptyentities <<YAML
 strategy: { mode: single }
 targets: [ { virtual_key: openai } ]
 plugins:
   - { name: pii-redact, type: guardrail, stage: before_request, enabled: true, config: { entities: [] } }
 YAML
 )"
-check "serve refuses pii-redact with an empty entity list and no patterns" \
-  "$([ "$REFUSED" -eq 0 ] && has entities "$REFUSAL" && echo 0 || echo 1)" "refused=$REFUSED log=$REFUSAL"
+check "validate rejects pii-redact with an empty entity list and no patterns" \
+  "$([ "$VCODE" -ne 0 ] && has entities "$VOUT" && echo 0 || echo 1)" "code=$VCODE out=$VOUT"
 
-refused "$(config badkind <<YAML
+validate "$(config badkind <<YAML
 strategy: { mode: single }
 targets: [ { virtual_key: openai } ]
 plugins:
   - { name: secret-scan, type: guardrail, stage: before_request, enabled: true, config: { kinds: [ nope ] } }
 YAML
 )"
-check "serve refuses secret-scan naming an unknown kind" "$([ "$REFUSED" -eq 0 ] && has nope "$REFUSAL" && echo 0 || echo 1)" "refused=$REFUSED log=$REFUSAL"
+check "validate rejects secret-scan naming an unknown kind" "$([ "$VCODE" -ne 0 ] && has nope "$VOUT" && echo 0 || echo 1)" "code=$VCODE out=$VOUT"
 
-refused "$(config badcategory <<YAML
+validate "$(config badcategory <<YAML
 strategy: { mode: single }
 targets: [ { virtual_key: openai } ]
 plugins:
   - { name: prompt-shield, type: guardrail, stage: before_request, enabled: true, config: { categories: [] } }
 YAML
 )"
-check "serve refuses prompt-shield with an empty category list" "$([ "$REFUSED" -eq 0 ] && has categories "$REFUSAL" && echo 0 || echo 1)" "refused=$REFUSED log=$REFUSAL"
+check "validate rejects prompt-shield with an empty category list" "$([ "$VCODE" -ne 0 ] && has categories "$VOUT" && echo 0 || echo 1)" "code=$VCODE out=$VOUT"
+
+validate "$(config badpattern <<YAML
+strategy: { mode: single }
+targets: [ { virtual_key: openai } ]
+plugins:
+  - name: regex-guard
+    type: guardrail
+    stage: before_request
+    enabled: true
+    config:
+      rules: [ { name: broken, pattern: '(' } ]
+YAML
+)"
+check "validate rejects an uncompilable regex-guard pattern" "$([ "$VCODE" -ne 0 ] && has "rules[0]" "$VOUT" && echo 0 || echo 1)" "code=$VCODE out=$VOUT"
 
 echo
 echo "== Summary: ${pass} passed, ${fail} failed =="

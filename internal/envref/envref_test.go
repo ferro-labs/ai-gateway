@@ -130,3 +130,23 @@ func TestStringMap_NilVsNonNilEmpty(t *testing.T) {
 		t.Error("StringMap(non-nil empty map) = nil, want a non-nil empty map")
 	}
 }
+
+func TestHasReferenceIn_WalksMapsAndLists(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		v    any
+		want bool
+	}{
+		{"plain string", "x", false},
+		{"string reference", "${A}", true},
+		{"nested map", map[string]any{"rules": []any{map[string]any{"pattern": "${A}"}}}, true},
+		{"nested map without one", map[string]any{"rules": []any{map[string]any{"pattern": "x"}}}, false},
+		{"non-string leaf", map[string]any{"n": 1.5, "b": true, "nil": nil}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := HasReferenceIn(tc.v); got != tc.want {
+				t.Fatalf("HasReferenceIn(%v) = %v, want %v", tc.v, got, tc.want)
+			}
+		})
+	}
+}
