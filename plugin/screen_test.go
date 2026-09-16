@@ -79,8 +79,12 @@ func TestRejectUninspectable_DeniesBeforeRequestWithAVerdictNotAnError(t *testin
 }
 
 func TestRejectUninspectable_IgnoresAfterRequestStage(t *testing.T) {
+	// The Request is deliberately non-nil: without it the nil-Request guard
+	// short-circuits first and this test passes whether or not the stage is
+	// checked at all, pinning nothing.
 	pctx := &Context{
 		Stage:    StageAfterRequest,
+		Request:  &providers.Request{},
 		Metadata: map[string]any{MetadataUninspectableContent: true},
 	}
 
