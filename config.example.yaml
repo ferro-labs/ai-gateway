@@ -353,8 +353,8 @@ plugins:
     config:
       # A rule's apply_to decides which DIRECTION it screens. A rule with
       # apply_to: output only fires when this plugin is ALSO listed at
-      # after_request — a plugin entry registers one stage, so an output rule
-      # under a before_request-only entry never runs.
+      # after_request — a plugin entry registers one stage. An entry whose
+      # rules cannot act at its stage fails the load. rules is required.
       rules:
         - name: internal-ticket-id
           pattern: '\bINC-\d{6}\b'
@@ -366,7 +366,8 @@ plugins:
     stage: before_request
     enabled: false
     config:
-      # Omit `entities` for all built-ins: email, phone, ssn, credit_card.
+      # Omit `entities` for all built-ins: email, phone, ssn, credit_card
+      # (a card must also pass the Luhn check).
       # An unrecognised name fails the load rather than selecting nothing, and
       # so does an empty list with no `patterns` to fall back on.
       entities: ["ssn", "credit_card"]

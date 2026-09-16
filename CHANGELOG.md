@@ -65,7 +65,9 @@ A selector that is **present but empty** is a startup error too — `rules: []`,
 would load, report itself enabled and screen nothing. So is one written as a
 scalar or a mapping rather than a list, which previously widened the selection
 to every built-in. Omitting the key still means what it always did: every
-built-in for `entities`, `kinds` and `categories`, and a no-op for `rules`.
+built-in for `entities`, `kinds` and `categories`. `regex-guard` has no
+built-in patterns, so its `rules` key is required and must name at least one
+rule.
 `entities: []` or `kinds: []` **alongside a non-empty `patterns` list is
 legal** — that selects the custom patterns and none of the built-ins, and the
 plugin still has something to screen for.
@@ -100,9 +102,15 @@ A plugin listed at a stage it does nothing at now **fails the load** and is
 reported by `ferrogw validate`, instead of registering and returning early on
 every request. `pii-redact` and `prompt-shield` screen the prompt, so they take
 `before_request`; `schema-guard` validates the answer, so it takes
-`after_request`. `regex-guard` and `secret-scan` genuinely act at both and are
-unchanged. A plugin registered outside this repository declares nothing and
-keeps registering at any stage, as before.
+`after_request`. `regex-guard` takes the stages its rules can act at, so an
+entry whose rules all carry `apply_to: output` fails the load at
+`before_request` instead of screening nothing there. `secret-scan` genuinely
+acts at both and is unchanged. A plugin registered outside this repository
+declares nothing and keeps registering at any stage, as before.
+
+`pii-redact`'s `credit_card` entity requires the Luhn check digit to pass, so a
+sixteen-digit order id or tracking number is no longer denied or rewritten as a
+card number.
 
 Every content guardrail screens a message's reasoning content and its tool
 calls' arguments as well as its body and content parts, in both directions. A

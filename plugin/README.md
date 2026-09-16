@@ -101,10 +101,13 @@ nothing.
 A rule's `apply_to` and the plugin entry's `stage` are two separate settings
 and both must agree: one `plugins[]` entry registers one stage, so a rule with
 `apply_to: output` or `both` only fires when this plugin is **also** listed at
-`after_request`. An unrecognised `apply_to` fails the load rather than
-defaulting to `input` — screening the prompt is not the rule that was written.
-Omitting `rules` entirely is a silent no-op; writing `rules: []` is a load
-error, because an empty list is an operator who set out to name some.
+`after_request`. An entry whose rules cannot act at its stage — every rule
+`output` under `before_request`, or every rule `input` under `after_request` —
+fails the load rather than registering a plugin that screens nothing. An
+unrecognised `apply_to` fails the load rather than defaulting to `input` —
+screening the prompt is not the rule that was written. `rules` is required and
+must name at least one rule: this plugin has no built-in patterns, so without
+one it would load and screen nothing.
 
 ```yaml
 config:
@@ -123,7 +126,9 @@ custom regex patterns) and either denies the request (`action: block`) or, the
 only built-in guardrail that can, rewrites it in place and lets it continue
 (`action: redact`). Redaction rewrites every screenable field — a message's
 `Content`, its reasoning content, each of its content parts and each tool
-call's arguments — so none of them can carry the value past the plugin.
+call's arguments — so none of them can carry the value past the plugin. A
+`credit_card` match must also pass the Luhn check, so a sixteen-digit order id
+or tracking number is not denied as a card.
 
 **`redact` takes effect on the chat-shaped surfaces** — `/v1/chat/completions`
 (streamed or not) and `/v1/completions` — where the gateway reads the rewritten
