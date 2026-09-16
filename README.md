@@ -130,7 +130,7 @@ AI gateways differ most under load, in throughput, latency and memory. Ferro Lab
 |:---|:---|:---|
 | 🔀 **Routing** | 8 strategies — single, fallback, load balance, least latency, cost-optimized, content-based, A/B test, conditional — with per-target retry, failover, and model aliases | [Docs →](https://docs.ferrolabs.ai/routing/) |
 | 🔌 **30 providers** | Chat and streaming everywhere; embeddings, images, rerank, moderations, speech-to-text, text-to-speech, and batch where the vendor offers them | [Docs →](https://docs.ferrolabs.ai/providers/) |
-| 🛡️ **Guardrails & plugins** | Six built in — word filter, token/message limits, response cache, rate limiting, per-key budgets, request logging — and the plugin framework is public for writing your own | [Docs →](https://docs.ferrolabs.ai/plugins/) |
+| 🛡️ **Guardrails & plugins** | Eleven built in — word filter, regex guard, PII redaction, secret scanning, prompt-injection shield, response schema validation, token/message limits, response cache, rate limiting, per-key budgets, request logging — and the plugin framework is public for writing your own | [Docs →](https://docs.ferrolabs.ai/plugins/) |
 | 🎯 **Capability matrix** | One declarative record of which OpenAI parameters each provider forwards, translates, or cannot express, served by `GET /v1/capabilities` | [Docs →](https://docs.ferrolabs.ai/guides/provider-capabilities/) |
 | 🤖 **MCP** | Connects to stdio and Streamable HTTP tool servers, injects their tools into chat completions, and drives the agentic `tool_calls` loop itself | [Docs →](https://docs.ferrolabs.ai/guides/mcp/) |
 | 📊 **Observability** | OpenTelemetry tracing and Prometheus metrics, one trace ID across logs and spans — a zero-allocation no-op until enabled | [Docs →](https://docs.ferrolabs.ai/guides/observability/) |
@@ -180,7 +180,7 @@ its code:
 | [providers/README.md](providers/README.md) | The 30 providers, the per-provider endpoint matrix, and every `/v1/*` surface |
 | [config/README.md](config/README.md) | Config loading, validation, `${VAR}` secrets, declared models, trusted proxies |
 | [internal/strategies/README.md](internal/strategies/README.md) | All 8 routing strategies and their failure semantics |
-| [plugin/README.md](plugin/README.md) | The plugin framework and the six built-in plugins |
+| [plugin/README.md](plugin/README.md) | The plugin framework and the eleven built-in plugins |
 | [mcp/README.md](mcp/README.md) | MCP tool servers, transports, the subprocess trust boundary, readiness |
 | [observability/README.md](observability/README.md) | Tracing setup, managed backends, emitted attributes, privacy levels, exporters |
 | [deploy/README.md](deploy/README.md) | Dockerfiles, Compose files, the fullstack demo stack |

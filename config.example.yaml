@@ -346,8 +346,64 @@ plugins:
       level: info
       persist: false
 
-  # Advanced guardrails (pii-redact, secret-scan, prompt-shield, schema-guard,
-  # regex-guard) are available in FerroCloud. See https://docs.ferrolabs.ai/guardrails
+  - name: regex-guard
+    type: guardrail
+    stage: before_request
+    enabled: false
+    config:
+      # A rule's apply_to decides which DIRECTION it screens. A rule with
+      # apply_to: output only fires when this plugin is ALSO listed at
+      # after_request — a plugin entry registers one stage, so an output rule
+      # under a before_request-only entry never runs.
+      rules:
+        - name: internal-ticket-id
+          pattern: '\bINC-\d{6}\b'
+          apply_to: input
+          action: block
+
+  - name: pii-redact
+    type: guardrail
+    stage: before_request
+    enabled: false
+    config:
+      # Omit `entities` for all built-ins: email, phone, ssn, credit_card.
+      entities: ["ssn", "credit_card"]
+      # block denies the request; redact rewrites it and lets it through.
+      action: redact
+      redact_placeholder: "[REDACTED]"
+
+  - name: secret-scan
+    type: guardrail
+    stage: before_request
+    enabled: false
+    config:
+      # Omit `providers` for every curated set. List this plugin at
+      # after_request as well to screen what the model reads back out.
+      action: block
+
+  - name: prompt-shield
+    type: guardrail
+    stage: before_request
+    enabled: false
+    config:
+      # Omit `categories` for all four: system_override, role_manipulation,
+      # instruction_leak, delimiter_attack.
+      action: block
+
+  - name: schema-guard
+    type: guardrail
+    stage: after_request
+    enabled: false
+    config:
+      # Validates the model's response. after_request only — on a streamed
+      # response it can report a violation but cannot unsend the tokens.
+      schema:
+        type: object
+        required: ["name"]
+        properties:
+          name:
+            type: string
+      action: block
 
   - name: rate-limit
     type: guardrail

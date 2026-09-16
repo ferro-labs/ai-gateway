@@ -5,6 +5,32 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.7] — 2026-09-16
+
+### Added
+
+- **Five content guardrail plugins.** `regex-guard`, `pii-redact`, `secret-scan`,
+  `prompt-shield` and `schema-guard` are now registered plugins with factories,
+  catalog entries and tests. Register each with a blank import, e.g.
+  `_ "github.com/ferro-labs/ai-gateway/plugin/piiredact"`.
+- `plugin.RequestText` / `plugin.ResponseText` — iterators over every piece of
+  text a request or response carries, including content parts of every type.
+  `Part.ImageURL` is deliberately excluded.
+- `plugin.RejectUninspectable` — the shared verdict for a before_request whose
+  content could not be projected as text.
+
+### Changed
+
+- `wordfilter` now screens through the shared iterators. No behavioural change;
+  its existing suite is unmodified and still passes.
+
+### Notes for operators
+
+`pii-redact` with `action: "redact"` rewrites the request in place and lets it
+continue; with `action: "block"` it denies. `schema-guard` runs at
+`after_request` only — on a streamed response it can report a violation but
+cannot withhold output already delivered.
+
 ## [1.5.6] — 2026-09-14
 
 Two routing-config corrections. No endpoint or configuration key is added

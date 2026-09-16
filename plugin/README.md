@@ -3,7 +3,7 @@
 Plugins are middleware that run around each request the gateway routes. They can
 inspect or rewrite a request before it reaches a provider, screen or record the
 response after, and note failures — enough to build guardrails, caching, rate
-limiting, budgets, and logging without touching the routing core. Six ship
+limiting, budgets, and logging without touching the routing core. Eleven ship
 built-in; the framework is public, so you can add your own.
 
 This package holds the framework (`plugin.go`, `manager.go`, `registry.go`) and
