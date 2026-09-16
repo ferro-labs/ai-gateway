@@ -96,6 +96,82 @@ func TestExecute_BlocksAClassicGitHubToken(t *testing.T) {
 	}
 }
 
+// Each of these is a live credential form the curated set did not match, and
+// each belongs under a kind an operator can already select. A new kind name
+// would have changed what an existing `kinds` list selects; a new form under
+// the existing name does not.
+func TestExecute_BlocksTheAdditionalCredentialForms(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		content string
+		kind    string
+	}{
+		{
+			name:    "a Slack app-level token",
+			content: "call it with xapp-1-A012345678-" + strings.Repeat("9", 12), // #nosec G101 -- filler in the shape of a token, not a credential.
+			kind:    "slack_token",
+		},
+		{
+			name:    "a Slack refresh token",
+			content: "rotate with xoxe-1-" + strings.Repeat("A", 20), // #nosec G101 -- filler in the shape of a token, not a credential.
+			kind:    "slack_token",
+		},
+		{
+			name:    "a DSA private key header",
+			content: "here it is: -----BEGIN DSA PRIVATE KEY-----",
+			kind:    "private_key",
+		},
+		{
+			name:    "an encrypted private key header",
+			content: "here it is: -----BEGIN ENCRYPTED PRIVATE KEY-----",
+			kind:    "private_key",
+		},
+		{
+			name:    "a Stripe webhook signing secret",
+			content: "verify with whsec_" + strings.Repeat("A", 32), // #nosec G101 -- filler in the shape of a secret, not a credential.
+			kind:    "stripe_key",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &SecretScan{}
+			if err := s.Init(map[string]any{}); err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+
+			pctx := newRequest(tc.content)
+			if err := s.Execute(context.Background(), pctx); err != nil {
+				t.Fatalf("Execute returned an error; a denial is a verdict, not a fault: %v", err)
+			}
+
+			if !pctx.Reject {
+				t.Fatal("a credential was forwarded to the provider")
+			}
+			if !strings.Contains(pctx.Reason, tc.kind) {
+				t.Fatalf("Reason %q does not name the kind %q, so an operator's kinds selection no longer covers this form", pctx.Reason, tc.kind)
+			}
+		})
+	}
+}
+
+// The patterns match a credential's structure — a fixed prefix and a length —
+// so the words around one are not evidence of anything. A false positive costs
+// a developer their request.
+func TestExecute_AllowsProseNamingTheAdditionalForms(t *testing.T) {
+	s := &SecretScan{}
+	if err := s.Init(map[string]any{}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	pctx := newRequest("rotate the whsec webhook signing secret, reissue the xapp and xoxe Slack tokens, and re-encrypt the DSA private key")
+	if err := s.Execute(context.Background(), pctx); err != nil {
+		t.Fatalf("Execute returned an error; a denial is a verdict, not a fault: %v", err)
+	}
+
+	if pctx.Reject {
+		t.Fatalf("prose naming credential formats was blocked as a credential: %q", pctx.Reason)
+	}
+}
+
 func TestExecute_ReasonNamesTheSecretKindNotTheSecret(t *testing.T) {
 	s := &SecretScan{}
 	if err := s.Init(map[string]any{}); err != nil {

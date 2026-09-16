@@ -99,6 +99,14 @@ tokens (`github_pat_…`) as well as the classic prefixes. The fine-grained
 format is the one GitHub now issues by default, and it was passing screening in
 both directions while the kind reported itself selected.
 
+Three more credential forms are screened, each under the kind it belongs to, so
+an existing `kinds` selection keeps working unchanged: `slack_token` also
+matches app-level (`xapp-…`) and rotation (`xoxe-…`) tokens, `private_key` also
+matches `DSA` and `ENCRYPTED` PEM headers, and `stripe_key` also matches
+webhook signing secrets (`whsec_…`). Each matches a fixed prefix and a length,
+as the rest of the curated set does, so prose naming these formats is not a
+match.
+
 `schema-guard` checks its `schema` block at load, recursively. A malformed
 **supported** keyword — `required` written as a bare name, a `type` naming no
 JSON Schema type, a `properties` map whose subschema is not an object — is a

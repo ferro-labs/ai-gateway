@@ -44,11 +44,16 @@ var curated = []secret{
 	// now issues by default, whose body contains underscores the classic
 	// character class excludes.
 	{"github_token", regexp.MustCompile(`\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{36,})\b`)},
-	{"slack_token", regexp.MustCompile(`\bxox[baprs]-[0-9A-Za-z-]{10,}\b`)},
+	// The bot, user and legacy prefixes, plus the app-level (xapp-) and
+	// rotation (xoxe-) prefixes, which carry the same access as the rest and
+	// were passing screening while the kind reported itself selected.
+	{"slack_token", regexp.MustCompile(`\b(?:xox[abeprs]|xapp)-[0-9A-Za-z-]{10,}\b`)},
 	{"openai_key", regexp.MustCompile(`\bsk-[A-Za-z0-9_-]{20,}\b`)},
 	{"google_api_key", regexp.MustCompile(`\bAIza[0-9A-Za-z_-]{35}\b`)},
-	{"stripe_key", regexp.MustCompile(`\b[rs]k_(?:live|test)_[0-9A-Za-z]{24,}\b`)},
-	{"private_key", regexp.MustCompile(`-----BEGIN (?:RSA |EC |OPENSSH |PGP )?PRIVATE KEY-----`)},
+	// The API keys, plus the webhook signing secret, which authenticates
+	// callbacks and is a credential in the same sense.
+	{"stripe_key", regexp.MustCompile(`\b(?:[rs]k_(?:live|test)|whsec)_[0-9A-Za-z]{24,}\b`)},
+	{"private_key", regexp.MustCompile(`-----BEGIN (?:RSA |DSA |EC |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY-----`)},
 	{"jwt", regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b`)},
 }
 
