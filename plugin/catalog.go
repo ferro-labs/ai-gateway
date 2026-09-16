@@ -82,6 +82,12 @@ var builtins = []BuiltinPlugin{
 		Settings: []string{"rules", "action"},
 	},
 	{
+		Name:     "pii-redact",
+		Type:     TypeGuardrail,
+		Summary:  "Detects personally identifiable information and either denies the request or rewrites it with the values replaced by a placeholder.",
+		Settings: []string{"entities", "patterns", "action", "redact_placeholder"},
+	},
+	{
 		Name:     "response-cache",
 		Type:     TypeTransform,
 		Summary:  "Serves an identical request from memory instead of calling a provider again, scoped to the API key that primed it — one credential's response is never served to another.",

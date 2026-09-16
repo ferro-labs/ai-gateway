@@ -1,0 +1,195 @@
+// Package piiredact provides a pii-redact guardrail plugin that detects
+// personally identifiable information and either denies the request or rewrites
+// it with the values removed. Register it with a blank import:
+//
+//	_ "github.com/ferro-labs/ai-gateway/plugin/piiredact"
+package piiredact
+
+import (
+	"context"
+	"fmt"
+	"regexp"
+	"strings"
+
+	"github.com/ferro-labs/ai-gateway/pkg/logger"
+	"github.com/ferro-labs/ai-gateway/plugin"
+	"github.com/ferro-labs/ai-gateway/providers"
+)
+
+func init() {
+	plugin.RegisterFactory("pii-redact", func() plugin.Plugin {
+		return &PIIRedact{}
+	})
+}
+
+const defaultPlaceholder = "[REDACTED]"
+
+type entity struct {
+	name string
+	re   *regexp.Regexp
+}
+
+// builtinEntities are the entity types recognised without configuration.
+//
+// The set is deliberately small and literal: each entry matches a well-known
+// written form rather than guessing from context, because a false positive on
+// this plugin costs a caller their request.
+var builtinEntities = []entity{
+	{"email", regexp.MustCompile(`[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}`)},
+	{"phone", regexp.MustCompile(`(\+1\d{10}|\(\d{3}\)\s?\d{3}-\d{4}|\d{3}[-.]\d{3}[-.]\d{4})`)},
+	{"ssn", regexp.MustCompile(`\b\d{3}-\d{2}-\d{4}\b`)},
+	{"credit_card", regexp.MustCompile(`\b\d{4}[\s\-]?\d{4}[\s\-]?\d{4}[\s\-]?\d{4}\b`)},
+}
+
+// PIIRedact detects PII and either denies the request or sanitizes it.
+//
+// With action "redact" the plugin REWRITES Request.Messages in place and lets
+// the request continue. That is the point of the mode: the provider never sees
+// the value, and the caller still gets an answer. With action "block" nothing is
+// rewritten and the request is denied.
+//
+// The action set is deliberately just {block, redact} — unlike a filter, this
+// plugin has no non-blocking observe mode: "warn" on a redactor would mean
+// detecting PII and forwarding it anyway, which defeats the plugin's purpose.
+type PIIRedact struct {
+	entities    []entity
+	action      string
+	placeholder string
+}
+
+// Name returns the plugin identifier.
+func (p *PIIRedact) Name() string { return "pii-redact" }
+
+// Type returns the plugin lifecycle hook type.
+func (p *PIIRedact) Type() plugin.PluginType { return plugin.TypeGuardrail }
+
+// Init selects the entity set and the action.
+func (p *PIIRedact) Init(config map[string]any) error {
+	rawAction, _ := config["action"].(string)
+	action, err := plugin.NormalizeAction(rawAction, plugin.ActionBlock, plugin.ActionBlock, plugin.ActionRedact)
+	if err != nil {
+		return fmt.Errorf("pii-redact: action: %w", err)
+	}
+	p.action = action
+
+	p.placeholder = defaultPlaceholder
+	if ph, ok := config["redact_placeholder"].(string); ok && strings.TrimSpace(ph) != "" {
+		p.placeholder = ph
+	}
+
+	selected, err := selectEntities(config["entities"])
+	if err != nil {
+		return err
+	}
+	p.entities = selected
+
+	custom, ok := config["patterns"].([]any)
+	if !ok {
+		return nil
+	}
+	for i, v := range custom {
+		s, ok := v.(string)
+		if !ok {
+			return fmt.Errorf("pii-redact: patterns[%d] must be a string", i)
+		}
+		re, err := regexp.Compile(s)
+		if err != nil {
+			return fmt.Errorf("pii-redact: patterns[%d]: %w", i, err)
+		}
+		p.entities = append(p.entities, entity{name: fmt.Sprintf("custom_%d", i+1), re: re})
+	}
+	return nil
+}
+
+// Execute screens the request. An absent "entities" list means every builtin.
+func (p *PIIRedact) Execute(ctx context.Context, pctx *plugin.Context) error {
+	if len(p.entities) == 0 || pctx.Stage != plugin.StageBeforeRequest {
+		return nil
+	}
+	if plugin.RejectUninspectable(pctx) {
+		return nil
+	}
+	if pctx.Request == nil {
+		return nil
+	}
+
+	if p.action == plugin.ActionRedact {
+		p.redactRequest(ctx, pctx.Request)
+		return nil
+	}
+
+	for text := range plugin.RequestText(pctx.Request) {
+		if name, found := p.detect(text); found {
+			logger.Ctx(ctx).Info("pii-redact: blocked request", "entity", name)
+			pctx.Reject = true
+			// The entity TYPE, never the value: the caller needs to know what to
+			// remove, and echoing the value back would put it in the error log of
+			// every hop between here and them.
+			pctx.Reason = "request blocked by content policy: " + name + " detected"
+			return nil
+		}
+	}
+	return nil
+}
+
+// Close releases resources owned by the plugin.
+func (p *PIIRedact) Close() error { return nil }
+
+// redactRequest rewrites every screenable field in place. ContentParts are
+// rewritten as well as Content: a non-text part leaves no trace in Content, so
+// redacting only Content would forward the value the plugin just claimed to
+// remove.
+func (p *PIIRedact) redactRequest(ctx context.Context, req *providers.Request) {
+	for i := range req.Messages {
+		req.Messages[i].Content = p.redact(ctx, req.Messages[i].Content)
+		for j := range req.Messages[i].ContentParts {
+			req.Messages[i].ContentParts[j].Text = p.redact(ctx, req.Messages[i].ContentParts[j].Text)
+		}
+	}
+}
+
+func (p *PIIRedact) redact(ctx context.Context, text string) string {
+	for _, e := range p.entities {
+		if !e.re.MatchString(text) {
+			continue
+		}
+		logger.Ctx(ctx).Info("pii-redact: redacted request", "entity", e.name)
+		text = e.re.ReplaceAllString(text, p.placeholder)
+	}
+	return text
+}
+
+func (p *PIIRedact) detect(text string) (string, bool) {
+	for _, e := range p.entities {
+		if e.re.MatchString(text) {
+			return e.name, true
+		}
+	}
+	return "", false
+}
+
+func selectEntities(raw any) ([]entity, error) {
+	list, ok := raw.([]any)
+	if !ok {
+		out := make([]entity, len(builtinEntities))
+		copy(out, builtinEntities)
+		return out, nil
+	}
+
+	wanted := make(map[string]bool, len(list))
+	for i, v := range list {
+		s, ok := v.(string)
+		if !ok {
+			return nil, fmt.Errorf("pii-redact: entities[%d] must be a string", i)
+		}
+		wanted[strings.ToLower(strings.TrimSpace(s))] = true
+	}
+
+	out := make([]entity, 0, len(builtinEntities))
+	for _, e := range builtinEntities {
+		if wanted[e.name] {
+			out = append(out, e)
+		}
+	}
+	return out, nil
+}
