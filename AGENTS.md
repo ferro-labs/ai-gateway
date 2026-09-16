@@ -16,7 +16,7 @@
 - **Single source of truth for name constants** — `providers/names.go` re-exports `NameXxx` from each subpackage's `const Name`.
 - **Model discovery** — `providers/core` exposes `DiscoverOpenAICompatibleModels`/`DiscoverModelsWithHeaders` for live `/models` enumeration, shared by many OpenAI-compatible providers (fireworks, xai, moonshot, nvidia-nim, novita, …).
 - **Provider coverage** — OpenAI, Anthropic, Gemini, Groq, Bedrock, Vertex AI, Hugging Face, Cerebras, Cloudflare, Databricks, DeepInfra, Moonshot, Novita, NVIDIA NIM, OpenRouter, Qwen, SambaNova, and more.
-- **Built-in OSS plugins** — word filter, max token, response cache, request logger, rate limit, budget.
+- **Built-in OSS plugins** — word filter, regex guard, PII redaction, secret scanning, prompt-injection shield, response schema validation, max token, response cache, request logger, rate limit, budget.
 - **Admin API** — dashboard, key management, usage stats, request logs, config history/rollback (`internal/admin/handlers/`).
 - **Metrics** — Prometheus metrics exposed at `/metrics` (`pkg/metrics/`).
 - **Circuit breaker** — per-provider circuit breaker in `pkg/circuitbreaker/`.
@@ -1284,6 +1284,24 @@ E2E_SLOW=1 make test-e2e-strategies   # adds the hung-target cell (~15s more)
 
 `scripts/strategy_smoke.sh` is the live counterpart against real providers and
 needs `GROQ_API_KEY` and `TOGETHER_API_KEY`.
+
+### 4. Plugin end-to-end (no keys)
+
+`scripts/plugin_e2e.sh` runs every built-in plugin over the real `ferrogw`
+binary against one scriptable mock upstream. A scenario sets the completion
+the mock answers with, so response-side checks (regex-guard output rules,
+secret-scan at `after_request`, schema-guard) are driven deterministically,
+and the mock's record of the last prompt it received proves what the gateway
+forwarded — a redacted request, or one a `warn` action let through. The final
+phase proves a misconfigured guardrail refuses to load rather than starting
+inert. `scripts/config.plugin-e2e.yaml` is the committed all-guardrails config
+it boots first.
+
+```bash
+make test-e2e-plugins                 # under a minute; runs in CI
+```
+
+`scripts/plugin_smoke.sh` is the live counterpart against a real provider.
 
 ### Additional checks
 
