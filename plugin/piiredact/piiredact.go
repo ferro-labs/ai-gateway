@@ -232,13 +232,21 @@ func (p *PIIRedact) redactRequest(ctx context.Context, req *providers.Request) {
 	}
 }
 
+// redact replaces every match with the configured placeholder as LITERAL text.
+//
+// ReplaceAllString would read the placeholder as a replacement template, where
+// $0 stands for the whole match and $1 for the first group. A placeholder of
+// "$0" therefore wrote the detected value straight back into the request while
+// the plugin logged a redaction and let it through, and any placeholder
+// carrying a dollar sign reached the provider as something other than what the
+// operator wrote. Replacing through a function inserts the string as given.
 func (p *PIIRedact) redact(ctx context.Context, text string) string {
 	for _, e := range p.entities {
 		if !e.re.MatchString(text) {
 			continue
 		}
 		logger.Ctx(ctx).Info("pii-redact: redacted request", "entity", e.name)
-		text = e.re.ReplaceAllString(text, p.placeholder)
+		text = e.re.ReplaceAllStringFunc(text, func(string) string { return p.placeholder })
 	}
 	return text
 }

@@ -145,7 +145,9 @@ config:
   patterns: ['\bACME-\d{6}\b'] # optional custom regexes, compiled at load.
                                # `entities: []` alongside these screens your
                                # patterns and none of the built-ins
-  redact_placeholder: "[REDACTED]"
+  redact_placeholder: "[REDACTED]" # literal text, inserted exactly as written —
+                               # a `$` in it is a dollar sign, not a reference
+                               # to the matched value
 ```
 
 ### secret-scan

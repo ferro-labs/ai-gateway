@@ -58,6 +58,48 @@ func TestExecute_RedactRewritesTheRequestAndAllowsIt(t *testing.T) {
 	}
 }
 
+// The placeholder is literal text, not a replacement template. Expanded as a
+// template, "$0" stands for the whole match — so the configured placeholder put
+// the detected value straight back into the request while the plugin logged a
+// redaction and let the request through.
+func TestExecute_RedactDoesNotExpandThePlaceholderAsATemplate(t *testing.T) {
+	p := &PIIRedact{}
+	if err := p.Init(map[string]any{"action": "redact", "redact_placeholder": "$0"}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	pctx := newRequest("my ssn is 123-45-6789")
+	if err := p.Execute(context.Background(), pctx); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	got := pctx.Request.Messages[0].Content
+	if strings.Contains(got, "123-45-6789") {
+		t.Fatalf("content %q still carries the value the plugin reported as redacted", got)
+	}
+	if !strings.Contains(got, "$0") {
+		t.Fatalf("content %q does not carry the configured placeholder", got)
+	}
+}
+
+// A placeholder carrying a dollar sign is ordinary text an operator wrote, and
+// it must reach the provider exactly as configured.
+func TestExecute_RedactInsertsAPlaceholderCarryingADollarSignVerbatim(t *testing.T) {
+	p := &PIIRedact{}
+	if err := p.Init(map[string]any{"action": "redact", "redact_placeholder": "[$$$]"}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	pctx := newRequest("my ssn is 123-45-6789")
+	if err := p.Execute(context.Background(), pctx); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	if got, want := pctx.Request.Messages[0].Content, "my ssn is [$$$]"; got != want {
+		t.Fatalf("content = %q, want %q", got, want)
+	}
+}
+
 func TestExecute_RedactRewritesOnAChatShapedSurface(t *testing.T) {
 	p := &PIIRedact{}
 	if err := p.Init(map[string]any{"action": "redact"}); err != nil {

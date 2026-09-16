@@ -81,6 +81,12 @@ would be discarded: a detection on those is **denied** instead, with a reason
 saying the content could not be sanitized on that surface. `action: "block"`
 behaves identically everywhere.
 
+`pii-redact`'s `redact_placeholder` is inserted as **literal text**. It was
+applied as a replacement template, where `$0` stands for the whole match, so
+`redact_placeholder: "$0"` wrote the detected value back into the request while
+the plugin logged a redaction and let it through, and any placeholder carrying
+a dollar sign reached the provider as something other than what was configured.
+
 `schema-guard` runs at `after_request` only — on a streamed response it can
 report a violation but cannot withhold output already delivered.
 
