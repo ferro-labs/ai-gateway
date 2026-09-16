@@ -434,7 +434,8 @@ func TestInit_IgnoresAnUnsupportedKeyword(t *testing.T) {
 		"additionalProperties": false,
 		"required":             []any{"score"},
 		"properties": map[string]any{
-			"score": map[string]any{"type": "number", "minimum": 0, "maximum": 10},
+			"score": map[string]any{"type": "number", "minimum": 5, "maximum": 10},
+			"rank":  map[string]any{"type": "number", "minimum": 5},
 			"name":  map[string]any{"type": "string", "pattern": "^[a-z]+$"},
 		},
 	}
@@ -443,12 +444,17 @@ func TestInit_IgnoresAnUnsupportedKeyword(t *testing.T) {
 		t.Fatalf("Init rejected an unsupported keyword; a schema from elsewhere must still load: %v", err)
 	}
 
-	pctx := newResponse(`{"name":"ada","score":9.5}`)
+	// The document satisfies every SUPPORTED keyword and breaks every
+	// unsupported one: "score" exceeds maximum, "rank" falls below minimum,
+	// "name" does not match pattern, and "nickname" is an additional property.
+	// A document that satisfied them too would pass whether they are ignored or
+	// enforced, which is the one thing this test must be able to tell apart.
+	pctx := newResponse(`{"name":"ADA","score":11,"rank":1,"nickname":"a"}`)
 	if err := g.Execute(context.Background(), pctx); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	if pctx.Reject {
-		t.Fatalf("a response conforming to the supported keywords was rejected: %q", pctx.Reason)
+		t.Fatalf("a response conforming to the supported keywords was rejected on an unsupported one: %q", pctx.Reason)
 	}
 }
 
