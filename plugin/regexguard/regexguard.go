@@ -7,8 +7,9 @@
 // A rule's apply_to and the plugin entry's stage are two separate settings and
 // both must agree: a rule with apply_to "output" or "both" only screens the
 // response when this plugin is ALSO listed at after_request, because one
-// plugins[] entry registers one stage. A rule that names neither direction
-// screens the request.
+// plugins[] entry registers one stage. An entry whose rules cannot act at its
+// stage fails the load. A rule that names neither direction screens the
+// request.
 //
 // Only action "block" rejects. Under "warn" and "log" the match is recorded by
 // rule name and the content is forwarded anyway.
@@ -18,6 +19,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/ferro-labs/ai-gateway/pkg/logger"
@@ -64,16 +66,31 @@ func (g *RegexGuard) Name() string { return "regex-guard" }
 // Type returns the plugin lifecycle hook type.
 func (g *RegexGuard) Type() plugin.PluginType { return plugin.TypeGuardrail }
 
-// actions are the actions this plugin can honour, read by Init and by
-// ValidateConfig so the two cannot disagree about the set.
+// SupportedStages follows from the rules: a plugin whose rules all screen the
+// response has nothing to do at before_request, and one whose rules all screen
+// the request has nothing to do at after_request. Registering either at the
+// stage it cannot act at would enforce nothing on every request, so
+// Manager.Register refuses it. Before Init there are no rules to read, so every
+// stage is declared and the answer arrives once they are compiled.
+func (g *RegexGuard) SupportedStages() []plugin.Stage {
+	if len(g.rules) == 0 {
+		return []plugin.Stage{plugin.StageBeforeRequest, plugin.StageAfterRequest, plugin.StageOnError}
+	}
+	var stages []plugin.Stage
+	if slices.ContainsFunc(g.rules, func(r rule) bool { return !r.applies(true) || r.applyTo == applyToBoth }) {
+		stages = append(stages, plugin.StageBeforeRequest)
+	}
+	if slices.ContainsFunc(g.rules, func(r rule) bool { return r.applies(true) }) {
+		stages = append(stages, plugin.StageAfterRequest)
+	}
+	return stages
+}
+
+// actions is the closed set this plugin honours; see plugin.NormalizeAction.
 var actions = []string{plugin.ActionBlock, plugin.ActionWarn, plugin.ActionLog}
 
-// ValidateConfig checks the default action without compiling anything, so
-// `ferrogw validate` and `ferrogw doctor` reject a misspelled one rather than
-// leaving it to the startup or the config reload that follows. See
-// plugin.ConfigValidator, and plugin.ValidateAction for why a ${VAR} reference
-// is passed. The rules themselves — each one's pattern, scope and action — are
-// checked at Init, where every value is resolved.
+// ValidateConfig checks the action at config-load time; see plugin.ValidateAction.
+// Everything else is checked at Init, where every value is resolved.
 func (g *RegexGuard) ValidateConfig(config map[string]any) error {
 	if err := plugin.ValidateAction(config["action"], plugin.ActionBlock, actions...); err != nil {
 		return fmt.Errorf("regex-guard: %w", err)
@@ -92,23 +109,16 @@ func (g *RegexGuard) Init(config map[string]any) error {
 		return fmt.Errorf("regex-guard: action: %w", err)
 	}
 
-	rules, present := config["rules"]
-	if !present {
-		return nil
-	}
-	// Present but not a sequence — a rules block written as a mapping. Reading
-	// that as "no rules" yields a plugin the catalog reports as enabled and
-	// that screens nothing.
-	raw, ok := rules.([]any)
+	// Unlike the plugins that carry built-in patterns, this one has nothing to
+	// screen with until the operator names a rule, so an absent, empty or
+	// non-list rules block all describe the same thing: a guardrail that loads,
+	// reports itself enabled and screens nothing.
+	raw, ok := config["rules"].([]any)
 	if !ok {
 		return fmt.Errorf("regex-guard: rules must be a list of rule objects")
 	}
-	// Present and empty is a different statement from absent, and only one of
-	// them is a configuration. Absent means the plugin was not set up; an empty
-	// list is an operator who set out to name rules, and accepting it yields the
-	// same enabled-and-inert guardrail a mapping would.
 	if len(raw) == 0 {
-		return fmt.Errorf("regex-guard: rules is empty: omit the key to disable the plugin, or name at least one rule")
+		return fmt.Errorf("regex-guard: rules is empty: name at least one rule, or disable the plugin")
 	}
 
 	for i, entry := range raw {
@@ -141,7 +151,7 @@ func (g *RegexGuard) Init(config map[string]any) error {
 		if err != nil {
 			return fmt.Errorf("regex-guard: rules[%d]: %w", i, err)
 		}
-		action, err := plugin.NormalizeAction(rawRuleAction, defaultAction, plugin.ActionBlock, plugin.ActionWarn, plugin.ActionLog)
+		action, err := plugin.NormalizeAction(rawRuleAction, defaultAction, actions...)
 		if err != nil {
 			return fmt.Errorf("regex-guard: rules[%d]: action: %w", i, err)
 		}
@@ -188,11 +198,7 @@ func (g *RegexGuard) Execute(ctx context.Context, pctx *plugin.Context) error {
 		return nil
 	}
 	for text := range plugin.RequestText(pctx.Request) {
-		// The caller has gone: stop matching rather than walk the rest of a body
-		// nobody is waiting for. Returning nil and not the context's error is
-		// the whole point — an error from Execute means the plugin broke, which
-		// the gateway answers 500 and the target's circuit breaker counts as a
-		// fault. A caller hanging up is neither.
+		// The caller has gone; see plugin.RequestText for why this is not an error.
 		if ctx.Err() != nil {
 			return nil
 		}

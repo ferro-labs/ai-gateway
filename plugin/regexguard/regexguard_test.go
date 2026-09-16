@@ -207,19 +207,70 @@ func TestInit_RejectsARulesBlockThatIsNotAList(t *testing.T) {
 	}
 }
 
-func TestInit_AbsentRulesIsANoOpWithoutError(t *testing.T) {
+func TestInit_RejectsAnAbsentRulesKey(t *testing.T) {
 	g := &RegexGuard{}
-	if err := g.Init(map[string]any{"action": "warn"}); err != nil {
-		t.Fatalf("Init rejected a config carrying no rules key; an absent key is not a misconfiguration: %v", err)
+	err := g.Init(map[string]any{"action": "warn"})
+	if err == nil {
+		t.Fatal("Init accepted a config with no rules; it yields a guardrail that screens nothing")
+	}
+	if !strings.Contains(err.Error(), "rules") {
+		t.Fatalf("error %q does not name the rules key", err)
+	}
+}
+
+// The stages a regex-guard can act at follow from its rules: a plugin whose
+// rules all screen the response has nothing to do at before_request, and
+// registering it there would enforce nothing on every request.
+func TestSupportedStages_FollowTheRulesScopes(t *testing.T) {
+	for _, tc := range []struct {
+		applyTo string
+		want    []plugin.Stage
+	}{
+		{"input", []plugin.Stage{plugin.StageBeforeRequest}},
+		{"output", []plugin.Stage{plugin.StageAfterRequest}},
+		{"both", []plugin.Stage{plugin.StageBeforeRequest, plugin.StageAfterRequest}},
+	} {
+		t.Run(tc.applyTo, func(t *testing.T) {
+			g := &RegexGuard{}
+			if err := g.Init(map[string]any{"rules": []any{
+				map[string]any{"pattern": "x", "apply_to": tc.applyTo},
+			}}); err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			got := g.SupportedStages()
+			if len(got) != len(tc.want) {
+				t.Fatalf("SupportedStages() = %v, want %v", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("SupportedStages() = %v, want %v", got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+func TestRegister_RefusesAnOutputOnlyGuardAtBeforeRequest(t *testing.T) {
+	g := &RegexGuard{}
+	if err := g.Init(map[string]any{"rules": []any{
+		map[string]any{"pattern": "x", "apply_to": "output"},
+	}}); err != nil {
+		t.Fatalf("Init: %v", err)
 	}
 
-	pctx := newRequest("my ssn is 123-45-6789")
-	if err := g.Execute(context.Background(), pctx); err != nil {
-		t.Fatalf("Execute: %v", err)
-	}
+	err := plugin.NewManager(nil).Register(plugin.StageBeforeRequest, g)
 
-	if pctx.Reject {
-		t.Fatal("a plugin with no rules rejected a request")
+	if err == nil {
+		t.Fatal("Register accepted an output-only regex-guard at before_request, where it screens nothing")
+	}
+}
+
+// Before Init there are no rules to derive a stage from, so an uninitialised
+// plugin declares every stage; the answer arrives once the rules are compiled.
+func TestSupportedStages_UninitialisedDeclaresEveryStage(t *testing.T) {
+	got := (&RegexGuard{}).SupportedStages()
+	if len(got) != 3 {
+		t.Fatalf("SupportedStages() on an uninitialised plugin = %v, want all three stages", got)
 	}
 }
 
