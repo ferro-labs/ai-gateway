@@ -88,6 +88,12 @@ var builtins = []BuiltinPlugin{
 		Settings: []string{"entities", "patterns", "action", "redact_placeholder"},
 	},
 	{
+		Name:     "secret-scan",
+		Type:     TypeGuardrail,
+		Summary:  "Rejects content carrying credentials — cloud keys, tokens, private keys — in the request and in the model's response.",
+		Settings: []string{"providers", "patterns", "action"},
+	},
+	{
 		Name:     "response-cache",
 		Type:     TypeTransform,
 		Summary:  "Serves an identical request from memory instead of calling a provider again, scoped to the API key that primed it — one credential's response is never served to another.",

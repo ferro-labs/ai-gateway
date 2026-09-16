@@ -63,6 +63,7 @@ gateway refuses to start if they disagree.
 | **word-filter** | guardrail | before_request (and after_request to screen the response) | Rejects a request whose text contains a blocked entry as a substring. |
 | **regex-guard** | guardrail | before_request (and after_request to screen the response) | Rejects or flags content matching named regular expressions, per rule's `apply_to`. |
 | **pii-redact** | guardrail | before_request | Detects personally identifiable information and either denies the request or rewrites it in place with the values replaced by a placeholder, letting it continue. |
+| **secret-scan** | guardrail | before_request (and after_request to screen the response) | Rejects content carrying credentials — cloud keys, tokens, private keys — in either direction, so a model asked to read one back out of its context is screened too. |
 | **max-token** | guardrail | before_request | Rejects a request that declares a completion ceiling above the limit, or exceeds the message-count / input-length limit. It never *imposes* a ceiling. |
 | **rate-limit** | ratelimit | before_request | Bounds request rate globally and per API key or user, independently of the per-IP HTTP limiter. |
 | **budget** | ratelimit | before_request + after_request | Tracks estimated spend per API key and refuses requests once the budget is exhausted. |
@@ -113,6 +114,23 @@ config:
   entities: ["email", "ssn"]  # optional; default is every built-in entity
   patterns: ['\bACME-\d{6}\b'] # optional custom regexes, compiled at load
   redact_placeholder: "[REDACTED]"
+```
+
+### secret-scan
+
+Screens for credentials — cloud keys, tokens, private keys — using a curated
+set of structural patterns (a fixed prefix and length) rather than an
+entropy heuristic, because a false positive here costs a developer their
+request. It screens the response as well as the request: a model asked to
+"show me the config" will read a credential back out of its context, and a
+guardrail that only watched the prompt would miss it. The matched kind (e.g.
+`aws_access_key`) is logged and reported; the credential itself never is.
+
+```yaml
+config:
+  action: block                # block | warn | log
+  providers: ["aws_access_key", "private_key"]  # optional; default is every curated set
+  patterns: ['\bACME-KEY-[0-9]{8}\b']            # optional custom regexes, compiled at load
 ```
 
 ### max-token

@@ -21,6 +21,7 @@ import (
 	_ "github.com/ferro-labs/ai-gateway/plugin/piiredact"
 	_ "github.com/ferro-labs/ai-gateway/plugin/ratelimit"
 	_ "github.com/ferro-labs/ai-gateway/plugin/regexguard"
+	_ "github.com/ferro-labs/ai-gateway/plugin/secretscan"
 	_ "github.com/ferro-labs/ai-gateway/plugin/wordfilter"
 )
 
