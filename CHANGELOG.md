@@ -14,8 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   catalog entries and tests. Register each with a blank import, e.g.
   `_ "github.com/ferro-labs/ai-gateway/plugin/piiredact"`.
 - `plugin.RequestText` / `plugin.ResponseText` — iterators over every piece of
-  text a request or response carries, including content parts of every type.
-  `Part.ImageURL` is deliberately excluded.
+  text a request or response carries: content parts of every type, reasoning
+  content, and each tool call's arguments, in both directions.
+  `Part.ImageURL` and a tool call's function name are deliberately excluded.
 - `plugin.RejectUninspectable` — the shared verdict for a before_request whose
   content could not be projected as text.
 - `plugin.NormalizeAction` — canonicalises a configured `action` against the
@@ -67,6 +68,12 @@ behaves identically everywhere.
 
 `schema-guard` runs at `after_request` only — on a streamed response it can
 report a violation but cannot withhold output already delivered.
+
+Every content guardrail screens a message's reasoning content and its tool
+calls' arguments as well as its body and content parts, in both directions. A
+model asked to act rather than answer puts its output in those fields, and a
+client replaying a conversation sends them back, so a credential or a matched
+pattern there is now screened where it previously passed.
 
 `schema-guard` reads `type: integer` as a whole number. JSON carries one number
 type, so `42` satisfies it and `42.5` does not, and a `type: number` property

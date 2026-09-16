@@ -114,8 +114,8 @@ Detects personally identifiable information (email, phone, SSN, credit card, or
 custom regex patterns) and either denies the request (`action: block`) or, the
 only built-in guardrail that can, rewrites it in place and lets it continue
 (`action: redact`). Redaction rewrites every screenable field — a message's
-`Content` and each of its content parts — so a non-text part cannot carry the
-value past the plugin.
+`Content`, its reasoning content, each of its content parts and each tool
+call's arguments — so none of them can carry the value past the plugin.
 
 **`redact` takes effect on the chat-shaped surfaces** — `/v1/chat/completions`
 (streamed or not) and `/v1/completions` — where the gateway reads the rewritten

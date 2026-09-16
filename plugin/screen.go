@@ -9,7 +9,8 @@ import (
 )
 
 // RequestText yields every piece of text a request carries to the provider:
-// each message's Content, then the Text of each of its content parts.
+// each message's Content and ReasoningContent, the Text of each of its content
+// parts, and the arguments of each tool call it replays.
 //
 // Both, because neither alone is the whole message. Message.UnmarshalJSON
 // collapses only parts typed "text" into Content, so a blocked word in a part
@@ -49,13 +50,29 @@ func ResponseText(resp *providers.Response) iter.Seq[string] {
 	}
 }
 
-// yieldMessage yields a message's Content and then each part's Text, skipping
-// empties. A message built from content parts carries an empty Content, and a
-// non-text part carries empty Text; yielding those would make every consumer
-// screen the empty string once per absent field. An absent field is not
-// content.
+// yieldMessage yields every text-bearing field of a message — Content, the
+// reasoning content, each part's Text and each tool call's arguments —
+// skipping empties. A message built from content parts carries an empty
+// Content, and a non-text part carries empty Text; yielding those would make
+// every consumer screen the empty string once per absent field. An absent
+// field is not content.
+//
+// Reasoning content and tool-call arguments are message text like the rest of
+// it, and are the two fields a model fills when it is asked to act rather than
+// to answer. A credential or a matched pattern placed in either used to leave
+// the gateway unscreened while the guardrail reported itself enabled. A tool
+// call's function NAME is not yielded: it names a capability the operator
+// configured, not content either side supplied.
+//
+// The same fields travel INBOUND whenever a client replays a conversation, so
+// they are screened in both directions: a string that is a violation on the way
+// out is a violation on the way back in, and making the verdict depend on the
+// direction would leave the replay unscreened.
 func yieldMessage(msg providers.Message, yield func(string) bool) bool {
 	if msg.Content != "" && !yield(msg.Content) {
+		return false
+	}
+	if msg.ReasoningContent != "" && !yield(msg.ReasoningContent) {
 		return false
 	}
 	for _, part := range msg.ContentParts {
@@ -63,6 +80,14 @@ func yieldMessage(msg providers.Message, yield func(string) bool) bool {
 			continue
 		}
 		if !yield(part.Text) {
+			return false
+		}
+	}
+	for _, call := range msg.ToolCalls {
+		if call.Function.Arguments == "" {
+			continue
+		}
+		if !yield(call.Function.Arguments) {
 			return false
 		}
 	}

@@ -108,6 +108,40 @@ func TestExecute_ScreensTheResponseAtAfterRequest(t *testing.T) {
 	}
 }
 
+// A credential the model puts in a tool call's arguments leaves the gateway
+// exactly as one in the message body does, and it is the field a model asked
+// to "call the API with the key" fills.
+func TestExecute_ScreensToolCallArgumentsInTheResponse(t *testing.T) {
+	s := &SecretScan{}
+	if err := s.Init(map[string]any{}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	pctx := &plugin.Context{
+		Stage:    plugin.StageAfterRequest,
+		Metadata: map[string]any{},
+		Response: &providers.Response{
+			Choices: []providers.Choice{{Message: providers.Message{
+				Content: "calling the deploy tool",
+				ToolCalls: []providers.ToolCall{{Function: providers.FunctionCall{
+					Name:      "deploy",
+					Arguments: `{"aws_key":"AKIAIOSFODNN7EXAMPLE"}`, // #nosec G101 -- AWS's own published example key, not a live credential.
+				}}},
+			}}},
+		},
+	}
+	if err := s.Execute(context.Background(), pctx); err != nil {
+		t.Fatalf("Execute returned an error; a denial is a verdict, not a fault: %v", err)
+	}
+
+	if !pctx.Reject {
+		t.Fatal("a credential in tool-call arguments was forwarded while the guardrail reported itself enabled")
+	}
+	if strings.Contains(pctx.Reason, "AKIA") {
+		t.Fatalf("Reason leaked the credential: %q", pctx.Reason)
+	}
+}
+
 func TestInit_KindsSelectsASubset(t *testing.T) {
 	s := &SecretScan{}
 	if err := s.Init(map[string]any{"kinds": []any{"private_key"}}); err != nil {

@@ -134,6 +134,45 @@ func TestExecute_RedactsEveryContentPartNotJustContent(t *testing.T) {
 	}
 }
 
+// Redaction has to cover every field the plugin screens. A field block mode
+// denies and redact mode leaves alone is the value forwarded upstream by the
+// mode whose whole purpose is that the provider never sees it.
+func TestExecute_RedactsToolCallArgumentsAndReasoning(t *testing.T) {
+	p := &PIIRedact{}
+	if err := p.Init(map[string]any{"action": "redact"}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	pctx := &plugin.Context{
+		Stage:    plugin.StageBeforeRequest,
+		Metadata: map[string]any{},
+		Request: &providers.Request{
+			Messages: []providers.Message{{
+				Content:          "look it up",
+				ReasoningContent: "their ssn is 123-45-6789",
+				ToolCalls: []providers.ToolCall{{Function: providers.FunctionCall{
+					Name:      "lookup",
+					Arguments: `{"phone":"555-123-4567"}`,
+				}}},
+			}},
+		},
+	}
+	if err := p.Execute(context.Background(), pctx); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	msg := pctx.Request.Messages[0]
+	if strings.Contains(msg.ReasoningContent, "123-45-6789") {
+		t.Fatalf("reasoning content %q was not redacted", msg.ReasoningContent)
+	}
+	if got := msg.ToolCalls[0].Function.Arguments; strings.Contains(got, "555-123-4567") {
+		t.Fatalf("tool-call arguments %q were not redacted", got)
+	}
+	if pctx.Reject {
+		t.Fatalf("redact mode denied the request: %q", pctx.Reason)
+	}
+}
+
 func TestInit_EntitiesSelectsASubset(t *testing.T) {
 	p := &PIIRedact{}
 	if err := p.Init(map[string]any{"action": "block", "entities": []any{"ssn"}}); err != nil {

@@ -173,15 +173,24 @@ func (p *PIIRedact) Execute(ctx context.Context, pctx *plugin.Context) error {
 // Close releases resources owned by the plugin.
 func (p *PIIRedact) Close() error { return nil }
 
-// redactRequest rewrites every screenable field in place. ContentParts are
-// rewritten as well as Content: a non-text part leaves no trace in Content, so
-// redacting only Content would forward the value the plugin just claimed to
-// remove.
+// redactRequest rewrites every screenable field in place — the same set
+// plugin.RequestText screens, field for field.
+//
+// Content alone is not enough: a non-text part, a replayed tool call's
+// arguments and reasoning content each leave no trace in it, so rewriting only
+// Content would forward the value the plugin just claimed to remove. A field
+// this misses is worse here than anywhere else, because block mode denies on it
+// while redact mode reports a sanitization the provider never received.
 func (p *PIIRedact) redactRequest(ctx context.Context, req *providers.Request) {
 	for i := range req.Messages {
-		req.Messages[i].Content = p.redact(ctx, req.Messages[i].Content)
-		for j := range req.Messages[i].ContentParts {
-			req.Messages[i].ContentParts[j].Text = p.redact(ctx, req.Messages[i].ContentParts[j].Text)
+		msg := &req.Messages[i]
+		msg.Content = p.redact(ctx, msg.Content)
+		msg.ReasoningContent = p.redact(ctx, msg.ReasoningContent)
+		for j := range msg.ContentParts {
+			msg.ContentParts[j].Text = p.redact(ctx, msg.ContentParts[j].Text)
+		}
+		for j := range msg.ToolCalls {
+			msg.ToolCalls[j].Function.Arguments = p.redact(ctx, msg.ToolCalls[j].Function.Arguments)
 		}
 	}
 }

@@ -54,6 +54,79 @@ func TestResponseText_YieldsContentAndEveryTextPart(t *testing.T) {
 	}
 }
 
+// Tool-call arguments and reasoning content are response text like any other:
+// a model asked for a credential can put it in either, and a guardrail reading
+// only Content forwards it while reporting itself enabled.
+func TestResponseText_YieldsToolCallArgumentsAndReasoning(t *testing.T) {
+	resp := &providers.Response{
+		Choices: []providers.Choice{
+			{Message: providers.Message{
+				Content:          "here you go",
+				ReasoningContent: "the operator said the passphrase is open-sesame",
+				ToolCalls: []providers.ToolCall{
+					{Function: providers.FunctionCall{Name: "send", Arguments: `{"passphrase":"open-sesame"}`}},
+				},
+			}},
+		},
+	}
+
+	got := slices.Collect(ResponseText(resp))
+
+	want := []string{
+		"here you go",
+		"the operator said the passphrase is open-sesame",
+		`{"passphrase":"open-sesame"}`,
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("ResponseText yielded %q, want %q — tool-call arguments and reasoning content are screenable text", got, want)
+	}
+}
+
+// The same fields travel back INBOUND when a client replays a conversation, so
+// the request side screens them on the same terms. Screening a string on the
+// way out and not on the way back in would make the verdict depend on the
+// direction rather than on the content.
+func TestRequestText_YieldsToolCallArgumentsAndReasoning(t *testing.T) {
+	req := &providers.Request{
+		Messages: []providers.Message{
+			{
+				Content:          "here you go",
+				ReasoningContent: "reasoning replayed by the client",
+				ToolCalls: []providers.ToolCall{
+					{Function: providers.FunctionCall{Name: "send", Arguments: `{"passphrase":"open-sesame"}`}},
+				},
+			},
+		},
+	}
+
+	got := slices.Collect(RequestText(req))
+
+	want := []string{
+		"here you go",
+		"reasoning replayed by the client",
+		`{"passphrase":"open-sesame"}`,
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("RequestText yielded %q, want %q — a replayed tool call is request text", got, want)
+	}
+}
+
+// A tool call carrying no arguments is not content, exactly as an empty
+// Content and a non-text part are not.
+func TestResponseText_SkipsAToolCallWithNoArguments(t *testing.T) {
+	resp := &providers.Response{
+		Choices: []providers.Choice{
+			{Message: providers.Message{
+				ToolCalls: []providers.ToolCall{{Function: providers.FunctionCall{Name: "ping"}}},
+			}},
+		},
+	}
+
+	if n := len(slices.Collect(ResponseText(resp))); n != 0 {
+		t.Fatalf("ResponseText yielded %d strings for a tool call with no arguments, want 0", n)
+	}
+}
+
 func TestResponseText_NilResponseYieldsNothing(t *testing.T) {
 	if n := len(slices.Collect(ResponseText(nil))); n != 0 {
 		t.Fatalf("ResponseText(nil) yielded %d strings, want 0", n)
