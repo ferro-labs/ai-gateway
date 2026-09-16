@@ -83,7 +83,7 @@ func yieldMessage(msg providers.Message, yield func(string) bool) bool {
 // At after_request there is nothing to withhold: the response has already been
 // delivered chunk by chunk, so this reports false and the caller proceeds.
 func RejectUninspectable(pctx *Context) bool {
-	if pctx == nil || pctx.Stage != StageBeforeRequest {
+	if pctx == nil || pctx.Request == nil || pctx.Stage != StageBeforeRequest {
 		return false
 	}
 	uninspectable, _ := pctx.Metadata[MetadataUninspectableContent].(bool)
@@ -117,15 +117,30 @@ const (
 // A misspelling must fail the load rather than degrade to the nearest
 // non-blocking behaviour. An empty value is not a misspelling: it means the key
 // was not set, so it takes fallback.
+//
+// The fallback must itself be in the allowed set. A caller passing one it cannot
+// honour would turn an unset key into the same silent no-op this helper exists
+// to prevent, one field over.
 func NormalizeAction(raw, fallback string, allowed ...string) (string, error) {
+	if !permitted(fallback, allowed) {
+		return "", fmt.Errorf("fallback action %q is not one of %q", fallback, allowed)
+	}
 	action := strings.ToLower(strings.TrimSpace(raw))
 	if action == "" {
 		return fallback, nil
 	}
+	if !permitted(action, allowed) {
+		return "", fmt.Errorf("unrecognized action %q: must be one of %q", raw, allowed)
+	}
+	return action, nil
+}
+
+func permitted(value string, allowed []string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
 	for _, a := range allowed {
-		if action == strings.ToLower(strings.TrimSpace(a)) {
-			return action, nil
+		if value == strings.ToLower(strings.TrimSpace(a)) {
+			return true
 		}
 	}
-	return "", fmt.Errorf("unrecognized action %q: must be one of %q", raw, allowed)
+	return false
 }

@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/ferro-labs/ai-gateway/pkg/logger"
@@ -43,12 +44,20 @@ type category struct {
 // almost always also carries one of the surviving, adversarially-framed
 // alternatives, and missing that weak a signal costs less than blocking
 // routine support and HR text. "assume the role" is kept only when the target
-// is a privilege persona (system, assistant, admin, administrator,
-// developer) — "assume the role of system" still matches; "assume the role of
-// team lead" does not.
+// is a privilege persona (system, assistant, admin, administrator) and the
+// persona ends there — "assume the role of system" still matches; "assume the
+// role of team lead" and "assume the role of systems architect" do not. The
+// trailing word boundary is load-bearing: without it the persona group matched
+// inside a longer word and blocked real job titles.
+//
+// "developer" is deliberately absent from the group. "Assume the role of
+// developer" is routine workflow prose, and a developer persona is a far
+// weaker privilege claim than system or admin — by this plugin's own cost
+// calculus, under-blocking a weak signal beats blocking ordinary business
+// text.
 var categories = []category{
 	{"system_override", regexp.MustCompile(`(?i)(ignore\s+(previous|all)\s+instructions|disregard\s+your\s+instructions|forget\s+your\s+instructions|override\s+system\s+prompt)`)},
-	{"role_manipulation", regexp.MustCompile(`(?i)(act\s+as\s+if\s+you\s+are|pretend\s+you\s+are|roleplay\s+as|assume\s+the\s+role\s+of\s+(?:the\s+)?(?:system|assistant|admin|administrator|developer))`)},
+	{"role_manipulation", regexp.MustCompile(`(?i)(act\s+as\s+if\s+you\s+are|pretend\s+you\s+are|roleplay\s+as|assume\s+the\s+role\s+of\s+(?:the\s+)?(?:system|assistant|admin|administrator)\b)`)},
 	{"instruction_leak", regexp.MustCompile(`(?i)(show\s+me\s+your\s+system\s+prompt|reveal\s+your\s+instructions|what\s+are\s+your\s+instructions|print\s+your\s+system\s+message|output\s+your\s+prompt)`)},
 	{"delimiter_attack", regexp.MustCompile("(?i)(" + regexp.QuoteMeta("```system") + "|" + regexp.QuoteMeta("###SYSTEM") + "|" + regexp.QuoteMeta("[SYSTEM]") + "|" + regexp.QuoteMeta("<|system|>") + ")")},
 }
@@ -85,11 +94,24 @@ func (s *PromptShield) Init(config map[string]any) error {
 		return nil
 	}
 
+	known := make([]string, len(categories))
+	for i, c := range categories {
+		known[i] = c.name
+	}
+
 	wanted := make(map[string]bool, len(list))
-	for _, v := range list {
-		if str, ok := v.(string); ok {
-			wanted[strings.ToLower(strings.TrimSpace(str))] = true
+	for i, v := range list {
+		str, ok := v.(string)
+		if !ok {
+			return fmt.Errorf("prompt-shield: categories[%d] must be a string", i)
 		}
+		name := strings.ToLower(strings.TrimSpace(str))
+		// A name matching nothing enables nothing, which registers a plugin the
+		// catalog reports as enabled and that lets every injection through.
+		if !slices.Contains(known, name) {
+			return fmt.Errorf("prompt-shield: unrecognized category %q: must be one of %q", str, known)
+		}
+		wanted[name] = true
 	}
 	for _, c := range categories {
 		if wanted[c.name] {

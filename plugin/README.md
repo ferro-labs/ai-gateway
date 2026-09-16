@@ -62,7 +62,7 @@ gateway refuses to start if they disagree.
 |---|---|---|---|
 | **word-filter** | guardrail | before_request (and after_request to screen the response) | Rejects a request whose text contains a blocked entry as a substring. |
 | **regex-guard** | guardrail | before_request (and after_request to screen the response) | Rejects or flags content matching named regular expressions, per rule's `apply_to`. |
-| **pii-redact** | guardrail | before_request | Detects personally identifiable information and either denies the request or rewrites it in place with the values replaced by a placeholder, letting it continue. |
+| **pii-redact** | guardrail | before_request | Detects personally identifiable information and either denies the request or rewrites it in place with the values replaced by a placeholder, letting it continue. Rewriting applies to the chat-shaped surfaces; elsewhere a detection is denied. |
 | **secret-scan** | guardrail | before_request (and after_request to screen the response) | Rejects content carrying credentials — cloud keys, tokens, private keys — in either direction, so a model asked to read one back out of its context is screened too. |
 | **prompt-shield** | guardrail | before_request | Rejects requests carrying prompt-injection and jailbreak attempts, matched by category over common written forms. |
 | **schema-guard** | guardrail | after_request | Validates the model's response against a JSON Schema subset — `type`, `required`, `properties`. |
@@ -90,6 +90,12 @@ to the request, the response, or both via `apply_to`. Patterns compile once at
 load — an uncompilable pattern fails the load rather than silently matching
 nothing.
 
+A rule's `apply_to` and the plugin entry's `stage` are two separate settings
+and both must agree: one `plugins[]` entry registers one stage, so a rule with
+`apply_to: output` or `both` only fires when this plugin is **also** listed at
+`after_request`. An unrecognised `apply_to` fails the load rather than
+defaulting to `input` — screening the prompt is not the rule that was written.
+
 ```yaml
 config:
   action: block          # default action for a rule that omits one
@@ -97,7 +103,7 @@ config:
     - name: ssn
       pattern: '\d{3}-\d{2}-\d{4}'
       apply_to: input     # input (default) | output | both
-      action: block        # block | warn (warn never rejects)
+      action: block        # block | warn | log (only block rejects)
 ```
 
 ### pii-redact
@@ -109,11 +115,21 @@ only built-in guardrail that can, rewrites it in place and lets it continue
 `Content` and each of its content parts — so a non-text part cannot carry the
 value past the plugin.
 
+**`redact` takes effect on the chat-shaped surfaces** — `/v1/chat/completions`
+(streamed or not) and `/v1/completions` — where the gateway reads the rewritten
+request back before routing it. Every other surface (`/v1/embeddings`,
+`/v1/images/generations`, `/v1/responses`, `/v1/rerank`, `/v1/moderations`,
+`/v1/audio/*` and the `/v1/*` pass-through) forwards its own body unchanged,
+so a rewrite there would be discarded: on those a detection is **denied**
+instead, with a reason saying the content could not be sanitized on that
+surface. `action: block` behaves identically on every surface.
+
 ```yaml
 config:
   action: redact              # block | redact (no observe-only mode: a redactor
                                # that only warned would mean forwarding the PII)
-  entities: ["email", "ssn"]  # optional; default is every built-in entity
+  entities: ["email", "ssn"]  # optional; default is every built-in entity.
+                               # An unrecognised name fails the load
   patterns: ['\bACME-\d{6}\b'] # optional custom regexes, compiled at load
   redact_placeholder: "[REDACTED]"
 ```
@@ -131,8 +147,10 @@ guardrail that only watched the prompt would miss it. The matched kind (e.g.
 ```yaml
 config:
   action: block                # block | warn | log
-  providers: ["aws_access_key", "private_key"]  # optional; default is every curated set
-  patterns: ['\bACME-KEY-[0-9]{8}\b']            # optional custom regexes, compiled at load
+  kinds: ["aws_access_key", "private_key"]  # optional; default is every curated
+                                             # kind. An unrecognised name fails
+                                             # the load
+  patterns: ['\bACME-KEY-[0-9]{8}\b']        # optional custom regexes, compiled at load
 ```
 
 ### prompt-shield
@@ -152,7 +170,9 @@ pattern.
 ```yaml
 config:
   action: block       # block | warn | log
-  categories: ["system_override", "instruction_leak"]  # optional; default is every category
+  categories: ["system_override", "instruction_leak"]  # optional; default is every
+                                                        # category. An unrecognised
+                                                        # name fails the load
 ```
 
 ### schema-guard
@@ -266,5 +286,7 @@ only when the plugin itself failed. See the `plugin` package docs and
 
 ## Quick check
 
-`scripts/plugin_smoke.sh` exercises every built-in plugin end-to-end against a
-live provider and prints a PASS/FAIL summary.
+`scripts/plugin_smoke.sh` exercises word-filter, max-token, response-cache,
+request-logger, budget and rate-limit end-to-end against a live provider and
+prints a PASS/FAIL summary. The content guardrails are covered by their unit
+suites; the script names the plugins it runs in its own header.

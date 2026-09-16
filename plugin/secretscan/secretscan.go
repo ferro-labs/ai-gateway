@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/ferro-labs/ai-gateway/pkg/logger"
@@ -20,14 +21,12 @@ func init() {
 	})
 }
 
-const actionBlock = "block"
-
 type secret struct {
 	name string
 	re   *regexp.Regexp
 }
 
-// curated is the default credential pattern set.
+// curated is the default credential pattern set, selectable by kind.
 //
 // Each entry matches a credential's STRUCTURE — a fixed prefix and a length —
 // rather than guessing from surrounding words. High-entropy-string heuristics
@@ -60,7 +59,7 @@ func (s *SecretScan) Name() string { return "secret-scan" }
 // Type returns the plugin lifecycle hook type.
 func (s *SecretScan) Type() plugin.PluginType { return plugin.TypeGuardrail }
 
-// Init selects the curated sets and compiles any custom patterns.
+// Init selects the curated kinds and compiles any custom patterns.
 func (s *SecretScan) Init(config map[string]any) error {
 	rawAction, _ := config["action"].(string)
 	action, err := plugin.NormalizeAction(rawAction, plugin.ActionBlock, plugin.ActionBlock, plugin.ActionWarn, plugin.ActionLog)
@@ -69,7 +68,11 @@ func (s *SecretScan) Init(config map[string]any) error {
 	}
 	s.action = action
 
-	s.secrets = selectCurated(config["providers"])
+	selected, err := selectCurated(config["kinds"])
+	if err != nil {
+		return err
+	}
+	s.secrets = selected
 
 	custom, ok := config["patterns"].([]any)
 	if !ok {
@@ -128,7 +131,7 @@ func (s *SecretScan) screen(ctx context.Context, pctx *plugin.Context, content, 
 			continue
 		}
 		logger.Ctx(ctx).Warn("secret-scan: credential detected in "+subject, "kind", sec.name)
-		if s.action != actionBlock {
+		if s.action != plugin.ActionBlock {
 			continue
 		}
 		pctx.Reject = true
@@ -138,19 +141,32 @@ func (s *SecretScan) screen(ctx context.Context, pctx *plugin.Context, content, 
 	return false
 }
 
-func selectCurated(raw any) []secret {
+func selectCurated(raw any) ([]secret, error) {
 	list, ok := raw.([]any)
 	if !ok {
 		out := make([]secret, len(curated))
 		copy(out, curated)
-		return out
+		return out, nil
+	}
+
+	known := make([]string, len(curated))
+	for i, sec := range curated {
+		known[i] = sec.name
 	}
 
 	wanted := make(map[string]bool, len(list))
-	for _, v := range list {
-		if str, ok := v.(string); ok {
-			wanted[strings.ToLower(strings.TrimSpace(str))] = true
+	for i, v := range list {
+		str, ok := v.(string)
+		if !ok {
+			return nil, fmt.Errorf("secret-scan: kinds[%d] must be a string", i)
 		}
+		name := strings.ToLower(strings.TrimSpace(str))
+		// A name matching nothing selects nothing, which registers a plugin the
+		// catalog reports as enabled and that scans for no credential at all.
+		if !slices.Contains(known, name) {
+			return nil, fmt.Errorf("secret-scan: unrecognized kind %q: must be one of %q", str, known)
+		}
+		wanted[name] = true
 	}
 
 	out := make([]secret, 0, len(curated))
@@ -159,5 +175,5 @@ func selectCurated(raw any) []secret {
 			out = append(out, sec)
 		}
 	}
-	return out
+	return out, nil
 }

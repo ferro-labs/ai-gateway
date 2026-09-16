@@ -91,7 +91,7 @@ var builtins = []BuiltinPlugin{
 		Name:     "secret-scan",
 		Type:     TypeGuardrail,
 		Summary:  "Rejects content carrying credentials — cloud keys, tokens, private keys — in the request and in the model's response.",
-		Settings: []string{"providers", "patterns", "action"},
+		Settings: []string{"kinds", "patterns", "action"},
 	},
 	{
 		Name:     "prompt-shield",

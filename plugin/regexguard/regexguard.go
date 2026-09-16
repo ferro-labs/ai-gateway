@@ -3,6 +3,11 @@
 // blank import:
 //
 //	_ "github.com/ferro-labs/ai-gateway/plugin/regexguard"
+//
+// A rule's apply_to and the plugin entry's stage are two separate settings and
+// both must agree: a rule with apply_to "output" or "both" only screens the
+// response when this plugin is ALSO listed at after_request, because one
+// plugins[] entry registers one stage.
 package regexguard
 
 import (
@@ -28,8 +33,6 @@ const (
 	applyToBoth   = "both"
 )
 
-const actionBlock = "block"
-
 // rule is one compiled regex-guard rule.
 type rule struct {
 	name    string
@@ -47,6 +50,11 @@ type rule struct {
 //
 // Matching uses Go's RE2 engine: linear time, no backtracking, program size
 // capped at compile. An operator-supplied pattern cannot mount a ReDoS.
+//
+// A rule's apply_to scopes the DIRECTION it screens; the plugins[] entry's
+// stage decides which directions run at all. A rule with apply_to "output" or
+// "both" therefore needs this plugin listed at after_request as well, or it
+// never fires.
 type RegexGuard struct {
 	rules []rule
 }
@@ -59,18 +67,25 @@ func (g *RegexGuard) Type() plugin.PluginType { return plugin.TypeGuardrail }
 
 // Init compiles the configured rules.
 func (g *RegexGuard) Init(config map[string]any) error {
-	defaultAction := actionBlock
+	defaultAction := plugin.ActionBlock
 	if a, ok := config["action"].(string); ok {
-		normalized, err := plugin.NormalizeAction(a, actionBlock, plugin.ActionBlock, plugin.ActionWarn, plugin.ActionLog)
+		normalized, err := plugin.NormalizeAction(a, plugin.ActionBlock, plugin.ActionBlock, plugin.ActionWarn, plugin.ActionLog)
 		if err != nil {
 			return fmt.Errorf("regex-guard: action: %w", err)
 		}
 		defaultAction = normalized
 	}
 
-	raw, ok := config["rules"].([]any)
-	if !ok {
+	rules, present := config["rules"]
+	if !present {
 		return nil
+	}
+	// Present but not a sequence — a rules block written as a mapping. Reading
+	// that as "no rules" yields a plugin the catalog reports as enabled and
+	// that screens nothing.
+	raw, ok := rules.([]any)
+	if !ok {
+		return fmt.Errorf("regex-guard: rules must be a list of rule objects")
 	}
 
 	for i, entry := range raw {
@@ -102,12 +117,16 @@ func (g *RegexGuard) Init(config map[string]any) error {
 			action = normalized
 		}
 
-		applyTo, _ := mapped["apply_to"].(string)
+		rawApplyTo, _ := mapped["apply_to"].(string)
+		applyTo, err := normalizeApplyTo(rawApplyTo)
+		if err != nil {
+			return fmt.Errorf("regex-guard: rules[%d]: %w", i, err)
+		}
 
 		g.rules = append(g.rules, rule{
 			name:    name,
 			re:      re,
-			applyTo: normalizeApplyTo(applyTo),
+			applyTo: applyTo,
 			action:  action,
 		})
 	}
@@ -154,7 +173,7 @@ func (g *RegexGuard) screen(ctx context.Context, pctx *plugin.Context, content s
 		}
 		logger.Ctx(ctx).Info("regex-guard: matched "+subject,
 			"rule", r.name, "action", r.action)
-		if r.action != actionBlock {
+		if r.action != plugin.ActionBlock {
 			continue
 		}
 		pctx.Reject = true
@@ -178,13 +197,22 @@ func (r rule) applies(isOutput bool) bool {
 	}
 }
 
-func normalizeApplyTo(raw string) string {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case applyToOutput:
-		return applyToOutput
-	case applyToBoth:
-		return applyToBoth
+// normalizeApplyTo canonicalises a rule's scope and rejects anything outside
+// the three.
+//
+// An unrecognised scope is not degraded to input. Input screening is not a
+// superset of output screening, so an operator who wrote "outupt" meaning to
+// screen the model's answer would get a rule that screens the prompt instead —
+// a different rule, silently substituted. An ABSENT scope is not a
+// misspelling: it means the key was not set, so it takes the input default.
+func normalizeApplyTo(raw string) (string, error) {
+	switch scope := strings.ToLower(strings.TrimSpace(raw)); scope {
+	case "":
+		return applyToInput, nil
+	case applyToInput, applyToOutput, applyToBoth:
+		return scope, nil
 	default:
-		return applyToInput
+		return "", fmt.Errorf("unrecognized apply_to %q: must be one of %q", raw,
+			[]string{applyToInput, applyToOutput, applyToBoth})
 	}
 }

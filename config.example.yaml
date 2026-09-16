@@ -367,8 +367,15 @@ plugins:
     enabled: false
     config:
       # Omit `entities` for all built-ins: email, phone, ssn, credit_card.
+      # An unrecognised name fails the load rather than selecting nothing.
       entities: ["ssn", "credit_card"]
       # block denies the request; redact rewrites it and lets it through.
+      #
+      # redact takes effect on the chat-shaped surfaces (/v1/chat/completions,
+      # streamed or not, and /v1/completions), the ones the gateway reads the
+      # rewritten request back from. Every other surface forwards its own body
+      # unchanged, so a rewrite there would be discarded — on those a detection
+      # is DENIED instead. Use action: block if you want one answer everywhere.
       action: redact
       redact_placeholder: "[REDACTED]"
 
@@ -377,8 +384,11 @@ plugins:
     stage: before_request
     enabled: false
     config:
-      # Omit `providers` for every curated set. List this plugin at
-      # after_request as well to screen what the model reads back out.
+      # Omit `kinds` for every curated credential kind (aws_access_key,
+      # github_token, slack_token, openai_key, google_api_key, stripe_key,
+      # private_key, jwt); an unrecognised name fails the load. List this
+      # plugin at after_request as well to screen what the model reads back
+      # out.
       action: block
 
   - name: prompt-shield
@@ -387,7 +397,8 @@ plugins:
     enabled: false
     config:
       # Omit `categories` for all four: system_override, role_manipulation,
-      # instruction_leak, delimiter_attack.
+      # instruction_leak, delimiter_attack. An unrecognised name fails the
+      # load rather than enabling no category at all.
       action: block
 
   - name: schema-guard

@@ -34,9 +34,36 @@ func TestRequestText_NilRequestYieldsNothing(t *testing.T) {
 	}
 }
 
+func TestResponseText_YieldsContentAndEveryTextPart(t *testing.T) {
+	resp := &providers.Response{
+		Choices: []providers.Choice{
+			{Message: providers.Message{Content: "collapsed text"}},
+			{Message: providers.Message{ContentParts: []providers.ContentPart{
+				{Type: "text", Text: "part one"},
+				{Type: "input_audio", Text: "part two"},
+				{Type: "image_url", ImageURL: &providers.ImageURLPart{URL: "data:image/png;base64,AAAA"}},
+			}}},
+		},
+	}
+
+	got := slices.Collect(ResponseText(resp))
+
+	want := []string{"collapsed text", "part one", "part two"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("ResponseText yielded %q, want %q — every choice and every text part must be screened, ImageURL must not", got, want)
+	}
+}
+
+func TestResponseText_NilResponseYieldsNothing(t *testing.T) {
+	if n := len(slices.Collect(ResponseText(nil))); n != 0 {
+		t.Fatalf("ResponseText(nil) yielded %d strings, want 0", n)
+	}
+}
+
 func TestRejectUninspectable_DeniesBeforeRequestWithAVerdictNotAnError(t *testing.T) {
 	pctx := &Context{
 		Stage:    StageBeforeRequest,
+		Request:  &providers.Request{},
 		Metadata: map[string]any{MetadataUninspectableContent: true},
 	}
 
@@ -63,10 +90,24 @@ func TestRejectUninspectable_IgnoresAfterRequestStage(t *testing.T) {
 }
 
 func TestRejectUninspectable_AllowsInspectableContent(t *testing.T) {
-	pctx := &Context{Stage: StageBeforeRequest, Metadata: map[string]any{}}
+	pctx := &Context{Stage: StageBeforeRequest, Request: &providers.Request{}, Metadata: map[string]any{}}
 
 	if RejectUninspectable(pctx) {
 		t.Fatal("RejectUninspectable denied a request whose content was readable")
+	}
+}
+
+func TestRejectUninspectable_IgnoresANilRequest(t *testing.T) {
+	pctx := &Context{
+		Stage:    StageBeforeRequest,
+		Metadata: map[string]any{MetadataUninspectableContent: true},
+	}
+
+	if RejectUninspectable(pctx) {
+		t.Fatal("RejectUninspectable denied a context carrying no request at all — there is no content to have failed to inspect")
+	}
+	if pctx.Reject {
+		t.Fatal("pctx.Reject set on a context with no request")
 	}
 }
 
@@ -114,6 +155,19 @@ func TestNormalizeAction_RejectsAnUnrecognisedValue(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("error %q does not name the accepted set (missing %q)", err.Error(), want)
 		}
+	}
+}
+
+func TestNormalizeAction_RejectsAFallbackOutsideTheAllowedSet(t *testing.T) {
+	// A fallback the caller cannot honour is the silent no-op this helper
+	// exists to prevent, one field over: an unset key would resolve to an
+	// action the plugin then ignores.
+	_, err := NormalizeAction("", ActionRedact, ActionBlock, ActionWarn)
+	if err == nil {
+		t.Fatal("NormalizeAction accepted a fallback outside its own allowed set")
+	}
+	if !strings.Contains(err.Error(), ActionRedact) {
+		t.Fatalf("error %q does not name the offending fallback", err.Error())
 	}
 }
 

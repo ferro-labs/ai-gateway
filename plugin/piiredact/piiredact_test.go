@@ -58,6 +58,47 @@ func TestExecute_RedactRewritesTheRequestAndAllowsIt(t *testing.T) {
 	}
 }
 
+func TestExecute_RedactRewritesOnAChatShapedSurface(t *testing.T) {
+	p := &PIIRedact{}
+	if err := p.Init(map[string]any{"action": "redact"}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	// No plugin.MetadataSurface key: the chat surfaces read the rewritten
+	// request back, so a rewrite here is the one that actually travels.
+	pctx := newRequest("my ssn is 123-45-6789")
+	if err := p.Execute(context.Background(), pctx); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	if pctx.Reject {
+		t.Fatalf("a chat-shaped request was denied instead of sanitized: %q", pctx.Reason)
+	}
+	if got := pctx.Request.Messages[0].Content; strings.Contains(got, "123-45-6789") {
+		t.Fatalf("content %q still carries the SSN — redaction did not rewrite the request", got)
+	}
+}
+
+func TestExecute_RedactDeniesOnASurfaceThatDiscardsTheRewrite(t *testing.T) {
+	p := &PIIRedact{}
+	if err := p.Init(map[string]any{"action": "redact"}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	pctx := newRequest("customer 123-45-6789 called")
+	pctx.Metadata[plugin.MetadataSurface] = "embeddings"
+	if err := p.Execute(context.Background(), pctx); err != nil {
+		t.Fatalf("Execute returned an error; a denial is a verdict: %v", err)
+	}
+
+	if !pctx.Reject {
+		t.Fatal("the SSN was forwarded to the provider while the plugin reported a redaction that this surface discards")
+	}
+	if got := pctx.Request.Messages[0].Content; !strings.Contains(got, "123-45-6789") {
+		t.Fatalf("content %q was rewritten on a surface that reads the rewrite back — the rewrite is pointless work and hides the denial", got)
+	}
+}
+
 func TestExecute_RedactsEveryContentPartNotJustContent(t *testing.T) {
 	p := &PIIRedact{}
 	if err := p.Init(map[string]any{"action": "redact"}); err != nil {
@@ -91,10 +132,27 @@ func TestInit_EntitiesSelectsASubset(t *testing.T) {
 	}
 
 	pctx := newRequest("email me at bob@acme.com")
-	_ = p.Execute(context.Background(), pctx)
+	if err := p.Execute(context.Background(), pctx); err != nil {
+		t.Fatalf("Execute returned an error; a denial is a verdict, not a fault: %v", err)
+	}
 
 	if pctx.Reject {
 		t.Fatal("an email was blocked although entities selected ssn only")
+	}
+}
+
+func TestInit_RejectsAnUnknownEntityName(t *testing.T) {
+	p := &PIIRedact{}
+	err := p.Init(map[string]any{"entities": []any{"social_security"}})
+
+	if err == nil {
+		t.Fatal("Init accepted an unknown entity name; it selects nothing, so the plugin reports itself enabled and screens nothing")
+	}
+	if !strings.Contains(err.Error(), "social_security") {
+		t.Fatalf("error %q does not name the offending value", err.Error())
+	}
+	if !strings.Contains(err.Error(), "ssn") {
+		t.Fatalf("error %q does not name the accepted set", err.Error())
 	}
 }
 
@@ -114,7 +172,9 @@ func TestExecute_ReasonNamesTheEntityTypeNotTheValue(t *testing.T) {
 	}
 
 	pctx := newRequest("my ssn is 123-45-6789")
-	_ = p.Execute(context.Background(), pctx)
+	if err := p.Execute(context.Background(), pctx); err != nil {
+		t.Fatalf("Execute returned an error; a denial is a verdict, not a fault: %v", err)
+	}
 
 	if strings.Contains(pctx.Reason, "123-45-6789") {
 		t.Fatalf("Reason %q echoes the detected value back to the caller", pctx.Reason)
@@ -132,7 +192,9 @@ func TestExecute_DeniesUninspectableContent(t *testing.T) {
 
 	pctx := newRequest("")
 	pctx.Metadata[plugin.MetadataUninspectableContent] = true
-	_ = p.Execute(context.Background(), pctx)
+	if err := p.Execute(context.Background(), pctx); err != nil {
+		t.Fatalf("Execute returned an error; a denial is a verdict, not a fault: %v", err)
+	}
 
 	if !pctx.Reject {
 		t.Fatal("uninspectable content was forwarded unscreened")

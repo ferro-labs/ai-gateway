@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Part.ImageURL` is deliberately excluded.
 - `plugin.RejectUninspectable` — the shared verdict for a before_request whose
   content could not be projected as text.
+- `plugin.NormalizeAction` — canonicalises a configured `action` against the
+  closed set the calling plugin can honour, and rejects anything outside it,
+  the caller's fallback included.
 
 ### Changed
 
@@ -26,10 +29,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Notes for operators
 
+A misconfigured guardrail fails the load rather than registering as a plugin
+that enforces nothing. An unrecognised `action`, an unrecognised
+`regex-guard` `apply_to`, a `rules` block that is not a list, and an
+unrecognised name in `pii-redact`'s `entities`, `secret-scan`'s `kinds` or
+`prompt-shield`'s `categories` are all startup errors naming the value and the
+accepted set. Omitting any of those keys keeps its default.
+
 `pii-redact` with `action: "redact"` rewrites the request in place and lets it
-continue; with `action: "block"` it denies. `schema-guard` runs at
-`after_request` only — on a streamed response it can report a violation but
-cannot withhold output already delivered.
+continue; with `action: "block"` it denies. **Redaction takes effect on the
+chat-shaped surfaces** — `/v1/chat/completions` (streamed or not) and
+`/v1/completions` — which are the ones the gateway reads the rewritten request
+back from. The other surfaces (`/v1/embeddings`, `/v1/images/generations`,
+`/v1/responses`, `/v1/rerank`, `/v1/moderations`, `/v1/audio/*` and the
+`/v1/*` pass-through) forward their own body unchanged, so a rewrite there
+would be discarded: a detection on those is **denied** instead, with a reason
+saying the content could not be sanitized on that surface. `action: "block"`
+behaves identically everywhere.
+
+`schema-guard` runs at `after_request` only — on a streamed response it can
+report a violation but cannot withhold output already delivered.
+
+A `regex-guard` rule's `apply_to` and the plugin entry's `stage` are separate
+settings that must agree: one `plugins[]` entry registers one stage, so an
+`output` or `both` rule needs the plugin listed at `after_request` as well.
 
 ## [1.5.6] — 2026-09-14
 

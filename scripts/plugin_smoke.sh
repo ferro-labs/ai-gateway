@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# plugin_smoke.sh — quick live check that every built-in plugin works.
+# plugin_smoke.sh — quick live check of the plugins listed below.
 #
 # Boots the gateway against one real (cheap) provider and exercises each plugin
 # end-to-end over HTTP, then prints a PASS/FAIL summary. Phase 1 uses the

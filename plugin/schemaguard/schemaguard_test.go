@@ -52,7 +52,9 @@ func TestExecute_RejectsAResponseMissingARequiredField(t *testing.T) {
 	}
 
 	pctx := newResponse(`{"name":"ada"}`)
-	_ = g.Execute(context.Background(), pctx)
+	if err := g.Execute(context.Background(), pctx); err != nil {
+		t.Fatalf("Execute returned an error; a denial is a verdict, not a fault: %v", err)
+	}
 
 	if !pctx.Reject {
 		t.Fatal("a response missing a required field was allowed through")
@@ -66,7 +68,9 @@ func TestExecute_RejectsAWronglyTypedField(t *testing.T) {
 	}
 
 	pctx := newResponse(`{"name":"ada","score":"high"}`)
-	_ = g.Execute(context.Background(), pctx)
+	if err := g.Execute(context.Background(), pctx); err != nil {
+		t.Fatalf("Execute returned an error; a denial is a verdict, not a fault: %v", err)
+	}
 
 	if !pctx.Reject {
 		t.Fatal("a string where the schema requires a number was allowed through")
@@ -80,7 +84,9 @@ func TestExecute_RejectsUnparseableJSON(t *testing.T) {
 	}
 
 	pctx := newResponse("I'm afraid I can't do that")
-	_ = g.Execute(context.Background(), pctx)
+	if err := g.Execute(context.Background(), pctx); err != nil {
+		t.Fatalf("Execute returned an error; a denial is a verdict, not a fault: %v", err)
+	}
 
 	if !pctx.Reject {
 		t.Fatal("prose was allowed through where an object was required")
@@ -94,7 +100,9 @@ func TestExecute_ReasonNamesTheViolation(t *testing.T) {
 	}
 
 	pctx := newResponse(`{"name":"ada"}`)
-	_ = g.Execute(context.Background(), pctx)
+	if err := g.Execute(context.Background(), pctx); err != nil {
+		t.Fatalf("Execute returned an error; a denial is a verdict, not a fault: %v", err)
+	}
 
 	if pctx.Reason == "" {
 		t.Fatal("Reason empty — the caller cannot tell which field was wrong")
@@ -108,7 +116,9 @@ func TestExecute_WarnActionDoesNotReject(t *testing.T) {
 	}
 
 	pctx := newResponse(`{"name":"ada"}`)
-	_ = g.Execute(context.Background(), pctx)
+	if err := g.Execute(context.Background(), pctx); err != nil {
+		t.Fatalf("Execute returned an error; a denial is a verdict, not a fault: %v", err)
+	}
 
 	if pctx.Reject {
 		t.Fatal("action=warn rejected a non-conforming response")
@@ -126,7 +136,9 @@ func TestExecute_IgnoresBeforeRequest(t *testing.T) {
 		Metadata: map[string]any{},
 		Request:  &providers.Request{Messages: []providers.Message{{Content: "hello"}}},
 	}
-	_ = g.Execute(context.Background(), pctx)
+	if err := g.Execute(context.Background(), pctx); err != nil {
+		t.Fatalf("Execute returned an error; a denial is a verdict, not a fault: %v", err)
+	}
 
 	if pctx.Reject {
 		t.Fatal("schema-guard screened the request; it validates responses only")

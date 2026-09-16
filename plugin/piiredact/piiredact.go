@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/ferro-labs/ai-gateway/pkg/logger"
@@ -47,6 +48,15 @@ var builtinEntities = []entity{
 // the request continue. That is the point of the mode: the provider never sees
 // the value, and the caller still gets an answer. With action "block" nothing is
 // rewritten and the request is denied.
+//
+// Redaction takes effect on the chat-shaped surfaces — /v1/chat/completions,
+// streaming chat and /v1/completions — where the gateway reads the rewritten
+// request back before routing it. Every other surface projects its own body
+// into Request for screening and forwards that body unchanged, so a rewrite
+// there would be discarded. On those surfaces a detection is DENIED instead
+// (plugin.MetadataSurface is how they are recognised): reporting a redaction
+// that did not happen would forward the exact value the plugin claims to
+// remove.
 //
 // The action set is deliberately just {block, redact} — unlike a filter, this
 // plugin has no non-blocking observe mode: "warn" on a redactor would mean
@@ -113,7 +123,12 @@ func (p *PIIRedact) Execute(ctx context.Context, pctx *plugin.Context) error {
 		return nil
 	}
 
-	if p.action == plugin.ActionRedact {
+	// A rewrite only travels on the surfaces that read Request back after the
+	// stage, and those are exactly the ones carrying no plugin.MetadataSurface.
+	// Anywhere else the projection is one-way and the original body is
+	// forwarded, so redacting would log a sanitization the provider never sees.
+	_, projected := pctx.Metadata[plugin.MetadataSurface]
+	if p.action == plugin.ActionRedact && !projected {
 		p.redactRequest(ctx, pctx.Request)
 		return nil
 	}
@@ -126,6 +141,12 @@ func (p *PIIRedact) Execute(ctx context.Context, pctx *plugin.Context) error {
 			// remove, and echoing the value back would put it in the error log of
 			// every hop between here and them.
 			pctx.Reason = "request blocked by content policy: " + name + " detected"
+			if p.action == plugin.ActionRedact {
+				// A verdict, not an error: the plugin reached a decision. Say why
+				// the configured action did not apply, so the answer does not read
+				// as an unexplained block on a surface the operator set to redact.
+				pctx.Reason += "; content cannot be sanitized on this surface"
+			}
 			return nil
 		}
 	}
@@ -176,13 +197,24 @@ func selectEntities(raw any) ([]entity, error) {
 		return out, nil
 	}
 
+	known := make([]string, len(builtinEntities))
+	for i, e := range builtinEntities {
+		known[i] = e.name
+	}
+
 	wanted := make(map[string]bool, len(list))
 	for i, v := range list {
 		s, ok := v.(string)
 		if !ok {
 			return nil, fmt.Errorf("pii-redact: entities[%d] must be a string", i)
 		}
-		wanted[strings.ToLower(strings.TrimSpace(s))] = true
+		name := strings.ToLower(strings.TrimSpace(s))
+		// A name matching nothing selects nothing, which registers a plugin the
+		// catalog reports as enabled and that screens no entity at all.
+		if !slices.Contains(known, name) {
+			return nil, fmt.Errorf("pii-redact: unrecognized entity %q: must be one of %q", s, known)
+		}
+		wanted[name] = true
 	}
 
 	out := make([]entity, 0, len(builtinEntities))

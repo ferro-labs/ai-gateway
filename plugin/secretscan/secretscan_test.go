@@ -42,7 +42,9 @@ func TestExecute_BlocksAPrivateKeyBlock(t *testing.T) {
 	}
 
 	pctx := newRequest("here it is: -----BEGIN RSA PRIVATE KEY-----")
-	_ = s.Execute(context.Background(), pctx)
+	if err := s.Execute(context.Background(), pctx); err != nil {
+		t.Fatalf("Execute returned an error; a denial is a verdict, not a fault: %v", err)
+	}
 
 	if !pctx.Reject {
 		t.Fatal("a private key header reached the provider")
@@ -56,7 +58,9 @@ func TestExecute_ReasonNamesTheSecretKindNotTheSecret(t *testing.T) {
 	}
 
 	pctx := newRequest("deploy with AKIAIOSFODNN7EXAMPLE please")
-	_ = s.Execute(context.Background(), pctx)
+	if err := s.Execute(context.Background(), pctx); err != nil {
+		t.Fatalf("Execute returned an error; a denial is a verdict, not a fault: %v", err)
+	}
 
 	if strings.Contains(pctx.Reason, "AKIAIOSFODNN7EXAMPLE") {
 		t.Fatalf("Reason %q echoes the credential back to the caller and into every log between here and them", pctx.Reason)
@@ -73,7 +77,9 @@ func TestExecute_AllowsOrdinaryProse(t *testing.T) {
 	}
 
 	pctx := newRequest("summarize our quarterly revenue report")
-	_ = s.Execute(context.Background(), pctx)
+	if err := s.Execute(context.Background(), pctx); err != nil {
+		t.Fatalf("Execute returned an error; a denial is a verdict, not a fault: %v", err)
+	}
 
 	if pctx.Reject {
 		t.Fatalf("ordinary prose was blocked as a secret: %q", pctx.Reason)
@@ -93,24 +99,43 @@ func TestExecute_ScreensTheResponseAtAfterRequest(t *testing.T) {
 			Choices: []providers.Choice{{Message: providers.Message{Content: "sure: AKIAIOSFODNN7EXAMPLE"}}}, // #nosec G101 -- AWS's own published example key, not a live credential.
 		},
 	}
-	_ = s.Execute(context.Background(), pctx)
+	if err := s.Execute(context.Background(), pctx); err != nil {
+		t.Fatalf("Execute returned an error; a denial is a verdict, not a fault: %v", err)
+	}
 
 	if !pctx.Reject {
 		t.Fatal("a model that echoed a credential back was not screened")
 	}
 }
 
-func TestInit_ProvidersSelectsASubset(t *testing.T) {
+func TestInit_KindsSelectsASubset(t *testing.T) {
 	s := &SecretScan{}
-	if err := s.Init(map[string]any{"providers": []any{"private_key"}}); err != nil {
+	if err := s.Init(map[string]any{"kinds": []any{"private_key"}}); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
 
 	pctx := newRequest("deploy with AKIAIOSFODNN7EXAMPLE please")
-	_ = s.Execute(context.Background(), pctx)
+	if err := s.Execute(context.Background(), pctx); err != nil {
+		t.Fatalf("Execute returned an error; a denial is a verdict, not a fault: %v", err)
+	}
 
 	if pctx.Reject {
-		t.Fatal("an AWS key was blocked although providers selected private_key only")
+		t.Fatal("an AWS key was blocked although kinds selected private_key only")
+	}
+}
+
+func TestInit_RejectsAnUnknownKindName(t *testing.T) {
+	s := &SecretScan{}
+	err := s.Init(map[string]any{"kinds": []any{"aws-access-key"}})
+
+	if err == nil {
+		t.Fatal("Init accepted an unknown kind name; it selects nothing, so the plugin reports itself enabled and screens nothing")
+	}
+	if !strings.Contains(err.Error(), "aws-access-key") {
+		t.Fatalf("error %q does not name the offending value", err.Error())
+	}
+	if !strings.Contains(err.Error(), "aws_access_key") {
+		t.Fatalf("error %q does not name the accepted set", err.Error())
 	}
 }
 
@@ -122,7 +147,9 @@ func TestExecute_DeniesUninspectableContent(t *testing.T) {
 
 	pctx := newRequest("")
 	pctx.Metadata[plugin.MetadataUninspectableContent] = true
-	_ = s.Execute(context.Background(), pctx)
+	if err := s.Execute(context.Background(), pctx); err != nil {
+		t.Fatalf("Execute returned an error; a denial is a verdict, not a fault: %v", err)
+	}
 
 	if !pctx.Reject {
 		t.Fatal("uninspectable content was forwarded unscanned")
