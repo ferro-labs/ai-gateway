@@ -2,6 +2,7 @@ package schemaguard
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/ferro-labs/ai-gateway/plugin"
@@ -106,6 +107,71 @@ func TestExecute_ReasonNamesTheViolation(t *testing.T) {
 
 	if pctx.Reason == "" {
 		t.Fatal("Reason empty — the caller cannot tell which field was wrong")
+	}
+}
+
+// integerSchema is the ordinary shape for a count, an age or an id. JSON has
+// one number type on the wire, so a validator built on encoding/json sees
+// float64 for both 42 and 42.5 and has to tell them apart by value.
+func integerSchema() map[string]any {
+	return map[string]any{
+		"type":       "object",
+		"properties": map[string]any{"age": map[string]any{"type": "integer"}},
+	}
+}
+
+func TestExecute_AcceptsAWholeNumberWhereTheSchemaSaysInteger(t *testing.T) {
+	g := &SchemaGuard{}
+	if err := g.Init(map[string]any{"schema": integerSchema()}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	pctx := newResponse(`{"age":42}`)
+	if err := g.Execute(context.Background(), pctx); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	if pctx.Reject {
+		t.Fatalf("a whole number was rejected where the schema says integer: %q", pctx.Reason)
+	}
+}
+
+func TestExecute_RejectsAFractionalValueWhereTheSchemaSaysInteger(t *testing.T) {
+	g := &SchemaGuard{}
+	if err := g.Init(map[string]any{"schema": integerSchema()}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	pctx := newResponse(`{"age":42.5}`)
+	if err := g.Execute(context.Background(), pctx); err != nil {
+		t.Fatalf("Execute returned an error; a denial is a verdict, not a fault: %v", err)
+	}
+
+	if !pctx.Reject {
+		t.Fatal("a fractional value was allowed where the schema requires an integer")
+	}
+	if !strings.Contains(pctx.Reason, "response.age") {
+		t.Fatalf("Reason does not name the field: %q", pctx.Reason)
+	}
+}
+
+func TestExecute_AcceptsAWholeNumberWhereTheSchemaSaysNumber(t *testing.T) {
+	g := &SchemaGuard{}
+	schema := map[string]any{
+		"type":       "object",
+		"properties": map[string]any{"age": map[string]any{"type": "number"}},
+	}
+	if err := g.Init(map[string]any{"schema": schema}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	pctx := newResponse(`{"age":42}`)
+	if err := g.Execute(context.Background(), pctx); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	if pctx.Reject {
+		t.Fatalf("a whole number was rejected where the schema says number: %q", pctx.Reason)
 	}
 }
 

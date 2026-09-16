@@ -60,6 +60,10 @@ behaves identically everywhere.
 `schema-guard` runs at `after_request` only — on a streamed response it can
 report a violation but cannot withhold output already delivered.
 
+`schema-guard` reads `type: integer` as a whole number. JSON carries one number
+type, so `42` satisfies it and `42.5` does not, and a `type: number` property
+keeps accepting both.
+
 A `regex-guard` rule's `apply_to` and the plugin entry's `stage` are separate
 settings that must agree: one `plugins[]` entry registers one stage, so an
 `output` or `both` rule needs the plugin listed at `after_request` as well.

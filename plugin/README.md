@@ -206,7 +206,9 @@ Validates the model's response against a JSON Schema subset — `type`,
 would be a large addition for the question this answers: did the model return
 the object shape the caller is about to unmarshal. An unsupported keyword is
 ignored, so a schema copied in from elsewhere still validates the part this
-plugin understands. Runs at `after_request` only: on a streamed response the
+plugin understands. `type: integer` is a whole number — JSON carries one number
+type, so `42` satisfies it and `42.5` does not, while `type: number` accepts
+both. Runs at `after_request` only: on a streamed response the
 tokens are already delivered, so it can report a violation but not unsend it.
 The denial reason names the field and what was expected, since a schema
 violation is not adversarial and naming it is the whole diagnostic value.

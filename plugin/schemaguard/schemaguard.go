@@ -9,11 +9,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/ferro-labs/ai-gateway/pkg/logger"
 	"github.com/ferro-labs/ai-gateway/plugin"
 )
+
+// typeInteger is the one JSON Schema type name no decoded value ever reports,
+// because encoding/json has no integer type to report.
+const typeInteger = "integer"
 
 func init() {
 	plugin.RegisterFactory("schema-guard", func() plugin.Plugin {
@@ -113,10 +118,8 @@ func (g *SchemaGuard) validate(text string) string {
 // elsewhere still validates the part this plugin understands rather than
 // erroring on the part it does not.
 func validateAgainst(doc any, schema map[string]any, path string) string {
-	if want, ok := schema["type"].(string); ok {
-		if got := jsonType(doc); got != want {
-			return fmt.Sprintf("%s: expected %s, got %s", path, want, got)
-		}
+	if want, ok := schema["type"].(string); ok && !satisfiesType(doc, want) {
+		return fmt.Sprintf("%s: expected %s, got %s", path, want, jsonType(doc))
 	}
 
 	obj, isObject := doc.(map[string]any)
@@ -156,10 +159,25 @@ func validateAgainst(doc any, schema map[string]any, path string) string {
 	return ""
 }
 
-// jsonType names a decoded JSON value's type in JSON Schema's vocabulary.
-// encoding/json decodes every number as float64, so "integer" is reported as
-// "number" — distinguishing them would mean claiming a precision the decode
-// already discarded.
+// satisfiesType reports whether a decoded JSON value matches a schema type
+// name.
+//
+// "integer" is a constraint on a number's VALUE rather than a type a decoded
+// value could report: JSON carries one number type and encoding/json decodes
+// all of it as float64, so 42 and 42.5 arrive as the same Go type. Comparing
+// type names alone would reject every response under a schema declaring
+// "integer" — a count, an age, an id — because nothing ever reports one.
+func satisfiesType(v any, want string) bool {
+	if want != typeInteger {
+		return jsonType(v) == want
+	}
+	f, ok := v.(float64)
+	return ok && f == math.Trunc(f)
+}
+
+// jsonType names a decoded JSON value's type in JSON Schema's vocabulary. Every
+// number is reported as "number"; "integer" is a constraint on a number's
+// value, applied by validateAgainst through isWholeNumber.
 func jsonType(v any) string {
 	switch v.(type) {
 	case nil:
