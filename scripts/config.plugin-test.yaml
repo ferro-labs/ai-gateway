@@ -90,3 +90,40 @@ plugins:
     stage: before_request
     enabled: true
     config: { requests_per_second: 100, burst: 100 }
+
+  # The content guardrails. Each fires only on crafted input, so ordinary
+  # prompts pass all of them; schema-guard runs under warn so a prose answer
+  # is delivered rather than rejected.
+  - name: regex-guard
+    type: guardrail
+    stage: before_request
+    enabled: true
+    config:
+      rules:
+        - { name: internal-ticket-id, pattern: '\bINC-\d{6}\b', apply_to: input, action: block }
+
+  - name: pii-redact
+    type: guardrail
+    stage: before_request
+    enabled: true
+    config: { action: redact }
+
+  - name: secret-scan
+    type: guardrail
+    stage: before_request
+    enabled: true
+    config: { action: block }
+
+  - name: prompt-shield
+    type: guardrail
+    stage: before_request
+    enabled: true
+    config: { action: block }
+
+  - name: schema-guard
+    type: guardrail
+    stage: after_request
+    enabled: true
+    config:
+      action: warn
+      schema: { type: object, required: ["name"] }
