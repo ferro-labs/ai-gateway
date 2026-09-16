@@ -30,6 +30,17 @@ import (
 // mangles secrets.
 var refPattern = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 
+// HasReference reports whether s still carries a ${VAR} reference.
+//
+// It reads the same syntax Expand substitutes, which is the point of it being
+// here rather than at a caller: code that checks a configured value BEFORE the
+// environment is available — `ferrogw validate` runs on a build machine with no
+// secrets — has to know which values it cannot judge yet, and a private "${"
+// test would diverge from what Expand actually replaces.
+func HasReference(s string) bool {
+	return refPattern.MatchString(s)
+}
+
 // Expand substitutes every ${VAR} in s.
 //
 // An undefined variable is an operator error, not a default: Expand returns an error

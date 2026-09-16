@@ -76,13 +76,29 @@ func (s *SecretScan) Name() string { return "secret-scan" }
 // Type returns the plugin lifecycle hook type.
 func (s *SecretScan) Type() plugin.PluginType { return plugin.TypeGuardrail }
 
+// actions are the actions this plugin can honour, read by Init and by
+// ValidateConfig so the two cannot disagree about the set.
+var actions = []string{plugin.ActionBlock, plugin.ActionWarn, plugin.ActionLog}
+
+// ValidateConfig checks the action without compiling anything, so `ferrogw
+// validate` and `ferrogw doctor` reject a misspelled one rather than leaving it
+// to the startup or the config reload that follows. See plugin.ConfigValidator,
+// and plugin.ValidateAction for why a ${VAR} reference is passed. The kinds and
+// patterns lists are checked at Init, where every value is resolved.
+func (s *SecretScan) ValidateConfig(config map[string]any) error {
+	if err := plugin.ValidateAction(config["action"], plugin.ActionBlock, actions...); err != nil {
+		return fmt.Errorf("secret-scan: %w", err)
+	}
+	return nil
+}
+
 // Init selects the curated kinds and compiles any custom patterns.
 func (s *SecretScan) Init(config map[string]any) error {
 	rawAction, err := plugin.StringSetting(config["action"], "action")
 	if err != nil {
 		return fmt.Errorf("secret-scan: %w", err)
 	}
-	action, err := plugin.NormalizeAction(rawAction, plugin.ActionBlock, plugin.ActionBlock, plugin.ActionWarn, plugin.ActionLog)
+	action, err := plugin.NormalizeAction(rawAction, plugin.ActionBlock, actions...)
 	if err != nil {
 		return fmt.Errorf("secret-scan: action: %w", err)
 	}

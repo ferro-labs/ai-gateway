@@ -64,13 +64,30 @@ func (g *RegexGuard) Name() string { return "regex-guard" }
 // Type returns the plugin lifecycle hook type.
 func (g *RegexGuard) Type() plugin.PluginType { return plugin.TypeGuardrail }
 
+// actions are the actions this plugin can honour, read by Init and by
+// ValidateConfig so the two cannot disagree about the set.
+var actions = []string{plugin.ActionBlock, plugin.ActionWarn, plugin.ActionLog}
+
+// ValidateConfig checks the default action without compiling anything, so
+// `ferrogw validate` and `ferrogw doctor` reject a misspelled one rather than
+// leaving it to the startup or the config reload that follows. See
+// plugin.ConfigValidator, and plugin.ValidateAction for why a ${VAR} reference
+// is passed. The rules themselves — each one's pattern, scope and action — are
+// checked at Init, where every value is resolved.
+func (g *RegexGuard) ValidateConfig(config map[string]any) error {
+	if err := plugin.ValidateAction(config["action"], plugin.ActionBlock, actions...); err != nil {
+		return fmt.Errorf("regex-guard: %w", err)
+	}
+	return nil
+}
+
 // Init compiles the configured rules.
 func (g *RegexGuard) Init(config map[string]any) error {
 	rawAction, err := plugin.StringSetting(config["action"], "action")
 	if err != nil {
 		return fmt.Errorf("regex-guard: %w", err)
 	}
-	defaultAction, err := plugin.NormalizeAction(rawAction, plugin.ActionBlock, plugin.ActionBlock, plugin.ActionWarn, plugin.ActionLog)
+	defaultAction, err := plugin.NormalizeAction(rawAction, plugin.ActionBlock, actions...)
 	if err != nil {
 		return fmt.Errorf("regex-guard: action: %w", err)
 	}

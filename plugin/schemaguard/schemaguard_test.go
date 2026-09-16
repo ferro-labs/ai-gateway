@@ -452,6 +452,19 @@ func TestInit_IgnoresAnUnsupportedKeyword(t *testing.T) {
 	}
 }
 
+// A misspelled action is caught by `ferrogw validate`, rather than at the
+// startup or the config reload that follows it. A ${VAR} reference is passed
+// instead of checked: it resolves when the plugin is constructed, so validate
+// cannot read one and must not be stricter than the server it checks for.
+func TestValidateConfig_CatchesAMisspelledActionAndPassesAnEnvReference(t *testing.T) {
+	if err := plugin.ValidateConfigFor("schema-guard", map[string]any{"action": "blockk"}); err == nil {
+		t.Fatal("a misspelled action was reported valid; an operator meets it at startup instead")
+	}
+	if err := plugin.ValidateConfigFor("schema-guard", map[string]any{"action": "${GUARDRAIL_ACTION}"}); err != nil {
+		t.Fatalf("an env reference was rejected at load, where it is not yet resolved: %v", err)
+	}
+}
+
 func TestExecute_IgnoresBeforeRequest(t *testing.T) {
 	g := &SchemaGuard{}
 	if err := g.Init(map[string]any{"schema": objectSchema()}); err != nil {

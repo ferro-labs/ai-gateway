@@ -22,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `plugin.NormalizeAction` — canonicalises a configured `action` against the
   closed set the calling plugin can honour, and rejects anything outside it,
   the caller's fallback included.
+- `plugin.ValidateAction` — the same check at config-load time, for a plugin's
+  `ValidateConfig`. A value carrying a `${VAR}` reference is passed rather than
+  judged, since those resolve when the plugin is constructed.
 - `plugin.StageRestricted` / `plugin.ValidateStage` — a plugin may declare the
   stages it can act at, and `Manager.Register` refuses the rest. Opt-in: a
   plugin that declares nothing registers at any stage exactly as before.
@@ -42,6 +45,12 @@ that enforces nothing. An unrecognised `action`, an unrecognised
 unrecognised name in `pii-redact`'s `entities`, `secret-scan`'s `kinds` or
 `prompt-shield`'s `categories` are all startup errors naming the value and the
 accepted set. Omitting any of those keys keeps its default.
+
+`ferrogw validate` and `ferrogw doctor` now report a misspelled `action` on all
+five content guardrails, so it is answered before the deploy rather than by a
+failed start or a failed config reload. An `action` written as a `${VAR}`
+reference is reported valid: those resolve when the plugin is constructed, so
+validate cannot read one, and the resolved value is still checked at startup.
 
 A key written with the **wrong kind of value** is a startup error naming the
 key and the shape expected — `action: 1`, `apply_to: 5`, a `patterns` or

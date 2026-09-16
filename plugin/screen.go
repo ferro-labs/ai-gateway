@@ -5,6 +5,7 @@ import (
 	"iter"
 	"strings"
 
+	"github.com/ferro-labs/ai-gateway/internal/envref"
 	"github.com/ferro-labs/ai-gateway/providers"
 )
 
@@ -158,6 +159,32 @@ func NormalizeAction(raw, fallback string, allowed ...string) (string, error) {
 		return "", fmt.Errorf("unrecognized action %q: must be one of %q", raw, allowed)
 	}
 	return action, nil
+}
+
+// ValidateAction checks a configured action at CONFIG-LOAD time, against the
+// same allowed set NormalizeAction will apply when the plugin is constructed.
+// It is what a guardrail's ValidateConfig calls, so a misspelled action is a
+// `ferrogw validate` error rather than a failed startup or a failed config
+// reload.
+//
+// A value carrying a ${VAR} reference is passed rather than checked. Those
+// resolve when the plugin is constructed, never at load, so at load the value
+// is the reference itself and judging it would reject every deployment that
+// names its action in the environment — making validate stricter than the
+// server it is checking for. An unresolved reference is unvalidatable here, and
+// the resolved value still meets NormalizeAction at Init.
+func ValidateAction(raw any, fallback string, allowed ...string) error {
+	action, err := StringSetting(raw, "action")
+	if err != nil {
+		return err
+	}
+	if envref.HasReference(action) {
+		return nil
+	}
+	if _, err := NormalizeAction(action, fallback, allowed...); err != nil {
+		return fmt.Errorf("action: %w", err)
+	}
+	return nil
 }
 
 func permitted(value string, allowed []string) bool {

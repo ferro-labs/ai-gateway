@@ -81,13 +81,29 @@ func (p *PIIRedact) SupportedStages() []plugin.Stage {
 	return []plugin.Stage{plugin.StageBeforeRequest}
 }
 
+// actions are the actions this plugin can honour, read by Init and by
+// ValidateConfig so the two cannot disagree about the set.
+var actions = []string{plugin.ActionBlock, plugin.ActionRedact}
+
+// ValidateConfig checks the action without compiling anything, so `ferrogw
+// validate` and `ferrogw doctor` reject a misspelled one rather than leaving it
+// to the startup or the config reload that follows. See plugin.ConfigValidator,
+// and plugin.ValidateAction for why a ${VAR} reference is passed. The entities
+// and patterns lists are checked at Init, where every value is resolved.
+func (p *PIIRedact) ValidateConfig(config map[string]any) error {
+	if err := plugin.ValidateAction(config["action"], plugin.ActionBlock, actions...); err != nil {
+		return fmt.Errorf("pii-redact: %w", err)
+	}
+	return nil
+}
+
 // Init selects the entity set and the action.
 func (p *PIIRedact) Init(config map[string]any) error {
 	rawAction, err := plugin.StringSetting(config["action"], "action")
 	if err != nil {
 		return fmt.Errorf("pii-redact: %w", err)
 	}
-	action, err := plugin.NormalizeAction(rawAction, plugin.ActionBlock, plugin.ActionBlock, plugin.ActionRedact)
+	action, err := plugin.NormalizeAction(rawAction, plugin.ActionBlock, actions...)
 	if err != nil {
 		return fmt.Errorf("pii-redact: action: %w", err)
 	}

@@ -73,13 +73,29 @@ func (g *SchemaGuard) SupportedStages() []plugin.Stage {
 	return []plugin.Stage{plugin.StageAfterRequest}
 }
 
+// actions are the actions this plugin can honour, read by Init and by
+// ValidateConfig so the two cannot disagree about the set.
+var actions = []string{plugin.ActionBlock, plugin.ActionWarn, plugin.ActionLog}
+
+// ValidateConfig checks the action without building anything, so `ferrogw
+// validate` and `ferrogw doctor` reject a misspelled one rather than leaving it
+// to the startup or the config reload that follows. See plugin.ConfigValidator,
+// and plugin.ValidateAction for why a ${VAR} reference is passed. The schema
+// block is checked at Init, where every value is resolved.
+func (g *SchemaGuard) ValidateConfig(config map[string]any) error {
+	if err := plugin.ValidateAction(config["action"], plugin.ActionBlock, actions...); err != nil {
+		return fmt.Errorf("schema-guard: %w", err)
+	}
+	return nil
+}
+
 // Init stores the schema and the action.
 func (g *SchemaGuard) Init(config map[string]any) error {
 	rawAction, err := plugin.StringSetting(config["action"], "action")
 	if err != nil {
 		return fmt.Errorf("schema-guard: %w", err)
 	}
-	action, err := plugin.NormalizeAction(rawAction, plugin.ActionBlock, plugin.ActionBlock, plugin.ActionWarn, plugin.ActionLog)
+	action, err := plugin.NormalizeAction(rawAction, plugin.ActionBlock, actions...)
 	if err != nil {
 		return fmt.Errorf("schema-guard: action: %w", err)
 	}

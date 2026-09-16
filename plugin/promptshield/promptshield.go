@@ -99,13 +99,29 @@ func (s *PromptShield) SupportedStages() []plugin.Stage {
 	return []plugin.Stage{plugin.StageBeforeRequest}
 }
 
+// actions are the actions this plugin can honour, read by Init and by
+// ValidateConfig so the two cannot disagree about the set.
+var actions = []string{plugin.ActionBlock, plugin.ActionWarn, plugin.ActionLog}
+
+// ValidateConfig checks the action without building anything, so `ferrogw
+// validate` and `ferrogw doctor` reject a misspelled one rather than leaving it
+// to the startup or the config reload that follows. See plugin.ConfigValidator,
+// and plugin.ValidateAction for why a ${VAR} reference is passed. The
+// categories list is checked at Init, where every value is resolved.
+func (s *PromptShield) ValidateConfig(config map[string]any) error {
+	if err := plugin.ValidateAction(config["action"], plugin.ActionBlock, actions...); err != nil {
+		return fmt.Errorf("prompt-shield: %w", err)
+	}
+	return nil
+}
+
 // Init selects the enabled categories and the action.
 func (s *PromptShield) Init(config map[string]any) error {
 	rawAction, err := plugin.StringSetting(config["action"], "action")
 	if err != nil {
 		return fmt.Errorf("prompt-shield: %w", err)
 	}
-	action, err := plugin.NormalizeAction(rawAction, plugin.ActionBlock, plugin.ActionBlock, plugin.ActionWarn, plugin.ActionLog)
+	action, err := plugin.NormalizeAction(rawAction, plugin.ActionBlock, actions...)
 	if err != nil {
 		return fmt.Errorf("prompt-shield: action: %w", err)
 	}
