@@ -7,7 +7,11 @@
 // A rule's apply_to and the plugin entry's stage are two separate settings and
 // both must agree: a rule with apply_to "output" or "both" only screens the
 // response when this plugin is ALSO listed at after_request, because one
-// plugins[] entry registers one stage.
+// plugins[] entry registers one stage. A rule that names neither direction
+// screens the request.
+//
+// Only action "block" rejects. Under "warn" and "log" the match is recorded by
+// rule name and the content is forwarded anyway.
 package regexguard
 
 import (
@@ -50,11 +54,6 @@ type rule struct {
 //
 // Matching uses Go's RE2 engine: linear time, no backtracking, program size
 // capped at compile. An operator-supplied pattern cannot mount a ReDoS.
-//
-// A rule's apply_to scopes the DIRECTION it screens; the plugins[] entry's
-// stage decides which directions run at all. A rule with apply_to "output" or
-// "both" therefore needs this plugin listed at after_request as well, or it
-// never fires.
 type RegexGuard struct {
 	rules []rule
 }

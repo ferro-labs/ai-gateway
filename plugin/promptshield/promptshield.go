@@ -4,6 +4,25 @@
 // import:
 //
 //	_ "github.com/ferro-labs/ai-gateway/plugin/promptshield"
+//
+// # What this plugin can and cannot do
+//
+// The categories are heuristics over phrasing, not a classifier. They catch the
+// common written forms and will miss an attacker who paraphrases — that is the
+// honest ceiling of pattern matching, and it does not move with tuning. Run
+// this as one layer and pair it with an external provider for adversarial
+// traffic; a deployment relying on it alone is relying on an attacker writing
+// the attempt the usual way.
+//
+// It screens the request only. An injection attempt is something a caller
+// sends: by after_request the model has already acted on it, and on a streamed
+// response the tokens have already been delivered, so there would be nothing
+// left to withhold.
+//
+// Only action "block" rejects. Under "warn" and "log" the detection is recorded
+// by category and the prompt reaches the model anyway, which is what those
+// actions are for — measuring a pattern's false-positive rate before enforcing
+// on it.
 package promptshield
 
 import (
@@ -28,13 +47,8 @@ type category struct {
 	re   *regexp.Regexp
 }
 
-// categories are the injection shapes recognised without configuration.
-//
-// These are heuristics over phrasing, not a classifier: they catch the common
-// written forms and will miss an attacker who paraphrases. That is the honest
-// ceiling of pattern matching, and it is why this plugin is one layer rather
-// than the whole defence — pair it with an external provider for adversarial
-// traffic.
+// categories are the injection shapes recognised without configuration. See
+// the package doc for what pattern matching can and cannot catch.
 //
 // role_manipulation is deliberately narrower than "any sentence about roles":
 // "you are now" is ordinary account-state phrasing ("you are now enrolled in
@@ -63,13 +77,9 @@ var categories = []category{
 	{"delimiter_attack", regexp.MustCompile("(?i)(" + regexp.QuoteMeta("```system") + "|" + regexp.QuoteMeta("###SYSTEM") + "|" + regexp.QuoteMeta("[SYSTEM]") + "|" + regexp.QuoteMeta("<|system|>") + ")")},
 }
 
-// PromptShield detects prompt-injection attempts and applies the configured
-// action. Only "block" rejects the request; under "warn" and "log" the
-// detection is recorded by category and the prompt reaches the model.
-//
-// It screens the request only. An injection attempt is something a caller
-// sends; by after_request the model has already acted on it, and on a
-// streamed response the tokens have already been delivered.
+// PromptShield detects prompt-injection attempts in a request and applies the
+// configured action: block, warn or log. See the package doc for the action
+// semantics and the limits of the detection.
 type PromptShield struct {
 	enabled []category
 	action  string

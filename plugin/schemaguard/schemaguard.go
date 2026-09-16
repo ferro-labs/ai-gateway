@@ -1,8 +1,27 @@
 // Package schemaguard provides a schema-guard guardrail plugin that validates a
-// model's response against a JSON Schema subset. Register it with a blank
-// import:
+// model's response against a JSON Schema subset — "type", "required" and
+// "properties". Register it with a blank import:
 //
 //	_ "github.com/ferro-labs/ai-gateway/plugin/schemaguard"
+//
+// # Scope
+//
+// A subset rather than a dependency: this module carries no JSON Schema
+// library, and adding one to validate the three keywords that answer "did the
+// model return the object shape my code is about to unmarshal" would be a large
+// dependency for a small question. A keyword outside the subset is ignored, so
+// a schema pasted in from elsewhere still validates the part this plugin
+// understands; a keyword INSIDE it that is written wrong fails the load.
+//
+// It validates responses only. On a streamed response the tokens have already
+// been delivered chunk by chunk, so a violation can be reported but not
+// unsent — a caller that must withhold malformed output must not stream.
+//
+// Each choice is assembled into one document and validated once, and a choice
+// carrying no content at all is a violation. A choice that carries only a tool
+// call therefore carries no document and is denied under action "block": a
+// deployment doing both should scope this plugin to the requests that ask for
+// structured output, or run it under "warn".
 package schemaguard
 
 import (
@@ -33,18 +52,9 @@ func init() {
 }
 
 // SchemaGuard validates the model's response against a JSON Schema subset:
-// "type", "required" and "properties".
-//
-// A subset rather than a dependency: this module carries no JSON Schema
-// library, and adding one to validate the three keywords that answer "did the
-// model return the object shape my code is about to unmarshal" would be a large
-// dependency for a small question. An unsupported keyword is ignored rather
-// than rejected, so a schema copied from elsewhere still validates what this
-// plugin understands.
-//
-// It runs at after_request only. On a streamed response the tokens are
-// already delivered to the caller, so this can report a violation but cannot
-// unsend it — a caller that must withhold malformed output must not stream.
+// "type", "required" and "properties". A keyword outside that subset is
+// ignored, which is a contract rather than an omission — see the package doc
+// before narrowing it.
 type SchemaGuard struct {
 	schema map[string]any
 	action string
