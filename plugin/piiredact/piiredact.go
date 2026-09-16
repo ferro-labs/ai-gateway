@@ -28,6 +28,17 @@ const defaultPlaceholder = "[REDACTED]"
 type entity struct {
 	name string
 	re   *regexp.Regexp
+	// verify, when set, decides whether a regex match is a real instance of
+	// the entity. nil means every match counts.
+	verify func(match string) bool
+}
+
+// matches reports whether text carries at least one verified instance.
+func (e entity) matches(text string) bool {
+	if e.verify == nil {
+		return e.re.MatchString(text)
+	}
+	return slices.ContainsFunc(e.re.FindAllString(text, -1), e.verify)
 }
 
 // builtinEntities are the entity types recognised without configuration.
@@ -36,10 +47,35 @@ type entity struct {
 // written form rather than guessing from context, because a false positive on
 // this plugin costs a caller their request.
 var builtinEntities = []entity{
-	{"email", regexp.MustCompile(`[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}`)},
-	{"phone", regexp.MustCompile(`(\+1\d{10}|\(\d{3}\)\s?\d{3}-\d{4}|\d{3}[-.]\d{3}[-.]\d{4})`)},
-	{"ssn", regexp.MustCompile(`\b\d{3}-\d{2}-\d{4}\b`)},
-	{"credit_card", regexp.MustCompile(`\b\d{4}[\s\-]?\d{4}[\s\-]?\d{4}[\s\-]?\d{4}\b`)},
+	{name: "email", re: regexp.MustCompile(`[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}`)},
+	{name: "phone", re: regexp.MustCompile(`(\+1\d{10}|\(\d{3}\)\s?\d{3}-\d{4}|\d{3}[-.]\d{3}[-.]\d{4})`)},
+	{name: "ssn", re: regexp.MustCompile(`\b\d{3}-\d{2}-\d{4}\b`)},
+	// Sixteen digits alone also describe an order id or a tracking number, so
+	// a match only counts when its check digit passes Luhn — the test every
+	// issued card number satisfies and a random sixteen-digit string fails
+	// nine times in ten.
+	{name: "credit_card", re: regexp.MustCompile(`\b\d{4}[\s\-]?\d{4}[\s\-]?\d{4}[\s\-]?\d{4}\b`), verify: luhnValid},
+}
+
+// luhnValid reports whether the digits in s satisfy the Luhn check.
+func luhnValid(s string) bool {
+	sum, double := 0, false
+	for i := len(s) - 1; i >= 0; i-- {
+		c := s[i]
+		if c < '0' || c > '9' {
+			continue
+		}
+		d := int(c - '0')
+		if double {
+			d *= 2
+			if d > 9 {
+				d -= 9
+			}
+		}
+		sum += d
+		double = !double
+	}
+	return sum%10 == 0
 }
 
 // PIIRedact detects PII and either denies the request or sanitizes it.
@@ -81,15 +117,11 @@ func (p *PIIRedact) SupportedStages() []plugin.Stage {
 	return []plugin.Stage{plugin.StageBeforeRequest}
 }
 
-// actions are the actions this plugin can honour, read by Init and by
-// ValidateConfig so the two cannot disagree about the set.
+// actions is the closed set this plugin honours; see plugin.NormalizeAction.
 var actions = []string{plugin.ActionBlock, plugin.ActionRedact}
 
-// ValidateConfig checks the action without compiling anything, so `ferrogw
-// validate` and `ferrogw doctor` reject a misspelled one rather than leaving it
-// to the startup or the config reload that follows. See plugin.ConfigValidator,
-// and plugin.ValidateAction for why a ${VAR} reference is passed. The entities
-// and patterns lists are checked at Init, where every value is resolved.
+// ValidateConfig checks the action at config-load time; see plugin.ValidateAction.
+// Everything else is checked at Init, where every value is resolved.
 func (p *PIIRedact) ValidateConfig(config map[string]any) error {
 	if err := plugin.ValidateAction(config["action"], plugin.ActionBlock, actions...); err != nil {
 		return fmt.Errorf("pii-redact: %w", err)
@@ -181,11 +213,7 @@ func (p *PIIRedact) Execute(ctx context.Context, pctx *plugin.Context) error {
 	}
 
 	for text := range plugin.RequestText(pctx.Request) {
-		// The caller has gone: stop screening rather than walk the rest of a
-		// body nobody is waiting for. Returning nil and not the context's error
-		// is the whole point — an error from Execute means the plugin broke,
-		// which the gateway answers 500 and the target's circuit breaker counts
-		// as a fault. A caller hanging up is neither.
+		// The caller has gone; see plugin.RequestText for why this is not an error.
 		if ctx.Err() != nil {
 			return nil
 		}
@@ -248,18 +276,23 @@ func (p *PIIRedact) redactRequest(ctx context.Context, req *providers.Request) {
 // operator wrote. Replacing through a function inserts the string as given.
 func (p *PIIRedact) redact(ctx context.Context, text string) string {
 	for _, e := range p.entities {
-		if !e.re.MatchString(text) {
+		if !e.matches(text) {
 			continue
 		}
 		logger.Ctx(ctx).Info("pii-redact: redacted request", "entity", e.name)
-		text = e.re.ReplaceAllStringFunc(text, func(string) string { return p.placeholder })
+		text = e.re.ReplaceAllStringFunc(text, func(match string) string {
+			if e.verify != nil && !e.verify(match) {
+				return match
+			}
+			return p.placeholder
+		})
 	}
 	return text
 }
 
 func (p *PIIRedact) detect(text string) (string, bool) {
 	for _, e := range p.entities {
-		if e.re.MatchString(text) {
+		if e.matches(text) {
 			return e.name, true
 		}
 	}

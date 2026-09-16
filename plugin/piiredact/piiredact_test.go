@@ -35,6 +35,52 @@ func TestExecute_BlocksDetectedSSN(t *testing.T) {
 	}
 }
 
+// A card number is sixteen digits whose check digit passes Luhn. A number that
+// does not is an order id, a tracking number or a phone number written without
+// separators, and denying it is a false positive that costs a caller their
+// request.
+func TestExecute_CreditCardRequiresAValidCheckDigit(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		text   string
+		reject bool
+	}{
+		{"valid card with spaces", "pay with 4111 1111 1111 1111 today", true},
+		{"valid card with dashes", "pay with 5500-0000-0000-0004 today", true},
+		{"sixteen digits failing the check", "order 1234 5678 9012 3456 shipped", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &PIIRedact{}
+			if err := p.Init(map[string]any{"entities": []any{"credit_card"}}); err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			pctx := newRequest(tc.text)
+			if err := p.Execute(context.Background(), pctx); err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			if pctx.Reject != tc.reject {
+				t.Fatalf("Reject = %v, want %v for %q", pctx.Reject, tc.reject, tc.text)
+			}
+		})
+	}
+}
+
+func TestExecute_RedactLeavesANumberFailingTheCheckDigitAlone(t *testing.T) {
+	p := &PIIRedact{}
+	if err := p.Init(map[string]any{"entities": []any{"credit_card"}, "action": "redact"}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	pctx := newRequest("order 1234 5678 9012 3456 and card 4111 1111 1111 1111")
+	if err := p.Execute(context.Background(), pctx); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	got := pctx.Request.Messages[0].Content
+	want := "order 1234 5678 9012 3456 and card [REDACTED]"
+	if got != want {
+		t.Fatalf("Content = %q, want %q", got, want)
+	}
+}
+
 func TestExecute_RedactRewritesTheRequestAndAllowsIt(t *testing.T) {
 	p := &PIIRedact{}
 	if err := p.Init(map[string]any{"action": "redact"}); err != nil {
