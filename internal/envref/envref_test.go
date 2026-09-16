@@ -36,6 +36,34 @@ func TestExpand(t *testing.T) {
 	}
 }
 
+// HasReference answers "is this value still a reference", which is what a
+// caller validating a config before the environment exists asks. It must read
+// the same syntax Expand substitutes: a caller that disagreed with Expand would
+// either check a value Expand is about to replace or skip one it will not.
+func TestHasReference(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{"a braced reference", "${ENVREF_SET}", true},
+		{"a reference inside surrounding text", "Bearer ${ENVREF_SET}", true},
+		{"a bare dollar-name is not a reference", "$ENVREF_SET", false},
+		{"an unclosed brace is not a reference", "${ENVREF_SET", false},
+		{"a leading dollar in a blocked word", "$100", false},
+		{"doubled dollars in a password", "pa$$w0rd", false},
+		{"no dollars at all", "block", false},
+		{"empty", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := HasReference(tt.in); got != tt.want {
+				t.Errorf("HasReference(%q) = %v, want %v", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestExpand_UndefinedVariableIsAnError(t *testing.T) {
 	if err := os.Unsetenv("ENVREF_DEFINITELY_UNSET"); err != nil {
 		t.Fatalf("unsetenv: %v", err)
@@ -100,5 +128,25 @@ func TestStringMap_NilVsNonNilEmpty(t *testing.T) {
 	}
 	if out == nil {
 		t.Error("StringMap(non-nil empty map) = nil, want a non-nil empty map")
+	}
+}
+
+func TestHasReferenceIn_WalksMapsAndLists(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		v    any
+		want bool
+	}{
+		{"plain string", "x", false},
+		{"string reference", "${A}", true},
+		{"nested map", map[string]any{"rules": []any{map[string]any{"pattern": "${A}"}}}, true},
+		{"nested map without one", map[string]any{"rules": []any{map[string]any{"pattern": "x"}}}, false},
+		{"non-string leaf", map[string]any{"n": 1.5, "b": true, "nil": nil}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := HasReferenceIn(tc.v); got != tc.want {
+				t.Fatalf("HasReferenceIn(%v) = %v, want %v", tc.v, got, tc.want)
+			}
+		})
 	}
 }

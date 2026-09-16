@@ -122,7 +122,16 @@ func (m *Manager) Acquire() func() {
 }
 
 // Register registers a plugin at the given stage.
+//
+// A plugin that declares which stages it can act at (StageRestricted) is
+// refused at the others rather than registered into a no-op: binding a stage is
+// the first moment the pair is knowable, and the alternative is a plugin that
+// reports itself enabled for the life of the deployment and enforces nothing.
 func (m *Manager) Register(stage Stage, p Plugin) error {
+	if err := ValidateStage(p, stage); err != nil {
+		return err
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 

@@ -123,6 +123,31 @@ func TestRunValidateCatchesUnknownReferences(t *testing.T) {
 			wantErr: "during_request",
 		},
 		{
+			name: "plugin listed at a stage where it enforces nothing",
+			// prompt-shield screens the prompt, so an after_request entry
+			// validates, registers, reports itself enabled and does nothing —
+			// the shape a guardrail must never be allowed to take.
+			config: "strategy:\n  mode: single\ntargets:\n  - virtual_key: openai\n" +
+				"plugins:\n  - name: prompt-shield\n    type: guardrail\n" +
+				"    stage: after_request\n    enabled: true\n",
+			wantErr: "after_request",
+		},
+		{
+			name: "response-only plugin listed at before_request",
+			config: "strategy:\n  mode: single\ntargets:\n  - virtual_key: openai\n" +
+				"plugins:\n  - name: schema-guard\n    type: guardrail\n" +
+				"    stage: before_request\n    enabled: true\n    config:\n" +
+				"      schema:\n        type: object\n",
+			wantErr: "before_request",
+		},
+		{
+			name: "a plugin that supports both stages is accepted at either",
+			config: "strategy:\n  mode: single\ntargets:\n  - virtual_key: openai\n" +
+				"plugins:\n  - name: secret-scan\n    type: guardrail\n" +
+				"    stage: after_request\n    enabled: true\n",
+			wantErr: "",
+		},
+		{
 			name: "one plugin at two stages with configs that disagree",
 			// serve refuses this outright: the two entries become two instances
 			// that never see each other's state, so the cache never serves a hit.

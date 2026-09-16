@@ -21,14 +21,20 @@
 // Control endpoints:
 //
 //	POST   /_mock/scenario  {"status":503,"fail_count":2,"retry_after_s":1,
-//	                         "delay_ms":100,"hang":false,"stream_fail_after":2}
+//	                         "delay_ms":100,"hang":false,"stream_fail_after":2,
+//	                         "content":"exact completion text"}
 //	                        Sets the scenario and turns demo randomness off.
 //	                        An empty object {} is a healthy, deterministic
 //	                        instance. status fails every call until cleared;
 //	                        with fail_count it fails only the next N calls and
 //	                        then heals. Order per call: delay, hang, status.
+//	                        content replaces the completion, unary and
+//	                        streamed, so a response-side check can be driven.
 //	DELETE /_mock/scenario  Back to demo mode.
-//	GET    /_mock/calls     {"calls","streams","last_model","models"}
+//	GET    /_mock/calls     {"calls","streams","last_model","last_prompt","models"}
+//	                        last_prompt is the message text of the most recent
+//	                        chat request, one line per message, which shows
+//	                        what a gateway in front of the mock forwarded.
 //	POST   /_mock/reset     Clear the scenario and the counters.
 //
 // Run it standalone with `go run .`, or build the image from this directory.
@@ -82,6 +88,8 @@ type scenario struct {
 	Hang bool `json:"hang"`
 	// StreamFailAfter ends a stream with an error frame after N chunks.
 	StreamFailAfter int `json:"stream_fail_after"`
+	// Content, when set, is the completion every call answers with.
+	Content string `json:"content"`
 }
 
 // decision is what one call does, resolved under the lock so counters and
@@ -98,14 +106,15 @@ type decision struct {
 type mock struct {
 	cfg settings
 
-	mu        sync.Mutex
-	active    bool // a scenario is set; demo randomness is off
-	sc        scenario
-	remaining int // failures left while sc.FailCount > 0
-	calls     int
-	streams   int
-	lastModel string
-	models    map[string]int
+	mu         sync.Mutex
+	active     bool // a scenario is set; demo randomness is off
+	sc         scenario
+	remaining  int // failures left while sc.FailCount > 0
+	calls      int
+	streams    int
+	lastModel  string
+	lastPrompt string
+	models     map[string]int
 }
 
 func main() {
@@ -164,7 +173,7 @@ func (m *mock) handleCalls(w http.ResponseWriter, r *http.Request) {
 	}
 	m.mu.Lock()
 	models := maps.Clone(m.models)
-	body := map[string]any{"calls": m.calls, "streams": m.streams, "last_model": m.lastModel, "models": models}
+	body := map[string]any{"calls": m.calls, "streams": m.streams, "last_model": m.lastModel, "last_prompt": m.lastPrompt, "models": models}
 	m.mu.Unlock()
 	writeJSON(w, body)
 }
@@ -176,7 +185,7 @@ func (m *mock) handleReset(w http.ResponseWriter, r *http.Request) {
 	}
 	m.mu.Lock()
 	m.active, m.sc, m.remaining = false, scenario{}, 0
-	m.calls, m.streams, m.lastModel, m.models = 0, 0, "", map[string]int{}
+	m.calls, m.streams, m.lastModel, m.lastPrompt, m.models = 0, 0, "", "", map[string]int{}
 	m.mu.Unlock()
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -194,7 +203,7 @@ func (m *mock) dispatch(w http.ResponseWriter, r *http.Request) {
 }
 
 // decide records the call and resolves what the scenario says to do with it.
-func (m *mock) decide(model string, stream bool) decision {
+func (m *mock) decide(model string, stream bool, prompt string) decision {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.calls++
@@ -202,6 +211,7 @@ func (m *mock) decide(model string, stream bool) decision {
 		m.streams++
 	}
 	m.lastModel = model
+	m.lastPrompt = prompt
 	m.models[model]++
 	if !m.active {
 		return decision{demo: true}
@@ -271,7 +281,11 @@ func (m *mock) chatCompletion(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewDecoder(r.Body).Decode(&req)
 	model := orDefault(req.Model, "gpt-4o-mini")
 
-	d := m.decide(model, req.Stream)
+	lines := make([]string, len(req.Messages))
+	for i, msg := range req.Messages {
+		lines[i] = msg.Content
+	}
+	d := m.decide(model, req.Stream, strings.Join(lines, "\n"))
 	if !m.admit(w, r, d) {
 		return
 	}
@@ -356,7 +370,8 @@ func (m *mock) embedding(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewDecoder(r.Body).Decode(&req)
 	model := orDefault(req.Model, "text-embedding-3-small")
 
-	d := m.decide(model, false)
+	input, _ := req.Input.(string)
+	d := m.decide(model, false, input)
 	if !m.admit(w, r, d) {
 		return
 	}
@@ -380,8 +395,21 @@ func (m *mock) embedding(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// words is the completion every instance gives, split the way it is streamed.
-func (m *mock) words() []string { return []string{"ok", " from", " " + m.cfg.name} }
+// words is the completion every instance gives, split the way it is streamed:
+// the scenario's content when one is set, otherwise a phrase naming the
+// instance so a test can tell which upstream answered.
+func (m *mock) words() []string {
+	m.mu.Lock()
+	content := ""
+	if m.active {
+		content = m.sc.Content
+	}
+	m.mu.Unlock()
+	if content == "" {
+		return []string{"ok", " from", " " + m.cfg.name}
+	}
+	return strings.SplitAfter(content, " ")
+}
 
 func (m *mock) content() string { return strings.Join(m.words(), "") }
 

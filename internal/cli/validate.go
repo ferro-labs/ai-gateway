@@ -18,7 +18,12 @@ import (
 	_ "github.com/ferro-labs/ai-gateway/plugin/cache"
 	_ "github.com/ferro-labs/ai-gateway/plugin/logger"
 	_ "github.com/ferro-labs/ai-gateway/plugin/maxtoken"
+	_ "github.com/ferro-labs/ai-gateway/plugin/piiredact"
+	_ "github.com/ferro-labs/ai-gateway/plugin/promptshield"
 	_ "github.com/ferro-labs/ai-gateway/plugin/ratelimit"
+	_ "github.com/ferro-labs/ai-gateway/plugin/regexguard"
+	_ "github.com/ferro-labs/ai-gateway/plugin/schemaguard"
+	_ "github.com/ferro-labs/ai-gateway/plugin/secretscan"
 	_ "github.com/ferro-labs/ai-gateway/plugin/wordfilter"
 )
 
@@ -136,7 +141,8 @@ func validateReferences(cfg config.Config) error {
 		if !p.Enabled {
 			continue
 		}
-		if _, ok := plugin.GetFactory(p.Name); !ok {
+		factory, ok := plugin.GetFactory(p.Name)
+		if !ok {
 			available := plugin.RegisteredPlugins()
 			sort.Strings(available)
 			return fmt.Errorf("unknown plugin %q; available plugins: %s",
@@ -148,6 +154,12 @@ func validateReferences(cfg config.Config) error {
 			return fmt.Errorf("plugin %q: unknown stage %q; valid stages: %s, %s, %s",
 				p.Name, p.Stage,
 				plugin.StageBeforeRequest, plugin.StageAfterRequest, plugin.StageOnError)
+		}
+		// A stage the plugin does nothing at. serve refuses this too, when the
+		// manager binds the stage; reporting it here means the answer arrives
+		// before the deploy rather than as a failed start.
+		if err := plugin.ValidateStage(factory(), plugin.Stage(p.Stage)); err != nil {
+			return err
 		}
 		// Rules the plugin publishes about its own config block. Only the
 		// deployment-independent ones: plugin.ConfigValidator is contracted to

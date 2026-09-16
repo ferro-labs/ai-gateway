@@ -5,6 +5,184 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.7] — 2026-09-16
+
+### Added
+
+- **Five content guardrail plugins.** `regex-guard`, `pii-redact`, `secret-scan`,
+  `prompt-shield` and `schema-guard` are now registered plugins with factories,
+  catalog entries and tests. Register each with a blank import, e.g.
+  `_ "github.com/ferro-labs/ai-gateway/plugin/piiredact"`.
+- `plugin.RequestText` / `plugin.ResponseText` — iterators over every piece of
+  text a request or response carries: content parts of every type, reasoning
+  content, and each tool call's arguments, in both directions.
+  `Part.ImageURL` and a tool call's function name are deliberately excluded.
+- `plugin.RejectUninspectable` — the shared verdict for a before_request whose
+  content could not be projected as text.
+- `plugin.NormalizeAction` — canonicalises a configured `action` against the
+  closed set the calling plugin can honour, and rejects anything outside it,
+  the caller's fallback included.
+- `plugin.ValidateAction` — the same check at config-load time, for a plugin's
+  `ValidateConfig`. A value carrying a `${VAR}` reference is passed rather than
+  judged, since those resolve when the plugin is constructed.
+- `plugin.StageRestricted` / `plugin.ValidateStage` — a plugin may declare the
+  stages it can act at, and `Manager.Register` refuses the rest. Opt-in: a
+  plugin that declares nothing registers at any stage exactly as before.
+- `plugin.StringSetting` / `plugin.ListSetting` — read one optional config key,
+  keeping an absent key (take the default) apart from one written with the
+  wrong kind of value (fail the load).
+
+### Changed
+
+- `wordfilter` now screens through the shared iterators. No behavioural change;
+  its existing suite is unmodified and still passes.
+
+### Notes for operators
+
+A misconfigured guardrail fails the load rather than registering as a plugin
+that enforces nothing. An unrecognised `action`, an unrecognised
+`regex-guard` `apply_to`, a `rules` block that is not a list, and an
+unrecognised name in `pii-redact`'s `entities`, `secret-scan`'s `kinds` or
+`prompt-shield`'s `categories` are all startup errors naming the value and the
+accepted set. Omitting any of those keys keeps its default.
+
+`ferrogw validate` and `ferrogw doctor` now report a misspelled `action` on all
+five content guardrails, so it is answered before the deploy rather than by a
+failed start or a failed config reload. An `action` written as a `${VAR}`
+reference is reported valid: those resolve when the plugin is constructed, so
+validate cannot read one, and the resolved value is still checked at startup.
+
+A key written with the **wrong kind of value** is a startup error naming the
+key and the shape expected — `action: 1`, `apply_to: 5`, a `patterns` or
+`redact_placeholder` written as the wrong type. Reading those as "not set"
+loaded a plugin that reported itself enabled and quietly applied the default
+the operator wrote that line to override; `apply_to` was the sharpest case,
+since its default screens the prompt rather than the answer the rule asked for.
+Omitting a key still means what it always did.
+
+A selector that is **present but empty** is a startup error too — `rules: []`,
+`entities: []`, `kinds: []` and `categories: []` each describe a plugin that
+would load, report itself enabled and screen nothing. So is one written as a
+scalar or a mapping rather than a list, which previously widened the selection
+to every built-in. Omitting the key still means what it always did: every
+built-in for `entities`, `kinds` and `categories`. `regex-guard` has no
+built-in patterns, so its `rules` key is required and must name at least one
+rule.
+`entities: []` or `kinds: []` **alongside a non-empty `patterns` list is
+legal** — that selects the custom patterns and none of the built-ins, and the
+plugin still has something to screen for.
+
+An **empty entry inside** a `patterns` list is a startup error, on `pii-redact`
+and `secret-scan` as it already was on `regex-guard`'s rules. An empty pattern
+compiles and matches every string, so `patterns: [""]` — a trailing comma, a
+blank list item — denied every request under `block` and rewrote every request
+under `redact`.
+
+`pii-redact` with `action: "redact"` rewrites the request in place and lets it
+continue; with `action: "block"` it denies. **Redaction takes effect on the
+chat-shaped surfaces** — `/v1/chat/completions` (streamed or not) and
+`/v1/completions` — which are the ones the gateway reads the rewritten request
+back from. The other surfaces (`/v1/embeddings`, `/v1/images/generations`,
+`/v1/responses`, `/v1/rerank`, `/v1/moderations`, `/v1/audio/*` and the
+`/v1/*` pass-through) forward their own body unchanged, so a rewrite there
+would be discarded: a detection on those is **denied** instead, with a reason
+saying the content could not be sanitized on that surface. `action: "block"`
+behaves identically everywhere.
+
+`pii-redact`'s `redact_placeholder` is inserted as **literal text**. It was
+applied as a replacement template, where `$0` stands for the whole match, so
+`redact_placeholder: "$0"` wrote the detected value back into the request while
+the plugin logged a redaction and let it through, and any placeholder carrying
+a dollar sign reached the provider as something other than what was configured.
+
+`schema-guard` runs at `after_request` only — on a streamed response it can
+report a violation but cannot withhold output already delivered.
+
+A plugin listed at a stage it does nothing at now **fails the load** and is
+reported by `ferrogw validate`, instead of registering and returning early on
+every request. `pii-redact` and `prompt-shield` screen the prompt, so they take
+`before_request`; `schema-guard` validates the answer, so it takes
+`after_request`. `regex-guard` takes the stages its rules can act at, so an
+entry whose rules all carry `apply_to: output` fails the load at
+`before_request` instead of screening nothing there. `secret-scan` genuinely
+acts at both and is unchanged. A plugin registered outside this repository
+declares nothing and keeps registering at any stage, as before.
+
+`pii-redact`'s `credit_card` entity requires the Luhn check digit to pass, so a
+sixteen-digit order id or tracking number is no longer denied or rewritten as a
+card number.
+
+Every content guardrail screens a message's reasoning content and its tool
+calls' arguments as well as its body and content parts, in both directions. A
+model asked to act rather than answer puts its output in those fields, and a
+client replaying a conversation sends them back, so a credential or a matched
+pattern there is now screened where it previously passed.
+
+All five plugins stop screening when the request is cancelled, and report no
+error for it. A caller hanging up is not a plugin fault: returning the context's
+error would answer 500, count against the target's circuit breaker and record a
+failure the gateway did not have.
+
+`ferrogw validate` and `ferrogw doctor` now report **everything** a content
+guardrail's startup would refuse — an uncompilable pattern, an unrecognised
+entity, kind or category, a malformed rule or schema keyword — not only a
+misspelled `action`. A block carrying a `${VAR}` reference anywhere is still
+judged on its `action` alone, since the rest cannot be read before the
+environment is available; startup checks the resolved values as before.
+
+`secret-scan`'s `private_key` kind matches OpenPGP armor, whose header ends in
+`PRIVATE KEY BLOCK`, alongside the forms ending in `PRIVATE KEY`.
+
+`pii-redact` inserts `redact_placeholder` into a tool call's arguments in its
+JSON-escaped form, so a placeholder carrying a quote or a backslash keeps the
+argument object valid JSON; everywhere else it is inserted as written.
+
+`secret-scan`'s `github_token` kind matches fine-grained personal access
+tokens (`github_pat_…`) as well as the classic prefixes. The fine-grained
+format is the one GitHub now issues by default, and it was passing screening in
+both directions while the kind reported itself selected.
+
+Three more credential forms are screened, each under the kind it belongs to, so
+an existing `kinds` selection keeps working unchanged: `slack_token` also
+matches app-level (`xapp-…`) and rotation (`xoxe-…`) tokens, `private_key` also
+matches `DSA` and `ENCRYPTED` PEM headers, and `stripe_key` also matches
+webhook signing secrets (`whsec_…`). Each matches a fixed prefix and a length,
+as the rest of the curated set does, so prose naming these formats is not a
+match.
+
+`schema-guard` checks its `schema` block at load, recursively. A malformed
+**supported** keyword — `required` written as a bare name, a `type` naming no
+JSON Schema type, a `properties` map whose subschema is not an object — is a
+startup error, because an ignored `required` is a guardrail that starts and
+approves every response. An **unsupported** keyword is still ignored in
+silence: a schema copied in from elsewhere keeps loading and keeps being
+validated for the part this plugin understands.
+
+`schema-guard` validates **one assembled document per choice**. A response
+split across content parts is judged whole instead of as several invalid
+fragments, a collapsed message is no longer validated twice against its own
+parts, and every choice of an `n > 1` response is checked. A choice carrying
+neither content nor a tool call is a violation, since an empty answer does not
+satisfy a schema requiring an object. A choice carrying only a tool call passes
+without validation — a tool call is a different kind of answer, not a malformed
+one — so this plugin can run on a gateway serving structured output and tool
+calling at once.
+
+`schema-guard` reads `type: integer` as a whole number. JSON carries one number
+type, so `42` satisfies it and `42.5` does not, and a `type: number` property
+keeps accepting both.
+
+A `regex-guard` rule's `apply_to` and the plugin entry's `stage` are separate
+settings that must agree: one `plugins[]` entry registers one stage, so an
+`output` or `both` rule needs the plugin listed at `after_request` as well.
+`secret-scan` has the same stage requirement for the direction it screens: a
+`before_request`-only entry screens the prompt, and the model's response is
+screened only when the plugin is also listed at `after_request`.
+
+On `regex-guard`, `secret-scan` and `prompt-shield`, only `action: block`
+rejects. Under `warn` or `log` the match is detected and recorded and the
+content is forwarded, which is what those actions are for.
+
 ## [1.5.6] — 2026-09-14
 
 Two routing-config corrections. No endpoint or configuration key is added

@@ -346,8 +346,81 @@ plugins:
       level: info
       persist: false
 
-  # Advanced guardrails (pii-redact, secret-scan, prompt-shield, schema-guard,
-  # regex-guard) are available in FerroCloud. See https://docs.ferrolabs.ai/guardrails
+  - name: regex-guard
+    type: guardrail
+    stage: before_request
+    enabled: false
+    config:
+      # A rule's apply_to decides which DIRECTION it screens. A rule with
+      # apply_to: output only fires when this plugin is ALSO listed at
+      # after_request — a plugin entry registers one stage. An entry whose
+      # rules cannot act at its stage fails the load. rules is required.
+      rules:
+        - name: internal-ticket-id
+          pattern: '\bINC-\d{6}\b'
+          apply_to: input
+          action: block
+
+  - name: pii-redact
+    type: guardrail
+    stage: before_request
+    enabled: false
+    config:
+      # Omit `entities` for all built-ins: email, phone, ssn, credit_card
+      # (a card must also pass the Luhn check).
+      # An unrecognised name fails the load rather than selecting nothing, and
+      # so does an empty list with no `patterns` to fall back on.
+      entities: ["ssn", "credit_card"]
+      # block denies the request; redact rewrites it and lets it through.
+      #
+      # redact takes effect on the chat-shaped surfaces (/v1/chat/completions,
+      # streamed or not, and /v1/completions), the ones the gateway reads the
+      # rewritten request back from. Every other surface forwards its own body
+      # unchanged, so a rewrite there would be discarded — on those a detection
+      # is DENIED instead. Use action: block if you want one answer everywhere.
+      action: redact
+      redact_placeholder: "[REDACTED]"
+
+  - name: secret-scan
+    type: guardrail
+    stage: before_request
+    enabled: false
+    config:
+      # Omit `kinds` for every curated credential kind (aws_access_key,
+      # github_token, slack_token, openai_key, google_api_key, stripe_key,
+      # private_key, jwt); an unrecognised name, and an empty list with no
+      # `patterns` to fall back on, both fail the load. List this plugin at
+      # after_request as well to screen what the model reads back out —
+      # a before_request-only entry screens the prompt and nothing else.
+      # Only action: block rejects; warn and log detect and forward.
+      action: block
+
+  - name: prompt-shield
+    type: guardrail
+    stage: before_request
+    enabled: false
+    config:
+      # Omit `categories` for all four: system_override, role_manipulation,
+      # instruction_leak, delimiter_attack. An unrecognised name, an empty
+      # list, and a value that is not a list all fail the load rather than
+      # enabling no category or silently enabling every one.
+      # Only action: block rejects; warn and log detect and forward.
+      action: block
+
+  - name: schema-guard
+    type: guardrail
+    stage: after_request
+    enabled: false
+    config:
+      # Validates the model's response. after_request only — on a streamed
+      # response it can report a violation but cannot unsend the tokens.
+      schema:
+        type: object
+        required: ["name"]
+        properties:
+          name:
+            type: string
+      action: block
 
   - name: rate-limit
     type: guardrail

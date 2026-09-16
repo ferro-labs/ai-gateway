@@ -76,6 +76,36 @@ var builtins = []BuiltinPlugin{
 		Settings: []string{"spend_limit_usd", "input_per_m_tokens", "output_per_m_tokens", "cache_read_per_m_tokens", "cache_write_per_m_tokens", "max_keys", "store_id"},
 	},
 	{
+		Name:     "regex-guard",
+		Type:     TypeGuardrail,
+		Summary:  "Rejects or flags content matching named regular expressions; screens the request at before_request and the response at after_request according to each rule's apply_to.",
+		Settings: []string{"rules", "action"},
+	},
+	{
+		Name:     "pii-redact",
+		Type:     TypeGuardrail,
+		Summary:  "Detects personally identifiable information and either denies the request or rewrites it with the values replaced by a placeholder; redact applies on the chat-shaped surfaces, and a detection on any other surface is denied instead.",
+		Settings: []string{"entities", "patterns", "action", "redact_placeholder"},
+	},
+	{
+		Name:     "secret-scan",
+		Type:     TypeGuardrail,
+		Summary:  "Detects credentials — cloud keys, tokens, private keys — in the request and applies the configured action, only block rejecting it; screens the model's response when also listed at after_request.",
+		Settings: []string{"kinds", "patterns", "action"},
+	},
+	{
+		Name:     "prompt-shield",
+		Type:     TypeGuardrail,
+		Summary:  "Detects prompt-injection and jailbreak attempts by category over common written forms and applies the configured action, only block rejecting the request.",
+		Settings: []string{"categories", "action"},
+	},
+	{
+		Name:     "schema-guard",
+		Type:     TypeGuardrail,
+		Summary:  "Validates the model's response against a JSON Schema subset — type, required and properties — at after_request.",
+		Settings: []string{"schema", "action"},
+	},
+	{
 		Name:     "response-cache",
 		Type:     TypeTransform,
 		Summary:  "Serves an identical request from memory instead of calling a provider again, scoped to the API key that primed it — one credential's response is never served to another.",

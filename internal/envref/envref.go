@@ -30,6 +30,35 @@ import (
 // mangles secrets.
 var refPattern = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 
+// HasReference reports whether s carries a ${VAR} reference Expand would
+// substitute.
+func HasReference(s string) bool {
+	return refPattern.MatchString(s)
+}
+
+// HasReferenceIn reports whether any string inside v — walking maps and lists
+// — still carries a ${VAR} reference. It is what a pre-flight check asks of a
+// whole config block before deciding whether it can judge the block yet.
+func HasReferenceIn(v any) bool {
+	switch t := v.(type) {
+	case string:
+		return HasReference(t)
+	case []any:
+		for _, item := range t {
+			if HasReferenceIn(item) {
+				return true
+			}
+		}
+	case map[string]any:
+		for _, item := range t {
+			if HasReferenceIn(item) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // Expand substitutes every ${VAR} in s.
 //
 // An undefined variable is an operator error, not a default: Expand returns an error

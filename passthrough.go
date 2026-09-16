@@ -282,7 +282,7 @@ func (g *Gateway) runPassthroughGovernance(
 	}
 	pctx := g.newPluginContext(ctx, plugins, span, &req)
 	defer plugin.PutContext(pctx)
-	pctx.Metadata["surface"] = surfacePassthrough
+	pctx.Metadata[plugin.MetadataSurface] = surfacePassthrough
 
 	// Fail closed BEFORE the stage runs, not inside it. A guardrail handed an
 	// empty projection would approve the request — it has nothing to match on —
