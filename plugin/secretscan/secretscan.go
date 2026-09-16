@@ -39,7 +39,11 @@ type secret struct {
 // costs a developer their request, so the patterns stay literal.
 var curated = []secret{
 	{"aws_access_key", regexp.MustCompile(`\b(?:AKIA|ASIA)[0-9A-Z]{16}\b`)},
-	{"github_token", regexp.MustCompile(`\bgh[pousr]_[A-Za-z0-9]{36,}\b`)},
+	// Two shapes under one kind: the classic prefixes, and the github_pat_
+	// prefix a fine-grained personal access token carries — the format GitHub
+	// now issues by default, whose body contains underscores the classic
+	// character class excludes.
+	{"github_token", regexp.MustCompile(`\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{36,})\b`)},
 	{"slack_token", regexp.MustCompile(`\bxox[baprs]-[0-9A-Za-z-]{10,}\b`)},
 	{"openai_key", regexp.MustCompile(`\bsk-[A-Za-z0-9_-]{20,}\b`)},
 	{"google_api_key", regexp.MustCompile(`\bAIza[0-9A-Za-z_-]{35}\b`)},

@@ -89,6 +89,11 @@ model asked to act rather than answer puts its output in those fields, and a
 client replaying a conversation sends them back, so a credential or a matched
 pattern there is now screened where it previously passed.
 
+`secret-scan`'s `github_token` kind matches fine-grained personal access
+tokens (`github_pat_…`) as well as the classic prefixes. The fine-grained
+format is the one GitHub now issues by default, and it was passing screening in
+both directions while the kind reported itself selected.
+
 `schema-guard` checks its `schema` block at load, recursively. A malformed
 **supported** keyword — `required` written as a bare name, a `type` naming no
 JSON Schema type, a `properties` map whose subschema is not an object — is a

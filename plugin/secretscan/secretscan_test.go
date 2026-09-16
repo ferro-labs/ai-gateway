@@ -51,6 +51,51 @@ func TestExecute_BlocksAPrivateKeyBlock(t *testing.T) {
 	}
 }
 
+// A fine-grained personal access token carries a different prefix from the
+// classic ones, and it is the format GitHub now issues by default. Matching
+// only the classic prefixes let one through in both directions while the
+// github_token kind reported itself selected.
+func TestExecute_BlocksAFineGrainedGitHubToken(t *testing.T) {
+	s := &SecretScan{}
+	if err := s.Init(map[string]any{}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	// Structurally a fine-grained token — the prefix, the 22-character
+	// identifier, the separator and the 59-character secret — and not a
+	// credential: every character after the prefix is filler.
+	token := "github_pat_" + strings.Repeat("A", 22) + "_" + strings.Repeat("B", 59) // #nosec G101 -- filler in the shape of a token, not a credential.
+	pctx := newRequest("deploy with " + token)
+	if err := s.Execute(context.Background(), pctx); err != nil {
+		t.Fatalf("Execute returned an error; a denial is a verdict, not a fault: %v", err)
+	}
+
+	if !pctx.Reject {
+		t.Fatal("a fine-grained GitHub token was forwarded to the provider")
+	}
+	if !strings.Contains(pctx.Reason, "github_token") {
+		t.Fatalf("Reason does not name the kind: %q", pctx.Reason)
+	}
+}
+
+// The classic prefixes must keep matching: the fine-grained pattern is an
+// addition, not a replacement.
+func TestExecute_BlocksAClassicGitHubToken(t *testing.T) {
+	s := &SecretScan{}
+	if err := s.Init(map[string]any{}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	pctx := newRequest("deploy with ghp_" + strings.Repeat("A", 36)) // #nosec G101 -- filler in the shape of a token, not a credential.
+	if err := s.Execute(context.Background(), pctx); err != nil {
+		t.Fatalf("Execute returned an error; a denial is a verdict, not a fault: %v", err)
+	}
+
+	if !pctx.Reject {
+		t.Fatal("a classic GitHub token was forwarded to the provider")
+	}
+}
+
 func TestExecute_ReasonNamesTheSecretKindNotTheSecret(t *testing.T) {
 	s := &SecretScan{}
 	if err := s.Init(map[string]any{}); err != nil {
