@@ -94,6 +94,12 @@ var builtins = []BuiltinPlugin{
 		Settings: []string{"providers", "patterns", "action"},
 	},
 	{
+		Name:     "prompt-shield",
+		Type:     TypeGuardrail,
+		Summary:  "Rejects requests carrying prompt-injection and jailbreak attempts, matched by category over common written forms.",
+		Settings: []string{"categories", "action"},
+	},
+	{
 		Name:     "response-cache",
 		Type:     TypeTransform,
 		Summary:  "Serves an identical request from memory instead of calling a provider again, scoped to the API key that primed it — one credential's response is never served to another.",

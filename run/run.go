@@ -20,6 +20,7 @@ import (
 	_ "github.com/ferro-labs/ai-gateway/plugin/logger"
 	_ "github.com/ferro-labs/ai-gateway/plugin/maxtoken"
 	_ "github.com/ferro-labs/ai-gateway/plugin/piiredact"
+	_ "github.com/ferro-labs/ai-gateway/plugin/promptshield"
 	_ "github.com/ferro-labs/ai-gateway/plugin/ratelimit"
 	_ "github.com/ferro-labs/ai-gateway/plugin/regexguard"
 	_ "github.com/ferro-labs/ai-gateway/plugin/secretscan"

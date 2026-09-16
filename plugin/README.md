@@ -64,6 +64,7 @@ gateway refuses to start if they disagree.
 | **regex-guard** | guardrail | before_request (and after_request to screen the response) | Rejects or flags content matching named regular expressions, per rule's `apply_to`. |
 | **pii-redact** | guardrail | before_request | Detects personally identifiable information and either denies the request or rewrites it in place with the values replaced by a placeholder, letting it continue. |
 | **secret-scan** | guardrail | before_request (and after_request to screen the response) | Rejects content carrying credentials — cloud keys, tokens, private keys — in either direction, so a model asked to read one back out of its context is screened too. |
+| **prompt-shield** | guardrail | before_request | Rejects requests carrying prompt-injection and jailbreak attempts, matched by category over common written forms. |
 | **max-token** | guardrail | before_request | Rejects a request that declares a completion ceiling above the limit, or exceeds the message-count / input-length limit. It never *imposes* a ceiling. |
 | **rate-limit** | ratelimit | before_request | Bounds request rate globally and per API key or user, independently of the per-IP HTTP limiter. |
 | **budget** | ratelimit | before_request + after_request | Tracks estimated spend per API key and refuses requests once the budget is exhausted. |
@@ -131,6 +132,26 @@ config:
   action: block                # block | warn | log
   providers: ["aws_access_key", "private_key"]  # optional; default is every curated set
   patterns: ['\bACME-KEY-[0-9]{8}\b']            # optional custom regexes, compiled at load
+```
+
+### prompt-shield
+
+Rejects requests carrying prompt-injection and jailbreak attempts, matched by
+category (`system_override`, `role_manipulation`, `instruction_leak`,
+`delimiter_attack`) over the common written forms. Screens the request only:
+by `after_request` the model has already acted on an injection, and on a
+streamed response the tokens have already been delivered, so there is nothing
+left to withhold there. These are heuristics over phrasing, not a classifier —
+they catch the common written forms and will miss an attacker who paraphrases.
+Pair this with an external provider for adversarial traffic; it is one layer,
+not the whole defence. The denial reason names the category, never the
+matched phrase — quoting the match would let an attacker binary-search the
+pattern.
+
+```yaml
+config:
+  action: block       # block | warn | log
+  categories: ["system_override", "instruction_leak"]  # optional; default is every category
 ```
 
 ### max-token
