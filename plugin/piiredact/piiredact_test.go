@@ -110,8 +110,13 @@ func TestExecute_RedactsEveryContentPartNotJustContent(t *testing.T) {
 		Metadata: map[string]any{},
 		Request: &providers.Request{
 			Messages: []providers.Message{{
+				// Two parts carrying different values: one part cannot show that
+				// the rewrite iterates past the first, and redacting only the
+				// first would forward the second to the provider while the log
+				// still reported a redaction.
 				ContentParts: []providers.ContentPart{
 					{Type: "input_audio", Text: "call 555-123-4567"},
+					{Type: "input_audio", Text: "ssn is 123-45-6789"},
 				},
 			}},
 		},
@@ -120,8 +125,12 @@ func TestExecute_RedactsEveryContentPartNotJustContent(t *testing.T) {
 		t.Fatalf("Execute: %v", err)
 	}
 
-	if got := pctx.Request.Messages[0].ContentParts[0].Text; strings.Contains(got, "555-123-4567") {
+	parts := pctx.Request.Messages[0].ContentParts
+	if got := parts[0].Text; strings.Contains(got, "555-123-4567") {
 		t.Fatalf("part text %q was not redacted — a non-text part leaves no trace in Content", got)
+	}
+	if got := parts[1].Text; strings.Contains(got, "123-45-6789") {
+		t.Fatalf("second part text %q was not redacted — the rewrite stopped at the first part", got)
 	}
 }
 
