@@ -95,9 +95,10 @@ func luhnValid(s string) bool {
 // that did not happen would forward the exact value the plugin claims to
 // remove.
 //
-// The action set is deliberately just {block, redact} — unlike a filter, this
-// plugin has no non-blocking observe mode: "warn" on a redactor would mean
-// detecting PII and forwarding it anyway, which defeats the plugin's purpose.
+// With action "log" nothing is denied or rewritten: a detection is recorded
+// by entity type and the request is forwarded as written. That is the
+// observe-only mode for sizing a policy before enforcing it, and it behaves
+// the same on every surface, since it has no rewrite to lose.
 type PIIRedact struct {
 	entities    []entity
 	action      string
@@ -122,7 +123,7 @@ func (p *PIIRedact) SupportedStages() []plugin.Stage {
 }
 
 // actions is the closed set this plugin honours; see plugin.NormalizeAction.
-var actions = []string{plugin.ActionBlock, plugin.ActionRedact}
+var actions = []string{plugin.ActionBlock, plugin.ActionRedact, plugin.ActionLog}
 
 // ValidateConfig runs the same checks Init runs, so a misconfiguration is a
 // `ferrogw validate` error rather than a failed start; see plugin.ValidateViaInit.
@@ -218,32 +219,74 @@ func (p *PIIRedact) Execute(ctx context.Context, pctx *plugin.Context) error {
 		return nil
 	}
 
+	if p.action == plugin.ActionLog {
+		p.logRequest(ctx, pctx.Request)
+		return nil
+	}
+
 	for text := range plugin.RequestText(pctx.Request) {
 		// The caller has gone; see plugin.RequestText for why this is not an error.
 		if ctx.Err() != nil {
 			return nil
 		}
-		if name, found := p.detect(text); found {
-			logger.Ctx(ctx).Info("pii-redact: blocked request", "entity", name)
-			pctx.Reject = true
-			// The entity TYPE, never the value: the caller needs to know what to
-			// remove, and echoing the value back would put it in the error log of
-			// every hop between here and them.
-			pctx.Reason = "request blocked by content policy: " + name + " detected"
-			if p.action == plugin.ActionRedact {
-				// A verdict, not an error: the plugin reached a decision. Say why
-				// the configured action did not apply, so the answer does not read
-				// as an unexplained block on a surface the operator set to redact.
-				pctx.Reason += "; content cannot be sanitized on this surface"
-			}
-			return nil
+		name, found := p.detect(text)
+		if !found {
+			continue
 		}
+		logger.Ctx(ctx).Info("pii-redact: blocked request", "entity", name)
+		pctx.Reject = true
+		// The entity TYPE, never the value: the caller needs to know what to
+		// remove, and echoing the value back would put it in the error log of
+		// every hop between here and them.
+		pctx.Reason = "request blocked by content policy: " + name + " detected"
+		if p.action == plugin.ActionRedact {
+			// A verdict, not an error: the plugin reached a decision. Say why
+			// the configured action did not apply, so the answer does not read
+			// as an unexplained block on a surface the operator set to redact.
+			pctx.Reason += "; content cannot be sanitized on this surface"
+		}
+		return nil
 	}
 	return nil
 }
 
+// Detect reports which built-in entity types occur in text, by name, sorted.
+// It runs every built-in entity regardless of configuration, with the same
+// patterns Execute enforces, and never returns matched text. No match is an
+// empty, non-nil slice.
+func Detect(text string) []string {
+	names := []string{}
+	for _, e := range builtinEntities {
+		if e.matches(text) {
+			names = append(names, e.name)
+		}
+	}
+	slices.Sort(names)
+	return names
+}
+
 // Close releases resources owned by the plugin.
 func (p *PIIRedact) Close() error { return nil }
+
+// logRequest records every entity type the request carries, once each, across
+// every screenable field. block stops at the first match because one is a
+// verdict; the record log keeps has to name everything block would deny, or
+// it understates the policy it is sizing.
+func (p *PIIRedact) logRequest(ctx context.Context, req *providers.Request) {
+	seen := make(map[string]bool, len(p.entities))
+	for text := range plugin.RequestText(req) {
+		if ctx.Err() != nil {
+			return
+		}
+		for _, e := range p.entities {
+			if seen[e.name] || !e.matches(text) {
+				continue
+			}
+			seen[e.name] = true
+			logger.Ctx(ctx).Info("pii-redact: detected in request", "entity", e.name)
+		}
+	}
+}
 
 // redactRequest rewrites every screenable field in place — the same set
 // plugin.RequestText screens, field for field.

@@ -18,6 +18,13 @@
 # command is retried, bounded, and its output is printed when the budget runs
 # out. A version mismatch is not retried: a wrong version is a bug, not lag.
 #
+# Each npx attempt runs against a fresh npm cache. The registry makes the seven
+# npm packages visible in its own order, minutes apart, and an optional
+# platform package that is not visible yet is skipped without error; npx then
+# keeps that binary-less install in its cache and reuses it on every later
+# attempt, so the retry never recovers (v1.5.7: linux and windows failed all
+# twenty attempts while the packages had been visible since attempt three).
+#
 # Each attempt is bounded too: a stalled fetch would otherwise turn "10 x 30 s"
 # into an unbounded wait. GNU coreutils `timeout` is on the Linux and Windows
 # (Git Bash) runners; the macOS image has neither it nor `gtimeout`, so perl's
@@ -60,7 +67,14 @@ bounded() {
 }
 
 attempt=1
+npm_config_cache=""
+trap '[ -n "$npm_config_cache" ] && rm -rf "$npm_config_cache"' EXIT
 while :; do
+  if [ "$label" = npx ]; then
+    [ -n "$npm_config_cache" ] && rm -rf "$npm_config_cache"
+    npm_config_cache="$(mktemp -d)"
+    export npm_config_cache
+  fi
   raw="$(bounded "$@" 2>&1)"
   rc=$?
   [ "$rc" -eq 0 ] && break

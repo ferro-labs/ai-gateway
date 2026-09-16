@@ -5,6 +5,31 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.8] — 2026-09-16
+
+### Added
+
+- `piiredact.Detect` and `promptshield.Detect` — pure functions that report, by
+  name, which built-in PII entity types or injection categories occur in a
+  string. They run the same patterns the plugins enforce and never return
+  matched text, so an embedding policy layer can ask the same question with
+  the same answer.
+- `pii-redact` accepts `action: log`: detect and record, without denying or
+  rewriting. The observe-only mode every other content guardrail already has.
+- `secret-scan` reports Anthropic keys under their own `anthropic_key` kind
+  instead of `openai_key`. The key was already caught; the audit trail now
+  names the right vendor, and `kinds: ["openai_key"]` no longer covers a
+  vendor it does not name.
+- `secret-scan` gains seven curated kinds, each matched on structure alone:
+  `gitlab_token`, `npm_token`, `huggingface_token`, `sendgrid_key`,
+  `twilio_key` (the API key; an account SID is an identifier and is left
+  alone), `azure_storage_key` and `slack_webhook`.
+
+### Fixed
+
+- The least-latency end-to-end check tolerates normal scheduling variance
+  while still failing a strategy that has stopped preferring the fast target.
+
 ## [1.5.7] — 2026-09-16
 
 ### Added

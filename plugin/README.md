@@ -70,7 +70,7 @@ every stage they name.
 |---|---|---|---|
 | **word-filter** | guardrail | before_request (and after_request to screen the response) | Rejects a request whose text contains a blocked entry as a substring. |
 | **regex-guard** | guardrail | before_request (and after_request to screen the response) | Rejects or flags content matching named regular expressions, per rule's `apply_to`. |
-| **pii-redact** | guardrail | before_request | Detects personally identifiable information and either denies the request or rewrites it in place with the values replaced by a placeholder, letting it continue. Rewriting applies to the chat-shaped surfaces; elsewhere a detection is denied. |
+| **pii-redact** | guardrail | before_request | Detects personally identifiable information and either denies the request, rewrites it in place with the values replaced by a placeholder, or only records the detection. Rewriting applies to the chat-shaped surfaces; elsewhere a detection under `redact` is denied. |
 | **secret-scan** | guardrail | before_request (and after_request to screen the response) | Detects content carrying credentials — cloud keys, tokens, private keys — and applies the configured action; only `block` rejects. The response is screened only when this plugin is **also** listed at `after_request`. |
 | **prompt-shield** | guardrail | before_request | Detects prompt-injection and jailbreak attempts, matched by category over common written forms, and applies the configured action; only `block` rejects. |
 | **schema-guard** | guardrail | after_request | Validates the model's response against a JSON Schema subset — `type`, `required`, `properties`. |
@@ -122,9 +122,11 @@ config:
 ### pii-redact
 
 Detects personally identifiable information (email, phone, SSN, credit card, or
-custom regex patterns) and either denies the request (`action: block`) or, the
+custom regex patterns) and either denies the request (`action: block`), or, the
 only built-in guardrail that can, rewrites it in place and lets it continue
-(`action: redact`). Redaction rewrites every screenable field — a message's
+(`action: redact`), or records the detection by entity type and forwards the
+request as written (`action: log`, the observe-only mode for sizing a policy
+before enforcing it). Redaction rewrites every screenable field — a message's
 `Content`, its reasoning content, each of its content parts and each tool
 call's arguments — so none of them can carry the value past the plugin. A
 `credit_card` match must also pass the Luhn check, so a sixteen-digit order id
@@ -137,12 +139,17 @@ request back before routing it. Every other surface (`/v1/embeddings`,
 `/v1/audio/*` and the `/v1/*` pass-through) forwards its own body unchanged,
 so a rewrite there would be discarded: on those a detection is **denied**
 instead, with a reason saying the content could not be sanitized on that
-surface. `action: block` behaves identically on every surface.
+surface. `action: block` and `action: log` behave identically on every surface.
+
+`piiredact.Detect(text)` is the same detection as a pure function: it runs
+every built-in entity and returns the names that matched, sorted, and never the
+matched text. It exists so a policy layer embedding the gateway can ask the
+same question with the same patterns instead of carrying a copy that drifts.
+Custom `patterns` are configuration and are not part of it.
 
 ```yaml
 config:
-  action: redact              # block | redact (no observe-only mode: a redactor
-                               # that only warned would mean forwarding the PII)
+  action: redact              # block | redact | log (log records and forwards)
   entities: ["email", "ssn"]  # optional; default is every built-in entity.
                                # An unrecognised name fails the load, and so
                                # does an empty list with no `patterns` to fall
@@ -165,7 +172,13 @@ entropy heuristic, because a false positive here costs a developer their
 request. It screens the response as well as the request: a model asked to
 "show me the config" will read a credential back out of its context, and a
 guardrail that only watched the prompt would miss it. The matched kind (e.g.
-`aws_access_key`) is logged and reported; the credential itself never is.
+`aws_access_key`) is logged and reported; the credential itself never is. The
+curated kinds are `aws_access_key`, `github_token`, `slack_token`,
+`anthropic_key`, `openai_key`, `google_api_key`, `stripe_key`, `private_key`,
+`jwt`, `gitlab_token`, `npm_token`, `huggingface_token`, `sendgrid_key`,
+`twilio_key`, `azure_storage_key` and `slack_webhook`; an Anthropic key is
+reported under its own kind even though it also fits the OpenAI shape, so a
+`kinds` selection covers exactly the vendors it names.
 
 **Response screening needs its own `plugins[]` entry.** One entry registers one
 stage, so a `before_request`-only entry screens the prompt and nothing else —
@@ -208,6 +221,12 @@ pattern.
 Only `action: block` rejects. Under `warn` or `log` a detected attempt is
 recorded by category and the prompt **reaches the model anyway** — those
 actions are for measuring a pattern's false-positive rate before enforcing it.
+
+`promptshield.Detect(text)` is the same detection as a pure function: it runs
+every category and returns the names that matched, sorted, and never the
+matched phrase. It carries the same ceiling as the plugin — pattern matches
+over common written forms, not a classifier — and exists so a policy layer
+embedding the gateway can ask the same question with the same patterns.
 
 ```yaml
 config:

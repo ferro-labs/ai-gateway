@@ -1,13 +1,25 @@
 package secretscan
 
 import (
+	"bytes"
 	"context"
 	"strings"
 	"testing"
 
+	"github.com/ferro-labs/ai-gateway/pkg/logger"
 	"github.com/ferro-labs/ai-gateway/plugin"
 	"github.com/ferro-labs/ai-gateway/providers"
 )
+
+// captureLog routes the process logger into a buffer for the test's lifetime.
+func captureLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	previous := logger.Default()
+	logger.SetDefault(logger.New(logger.Options{Level: "debug", Output: &buf}))
+	t.Cleanup(func() { logger.SetDefault(previous) })
+	return &buf
+}
 
 func newRequest(content string) *plugin.Context {
 	return &plugin.Context{
@@ -136,6 +148,41 @@ func TestExecute_BlocksTheAdditionalCredentialForms(t *testing.T) {
 			content: "verify with whsec_" + strings.Repeat("A", 32), // #nosec G101 -- filler in the shape of a secret, not a credential.
 			kind:    "stripe_key",
 		},
+		{
+			name:    "a GitLab personal access token",
+			content: "clone with glpat-" + strings.Repeat("a", 20), // #nosec G101 -- filler in the shape of a token, not a credential.
+			kind:    "gitlab_token",
+		},
+		{
+			name:    "an npm access token",
+			content: "publish with npm_" + strings.Repeat("a", 36), // #nosec G101 -- filler in the shape of a token, not a credential.
+			kind:    "npm_token",
+		},
+		{
+			name:    "a Hugging Face token",
+			content: "download with hf_" + strings.Repeat("a", 30), // #nosec G101 -- filler in the shape of a token, not a credential.
+			kind:    "huggingface_token",
+		},
+		{
+			name:    "a SendGrid key",
+			content: "send with SG." + strings.Repeat("a", 22) + "." + strings.Repeat("b", 43), // #nosec G101 -- filler in the shape of a key, not a credential.
+			kind:    "sendgrid_key",
+		},
+		{
+			name:    "a Twilio API key",
+			content: "dial with SK" + strings.Repeat("0123456789abcdef", 2), // #nosec G101 -- filler in the shape of a key, not a credential.
+			kind:    "twilio_key",
+		},
+		{
+			name:    "an Azure storage account key",
+			content: "DefaultEndpointsProtocol=https;AccountName=x;AccountKey=" + strings.Repeat("A", 86) + "==", // #nosec G101 -- filler in the shape of a key, not a credential.
+			kind:    "azure_storage_key",
+		},
+		{
+			name:    "a Slack incoming webhook",
+			content: "post to https://hooks.slack.com/services/T00000000/B00000000/" + strings.Repeat("x", 24), // #nosec G101 -- filler in the shape of a webhook, not a credential.
+			kind:    "slack_webhook",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := &SecretScan{}
@@ -167,7 +214,9 @@ func TestExecute_AllowsProseNamingTheAdditionalForms(t *testing.T) {
 		t.Fatalf("Init: %v", err)
 	}
 
-	pctx := newRequest("rotate the whsec webhook signing secret, reissue the xapp and xoxe Slack tokens, and re-encrypt the DSA private key")
+	pctx := newRequest("rotate the whsec webhook signing secret, reissue the xapp and xoxe Slack tokens, re-encrypt the DSA private key, " +
+		"regenerate the glpat, npm_ and hf_ tokens, the SG. SendGrid key, the SK Twilio key, the AccountKey= in the connection string " +
+		"and the hooks.slack.com/services webhook; the Twilio account SID AC" + strings.Repeat("0123456789abcdef", 2) + " is an identifier, not a secret")
 	if err := s.Execute(context.Background(), pctx); err != nil {
 		t.Fatalf("Execute returned an error; a denial is a verdict, not a fault: %v", err)
 	}
@@ -476,6 +525,70 @@ func TestValidateConfig_RejectsWhatInitRejects(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("error %q does not name %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// Before anthropic_key existed, a kinds list naming only openai_key covered
+// Anthropic keys by accident. It no longer does, and a policy that loses
+// coverage on an upgrade must say so where the operator will read it.
+func TestInit_WarnsWhenOpenAIKeyIsSelectedWithoutAnthropicKey(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		kinds []any
+		warn  bool
+	}{
+		{"openai_key alone", []any{"openai_key"}, true},
+		{"openai_key with anthropic_key", []any{"openai_key", "anthropic_key"}, false},
+		{"another kind alone", []any{"aws_access_key"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			log := captureLog(t)
+			if err := (&SecretScan{}).Init(map[string]any{"kinds": tc.kinds}); err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			if got := strings.Contains(log.String(), "anthropic_key"); got != tc.warn {
+				t.Fatalf("warned=%v, want %v; log: %s", got, tc.warn, log.String())
+			}
+		})
+	}
+}
+
+// An Anthropic key starts with sk-ant-, which the openai_key shape also
+// accepts. Reporting it as openai_key sends an operator investigating a block
+// to the wrong vendor, and lets a kinds selection cover a vendor it never named.
+func TestExecute_ReportsAnAnthropicKeyUnderItsOwnKind(t *testing.T) {
+	anthropic := "sk-ant-" + strings.Repeat("a", 30) // #nosec G101 -- filler in the shape of a key, not a credential.
+	openai := "sk-" + strings.Repeat("a", 30)        // #nosec G101 -- filler in the shape of a key, not a credential.
+	for _, tc := range []struct {
+		name    string
+		config  map[string]any
+		content string
+		reject  bool
+		kind    string
+	}{
+		{"anthropic key, every kind", map[string]any{}, "use " + anthropic, true, "anthropic_key"},
+		{"openai key, every kind", map[string]any{}, "use " + openai, true, "openai_key"},
+		{"sk- inside a URL fragment", map[string]any{}, "see https://example.com/docs#sk-setup", false, ""},
+		{"anthropic key, only openai_key selected", map[string]any{"kinds": []any{"openai_key"}}, "use " + anthropic, false, ""},
+		{"anthropic key, only anthropic_key selected", map[string]any{"kinds": []any{"anthropic_key"}}, "use " + anthropic, true, "anthropic_key"},
+		{"openai key, only anthropic_key selected", map[string]any{"kinds": []any{"anthropic_key"}}, "use " + openai, false, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &SecretScan{}
+			if err := s.Init(tc.config); err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			pctx := newRequest(tc.content)
+			if err := s.Execute(context.Background(), pctx); err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			if pctx.Reject != tc.reject {
+				t.Fatalf("rejected=%v, want %v (reason %q)", pctx.Reject, tc.reject, pctx.Reason)
+			}
+			if tc.kind != "" && !strings.HasSuffix(pctx.Reason, tc.kind+" detected") {
+				t.Fatalf("Reason %q does not name %q", pctx.Reason, tc.kind)
 			}
 		})
 	}

@@ -371,7 +371,8 @@ plugins:
       # An unrecognised name fails the load rather than selecting nothing, and
       # so does an empty list with no `patterns` to fall back on.
       entities: ["ssn", "credit_card"]
-      # block denies the request; redact rewrites it and lets it through.
+      # block denies the request; redact rewrites it and lets it through; log
+      # records the detection by entity type and forwards the request as written.
       #
       # redact takes effect on the chat-shaped surfaces (/v1/chat/completions,
       # streamed or not, and /v1/completions), the ones the gateway reads the
@@ -387,8 +388,10 @@ plugins:
     enabled: false
     config:
       # Omit `kinds` for every curated credential kind (aws_access_key,
-      # github_token, slack_token, openai_key, google_api_key, stripe_key,
-      # private_key, jwt); an unrecognised name, and an empty list with no
+      # github_token, slack_token, anthropic_key, openai_key, google_api_key,
+      # stripe_key, private_key, jwt, gitlab_token, npm_token,
+      # huggingface_token, sendgrid_key, twilio_key, azure_storage_key,
+      # slack_webhook); an unrecognised name, and an empty list with no
       # `patterns` to fall back on, both fail the load. List this plugin at
       # after_request as well to screen what the model reads back out —
       # a before_request-only entry screens the prompt and nothing else.

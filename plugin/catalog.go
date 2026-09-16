@@ -84,7 +84,7 @@ var builtins = []BuiltinPlugin{
 	{
 		Name:     "pii-redact",
 		Type:     TypeGuardrail,
-		Summary:  "Detects personally identifiable information and either denies the request or rewrites it with the values replaced by a placeholder; redact applies on the chat-shaped surfaces, and a detection on any other surface is denied instead.",
+		Summary:  "Detects personally identifiable information and either denies the request (block), rewrites it with the values replaced by a placeholder (redact), or records the detection and forwards the request as written (log); redact applies on the chat-shaped surfaces, and under redact a detection on any other surface is denied instead.",
 		Settings: []string{"entities", "patterns", "action", "redact_placeholder"},
 	},
 	{

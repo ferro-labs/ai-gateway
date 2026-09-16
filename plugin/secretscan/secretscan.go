@@ -29,6 +29,17 @@ func init() {
 type secret struct {
 	name string
 	re   *regexp.Regexp
+	// verify, when set, decides whether a regex match is a real instance of
+	// the kind. nil means every match counts.
+	verify func(match string) bool
+}
+
+// matches reports whether content carries at least one verified instance.
+func (s secret) matches(content string) bool {
+	if s.verify == nil {
+		return s.re.MatchString(content)
+	}
+	return slices.ContainsFunc(s.re.FindAllString(content, -1), s.verify)
 }
 
 // curated is the default credential pattern set, selectable by kind.
@@ -38,25 +49,45 @@ type secret struct {
 // belong to a scanner with a corpus to tune against; here a false positive
 // costs a developer their request, so the patterns stay literal.
 var curated = []secret{
-	{"aws_access_key", regexp.MustCompile(`\b(?:AKIA|ASIA)[0-9A-Z]{16}\b`)},
+	{name: "aws_access_key", re: regexp.MustCompile(`\b(?:AKIA|ASIA)[0-9A-Z]{16}\b`)},
 	// Two shapes under one kind: the classic prefixes, and the github_pat_
 	// prefix a fine-grained personal access token carries — the format GitHub
 	// now issues by default, whose body contains underscores the classic
 	// character class excludes.
-	{"github_token", regexp.MustCompile(`\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{36,})\b`)},
+	{name: "github_token", re: regexp.MustCompile(`\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{36,})\b`)},
 	// The bot, user and legacy prefixes, plus the app-level (xapp-) and
 	// rotation (xoxe-) prefixes, which carry the same access as the rest and
 	// were passing screening while the kind reported itself selected.
-	{"slack_token", regexp.MustCompile(`\b(?:xox[abeprs]|xapp)-[0-9A-Za-z-]{10,}\b`)},
-	{"openai_key", regexp.MustCompile(`\bsk-[A-Za-z0-9_-]{20,}\b`)},
-	{"google_api_key", regexp.MustCompile(`\bAIza[0-9A-Za-z_-]{35}\b`)},
+	{name: "slack_token", re: regexp.MustCompile(`\b(?:xox[abeprs]|xapp)-[0-9A-Za-z-]{10,}\b`)},
+	{name: "anthropic_key", re: regexp.MustCompile(`\bsk-ant-[A-Za-z0-9_-]{20,}\b`)},
+	// An Anthropic key also fits this shape. It is excluded by its prefix,
+	// which RE2 cannot express as a lookahead, so that a kinds selection
+	// naming only openai_key does not silently cover another vendor and the
+	// reported kind sends an operator to the right one.
+	{name: "openai_key", re: regexp.MustCompile(`\bsk-[A-Za-z0-9_-]{20,}\b`), verify: func(match string) bool {
+		return !strings.HasPrefix(match, "sk-ant-")
+	}},
+	{name: "google_api_key", re: regexp.MustCompile(`\bAIza[0-9A-Za-z_-]{35}\b`)},
 	// The API keys, plus the webhook signing secret, which authenticates
 	// callbacks and is a credential in the same sense.
-	{"stripe_key", regexp.MustCompile(`\b(?:[rs]k_(?:live|test)|whsec)_[0-9A-Za-z]{24,}\b`)},
+	{name: "stripe_key", re: regexp.MustCompile(`\b(?:[rs]k_(?:live|test)|whsec)_[0-9A-Za-z]{24,}\b`)},
 	// OpenPGP armor ends in "PRIVATE KEY BLOCK"; every other form ends in
 	// "PRIVATE KEY".
-	{"private_key", regexp.MustCompile(`-----BEGIN (?:RSA |DSA |EC |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY(?: BLOCK)?-----`)},
-	{"jwt", regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b`)},
+	{name: "private_key", re: regexp.MustCompile(`-----BEGIN (?:RSA |DSA |EC |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY(?: BLOCK)?-----`)},
+	{name: "jwt", re: regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b`)},
+	{name: "gitlab_token", re: regexp.MustCompile(`\bglpat-[A-Za-z0-9_-]{20,}\b`)},
+	{name: "npm_token", re: regexp.MustCompile(`\bnpm_[A-Za-z0-9]{36}\b`)},
+	{name: "huggingface_token", re: regexp.MustCompile(`\bhf_[A-Za-z0-9]{30,}\b`)},
+	{name: "sendgrid_key", re: regexp.MustCompile(`\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}\b`)},
+	// The API key only. An account SID has the same length under an AC
+	// prefix, but it is an identifier, not a credential.
+	{name: "twilio_key", re: regexp.MustCompile(`\bSK[0-9a-f]{32}\b`)},
+	{name: "azure_storage_key", re: regexp.MustCompile(`\bAccountKey=[A-Za-z0-9+/]{86}==`)},
+	// A webhook URL is a bearer credential: whoever holds it can post as the
+	// integration. Deliberately unanchored: this scans free text for the
+	// credential, it does not validate a URL, so it must match wherever the
+	// webhook sits in a prompt.
+	{name: "slack_webhook", re: regexp.MustCompile(`https://hooks\.slack\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[A-Za-z0-9]+`)},
 }
 
 // SecretScan detects content carrying credentials, in either direction, and
@@ -105,6 +136,13 @@ func (s *SecretScan) Init(config map[string]any) error {
 		return err
 	}
 	s.secrets = selected
+	// Before anthropic_key existed, a list naming only openai_key covered
+	// Anthropic keys through the shape the two share. It no longer does, and
+	// a policy that narrows on an upgrade must say so rather than let a key
+	// through in silence.
+	if present && hasKind(selected, "openai_key") && !hasKind(selected, "anthropic_key") {
+		logger.Default().Warn("secret-scan: kinds names openai_key without anthropic_key; Anthropic keys are no longer covered by openai_key, add anthropic_key to keep screening them")
+	}
 
 	custom, err := plugin.ListSetting(config["patterns"], "patterns")
 	if err != nil {
@@ -181,7 +219,7 @@ func (s *SecretScan) Close() error { return nil }
 // leaked secret.
 func (s *SecretScan) screen(ctx context.Context, pctx *plugin.Context, content, subject string) bool {
 	for _, sec := range s.secrets {
-		if !sec.re.MatchString(content) {
+		if !sec.matches(content) {
 			continue
 		}
 		logger.Ctx(ctx).Warn("secret-scan: credential detected in "+subject, "kind", sec.name)
@@ -193,6 +231,10 @@ func (s *SecretScan) screen(ctx context.Context, pctx *plugin.Context, content, 
 		return true
 	}
 	return false
+}
+
+func hasKind(secrets []secret, name string) bool {
+	return slices.ContainsFunc(secrets, func(s secret) bool { return s.name == name })
 }
 
 // selectCurated resolves the kinds selector. An ABSENT key selects every

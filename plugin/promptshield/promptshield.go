@@ -202,3 +202,18 @@ func (s *PromptShield) Execute(ctx context.Context, pctx *plugin.Context) error 
 
 // Close releases resources owned by the plugin.
 func (s *PromptShield) Close() error { return nil }
+
+// Detect reports which injection categories occur in text, by name, sorted.
+// It runs every category regardless of configuration, with the same patterns
+// Execute enforces, and never returns the matched phrase. No match is an
+// empty, non-nil slice. The package doc's limits apply.
+func Detect(text string) []string {
+	names := []string{}
+	for _, c := range categories {
+		if c.re.MatchString(text) {
+			names = append(names, c.name)
+		}
+	}
+	slices.Sort(names)
+	return names
+}
