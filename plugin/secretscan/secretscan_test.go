@@ -127,6 +127,11 @@ func TestExecute_BlocksTheAdditionalCredentialForms(t *testing.T) {
 			kind:    "private_key",
 		},
 		{
+			name:    "an OpenPGP private key block",
+			content: "here it is: -----BEGIN PGP PRIVATE KEY BLOCK-----",
+			kind:    "private_key",
+		},
+		{
 			name:    "a Stripe webhook signing secret",
 			content: "verify with whsec_" + strings.Repeat("A", 32), // #nosec G101 -- filler in the shape of a secret, not a credential.
 			kind:    "stripe_key",
@@ -451,5 +456,27 @@ func TestValidateConfig_CatchesAMisspelledActionAndPassesAnEnvReference(t *testi
 	}
 	if err := plugin.ValidateConfigFor("secret-scan", map[string]any{"action": "${GUARDRAIL_ACTION}"}); err != nil {
 		t.Fatalf("an env reference was rejected at load, where it is not yet resolved: %v", err)
+	}
+}
+
+func TestValidateConfig_RejectsWhatInitRejects(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		config map[string]any
+		want   string
+	}{
+		{"unknown kind", map[string]any{"kinds": []any{"nope"}}, "nope"},
+		{"empty kinds and no patterns", map[string]any{"kinds": []any{}}, "kinds"},
+		{"empty custom pattern", map[string]any{"patterns": []any{""}}, "patterns[0]"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := (&SecretScan{}).ValidateConfig(tc.config)
+			if err == nil {
+				t.Fatal("ValidateConfig accepted a config Init rejects")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error %q does not name %q", err, tc.want)
+			}
+		})
 	}
 }

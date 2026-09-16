@@ -53,7 +53,9 @@ var curated = []secret{
 	// The API keys, plus the webhook signing secret, which authenticates
 	// callbacks and is a credential in the same sense.
 	{"stripe_key", regexp.MustCompile(`\b(?:[rs]k_(?:live|test)|whsec)_[0-9A-Za-z]{24,}\b`)},
-	{"private_key", regexp.MustCompile(`-----BEGIN (?:RSA |DSA |EC |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY-----`)},
+	// OpenPGP armor ends in "PRIVATE KEY BLOCK"; every other form ends in
+	// "PRIVATE KEY".
+	{"private_key", regexp.MustCompile(`-----BEGIN (?:RSA |DSA |EC |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY(?: BLOCK)?-----`)},
 	{"jwt", regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b`)},
 }
 
@@ -79,13 +81,10 @@ func (s *SecretScan) Type() plugin.PluginType { return plugin.TypeGuardrail }
 // actions is the closed set this plugin honours; see plugin.NormalizeAction.
 var actions = []string{plugin.ActionBlock, plugin.ActionWarn, plugin.ActionLog}
 
-// ValidateConfig checks the action at config-load time; see plugin.ValidateAction.
-// Everything else is checked at Init, where every value is resolved.
+// ValidateConfig runs the same checks Init runs, so a misconfiguration is a
+// `ferrogw validate` error rather than a failed start; see plugin.ValidateViaInit.
 func (s *SecretScan) ValidateConfig(config map[string]any) error {
-	if err := plugin.ValidateAction(config["action"], plugin.ActionBlock, actions...); err != nil {
-		return fmt.Errorf("secret-scan: %w", err)
-	}
-	return nil
+	return plugin.ValidateViaInit("secret-scan", config, plugin.ActionBlock, actions...)
 }
 
 // Init selects the curated kinds and compiles any custom patterns.
