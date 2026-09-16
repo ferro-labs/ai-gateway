@@ -115,8 +115,14 @@ func TestExecute_ReasonNamesTheViolation(t *testing.T) {
 		t.Fatalf("Execute returned an error; a denial is a verdict, not a fault: %v", err)
 	}
 
-	if pctx.Reason == "" {
-		t.Fatal("Reason empty — the caller cannot tell which field was wrong")
+	if !pctx.Reject {
+		t.Fatal("a response missing a required field was allowed through")
+	}
+	// The field name is the whole diagnostic value here. Asserting only that
+	// the reason is non-empty passes on any string at all, including one that
+	// names a different field.
+	if !strings.Contains(pctx.Reason, "score") {
+		t.Fatalf("Reason %q does not name the missing field, so the caller cannot tell which one was wrong", pctx.Reason)
 	}
 }
 

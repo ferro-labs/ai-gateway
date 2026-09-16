@@ -50,6 +50,12 @@ func TestExecute_ReasonDoesNotLeakThePattern(t *testing.T) {
 		t.Fatalf("Execute returned an error; a denial is a verdict, not a fault: %v", err)
 	}
 
+	// Without this the test passes on a plugin that never matched at all: an
+	// empty reason leaks nothing, so the assertion below holds for a guardrail
+	// that enforced nothing.
+	if !pctx.Reject {
+		t.Fatal("the rule did not fire, so the reason under test was never produced")
+	}
 	for _, leak := range []string{`\d{3}`, "123-45-6789"} {
 		if strings.Contains(pctx.Reason, leak) {
 			t.Fatalf("Reason %q leaks %q — one probe at a time reconstructs the operator's policy", pctx.Reason, leak)
