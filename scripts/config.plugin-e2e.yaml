@@ -1,0 +1,91 @@
+# config.plugin-e2e.yaml — every content guardrail enabled at once, against a
+# mock upstream. Used by scripts/plugin_e2e.sh, phase 1.
+#
+# The rules are chosen so that one crafted request trips exactly one plugin and
+# an ordinary request trips none: schema-guard runs under `warn` here so the
+# mock's default prose answer is not rejected, and its `block` behaviour gets
+# its own phase in the script. regex-guard and secret-scan are listed at both
+# stages so the response direction is exercised too.
+strategy:
+  mode: single
+
+targets:
+  - virtual_key: openai
+
+plugins:
+  - name: word-filter
+    type: guardrail
+    stage: before_request
+    enabled: true
+    config:
+      blocked_words: ["password"]
+
+  - name: max-token
+    type: guardrail
+    stage: before_request
+    enabled: true
+    config:
+      max_tokens: 4096
+      max_messages: 50
+      max_input_length: 0
+
+  - name: regex-guard
+    type: guardrail
+    stage: before_request
+    enabled: true
+    config: &regex_guard
+      rules:
+        - name: internal-ticket-id
+          pattern: '\bINC-\d{6}\b'
+          apply_to: input
+          action: block
+        - name: observed-word
+          pattern: '\bwarnword\b'
+          apply_to: input
+          action: warn
+        - name: forbidden-output
+          pattern: 'FORBIDDEN-OUTPUT'
+          apply_to: output
+          action: block
+  - name: regex-guard
+    type: guardrail
+    stage: after_request
+    enabled: true
+    config: *regex_guard
+
+  - name: pii-redact
+    type: guardrail
+    stage: before_request
+    enabled: true
+    config:
+      action: redact
+
+  - name: secret-scan
+    type: guardrail
+    stage: before_request
+    enabled: true
+    config:
+      action: block
+  - name: secret-scan
+    type: guardrail
+    stage: after_request
+    enabled: true
+    config:
+      action: block
+
+  - name: prompt-shield
+    type: guardrail
+    stage: before_request
+    enabled: true
+    config:
+      action: block
+
+  - name: schema-guard
+    type: guardrail
+    stage: after_request
+    enabled: true
+    config:
+      action: warn
+      schema:
+        type: object
+        required: ["name"]

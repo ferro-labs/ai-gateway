@@ -100,6 +100,11 @@ test-integration-all: test-integration test-integration-live
 test-e2e-strategies:
 	scripts/strategy_e2e.sh
 
+# Every built-in plugin over the real binary against a scriptable mock upstream
+# (scripts/mockllm) — no provider keys. Includes the load-time refusals.
+test-e2e-plugins:
+	scripts/plugin_e2e.sh
+
 bench:
 	go test -v -bench=. -benchmem $(GATEWAY_PACKAGES)
 
