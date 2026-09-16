@@ -120,6 +120,12 @@ func (s *SecretScan) Init(config map[string]any) error {
 		if !ok {
 			return fmt.Errorf("secret-scan: patterns[%d] must be a string", i)
 		}
+		// An empty pattern compiles and matches every string, so it would report
+		// a credential in every request and deny them all under "block". An
+		// empty entry in a list is a typo, never a policy.
+		if strings.TrimSpace(str) == "" {
+			return fmt.Errorf("secret-scan: patterns[%d] requires a non-empty pattern", i)
+		}
 		re, err := regexp.Compile(str)
 		if err != nil {
 			return fmt.Errorf("secret-scan: patterns[%d]: %w", i, err)

@@ -142,7 +142,9 @@ config:
                                # An unrecognised name fails the load, and so
                                # does an empty list with no `patterns` to fall
                                # back on
-  patterns: ['\bACME-\d{6}\b'] # optional custom regexes, compiled at load.
+  patterns: ['\bACME-\d{6}\b'] # optional custom regexes, compiled at load. An
+                               # empty entry fails the load: it would match
+                               # every request.
                                # `entities: []` alongside these screens your
                                # patterns and none of the built-ins
   redact_placeholder: "[REDACTED]" # literal text, inserted exactly as written —
@@ -178,6 +180,8 @@ config:
                                              # list with no `patterns` to fall
                                              # back on
   patterns: ['\bACME-KEY-[0-9]{8}\b']        # optional custom regexes, compiled at load.
+                                             # An empty entry fails the load: it would
+                                             # match every request.
                                              # `kinds: []` alongside these scans for
                                              # your patterns and no curated kind
 ```

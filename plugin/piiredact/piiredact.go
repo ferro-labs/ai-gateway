@@ -134,6 +134,12 @@ func (p *PIIRedact) Init(config map[string]any) error {
 		if !ok {
 			return fmt.Errorf("pii-redact: patterns[%d] must be a string", i)
 		}
+		// An empty pattern compiles and matches every string, so it would deny
+		// every request under "block" and rewrite every request under "redact".
+		// An empty entry in a list is a typo, never a policy.
+		if strings.TrimSpace(s) == "" {
+			return fmt.Errorf("pii-redact: patterns[%d] requires a non-empty pattern", i)
+		}
 		re, err := regexp.Compile(s)
 		if err != nil {
 			return fmt.Errorf("pii-redact: patterns[%d]: %w", i, err)

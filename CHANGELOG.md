@@ -70,6 +70,12 @@ built-in for `entities`, `kinds` and `categories`, and a no-op for `rules`.
 legal** — that selects the custom patterns and none of the built-ins, and the
 plugin still has something to screen for.
 
+An **empty entry inside** a `patterns` list is a startup error, on `pii-redact`
+and `secret-scan` as it already was on `regex-guard`'s rules. An empty pattern
+compiles and matches every string, so `patterns: [""]` — a trailing comma, a
+blank list item — denied every request under `block` and rewrote every request
+under `redact`.
+
 `pii-redact` with `action: "redact"` rewrites the request in place and lets it
 continue; with `action: "block"` it denies. **Redaction takes effect on the
 chat-shaped surfaces** — `/v1/chat/completions` (streamed or not) and

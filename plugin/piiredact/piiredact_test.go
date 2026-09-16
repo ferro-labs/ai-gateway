@@ -255,6 +255,24 @@ func TestInit_RejectsAnUncompilableCustomPattern(t *testing.T) {
 	}
 }
 
+// An empty pattern compiles and matches every string, so it registers a plugin
+// that denies every request under the default action and rewrites every
+// request under redact. An empty entry in a list is a typo — a trailing comma,
+// a blank list item — never a policy.
+func TestInit_RejectsAnEmptyCustomPattern(t *testing.T) {
+	for _, pattern := range []string{"", "   "} {
+		p := &PIIRedact{}
+		err := p.Init(map[string]any{"patterns": []any{pattern}})
+
+		if err == nil {
+			t.Fatalf("Init accepted the empty pattern %q; it matches every request", pattern)
+		}
+		if !strings.Contains(err.Error(), "patterns[0]") {
+			t.Fatalf("error does not name the entry: %v", err)
+		}
+	}
+}
+
 func TestExecute_ReasonNamesTheEntityTypeNotTheValue(t *testing.T) {
 	p := &PIIRedact{}
 	if err := p.Init(map[string]any{"action": "block"}); err != nil {
