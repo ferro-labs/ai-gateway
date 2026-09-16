@@ -272,6 +272,30 @@ func TestExecute_RejectsAChoiceCarryingNoContent(t *testing.T) {
 	}
 }
 
+// A tool call is a different kind of answer, not a malformed one. A model that
+// chose to call a tool returned no document for this schema to describe, and
+// denying it would make the plugin incompatible with tool calling rather than
+// protective of it — a gateway doing both would deny every tool-call response.
+func TestExecute_AllowsAChoiceCarryingOnlyAToolCall(t *testing.T) {
+	g := &SchemaGuard{}
+	if err := g.Init(map[string]any{"schema": objectSchema(), "action": "block"}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	pctx := newChoice(providers.Message{ToolCalls: []providers.ToolCall{{
+		ID:       "call_1",
+		Type:     "function",
+		Function: providers.FunctionCall{Name: "lookup_city", Arguments: `{"city":"berlin"}`},
+	}}})
+	if err := g.Execute(context.Background(), pctx); err != nil {
+		t.Fatalf("Execute returned an error; a denial is a verdict, not a fault: %v", err)
+	}
+
+	if pctx.Reject {
+		t.Fatalf("a choice carrying only a tool call was denied: %q", pctx.Reason)
+	}
+}
+
 // Every choice is validated, not only the first: n > 1 returns independent
 // candidates and the caller unmarshals whichever it picks.
 func TestExecute_ValidatesEveryChoice(t *testing.T) {

@@ -226,12 +226,12 @@ violation is not adversarial and naming it is the whole diagnostic value.
 
 Each choice is assembled into **one document** and validated once, so an answer
 split across content parts is judged whole rather than as several invalid
-fragments, and `n > 1` has every candidate validated. A choice carrying **no
-content** is a violation: an empty answer does not satisfy a schema requiring an
-object. Note what that means for tool calling — a choice that carries only a
-tool call carries no document, so a deployment doing both should scope
-`schema-guard` to the requests that ask for structured output, or run it under
-`action: warn`.
+fragments, and `n > 1` has every candidate validated. A choice carrying
+**neither content nor a tool call** is a violation: an empty answer does not
+satisfy a schema requiring an object. A choice carrying **only a tool call**
+passes without validation — a tool call is a different kind of answer, not a
+malformed one, so this plugin is safe to run on a gateway serving structured
+output and tool calling at once.
 
 ```yaml
 config:

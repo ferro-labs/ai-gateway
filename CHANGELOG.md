@@ -110,11 +110,12 @@ validated for the part this plugin understands.
 `schema-guard` validates **one assembled document per choice**. A response
 split across content parts is judged whole instead of as several invalid
 fragments, a collapsed message is no longer validated twice against its own
-parts, and every choice of an `n > 1` response is checked. A choice carrying no
-content is a violation, since an empty answer does not satisfy a schema
-requiring an object — which also means a choice carrying only a tool call is
-denied under `action: block`, so a deployment doing both should scope this
-plugin to the requests asking for structured output or run it under `warn`.
+parts, and every choice of an `n > 1` response is checked. A choice carrying
+neither content nor a tool call is a violation, since an empty answer does not
+satisfy a schema requiring an object. A choice carrying only a tool call passes
+without validation — a tool call is a different kind of answer, not a malformed
+one — so this plugin can run on a gateway serving structured output and tool
+calling at once.
 
 `schema-guard` reads `type: integer` as a whole number. JSON carries one number
 type, so `42` satisfies it and `42.5` does not, and a `type: number` property

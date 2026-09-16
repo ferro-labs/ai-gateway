@@ -18,10 +18,10 @@
 // unsent — a caller that must withhold malformed output must not stream.
 //
 // Each choice is assembled into one document and validated once, and a choice
-// carrying no content at all is a violation. A choice that carries only a tool
-// call therefore carries no document and is denied under action "block": a
-// deployment doing both should scope this plugin to the requests that ask for
-// structured output, or run it under "warn".
+// carrying NEITHER content NOR a tool call is a violation. A choice that
+// carries only a tool call passes without validation: a tool call is a
+// different kind of answer, not a malformed one, so a model that chose to call
+// a tool did not return a document this schema describes.
 package schemaguard
 
 import (
@@ -172,7 +172,7 @@ func (g *SchemaGuard) Execute(ctx context.Context, pctx *plugin.Context) error {
 		if ctx.Err() != nil {
 			return nil
 		}
-		violation := g.validate(choiceDocument(choice.Message))
+		violation := g.validate(choice.Message)
 		if violation == "" {
 			continue
 		}
@@ -218,15 +218,25 @@ func choiceDocument(msg providers.Message) string {
 	return assembled.String()
 }
 
-// validate returns a human-readable violation, or "" when the document
-// conforms.
+// validate returns a human-readable violation, or "" when the choice conforms.
 //
 // A choice carrying nothing is a violation rather than a skip: a response with
 // no content in it does not satisfy a schema requiring an object, and reading
 // the absence as conformance let every empty answer through a guardrail
 // configured to require one.
-func (g *SchemaGuard) validate(text string) string {
+//
+// A choice carrying a TOOL CALL and no text is not that case. A tool call is a
+// different kind of answer, not a malformed one: a model that chose to call a
+// tool did not return a document this schema describes, and denying it would
+// make the plugin incompatible with tool calling rather than protective of it.
+// A choice with nothing in it at all is still a violation, because that is the
+// case the rule exists for.
+func (g *SchemaGuard) validate(msg providers.Message) string {
+	text := choiceDocument(msg)
 	if strings.TrimSpace(text) == "" {
+		if len(msg.ToolCalls) > 0 {
+			return ""
+		}
 		return "response carries no content"
 	}
 	var doc any
