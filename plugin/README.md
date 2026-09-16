@@ -70,7 +70,7 @@ every stage they name.
 |---|---|---|---|
 | **word-filter** | guardrail | before_request (and after_request to screen the response) | Rejects a request whose text contains a blocked entry as a substring. |
 | **regex-guard** | guardrail | before_request (and after_request to screen the response) | Rejects or flags content matching named regular expressions, per rule's `apply_to`. |
-| **pii-redact** | guardrail | before_request | Detects personally identifiable information and either denies the request, rewrites it in place with the values replaced by a placeholder, or only records the detection. Rewriting applies to the chat-shaped surfaces; elsewhere a detection is denied. |
+| **pii-redact** | guardrail | before_request | Detects personally identifiable information and either denies the request, rewrites it in place with the values replaced by a placeholder, or only records the detection. Rewriting applies to the chat-shaped surfaces; elsewhere a detection under `redact` is denied. |
 | **secret-scan** | guardrail | before_request (and after_request to screen the response) | Detects content carrying credentials — cloud keys, tokens, private keys — and applies the configured action; only `block` rejects. The response is screened only when this plugin is **also** listed at `after_request`. |
 | **prompt-shield** | guardrail | before_request | Detects prompt-injection and jailbreak attempts, matched by category over common written forms, and applies the configured action; only `block` rejects. |
 | **schema-guard** | guardrail | after_request | Validates the model's response against a JSON Schema subset — `type`, `required`, `properties`. |

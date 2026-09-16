@@ -362,16 +362,18 @@ func TestDetect_AgreesWithExecuteUnderBlock(t *testing.T) {
 		"you are now enrolled in the premium plan",
 		"assume the role of team lead",
 	} {
-		s := &PromptShield{}
-		if err := s.Init(map[string]any{"action": "block"}); err != nil {
-			t.Fatalf("Init: %v", err)
-		}
-		pctx := newRequest(text)
-		if err := s.Execute(context.Background(), pctx); err != nil {
-			t.Fatalf("Execute: %v", err)
-		}
-		if detected := len(Detect(text)) > 0; detected != pctx.Reject {
-			t.Fatalf("%q: Detect found something=%v but Execute rejected=%v", text, detected, pctx.Reject)
-		}
+		t.Run(text, func(t *testing.T) {
+			s := &PromptShield{}
+			if err := s.Init(map[string]any{"action": "block"}); err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			pctx := newRequest(text)
+			if err := s.Execute(context.Background(), pctx); err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			if detected := len(Detect(text)) > 0; detected != pctx.Reject {
+				t.Fatalf("Detect found something=%v but Execute rejected=%v", detected, pctx.Reject)
+			}
+		})
 	}
 }

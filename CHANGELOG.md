@@ -27,9 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- The least-latency end-to-end check tolerates the leader flips CI load
-  produces: its bar is 70% of 100 draws, which a strategy that had stopped
-  preferring the fast target (near 50%) still fails.
+- The least-latency end-to-end check tolerates normal scheduling variance
+  while still failing a strategy that has stopped preferring the fast target.
 
 ## [1.5.7] — 2026-09-16
 

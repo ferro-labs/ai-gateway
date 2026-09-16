@@ -84,7 +84,9 @@ var curated = []secret{
 	{name: "twilio_key", re: regexp.MustCompile(`\bSK[0-9a-f]{32}\b`)},
 	{name: "azure_storage_key", re: regexp.MustCompile(`\bAccountKey=[A-Za-z0-9+/]{86}==`)},
 	// A webhook URL is a bearer credential: whoever holds it can post as the
-	// integration.
+	// integration. Deliberately unanchored: this scans free text for the
+	// credential, it does not validate a URL, so it must match wherever the
+	// webhook sits in a prompt.
 	{name: "slack_webhook", re: regexp.MustCompile(`https://hooks\.slack\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[A-Za-z0-9]+`)},
 }
 
@@ -134,6 +136,13 @@ func (s *SecretScan) Init(config map[string]any) error {
 		return err
 	}
 	s.secrets = selected
+	// Before anthropic_key existed, a list naming only openai_key covered
+	// Anthropic keys through the shape the two share. It no longer does, and
+	// a policy that narrows on an upgrade must say so rather than let a key
+	// through in silence.
+	if present && hasKind(selected, "openai_key") && !hasKind(selected, "anthropic_key") {
+		logger.Default().Warn("secret-scan: kinds names openai_key without anthropic_key; Anthropic keys are no longer covered by openai_key, add anthropic_key to keep screening them")
+	}
 
 	custom, err := plugin.ListSetting(config["patterns"], "patterns")
 	if err != nil {
@@ -222,6 +231,10 @@ func (s *SecretScan) screen(ctx context.Context, pctx *plugin.Context, content, 
 		return true
 	}
 	return false
+}
+
+func hasKind(secrets []secret, name string) bool {
+	return slices.ContainsFunc(secrets, func(s secret) bool { return s.name == name })
 }
 
 // selectCurated resolves the kinds selector. An ABSENT key selects every

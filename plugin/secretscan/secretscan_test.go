@@ -1,13 +1,25 @@
 package secretscan
 
 import (
+	"bytes"
 	"context"
 	"strings"
 	"testing"
 
+	"github.com/ferro-labs/ai-gateway/pkg/logger"
 	"github.com/ferro-labs/ai-gateway/plugin"
 	"github.com/ferro-labs/ai-gateway/providers"
 )
+
+// captureLog routes the process logger into a buffer for the test's lifetime.
+func captureLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	previous := logger.Default()
+	logger.SetDefault(logger.New(logger.Options{Level: "debug", Output: &buf}))
+	t.Cleanup(func() { logger.SetDefault(previous) })
+	return &buf
+}
 
 func newRequest(content string) *plugin.Context {
 	return &plugin.Context{
@@ -513,6 +525,31 @@ func TestValidateConfig_RejectsWhatInitRejects(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("error %q does not name %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// Before anthropic_key existed, a kinds list naming only openai_key covered
+// Anthropic keys by accident. It no longer does, and a policy that loses
+// coverage on an upgrade must say so where the operator will read it.
+func TestInit_WarnsWhenOpenAIKeyIsSelectedWithoutAnthropicKey(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		kinds []any
+		warn  bool
+	}{
+		{"openai_key alone", []any{"openai_key"}, true},
+		{"openai_key with anthropic_key", []any{"openai_key", "anthropic_key"}, false},
+		{"another kind alone", []any{"aws_access_key"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			log := captureLog(t)
+			if err := (&SecretScan{}).Init(map[string]any{"kinds": tc.kinds}); err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			if got := strings.Contains(log.String(), "anthropic_key"); got != tc.warn {
+				t.Fatalf("warned=%v, want %v; log: %s", got, tc.warn, log.String())
 			}
 		})
 	}

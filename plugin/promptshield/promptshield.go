@@ -203,13 +203,10 @@ func (s *PromptShield) Execute(ctx context.Context, pctx *plugin.Context) error 
 // Close releases resources owned by the plugin.
 func (s *PromptShield) Close() error { return nil }
 
-// Detect reports which injection categories occur in text, by name, sorted
-// and de-duplicated. It runs every category regardless of configuration and
-// never returns the matched phrase.
-//
-// These are the same heuristics Execute uses: pattern matches over common
-// written forms, not a classifier. A caller sizing a policy around this must
-// read the package doc's statement of that ceiling.
+// Detect reports which injection categories occur in text, by name, sorted.
+// It runs every category regardless of configuration, with the same patterns
+// Execute enforces, and never returns the matched phrase. No match is an
+// empty, non-nil slice. The package doc's limits apply.
 func Detect(text string) []string {
 	names := []string{}
 	for _, c := range categories {

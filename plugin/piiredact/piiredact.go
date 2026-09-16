@@ -219,6 +219,11 @@ func (p *PIIRedact) Execute(ctx context.Context, pctx *plugin.Context) error {
 		return nil
 	}
 
+	if p.action == plugin.ActionLog {
+		p.logRequest(ctx, pctx.Request)
+		return nil
+	}
+
 	for text := range plugin.RequestText(pctx.Request) {
 		// The caller has gone; see plugin.RequestText for why this is not an error.
 		if ctx.Err() != nil {
@@ -227,10 +232,6 @@ func (p *PIIRedact) Execute(ctx context.Context, pctx *plugin.Context) error {
 		name, found := p.detect(text)
 		if !found {
 			continue
-		}
-		if p.action == plugin.ActionLog {
-			logger.Ctx(ctx).Info("pii-redact: detected in request", "entity", name)
-			return nil
 		}
 		logger.Ctx(ctx).Info("pii-redact: blocked request", "entity", name)
 		pctx.Reject = true
@@ -249,14 +250,10 @@ func (p *PIIRedact) Execute(ctx context.Context, pctx *plugin.Context) error {
 	return nil
 }
 
-// Detect reports which built-in entity types occur in text, by name, sorted
-// and de-duplicated. It runs every built-in detector regardless of
-// configuration and never returns matched text: a caller learns THAT an SSN is
-// present, not what it is. The plugin's own reasons and logs follow the same
-// rule.
-//
-// It exists so an embedding policy layer can ask the same question the plugin
-// answers, with the same patterns, rather than carrying a copy that drifts.
+// Detect reports which built-in entity types occur in text, by name, sorted.
+// It runs every built-in entity regardless of configuration, with the same
+// patterns Execute enforces, and never returns matched text. No match is an
+// empty, non-nil slice.
 func Detect(text string) []string {
 	names := []string{}
 	for _, e := range builtinEntities {
@@ -270,6 +267,26 @@ func Detect(text string) []string {
 
 // Close releases resources owned by the plugin.
 func (p *PIIRedact) Close() error { return nil }
+
+// logRequest records every entity type the request carries, once each, across
+// every screenable field. block stops at the first match because one is a
+// verdict; the record log keeps has to name everything block would deny, or
+// it understates the policy it is sizing.
+func (p *PIIRedact) logRequest(ctx context.Context, req *providers.Request) {
+	seen := make(map[string]bool, len(p.entities))
+	for text := range plugin.RequestText(req) {
+		if ctx.Err() != nil {
+			return
+		}
+		for _, e := range p.entities {
+			if seen[e.name] || !e.matches(text) {
+				continue
+			}
+			seen[e.name] = true
+			logger.Ctx(ctx).Info("pii-redact: detected in request", "entity", e.name)
+		}
+	}
+}
 
 // redactRequest rewrites every screenable field in place — the same set
 // plugin.RequestText screens, field for field.

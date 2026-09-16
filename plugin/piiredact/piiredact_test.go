@@ -1,14 +1,26 @@
 package piiredact
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"strings"
 	"testing"
 
+	"github.com/ferro-labs/ai-gateway/pkg/logger"
 	"github.com/ferro-labs/ai-gateway/plugin"
 	"github.com/ferro-labs/ai-gateway/providers"
 )
+
+// captureLog routes the process logger into a buffer for the test's lifetime.
+func captureLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	previous := logger.Default()
+	logger.SetDefault(logger.New(logger.Options{Level: "debug", Output: &buf}))
+	t.Cleanup(func() { logger.SetDefault(previous) })
+	return &buf
+}
 
 func newRequest(content string) *plugin.Context {
 	return &plugin.Context{
@@ -591,17 +603,19 @@ func TestDetect_AgreesWithExecuteUnderBlock(t *testing.T) {
 		"the meeting moved to Thursday",
 		"order 1234 5678 9012 3456 shipped",
 	} {
-		p := &PIIRedact{}
-		if err := p.Init(map[string]any{"action": "block"}); err != nil {
-			t.Fatalf("Init: %v", err)
-		}
-		pctx := newRequest(text)
-		if err := p.Execute(context.Background(), pctx); err != nil {
-			t.Fatalf("Execute: %v", err)
-		}
-		if detected := len(Detect(text)) > 0; detected != pctx.Reject {
-			t.Fatalf("%q: Detect found something=%v but Execute rejected=%v", text, detected, pctx.Reject)
-		}
+		t.Run(text, func(t *testing.T) {
+			p := &PIIRedact{}
+			if err := p.Init(map[string]any{"action": "block"}); err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			pctx := newRequest(text)
+			if err := p.Execute(context.Background(), pctx); err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			if detected := len(Detect(text)) > 0; detected != pctx.Reject {
+				t.Fatalf("Detect found something=%v but Execute rejected=%v", detected, pctx.Reject)
+			}
+		})
 	}
 }
 
@@ -612,6 +626,7 @@ func TestValidateConfig_AcceptsLog(t *testing.T) {
 }
 
 func TestExecute_LogRecordsWithoutDenyingOrRewriting(t *testing.T) {
+	log := captureLog(t)
 	p := &PIIRedact{}
 	if err := p.Init(map[string]any{"action": "log"}); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -627,6 +642,45 @@ func TestExecute_LogRecordsWithoutDenyingOrRewriting(t *testing.T) {
 	}
 	if got := pctx.Request.Messages[0].Content; got != "customer 123-45-6789 called" {
 		t.Fatalf("action=log rewrote the request to %q; log observes and forwards as written", got)
+	}
+	if !strings.Contains(log.String(), `"msg":"pii-redact: detected in request"`) || !strings.Contains(log.String(), `"entity":"ssn"`) {
+		t.Fatalf("action=log recorded nothing; the mode exists to record. log: %s", log.String())
+	}
+	if strings.Contains(log.String(), "123-45-6789") {
+		t.Fatalf("the log line carries the value, not just the entity type: %s", log.String())
+	}
+}
+
+// The record sizes a policy before it is enforced, so it has to name every
+// entity type the request carries, wherever it sits. Stopping at the first
+// match would understate what block would later deny.
+func TestExecute_LogRecordsEveryEntityTypeAcrossEveryField(t *testing.T) {
+	log := captureLog(t)
+	p := &PIIRedact{}
+	if err := p.Init(map[string]any{"action": "log"}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	pctx := newRequest("customer 123-45-6789 called")
+	pctx.Request.Messages = append(pctx.Request.Messages,
+		providers.Message{Content: "reach them at a@b.co"},
+		providers.Message{ToolCalls: []providers.ToolCall{{Function: providers.FunctionCall{Arguments: `{"phone":"(555) 123-4567"}`}}}},
+		providers.Message{Content: "and again a@b.co"},
+	)
+	if err := p.Execute(context.Background(), pctx); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	for _, entity := range []string{"ssn", "email", "phone"} {
+		if !strings.Contains(log.String(), `"entity":"`+entity+`"`) {
+			t.Fatalf("entity %q was not recorded; log: %s", entity, log.String())
+		}
+	}
+	if n := strings.Count(log.String(), `"entity":"email"`); n != 1 {
+		t.Fatalf("email was recorded %d times; one line per entity type per request", n)
+	}
+	if pctx.Reject {
+		t.Fatal("action=log denied the request")
 	}
 }
 
