@@ -65,6 +65,7 @@ gateway refuses to start if they disagree.
 | **pii-redact** | guardrail | before_request | Detects personally identifiable information and either denies the request or rewrites it in place with the values replaced by a placeholder, letting it continue. |
 | **secret-scan** | guardrail | before_request (and after_request to screen the response) | Rejects content carrying credentials — cloud keys, tokens, private keys — in either direction, so a model asked to read one back out of its context is screened too. |
 | **prompt-shield** | guardrail | before_request | Rejects requests carrying prompt-injection and jailbreak attempts, matched by category over common written forms. |
+| **schema-guard** | guardrail | after_request | Validates the model's response against a JSON Schema subset — `type`, `required`, `properties`. |
 | **max-token** | guardrail | before_request | Rejects a request that declares a completion ceiling above the limit, or exceeds the message-count / input-length limit. It never *imposes* a ceiling. |
 | **rate-limit** | ratelimit | before_request | Bounds request rate globally and per API key or user, independently of the per-IP HTTP limiter. |
 | **budget** | ratelimit | before_request + after_request | Tracks estimated spend per API key and refuses requests once the budget is exhausted. |
@@ -152,6 +153,31 @@ pattern.
 config:
   action: block       # block | warn | log
   categories: ["system_override", "instruction_leak"]  # optional; default is every category
+```
+
+### schema-guard
+
+Validates the model's response against a JSON Schema subset — `type`,
+`required`, `properties` — rather than a full JSON Schema dependency, which
+would be a large addition for the question this answers: did the model return
+the object shape the caller is about to unmarshal. An unsupported keyword is
+ignored, so a schema copied in from elsewhere still validates the part this
+plugin understands. Runs at `after_request` only: on a streamed response the
+tokens are already delivered, so it can report a violation but not unsend it.
+The denial reason names the field and what was expected, since a schema
+violation is not adversarial and naming it is the whole diagnostic value.
+
+```yaml
+config:
+  action: block   # block | warn | log
+  schema:
+    type: object
+    required: ["name", "score"]
+    properties:
+      name:
+        type: string
+      score:
+        type: number
 ```
 
 ### max-token

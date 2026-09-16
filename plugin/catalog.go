@@ -100,6 +100,12 @@ var builtins = []BuiltinPlugin{
 		Settings: []string{"categories", "action"},
 	},
 	{
+		Name:     "schema-guard",
+		Type:     TypeGuardrail,
+		Summary:  "Validates the model's response against a JSON Schema subset — type, required and properties — at after_request.",
+		Settings: []string{"schema", "action"},
+	},
+	{
 		Name:     "response-cache",
 		Type:     TypeTransform,
 		Summary:  "Serves an identical request from memory instead of calling a provider again, scoped to the API key that primed it — one credential's response is never served to another.",
