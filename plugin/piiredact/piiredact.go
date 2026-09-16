@@ -95,9 +95,10 @@ func luhnValid(s string) bool {
 // that did not happen would forward the exact value the plugin claims to
 // remove.
 //
-// The action set is deliberately just {block, redact} — unlike a filter, this
-// plugin has no non-blocking observe mode: "warn" on a redactor would mean
-// detecting PII and forwarding it anyway, which defeats the plugin's purpose.
+// With action "log" nothing is denied or rewritten: a detection is recorded
+// by entity type and the request is forwarded as written. That is the
+// observe-only mode for sizing a policy before enforcing it, and it behaves
+// the same on every surface, since it has no rewrite to lose.
 type PIIRedact struct {
 	entities    []entity
 	action      string
@@ -122,7 +123,7 @@ func (p *PIIRedact) SupportedStages() []plugin.Stage {
 }
 
 // actions is the closed set this plugin honours; see plugin.NormalizeAction.
-var actions = []string{plugin.ActionBlock, plugin.ActionRedact}
+var actions = []string{plugin.ActionBlock, plugin.ActionRedact, plugin.ActionLog}
 
 // ValidateConfig runs the same checks Init runs, so a misconfiguration is a
 // `ferrogw validate` error rather than a failed start; see plugin.ValidateViaInit.
@@ -223,23 +224,48 @@ func (p *PIIRedact) Execute(ctx context.Context, pctx *plugin.Context) error {
 		if ctx.Err() != nil {
 			return nil
 		}
-		if name, found := p.detect(text); found {
-			logger.Ctx(ctx).Info("pii-redact: blocked request", "entity", name)
-			pctx.Reject = true
-			// The entity TYPE, never the value: the caller needs to know what to
-			// remove, and echoing the value back would put it in the error log of
-			// every hop between here and them.
-			pctx.Reason = "request blocked by content policy: " + name + " detected"
-			if p.action == plugin.ActionRedact {
-				// A verdict, not an error: the plugin reached a decision. Say why
-				// the configured action did not apply, so the answer does not read
-				// as an unexplained block on a surface the operator set to redact.
-				pctx.Reason += "; content cannot be sanitized on this surface"
-			}
+		name, found := p.detect(text)
+		if !found {
+			continue
+		}
+		if p.action == plugin.ActionLog {
+			logger.Ctx(ctx).Info("pii-redact: detected in request", "entity", name)
 			return nil
 		}
+		logger.Ctx(ctx).Info("pii-redact: blocked request", "entity", name)
+		pctx.Reject = true
+		// The entity TYPE, never the value: the caller needs to know what to
+		// remove, and echoing the value back would put it in the error log of
+		// every hop between here and them.
+		pctx.Reason = "request blocked by content policy: " + name + " detected"
+		if p.action == plugin.ActionRedact {
+			// A verdict, not an error: the plugin reached a decision. Say why
+			// the configured action did not apply, so the answer does not read
+			// as an unexplained block on a surface the operator set to redact.
+			pctx.Reason += "; content cannot be sanitized on this surface"
+		}
+		return nil
 	}
 	return nil
+}
+
+// Detect reports which built-in entity types occur in text, by name, sorted
+// and de-duplicated. It runs every built-in detector regardless of
+// configuration and never returns matched text: a caller learns THAT an SSN is
+// present, not what it is. The plugin's own reasons and logs follow the same
+// rule.
+//
+// It exists so an embedding policy layer can ask the same question the plugin
+// answers, with the same patterns, rather than carrying a copy that drifts.
+func Detect(text string) []string {
+	names := []string{}
+	for _, e := range builtinEntities {
+		if e.matches(text) {
+			names = append(names, e.name)
+		}
+	}
+	slices.Sort(names)
+	return names
 }
 
 // Close releases resources owned by the plugin.

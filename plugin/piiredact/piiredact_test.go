@@ -557,3 +557,95 @@ func TestExecute_RedactKeepsToolCallArgumentsValidJSON(t *testing.T) {
 		t.Fatalf("Content = %q, want untouched", pctx.Request.Messages[0].Content)
 	}
 }
+
+func TestDetect_ReportsBuiltinEntityNames(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		text string
+		want []string
+	}{
+		{"ssn", "my ssn is 123-45-6789", []string{"ssn"}},
+		{"two entities, sorted", "email a@b.co, card 4111 1111 1111 1111", []string{"credit_card", "email"}},
+		{"ordinary prose", "the meeting moved to Thursday", []string{}},
+		{"a number failing the check digit", "order 1234 5678 9012 3456 shipped", []string{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Detect(tc.text)
+			if got == nil {
+				t.Fatal("Detect returned nil; a caller must be able to range and len without a nil check")
+			}
+			if strings.Join(got, ",") != strings.Join(tc.want, ",") {
+				t.Fatalf("Detect(%q) = %q, want %q", tc.text, got, tc.want)
+			}
+		})
+	}
+}
+
+// Detect and Execute run the same patterns, so they must reach the same
+// verdict on the same text. This pins that, so neither can drift on its own.
+func TestDetect_AgreesWithExecuteUnderBlock(t *testing.T) {
+	for _, text := range []string{
+		"my ssn is 123-45-6789",
+		"email a@b.co, card 4111 1111 1111 1111",
+		"call (555) 123-4567",
+		"the meeting moved to Thursday",
+		"order 1234 5678 9012 3456 shipped",
+	} {
+		p := &PIIRedact{}
+		if err := p.Init(map[string]any{"action": "block"}); err != nil {
+			t.Fatalf("Init: %v", err)
+		}
+		pctx := newRequest(text)
+		if err := p.Execute(context.Background(), pctx); err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		if detected := len(Detect(text)) > 0; detected != pctx.Reject {
+			t.Fatalf("%q: Detect found something=%v but Execute rejected=%v", text, detected, pctx.Reject)
+		}
+	}
+}
+
+func TestValidateConfig_AcceptsLog(t *testing.T) {
+	if err := plugin.ValidateConfigFor("pii-redact", map[string]any{"action": "log"}); err != nil {
+		t.Fatalf("action=log was rejected; an observe-only rollout cannot include this plugin: %v", err)
+	}
+}
+
+func TestExecute_LogRecordsWithoutDenyingOrRewriting(t *testing.T) {
+	p := &PIIRedact{}
+	if err := p.Init(map[string]any{"action": "log"}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	pctx := newRequest("customer 123-45-6789 called")
+	if err := p.Execute(context.Background(), pctx); err != nil {
+		t.Fatalf("Execute returned an error; a detection is a verdict: %v", err)
+	}
+
+	if pctx.Reject {
+		t.Fatal("action=log denied the request — an observe-only rollout must not block")
+	}
+	if got := pctx.Request.Messages[0].Content; got != "customer 123-45-6789 called" {
+		t.Fatalf("action=log rewrote the request to %q; log observes and forwards as written", got)
+	}
+}
+
+// A surface that discards rewrites turns redact into a denial, because a
+// rewrite there would be reported and never applied. log rewrites nothing, so
+// it has nothing to lose on such a surface and must keep observing there.
+func TestExecute_LogAllowsOnASurfaceThatDiscardsTheRewrite(t *testing.T) {
+	p := &PIIRedact{}
+	if err := p.Init(map[string]any{"action": "log"}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	pctx := newRequest("customer 123-45-6789 called")
+	pctx.Metadata[plugin.MetadataSurface] = "embeddings"
+	if err := p.Execute(context.Background(), pctx); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	if pctx.Reject {
+		t.Fatal("action=log denied on a surface that discards rewrites; only redact has a rewrite to lose there")
+	}
+}
