@@ -67,8 +67,11 @@ bounded() {
 }
 
 attempt=1
+npm_config_cache=""
+trap '[ -n "$npm_config_cache" ] && rm -rf "$npm_config_cache"' EXIT
 while :; do
   if [ "$label" = npx ]; then
+    [ -n "$npm_config_cache" ] && rm -rf "$npm_config_cache"
     npm_config_cache="$(mktemp -d)"
     export npm_config_cache
   fi
