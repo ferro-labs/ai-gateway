@@ -52,7 +52,10 @@ func (g *SchemaGuard) Type() plugin.PluginType { return plugin.TypeGuardrail }
 
 // Init stores the schema and the action.
 func (g *SchemaGuard) Init(config map[string]any) error {
-	rawAction, _ := config["action"].(string)
+	rawAction, err := plugin.StringSetting(config["action"], "action")
+	if err != nil {
+		return fmt.Errorf("schema-guard: %w", err)
+	}
 	action, err := plugin.NormalizeAction(rawAction, plugin.ActionBlock, plugin.ActionBlock, plugin.ActionWarn, plugin.ActionLog)
 	if err != nil {
 		return fmt.Errorf("schema-guard: action: %w", err)

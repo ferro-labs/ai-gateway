@@ -67,13 +67,13 @@ func (g *RegexGuard) Type() plugin.PluginType { return plugin.TypeGuardrail }
 
 // Init compiles the configured rules.
 func (g *RegexGuard) Init(config map[string]any) error {
-	defaultAction := plugin.ActionBlock
-	if a, ok := config["action"].(string); ok {
-		normalized, err := plugin.NormalizeAction(a, plugin.ActionBlock, plugin.ActionBlock, plugin.ActionWarn, plugin.ActionLog)
-		if err != nil {
-			return fmt.Errorf("regex-guard: action: %w", err)
-		}
-		defaultAction = normalized
+	rawAction, err := plugin.StringSetting(config["action"], "action")
+	if err != nil {
+		return fmt.Errorf("regex-guard: %w", err)
+	}
+	defaultAction, err := plugin.NormalizeAction(rawAction, plugin.ActionBlock, plugin.ActionBlock, plugin.ActionWarn, plugin.ActionLog)
+	if err != nil {
+		return fmt.Errorf("regex-guard: action: %w", err)
 	}
 
 	rules, present := config["rules"]
@@ -101,7 +101,10 @@ func (g *RegexGuard) Init(config map[string]any) error {
 			return fmt.Errorf("regex-guard: rules[%d] must be an object", i)
 		}
 
-		pattern, _ := mapped["pattern"].(string)
+		pattern, err := plugin.StringSetting(mapped["pattern"], "pattern")
+		if err != nil {
+			return fmt.Errorf("regex-guard: rules[%d]: %w", i, err)
+		}
 		if strings.TrimSpace(pattern) == "" {
 			return fmt.Errorf("regex-guard: rules[%d] requires a non-empty pattern", i)
 		}
@@ -110,21 +113,27 @@ func (g *RegexGuard) Init(config map[string]any) error {
 			return fmt.Errorf("regex-guard: rules[%d]: %w", i, err)
 		}
 
-		name, _ := mapped["name"].(string)
+		name, err := plugin.StringSetting(mapped["name"], "name")
+		if err != nil {
+			return fmt.Errorf("regex-guard: rules[%d]: %w", i, err)
+		}
 		if strings.TrimSpace(name) == "" {
 			name = fmt.Sprintf("rule_%d", i+1)
 		}
 
-		action := defaultAction
-		if a, ok := mapped["action"].(string); ok {
-			normalized, err := plugin.NormalizeAction(a, defaultAction, plugin.ActionBlock, plugin.ActionWarn, plugin.ActionLog)
-			if err != nil {
-				return fmt.Errorf("regex-guard: rules[%d]: action: %w", i, err)
-			}
-			action = normalized
+		rawRuleAction, err := plugin.StringSetting(mapped["action"], "action")
+		if err != nil {
+			return fmt.Errorf("regex-guard: rules[%d]: %w", i, err)
+		}
+		action, err := plugin.NormalizeAction(rawRuleAction, defaultAction, plugin.ActionBlock, plugin.ActionWarn, plugin.ActionLog)
+		if err != nil {
+			return fmt.Errorf("regex-guard: rules[%d]: action: %w", i, err)
 		}
 
-		rawApplyTo, _ := mapped["apply_to"].(string)
+		rawApplyTo, err := plugin.StringSetting(mapped["apply_to"], "apply_to")
+		if err != nil {
+			return fmt.Errorf("regex-guard: rules[%d]: %w", i, err)
+		}
 		applyTo, err := normalizeApplyTo(rawApplyTo)
 		if err != nil {
 			return fmt.Errorf("regex-guard: rules[%d]: %w", i, err)

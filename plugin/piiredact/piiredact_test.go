@@ -255,3 +255,46 @@ func TestInit_RejectsAnEntitiesValueThatIsNotAList(t *testing.T) {
 		t.Fatal("Init accepted an entities value that is not a list; a scalar must fail the load, not silently select every entity")
 	}
 }
+
+// A scalar written where a string belongs is a different fact from an absent
+// key, and only one of them is a configuration. Discarding the type
+// assertion's second result reads `action: 1` as "not set", so the plugin
+// loads, reports itself enabled, and enforces the default the operator was
+// overriding.
+func TestInit_RejectsANonStringAction(t *testing.T) {
+	p := &PIIRedact{}
+	err := p.Init(map[string]any{"action": 1})
+
+	if err == nil {
+		t.Fatal("Init accepted a non-string action; a present-but-wrong-typed key silently takes the default")
+	}
+	if !strings.Contains(err.Error(), "action") {
+		t.Fatalf("error does not name the key: %v", err)
+	}
+}
+
+func TestInit_RejectsANonStringPlaceholder(t *testing.T) {
+	p := &PIIRedact{}
+	err := p.Init(map[string]any{"action": "redact", "redact_placeholder": 0})
+
+	if err == nil {
+		t.Fatal("Init accepted a non-string redact_placeholder; the configured placeholder silently reverts to the default")
+	}
+	if !strings.Contains(err.Error(), "redact_placeholder") {
+		t.Fatalf("error does not name the key: %v", err)
+	}
+}
+
+func TestInit_RejectsAPatternsValueThatIsNotAList(t *testing.T) {
+	p := &PIIRedact{}
+	// One pattern written without the list syntax. Reading it as "no custom
+	// patterns" loads a plugin screening for none of what the operator wrote.
+	err := p.Init(map[string]any{"patterns": `\bACME-\d{6}\b`})
+
+	if err == nil {
+		t.Fatal("Init accepted a patterns value that is not a list; the custom patterns are silently dropped")
+	}
+	if !strings.Contains(err.Error(), "patterns") {
+		t.Fatalf("error does not name the key: %v", err)
+	}
+}

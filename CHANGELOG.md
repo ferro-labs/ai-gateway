@@ -36,6 +36,14 @@ unrecognised name in `pii-redact`'s `entities`, `secret-scan`'s `kinds` or
 `prompt-shield`'s `categories` are all startup errors naming the value and the
 accepted set. Omitting any of those keys keeps its default.
 
+A key written with the **wrong kind of value** is a startup error naming the
+key and the shape expected — `action: 1`, `apply_to: 5`, a `patterns` or
+`redact_placeholder` written as the wrong type. Reading those as "not set"
+loaded a plugin that reported itself enabled and quietly applied the default
+the operator wrote that line to override; `apply_to` was the sharpest case,
+since its default screens the prompt rather than the answer the rule asked for.
+Omitting a key still means what it always did.
+
 A selector that is **present but empty** is a startup error too — `rules: []`,
 `entities: []`, `kinds: []` and `categories: []` each describe a plugin that
 would load, report itself enabled and screen nothing. So is one written as a

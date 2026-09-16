@@ -252,3 +252,82 @@ func TestInit_RejectsAnEmptyRulesList(t *testing.T) {
 		t.Fatal("Init accepted an empty rules list; it yields a guardrail that enforces nothing")
 	}
 }
+
+// A scalar written where a string belongs is a different fact from an absent
+// key, and only one of them is a configuration. Discarding the type
+// assertion's second result reads `action: 1` as "not set", so the plugin
+// loads, reports itself enabled, and enforces the default the operator was
+// overriding.
+func TestInit_RejectsANonStringTopLevelAction(t *testing.T) {
+	g := &RegexGuard{}
+	err := g.Init(map[string]any{
+		"action": 1,
+		"rules":  []any{map[string]any{"name": "ssn", "pattern": `\d{3}-\d{2}-\d{4}`}},
+	})
+
+	if err == nil {
+		t.Fatal("Init accepted a non-string action; a present-but-wrong-typed key silently takes the default")
+	}
+	if !strings.Contains(err.Error(), "action") {
+		t.Fatalf("error does not name the key: %v", err)
+	}
+}
+
+func TestInit_RejectsANonStringRuleAction(t *testing.T) {
+	g := &RegexGuard{}
+	err := g.Init(map[string]any{
+		"rules": []any{map[string]any{"name": "ssn", "pattern": `\d{3}-\d{2}-\d{4}`, "action": 1}},
+	})
+
+	if err == nil {
+		t.Fatal("Init accepted a non-string rule action; a present-but-wrong-typed key silently takes the default")
+	}
+	if !strings.Contains(err.Error(), "action") {
+		t.Fatalf("error does not name the key: %v", err)
+	}
+}
+
+// apply_to is the one whose silent default is a DIFFERENT rule rather than a
+// weaker one: an operator writing a scalar while meaning to screen the model's
+// answer gets a rule that screens the prompt instead.
+func TestInit_RejectsANonStringApplyTo(t *testing.T) {
+	g := &RegexGuard{}
+	err := g.Init(map[string]any{
+		"rules": []any{map[string]any{"name": "ssn", "pattern": `\d{3}-\d{2}-\d{4}`, "apply_to": 5}},
+	})
+
+	if err == nil {
+		t.Fatal("Init accepted a non-string apply_to; it becomes a silent input-only rule")
+	}
+	if !strings.Contains(err.Error(), "apply_to") {
+		t.Fatalf("error does not name the key: %v", err)
+	}
+}
+
+func TestInit_RejectsANonStringRuleName(t *testing.T) {
+	g := &RegexGuard{}
+	err := g.Init(map[string]any{
+		"rules": []any{map[string]any{"name": 7, "pattern": `\d{3}-\d{2}-\d{4}`}},
+	})
+
+	if err == nil {
+		t.Fatal("Init accepted a non-string rule name; the rule silently logs under a generated one")
+	}
+	if !strings.Contains(err.Error(), "name") {
+		t.Fatalf("error does not name the key: %v", err)
+	}
+}
+
+func TestInit_RejectsANonStringPattern(t *testing.T) {
+	g := &RegexGuard{}
+	err := g.Init(map[string]any{
+		"rules": []any{map[string]any{"name": "ssn", "pattern": 1234}},
+	})
+
+	if err == nil {
+		t.Fatal("Init accepted a non-string pattern")
+	}
+	if !strings.Contains(err.Error(), "pattern") {
+		t.Fatalf("error does not name the key: %v", err)
+	}
+}

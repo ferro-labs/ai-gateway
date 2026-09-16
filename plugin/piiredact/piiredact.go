@@ -75,16 +75,23 @@ func (p *PIIRedact) Type() plugin.PluginType { return plugin.TypeGuardrail }
 
 // Init selects the entity set and the action.
 func (p *PIIRedact) Init(config map[string]any) error {
-	rawAction, _ := config["action"].(string)
+	rawAction, err := plugin.StringSetting(config["action"], "action")
+	if err != nil {
+		return fmt.Errorf("pii-redact: %w", err)
+	}
 	action, err := plugin.NormalizeAction(rawAction, plugin.ActionBlock, plugin.ActionBlock, plugin.ActionRedact)
 	if err != nil {
 		return fmt.Errorf("pii-redact: action: %w", err)
 	}
 	p.action = action
 
+	placeholder, err := plugin.StringSetting(config["redact_placeholder"], "redact_placeholder")
+	if err != nil {
+		return fmt.Errorf("pii-redact: %w", err)
+	}
 	p.placeholder = defaultPlaceholder
-	if ph, ok := config["redact_placeholder"].(string); ok && strings.TrimSpace(ph) != "" {
-		p.placeholder = ph
+	if strings.TrimSpace(placeholder) != "" {
+		p.placeholder = placeholder
 	}
 
 	entities, present := config["entities"]
@@ -94,18 +101,20 @@ func (p *PIIRedact) Init(config map[string]any) error {
 	}
 	p.entities = selected
 
-	if custom, ok := config["patterns"].([]any); ok {
-		for i, v := range custom {
-			s, ok := v.(string)
-			if !ok {
-				return fmt.Errorf("pii-redact: patterns[%d] must be a string", i)
-			}
-			re, err := regexp.Compile(s)
-			if err != nil {
-				return fmt.Errorf("pii-redact: patterns[%d]: %w", i, err)
-			}
-			p.entities = append(p.entities, entity{name: fmt.Sprintf("custom_%d", i+1), re: re})
+	custom, err := plugin.ListSetting(config["patterns"], "patterns")
+	if err != nil {
+		return fmt.Errorf("pii-redact: %w", err)
+	}
+	for i, v := range custom {
+		s, ok := v.(string)
+		if !ok {
+			return fmt.Errorf("pii-redact: patterns[%d] must be a string", i)
 		}
+		re, err := regexp.Compile(s)
+		if err != nil {
+			return fmt.Errorf("pii-redact: patterns[%d]: %w", i, err)
+		}
+		p.entities = append(p.entities, entity{name: fmt.Sprintf("custom_%d", i+1), re: re})
 	}
 
 	// Checked after the custom patterns are appended, because an empty entities

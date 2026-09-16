@@ -69,7 +69,10 @@ func (s *SecretScan) Type() plugin.PluginType { return plugin.TypeGuardrail }
 
 // Init selects the curated kinds and compiles any custom patterns.
 func (s *SecretScan) Init(config map[string]any) error {
-	rawAction, _ := config["action"].(string)
+	rawAction, err := plugin.StringSetting(config["action"], "action")
+	if err != nil {
+		return fmt.Errorf("secret-scan: %w", err)
+	}
 	action, err := plugin.NormalizeAction(rawAction, plugin.ActionBlock, plugin.ActionBlock, plugin.ActionWarn, plugin.ActionLog)
 	if err != nil {
 		return fmt.Errorf("secret-scan: action: %w", err)
@@ -83,18 +86,20 @@ func (s *SecretScan) Init(config map[string]any) error {
 	}
 	s.secrets = selected
 
-	if custom, ok := config["patterns"].([]any); ok {
-		for i, v := range custom {
-			str, ok := v.(string)
-			if !ok {
-				return fmt.Errorf("secret-scan: patterns[%d] must be a string", i)
-			}
-			re, err := regexp.Compile(str)
-			if err != nil {
-				return fmt.Errorf("secret-scan: patterns[%d]: %w", i, err)
-			}
-			s.secrets = append(s.secrets, secret{name: fmt.Sprintf("custom_%d", i+1), re: re})
+	custom, err := plugin.ListSetting(config["patterns"], "patterns")
+	if err != nil {
+		return fmt.Errorf("secret-scan: %w", err)
+	}
+	for i, v := range custom {
+		str, ok := v.(string)
+		if !ok {
+			return fmt.Errorf("secret-scan: patterns[%d] must be a string", i)
 		}
+		re, err := regexp.Compile(str)
+		if err != nil {
+			return fmt.Errorf("secret-scan: patterns[%d]: %w", i, err)
+		}
+		s.secrets = append(s.secrets, secret{name: fmt.Sprintf("custom_%d", i+1), re: re})
 	}
 
 	// Checked after the custom patterns are appended, because an empty kinds
