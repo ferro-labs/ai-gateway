@@ -221,6 +221,15 @@ tokens are already delivered, so it can report a violation but not unsend it.
 The denial reason names the field and what was expected, since a schema
 violation is not adversarial and naming it is the whole diagnostic value.
 
+Each choice is assembled into **one document** and validated once, so an answer
+split across content parts is judged whole rather than as several invalid
+fragments, and `n > 1` has every candidate validated. A choice carrying **no
+content** is a violation: an empty answer does not satisfy a schema requiring an
+object. Note what that means for tool calling — a choice that carries only a
+tool call carries no document, so a deployment doing both should scope
+`schema-guard` to the requests that ask for structured output, or run it under
+`action: warn`.
+
 ```yaml
 config:
   action: block   # block | warn | log

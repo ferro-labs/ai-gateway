@@ -14,6 +14,7 @@ import (
 
 	"github.com/ferro-labs/ai-gateway/pkg/logger"
 	"github.com/ferro-labs/ai-gateway/plugin"
+	"github.com/ferro-labs/ai-gateway/providers"
 )
 
 // typeInteger is the one JSON Schema type name no decoded value ever reports,
@@ -82,15 +83,12 @@ func (g *SchemaGuard) Init(config map[string]any) error {
 // responses only, and there is nothing to validate before the provider has
 // answered.
 func (g *SchemaGuard) Execute(ctx context.Context, pctx *plugin.Context) error {
-	if g.schema == nil || pctx.Stage != plugin.StageAfterRequest {
+	if g.schema == nil || pctx.Stage != plugin.StageAfterRequest || pctx.Response == nil {
 		return nil
 	}
 
-	for text := range plugin.ResponseText(pctx.Response) {
-		if strings.TrimSpace(text) == "" {
-			continue
-		}
-		violation := g.validate(text)
+	for _, choice := range pctx.Response.Choices {
+		violation := g.validate(choiceDocument(choice.Message))
 		if violation == "" {
 			continue
 		}
@@ -111,9 +109,42 @@ func (g *SchemaGuard) Execute(ctx context.Context, pctx *plugin.Context) error {
 // Close releases resources owned by the plugin.
 func (g *SchemaGuard) Close() error { return nil }
 
+// choiceDocument assembles the one document a choice carries.
+//
+// A schema is a statement about a DOCUMENT, which is why this plugin does its
+// own traversal rather than screening each string plugin.ResponseText yields.
+// That iterator is shaped for pattern matching, where every fragment is worth
+// testing on its own; here the fragments of one object are each invalid JSON
+// alone, so a conforming answer split across content parts was denied, and a
+// decoded multipart message — which carries both the collapsed Content and the
+// parts it was collapsed from — had the same document validated twice.
+//
+// Content is the collapsed form: Message.UnmarshalJSON joins every text part
+// into it, so whenever it is set it is the whole document and the parts are the
+// same bytes again. A message built in Go rather than decoded carries an empty
+// Content, and there its parts are the only source.
+func choiceDocument(msg providers.Message) string {
+	if msg.Content != "" {
+		return msg.Content
+	}
+	var assembled strings.Builder
+	for _, part := range msg.ContentParts {
+		assembled.WriteString(part.Text)
+	}
+	return assembled.String()
+}
+
 // validate returns a human-readable violation, or "" when the document
 // conforms.
+//
+// A choice carrying nothing is a violation rather than a skip: a response with
+// no content in it does not satisfy a schema requiring an object, and reading
+// the absence as conformance let every empty answer through a guardrail
+// configured to require one.
 func (g *SchemaGuard) validate(text string) string {
+	if strings.TrimSpace(text) == "" {
+		return "response carries no content"
+	}
 	var doc any
 	if err := json.Unmarshal([]byte(text), &doc); err != nil {
 		return "response is not valid JSON"

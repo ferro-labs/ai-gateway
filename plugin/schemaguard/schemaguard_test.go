@@ -19,6 +19,16 @@ func newResponse(content string) *plugin.Context {
 	}
 }
 
+// newChoice builds one choice carrying whatever the caller gives it, which is
+// how a response split across content parts is expressed.
+func newChoice(msg providers.Message) *plugin.Context {
+	return &plugin.Context{
+		Stage:    plugin.StageAfterRequest,
+		Metadata: map[string]any{},
+		Response: &providers.Response{Choices: []providers.Choice{{Message: msg}}},
+	}
+}
+
 func objectSchema() map[string]any {
 	return map[string]any{
 		"type":     "object",
@@ -188,6 +198,96 @@ func TestExecute_WarnActionDoesNotReject(t *testing.T) {
 
 	if pctx.Reject {
 		t.Fatal("action=warn rejected a non-conforming response")
+	}
+}
+
+// A schema is a statement about a DOCUMENT, so the parts of a choice have to
+// be assembled before they are validated. Validated separately, each half of a
+// split object is invalid JSON on its own and a conforming response is denied.
+func TestExecute_AssemblesADocumentSplitAcrossContentParts(t *testing.T) {
+	g := &SchemaGuard{}
+	if err := g.Init(map[string]any{"schema": objectSchema()}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	pctx := newChoice(providers.Message{ContentParts: []providers.ContentPart{
+		{Type: "text", Text: `{"name":"ada",`},
+		{Type: "text", Text: `"score":9.5}`},
+	}})
+	if err := g.Execute(context.Background(), pctx); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	if pctx.Reject {
+		t.Fatalf("a conforming document split across parts was rejected: %q", pctx.Reason)
+	}
+}
+
+// A decoded multipart message carries BOTH the collapsed Content and the parts
+// it was collapsed from. Validating each string the choice yields validates the
+// same document twice, and the second pass rejects it as a duplicate fragment.
+func TestExecute_ValidatesACollapsedDocumentOnce(t *testing.T) {
+	g := &SchemaGuard{}
+	if err := g.Init(map[string]any{"schema": objectSchema()}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	pctx := newChoice(providers.Message{
+		Content: `{"name":"ada","score":9.5}`,
+		ContentParts: []providers.ContentPart{
+			{Type: "text", Text: `{"name":"ada",`},
+			{Type: "text", Text: `"score":9.5}`},
+		},
+	})
+	if err := g.Execute(context.Background(), pctx); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	if pctx.Reject {
+		t.Fatalf("a conforming response was rejected on a second pass over its own fragments: %q", pctx.Reason)
+	}
+}
+
+// A choice carrying nothing does not satisfy a schema requiring an object.
+// Skipping it read an empty answer as a conforming one.
+func TestExecute_RejectsAChoiceCarryingNoContent(t *testing.T) {
+	g := &SchemaGuard{}
+	if err := g.Init(map[string]any{"schema": objectSchema()}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	pctx := newChoice(providers.Message{Content: "   "})
+	if err := g.Execute(context.Background(), pctx); err != nil {
+		t.Fatalf("Execute returned an error; a denial is a verdict, not a fault: %v", err)
+	}
+
+	if !pctx.Reject {
+		t.Fatal("a response carrying no content was allowed through where an object was required")
+	}
+}
+
+// Every choice is validated, not only the first: n > 1 returns independent
+// candidates and the caller unmarshals whichever it picks.
+func TestExecute_ValidatesEveryChoice(t *testing.T) {
+	g := &SchemaGuard{}
+	if err := g.Init(map[string]any{"schema": objectSchema()}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	pctx := &plugin.Context{
+		Stage:    plugin.StageAfterRequest,
+		Metadata: map[string]any{},
+		Response: &providers.Response{Choices: []providers.Choice{
+			{Message: providers.Message{Content: `{"name":"ada","score":9.5}`}},
+			{Message: providers.Message{Content: `{"name":"grace"}`}},
+		}},
+	}
+	if err := g.Execute(context.Background(), pctx); err != nil {
+		t.Fatalf("Execute returned an error; a denial is a verdict, not a fault: %v", err)
+	}
+
+	if !pctx.Reject {
+		t.Fatal("a second choice missing a required field was allowed through")
 	}
 }
 
