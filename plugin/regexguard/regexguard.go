@@ -219,6 +219,7 @@ func (g *RegexGuard) screen(ctx context.Context, pctx *plugin.Context, content s
 		}
 		logger.Ctx(ctx).Info("regex-guard: matched "+subject,
 			"rule", r.name, "action", r.action)
+		pctx.NoteGuardrailMatch(r.action)
 		if r.action != plugin.ActionBlock {
 			continue
 		}

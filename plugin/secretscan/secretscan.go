@@ -223,6 +223,7 @@ func (s *SecretScan) screen(ctx context.Context, pctx *plugin.Context, content, 
 			continue
 		}
 		logger.Ctx(ctx).Warn("secret-scan: credential detected in "+subject, "kind", sec.name)
+		pctx.NoteGuardrailMatch(s.action)
 		if s.action != plugin.ActionBlock {
 			continue
 		}

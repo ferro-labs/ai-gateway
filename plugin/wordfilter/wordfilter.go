@@ -121,6 +121,7 @@ func (w *WordFilter) reject(ctx context.Context, pctx *plugin.Context, content, 
 		}
 		if strings.Contains(content, check) {
 			logger.Ctx(ctx).Info("word-filter: blocked "+subject, "matched_word", word)
+			pctx.NoteGuardrailMatch(plugin.ActionBlock)
 			pctx.Reject = true
 			pctx.Reason = subject + " blocked by content policy"
 			return true

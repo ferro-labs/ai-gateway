@@ -89,6 +89,11 @@ type Manager struct {
 	// at several stages — one multi-stage plugin — carries one id. Empty for an
 	// instance registered without one. Guarded by mu, written only at Register.
 	instanceIDs map[Plugin]string
+	// emitMatch, when set, receives each guardrail match at the end of the stage
+	// that recorded it, with whether the request was ultimately allowed past the
+	// guardrails. The gateway installs it (SetGuardrailMatchSink) so the manager
+	// need not know how an Event is built or where it goes; nil means no emission.
+	emitMatch   func(ctx context.Context, match GuardrailMatch, allowed bool)
 	mu          sync.RWMutex
 	lifecycleMu sync.Mutex
 	lifecycle   *sync.Cond
@@ -184,6 +189,32 @@ func (m *Manager) instanceID(p Plugin) string {
 	return m.instanceIDs[p]
 }
 
+// SetGuardrailMatchSink installs the callback that receives each guardrail match
+// at the end of its stage. Pass nil to disable emission. Set once at wiring,
+// before serving.
+func (m *Manager) SetGuardrailMatchSink(fn func(ctx context.Context, match GuardrailMatch, allowed bool)) {
+	m.emitMatch = fn
+}
+
+// flushGuardrailMatches emits every match recorded so far and clears them, so a
+// stage reports its own matches and an agentic loop turn does not re-report an
+// earlier turn's. allowed reflects whether the request survived the guardrails —
+// a match under warn/log on a served request is allowed; any match on a request
+// a guardrail rejected is not. Deferred by each stage runner, so it sees the
+// stage's final pctx.Reject.
+func (m *Manager) flushGuardrailMatches(ctx context.Context, pctx *Context) {
+	if len(pctx.GuardrailMatches) == 0 {
+		return
+	}
+	if m.emitMatch != nil {
+		allowed := !pctx.Reject
+		for _, match := range pctx.GuardrailMatches {
+			m.emitMatch(ctx, match, allowed)
+		}
+	}
+	pctx.GuardrailMatches = pctx.GuardrailMatches[:0]
+}
+
 // RunBefore executes all before-request plugins. Fail-closed plugin errors or
 // rejections abort the request; fail-open plugin failures are logged and ignored.
 //
@@ -199,6 +230,7 @@ func (m *Manager) instanceID(p Plugin) string {
 // than at each call site because a caller that forgets it produces a request the
 // operator has no record of — the shape this stage exists to prevent.
 func (m *Manager) RunBefore(ctx context.Context, pctx *Context) error {
+	defer m.flushGuardrailMatches(ctx, pctx)
 	m.mu.RLock()
 	plugins := m.before
 	m.mu.RUnlock()
@@ -241,6 +273,7 @@ func (m *Manager) RunBefore(ctx context.Context, pctx *Context) error {
 // runs the same executePlugin and handlePluginFailure, so a fail-open plugin
 // still fails open here.
 func (m *Manager) RunBeforeLoopTurn(ctx context.Context, pctx *Context) error {
+	defer m.flushGuardrailMatches(ctx, pctx)
 	m.mu.RLock()
 	plugins := m.before
 	m.mu.RUnlock()
@@ -271,6 +304,7 @@ func (m *Manager) RunBeforeLoopTurn(ctx context.Context, pctx *Context) error {
 // Unlike RunBefore this does not run the on_error stage itself: its callers already
 // do, because only they hold the measurements that stage records.
 func (m *Manager) RunAfter(ctx context.Context, pctx *Context) error {
+	defer m.flushGuardrailMatches(ctx, pctx)
 	m.mu.RLock()
 	plugins := m.after
 	m.mu.RUnlock()
@@ -350,7 +384,20 @@ func (m *Manager) executePlugin(ctx context.Context, p Plugin, pctx *Context, st
 		}
 	}()
 
+	matchStart := len(pctx.GuardrailMatches)
 	err = p.Execute(ctx, pctx)
+
+	// Stamp the matches this plugin recorded during Execute with its identity.
+	// The plugin knows only the action; who matched is the framework's to state,
+	// the same reason it sets pctx.Stage above.
+	if len(pctx.GuardrailMatches) > matchStart {
+		id := m.instanceID(p)
+		name := p.Name()
+		for i := matchStart; i < len(pctx.GuardrailMatches); i++ {
+			pctx.GuardrailMatches[i].Plugin = name
+			pctx.GuardrailMatches[i].Instance = id
+		}
+	}
 
 	if span != nil {
 		switch {

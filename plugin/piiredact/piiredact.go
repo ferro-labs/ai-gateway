@@ -15,7 +15,6 @@ import (
 
 	"github.com/ferro-labs/ai-gateway/pkg/logger"
 	"github.com/ferro-labs/ai-gateway/plugin"
-	"github.com/ferro-labs/ai-gateway/providers"
 )
 
 func init() {
@@ -215,12 +214,12 @@ func (p *PIIRedact) Execute(ctx context.Context, pctx *plugin.Context) error {
 	// forwarded, so redacting would log a sanitization the provider never sees.
 	_, projected := pctx.Metadata[plugin.MetadataSurface]
 	if p.action == plugin.ActionRedact && !projected {
-		p.redactRequest(ctx, pctx.Request)
+		p.redactRequest(ctx, pctx)
 		return nil
 	}
 
 	if p.action == plugin.ActionLog {
-		p.logRequest(ctx, pctx.Request)
+		p.logRequest(ctx, pctx)
 		return nil
 	}
 
@@ -234,6 +233,7 @@ func (p *PIIRedact) Execute(ctx context.Context, pctx *plugin.Context) error {
 			continue
 		}
 		logger.Ctx(ctx).Info("pii-redact: blocked request", "entity", name)
+		pctx.NoteGuardrailMatch(plugin.ActionBlock)
 		pctx.Reject = true
 		// The entity TYPE, never the value: the caller needs to know what to
 		// remove, and echoing the value back would put it in the error log of
@@ -272,9 +272,9 @@ func (p *PIIRedact) Close() error { return nil }
 // every screenable field. block stops at the first match because one is a
 // verdict; the record log keeps has to name everything block would deny, or
 // it understates the policy it is sizing.
-func (p *PIIRedact) logRequest(ctx context.Context, req *providers.Request) {
+func (p *PIIRedact) logRequest(ctx context.Context, pctx *plugin.Context) {
 	seen := make(map[string]bool, len(p.entities))
-	for text := range plugin.RequestText(req) {
+	for text := range plugin.RequestText(pctx.Request) {
 		if ctx.Err() != nil {
 			return
 		}
@@ -284,6 +284,7 @@ func (p *PIIRedact) logRequest(ctx context.Context, req *providers.Request) {
 			}
 			seen[e.name] = true
 			logger.Ctx(ctx).Info("pii-redact: detected in request", "entity", e.name)
+			pctx.NoteGuardrailMatch(plugin.ActionLog)
 		}
 	}
 }
@@ -296,7 +297,8 @@ func (p *PIIRedact) logRequest(ctx context.Context, req *providers.Request) {
 // Content would forward the value the plugin just claimed to remove. A field
 // this misses is worse here than anywhere else, because block mode denies on it
 // while redact mode reports a sanitization the provider never received.
-func (p *PIIRedact) redactRequest(ctx context.Context, req *providers.Request) {
+func (p *PIIRedact) redactRequest(ctx context.Context, pctx *plugin.Context) {
+	req := pctx.Request
 	for i := range req.Messages {
 		// The caller has gone, so the rewritten request will never be sent:
 		// stop rather than rewrite the rest of it.
@@ -304,16 +306,16 @@ func (p *PIIRedact) redactRequest(ctx context.Context, req *providers.Request) {
 			return
 		}
 		msg := &req.Messages[i]
-		msg.Content = p.redact(ctx, msg.Content)
-		msg.ReasoningContent = p.redact(ctx, msg.ReasoningContent)
+		msg.Content = p.redact(ctx, pctx, msg.Content)
+		msg.ReasoningContent = p.redact(ctx, pctx, msg.ReasoningContent)
 		for j := range msg.ContentParts {
-			msg.ContentParts[j].Text = p.redact(ctx, msg.ContentParts[j].Text)
+			msg.ContentParts[j].Text = p.redact(ctx, pctx, msg.ContentParts[j].Text)
 		}
 		for j := range msg.ToolCalls {
 			// The arguments are a JSON document, so the placeholder goes in
 			// JSON-escaped: a quote or a backslash in it would otherwise turn a
 			// valid argument object into one the provider cannot parse.
-			msg.ToolCalls[j].Function.Arguments = p.redactWith(ctx, msg.ToolCalls[j].Function.Arguments, p.jsonPlaceholder)
+			msg.ToolCalls[j].Function.Arguments = p.redactWith(ctx, pctx, msg.ToolCalls[j].Function.Arguments, p.jsonPlaceholder)
 		}
 	}
 }
@@ -326,16 +328,17 @@ func (p *PIIRedact) redactRequest(ctx context.Context, req *providers.Request) {
 // the plugin logged a redaction and let it through, and any placeholder
 // carrying a dollar sign reached the provider as something other than what the
 // operator wrote. Replacing through a function inserts the string as given.
-func (p *PIIRedact) redact(ctx context.Context, text string) string {
-	return p.redactWith(ctx, text, p.placeholder)
+func (p *PIIRedact) redact(ctx context.Context, pctx *plugin.Context, text string) string {
+	return p.redactWith(ctx, pctx, text, p.placeholder)
 }
 
-func (p *PIIRedact) redactWith(ctx context.Context, text, placeholder string) string {
+func (p *PIIRedact) redactWith(ctx context.Context, pctx *plugin.Context, text, placeholder string) string {
 	for _, e := range p.entities {
 		if !e.matches(text) {
 			continue
 		}
 		logger.Ctx(ctx).Info("pii-redact: redacted request", "entity", e.name)
+		pctx.NoteGuardrailMatch(plugin.ActionRedact)
 		text = e.re.ReplaceAllStringFunc(text, func(match string) string {
 			if e.verify != nil && !e.verify(match) {
 				return match

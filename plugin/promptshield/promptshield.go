@@ -186,6 +186,7 @@ func (s *PromptShield) Execute(ctx context.Context, pctx *plugin.Context) error 
 				continue
 			}
 			logger.Ctx(ctx).Warn("prompt-shield: injection attempt detected", "category", c.name)
+			pctx.NoteGuardrailMatch(s.action)
 			if s.action != plugin.ActionBlock {
 				continue
 			}

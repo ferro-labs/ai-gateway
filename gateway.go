@@ -606,6 +606,7 @@ func (g *Gateway) buildPluginManager(configs []config.PluginConfig) (*plugin.Man
 	}
 
 	plugins := plugin.NewManager(g.log)
+	plugins.SetGuardrailMatchSink(g.emitGuardrailMatch)
 	shared := make(map[string]plugin.Plugin, len(configs))
 	for _, pc := range configs {
 		if !pc.Enabled {

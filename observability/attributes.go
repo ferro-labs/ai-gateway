@@ -53,22 +53,31 @@ const (
 	// SpanNameRoutingAttempt names the per-attempt CLIENT span opened when
 	// observability.tracing.attempt_spans is set. Same value as
 	// SubjectRoutingAttempt (one literal, not two).
-	SpanNameRoutingAttempt            = SubjectRoutingAttempt
-	AttrFerroRoutingABVariantLabel    = "ferro.routing.ab_variant_label"
-	AttrFerroCostUSD                  = "ferro.cost.usd"
-	AttrFerroCostInputUSD             = "ferro.cost.input_usd"
-	AttrFerroCostOutputUSD            = "ferro.cost.output_usd"
-	AttrFerroCostCacheReadUSD         = "ferro.cost.cache_read_usd"
-	AttrFerroCostCacheWriteUSD        = "ferro.cost.cache_write_usd"
-	AttrFerroCostReasoningUSD         = "ferro.cost.reasoning_usd"
-	AttrFerroCostModelFound           = "ferro.cost.model_found"
-	AttrFerroCacheHit                 = "ferro.cache.hit"
-	AttrFerroCacheKind                = "ferro.cache.kind"
-	AttrFerroPluginName               = "ferro.plugin.name"
-	AttrFerroPluginKind               = "ferro.plugin.kind"
-	AttrFerroPluginStage              = "ferro.plugin.stage"
-	AttrFerroPluginOutcome            = "ferro.plugin.outcome"
-	AttrFerroPluginReason             = "ferro.plugin.reason"
+	SpanNameRoutingAttempt         = SubjectRoutingAttempt
+	AttrFerroRoutingABVariantLabel = "ferro.routing.ab_variant_label"
+	AttrFerroCostUSD               = "ferro.cost.usd"
+	AttrFerroCostInputUSD          = "ferro.cost.input_usd"
+	AttrFerroCostOutputUSD         = "ferro.cost.output_usd"
+	AttrFerroCostCacheReadUSD      = "ferro.cost.cache_read_usd"
+	AttrFerroCostCacheWriteUSD     = "ferro.cost.cache_write_usd"
+	AttrFerroCostReasoningUSD      = "ferro.cost.reasoning_usd"
+	AttrFerroCostModelFound        = "ferro.cost.model_found"
+	AttrFerroCacheHit              = "ferro.cache.hit"
+	AttrFerroCacheKind             = "ferro.cache.kind"
+	AttrFerroPluginName            = "ferro.plugin.name"
+	AttrFerroPluginKind            = "ferro.plugin.kind"
+	AttrFerroPluginStage           = "ferro.plugin.stage"
+	AttrFerroPluginOutcome         = "ferro.plugin.outcome"
+	AttrFerroPluginReason          = "ferro.plugin.reason"
+	// Guardrail-match attributes, carried on a SubjectGuardrailMatch event —
+	// one per guardrail match, whatever the resolved action. They name the
+	// decision, never the matched text or offending value: the gateway keeps its
+	// no-leak posture, and a host that wants the content logs it itself.
+	AttrFerroGuardrailPlugin          = "ferro.guardrail.plugin"
+	AttrFerroGuardrailInstance        = "ferro.guardrail.instance"
+	AttrFerroGuardrailAction          = "ferro.guardrail.action"
+	AttrFerroGuardrailStage           = "ferro.guardrail.stage"
+	AttrFerroGuardrailAllowed         = "ferro.guardrail.allowed"
 	AttrFerroMCPServer                = "ferro.mcp.server"
 	AttrFerroMCPTool                  = "ferro.mcp.tool"
 	AttrFerroMCPDepth                 = "ferro.mcp.depth"
@@ -95,6 +104,14 @@ const SchemaVersion = "1.0.0-draft"
 
 // SubjectRoutingAttempt identifies one physical routing attempt.
 const SubjectRoutingAttempt = "gateway.routing.attempt"
+
+// SubjectGuardrailMatch identifies one guardrail match — a configured guardrail
+// rule that matched, whatever action it resolved to (block, warn, log, redact).
+// It is emitted through the same Provider.RecordEvent fanout a request's
+// terminal event uses, so a host running a guardrail in a non-blocking mode
+// (warn/log) can observe what it would have blocked. Its Attributes carry the
+// AttrFerroGuardrail* keys; it carries no matched text.
+const SubjectGuardrailMatch = "gateway.guardrail.match"
 
 // Group C — request identity. Standard OpenTelemetry names are used where one
 // exists (enduser.id, session.id); metadata uses the ferro.* namespace.

@@ -325,6 +325,25 @@ type Context struct {
 	// there is nothing to have measured yet. Setting it never alters pipeline
 	// control flow.
 	Measurements Measurements
+	// GuardrailMatches accumulates one entry per guardrail match during a stage,
+	// recorded by a guardrail through NoteGuardrailMatch. The manager stamps the
+	// plugin name and instance id onto each and flushes them to the observability
+	// seam at the end of the stage; a guardrail never reads this back. It carries
+	// no matched text — only the decision. Nil until something matches, so the
+	// no-match path allocates nothing.
+	GuardrailMatches []GuardrailMatch
+}
+
+// GuardrailMatch is one guardrail decision: a rule matched and resolved to an
+// action. It names the decision, never the matched text or offending value, so
+// the gateway keeps its no-leak posture. Plugin and Instance are stamped by the
+// manager from registration; a guardrail supplies only the Action (Stage is
+// taken from the Context).
+type GuardrailMatch struct {
+	Plugin   string
+	Instance string
+	Stage    Stage
+	Action   string
 }
 
 // Measurements are the per-request numbers the gateway computes and hands to
@@ -379,7 +398,7 @@ func PutContext(c *Context) {
 	pluginContextPool.Put(c)
 }
 
-// reset clears all 11 fields before returning to the pool.
+// reset clears all 12 fields before returning to the pool.
 // Metadata map entries are deleted but the map itself is kept
 // to preserve its bucket array capacity for the next request.
 // SECURITY: every field must be listed explicitly.
@@ -395,4 +414,14 @@ func (c *Context) reset() {
 	c.Reason = ""                   // field 9: string
 	c.Span = nil                    // field 10: observability.Span
 	c.Measurements = Measurements{} // field 11: Measurements
+	c.GuardrailMatches = nil        // field 12: []GuardrailMatch
+}
+
+// NoteGuardrailMatch records that a guardrail rule matched and resolved to
+// action, for the observability seam. A guardrail calls it on EVERY match —
+// block, warn, log or redact — so a non-blocking mode is observable. It records
+// only the decision, never the matched text or offending value. The manager
+// stamps the plugin name and instance id; the stage is taken from the Context.
+func (c *Context) NoteGuardrailMatch(action string) {
+	c.GuardrailMatches = append(c.GuardrailMatches, GuardrailMatch{Stage: c.Stage, Action: action})
 }

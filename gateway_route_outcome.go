@@ -70,6 +70,41 @@ func (g *Gateway) recordRoutingAttempt(ctx context.Context, obs observability.Pr
 	})
 }
 
+// emitGuardrailMatch broadcasts one guardrail match through the same
+// Provider.RecordEvent fanout a request's terminal event uses — a new event
+// subject, not a new channel. It is the sink the plugin manager calls at the end
+// of each stage (SetGuardrailMatchSink), so a guardrail running in a
+// non-blocking mode (warn/log) is observable: the payload names the decision and
+// whether the request survived the guardrails, and deliberately carries no
+// matched text. Gated on obsEventsActive, so with no exporter attached the
+// no-op path stays allocation-free. g.obs is read live, so the sink installed on
+// a rebuilt manager always reaches the current provider.
+func (g *Gateway) emitGuardrailMatch(ctx context.Context, match plugin.GuardrailMatch, allowed bool) {
+	g.mu.RLock()
+	obs := g.obs
+	active := g.obsEventsActive
+	g.mu.RUnlock()
+	if !active {
+		return
+	}
+	id := observability.RequestIdentityFromContext(ctx)
+	obs.RecordEvent(ctx, observability.Event{
+		Subject:   observability.SubjectGuardrailMatch,
+		TraceID:   logger.TraceIDFromContext(ctx),
+		User:      id.User,
+		SessionID: id.SessionID,
+		Metadata:  cloneMetadata(id.Metadata),
+		Timestamp: time.Now(),
+		Attributes: map[string]any{
+			observability.AttrFerroGuardrailPlugin:   match.Plugin,
+			observability.AttrFerroGuardrailInstance: match.Instance,
+			observability.AttrFerroGuardrailAction:   match.Action,
+			observability.AttrFerroGuardrailStage:    string(match.Stage),
+			observability.AttrFerroGuardrailAllowed:  allowed,
+		},
+	})
+}
+
 func abVariantAttributes(label string, present bool) map[string]any {
 	if !present {
 		return nil

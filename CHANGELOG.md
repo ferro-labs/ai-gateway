@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The gateway emits one `gateway.guardrail.match` observability event per
+  guardrail match, through the same `Provider.RecordEvent` fanout a request's
+  terminal event uses, whatever action the match resolved to (block, warn, log,
+  redact). A guardrail running in a non-blocking mode is now observable: a host
+  can record what a `log` or `warn` rule would have blocked, which the block-only
+  signal could not show. The event names the plugin, its instance `id`, the
+  resolved action, the stage, and whether the request was ultimately allowed past
+  the guardrails; it carries no matched text or offending value, keeping the
+  gateway's no-leak posture. A non-matching plugin emits nothing, so the happy
+  path is unchanged and stays allocation-free when no exporter is attached.
+
 - A plugin config entry accepts an optional `id` — an opaque, operator-supplied
   label for that instance. Several instances of one plugin can be configured
   (one rule each), and until now a decision named only the plugin type, so an
