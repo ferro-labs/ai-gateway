@@ -68,3 +68,41 @@ func TestGateway_ResolvesPluginSecretsAtConstruction(t *testing.T) {
 		t.Error("the materialised secret leaked into the gateway Config")
 	}
 }
+
+// TestGateway_WithoutEnvExpansion_PassesPluginReferenceLiterally proves the
+// off switch: with WithoutEnvExpansion the plugin receives the raw ${VAR}, and
+// the process environment is never consulted — even though the variable IS set,
+// which is exactly the case an operator building instances from customer config
+// must not have resolved against its own secrets.
+func TestGateway_WithoutEnvExpansion_PassesPluginReferenceLiterally(t *testing.T) {
+	t.Setenv("FERRO_TEST_PLUGIN_SECRET", "must-not-be-read")
+
+	// Drain any value a prior test left in the shared probe channel.
+	select {
+	case <-envrefProbeConfig:
+	default:
+	}
+
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets:  []config.Target{{VirtualKey: "openai"}},
+		Plugins: []config.PluginConfig{{
+			Name:    "envref-probe",
+			Type:    "logging",
+			Stage:   "before_request",
+			Enabled: true,
+			Config:  map[string]any{"token": "${FERRO_TEST_PLUGIN_SECRET}"}, //nolint:gosec // G101: an unresolved ${VAR} reference is the assertion, not a credential
+		}},
+	}, WithoutEnvExpansion())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := gw.LoadPlugins(); err != nil {
+		t.Fatalf("LoadPlugins: %v", err)
+	}
+
+	got := <-envrefProbeConfig
+	if got["token"] != "${FERRO_TEST_PLUGIN_SECRET}" {
+		t.Errorf("plugin received token = %v, want the literal reference (expansion disabled)", got["token"])
+	}
+}

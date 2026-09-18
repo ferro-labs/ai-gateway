@@ -71,7 +71,12 @@ const mcpInitTimeout = 60 * time.Second
 // Both Headers and Env are resolved. Env matters most: MCP subprocesses do not
 // inherit the gateway's environment (see mcp.newStdioClient), which
 // makes this map the only route by which a credential can reach one.
-func resolveMCPServerRefs(cfg mcp.ServerConfig) (mcp.ServerConfig, error) {
+// When expand is false the references pass through literally and the process
+// environment is never read — see Gateway.WithoutEnvExpansion.
+func resolveMCPServerRefs(cfg mcp.ServerConfig, expand bool) (mcp.ServerConfig, error) {
+	if !expand {
+		return cfg, nil
+	}
 	headers, err := envref.StringMap(cfg.Headers)
 	if err != nil {
 		return mcp.ServerConfig{}, fmt.Errorf("headers: %w", err)
@@ -119,7 +124,7 @@ func (g *Gateway) wireMCPLocked(cfg config.Config, failLogMsg string) {
 	reg := mcp.NewRegistry(g.log)
 	registered := make([]mcp.ServerConfig, 0, len(cfg.MCPServers))
 	for _, mcpCfg := range cfg.MCPServers {
-		resolved, err := resolveMCPServerRefs(mcpCfg)
+		resolved, err := resolveMCPServerRefs(mcpCfg, !g.disableEnvExpansion)
 		if err != nil {
 			// Skip only this server: an unrelated server's config must not be able to
 			// disable every other server, and the caller (ReloadConfig) must still get

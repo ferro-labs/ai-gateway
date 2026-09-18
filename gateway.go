@@ -52,13 +52,17 @@ type Gateway struct {
 	catalog   models.Catalog
 	// suppliedCatalog is the catalog WithCatalog handed in, kept so New knows
 	// to skip loading and refreshing. nil when the gateway loads its own.
-	suppliedCatalog  models.Catalog
-	providers        map[string]providers.Provider
-	providerNames    []string
-	strategies       map[string]strategies.Strategy // built lazily, keyed by surface ("" is chat)
-	plugins          *plugin.Manager
-	requestLogWriter requestlog.Writer
-	closeOnce        sync.Once
+	suppliedCatalog models.Catalog
+	// disableEnvExpansion turns off ${VAR} substitution for plugin configs and
+	// MCP headers/env when set by WithoutEnvExpansion. Off by default; set once
+	// at New and only read during construction/reload, so it needs no lock.
+	disableEnvExpansion bool
+	providers           map[string]providers.Provider
+	providerNames       []string
+	strategies          map[string]strategies.Strategy // built lazily, keyed by surface ("" is chat)
+	plugins             *plugin.Manager
+	requestLogWriter    requestlog.Writer
+	closeOnce           sync.Once
 	// closed is set under mu by Close. ReloadConfig checks it because closeOnce
 	// has already fired by then: a reload landing after shutdown would build a
 	// fresh MCP registry, spawn its subprocesses, and leave nothing to ever
@@ -164,6 +168,22 @@ func WithContext(ctx context.Context) Option {
 // keeps mutating its own. A nil catalog keeps the default load.
 func WithCatalog(c models.Catalog) Option {
 	return func(g *Gateway) { g.suppliedCatalog = c }
+}
+
+// WithoutEnvExpansion disables ${VAR} substitution for plugin configs and MCP
+// server headers/env. When set, a ${NAME} reaches the plugin or MCP client
+// verbatim and the process environment is never read for substitution.
+//
+// Off by default: expansion stays on, so an existing single-operator install is
+// unchanged. It is for a host that constructs gateway instances from config it
+// did not author — a customer string ${SOME_OPERATOR_SECRET} would otherwise be
+// resolved against the host's own process environment. The switch is a
+// gateway-level defence-in-depth under the host's own screening of that config.
+//
+// It affects only process-env ${VAR} resolution; it is unrelated to any
+// higher-level templating a host may layer on top.
+func WithoutEnvExpansion() Option {
+	return func(g *Gateway) { g.disableEnvExpansion = true }
 }
 
 // New creates a new Gateway instance with the given configuration.
@@ -615,12 +635,18 @@ func (g *Gateway) buildPluginManager(configs []config.PluginConfig) (*plugin.Man
 			}
 			// Resolve ${VAR} references into the plugin's own config at construction.
 			// The Config itself keeps the references, so the secret is never persisted
-			// to the config store nor served by GET /admin/config.
-			pluginCfg, err := envref.AnyMap(pc.Config)
-			if err != nil {
-				_ = plugins.Close()
-				_ = p.Close()
-				return nil, fmt.Errorf("plugin %s config: %w", pc.Name, err)
+			// to the config store nor served by GET /admin/config. When expansion is
+			// disabled the references pass through literally and the environment is
+			// never read — see WithoutEnvExpansion.
+			pluginCfg := pc.Config
+			if !g.disableEnvExpansion {
+				var err error
+				pluginCfg, err = envref.AnyMap(pc.Config)
+				if err != nil {
+					_ = plugins.Close()
+					_ = p.Close()
+					return nil, fmt.Errorf("plugin %s config: %w", pc.Name, err)
+				}
 			}
 			if err := p.Init(pluginCfg); err != nil {
 				_ = plugins.Close()

@@ -19,6 +19,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   name plus config), so one instance listed across stages carries one id.
   `ferrogw validate` rejects an `id` claimed by two different instances. An empty
   `id` keeps today's behaviour.
+- `gateway.WithoutEnvExpansion()` construction option disables `${VAR}`
+  substitution for plugin configs and MCP server headers/env. With it set, a
+  `${NAME}` reaches the plugin or MCP client verbatim and the process environment
+  is never read for substitution. Off by default — expansion stays on — so an
+  existing install is unchanged. It is defence-in-depth for a host that builds
+  gateway instances from config it did not author, where a `${...}` in that
+  config would otherwise resolve against the host's own environment.
 
 ### Fixed
 
