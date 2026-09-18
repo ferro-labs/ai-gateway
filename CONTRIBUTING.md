@@ -28,6 +28,25 @@ git push origin release/v1.0.0
 
 ---
 
+## Local Development
+
+### Prerequisites
+- Go version per `go.mod`
+- Install [golangci-lint](https://golangci-lint.run/usage/install/)
+
+### Running the checks
+```bash
+make fmt        # format code with gofmt
+make lint       # run golangci-lint
+make test       # run unit tests with -race
+```
+
+### Pre-commit hook (optional but recommended)
+
+The repo ships a git pre-commit hook that runs `fmt → lint → test` automatically before every commit.
+
+---
+
 ## Pull Request Guidelines
 
 - All PRs must target the active `release/*` branch (never `main` directly)
