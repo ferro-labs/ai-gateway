@@ -45,8 +45,12 @@ import (
 //     Gateway.RegisterProvider and plugin.RegisterFactory).
 //
 // What it deliberately does not promise: anything that needs the deployment.
-// It does not construct plugins, which means it does not resolve ${VAR}
-// references or run a plugin's own Init. That is not an omission to fix later
+// It resolves no ${VAR} reference and contacts nothing. A plugin's Init runs in
+// exactly two cases, both on a throwaway instance and only when its config block
+// carries no reference: a plugin that publishes its Init as its validator
+// (plugin.ValidateViaInit, contracted pure), and a plugin whose supported stages
+// follow from its compiled config (plugin.StageRestricted). No other plugin is
+// constructed. Leaving references unresolved is not an omission to fix later
 // — envref resolves at construction on purpose, so a plugin whose config reads
 // ${SOME_TOKEN} must validate on a build machine that has no such token, and a
 // check that only passed where the secrets live would not be a pre-flight
@@ -179,12 +183,23 @@ func validateReferences(cfg config.Config) error {
 		// today's permissive behaviour is kept (serve compiles them at start).
 		// The config is already validated above, so an Init error here is not new
 		// information and is ignored — the instance is only for the stage read.
+		//
+		// Only a StageRestricted plugin is initialised: no other plugin's stage
+		// answer can depend on its config, and validate must not run the Init of
+		// a plugin that never asked for it — one built outside this repository
+		// may open a store or a connection there.
 		inst := factory()
-		if !envref.HasReferenceIn(p.Config) {
+		_, restricted := inst.(plugin.StageRestricted)
+		initialised := restricted && !envref.HasReferenceIn(p.Config)
+		if initialised {
 			_ = inst.Init(p.Config)
 		}
-		if err := plugin.ValidateStage(inst, plugin.Stage(p.Stage)); err != nil {
-			return err
+		stageErr := plugin.ValidateStage(inst, plugin.Stage(p.Stage))
+		if initialised {
+			_ = inst.Close()
+		}
+		if stageErr != nil {
+			return stageErr
 		}
 	}
 	return nil

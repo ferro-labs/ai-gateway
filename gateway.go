@@ -128,6 +128,13 @@ type Gateway struct {
 	// physical provider call only while it is set.
 	obsAttemptsActive bool
 
+	// obsGuardrailMatchesActive is true when the installed Provider also
+	// implements observability.GuardrailMatchRecordingProvider and
+	// GuardrailMatchesEnabled() returned true at SetObservability. Guarded like
+	// obsEventsActive. Opt-in for the same reason attempt events are: a consumer
+	// written against one Event per request must not be handed extra ones.
+	obsGuardrailMatchesActive bool
+
 	// attemptSpanner is the installed Provider when it also implements
 	// observability.AttemptSpanProvider, nil otherwise. Guarded like obs. The
 	// walk consults it only while observability.tracing.attempt_spans is set,
@@ -293,6 +300,10 @@ func (g *Gateway) SetObservability(p observability.Provider) {
 	}
 	if ar, ok := p.(observability.RoutingAttemptRecordingProvider); ok {
 		g.obsAttemptsActive = g.obsEventsActive && ar.RoutingAttemptsEnabled()
+	}
+	g.obsGuardrailMatchesActive = false
+	if gr, ok := p.(observability.GuardrailMatchRecordingProvider); ok {
+		g.obsGuardrailMatchesActive = g.obsEventsActive && gr.GuardrailMatchesEnabled()
 	}
 	// Attempt spans are independent of the event path: a provider can open them
 	// with no exporter attached at all. NoOp implements neither, so the

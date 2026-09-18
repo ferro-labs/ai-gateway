@@ -76,13 +76,15 @@ func (g *Gateway) recordRoutingAttempt(ctx context.Context, obs observability.Pr
 // of each stage (SetGuardrailMatchSink), so a guardrail running in a
 // non-blocking mode (warn/log) is observable: the payload names the decision and
 // whether the request survived the guardrails, and deliberately carries no
-// matched text. Gated on obsEventsActive, so with no exporter attached the
-// no-op path stays allocation-free. g.obs is read live, so the sink installed on
-// a rebuilt manager always reaches the current provider.
+// matched text. Opt-in, like attempt events: it is built only for a provider
+// that implements observability.GuardrailMatchRecordingProvider and reports
+// true, so a consumer written against one Event per request never sees it and
+// the no-op path stays allocation-free. g.obs is read live, so the sink
+// installed on a rebuilt manager always reaches the current provider.
 func (g *Gateway) emitGuardrailMatch(ctx context.Context, match plugin.GuardrailMatch, allowed bool) {
 	g.mu.RLock()
 	obs := g.obs
-	active := g.obsEventsActive
+	active := g.obsGuardrailMatchesActive
 	g.mu.RUnlock()
 	if !active {
 		return

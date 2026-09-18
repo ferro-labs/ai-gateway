@@ -66,3 +66,39 @@ func TestManager_RejectionWithoutInstanceID(t *testing.T) {
 		t.Errorf("Instance = %q, want empty for an instance registered without an id", rej.Instance)
 	}
 }
+
+// valuePlugin is a plugin used by VALUE whose struct is not hashable. Nothing in
+// the Plugin contract forbids the shape, and uniquePluginInstances tolerates it.
+type valuePlugin struct{ words []string }
+
+func (valuePlugin) Name() string              { return "value-plugin" }
+func (valuePlugin) Type() PluginType          { return TypeGuardrail }
+func (valuePlugin) Init(map[string]any) error { return nil }
+func (valuePlugin) Close() error              { return nil }
+func (valuePlugin) Execute(_ context.Context, pctx *Context) error {
+	pctx.NoteGuardrailMatch(ActionBlock)
+	pctx.Reject = true
+	return nil
+}
+
+// TestManager_UnhashableValuePluginDoesNotPanic guards the id lookup against a
+// value-typed plugin holding a slice: keyed by the Plugin value, the lookup
+// panics with "hash of unhashable type" on every rejection — outside
+// executePlugin's recover — even when no id was ever configured.
+func TestManager_UnhashableValuePluginDoesNotPanic(t *testing.T) {
+	m := NewManager(nil)
+	if err := m.RegisterWithID(StageBeforeRequest, valuePlugin{words: []string{"x"}}, "some-id"); err != nil {
+		t.Fatal(err)
+	}
+
+	pctx := NewContext(&providers.Request{Model: "gpt-4o"})
+	err := m.RunBefore(context.Background(), pctx)
+
+	var rej *RejectionError
+	if !errors.As(err, &rej) {
+		t.Fatalf("want *RejectionError, got %T: %v", err, err)
+	}
+	if rej.Instance != "" {
+		t.Errorf("Instance = %q; a non-pointer plugin has no identity to carry an id", rej.Instance)
+	}
+}

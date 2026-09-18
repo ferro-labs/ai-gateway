@@ -41,6 +41,11 @@ func TestValidatePluginInstanceIDs(t *testing.T) {
 			plugins: []PluginConfig{p("response-cache", "c1", "before_request", ruleA), p("response-cache", "c1", "after_request", ruleA)},
 		},
 		{
+			name:    "one instance across two stages under two ids is rejected",
+			plugins: []PluginConfig{p("response-cache", "c1", "before_request", ruleA), p("response-cache", "c2", "after_request", ruleA)},
+			wantErr: "carries two ids",
+		},
+		{
 			name:    "empty ids never collide",
 			plugins: []PluginConfig{p("pii-redact", "", "before_request", ruleA), p("word-filter", "", "before_request", ruleB)},
 		},

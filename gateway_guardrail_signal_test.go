@@ -42,7 +42,7 @@ func TestGateway_Route_EmitsGuardrailMatchEvent(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	ep := &eventCapturingProvider{recordingActive: true}
+	ep := &matchCapturingProvider{eventCapturingProvider: eventCapturingProvider{recordingActive: true}}
 	gw.SetObservability(ep)
 	if err := gw.LoadPlugins(); err != nil {
 		t.Fatalf("LoadPlugins: %v", err)
@@ -53,9 +53,13 @@ func TestGateway_Route_EmitsGuardrailMatchEvent(t *testing.T) {
 		resp:   &providers.Response{ID: "r1", Provider: "mock", Model: testModel},
 	})
 
+	// The rule matches in BOTH messages; the request still yields one signal.
 	_, err = gw.Route(context.Background(), providers.Request{
-		Model:    testModel,
-		Messages: []providers.Message{{Role: "user", Content: "please handle " + canary + " now"}},
+		Model: testModel,
+		Messages: []providers.Message{
+			{Role: "user", Content: "please handle " + canary + " now"},
+			{Role: "user", Content: "and again " + canary},
+		},
 	})
 	if err != nil {
 		t.Fatalf("a log action must not block the request, got %v", err)
@@ -86,6 +90,51 @@ func TestGateway_Route_EmitsGuardrailMatchEvent(t *testing.T) {
 		if strings.Contains(s, canary) {
 			t.Fatalf("guardrail-match event leaked the matched text %q in %q", canary, s)
 		}
+	}
+}
+
+// matchCapturingProvider opts into guardrail-match events.
+type matchCapturingProvider struct{ eventCapturingProvider }
+
+func (*matchCapturingProvider) GuardrailMatchesEnabled() bool { return true }
+
+var _ observability.GuardrailMatchRecordingProvider = (*matchCapturingProvider)(nil)
+
+// TestGateway_Route_GuardrailMatchIsOptIn holds the compatibility line: a
+// provider written against "one Event per request" — it records events but never
+// asked for match events — is handed none, exactly as with attempt events.
+func TestGateway_Route_GuardrailMatchIsOptIn(t *testing.T) {
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets:  []config.Target{{VirtualKey: "mock"}},
+		Plugins: []config.PluginConfig{{
+			Name: "regex-guard", Type: "guardrail", Stage: "before_request", Enabled: true,
+			Config: map[string]any{"action": "log", "rules": []any{map[string]any{"pattern": "tripwire"}}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ep := &eventCapturingProvider{recordingActive: true} // no GuardrailMatchesEnabled
+	gw.SetObservability(ep)
+	if err := gw.LoadPlugins(); err != nil {
+		t.Fatalf("LoadPlugins: %v", err)
+	}
+	gw.RegisterProvider(&mockProvider{name: "mock", models: []string{testModel},
+		resp: &providers.Response{ID: "r1", Provider: "mock", Model: testModel}})
+
+	if _, err := gw.Route(context.Background(), providers.Request{
+		Model: testModel, Messages: []providers.Message{{Role: "user", Content: "a tripwire"}},
+	}); err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+
+	events := ep.capturedEvents()
+	if n := len(eventsWithSubject(events, observability.SubjectGuardrailMatch)); n != 0 {
+		t.Fatalf("a provider that did not opt in received %d match events", n)
+	}
+	if n := len(eventsWithSubject(events, "gateway.request.completed")); n != 1 {
+		t.Fatalf("want the one terminal event, got %d", n)
 	}
 }
 

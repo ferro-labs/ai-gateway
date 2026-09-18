@@ -347,6 +347,7 @@ func ValidateConfig(cfg Config) error {
 // config, and disabled entries are skipped exactly as they are everywhere else.
 func validatePluginInstanceIDs(configs []PluginConfig) error {
 	seen := make(map[string]string, len(configs)) // id -> instance key that claimed it
+	idOf := make(map[string]string, len(configs)) // instance key -> id it claimed
 	for i, pc := range configs {
 		if !pc.Enabled || pc.ID == "" {
 			continue
@@ -362,7 +363,16 @@ func validatePluginInstanceIDs(configs []PluginConfig) error {
 				"plugin id %q is used by more than one plugin instance; an id names a single configured instance",
 				pc.ID)
 		}
+		// The reverse: one instance listed across stages under two ids. It is
+		// one instance, so it can only answer to one; the second would silently
+		// replace the first and re-attribute every decision made under it.
+		if prev, ok := idOf[key]; ok && prev != pc.ID {
+			return fmt.Errorf(
+				"plugin %s is one instance listed at several stages but carries two ids, %q and %q; give every entry of one instance the same id",
+				pc.Name, prev, pc.ID)
+		}
 		seen[pc.ID] = key
+		idOf[key] = pc.ID
 	}
 	return nil
 }

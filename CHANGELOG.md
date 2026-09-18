@@ -16,9 +16,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   can record what a `log` or `warn` rule would have blocked, which the block-only
   signal could not show. The event names the plugin, its instance `id`, the
   resolved action, the stage, and whether the request was ultimately allowed past
-  the guardrails; it carries no matched text or offending value, keeping the
-  gateway's no-leak posture. A non-matching plugin emits nothing, so the happy
-  path is unchanged and stays allocation-free when no exporter is attached.
+  the guardrails — meaning no guardrail rejected it, not that the provider call
+  succeeded; it carries no matched text or offending value, keeping the
+  gateway's no-leak posture. A non-matching plugin emits nothing, and a plugin
+  that matches emits one event per resolved action per run rather than one per
+  message, so a long conversation does not multiply identical events.
+  The events are **opt-in**, on the same terms as routing-attempt events: an
+  exporter implements `observability.GuardrailMatchExporter`, and an embedder's
+  own provider implements `observability.GuardrailMatchRecordingProvider`.
+  Everything written against one event per request keeps seeing exactly one,
+  which is also why match events are not delivered to `Gateway.AddHook` hooks.
 
 - A plugin config entry accepts an optional `id` — an opaque, operator-supplied
   label for that instance. Several instances of one plugin can be configured
@@ -28,8 +35,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   produced it. The gateway treats the id as opaque and never interprets it, and
   it stays out of the instance identity used for multi-stage sharing (that is
   name plus config), so one instance listed across stages carries one id.
-  `ferrogw validate` rejects an `id` claimed by two different instances. An empty
-  `id` keeps today's behaviour.
+  `ferrogw validate` rejects an `id` claimed by two different instances, and one
+  instance listed across stages under two different ids. An empty `id` keeps
+  today's behaviour. A plugin registered by value rather than by pointer has no
+  identity to key on and carries no id.
 - `gateway.WithoutEnvExpansion()` construction option disables `${VAR}`
   substitution for plugin configs and MCP server headers/env. With it set, a
   `${NAME}` reaches the plugin or MCP client verbatim and the process environment

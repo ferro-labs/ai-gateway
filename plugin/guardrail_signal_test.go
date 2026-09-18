@@ -95,6 +95,31 @@ func TestManager_GuardrailMatch_BlockStillSignals(t *testing.T) {
 	}
 }
 
+// TestManager_GuardrailMatch_OneSignalPerActionPerInvocation bounds the volume: a
+// warn/log rule is evaluated on every piece of text, so a long conversation must
+// not become one identical event per message.
+func TestManager_GuardrailMatch_OneSignalPerActionPerInvocation(t *testing.T) {
+	m, got := sinkManager(t)
+	chatty := &mockPlugin{name: "regex-guard", typ: TypeGuardrail, execFn: func(_ context.Context, pctx *Context) error {
+		for range 50 { // fifty messages, each matching the same log rule
+			pctx.NoteGuardrailMatch(ActionLog)
+		}
+		pctx.NoteGuardrailMatch(ActionWarn) // a second rule with a different action
+		return nil
+	}}
+	if err := m.Register(StageBeforeRequest, chatty); err != nil {
+		t.Fatal(err)
+	}
+
+	pctx := NewContext(&providers.Request{Model: "gpt-4o"})
+	if err := m.RunBefore(context.Background(), pctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(*got) != 2 || (*got)[0].match.Action != ActionLog || (*got)[1].match.Action != ActionWarn {
+		t.Fatalf("want exactly [log warn], got %+v", *got)
+	}
+}
+
 // TestManager_GuardrailMatch_AfterStageAndFlushSeparation checks the stage is
 // stamped correctly and that a match in one stage is not re-reported by the next.
 func TestManager_GuardrailMatch_AfterStageAndFlushSeparation(t *testing.T) {

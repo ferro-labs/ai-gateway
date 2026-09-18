@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"runtime/debug"
+	"slices"
 	"sync"
 	"time"
 
@@ -85,10 +86,13 @@ type Manager struct {
 	after  []Plugin
 	onErr  []Plugin
 	// instanceIDs maps a registered plugin instance to its operator-supplied id
-	// (PluginConfig.ID). Keyed by the instance pointer, so an instance registered
-	// at several stages — one multi-stage plugin — carries one id. Empty for an
-	// instance registered without one. Guarded by mu, written only at Register.
-	instanceIDs map[Plugin]string
+	// (PluginConfig.ID). Keyed by pointer identity, never by the Plugin value
+	// itself: a value-typed plugin holding a slice or map is unhashable, and Go
+	// panics on such a key even when the map is empty. An instance registered at
+	// several stages — one multi-stage plugin — carries one id. A non-pointer
+	// plugin has no identity to key on and carries none. Guarded by mu, written
+	// only at Register.
+	instanceIDs map[pluginInstanceKey]string
 	// emitMatch, when set, receives each guardrail match at the end of the stage
 	// that recorded it, with whether the request was ultimately allowed past the
 	// guardrails. The gateway installs it (SetGuardrailMatchSink) so the manager
@@ -171,11 +175,11 @@ func (m *Manager) RegisterWithID(stage Stage, p Plugin, id string) error {
 	default:
 		return fmt.Errorf("unknown plugin stage: %s", stage)
 	}
-	if id != "" {
+	if key, ok := instanceKeyOf(p); ok && id != "" {
 		if m.instanceIDs == nil {
-			m.instanceIDs = make(map[Plugin]string)
+			m.instanceIDs = make(map[pluginInstanceKey]string)
 		}
-		m.instanceIDs[p] = id
+		m.instanceIDs[key] = id
 	}
 	m.log.Info("plugin registered", "name", p.Name(), "type", p.Type(), "stage", stage)
 	return nil
@@ -184,9 +188,13 @@ func (m *Manager) RegisterWithID(stage Stage, p Plugin, id string) error {
 // instanceID returns the operator-supplied id a plugin instance was registered
 // under, or "" when it was registered without one.
 func (m *Manager) instanceID(p Plugin) string {
+	key, ok := instanceKeyOf(p)
+	if !ok {
+		return ""
+	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.instanceIDs[p]
+	return m.instanceIDs[key]
 }
 
 // SetGuardrailMatchSink installs the callback that receives each guardrail match
@@ -334,6 +342,7 @@ const onErrorBudget = 10 * time.Second
 // and the trace context are preserved, so the row still carries the request's
 // trace ID. Cancellation is replaced by onErrorBudget rather than removed.
 func (m *Manager) RunOnError(ctx context.Context, pctx *Context) {
+	defer m.flushGuardrailMatches(ctx, pctx)
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), onErrorBudget)
 	defer cancel()
 
@@ -393,10 +402,19 @@ func (m *Manager) executePlugin(ctx context.Context, p Plugin, pctx *Context, st
 	if len(pctx.GuardrailMatches) > matchStart {
 		id := m.instanceID(p)
 		name := p.Name()
-		for i := matchStart; i < len(pctx.GuardrailMatches); i++ {
-			pctx.GuardrailMatches[i].Plugin = name
-			pctx.GuardrailMatches[i].Instance = id
+		// One signal per action per invocation. A warn/log rule is evaluated on
+		// every piece of text, so a long conversation would otherwise emit one
+		// event per message — identical events, since a match names the decision
+		// and never the text.
+		kept := pctx.GuardrailMatches[:matchStart]
+		for _, match := range pctx.GuardrailMatches[matchStart:] {
+			if slices.ContainsFunc(kept[matchStart:], func(k GuardrailMatch) bool { return k.Action == match.Action }) {
+				continue
+			}
+			match.Plugin, match.Instance = name, id
+			kept = append(kept, match)
 		}
+		pctx.GuardrailMatches = kept
 	}
 
 	if span != nil {
@@ -480,12 +498,11 @@ func uniquePluginInstances(plugins []Plugin) []Plugin {
 	unique := make([]Plugin, 0, len(plugins))
 	seen := make(map[pluginInstanceKey]struct{}, len(plugins))
 	for _, p := range plugins {
-		v := reflect.ValueOf(p)
-		if v.Kind() != reflect.Pointer || v.IsNil() {
+		key, ok := instanceKeyOf(p)
+		if !ok {
 			unique = append(unique, p)
 			continue
 		}
-		key := pluginInstanceKey{typ: v.Type(), ptr: v.Pointer()}
 		if _, ok := seen[key]; ok {
 			continue
 		}
@@ -493,6 +510,16 @@ func uniquePluginInstances(plugins []Plugin) []Plugin {
 		unique = append(unique, p)
 	}
 	return unique
+}
+
+// instanceKeyOf returns the pointer identity of a plugin instance. ok is false
+// for a nil or non-pointer plugin, which has no identity to compare on.
+func instanceKeyOf(p Plugin) (pluginInstanceKey, bool) {
+	v := reflect.ValueOf(p)
+	if v.Kind() != reflect.Pointer || v.IsNil() {
+		return pluginInstanceKey{}, false
+	}
+	return pluginInstanceKey{typ: v.Type(), ptr: v.Pointer()}, true
 }
 
 type pluginInstanceKey struct {
