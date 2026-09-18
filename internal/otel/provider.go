@@ -235,8 +235,17 @@ func (p *otelProvider) dispatchEvent(ctx context.Context, exporters []observabil
 		if evt.Subject == observability.SubjectRoutingAttempt && !exportsRoutingAttempts(ex) {
 			continue
 		}
+		if evt.Subject == observability.SubjectGuardrailMatch && !exportsGuardrailMatches(ex) {
+			continue
+		}
 		exportEvent(ctx, ex, evt)
 	}
+}
+
+// exportsGuardrailMatches reports whether ex has opted into guardrail-match events.
+func exportsGuardrailMatches(ex observability.Exporter) bool {
+	matchExporter, ok := ex.(observability.GuardrailMatchExporter)
+	return ok && matchExporter.ExportsGuardrailMatches()
 }
 
 // exportsRoutingAttempts reports whether ex has opted into attempt events.
@@ -445,8 +454,17 @@ func (p *otelProvider) RoutingAttemptsEnabled() bool {
 	return slices.ContainsFunc(p.exporters, exportsRoutingAttempts)
 }
 
+// GuardrailMatchesEnabled returns true when at least one attached Exporter has
+// opted into guardrail-match events; cached by the gateway like the above.
+func (p *otelProvider) GuardrailMatchesEnabled() bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return slices.ContainsFunc(p.exporters, exportsGuardrailMatches)
+}
+
 // Compile-time interface guards.
 var (
+	_ observability.GuardrailMatchRecordingProvider = (*otelProvider)(nil)
 	_ observability.Provider                        = (*otelProvider)(nil)
 	_ observability.EventRecordingProvider          = (*otelProvider)(nil)
 	_ observability.RoutingAttemptRecordingProvider = (*otelProvider)(nil)

@@ -104,6 +104,23 @@ type RoutingAttemptRecordingProvider interface {
 	RoutingAttemptsEnabled() bool
 }
 
+// GuardrailMatchRecordingProvider is an optional interface a Provider implements
+// to receive one Event per guardrail match — Subject SubjectGuardrailMatch —
+// alongside each request's terminal event. The gateway checks it once, in
+// SetObservability, exactly as it checks RoutingAttemptRecordingProvider: a
+// provider that does not implement it, or reports false, receives no match
+// events and pays nothing per match.
+//
+// Match events are opt-in for the reason attempt events are: one request can
+// produce several, and a consumer written against "one Event per request" would
+// count each as a request of its own.
+type GuardrailMatchRecordingProvider interface {
+	EventRecordingProvider
+	// GuardrailMatchesEnabled returns true when at least one consumer wants
+	// SubjectGuardrailMatch events.
+	GuardrailMatchesEnabled() bool
+}
+
 // AttemptSpanProvider is an optional interface a Provider implements to open
 // one child span per routing-layer attempt — SpanNameRoutingAttempt, CLIENT
 // kind — under the request span carried by ctx. The gateway calls it only
@@ -165,4 +182,15 @@ type RoutingAttemptExporter interface {
 	// ExportsRoutingAttempts returns true when this exporter should be handed
 	// SubjectRoutingAttempt events.
 	ExportsRoutingAttempts() bool
+}
+
+// GuardrailMatchExporter is an Exporter that also wants SubjectGuardrailMatch
+// events. An Exporter that does not implement it is never handed one, so every
+// exporter written before match events existed keeps seeing exactly one Event
+// per request.
+type GuardrailMatchExporter interface {
+	Exporter
+	// ExportsGuardrailMatches returns true when this exporter should be handed
+	// SubjectGuardrailMatch events.
+	ExportsGuardrailMatches() bool
 }

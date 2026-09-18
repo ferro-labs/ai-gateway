@@ -102,12 +102,26 @@ func StringMap(m map[string]string) (map[string]string, error) {
 // AnyMap returns a deep copy of m with every string value expanded, recursing into
 // nested maps and slices. The input is never mutated.
 func AnyMap(m map[string]any) (map[string]any, error) {
+	return walkMap(m, Expand)
+}
+
+// CloneAnyMap returns the same deep copy AnyMap produces with every ${VAR} left
+// as written. It is what a caller uses when expansion is disabled: the receiver
+// still gets a map of its own, so a component that retains or mutates its config
+// block cannot reach back into the Config the gateway serves and stores.
+func CloneAnyMap(m map[string]any) map[string]any {
+	// walkMap only fails when its string function does, and this one cannot.
+	out, _ := walkMap(m, func(s string) (string, error) { return s, nil })
+	return out
+}
+
+func walkMap(m map[string]any, str func(string) (string, error)) (map[string]any, error) {
 	if m == nil {
 		return nil, nil
 	}
 	out := make(map[string]any, len(m))
 	for k, v := range m {
-		resolved, err := anyValue(v)
+		resolved, err := anyValue(v, str)
 		if err != nil {
 			return nil, fmt.Errorf("key %q: %w", k, err)
 		}
@@ -116,18 +130,26 @@ func AnyMap(m map[string]any) (map[string]any, error) {
 	return out, nil
 }
 
-func anyValue(v any) (any, error) {
+func anyValue(v any, str func(string) (string, error)) (any, error) {
 	switch val := v.(type) {
 	case string:
-		return Expand(val)
+		return str(val)
 	case map[string]any:
-		return AnyMap(val)
+		return walkMap(val, str)
 	case map[string]string:
-		return StringMap(val)
+		out := make(map[string]string, len(val))
+		for k, elem := range val {
+			resolved, err := str(elem)
+			if err != nil {
+				return nil, fmt.Errorf("key %q: %w", k, err)
+			}
+			out[k] = resolved
+		}
+		return out, nil
 	case []any:
 		out := make([]any, len(val))
 		for i, elem := range val {
-			resolved, err := anyValue(elem)
+			resolved, err := anyValue(elem, str)
 			if err != nil {
 				return nil, fmt.Errorf("index %d: %w", i, err)
 			}
@@ -137,7 +159,7 @@ func anyValue(v any) (any, error) {
 	case []string:
 		out := make([]string, len(val))
 		for i, elem := range val {
-			resolved, err := Expand(elem)
+			resolved, err := str(elem)
 			if err != nil {
 				return nil, fmt.Errorf("index %d: %w", i, err)
 			}

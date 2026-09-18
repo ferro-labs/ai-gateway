@@ -197,7 +197,7 @@ point into `deploy/`.
 - **OpenAI Compatibility**: All requests/responses match OpenAI spec — other provider responses are translated
 - **Pass-Through Proxy**: Unhandled `/v1/*` endpoints forwarded transparently via `internal/proxy/proxy.go`
 - **Compile-time assertions**: Every provider subpackage has `var _ core.XxxProvider = (*Provider)(nil)` guards
-- **Observability seam**: `Gateway` holds exactly one `observability.Provider` (NoOp by default; install via `SetObservability`). `Route`/`RouteStream`/`Embed`/`GenerateImage` each open a `gateway.request` root span and stamp `gen_ai.*`/`ferro.*` attributes; plugins and MCP tool calls emit child spans. Registered exporters receive `gateway.request.completed`/`failed` events, and one `gateway.routing.attempt` event per physical provider call when they opt in through `observability.RoutingAttemptExporter`. With OTel disabled the hot path stays at the NoOp allocation baseline (asserted by `TestRoute_TracingOff_AllocBaseline`). `OTEL_EXPORTER_OTLP_ENDPOINT` and `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` take precedence over the configured endpoint; every other tracing setting, the head sampler included, comes from config. The sampler is `ParentBased`, so an inbound sampled `traceparent` is followed whatever `sample_ratio` says.
+- **Observability seam**: `Gateway` holds exactly one `observability.Provider` (NoOp by default; install via `SetObservability`). `Route`/`RouteStream`/`Embed`/`GenerateImage` each open a `gateway.request` root span and stamp `gen_ai.*`/`ferro.*` attributes; plugins and MCP tool calls emit child spans. Registered exporters receive `gateway.request.completed`/`failed` events, and one `gateway.routing.attempt` event per physical provider call when they opt in through `observability.RoutingAttemptExporter`, and `gateway.guardrail.match` events — one per resolved guardrail action per plugin run, repeats of the same action collapsed, never carrying the matched text — when they opt in through `observability.GuardrailMatchExporter`. With OTel disabled the hot path stays at the NoOp allocation baseline (asserted by `TestRoute_TracingOff_AllocBaseline`). `OTEL_EXPORTER_OTLP_ENDPOINT` and `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` take precedence over the configured endpoint; every other tracing setting, the head sampler included, comes from config. The sampler is `ParentBased`, so an inbound sampled `traceparent` is followed whatever `sample_ratio` says.
 
 ### Request Flow
 
@@ -1148,6 +1148,8 @@ Minimal by design — no heavy logging framework, no ORM.
 
 ## Adding a New Plugin
 
+**A guardrail calls `pctx.NoteGuardrailMatch(action)` on every match** — block, warn, log or redact — so a non-blocking mode is observable. Pass the resolved action only; the manager stamps the plugin name and the instance `id`, and the matched text never travels.
+
 **Deny with `pctx.Reject` + `pctx.Reason`, and return `nil`.** Return an error only when the plugin itself failed — an error means "I broke", and for every type except logging and metrics it aborts the request as a 500. See the `plugin` package docs.
 
 1. Create `plugin/<name>/<name>.go` (package `<name>`) implementing `plugin.Plugin`.
@@ -1196,7 +1198,7 @@ fails otherwise.
 Exporters bridge gateway events to a backend (LangSmith, Langfuse, Datadog, …). They live in the
 separate `ai-gateway-plugins` repo, not here — the gateway only ships the contract + wiring.
 
-1. Implement `observability.Exporter` (`Name`, `Init(cfg map[string]any)`, `Export(ctx, Event)`, `Shutdown(ctx)`). `Export` must be safe for concurrent use and non-blocking. Implement `observability.RoutingAttemptExporter` (`ExportsRoutingAttempts() bool`) as well to receive one `gateway.routing.attempt` event per physical provider call; without it the exporter is handed exactly one event per request.
+1. Implement `observability.Exporter` (`Name`, `Init(cfg map[string]any)`, `Export(ctx, Event)`, `Shutdown(ctx)`). `Export` must be safe for concurrent use and non-blocking. Implement `observability.RoutingAttemptExporter` (`ExportsRoutingAttempts() bool`) as well to receive one `gateway.routing.attempt` event per physical provider call; without it the exporter is handed exactly one event per request. `observability.GuardrailMatchExporter` (`ExportsGuardrailMatches() bool`) opts into `gateway.guardrail.match` events on the same terms.
 2. Register a factory in `init()`: `observability.RegisterExporter("<name>", New)`.
 3. Configure it under `observability.exporters` (`name`/`enabled`/`config`) — `internal/otel.Init` resolves enabled entries via `LookupExporter`; unknown/failed exporters are logged and skipped (non-fatal). Exporters work even with no OTLP endpoint.
 4. Emit new span attributes only via constants in `observability/attributes.go`; mark not-yet-wired ones as Planned.

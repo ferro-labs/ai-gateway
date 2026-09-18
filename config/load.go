@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ferro-labs/ai-gateway/internal/tracingpolicy"
 	pubmcp "github.com/ferro-labs/ai-gateway/mcp"
@@ -322,10 +323,79 @@ func ValidateConfig(cfg Config) error {
 		return err
 	}
 
-	if err := ValidateMultiStagePlugins(cfg.Plugins); err != nil {
+	if err := ValidatePlugins(cfg.Plugins); err != nil {
 		return err
 	}
 
+	return nil
+}
+
+// ValidatePlugins runs every rule that is a property of the plugin LIST alone.
+//
+// It exists so the two entry points cannot drift: ValidateConfig reaches it for
+// a config that was loaded, and Gateway.buildPluginManager calls it directly
+// because LoadPlugins can be handed a plugin list that never went through
+// ValidateConfig — an admin reload, or an embedder assembling one in Go. A rule
+// added here is inherited by both.
+func ValidatePlugins(configs []PluginConfig) error {
+	if err := ValidateMultiStagePlugins(configs); err != nil {
+		return err
+	}
+	return validatePluginInstanceIDs(configs)
+}
+
+// validatePluginInstanceIDs refuses a non-empty plugin id claimed by two
+// DIFFERENT instances.
+//
+// The id attributes a guardrail decision to the entry that produced it, so two
+// instances answering to one id would make that attribution ambiguous — the
+// point of having the field at all. Entries that resolve to ONE instance across
+// stages (a cache listed before and after under identical config) legitimately
+// share an id: they are one instance. So the check is by instance identity —
+// name plus config, the same key PluginSharingKey computes — not by entry.
+//
+// It runs from ValidateConfig, so `ferrogw validate` and startup reject the same
+// config, and disabled entries are skipped exactly as they are everywhere else.
+// maxPluginIDLen bounds plugins[].id. It is an opaque label echoed on a
+// rejection and a guardrail-match event, so it needs to fit a log line and an
+// event attribute, not to carry data.
+const maxPluginIDLen = 128
+
+func validatePluginInstanceIDs(configs []PluginConfig) error {
+	seen := make(map[string]string, len(configs)) // id -> instance key that claimed it
+	idOf := make(map[string]string, len(configs)) // instance key -> id it claimed
+	for i, pc := range configs {
+		if !pc.Enabled || pc.ID == "" {
+			continue
+		}
+		// Counted in runes, because the limit is stated in characters: len()
+		// would reject a 40-character id that happens to encode to 200 bytes.
+		if idLen := utf8.RuneCountInString(pc.ID); idLen > maxPluginIDLen {
+			return fmt.Errorf("plugin %s: id is %d characters; the maximum is %d",
+				pc.Name, idLen, maxPluginIDLen)
+		}
+		key, shareable := PluginSharingKey(pc)
+		if !shareable {
+			// Only reachable for a config assembled in Go; treat each as its own
+			// instance rather than collapsing distinct ones under one id.
+			key = fmt.Sprintf("\x00unshareable-%d", i)
+		}
+		if prev, ok := seen[pc.ID]; ok && prev != key {
+			return fmt.Errorf(
+				"plugin id %q is used by more than one plugin instance; an id names a single configured instance",
+				pc.ID)
+		}
+		// The reverse: one instance listed across stages under two ids. It is
+		// one instance, so it can only answer to one; the second would silently
+		// replace the first and re-attribute every decision made under it.
+		if prev, ok := idOf[key]; ok && prev != pc.ID {
+			return fmt.Errorf(
+				"plugin %s is one instance listed at several stages but carries two ids, %q and %q; give every entry of one instance the same id",
+				pc.Name, prev, pc.ID)
+		}
+		seen[pc.ID] = key
+		idOf[key] = pc.ID
+	}
 	return nil
 }
 

@@ -357,6 +357,23 @@ YAML
 check "serve refuses an output-only regex-guard listed at before_request" \
   "$([ "$REFUSED" -eq 0 ] && has "enforces nothing" "$REFUSAL" && echo 0 || echo 1)" "refused=$REFUSED log=$REFUSAL"
 
+# regex-guard's stages follow from its compiled rules, so validate must give the
+# same answer serve just did — before the deploy, not as a failed start (#440).
+validate "$(config outputonly_validate <<YAML
+strategy: { mode: single }
+targets: [ { virtual_key: openai } ]
+plugins:
+  - name: regex-guard
+    type: guardrail
+    stage: before_request
+    enabled: true
+    config:
+      rules: [ { name: out, pattern: 'x', apply_to: output } ]
+YAML
+)"
+check "validate refuses the output-only regex-guard serve just refused" \
+  "$([ "$VCODE" -ne 0 ] && has "enforces nothing" "$VOUT" && echo 0 || echo 1)" "code=$VCODE out=$VOUT"
+
 validate "$(config emptyentities <<YAML
 strategy: { mode: single }
 targets: [ { virtual_key: openai } ]

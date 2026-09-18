@@ -1313,7 +1313,7 @@ func TestResolveMCPServerRefs_ResolvesEnvAndHeaders(t *testing.T) {
 		Headers: map[string]string{"Authorization": "Bearer ${FERRO_TEST_MCP_TOKEN}"},
 	}
 
-	got, err := resolveMCPServerRefs(in)
+	got, err := resolveMCPServerRefs(in, true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1325,6 +1325,52 @@ func TestResolveMCPServerRefs_ResolvesEnvAndHeaders(t *testing.T) {
 	}
 }
 
+// With expansion disabled the references pass through literally and the process
+// environment is never read — even though the variables are set. This is the
+// MCP half of Gateway.WithoutEnvExpansion.
+func TestResolveMCPServerRefs_ExpansionDisabledPassesReferencesLiterally(t *testing.T) {
+	t.Setenv("FERRO_TEST_MCP_SECRET", "must-not-be-read")
+	t.Setenv("FERRO_TEST_MCP_TOKEN", "must-not-be-read")
+
+	in := mcp.ServerConfig{
+		Name:    "srv",
+		Command: "true",
+		Env:     map[string]string{"API_KEY": "${FERRO_TEST_MCP_SECRET}"},
+		Headers: map[string]string{"Authorization": "Bearer ${FERRO_TEST_MCP_TOKEN}"},
+	}
+
+	got, err := resolveMCPServerRefs(in, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Env["API_KEY"] != "${FERRO_TEST_MCP_SECRET}" {
+		t.Errorf("Env[API_KEY] = %q, want the literal reference", got.Env["API_KEY"])
+	}
+	if got.Headers["Authorization"] != "Bearer ${FERRO_TEST_MCP_TOKEN}" {
+		t.Errorf("Headers[Authorization] = %q, want the literal reference", got.Headers["Authorization"])
+	}
+}
+
+// An undefined reference is not an error when expansion is disabled: nothing is
+// resolved, so there is nothing to be missing.
+func TestResolveMCPServerRefs_ExpansionDisabledIgnoresUndefinedVar(t *testing.T) {
+	requireUnsetEnv(t, mcpUndefinedVar)
+
+	in := mcp.ServerConfig{
+		Name:    "srv",
+		Command: "true",
+		Env:     map[string]string{"API_KEY": "${" + mcpUndefinedVar + "}"},
+	}
+
+	got, err := resolveMCPServerRefs(in, false)
+	if err != nil {
+		t.Fatalf("expansion disabled: unexpected error: %v", err)
+	}
+	if got.Env["API_KEY"] != "${"+mcpUndefinedVar+"}" {
+		t.Errorf("Env[API_KEY] = %q, want the literal reference", got.Env["API_KEY"])
+	}
+}
+
 // The caller's Config must keep the reference, never the resolved secret —
 // otherwise the secret reaches the config-history store and GET /admin/config.
 func TestResolveMCPServerRefs_DoesNotMutateInput(t *testing.T) {
@@ -1333,7 +1379,7 @@ func TestResolveMCPServerRefs_DoesNotMutateInput(t *testing.T) {
 	env := map[string]string{"API_KEY": "${FERRO_TEST_MCP_SECRET}"}
 	in := mcp.ServerConfig{Name: "srv", Command: "true", Env: env}
 
-	if _, err := resolveMCPServerRefs(in); err != nil {
+	if _, err := resolveMCPServerRefs(in, true); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -1354,7 +1400,7 @@ func TestResolveMCPServerRefs_UndefinedEnvVarIsAnError(t *testing.T) {
 		Env:     map[string]string{"API_KEY": "${" + mcpUndefinedVar + "}"},
 	}
 
-	if _, err := resolveMCPServerRefs(in); err == nil {
+	if _, err := resolveMCPServerRefs(in, true); err == nil {
 		t.Fatal("expected an error for an undefined ${VAR} in Env, got nil")
 	}
 }

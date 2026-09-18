@@ -182,6 +182,7 @@ func (g *SchemaGuard) Execute(ctx context.Context, pctx *plugin.Context) error {
 			continue
 		}
 		logger.Ctx(ctx).Warn("schema-guard: response violates schema", "violation", violation)
+		pctx.NoteGuardrailMatch(g.action)
 		if g.action != plugin.ActionBlock {
 			continue
 		}

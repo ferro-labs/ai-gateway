@@ -5,6 +5,64 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.9] — 2026-09-18
+
+### Added
+
+- The gateway emits one `gateway.guardrail.match` observability event per
+  guardrail match, through the same `Provider.RecordEvent` fanout a request's
+  terminal event uses, whatever action the match resolved to (block, warn, log,
+  redact). A guardrail running in a non-blocking mode is now observable: a host
+  can record what a `log` or `warn` rule would have blocked, which the block-only
+  signal could not show. The event names the plugin, its instance `id`, the
+  resolved action, the stage, and whether a guardrail denied the request **at
+  that stage** — a `before_request` match reports how the request fared on the
+  way in, and a guardrail rejecting the response later does not change it, which
+  is why every event names its stage. A rate limiter or a budget denying the same
+  request leaves it true: those are not guardrail verdicts, and it is never a
+  claim that the provider call succeeded. It carries no matched text or offending value, keeping the
+  gateway's no-leak posture. A non-matching plugin emits nothing, and a plugin
+  that matches emits one event per resolved action per run rather than one per
+  message, so a long conversation does not multiply identical events.
+  The events are **opt-in**, on the same terms as routing-attempt events: an
+  exporter implements `observability.GuardrailMatchExporter`, and an embedder's
+  own provider implements `observability.GuardrailMatchRecordingProvider`.
+  Everything written against one event per request keeps seeing exactly one,
+  which is also why match events are not delivered to `Gateway.AddHook` hooks.
+
+- A plugin config entry accepts an optional `id` — an opaque, operator-supplied
+  label for that instance. Several instances of one plugin can be configured
+  (one rule each), and until now a decision named only the plugin type, so an
+  operator could report that "some pii-redact rule fired" but not which one. A
+  block's `plugin.RejectionError` now carries the `id` of the instance that
+  produced it. The gateway treats the id as opaque and never interprets it, and
+  it stays out of the instance identity used for multi-stage sharing (that is
+  name plus config), so one instance listed across stages carries one id.
+  `ferrogw validate` rejects an `id` claimed by two different instances, and one
+  instance listed across stages under two different ids. An empty `id` keeps
+  today's behaviour. A plugin registered by value rather than by pointer has no
+  identity to key on and carries no id.
+- `gateway.WithoutEnvExpansion()` construction option disables `${VAR}`
+  substitution for plugin configs and MCP server headers/env. With it set, a
+  `${NAME}` reaches the plugin or MCP client verbatim and the process environment
+  is never read for substitution. Off by default — expansion stays on — so an
+  existing install is unchanged. It is defence-in-depth for a host that builds
+  gateway instances from config it did not author, where a `${...}` in that
+  config would otherwise resolve against the host's own environment.
+
+### Fixed
+
+- `ferrogw validate` and `ferrogw doctor` now refuse a guardrail whose rules
+  cannot act at its configured stage — for example a `regex-guard` whose rules
+  all `apply_to: output` listed at `before_request`, or the reverse. Such a
+  plugin derives its supported stages from its compiled rules, so validate
+  checked them on an instance that had not been initialised and reported the
+  config healthy while `serve` refused it at startup. Validate now compiles the
+  rules (when the config block carries no `${VAR}` reference) before the stage
+  check, so the refusal arrives before the deploy rather than as a failed start.
+  A block carrying a reference keeps today's behaviour, since its rules cannot
+  be compiled before the environment is available.
+
 ## [1.5.8] — 2026-09-16
 
 ### Added

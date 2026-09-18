@@ -121,6 +121,10 @@ func RejectUninspectable(pctx *Context) bool {
 	if !uninspectable {
 		return false
 	}
+	// A denial is a guardrail decision like any other, so it carries the same
+	// match signal. Without this the one block a content policy makes on an
+	// uninspectable body reached no observability consumer at all.
+	pctx.NoteGuardrailMatch(ActionBlock)
 	pctx.Reject = true
 	pctx.Reason = "request blocked by content policy: content is not inspectable text"
 	return true

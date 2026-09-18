@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"runtime/debug"
+	"slices"
 	"sync"
 	"time"
 
@@ -46,7 +47,7 @@ func (m *Manager) handlePluginFailure(p Plugin, stage Stage, pctx *Context, err 
 	// A rejection outranks an error: the plugin reached a verdict, so report the
 	// verdict even if it also returned an error on its way out.
 	if pctx.Reject {
-		return rejectionErrorFor(p, stage, pctx, err)
+		return m.rejectionErrorFor(p, stage, pctx, err)
 	}
 	if err == nil {
 		return nil
@@ -58,8 +59,14 @@ func (m *Manager) handlePluginFailure(p Plugin, stage Stage, pctx *Context, err 
 	return &FailureError{Plugin: p.Name(), PluginType: p.Type(), Stage: stage, Err: err}
 }
 
-func rejectionErrorFor(p Plugin, stage Stage, pctx *Context, err error) *RejectionError {
-	return &RejectionError{Plugin: p.Name(), PluginType: p.Type(), Stage: stage, Reason: rejectionReason(pctx, err)}
+func (m *Manager) rejectionErrorFor(p Plugin, stage Stage, pctx *Context, err error) *RejectionError {
+	return &RejectionError{
+		Plugin:     p.Name(),
+		Instance:   m.instanceID(p),
+		PluginType: p.Type(),
+		Stage:      stage,
+		Reason:     rejectionReason(pctx, err),
+	}
 }
 
 func rejectionReason(pctx *Context, err error) string {
@@ -74,10 +81,23 @@ func rejectionReason(pctx *Context, err error) string {
 
 // Manager manages plugin lifecycle and execution.
 type Manager struct {
-	log         *logger.Logger
-	before      []Plugin
-	after       []Plugin
-	onErr       []Plugin
+	log    *logger.Logger
+	before []Plugin
+	after  []Plugin
+	onErr  []Plugin
+	// instanceIDs maps a registered plugin instance to its operator-supplied id
+	// (PluginConfig.ID). Keyed by pointer identity, never by the Plugin value
+	// itself: a value-typed plugin holding a slice or map is unhashable, and Go
+	// panics on such a key even when the map is empty. An instance registered at
+	// several stages — one multi-stage plugin — carries one id. A non-pointer
+	// plugin has no identity to key on and carries none. Guarded by mu, written
+	// only at Register.
+	instanceIDs map[pluginInstanceKey]string
+	// emitMatch, when set, receives each guardrail match at the end of the stage
+	// that recorded it, with whether a guardrail denied the request at that stage.
+	// The gateway installs it (SetGuardrailMatchSink) so the manager
+	// need not know how an Event is built or where it goes; nil means no emission.
+	emitMatch   func(ctx context.Context, match GuardrailMatch, allowed bool)
 	mu          sync.RWMutex
 	lifecycleMu sync.Mutex
 	lifecycle   *sync.Cond
@@ -121,13 +141,23 @@ func (m *Manager) Acquire() func() {
 	}
 }
 
-// Register registers a plugin at the given stage.
+// Register registers a plugin at the given stage. It is RegisterWithID with no
+// instance id — kept so existing callers, in this repo and out of tree, compile
+// unchanged.
+func (m *Manager) Register(stage Stage, p Plugin) error {
+	return m.RegisterWithID(stage, p, "")
+}
+
+// RegisterWithID registers a plugin at the given stage under an operator-supplied
+// instance id (see PluginConfig.ID), which the manager echoes on that instance's
+// rejection and match signal and never interprets. An empty id is the same as
+// Register.
 //
 // A plugin that declares which stages it can act at (StageRestricted) is
 // refused at the others rather than registered into a no-op: binding a stage is
 // the first moment the pair is knowable, and the alternative is a plugin that
 // reports itself enabled for the life of the deployment and enforces nothing.
-func (m *Manager) Register(stage Stage, p Plugin) error {
+func (m *Manager) RegisterWithID(stage Stage, p Plugin, id string) error {
 	if err := ValidateStage(p, stage); err != nil {
 		return err
 	}
@@ -145,8 +175,112 @@ func (m *Manager) Register(stage Stage, p Plugin) error {
 	default:
 		return fmt.Errorf("unknown plugin stage: %s", stage)
 	}
+	if key, ok := instanceKeyOf(p); ok && id != "" {
+		if m.instanceIDs == nil {
+			m.instanceIDs = make(map[pluginInstanceKey]string)
+		}
+		m.instanceIDs[key] = id
+	}
 	m.log.Info("plugin registered", "name", p.Name(), "type", p.Type(), "stage", stage)
 	return nil
+}
+
+// instanceID returns the operator-supplied id a plugin instance was registered
+// under, or "" when it was registered without one.
+func (m *Manager) instanceID(p Plugin) string {
+	key, ok := instanceKeyOf(p)
+	if !ok {
+		return ""
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.instanceIDs[key]
+}
+
+// SetGuardrailMatchSink installs the callback that receives each guardrail match
+// at the end of its stage. Pass nil to disable emission. Set once at wiring,
+// before serving.
+func (m *Manager) SetGuardrailMatchSink(fn func(ctx context.Context, match GuardrailMatch, allowed bool)) {
+	m.emitMatch = fn
+}
+
+// attributeGuardrailMatches stamps the matches one plugin recorded during its
+// Execute with that plugin's identity, and collapses repeats.
+//
+// The plugin knows only the action; who matched is the framework's to state, the
+// same reason it sets pctx.Stage. One signal per action per invocation: a
+// warn/log rule is evaluated on every piece of text, so a long conversation
+// would otherwise emit one event per message — identical events, since a match
+// names the decision and never the text.
+func (m *Manager) attributeGuardrailMatches(p Plugin, pctx *Context, matchStart int, rejectedBefore bool) {
+	// A guardrail that denied is the only kind of rejection allowed answers for;
+	// a rate limiter or a budget denying the same request is not a guardrail's
+	// verdict. Recorded here because this is where the deciding plugin's type is
+	// known — the stage flush sees only the shared Reject flag. Checked before
+	// the matches are: a guardrail can deny without recording one, and it still
+	// denied the request every other guardrail's match is reported against.
+	//
+	// THIS plugin must be the one that denied, which is why the flag is compared
+	// against its value before Execute rather than just read. Reject stays set
+	// once a request is denied, so a guardrail running afterwards — at the
+	// on_error stage, which runs precisely because something denied — would
+	// otherwise be recorded as having denied a request it only observed.
+	if pctx.Reject && !rejectedBefore && p.Type() == TypeGuardrail {
+		pctx.guardrailRejected = true
+	}
+	if len(pctx.GuardrailMatches) <= matchStart {
+		return
+	}
+
+	id := m.instanceID(p)
+	name := p.Name()
+	// An in-place filter over the matches this plugin appended: kept's write
+	// cursor never passes the read cursor, so the two safely share one backing
+	// array. kept[matchStart:] is what has been kept from THIS plugin so far.
+	kept := pctx.GuardrailMatches[:matchStart]
+	for _, match := range pctx.GuardrailMatches[matchStart:] {
+		if slices.ContainsFunc(kept[matchStart:], func(k GuardrailMatch) bool { return k.Action == match.Action }) {
+			continue
+		}
+		match.Plugin, match.Instance = name, id
+		kept = append(kept, match)
+	}
+	pctx.GuardrailMatches = kept
+}
+
+// flushGuardrailMatches emits every match recorded so far and clears them, so a
+// stage reports its own matches and an agentic loop turn does not re-report an
+// earlier turn's.
+//
+// allowed answers "did a GUARDRAIL deny this request, at THIS stage".
+//
+// Not "was it rejected at all": a rate limiter, a budget or an auth plugin
+// denying the request says nothing about the guardrail that matched, and reading
+// the shared Reject flag would report every warn and log match on such a request
+// as a denial.
+//
+// And not "did the request ultimately succeed": each stage flushes its own
+// matches, so a before_request match reports how the request fared on the way
+// in. A guardrail rejecting the RESPONSE at after_request does not retroactively
+// deny the prompt — they are verdicts on different content — and on a streamed
+// response the after stage runs once the body is already delivered, so there is
+// no later moment at which a single answer would be more final. Every event
+// names its stage, so a consumer can tell which decision it is reading.
+//
+// Deferred by each stage runner, so it sees that stage's final verdict.
+func (m *Manager) flushGuardrailMatches(ctx context.Context, pctx *Context) {
+	if m.emitMatch != nil && len(pctx.GuardrailMatches) > 0 {
+		allowed := !pctx.guardrailRejected
+		for _, match := range pctx.GuardrailMatches {
+			m.emitMatch(ctx, match, allowed)
+		}
+	}
+	// A stage boundary: the next stage reaches its own verdict, so neither the
+	// matches nor the verdict they were reported under carries into it. Cleared
+	// even when nothing matched — a stage that recorded no match still ends here,
+	// and leaving the flag set would deny the next stage's matches for it.
+	pctx.GuardrailMatches = pctx.GuardrailMatches[:0]
+	pctx.guardrailRejected = false
 }
 
 // RunBefore executes all before-request plugins. Fail-closed plugin errors or
@@ -164,6 +298,7 @@ func (m *Manager) Register(stage Stage, p Plugin) error {
 // than at each call site because a caller that forgets it produces a request the
 // operator has no record of — the shape this stage exists to prevent.
 func (m *Manager) RunBefore(ctx context.Context, pctx *Context) error {
+	defer m.flushGuardrailMatches(ctx, pctx)
 	m.mu.RLock()
 	plugins := m.before
 	m.mu.RUnlock()
@@ -171,6 +306,11 @@ func (m *Manager) RunBefore(ctx context.Context, pctx *Context) error {
 		err := m.executePlugin(ctx, p, pctx, StageBeforeRequest)
 		if failureErr := m.handlePluginFailure(p, StageBeforeRequest, pctx, err); failureErr != nil {
 			pctx.Error = failureErr
+			// Flush THIS stage before the nested on_error stage runs. The deferred
+			// flush would otherwise fire after RunOnError's, so the two stages
+			// would report in the wrong order and the on_error stage would inherit
+			// this stage's verdict instead of reaching its own.
+			m.flushGuardrailMatches(ctx, pctx)
 			m.RunOnError(ctx, pctx)
 			return failureErr
 		}
@@ -206,6 +346,7 @@ func (m *Manager) RunBefore(ctx context.Context, pctx *Context) error {
 // runs the same executePlugin and handlePluginFailure, so a fail-open plugin
 // still fails open here.
 func (m *Manager) RunBeforeLoopTurn(ctx context.Context, pctx *Context) error {
+	defer m.flushGuardrailMatches(ctx, pctx)
 	m.mu.RLock()
 	plugins := m.before
 	m.mu.RUnlock()
@@ -236,6 +377,7 @@ func (m *Manager) RunBeforeLoopTurn(ctx context.Context, pctx *Context) error {
 // Unlike RunBefore this does not run the on_error stage itself: its callers already
 // do, because only they hold the measurements that stage records.
 func (m *Manager) RunAfter(ctx context.Context, pctx *Context) error {
+	defer m.flushGuardrailMatches(ctx, pctx)
 	m.mu.RLock()
 	plugins := m.after
 	m.mu.RUnlock()
@@ -265,6 +407,7 @@ const onErrorBudget = 10 * time.Second
 // and the trace context are preserved, so the row still carries the request's
 // trace ID. Cancellation is replaced by onErrorBudget rather than removed.
 func (m *Manager) RunOnError(ctx context.Context, pctx *Context) {
+	defer m.flushGuardrailMatches(ctx, pctx)
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), onErrorBudget)
 	defer cancel()
 
@@ -314,6 +457,12 @@ func (m *Manager) executePlugin(ctx context.Context, p Plugin, pctx *Context, st
 			}
 		}
 	}()
+
+	matchStart := len(pctx.GuardrailMatches)
+	// Deferred rather than written after Execute: a plugin that records a match
+	// and then panics would otherwise leave that match unattributed, and the
+	// stage flush would emit it with no plugin name or instance.
+	defer m.attributeGuardrailMatches(p, pctx, matchStart, pctx.Reject)
 
 	err = p.Execute(ctx, pctx)
 
@@ -398,12 +547,11 @@ func uniquePluginInstances(plugins []Plugin) []Plugin {
 	unique := make([]Plugin, 0, len(plugins))
 	seen := make(map[pluginInstanceKey]struct{}, len(plugins))
 	for _, p := range plugins {
-		v := reflect.ValueOf(p)
-		if v.Kind() != reflect.Pointer || v.IsNil() {
+		key, ok := instanceKeyOf(p)
+		if !ok {
 			unique = append(unique, p)
 			continue
 		}
-		key := pluginInstanceKey{typ: v.Type(), ptr: v.Pointer()}
 		if _, ok := seen[key]; ok {
 			continue
 		}
@@ -411,6 +559,16 @@ func uniquePluginInstances(plugins []Plugin) []Plugin {
 		unique = append(unique, p)
 	}
 	return unique
+}
+
+// instanceKeyOf returns the pointer identity of a plugin instance. ok is false
+// for a nil or non-pointer plugin, which has no identity to compare on.
+func instanceKeyOf(p Plugin) (pluginInstanceKey, bool) {
+	v := reflect.ValueOf(p)
+	if v.Kind() != reflect.Pointer || v.IsNil() {
+		return pluginInstanceKey{}, false
+	}
+	return pluginInstanceKey{typ: v.Type(), ptr: v.Pointer()}, true
 }
 
 type pluginInstanceKey struct {
