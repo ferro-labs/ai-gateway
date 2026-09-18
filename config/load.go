@@ -322,15 +322,25 @@ func ValidateConfig(cfg Config) error {
 		return err
 	}
 
-	if err := ValidateMultiStagePlugins(cfg.Plugins); err != nil {
-		return err
-	}
-
-	if err := validatePluginInstanceIDs(cfg.Plugins); err != nil {
+	if err := ValidatePlugins(cfg.Plugins); err != nil {
 		return err
 	}
 
 	return nil
+}
+
+// ValidatePlugins runs every rule that is a property of the plugin LIST alone.
+//
+// It exists so the two entry points cannot drift: ValidateConfig reaches it for
+// a config that was loaded, and Gateway.buildPluginManager calls it directly
+// because LoadPlugins can be handed a plugin list that never went through
+// ValidateConfig — an admin reload, or an embedder assembling one in Go. A rule
+// added here is inherited by both.
+func ValidatePlugins(configs []PluginConfig) error {
+	if err := ValidateMultiStagePlugins(configs); err != nil {
+		return err
+	}
+	return validatePluginInstanceIDs(configs)
 }
 
 // validatePluginInstanceIDs refuses a non-empty plugin id claimed by two
@@ -345,12 +355,21 @@ func ValidateConfig(cfg Config) error {
 //
 // It runs from ValidateConfig, so `ferrogw validate` and startup reject the same
 // config, and disabled entries are skipped exactly as they are everywhere else.
+// maxPluginIDLen bounds plugins[].id. It is an opaque label echoed on a
+// rejection and a guardrail-match event, so it needs to fit a log line and an
+// event attribute, not to carry data.
+const maxPluginIDLen = 128
+
 func validatePluginInstanceIDs(configs []PluginConfig) error {
 	seen := make(map[string]string, len(configs)) // id -> instance key that claimed it
 	idOf := make(map[string]string, len(configs)) // instance key -> id it claimed
 	for i, pc := range configs {
 		if !pc.Enabled || pc.ID == "" {
 			continue
+		}
+		if len(pc.ID) > maxPluginIDLen {
+			return fmt.Errorf("plugin %s: id is %d characters; the maximum is %d",
+				pc.Name, len(pc.ID), maxPluginIDLen)
 		}
 		key, shareable := PluginSharingKey(pc)
 		if !shareable {

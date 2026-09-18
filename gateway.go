@@ -612,7 +612,7 @@ func (g *Gateway) buildPluginManager(configs []config.PluginConfig) (*plugin.Man
 	// Re-checked here, not only in ValidateConfig, because LoadPlugins can be
 	// called with a plugin list that never went through it. The rule itself is
 	// config's, so `ferrogw validate` rejects the same config this would.
-	if err := config.ValidateMultiStagePlugins(configs); err != nil {
+	if err := config.ValidatePlugins(configs); err != nil {
 		return nil, err
 	}
 
@@ -650,7 +650,10 @@ func (g *Gateway) buildPluginManager(configs []config.PluginConfig) (*plugin.Man
 			// to the config store nor served by GET /admin/config. When expansion is
 			// disabled the references pass through literally and the environment is
 			// never read — see WithoutEnvExpansion.
-			pluginCfg := pc.Config
+			// A copy either way: the plugin must never receive the live map the
+			// gateway serves from GetConfig and stores, whether or not it also
+			// needs its references resolved.
+			pluginCfg := envref.CloneAnyMap(pc.Config)
 			if !g.disableEnvExpansion {
 				var err error
 				pluginCfg, err = envref.AnyMap(pc.Config)

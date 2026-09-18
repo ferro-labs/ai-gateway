@@ -271,6 +271,13 @@ aliases:
 #     first is the least work done before the request is refused.
 plugins:
   - name: word-filter
+    # id is an optional opaque label for THIS instance, echoed on the plugin's
+    # rejection and on its gateway.guardrail.match events. name is the plugin
+    # type and is shared by every instance of it, so configure an id when you
+    # run several instances of one plugin and need to tell their decisions
+    # apart. Default: "" (empty — a decision names the plugin type only).
+    # Maximum 128 characters; two different instances may not share one.
+    id: ""
     type: guardrail
     stage: before_request
     enabled: true

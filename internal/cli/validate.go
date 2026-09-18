@@ -45,12 +45,13 @@ import (
 //     Gateway.RegisterProvider and plugin.RegisterFactory).
 //
 // What it deliberately does not promise: anything that needs the deployment.
-// It resolves no ${VAR} reference and contacts nothing. A plugin's Init runs in
-// exactly two cases, both on a throwaway instance and only when its config block
-// carries no reference: a plugin that publishes its Init as its validator
-// (plugin.ValidateViaInit, contracted pure), and a plugin whose supported stages
-// follow from its compiled config (plugin.StageRestricted). No other plugin is
-// constructed. Leaving references unresolved is not an omission to fix later
+// It resolves no ${VAR} reference and contacts nothing. A plugin's Init runs
+// only on a throwaway instance, only when its config block carries no reference,
+// and only for a plugin that publishes its Init as its own validator
+// (plugin.ValidateViaInit, whose contract is no I/O and no environment). No
+// other plugin is initialized — several are constructed, because a factory call
+// is how this command asks a plugin what it supports.
+// Leaving references unresolved is not an omission to fix later
 // — envref resolves at construction on purpose, so a plugin whose config reads
 // ${SOME_TOKEN} must validate on a build machine that has no such token, and a
 // check that only passed where the secrets live would not be a pre-flight
@@ -181,22 +182,34 @@ func validateReferences(cfg config.Config) error {
 		// serve refuses. Skipped when the block carries a ${VAR}: those resolve
 		// at construction, never at load, so the rules cannot be compiled yet and
 		// today's permissive behaviour is kept (serve compiles them at start).
-		// The config is already validated above, so an Init error here is not new
-		// information and is ignored — the instance is only for the stage read.
 		//
-		// Only a StageRestricted plugin is initialised: no other plugin's stage
-		// answer can depend on its config, and validate must not run the Init of
-		// a plugin that never asked for it — one built outside this repository
-		// may open a store or a connection there.
+		// Initialised only when the plugin is BOTH StageRestricted and a
+		// ConfigValidator. No other plugin's stage answer can depend on its
+		// config, and neither interface alone licenses running Init here:
+		// StageRestricted promises nothing about purity, so a plugin built
+		// outside this repository could open a store or a connection in Init.
+		// A ConfigValidator has already had this exact Init run against this
+		// exact block by ValidateConfigFor above (plugin.ValidateViaInit, whose
+		// contract is that Init performs no I/O and reads no environment), so
+		// this adds no class of side effect that validate did not already incur.
 		inst := factory()
 		_, restricted := inst.(plugin.StageRestricted)
-		initialised := restricted && !envref.HasReferenceIn(p.Config)
-		if initialised {
-			_ = inst.Init(p.Config)
-		}
-		stageErr := plugin.ValidateStage(inst, plugin.Stage(p.Stage))
-		if initialised {
-			_ = inst.Close()
+		_, pureInit := inst.(plugin.ConfigValidator)
+		stageErr := error(nil)
+		if restricted && pureInit && !envref.HasReferenceIn(p.Config) {
+			// ValidateConfigFor accepted this block moments ago, so an error here
+			// is a plugin disagreeing with itself; report it rather than read the
+			// stages of a half-built instance.
+			if err := inst.Init(p.Config); err != nil {
+				stageErr = fmt.Errorf("plugin %q: %w", p.Name, err)
+			} else {
+				stageErr = plugin.ValidateStage(inst, plugin.Stage(p.Stage))
+			}
+			if err := inst.Close(); err != nil && stageErr == nil {
+				stageErr = fmt.Errorf("plugin %q: close: %w", p.Name, err)
+			}
+		} else {
+			stageErr = plugin.ValidateStage(inst, plugin.Stage(p.Stage))
 		}
 		if stageErr != nil {
 			return stageErr

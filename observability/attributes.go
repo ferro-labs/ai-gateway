@@ -70,13 +70,18 @@ const (
 	AttrFerroPluginOutcome         = "ferro.plugin.outcome"
 	AttrFerroPluginReason          = "ferro.plugin.reason"
 	// Guardrail-match attributes, carried on a SubjectGuardrailMatch event —
-	// one per guardrail match, whatever the resolved action. They name the
-	// decision, never the matched text or offending value: the gateway keeps its
-	// no-leak posture, and a host that wants the content logs it itself.
-	AttrFerroGuardrailPlugin          = "ferro.guardrail.plugin"
-	AttrFerroGuardrailInstance        = "ferro.guardrail.instance"
-	AttrFerroGuardrailAction          = "ferro.guardrail.action"
-	AttrFerroGuardrailStage           = "ferro.guardrail.stage"
+	// one per resolved guardrail action per plugin run, repeats of the same
+	// action collapsed. They name the decision, never the matched text or
+	// offending value: the gateway keeps its no-leak posture, and a host that
+	// wants the content logs it itself.
+	AttrFerroGuardrailPlugin   = "ferro.guardrail.plugin"
+	AttrFerroGuardrailInstance = "ferro.guardrail.instance"
+	AttrFerroGuardrailAction   = "ferro.guardrail.action"
+	AttrFerroGuardrailStage    = "ferro.guardrail.stage"
+	// AttrFerroGuardrailAllowed reports whether a GUARDRAIL denied the request.
+	// A rate limiter, a budget or an auth plugin denying the same request leaves
+	// it true: those are not guardrail verdicts. It is never a claim that the
+	// request succeeded — a provider can still fail one no guardrail touched.
 	AttrFerroGuardrailAllowed         = "ferro.guardrail.allowed"
 	AttrFerroMCPServer                = "ferro.mcp.server"
 	AttrFerroMCPTool                  = "ferro.mcp.tool"

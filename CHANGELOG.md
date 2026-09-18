@@ -16,8 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   can record what a `log` or `warn` rule would have blocked, which the block-only
   signal could not show. The event names the plugin, its instance `id`, the
   resolved action, the stage, and whether the request was ultimately allowed past
-  the guardrails — meaning no guardrail rejected it, not that the provider call
-  succeeded; it carries no matched text or offending value, keeping the
+  the guardrails — meaning no guardrail denied it; a rate limiter or a budget
+  denying the same request leaves it true, and it is never a claim that the
+  provider call succeeded. It carries no matched text or offending value, keeping the
   gateway's no-leak posture. A non-matching plugin emits nothing, and a plugin
   that matches emits one event per resolved action per run rather than one per
   message, so a long conversation does not multiply identical events.

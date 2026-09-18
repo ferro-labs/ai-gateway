@@ -120,6 +120,133 @@ func TestManager_GuardrailMatch_OneSignalPerActionPerInvocation(t *testing.T) {
 	}
 }
 
+// TestManager_GuardrailMatch_NonGuardrailRejectionDoesNotDenyTheGuardrail is the
+// distinction allowed exists to make: a rate limiter, a budget or an auth plugin
+// denying the request says nothing about the guardrail that matched. Reading the
+// shared Reject flag would report this warn match as a guardrail denial.
+func TestManager_GuardrailMatch_NonGuardrailRejectionDoesNotDenyTheGuardrail(t *testing.T) {
+	m, got := sinkManager(t)
+	warned := &mockPlugin{name: "regex-guard", typ: TypeGuardrail, execFn: func(_ context.Context, pctx *Context) error {
+		pctx.NoteGuardrailMatch(ActionWarn)
+		return nil
+	}}
+	limiter := &mockPlugin{name: "rate-limit", typ: TypeRateLimit, execFn: func(_ context.Context, pctx *Context) error {
+		pctx.Reject = true
+		pctx.Reason = "rate limit exceeded"
+		return nil
+	}}
+	if err := m.Register(StageBeforeRequest, warned); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Register(StageBeforeRequest, limiter); err != nil {
+		t.Fatal(err)
+	}
+
+	pctx := NewContext(&providers.Request{Model: "gpt-4o"})
+	if err := m.RunBefore(context.Background(), pctx); err == nil {
+		t.Fatal("the rate limiter must still reject")
+	}
+
+	if len(*got) != 1 {
+		t.Fatalf("want one match signal, got %d", len(*got))
+	}
+	if c := (*got)[0]; !c.allowed {
+		t.Errorf("allowed = false; no guardrail denied this request — the rate limiter did")
+	}
+}
+
+// TestManager_GuardrailMatch_GuardrailRejectionDeniesIt is the other half: when a
+// guardrail itself denies, the match is reported as not allowed.
+func TestManager_GuardrailMatch_GuardrailRejectionDeniesIt(t *testing.T) {
+	m, got := sinkManager(t)
+	blocker := &mockPlugin{name: "word-filter", typ: TypeGuardrail, execFn: func(_ context.Context, pctx *Context) error {
+		pctx.NoteGuardrailMatch(ActionBlock)
+		pctx.Reject = true
+		return nil
+	}}
+	if err := m.Register(StageBeforeRequest, blocker); err != nil {
+		t.Fatal(err)
+	}
+
+	pctx := NewContext(&providers.Request{Model: "gpt-4o"})
+	if err := m.RunBefore(context.Background(), pctx); err == nil {
+		t.Fatal("the guardrail must reject")
+	}
+	if len(*got) != 1 || (*got)[0].allowed {
+		t.Fatalf("want one signal with allowed=false, got %+v", *got)
+	}
+}
+
+// TestManager_GuardrailMatch_SilentGuardrailDenialStillDenies covers a guardrail
+// that denies without recording a match of its own — it still denied the request
+// every other guardrail's match is reported against.
+func TestManager_GuardrailMatch_SilentGuardrailDenialStillDenies(t *testing.T) {
+	m, got := sinkManager(t)
+	warned := &mockPlugin{name: "regex-guard", typ: TypeGuardrail, execFn: func(_ context.Context, pctx *Context) error {
+		pctx.NoteGuardrailMatch(ActionWarn)
+		return nil
+	}}
+	silent := &mockPlugin{name: "prompt-shield", typ: TypeGuardrail, execFn: func(_ context.Context, pctx *Context) error {
+		pctx.Reject = true // denies, records nothing
+		return nil
+	}}
+	if err := m.Register(StageBeforeRequest, warned); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Register(StageBeforeRequest, silent); err != nil {
+		t.Fatal(err)
+	}
+
+	pctx := NewContext(&providers.Request{Model: "gpt-4o"})
+	if err := m.RunBefore(context.Background(), pctx); err == nil {
+		t.Fatal("the second guardrail must reject")
+	}
+	if len(*got) != 1 || (*got)[0].allowed {
+		t.Fatalf("want one signal with allowed=false, got %+v", *got)
+	}
+}
+
+// TestManager_GuardrailMatch_PanicStillAttributesTheMatch guards the attribution:
+// a plugin that records a match and then panics must not leave an event with no
+// plugin name for an exporter to puzzle over.
+func TestManager_GuardrailMatch_PanicStillAttributesTheMatch(t *testing.T) {
+	m, got := sinkManager(t)
+	exploding := &mockPlugin{name: "regex-guard", typ: TypeGuardrail, execFn: func(_ context.Context, pctx *Context) error {
+		pctx.NoteGuardrailMatch(ActionLog)
+		panic("kaboom")
+	}}
+	if err := m.RegisterWithID(StageBeforeRequest, exploding, "audit"); err != nil {
+		t.Fatal(err)
+	}
+
+	pctx := NewContext(&providers.Request{Model: "gpt-4o"})
+	if err := m.RunBefore(context.Background(), pctx); err == nil {
+		t.Fatal("a panicking guardrail fails closed")
+	}
+
+	if len(*got) != 1 {
+		t.Fatalf("want one match signal, got %d", len(*got))
+	}
+	if c := (*got)[0].match; c.Plugin != "regex-guard" || c.Instance != "audit" {
+		t.Errorf("match = %+v, want it attributed to regex-guard/audit despite the panic", c)
+	}
+}
+
+// TestRejectUninspectable_RecordsTheBlock keeps the one block a content policy
+// makes on an unreadable body from reaching no observability consumer at all.
+func TestRejectUninspectable_RecordsTheBlock(t *testing.T) {
+	pctx := NewContext(&providers.Request{Model: "gpt-4o"})
+	pctx.Stage = StageBeforeRequest
+	pctx.Metadata[MetadataUninspectableContent] = true
+
+	if !RejectUninspectable(pctx) {
+		t.Fatal("want the request denied")
+	}
+	if len(pctx.GuardrailMatches) != 1 || pctx.GuardrailMatches[0].Action != ActionBlock {
+		t.Fatalf("want one block match recorded, got %+v", pctx.GuardrailMatches)
+	}
+}
+
 // TestManager_GuardrailMatch_AfterStageAndFlushSeparation checks the stage is
 // stamped correctly and that a match in one stage is not re-reported by the next.
 func TestManager_GuardrailMatch_AfterStageAndFlushSeparation(t *testing.T) {

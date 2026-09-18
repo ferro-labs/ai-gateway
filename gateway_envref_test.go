@@ -105,4 +105,13 @@ func TestGateway_WithoutEnvExpansion_PassesPluginReferenceLiterally(t *testing.T
 	if got["token"] != "${FERRO_TEST_PLUGIN_SECRET}" {
 		t.Errorf("plugin received token = %v, want the literal reference (expansion disabled)", got["token"])
 	}
+
+	// With expansion on, the plugin gets the deep copy envref built. With it off
+	// there is nothing to resolve, and handing over the live map would let a
+	// plugin that mutates its config block rewrite what GetConfig serves and the
+	// config store keeps.
+	got["token"] = "mutated-by-the-plugin"
+	if live := gw.GetConfig().Plugins[0].Config["token"]; live != "${FERRO_TEST_PLUGIN_SECRET}" {
+		t.Errorf("gateway Config token = %v; the plugin was handed the live config map", live)
+	}
 }

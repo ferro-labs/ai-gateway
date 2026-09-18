@@ -46,6 +46,15 @@ func TestValidatePluginInstanceIDs(t *testing.T) {
 			wantErr: "carries two ids",
 		},
 		{
+			name:    "an id longer than the maximum is rejected",
+			plugins: []PluginConfig{p("pii-redact", strings.Repeat("x", maxPluginIDLen+1), "before_request", ruleA)},
+			wantErr: "the maximum is 128",
+		},
+		{
+			name:    "an id at the maximum is accepted",
+			plugins: []PluginConfig{p("pii-redact", strings.Repeat("x", maxPluginIDLen), "before_request", ruleA)},
+		},
+		{
 			name:    "empty ids never collide",
 			plugins: []PluginConfig{p("pii-redact", "", "before_request", ruleA), p("word-filter", "", "before_request", ruleB)},
 		},

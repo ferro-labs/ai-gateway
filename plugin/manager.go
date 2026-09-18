@@ -204,18 +204,59 @@ func (m *Manager) SetGuardrailMatchSink(fn func(ctx context.Context, match Guard
 	m.emitMatch = fn
 }
 
+// attributeGuardrailMatches stamps the matches one plugin recorded during its
+// Execute with that plugin's identity, and collapses repeats.
+//
+// The plugin knows only the action; who matched is the framework's to state, the
+// same reason it sets pctx.Stage. One signal per action per invocation: a
+// warn/log rule is evaluated on every piece of text, so a long conversation
+// would otherwise emit one event per message — identical events, since a match
+// names the decision and never the text.
+func (m *Manager) attributeGuardrailMatches(p Plugin, pctx *Context, matchStart int) {
+	// A guardrail that denied is the only kind of rejection allowed answers for;
+	// a rate limiter or a budget denying the same request is not a guardrail's
+	// verdict. Recorded here because this is where the deciding plugin's type is
+	// known — the stage flush sees only the shared Reject flag. Checked before
+	// the matches are: a guardrail can deny without recording one, and it still
+	// denied the request every other guardrail's match is reported against.
+	if pctx.Reject && p.Type() == TypeGuardrail {
+		pctx.guardrailRejected = true
+	}
+	if len(pctx.GuardrailMatches) <= matchStart {
+		return
+	}
+
+	id := m.instanceID(p)
+	name := p.Name()
+	// An in-place filter over the matches this plugin appended: kept's write
+	// cursor never passes the read cursor, so the two safely share one backing
+	// array. kept[matchStart:] is what has been kept from THIS plugin so far.
+	kept := pctx.GuardrailMatches[:matchStart]
+	for _, match := range pctx.GuardrailMatches[matchStart:] {
+		if slices.ContainsFunc(kept[matchStart:], func(k GuardrailMatch) bool { return k.Action == match.Action }) {
+			continue
+		}
+		match.Plugin, match.Instance = name, id
+		kept = append(kept, match)
+	}
+	pctx.GuardrailMatches = kept
+}
+
 // flushGuardrailMatches emits every match recorded so far and clears them, so a
 // stage reports its own matches and an agentic loop turn does not re-report an
-// earlier turn's. allowed reflects whether the request survived the guardrails —
-// a match under warn/log on a served request is allowed; any match on a request
-// a guardrail rejected is not. Deferred by each stage runner, so it sees the
-// stage's final pctx.Reject.
+// earlier turn's.
+//
+// allowed answers "did a GUARDRAIL deny this request", not "was it rejected at
+// all": a rate limiter, a budget or an auth plugin denying the request says
+// nothing about the guardrail that matched, and reading the shared Reject flag
+// would report every warn and log match on such a request as a denial. Deferred
+// by each stage runner, so it sees the stage's final verdict.
 func (m *Manager) flushGuardrailMatches(ctx context.Context, pctx *Context) {
 	if len(pctx.GuardrailMatches) == 0 {
 		return
 	}
 	if m.emitMatch != nil {
-		allowed := !pctx.Reject
+		allowed := !pctx.guardrailRejected
 		for _, match := range pctx.GuardrailMatches {
 			m.emitMatch(ctx, match, allowed)
 		}
@@ -394,28 +435,12 @@ func (m *Manager) executePlugin(ctx context.Context, p Plugin, pctx *Context, st
 	}()
 
 	matchStart := len(pctx.GuardrailMatches)
-	err = p.Execute(ctx, pctx)
+	// Deferred rather than written after Execute: a plugin that records a match
+	// and then panics would otherwise leave that match unattributed, and the
+	// stage flush would emit it with no plugin name or instance.
+	defer m.attributeGuardrailMatches(p, pctx, matchStart)
 
-	// Stamp the matches this plugin recorded during Execute with its identity.
-	// The plugin knows only the action; who matched is the framework's to state,
-	// the same reason it sets pctx.Stage above.
-	if len(pctx.GuardrailMatches) > matchStart {
-		id := m.instanceID(p)
-		name := p.Name()
-		// One signal per action per invocation. A warn/log rule is evaluated on
-		// every piece of text, so a long conversation would otherwise emit one
-		// event per message — identical events, since a match names the decision
-		// and never the text.
-		kept := pctx.GuardrailMatches[:matchStart]
-		for _, match := range pctx.GuardrailMatches[matchStart:] {
-			if slices.ContainsFunc(kept[matchStart:], func(k GuardrailMatch) bool { return k.Action == match.Action }) {
-				continue
-			}
-			match.Plugin, match.Instance = name, id
-			kept = append(kept, match)
-		}
-		pctx.GuardrailMatches = kept
-	}
+	err = p.Execute(ctx, pctx)
 
 	if span != nil {
 		switch {
