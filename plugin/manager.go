@@ -94,8 +94,8 @@ type Manager struct {
 	// only at Register.
 	instanceIDs map[pluginInstanceKey]string
 	// emitMatch, when set, receives each guardrail match at the end of the stage
-	// that recorded it, with whether the request was ultimately allowed past the
-	// guardrails. The gateway installs it (SetGuardrailMatchSink) so the manager
+	// that recorded it, with whether a guardrail denied the request at that stage.
+	// The gateway installs it (SetGuardrailMatchSink) so the manager
 	// need not know how an Event is built or where it goes; nil means no emission.
 	emitMatch   func(ctx context.Context, match GuardrailMatch, allowed bool)
 	mu          sync.RWMutex
@@ -246,11 +246,22 @@ func (m *Manager) attributeGuardrailMatches(p Plugin, pctx *Context, matchStart 
 // stage reports its own matches and an agentic loop turn does not re-report an
 // earlier turn's.
 //
-// allowed answers "did a GUARDRAIL deny this request", not "was it rejected at
-// all": a rate limiter, a budget or an auth plugin denying the request says
-// nothing about the guardrail that matched, and reading the shared Reject flag
-// would report every warn and log match on such a request as a denial. Deferred
-// by each stage runner, so it sees the stage's final verdict.
+// allowed answers "did a GUARDRAIL deny this request, at THIS stage".
+//
+// Not "was it rejected at all": a rate limiter, a budget or an auth plugin
+// denying the request says nothing about the guardrail that matched, and reading
+// the shared Reject flag would report every warn and log match on such a request
+// as a denial.
+//
+// And not "did the request ultimately succeed": each stage flushes its own
+// matches, so a before_request match reports how the request fared on the way
+// in. A guardrail rejecting the RESPONSE at after_request does not retroactively
+// deny the prompt — they are verdicts on different content — and on a streamed
+// response the after stage runs once the body is already delivered, so there is
+// no later moment at which a single answer would be more final. Every event
+// names its stage, so a consumer can tell which decision it is reading.
+//
+// Deferred by each stage runner, so it sees that stage's final verdict.
 func (m *Manager) flushGuardrailMatches(ctx context.Context, pctx *Context) {
 	if len(pctx.GuardrailMatches) == 0 {
 		return

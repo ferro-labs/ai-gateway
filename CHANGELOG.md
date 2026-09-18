@@ -15,10 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   redact). A guardrail running in a non-blocking mode is now observable: a host
   can record what a `log` or `warn` rule would have blocked, which the block-only
   signal could not show. The event names the plugin, its instance `id`, the
-  resolved action, the stage, and whether the request was ultimately allowed past
-  the guardrails — meaning no guardrail denied it; a rate limiter or a budget
-  denying the same request leaves it true, and it is never a claim that the
-  provider call succeeded. It carries no matched text or offending value, keeping the
+  resolved action, the stage, and whether a guardrail denied the request **at
+  that stage** — a `before_request` match reports how the request fared on the
+  way in, and a guardrail rejecting the response later does not change it, which
+  is why every event names its stage. A rate limiter or a budget denying the same
+  request leaves it true: those are not guardrail verdicts, and it is never a
+  claim that the provider call succeeded. It carries no matched text or offending value, keeping the
   gateway's no-leak posture. A non-matching plugin emits nothing, and a plugin
   that matches emits one event per resolved action per run rather than one per
   message, so a long conversation does not multiply identical events.

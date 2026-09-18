@@ -75,7 +75,7 @@ func (g *Gateway) recordRoutingAttempt(ctx context.Context, obs observability.Pr
 // subject, not a new channel. It is the sink the plugin manager calls at the end
 // of each stage (SetGuardrailMatchSink), so a guardrail running in a
 // non-blocking mode (warn/log) is observable: the payload names the decision and
-// whether the request survived the guardrails, and deliberately carries no
+// whether a guardrail denied the request at that stage, and deliberately carries no
 // matched text. Opt-in, like attempt events: it is built only for a provider
 // that implements observability.GuardrailMatchRecordingProvider and reports
 // true, so a consumer written against one Event per request never sees it and

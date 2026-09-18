@@ -78,10 +78,13 @@ const (
 	AttrFerroGuardrailInstance = "ferro.guardrail.instance"
 	AttrFerroGuardrailAction   = "ferro.guardrail.action"
 	AttrFerroGuardrailStage    = "ferro.guardrail.stage"
-	// AttrFerroGuardrailAllowed reports whether a GUARDRAIL denied the request.
+	// AttrFerroGuardrailAllowed reports whether a GUARDRAIL denied the request at
+	// the stage this match was recorded in — read it with AttrFerroGuardrailStage.
 	// A rate limiter, a budget or an auth plugin denying the same request leaves
 	// it true: those are not guardrail verdicts. It is never a claim that the
-	// request succeeded — a provider can still fail one no guardrail touched.
+	// request succeeded — a provider can still fail one no guardrail touched, and
+	// a guardrail rejecting the response does not change what an inbound match
+	// reported.
 	AttrFerroGuardrailAllowed         = "ferro.guardrail.allowed"
 	AttrFerroMCPServer                = "ferro.mcp.server"
 	AttrFerroMCPTool                  = "ferro.mcp.tool"

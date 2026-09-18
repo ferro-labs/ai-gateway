@@ -206,6 +206,48 @@ func TestManager_GuardrailMatch_SilentGuardrailDenialStillDenies(t *testing.T) {
 	}
 }
 
+// TestManager_GuardrailMatch_AllowedIsStageLocal pins the contract: each stage
+// flushes its own matches, so an inbound match reports how the request fared on
+// the way IN. A guardrail rejecting the response afterwards is a verdict on
+// different content and does not retroactively deny the prompt — every event
+// names its stage so a consumer can tell the two apart.
+func TestManager_GuardrailMatch_AllowedIsStageLocal(t *testing.T) {
+	m, got := sinkManager(t)
+	inbound := &mockPlugin{name: "regex-guard", typ: TypeGuardrail, execFn: func(_ context.Context, pctx *Context) error {
+		pctx.NoteGuardrailMatch(ActionWarn)
+		return nil
+	}}
+	outbound := &mockPlugin{name: "schema-guard", typ: TypeGuardrail, execFn: func(_ context.Context, pctx *Context) error {
+		pctx.NoteGuardrailMatch(ActionBlock)
+		pctx.Reject = true
+		return nil
+	}}
+	if err := m.Register(StageBeforeRequest, inbound); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Register(StageAfterRequest, outbound); err != nil {
+		t.Fatal(err)
+	}
+
+	pctx := NewContext(&providers.Request{Model: "gpt-4o"})
+	if err := m.RunBefore(context.Background(), pctx); err != nil {
+		t.Fatalf("the warn must not block the request: %v", err)
+	}
+	if err := m.RunAfter(context.Background(), pctx); err == nil {
+		t.Fatal("the response guardrail must reject")
+	}
+
+	if len(*got) != 2 {
+		t.Fatalf("want one signal per stage, got %d", len(*got))
+	}
+	if in := (*got)[0]; in.match.Stage != StageBeforeRequest || !in.allowed {
+		t.Errorf("inbound signal = %+v allowed=%v, want before_request/allowed=true", in.match, in.allowed)
+	}
+	if out := (*got)[1]; out.match.Stage != StageAfterRequest || out.allowed {
+		t.Errorf("outbound signal = %+v allowed=%v, want after_request/allowed=false", out.match, out.allowed)
+	}
+}
+
 // TestManager_GuardrailMatch_PanicStillAttributesTheMatch guards the attribution:
 // a plugin that records a match and then panics must not leave an event with no
 // plugin name for an exporter to puzzle over.
