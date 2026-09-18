@@ -195,27 +195,37 @@ func validateReferences(cfg config.Config) error {
 		inst := factory()
 		_, restricted := inst.(plugin.StageRestricted)
 		_, pureInit := inst.(plugin.ConfigValidator)
-		stageErr := error(nil)
 		if restricted && pureInit && !envref.HasReferenceIn(p.Config) {
-			// ValidateConfigFor accepted this block moments ago, so an error here
-			// is a plugin disagreeing with itself; report it rather than read the
-			// stages of a half-built instance.
-			if err := inst.Init(p.Config); err != nil {
-				stageErr = fmt.Errorf("plugin %q: %w", p.Name, err)
-			} else {
-				stageErr = plugin.ValidateStage(inst, plugin.Stage(p.Stage))
+			if err := stageOfInitialised(inst, p); err != nil {
+				return err
 			}
-			if err := inst.Close(); err != nil && stageErr == nil {
-				stageErr = fmt.Errorf("plugin %q: close: %w", p.Name, err)
-			}
-		} else {
-			stageErr = plugin.ValidateStage(inst, plugin.Stage(p.Stage))
+			continue
 		}
-		if stageErr != nil {
-			return stageErr
+		if err := plugin.ValidateStage(inst, plugin.Stage(p.Stage)); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+// stageOfInitialised compiles a plugin's config so its supported stages reflect
+// it, checks the configured stage against them, and releases the instance.
+//
+// ValidateConfigFor accepted this block moments ago, so an Init error here is a
+// plugin disagreeing with itself; it is reported rather than swallowed, because
+// the alternative is reading the stages of a half-built instance. A Close error
+// is reported only when nothing worse happened.
+func stageOfInitialised(inst plugin.Plugin, p config.PluginConfig) error {
+	stageErr := inst.Init(p.Config)
+	if stageErr != nil {
+		stageErr = fmt.Errorf("plugin %q: %w", p.Name, stageErr)
+	} else {
+		stageErr = plugin.ValidateStage(inst, plugin.Stage(p.Stage))
+	}
+	if err := inst.Close(); err != nil && stageErr == nil {
+		stageErr = fmt.Errorf("plugin %q: close: %w", p.Name, err)
+	}
+	return stageErr
 }
 
 // knownProviderIDs lists every provider this binary can build, sorted, for the

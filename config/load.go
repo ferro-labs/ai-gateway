@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ferro-labs/ai-gateway/internal/tracingpolicy"
 	pubmcp "github.com/ferro-labs/ai-gateway/mcp"
@@ -367,9 +368,11 @@ func validatePluginInstanceIDs(configs []PluginConfig) error {
 		if !pc.Enabled || pc.ID == "" {
 			continue
 		}
-		if len(pc.ID) > maxPluginIDLen {
+		// Counted in runes, because the limit is stated in characters: len()
+		// would reject a 40-character id that happens to encode to 200 bytes.
+		if idLen := utf8.RuneCountInString(pc.ID); idLen > maxPluginIDLen {
 			return fmt.Errorf("plugin %s: id is %d characters; the maximum is %d",
-				pc.Name, len(pc.ID), maxPluginIDLen)
+				pc.Name, idLen, maxPluginIDLen)
 		}
 		key, shareable := PluginSharingKey(pc)
 		if !shareable {

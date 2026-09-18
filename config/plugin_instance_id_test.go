@@ -55,6 +55,12 @@ func TestValidatePluginInstanceIDs(t *testing.T) {
 			plugins: []PluginConfig{p("pii-redact", strings.Repeat("x", maxPluginIDLen), "before_request", ruleA)},
 		},
 		{
+			// The limit is stated in characters, so it is counted in them: these
+			// are 128 runes but 384 bytes, and len() would reject them.
+			name:    "a multi-byte id at the maximum is accepted",
+			plugins: []PluginConfig{p("pii-redact", strings.Repeat("é", maxPluginIDLen), "before_request", ruleA)},
+		},
+		{
 			name:    "empty ids never collide",
 			plugins: []PluginConfig{p("pii-redact", "", "before_request", ruleA), p("word-filter", "", "before_request", ruleB)},
 		},
