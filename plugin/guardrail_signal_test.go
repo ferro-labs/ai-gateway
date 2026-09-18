@@ -248,6 +248,47 @@ func TestManager_GuardrailMatch_AllowedIsStageLocal(t *testing.T) {
 	}
 }
 
+// TestManager_GuardrailMatch_VerdictDoesNotLeakIntoTheNextStage covers the stage
+// boundary. A before_request denial runs the on_error stage nested inside
+// RunBefore, so both the ORDER of the two flushes and the verdict each reports
+// under are easy to get wrong: the denial must still report allowed=false, and
+// an on_error guardrail that merely observed must not inherit it.
+func TestManager_GuardrailMatch_VerdictDoesNotLeakIntoTheNextStage(t *testing.T) {
+	m, got := sinkManager(t)
+	denier := &mockPlugin{name: "word-filter", typ: TypeGuardrail, execFn: func(_ context.Context, pctx *Context) error {
+		pctx.NoteGuardrailMatch(ActionBlock)
+		pctx.Reject = true
+		return nil
+	}}
+	observer := &mockPlugin{name: "regex-guard", typ: TypeGuardrail, execFn: func(_ context.Context, pctx *Context) error {
+		pctx.NoteGuardrailMatch(ActionLog)
+		return nil
+	}}
+	if err := m.Register(StageBeforeRequest, denier); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Register(StageOnError, observer); err != nil {
+		t.Fatal(err)
+	}
+
+	pctx := NewContext(&providers.Request{Model: "gpt-4o"})
+	if err := m.RunBefore(context.Background(), pctx); err == nil {
+		t.Fatal("the guardrail must reject")
+	}
+
+	if len(*got) != 2 {
+		t.Fatalf("want one signal per stage, got %d: %+v", len(*got), *got)
+	}
+	// The denying stage reports first, and reports the denial.
+	if d := (*got)[0]; d.match.Stage != StageBeforeRequest || d.match.Action != ActionBlock || d.allowed {
+		t.Errorf("first signal = %+v allowed=%v, want before_request/block/allowed=false", d.match, d.allowed)
+	}
+	// The on_error stage denied nothing, so its own match is not a denial.
+	if o := (*got)[1]; o.match.Stage != StageOnError || !o.allowed {
+		t.Errorf("second signal = %+v allowed=%v, want on_error/allowed=true", o.match, o.allowed)
+	}
+}
+
 // TestManager_GuardrailMatch_PanicStillAttributesTheMatch guards the attribution:
 // a plugin that records a match and then panics must not leave an event with no
 // plugin name for an exporter to puzzle over.

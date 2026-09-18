@@ -212,14 +212,20 @@ func (m *Manager) SetGuardrailMatchSink(fn func(ctx context.Context, match Guard
 // warn/log rule is evaluated on every piece of text, so a long conversation
 // would otherwise emit one event per message — identical events, since a match
 // names the decision and never the text.
-func (m *Manager) attributeGuardrailMatches(p Plugin, pctx *Context, matchStart int) {
+func (m *Manager) attributeGuardrailMatches(p Plugin, pctx *Context, matchStart int, rejectedBefore bool) {
 	// A guardrail that denied is the only kind of rejection allowed answers for;
 	// a rate limiter or a budget denying the same request is not a guardrail's
 	// verdict. Recorded here because this is where the deciding plugin's type is
 	// known — the stage flush sees only the shared Reject flag. Checked before
 	// the matches are: a guardrail can deny without recording one, and it still
 	// denied the request every other guardrail's match is reported against.
-	if pctx.Reject && p.Type() == TypeGuardrail {
+	//
+	// THIS plugin must be the one that denied, which is why the flag is compared
+	// against its value before Execute rather than just read. Reject stays set
+	// once a request is denied, so a guardrail running afterwards — at the
+	// on_error stage, which runs precisely because something denied — would
+	// otherwise be recorded as having denied a request it only observed.
+	if pctx.Reject && !rejectedBefore && p.Type() == TypeGuardrail {
 		pctx.guardrailRejected = true
 	}
 	if len(pctx.GuardrailMatches) <= matchStart {
@@ -263,16 +269,18 @@ func (m *Manager) attributeGuardrailMatches(p Plugin, pctx *Context, matchStart 
 //
 // Deferred by each stage runner, so it sees that stage's final verdict.
 func (m *Manager) flushGuardrailMatches(ctx context.Context, pctx *Context) {
-	if len(pctx.GuardrailMatches) == 0 {
-		return
-	}
-	if m.emitMatch != nil {
+	if m.emitMatch != nil && len(pctx.GuardrailMatches) > 0 {
 		allowed := !pctx.guardrailRejected
 		for _, match := range pctx.GuardrailMatches {
 			m.emitMatch(ctx, match, allowed)
 		}
 	}
+	// A stage boundary: the next stage reaches its own verdict, so neither the
+	// matches nor the verdict they were reported under carries into it. Cleared
+	// even when nothing matched — a stage that recorded no match still ends here,
+	// and leaving the flag set would deny the next stage's matches for it.
 	pctx.GuardrailMatches = pctx.GuardrailMatches[:0]
+	pctx.guardrailRejected = false
 }
 
 // RunBefore executes all before-request plugins. Fail-closed plugin errors or
@@ -298,6 +306,11 @@ func (m *Manager) RunBefore(ctx context.Context, pctx *Context) error {
 		err := m.executePlugin(ctx, p, pctx, StageBeforeRequest)
 		if failureErr := m.handlePluginFailure(p, StageBeforeRequest, pctx, err); failureErr != nil {
 			pctx.Error = failureErr
+			// Flush THIS stage before the nested on_error stage runs. The deferred
+			// flush would otherwise fire after RunOnError's, so the two stages
+			// would report in the wrong order and the on_error stage would inherit
+			// this stage's verdict instead of reaching its own.
+			m.flushGuardrailMatches(ctx, pctx)
 			m.RunOnError(ctx, pctx)
 			return failureErr
 		}
@@ -449,7 +462,7 @@ func (m *Manager) executePlugin(ctx context.Context, p Plugin, pctx *Context, st
 	// Deferred rather than written after Execute: a plugin that records a match
 	// and then panics would otherwise leave that match unattributed, and the
 	// stage flush would emit it with no plugin name or instance.
-	defer m.attributeGuardrailMatches(p, pctx, matchStart)
+	defer m.attributeGuardrailMatches(p, pctx, matchStart, pctx.Reject)
 
 	err = p.Execute(ctx, pctx)
 
