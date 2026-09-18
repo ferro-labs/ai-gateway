@@ -13,7 +13,14 @@ import "fmt"
 // A plugin that could not reach a decision — because it errored or panicked —
 // produces a FailureError instead. See that type for why the two are distinct.
 type RejectionError struct {
-	Plugin     string
+	Plugin string
+	// Instance is the operator-supplied id of the configured instance that
+	// produced this rejection (PluginConfig.ID), or "" when none was set. Since
+	// several instances of one plugin can be configured, Plugin alone cannot say
+	// which rule fired; Instance can. It is an opaque string echoed from config,
+	// never interpreted, and it is deliberately absent from Error() — it is a
+	// field for programmatic attribution, not part of the client-facing message.
+	Instance   string
 	PluginType PluginType
 	Stage      Stage
 	Reason     string

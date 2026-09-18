@@ -629,7 +629,7 @@ func (g *Gateway) buildPluginManager(configs []config.PluginConfig) (*plugin.Man
 			}
 		}
 		stage := plugin.Stage(pc.Stage)
-		if err := plugins.Register(stage, p); err != nil {
+		if err := plugins.RegisterWithID(stage, p, pc.ID); err != nil {
 			_ = plugins.Close()
 			// A reused instance is already registered at an earlier stage, so the
 			// manager close above released it; only an instance this iteration

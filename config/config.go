@@ -675,7 +675,16 @@ func (c *CircuitBreakerConfig) setCircuitBreakerWire(w circuitBreakerWire, prese
 // References are resolved when the plugin is constructed, not when the config
 // is loaded, so a secret never reaches the config-history store.
 type PluginConfig struct {
-	Name    string         `json:"name" yaml:"name"`
+	Name string `json:"name" yaml:"name"`
+	// ID is an optional operator-supplied label for THIS instance. Name is the
+	// plugin type and is shared by every instance of that plugin, so when several
+	// instances of one plugin are configured (one per rule) a decision can only be
+	// attributed to the plugin, not the rule. ID closes that gap: the gateway
+	// treats it as an opaque string, echoes it back on the plugin's rejection and
+	// match signal, and never interprets it. Empty is legal. It is deliberately not
+	// part of the plugin's instance identity for multi-stage sharing (that is name
+	// plus config); a single instance listed at several stages carries one id.
+	ID      string         `json:"id,omitempty" yaml:"id,omitempty"`
 	Type    string         `json:"type" yaml:"type"`
 	Stage   string         `json:"stage" yaml:"stage"`
 	Enabled bool           `json:"enabled" yaml:"enabled"`

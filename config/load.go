@@ -326,6 +326,44 @@ func ValidateConfig(cfg Config) error {
 		return err
 	}
 
+	if err := validatePluginInstanceIDs(cfg.Plugins); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// validatePluginInstanceIDs refuses a non-empty plugin id claimed by two
+// DIFFERENT instances.
+//
+// The id attributes a guardrail decision to the entry that produced it, so two
+// instances answering to one id would make that attribution ambiguous — the
+// point of having the field at all. Entries that resolve to ONE instance across
+// stages (a cache listed before and after under identical config) legitimately
+// share an id: they are one instance. So the check is by instance identity —
+// name plus config, the same key PluginSharingKey computes — not by entry.
+//
+// It runs from ValidateConfig, so `ferrogw validate` and startup reject the same
+// config, and disabled entries are skipped exactly as they are everywhere else.
+func validatePluginInstanceIDs(configs []PluginConfig) error {
+	seen := make(map[string]string, len(configs)) // id -> instance key that claimed it
+	for i, pc := range configs {
+		if !pc.Enabled || pc.ID == "" {
+			continue
+		}
+		key, shareable := PluginSharingKey(pc)
+		if !shareable {
+			// Only reachable for a config assembled in Go; treat each as its own
+			// instance rather than collapsing distinct ones under one id.
+			key = fmt.Sprintf("\x00unshareable-%d", i)
+		}
+		if prev, ok := seen[pc.ID]; ok && prev != key {
+			return fmt.Errorf(
+				"plugin id %q is used by more than one plugin instance; an id names a single configured instance",
+				pc.ID)
+		}
+		seen[pc.ID] = key
+	}
 	return nil
 }
 

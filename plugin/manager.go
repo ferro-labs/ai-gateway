@@ -46,7 +46,7 @@ func (m *Manager) handlePluginFailure(p Plugin, stage Stage, pctx *Context, err 
 	// A rejection outranks an error: the plugin reached a verdict, so report the
 	// verdict even if it also returned an error on its way out.
 	if pctx.Reject {
-		return rejectionErrorFor(p, stage, pctx, err)
+		return m.rejectionErrorFor(p, stage, pctx, err)
 	}
 	if err == nil {
 		return nil
@@ -58,8 +58,14 @@ func (m *Manager) handlePluginFailure(p Plugin, stage Stage, pctx *Context, err 
 	return &FailureError{Plugin: p.Name(), PluginType: p.Type(), Stage: stage, Err: err}
 }
 
-func rejectionErrorFor(p Plugin, stage Stage, pctx *Context, err error) *RejectionError {
-	return &RejectionError{Plugin: p.Name(), PluginType: p.Type(), Stage: stage, Reason: rejectionReason(pctx, err)}
+func (m *Manager) rejectionErrorFor(p Plugin, stage Stage, pctx *Context, err error) *RejectionError {
+	return &RejectionError{
+		Plugin:     p.Name(),
+		Instance:   m.instanceID(p),
+		PluginType: p.Type(),
+		Stage:      stage,
+		Reason:     rejectionReason(pctx, err),
+	}
 }
 
 func rejectionReason(pctx *Context, err error) string {
@@ -74,10 +80,15 @@ func rejectionReason(pctx *Context, err error) string {
 
 // Manager manages plugin lifecycle and execution.
 type Manager struct {
-	log         *logger.Logger
-	before      []Plugin
-	after       []Plugin
-	onErr       []Plugin
+	log    *logger.Logger
+	before []Plugin
+	after  []Plugin
+	onErr  []Plugin
+	// instanceIDs maps a registered plugin instance to its operator-supplied id
+	// (PluginConfig.ID). Keyed by the instance pointer, so an instance registered
+	// at several stages — one multi-stage plugin — carries one id. Empty for an
+	// instance registered without one. Guarded by mu, written only at Register.
+	instanceIDs map[Plugin]string
 	mu          sync.RWMutex
 	lifecycleMu sync.Mutex
 	lifecycle   *sync.Cond
@@ -121,13 +132,23 @@ func (m *Manager) Acquire() func() {
 	}
 }
 
-// Register registers a plugin at the given stage.
+// Register registers a plugin at the given stage. It is RegisterWithID with no
+// instance id — kept so existing callers, in this repo and out of tree, compile
+// unchanged.
+func (m *Manager) Register(stage Stage, p Plugin) error {
+	return m.RegisterWithID(stage, p, "")
+}
+
+// RegisterWithID registers a plugin at the given stage under an operator-supplied
+// instance id (see PluginConfig.ID), which the manager echoes on that instance's
+// rejection and match signal and never interprets. An empty id is the same as
+// Register.
 //
 // A plugin that declares which stages it can act at (StageRestricted) is
 // refused at the others rather than registered into a no-op: binding a stage is
 // the first moment the pair is knowable, and the alternative is a plugin that
 // reports itself enabled for the life of the deployment and enforces nothing.
-func (m *Manager) Register(stage Stage, p Plugin) error {
+func (m *Manager) RegisterWithID(stage Stage, p Plugin, id string) error {
 	if err := ValidateStage(p, stage); err != nil {
 		return err
 	}
@@ -145,8 +166,22 @@ func (m *Manager) Register(stage Stage, p Plugin) error {
 	default:
 		return fmt.Errorf("unknown plugin stage: %s", stage)
 	}
+	if id != "" {
+		if m.instanceIDs == nil {
+			m.instanceIDs = make(map[Plugin]string)
+		}
+		m.instanceIDs[p] = id
+	}
 	m.log.Info("plugin registered", "name", p.Name(), "type", p.Type(), "stage", stage)
 	return nil
+}
+
+// instanceID returns the operator-supplied id a plugin instance was registered
+// under, or "" when it was registered without one.
+func (m *Manager) instanceID(p Plugin) string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.instanceIDs[p]
 }
 
 // RunBefore executes all before-request plugins. Fail-closed plugin errors or

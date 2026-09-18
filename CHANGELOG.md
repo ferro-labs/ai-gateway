@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- A plugin config entry accepts an optional `id` — an opaque, operator-supplied
+  label for that instance. Several instances of one plugin can be configured
+  (one rule each), and until now a decision named only the plugin type, so an
+  operator could report that "some pii-redact rule fired" but not which one. A
+  block's `plugin.RejectionError` now carries the `id` of the instance that
+  produced it. The gateway treats the id as opaque and never interprets it, and
+  it stays out of the instance identity used for multi-stage sharing (that is
+  name plus config), so one instance listed across stages carries one id.
+  `ferrogw validate` rejects an `id` claimed by two different instances. An empty
+  `id` keeps today's behaviour.
+
 ### Fixed
 
 - `ferrogw validate` and `ferrogw doctor` now refuse a guardrail whose rules
