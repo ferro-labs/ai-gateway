@@ -5,6 +5,21 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `ferrogw validate` and `ferrogw doctor` now refuse a guardrail whose rules
+  cannot act at its configured stage — for example a `regex-guard` whose rules
+  all `apply_to: output` listed at `before_request`, or the reverse. Such a
+  plugin derives its supported stages from its compiled rules, so validate
+  checked them on an instance that had not been initialised and reported the
+  config healthy while `serve` refused it at startup. Validate now compiles the
+  rules (when the config block carries no `${VAR}` reference) before the stage
+  check, so the refusal arrives before the deploy rather than as a failed start.
+  A block carrying a reference keeps today's behaviour, since its rules cannot
+  be compiled before the environment is available.
+
 ## [1.5.8] — 2026-09-16
 
 ### Added

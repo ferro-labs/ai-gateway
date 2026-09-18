@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/ferro-labs/ai-gateway/config"
+	"github.com/ferro-labs/ai-gateway/internal/envref"
 	"github.com/ferro-labs/ai-gateway/plugin"
 	"github.com/ferro-labs/ai-gateway/providers"
 	"github.com/spf13/cobra"
@@ -155,18 +156,34 @@ func validateReferences(cfg config.Config) error {
 				p.Name, p.Stage,
 				plugin.StageBeforeRequest, plugin.StageAfterRequest, plugin.StageOnError)
 		}
-		// A stage the plugin does nothing at. serve refuses this too, when the
-		// manager binds the stage; reporting it here means the answer arrives
-		// before the deploy rather than as a failed start.
-		if err := plugin.ValidateStage(factory(), plugin.Stage(p.Stage)); err != nil {
-			return err
-		}
 		// Rules the plugin publishes about its own config block. Only the
 		// deployment-independent ones: plugin.ConfigValidator is contracted to
 		// resolve no ${VAR} and touch nothing, so this keeps the promise above
 		// that validate runs anywhere. A plugin's remaining checks stay in Init
-		// and are still startup errors.
+		// and are still startup errors. Checked first so a malformed block is
+		// reported with the plugin's own message and the stage check below runs
+		// on an instance whose config is already known good.
 		if err := plugin.ValidateConfigFor(p.Name, p.Config); err != nil {
+			return err
+		}
+		// A stage the plugin does nothing at. serve refuses this too, when the
+		// manager binds the stage; reporting it here means the answer arrives
+		// before the deploy rather than as a failed start.
+		//
+		// A plugin whose supported stages follow from its compiled config —
+		// regex-guard derives them from its rules' apply_to — reports every
+		// stage until Init compiles that config. Init the instance first, so the
+		// stage check sees the real stages and validate refuses exactly what
+		// serve refuses. Skipped when the block carries a ${VAR}: those resolve
+		// at construction, never at load, so the rules cannot be compiled yet and
+		// today's permissive behaviour is kept (serve compiles them at start).
+		// The config is already validated above, so an Init error here is not new
+		// information and is ignored — the instance is only for the stage read.
+		inst := factory()
+		if !envref.HasReferenceIn(p.Config) {
+			_ = inst.Init(p.Config)
+		}
+		if err := plugin.ValidateStage(inst, plugin.Stage(p.Stage)); err != nil {
 			return err
 		}
 	}

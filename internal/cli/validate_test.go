@@ -215,6 +215,45 @@ func TestRunValidateCatchesUnknownReferences(t *testing.T) {
 				"      blocked_words:\n        - \"${FERRO_VALIDATE_NEVER_SET}\"\n",
 			wantErr: "",
 		},
+		{
+			name: "regex-guard whose rules can act only after_request, listed before_request",
+			// #440: the plugin's supported stages follow from its compiled rules.
+			// A rule apply_to: output leaves before_request a no-op, which serve
+			// refuses at Manager.Register. validate must refuse it too — it used to
+			// pass because it checked SupportedStages on an un-Init'd instance.
+			config: "strategy:\n  mode: single\ntargets:\n  - virtual_key: openai\n" +
+				"plugins:\n  - name: regex-guard\n    type: guardrail\n" +
+				"    stage: before_request\n    enabled: true\n    config:\n" +
+				"      rules:\n        - name: out\n          pattern: \"x\"\n          apply_to: output\n",
+			wantErr: "enforces nothing",
+		},
+		{
+			name: "regex-guard whose rules can act only before_request, listed after_request",
+			config: "strategy:\n  mode: single\ntargets:\n  - virtual_key: openai\n" +
+				"plugins:\n  - name: regex-guard\n    type: guardrail\n" +
+				"    stage: after_request\n    enabled: true\n    config:\n" +
+				"      rules:\n        - name: in\n          pattern: \"x\"\n          apply_to: input\n",
+			wantErr: "enforces nothing",
+		},
+		{
+			name: "regex-guard whose rules match its configured stage is accepted",
+			config: "strategy:\n  mode: single\ntargets:\n  - virtual_key: openai\n" +
+				"plugins:\n  - name: regex-guard\n    type: guardrail\n" +
+				"    stage: before_request\n    enabled: true\n    config:\n" +
+				"      rules:\n        - name: in\n          pattern: \"x\"\n          apply_to: input\n",
+			wantErr: "",
+		},
+		{
+			name: "regex-guard whose rule pattern references an unset env var keeps today's behaviour",
+			// The rules cannot be compiled before the environment is available, so
+			// the stage cannot be derived and validate does not guess — exactly as
+			// it does not resolve ${VAR} anywhere else. serve compiles it at start.
+			config: "strategy:\n  mode: single\ntargets:\n  - virtual_key: openai\n" +
+				"plugins:\n  - name: regex-guard\n    type: guardrail\n" +
+				"    stage: before_request\n    enabled: true\n    config:\n" +
+				"      rules:\n        - name: out\n          pattern: \"${FERRO_VALIDATE_NEVER_SET}\"\n          apply_to: output\n",
+			wantErr: "",
+		},
 	}
 
 	for _, tt := range tests {
