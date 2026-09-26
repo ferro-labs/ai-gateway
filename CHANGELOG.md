@@ -5,6 +5,18 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `word-filter` now refuses to load when `blocked_words` is present but is not
+  a list of strings: a scalar written where a list belongs, a map, or a list
+  with a non-string item. Such a value used to load as an empty blocklist, so
+  the guardrail registered and let every request through while startup and
+  `ferrogw validate` reported it healthy. The plugin now implements
+  `ValidateConfig`, so `ferrogw validate` reports the same error. An absent
+  key still configures no words.
+
 ## [1.5.9] — 2026-09-18
 
 ### Added
