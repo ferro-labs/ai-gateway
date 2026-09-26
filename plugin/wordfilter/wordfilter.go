@@ -6,6 +6,7 @@ package wordfilter
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/ferro-labs/ai-gateway/pkg/logger"
@@ -39,20 +40,21 @@ func (w *WordFilter) Name() string { return "word-filter" }
 // Type returns the plugin lifecycle hook type.
 func (w *WordFilter) Type() plugin.PluginType { return plugin.TypeGuardrail }
 
+// ValidateConfig runs the same blocked_words checks Init runs, so a malformed
+// list is a `ferrogw validate` error rather than a guardrail that loads and
+// screens nothing.
+func (w *WordFilter) ValidateConfig(config map[string]any) error {
+	_, err := blockedWords(config)
+	return err
+}
+
 // Init configures the plugin from the provided options map.
 func (w *WordFilter) Init(config map[string]any) error {
-	if words, ok := config["blocked_words"]; ok {
-		switch list := words.(type) {
-		case []any:
-			for _, word := range list {
-				if s, ok := word.(string); ok {
-					w.blockedWords = append(w.blockedWords, s)
-				}
-			}
-		case []string:
-			w.blockedWords = append(w.blockedWords, list...)
-		}
+	words, err := blockedWords(config)
+	if err != nil {
+		return err
 	}
+	w.blockedWords = append(w.blockedWords, words...)
 	if cs, ok := config["case_sensitive"].(bool); ok {
 		w.caseSensitive = cs
 	}
@@ -128,6 +130,34 @@ func (w *WordFilter) reject(ctx context.Context, pctx *plugin.Context, content, 
 		}
 	}
 	return false
+}
+
+// blockedWords reads blocked_words. An absent key configures no words, which
+// Execute treats as nothing to inspect. A value that is present but is not a
+// list of strings is a load error: skipping it would load the guardrail with no
+// words, and it would let every request through.
+func blockedWords(config map[string]any) ([]string, error) {
+	raw, ok := config["blocked_words"]
+	if !ok {
+		return nil, nil
+	}
+	// A config built in Go rather than decoded from YAML/JSON may carry []string.
+	if words, ok := raw.([]string); ok {
+		return words, nil
+	}
+	list, err := plugin.ListSetting(raw, "blocked_words")
+	if err != nil {
+		return nil, fmt.Errorf("word-filter: %w", err)
+	}
+	words := make([]string, 0, len(list))
+	for i, v := range list {
+		s, ok := v.(string)
+		if !ok {
+			return nil, fmt.Errorf("word-filter: blocked_words[%d] must be a string, got %T", i, v)
+		}
+		words = append(words, s)
+	}
+	return words, nil
 }
 
 // Close releases plugin resources.

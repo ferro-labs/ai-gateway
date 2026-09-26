@@ -39,6 +39,60 @@ func TestWordFilter_Init(t *testing.T) {
 	}
 }
 
+// A blocked_words value that is present but is not a list of strings used to
+// load as an empty blocklist, so the guardrail registered and let every request
+// through. It is a load error now, and validate reports the same error.
+func TestWordFilter_RejectsMalformedBlockedWords(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		words any
+		want  string
+	}{
+		{"scalar where a list belongs", "badword", "blocked_words must be a list, got string"},
+		{"map", map[string]any{"badword": true}, "blocked_words must be a list, got map[string]interface {}"},
+		{"non-string item", []any{123, "badword2"}, "blocked_words[0] must be a string, got int"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config := map[string]any{"blocked_words": tc.words}
+			err := (&WordFilter{}).Init(config)
+			if err == nil {
+				t.Fatal("Init accepted a malformed blocked_words")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Init error %q does not contain %q", err, tc.want)
+			}
+			if err := plugin.ValidateConfigFor("word-filter", config); err == nil {
+				t.Fatal("validate accepted a config Init rejects")
+			} else if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("validate error %q does not contain %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestWordFilter_AcceptsWellFormedBlockedWords(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		config map[string]any
+		want   int
+	}{
+		{"list from YAML or JSON", map[string]any{"blocked_words": []any{"badword", "forbidden"}}, 2},
+		{"[]string from a Go-built config", map[string]any{"blocked_words": []string{"badword"}}, 1},
+		{"empty list", map[string]any{"blocked_words": []any{}}, 0},
+		{"key absent", map[string]any{}, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := initFilter(t, tc.config)
+			if len(f.blockedWords) != tc.want {
+				t.Fatalf("got %d blocked words, want %d", len(f.blockedWords), tc.want)
+			}
+			if err := plugin.ValidateConfigFor("word-filter", tc.config); err != nil {
+				t.Fatalf("validate rejected a config Init accepts: %v", err)
+			}
+		})
+	}
+}
+
 func TestWordFilter_BlocksMessage(t *testing.T) {
 	f := initFilter(t, map[string]any{
 		"blocked_words": []any{"badword"},
