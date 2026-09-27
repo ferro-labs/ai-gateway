@@ -141,6 +141,14 @@ func blockedWords(config map[string]any) ([]string, error) {
 	if !ok {
 		return nil, nil
 	}
+	// The key can be present with a nil value: an explicit `blocked_words: null`,
+	// a YAML anchor, or a templated value that renders empty. plugin.ListSetting
+	// treats nil as "absent" (its contract for a caller that tells the two apart
+	// itself), so this needs its own check, or it would load with zero words the
+	// same way an absent key does, but for a config that named the key.
+	if raw == nil {
+		return nil, fmt.Errorf("word-filter: blocked_words must be a list, got null")
+	}
 	// A config built in Go rather than decoded from YAML/JSON may carry []string.
 	if words, ok := raw.([]string); ok {
 		return words, nil

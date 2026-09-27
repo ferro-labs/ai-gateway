@@ -49,6 +49,7 @@ func TestWordFilter_RejectsMalformedBlockedWords(t *testing.T) {
 		want  string
 	}{
 		{"scalar where a list belongs", "badword", "blocked_words must be a list, got string"},
+		{"explicit null", nil, "blocked_words must be a list, got null"},
 		{"map", map[string]any{"badword": true}, "blocked_words must be a list, got map[string]interface {}"},
 		{"non-string item", []any{123, "badword2"}, "blocked_words[0] must be a string, got int"},
 	} {
