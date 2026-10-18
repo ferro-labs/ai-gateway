@@ -57,6 +57,7 @@ COPY observability/ ./observability/
 COPY pkg/ ./pkg/
 COPY plugin/ ./plugin/
 COPY providers/ ./providers/
+COPY run/ ./run/
 
 # The bundle arrives from the node stage, not from the build context —
 # .dockerignore excludes internal/webui/dist so a locally built copy cannot be
