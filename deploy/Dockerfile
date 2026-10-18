@@ -34,7 +34,7 @@ RUN npm run build
 
 # ── Gateway ──────────────────────────────────────────────────────────────────
 
-FROM golang:1.25.13-alpine AS gateway-build
+FROM golang:1.26.9-alpine AS gateway-build
 
 RUN apk add --no-cache git ca-certificates
 
@@ -57,6 +57,7 @@ COPY observability/ ./observability/
 COPY pkg/ ./pkg/
 COPY plugin/ ./plugin/
 COPY providers/ ./providers/
+COPY run/ ./run/
 
 # The bundle arrives from the node stage, not from the build context —
 # .dockerignore excludes internal/webui/dist so a locally built copy cannot be
