@@ -5,17 +5,47 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.5.10] — 2026-10-18
+
+Security fixes and one guardrail fix. No API changes. Building the gateway, or
+a module that imports it, now needs Go 1.26.9 or later.
+
+### Security
+
+- Go 1.25.13 → 1.26.9 and `golang.org/x/net` v0.58.0 → v0.60.0, closing
+  GO-2026-6599, GO-2026-6600, GO-2026-6603, GO-2026-6605, GO-2026-6607,
+  GO-2026-6608, GO-2026-6609, GO-2026-6610, GO-2026-6611, GO-2026-6612,
+  GO-2026-6613 and GO-2026-6617 (HTTP/1 and HTTP/2 server and client
+  handling in `net/http`, `crypto/tls`, `net/textproto`, `html/template`).
+  Go 1.25 is out of support, so these have no 1.25 fix.
+- OpenTelemetry v1.43/v1.44 → v1.45.0, closing GO-2026-6505
+  (GHSA-8wmf-6v46-5gfg: exporter config logging could leak endpoint URLs).
+- Dashboard build dependencies refreshed in `web/package-lock.json`:
+  `proxy-addr`, `source-map-js`, `undici`, `js-yaml`, `ip-address`, `hono`,
+  `fast-uri`, `qs`, `postcss-selector-parser`, `brace-expansion` and
+  `@modelcontextprotocol/sdk`. All are build or test tooling and never ship
+  in the bundle; the built dashboard is unchanged.
+
+### Changed
+
+- The minimum Go version is 1.26.9 (`go.mod`, CI, release builds and
+  `deploy/Dockerfile`). A module importing the gateway picks it up through
+  `GOTOOLCHAIN=auto`, or fails to build on an older toolchain if that is off.
 
 ### Fixed
 
 - `word-filter` now refuses to load when `blocked_words` is present but is not
-  a list of strings: a scalar written where a list belongs, a map, or a list
-  with a non-string item. Such a value used to load as an empty blocklist, so
-  the guardrail registered and let every request through while startup and
-  `ferrogw validate` reported it healthy. The plugin now implements
-  `ValidateConfig`, so `ferrogw validate` reports the same error. An absent
-  key still configures no words.
+  a list of strings: an explicit `null`, a scalar written where a list belongs,
+  a map, or a list with a non-string item. Such a value used to load as an
+  empty blocklist, so the guardrail registered and let every request through
+  while startup and `ferrogw validate` reported it healthy. The plugin now
+  implements `ValidateConfig`, so `ferrogw validate` reports the same error.
+  An absent key still configures no words. Run `ferrogw validate` against
+  your config before upgrading. (#447, thanks @shaurya416)
+- `deploy/Dockerfile` copies the `run` package, so a source-built image
+  (`make docker-build`, `deploy/compose.dev.yaml`, `render.yaml`) builds again.
+  It had failed with an unresolved import since v1.5.0. Release images are
+  built from `deploy/gateway.release.Dockerfile` and were not affected.
 
 ## [1.5.9] — 2026-09-18
 
