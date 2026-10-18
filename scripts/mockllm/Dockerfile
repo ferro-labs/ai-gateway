@@ -1,5 +1,5 @@
 # Tiny OpenAI-compatible mock upstream for the fullstack observability demo.
-FROM golang:1.25-alpine AS build
+FROM golang:1.26-alpine AS build
 WORKDIR /src
 COPY go.mod ./
 COPY main.go ./
