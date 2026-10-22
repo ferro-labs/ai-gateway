@@ -12,6 +12,7 @@ import (
 	databrickspkg "github.com/ferro-labs/ai-gateway/providers/databricks"
 	deepinfrapkg "github.com/ferro-labs/ai-gateway/providers/deepinfra"
 	deepseekpkg "github.com/ferro-labs/ai-gateway/providers/deepseek"
+	edenaipkg "github.com/ferro-labs/ai-gateway/providers/edenai"
 	fireworkspkg "github.com/ferro-labs/ai-gateway/providers/fireworks"
 	geminipkg "github.com/ferro-labs/ai-gateway/providers/gemini"
 	groqpkg "github.com/ferro-labs/ai-gateway/providers/groq"
@@ -72,6 +73,9 @@ const (
 
 	// NameDeepSeek is the canonical name for the DeepSeek provider.
 	NameDeepSeek = deepseekpkg.Name
+
+	// NameEdenAI is the canonical name for the Eden AI provider.
+	NameEdenAI = edenaipkg.Name
 
 	// NamePerplexity is the canonical name for the Perplexity provider.
 	NamePerplexity = perplexitypkg.Name
@@ -156,6 +160,7 @@ func AllProviderNames() []string {
 		NameDatabricks,
 		NameDeepInfra,
 		NameDeepSeek,
+		NameEdenAI,
 		NameFireworks,
 		NameGemini,
 		NameGroq,
