@@ -64,7 +64,7 @@ func Calculate(catalog Catalog, modelKey string, usage Usage) CostResult {
 	// cost-optimized routing skips unpriced candidates, so under
 	// `unpriced_strategy: skip` no embedding target could rank at all.
 	switch model.Mode {
-	case ModeChat:
+	case ModeChat, ModeResponses, ModeCompletion:
 		r.Priced = p.InputPerMTokens != nil
 		// PromptTokens is INCLUSIVE of CacheReadTokens on every provider: that
 		// is the OpenAI convention, and providers/core/anthropicwire folds

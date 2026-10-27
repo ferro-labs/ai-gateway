@@ -303,9 +303,12 @@ plugins:
 YAML
 )" unauth
 RL_REQ=$(printf '{"model":"%s","messages":[{"role":"user","content":"rl"}],"max_tokens":5}' "$MODEL")
-codes=$(for _ in $(seq 1 8); do
+# Wait on the curl pids only: a bare `wait` here also inherits the gateway the
+# parent started, and bash 5.3 then spins forever on "not a child of this shell".
+codes=$(pids=(); for _ in $(seq 1 8); do
           curl -s -o /dev/null -m 30 -w '%{http_code}\n' -H 'Content-Type: application/json' -d "$RL_REQ" "$BASE/v1/chat/completions" &
-        done; wait)
+          pids+=($!)
+        done; wait "${pids[@]}")
 n200=$(grep -c '^200$' <<<"$codes" || true); n429=$(grep -c '^429$' <<<"$codes" || true)
 check "rate-limit sheds part of a concurrent burst (some 429, some 200)" \
   "$([ "${n429:-0}" -ge 1 ] && [ "${n200:-0}" -ge 1 ] && echo 0 || echo 1)" "200=$n200 429=$n429"

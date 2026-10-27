@@ -5,7 +5,7 @@
 **Ferro Labs AI Gateway** is a high-performance, open-source AI gateway written in Go. It acts as a unified routing layer between applications and 30 LLM providers (OpenAI, Anthropic, Gemini, Mistral, etc.), offering smart routing, plugin middleware, and API key management — all with an OpenAI-compatible API and transparent pass-through proxy.
 
 - **Module**: `github.com/ferro-labs/ai-gateway`
-- **Go version**: 1.26.9+
+- **Go version**: 1.26.10+
 - **License**: Apache 2.0
 
 ### Current Development Snapshot

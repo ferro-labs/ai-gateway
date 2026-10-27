@@ -5,6 +5,43 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.11] — 2026-10-27
+
+Security fixes. No API or configuration changes. Building the gateway, or a
+module that imports it, now needs Go 1.26.10 or later.
+
+### Security
+
+- Go 1.26.9 → 1.26.10, closing GO-2026-6809: `crypto/x509` did not distrust
+  a set of compromised intermediate certificates. The gateway verifies a
+  certificate chain on every upstream TLS connection, so a provider endpoint
+  presenting a chain through one of them was accepted. (#458)
+- Dashboard build and test tooling refreshed in `web/`: `vitest` and
+  `@vitest/coverage-v8` 3.2 → 4.1.12 (path traversal in `@vitest/mocker`;
+  removes `tinypool` and its two prototype-pollution advisories), `vite`
+  6.4.3 → 6.4.5, `body-parser` 2.3 → 2.4 and `fast-uri` 3.1.9. None of these
+  ship in the bundle; the built dashboard is byte-identical to v1.5.10.
+
+### Changed
+
+- The minimum Go version is 1.26.10 (`go.mod`, CI, release builds and
+  `deploy/Dockerfile`). A module importing the gateway picks it up through
+  `GOTOOLCHAIN=auto`, or fails to build on an older toolchain if that is off.
+- The embedded fallback model catalog (`models/catalog_backup.json`), used
+  when the live catalog cannot be fetched, is refreshed from 2,542 to 2,947
+  models. (#394)
+
+### Fixed
+
+- Requests to Responses-only models (`gpt-5-codex`, `gpt-5.1-codex`,
+  `codex-mini` and the rest of the catalog's `responses` mode) and to legacy
+  completions models (`completion` mode, e.g. `gpt-3.5-turbo-instruct`) are
+  priced again. The model catalog began classifying these models by endpoint
+  contract on 2026-08-22, and the cost calculator had no arm for either mode,
+  so every such request was logged, traced and metered as unpriced at $0 and
+  cost-optimized routing treated the models as unpriced. Both modes now bill
+  the same token fields as chat.
+
 ## [1.5.10] — 2026-10-18
 
 Security fixes and one guardrail fix. No API changes. Building the gateway, or
