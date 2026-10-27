@@ -234,7 +234,17 @@ const (
 	ModeImage     ModelMode = "image"
 	ModeAudioIn   ModelMode = "audio_in"
 	ModeAudioOut  ModelMode = "audio_out"
+	// ModeResponses and ModeCompletion are Responses-API-only and legacy
+	// completions models. Both bill the same token fields as ModeChat.
+	ModeResponses  ModelMode = "responses"
+	ModeCompletion ModelMode = "completion"
 )
+
+// billsTextTokens reports whether a mode is billed on the chat token fields
+// (input, output, cache, reasoning).
+func (m ModelMode) billsTextTokens() bool {
+	return m == ModeChat || m == ModeResponses || m == ModeCompletion
+}
 
 // Pricing holds all cost fields in USD.
 // Token prices are per 1M tokens. nil means the field is not applicable to
@@ -522,14 +532,14 @@ func catalogEntryUsableForPricing(m Model, morePrefixes bool) bool {
 	if !morePrefixes {
 		return true
 	}
-	if m.Mode != ModeChat {
+	if !m.Mode.billsTextTokens() {
 		return true
 	}
 	return m.Pricing.InputPerMTokens != nil
 }
 
 func pricingEntryHasInputRate(m Model) bool {
-	if m.Mode != ModeChat {
+	if !m.Mode.billsTextTokens() {
 		return true
 	}
 	return m.Pricing.InputPerMTokens != nil

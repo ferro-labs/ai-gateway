@@ -741,3 +741,49 @@ func TestCalculateChatCacheReadExceedingPromptClampsAtZero(t *testing.T) {
 		t.Errorf("TotalUSD = %v, must never be negative", got.TotalUSD)
 	}
 }
+
+// ---- Token-billed text modes beyond chat ----------------------------------
+
+// The catalog classifies models by endpoint contract, so Responses-only and
+// legacy-completions models carry their own modes while billing the same
+// token fields chat does. An arm missing for either reports a fully priced
+// model as unpriced and records $0.
+func TestCalculateTokenBilledTextModesPriceLikeChat(t *testing.T) {
+	for _, mode := range []ModelMode{ModeResponses, ModeCompletion} {
+		t.Run(string(mode), func(t *testing.T) {
+			c := catalogWith("openai/m", Model{
+				Provider: "openai", ModelID: "m", Mode: mode,
+				Pricing: Pricing{InputPerMTokens: ptr(1.25), OutputPerMTokens: ptr(10.0), CacheReadPerMTokens: ptr(0.125)},
+			})
+
+			got := Calculate(c, "openai/m", Usage{PromptTokens: 1_000_000, CacheReadTokens: 200_000, CompletionTokens: 100_000})
+
+			if !got.Priced {
+				t.Fatal("Priced = false, want true for a model with token prices")
+			}
+			// 800k uncached at 1.25 + 200k cached at 0.125 + 100k out at 10.
+			if want := 1.0 + 0.025 + 1.0; math.Abs(got.TotalUSD-want) > 1e-12 {
+				t.Errorf("TotalUSD = %v, want %v", got.TotalUSD, want)
+			}
+		})
+	}
+}
+
+// The embedded fallback catalog carries Responses-only models; a request
+// priced against it must not come out free.
+func TestCalculateEmbeddedCatalogPricesResponsesModels(t *testing.T) {
+	c, err := loadEmbedded()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, ok := c["openai/gpt-5-codex"]
+	if !ok || m.Mode != ModeResponses {
+		t.Skipf("embedded catalog has no responses-mode openai/gpt-5-codex (mode %q)", m.Mode)
+	}
+
+	got := Calculate(c, "openai/gpt-5-codex", Usage{PromptTokens: 1_000, CompletionTokens: 1_000})
+
+	if !got.Priced || got.TotalUSD <= 0 {
+		t.Errorf("Priced = %v, TotalUSD = %v, want a positive priced cost", got.Priced, got.TotalUSD)
+	}
+}

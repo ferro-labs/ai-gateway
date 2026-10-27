@@ -31,6 +31,17 @@ module that imports it, now needs Go 1.26.10 or later.
   when the live catalog cannot be fetched, is refreshed from 2,542 to 2,947
   models. (#394)
 
+### Fixed
+
+- Requests to Responses-only models (`gpt-5-codex`, `gpt-5.1-codex`,
+  `codex-mini` and the rest of the catalog's `responses` mode) and to legacy
+  completions models (`completion` mode, e.g. `gpt-3.5-turbo-instruct`) are
+  priced again. The model catalog began classifying these models by endpoint
+  contract on 2026-08-22, and the cost calculator had no arm for either mode,
+  so every such request was logged, traced and metered as unpriced at $0 and
+  cost-optimized routing treated the models as unpriced. Both modes now bill
+  the same token fields as chat.
+
 ## [1.5.10] — 2026-10-18
 
 Security fixes and one guardrail fix. No API changes. Building the gateway, or
