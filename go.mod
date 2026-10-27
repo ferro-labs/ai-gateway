@@ -7,7 +7,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/config v1.32.19
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.18
 	github.com/aws/aws-sdk-go-v2/service/bedrockagentruntime v1.55.3
-	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.53.0
+	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.57.0
 	github.com/aws/smithy-go v1.27.6
 	github.com/go-chi/chi/v5 v5.3.0
 	github.com/lib/pq v1.12.3
