@@ -8,7 +8,9 @@ package cache
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
+	"unicode/utf8"
 
 	cachestore "github.com/ferro-labs/ai-gateway/pkg/cache"
 	"github.com/ferro-labs/ai-gateway/plugin"
@@ -106,10 +108,7 @@ func (c *ResponseCache) Execute(_ context.Context, pctx *plugin.Context) error {
 	if bypass, _ := pctx.Metadata[metadataCacheBypass].(bool); bypass {
 		return nil
 	}
-	namespace, err := json.Marshal(struct {
-		KeyID           string            `json:"key_id"`
-		RoutingMetadata map[string]string `json:"routing_metadata,omitempty"`
-	}{KeyID: keyID, RoutingMetadata: pctx.Request.RoutingMetadata})
+	namespace, err := responseCacheNamespace(keyID, pctx.Request.RoutingMetadata)
 	var key string
 	if err == nil {
 		key, err = cachestore.Fingerprint(pctx.Request, string(namespace))
@@ -149,6 +148,23 @@ func (c *ResponseCache) Execute(_ context.Context, pctx *plugin.Context) error {
 	// the cache must not hold onto the same pointer.
 	c.Set(key, cloneResponse(pctx.Response))
 	return nil
+}
+
+// responseCacheNamespace rejects strings that JSON would normalize, preserving
+// the byte-for-byte distinctions used by conditional routing and credential IDs.
+func responseCacheNamespace(keyID string, metadata map[string]string) ([]byte, error) {
+	if !utf8.ValidString(keyID) {
+		return nil, errors.New("cache namespace: invalid UTF-8 identifier")
+	}
+	for key, value := range metadata {
+		if !utf8.ValidString(key) || !utf8.ValidString(value) {
+			return nil, errors.New("cache namespace: invalid UTF-8 routing metadata")
+		}
+	}
+	return json.Marshal(struct {
+		KeyID           string            `json:"key_id"`
+		RoutingMetadata map[string]string `json:"routing_metadata,omitempty"`
+	}{KeyID: keyID, RoutingMetadata: metadata})
 }
 
 // PreservesModel declares that this plugin never changes the model a request

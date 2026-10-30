@@ -33,7 +33,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Response-cache entries now include routing metadata in their namespace, so
   conditional routing cannot reuse an answer from a different metadata-selected
-  target for the same prompt and credential.
+  target for the same prompt and credential. Invalid UTF-8 in routing metadata
+  or credential IDs bypasses caching because JSON encoding would otherwise
+  collapse distinct byte sequences into the same namespace.
 - Supplying an MCP HTTP client solely to customize its transport no longer
   enables automatic redirects. An unset redirect policy refuses redirects,
   preventing credential replay to redirect targets.
