@@ -31,7 +31,7 @@ git push origin release/v1.0.0
 ## Pull Request Guidelines
 
 - All PRs must target the active `release/*` branch (never `main` directly)
-- New providers: OSS repo ONLY — never add to FerroCloud
+- Add new provider integrations to this repository’s `providers/` directory.
 - Every PR requires:
   - Clear description of what and why
   - Tests for new functionality
@@ -124,7 +124,7 @@ No change to `cmd/ferrogw/main.go` is needed — every entry in
 10. Add the provider's env var(s) (commented out) to `deploy/compose.yaml`.
 11. Add an example in [ferro-labs/ai-gateway-examples](https://github.com/ferro-labs/ai-gateway-examples).
 
-**Important:** Providers go in the OSS repo only. Never add provider integrations to FerroCloud.
+**Important:** Keep provider integrations in `providers/` and share protocol code through `providers/core/` when appropriate.
 
 ---
 

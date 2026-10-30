@@ -5,6 +5,22 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] — 2026-10-30
+
+### Added
+
+- `pkg/cache.Fingerprint` exposes versioned, namespace-scoped request keys for
+  exact-match completion caches, using the response-cache plugin's encoder.
+- `mcp.NewClientWithOptions` supports a caller-supplied HTTP client, response-size
+  limit and initialization identity. The existing `NewClient` signature and
+  defaults remain unchanged. Constructors copy headers and client configuration.
+
+### Fixed
+
+- Requests with values that cannot be JSON encoded bypass the response cache.
+  Previously, serialization error messages were hashed as request content,
+  allowing distinct invalid requests to share a cache entry.
+
 ## [1.5.11] — 2026-10-27
 
 Security fixes. No API or configuration changes. Building the gateway, or a

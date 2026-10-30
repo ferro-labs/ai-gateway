@@ -17,9 +17,7 @@ import (
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 
-	"github.com/ferro-labs/ai-gateway/internal/httpclient"
 	"github.com/ferro-labs/ai-gateway/internal/transport"
-	"github.com/ferro-labs/ai-gateway/internal/version"
 	"github.com/ferro-labs/ai-gateway/pkg/logger"
 )
 
@@ -38,9 +36,12 @@ const (
 // Client communicates with a single MCP server over Streamable HTTP transport.
 // All exported methods are safe for concurrent use.
 type Client struct {
-	endpoint   string
-	headers    map[string]string
-	httpClient *http.Client
+	endpoint         string
+	headers          map[string]string
+	httpClient       *http.Client
+	maxResponseBytes int64
+	clientName       string
+	clientVersion    string
 
 	// sessionMu protects sessionID. Written once during Initialize(), read on
 	// every subsequent call. RWMutex ensures concurrent CallTool invocations
@@ -55,14 +56,7 @@ type Client struct {
 // NewClient creates an MCP client for the given Streamable HTTP endpoint.
 // timeout is the per-request HTTP timeout; 0 defaults to 30 seconds.
 func NewClient(endpoint string, headers map[string]string, timeout time.Duration) *Client {
-	if timeout <= 0 {
-		timeout = defaultToolCallTimeout
-	}
-	return &Client{
-		endpoint:   endpoint,
-		headers:    headers,
-		httpClient: httpclient.New(timeout),
-	}
+	return newClient(endpoint, headers, timeout, ClientOptions{})
 }
 
 // Initialize performs the MCP initialization handshake (initialize +
@@ -77,8 +71,8 @@ func (c *Client) Initialize(ctx context.Context) (*ServerInfo, error) {
 		"protocolVersion": mcpgo.LATEST_PROTOCOL_VERSION,
 		"capabilities":    map[string]any{},
 		"clientInfo": map[string]string{
-			"name":    "ferro-ai-gateway",
-			"version": version.Short(),
+			"name":    c.clientName,
+			"version": c.clientVersion,
 		},
 	}
 
@@ -228,12 +222,12 @@ func (c *Client) call(ctx context.Context, method string, params any) (*JSONRPCR
 
 	// Bound the success-path read: read one byte past the cap so an
 	// over-limit body is detected rather than silently truncated.
-	respBody, err := io.ReadAll(io.LimitReader(httpResp.Body, maxResponseBodyBytes+1))
+	respBody, err := io.ReadAll(io.LimitReader(httpResp.Body, c.maxResponseBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("mcp read body: %w", err)
 	}
-	if len(respBody) > maxResponseBodyBytes {
-		return nil, fmt.Errorf("mcp response from %s exceeds %d byte limit", method, maxResponseBodyBytes)
+	if int64(len(respBody)) > c.maxResponseBytes {
+		return nil, fmt.Errorf("mcp response from %s exceeds %d byte limit", method, c.maxResponseBytes)
 	}
 
 	rpcResp, err := decodeRPCResponse(httpResp.Header.Get("Content-Type"), respBody)
