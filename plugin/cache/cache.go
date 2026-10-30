@@ -90,10 +90,17 @@ func (c *ResponseCache) Execute(_ context.Context, pctx *plugin.Context) error {
 		return nil
 	}
 
-	// The credential is part of the key, not just the request content. See
-	// Fingerprint. Metadata carries the opaque APIKey.ID, never the bearer secret,
-	// and it is populated before the before_request stage, so both stages of one
-	// request read the same value.
+	// The store is shared across callers, so content alone could serve one
+	// credential's answer to another. Scope with the opaque APIKey.ID, never
+	// the bearer secret. Metadata is populated before before_request, so both
+	// stages use the same ID. Empty IDs share an unauthenticated namespace that
+	// remains separate from every authenticated ID.
+	//
+	// The provider is not part of the key: Context.Target is unresolved during
+	// before_request, when a hit must decide whether to skip the provider. This
+	// assumes a model name has the same meaning across its routing targets.
+	// Callers of cachestore.Fingerprint with differing routing configurations
+	// must include that distinction in their namespace.
 	apiKey, _ := pctx.Metadata["api_key"].(string)
 	if bypass, _ := pctx.Metadata[metadataCacheBypass].(bool); bypass {
 		return nil

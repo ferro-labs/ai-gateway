@@ -15,9 +15,11 @@ import (
 // ClientOptions configures an HTTP MCP client. Its zero value uses the same
 // defaults as NewClient.
 type ClientOptions struct {
-	// HTTPClient is shallow-copied at construction. Its transport, redirect
-	// policy and cookie jar are retained; shared objects must be safe for
-	// concurrent use and must not be reconfigured while requests are running.
+	// HTTPClient is shallow-copied at construction. Its transport, cookie jar
+	// and explicit redirect policy are retained. A nil CheckRedirect defaults
+	// to rejecting redirects, so a transport-only override cannot replay
+	// credentials to a redirect target. Shared objects must be safe for concurrent
+	// use and must not be reconfigured while requests are running.
 	// A nil client uses the gateway's pooled transport and rejects redirects.
 	HTTPClient *http.Client
 
@@ -58,6 +60,11 @@ func newClient(endpoint string, headers map[string]string, timeout time.Duration
 		client = httpclient.New(timeout)
 	} else {
 		copyClient := *options.HTTPClient
+		if copyClient.CheckRedirect == nil {
+			copyClient.CheckRedirect = func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			}
+		}
 		if copyClient.Timeout <= 0 || timeout < copyClient.Timeout {
 			copyClient.Timeout = timeout
 		}

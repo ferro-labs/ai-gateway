@@ -14,9 +14,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `mcp.NewClientWithOptions` supports a caller-supplied HTTP client, response-size
   limit and initialization identity. The existing `NewClient` signature and
   defaults remain unchanged. Constructors copy headers and client configuration.
+  A custom client with no `CheckRedirect` retains the default redirect refusal;
+  an explicitly supplied redirect policy is preserved.
+
+### Changed
+
+- Cache fingerprints now use a `v1:` prefix and an opaque namespace. Existing
+  in-memory entries may miss after the encoding change; no storage migration is
+  required. TTL, capacity, credential isolation and request hooks are unchanged.
+- Fingerprints describe completion content. `RoutingMetadata`, `StreamOptions`
+  and `ClientStreamOptions` are excluded. Applications must scope caches by
+  routing configuration and handle stream framing and usage options separately.
+  A fingerprint is not an authorization decision or a semantic-similarity score.
+- Future changes to encoded fields, including newly included request fields,
+  require a new fingerprint version prefix and intentionally invalidate old keys.
 
 ### Fixed
 
+- Supplying an MCP HTTP client solely to customize its transport no longer
+  enables automatic redirects. An unset redirect policy refuses redirects,
+  preventing credential replay to redirect targets.
 - Requests with values that cannot be JSON encoded bypass the response cache.
   Previously, serialization error messages were hashed as request content,
   allowing distinct invalid requests to share a cache entry.

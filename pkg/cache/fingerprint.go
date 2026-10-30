@@ -27,7 +27,13 @@ import (
 // RoutingMetadata, StreamOptions and ClientStreamOptions are excluded: callers
 // must scope caches by routing configuration and handle stream framing separately.
 // A model name is assumed to identify the same model across provider targets.
-// An encoding change requires a new version prefix and may cause a cold cache.
+//
+// New completion-affecting request fields must be included. Adding or changing
+// encoded fields requires a new version prefix and new fixed test vectors, even
+// if it only separates previously equivalent requests. This intentionally causes
+// a cold cache rather than changing the meaning of an existing version. Excluded
+// fields require an explicit rationale in the field-coverage test; adding an
+// exclusion that leaves the encoding unchanged does not require a new prefix.
 func Fingerprint(req *providers.Request, namespace string) (string, error) {
 	if req == nil {
 		return "", errors.New("cache fingerprint: nil request")
