@@ -1065,13 +1065,13 @@ func TestExecute_StandsDownOnNonChatSurfaces(t *testing.T) {
 	if err := c.Execute(context.Background(), store); err != nil {
 		t.Fatalf("Execute (after_request): %v", err)
 	}
-	if _, ok := c.Get(fingerprintForTest(t, surfaceRequest, "")); ok {
+	if lookupAs(t, c, chatRequest, "") {
 		t.Error("the surface response was stored; the next chat request with this text is served an empty completion")
 	}
 
 	// before_request on the surface must not serve one either, even when the
 	// chat side has primed that key with a real answer.
-	c.Set(fingerprintForTest(t, chatRequest, ""), &providers.Response{
+	storeAs(t, c, chatRequest, "", &providers.Response{
 		Choices: []providers.Choice{{Message: providers.Message{Role: "assistant", Content: "a real answer"}}},
 	})
 	lookup := plugin.NewContext(surfaceRequest)
@@ -1104,4 +1104,29 @@ func fingerprintForTest(t testing.TB, req *providers.Request, namespace string) 
 		t.Fatal(err)
 	}
 	return key
+}
+
+func TestResponseCache_RoutingMetadataNamespace(t *testing.T) {
+	c := initCache(t, nil)
+	req := testRequest("gpt-4o", "hello")
+	req.RoutingMetadata = map[string]string{"route": "a", "region": "west"}
+	storeAs(t, c, req, "key-id", testResponse())
+	for _, tc := range []struct {
+		name     string
+		metadata map[string]string
+		hit      bool
+	}{
+		{"same entries", map[string]string{"region": "west", "route": "a"}, true},
+		{"different target", map[string]string{"region": "west", "route": "b"}, false},
+		{"missing field", map[string]string{"route": "a"}, false},
+		{"no metadata", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lookup := testRequest("gpt-4o", "hello")
+			lookup.RoutingMetadata = tc.metadata
+			if got := lookupAs(t, c, lookup, "key-id"); got != tc.hit {
+				t.Errorf("hit = %v, want %v", got, tc.hit)
+			}
+		})
+	}
 }

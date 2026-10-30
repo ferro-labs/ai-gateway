@@ -68,13 +68,47 @@ func TestFingerprintRequestFieldCoverage(t *testing.T) {
 		"ClientStreamOptions": "Client-facing usage-chunk suppression is handled separately from completion content.",
 		"RoutingMetadata":     "Routing configuration must be distinguished by the caller's namespace.",
 	}
-	typ := reflect.TypeFor[providers.Request]()
+	checkFingerprintFields(t, populatedFingerprintRequest, func(req *providers.Request) any { return req }, policy)
+}
+
+func TestFingerprintNestedFieldCoverage(t *testing.T) {
+	// These types are encoded field by field. JSON-encoded types such as Tool
+	// automatically include new serialized fields and do not need this policy.
+	for _, tc := range []struct {
+		name        string
+		selectValue func(*providers.Request) any
+		policy      map[string]string
+	}{
+		{"Message", func(r *providers.Request) any { return &r.Messages[0] }, map[string]string{
+			"Role": "", "Content": "", "ContentParts": "", "Name": "", "ToolCalls": "", "ToolCallID": "", "ReasoningContent": "",
+		}},
+		{"ContentPart", func(r *providers.Request) any { return &r.Messages[0].ContentParts[0] }, map[string]string{"Type": "", "Text": "", "ImageURL": ""}},
+		{"ImageURLPart", func(r *providers.Request) any { return r.Messages[0].ContentParts[0].ImageURL }, map[string]string{"URL": "", "Detail": ""}},
+		{"ToolCall", func(r *providers.Request) any { return &r.Messages[0].ToolCalls[0] }, map[string]string{"Index": "", "ID": "", "Type": "", "Function": ""}},
+		{"FunctionCall", func(r *providers.Request) any { return &r.Messages[0].ToolCalls[0].Function }, map[string]string{"Name": "", "Arguments": ""}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := func() *providers.Request {
+				req := populatedFingerprintRequest()
+				// Populate every content-part field independently of wire-format rules,
+				// so the encoder cannot silently start ignoring one of those fields.
+				req.Messages[0].ContentParts[0].ImageURL = req.Messages[0].ContentParts[1].ImageURL
+				return req
+			}
+			checkFingerprintFields(t, fixture, tc.selectValue, tc.policy)
+		})
+	}
+}
+
+func checkFingerprintFields(t *testing.T, fixture func() *providers.Request, selectValue func(*providers.Request) any, policy map[string]string) {
+	t.Helper()
+	typ := reflect.TypeOf(selectValue(fixture())).Elem()
 	for name := range policy {
 		if _, ok := typ.FieldByName(name); !ok {
-			t.Errorf("policy names nonexistent Request field %s", name)
+			t.Errorf("policy names nonexistent %s field %s", typ.Name(), name)
 		}
 	}
-	base, err := cache.Fingerprint(populatedFingerprintRequest(), "vector-scope")
+	base, err := cache.Fingerprint(fixture(), "vector-scope")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,12 +117,12 @@ func TestFingerprintRequestFieldCoverage(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			reason, classified := policy[name]
 			if !classified {
-				t.Fatalf("Request.%s must be hashed or explicitly excluded with a reason", name)
+				t.Fatalf("%s.%s must be hashed or explicitly excluded with a reason", typ.Name(), name)
 			}
-			req := populatedFingerprintRequest()
-			field := reflect.ValueOf(req).Elem().Field(i)
+			req := fixture()
+			field := reflect.ValueOf(selectValue(req)).Elem().Field(i)
 			if field.IsZero() {
-				t.Fatalf("fixture must populate Request.%s", name)
+				t.Fatalf("fixture must populate %s.%s", typ.Name(), name)
 			}
 			field.SetZero()
 			got, err := cache.Fingerprint(req, "vector-scope")
@@ -96,10 +130,10 @@ func TestFingerprintRequestFieldCoverage(t *testing.T) {
 				t.Fatal(err)
 			}
 			if reason == "" && got == base {
-				t.Errorf("Request.%s is classified as hashed but does not affect the key", name)
+				t.Errorf("%s.%s is classified as hashed but does not affect the key", typ.Name(), name)
 			}
 			if reason != "" && got != base {
-				t.Errorf("Request.%s affects the key despite exclusion: %s", name, reason)
+				t.Errorf("%s.%s affects the key despite exclusion: %s", typ.Name(), name, reason)
 			}
 		})
 	}

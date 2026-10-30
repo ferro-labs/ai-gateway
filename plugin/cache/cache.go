@@ -7,6 +7,7 @@ package cache
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	cachestore "github.com/ferro-labs/ai-gateway/pkg/cache"
@@ -99,13 +100,20 @@ func (c *ResponseCache) Execute(_ context.Context, pctx *plugin.Context) error {
 	// The provider is not part of the key: Context.Target is unresolved during
 	// before_request, when a hit must decide whether to skip the provider. This
 	// assumes a model name has the same meaning across its routing targets.
-	// Callers of cachestore.Fingerprint with differing routing configurations
-	// must include that distinction in their namespace.
-	apiKey, _ := pctx.Metadata["api_key"].(string)
+	// Routing metadata can select a different target, so include it in the
+	// namespace. JSON sorts map keys and keeps the ID and metadata unambiguous.
+	keyID, _ := pctx.Metadata["api_key"].(string)
 	if bypass, _ := pctx.Metadata[metadataCacheBypass].(bool); bypass {
 		return nil
 	}
-	key, err := cachestore.Fingerprint(pctx.Request, apiKey)
+	namespace, err := json.Marshal(struct {
+		KeyID           string            `json:"key_id"`
+		RoutingMetadata map[string]string `json:"routing_metadata,omitempty"`
+	}{KeyID: keyID, RoutingMetadata: pctx.Request.RoutingMetadata})
+	var key string
+	if err == nil {
+		key, err = cachestore.Fingerprint(pctx.Request, string(namespace))
+	}
 	if err != nil {
 		// Keep both stages out of the cache, even if a later plugin changes
 		// the request into a serializable form.

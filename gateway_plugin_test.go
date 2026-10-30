@@ -877,3 +877,47 @@ func TestGateway_ReloadConfig_DefersOldPluginCloseUntilInFlightRouteFinishes(t *
 		t.Fatal("timed out waiting for old plugin close")
 	}
 }
+
+// Conditional routing must not reuse a completion from another metadata-selected target.
+func TestPluginChain_CacheIsolatesRoutingMetadata(t *testing.T) {
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeConditional, Conditions: []config.Condition{
+			{Key: config.ConditionKeyMetadata, Field: "route", Value: "a", TargetKey: "a"},
+			{Key: config.ConditionKeyMetadata, Field: "route", Value: "b", TargetKey: "b"},
+		}},
+		Targets: []config.Target{{VirtualKey: "a"}, {VirtualKey: "b"}},
+		Plugins: cacheEntries(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := map[string]*atomic.Int64{"a": {}, "b": {}}
+	for _, name := range []string{"a", "b"} {
+		gw.RegisterProvider(&mockProvider{name: name, models: []string{"gpt-4o"},
+			completeFn: func(context.Context, providers.Request) (*providers.Response, error) {
+				calls[name].Add(1)
+				return &providers.Response{Model: "gpt-4o", Choices: []providers.Choice{{Message: providers.Message{Role: "assistant", Content: name}}}}, nil
+			},
+		})
+	}
+	if err := gw.LoadPlugins(); err != nil {
+		t.Fatal(err)
+	}
+	ctx := authctx.WithKeyID(context.Background(), "routing-cache-key-id")
+	for _, route := range []string{"a", "b", "a", "b"} {
+		req := chainRequest()
+		req.RoutingMetadata = map[string]string{"route": route}
+		resp, err := gw.Route(ctx, req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(resp.Choices) != 1 || resp.Choices[0].Message.Content != route {
+			t.Fatalf("route %q received response from another target: %+v", route, resp)
+		}
+	}
+	for name, count := range calls {
+		if got := count.Load(); got != 1 {
+			t.Errorf("target %s calls = %d, want 1", name, got)
+		}
+	}
+}
