@@ -5,6 +5,44 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] — 2026-10-30
+
+### Added
+
+- `pkg/cache.Fingerprint` exposes versioned, namespace-scoped request keys for
+  exact-match completion caches, using the response-cache plugin's encoder.
+- `mcp.NewClientWithOptions` supports a caller-supplied HTTP client, response-size
+  limit and initialization identity. The existing `NewClient` signature and
+  defaults remain unchanged. Constructors copy headers and client configuration.
+  A custom client with no `CheckRedirect` retains the default redirect refusal;
+  an explicitly supplied redirect policy is preserved.
+
+### Changed
+
+- Cache fingerprints now use a `v1:` prefix and an opaque namespace. Existing
+  in-memory entries may miss after the encoding change; no storage migration is
+  required. TTL, capacity, credential isolation and request hooks are unchanged.
+- Fingerprints describe completion content. `RoutingMetadata`, `StreamOptions`
+  and `ClientStreamOptions` are excluded. Applications must scope caches by
+  routing configuration and handle stream framing and usage options separately.
+  A fingerprint is not an authorization decision or a semantic-similarity score.
+- Future changes to encoded fields, including newly included request fields,
+  require a new fingerprint version prefix and intentionally invalidate old keys.
+
+### Fixed
+
+- Response-cache entries now include routing metadata in their namespace, so
+  conditional routing cannot reuse an answer from a different metadata-selected
+  target for the same prompt and credential. Invalid UTF-8 in routing metadata
+  or credential IDs bypasses caching because JSON encoding would otherwise
+  collapse distinct byte sequences into the same namespace.
+- Supplying an MCP HTTP client solely to customize its transport no longer
+  enables automatic redirects. An unset redirect policy refuses redirects,
+  preventing credential replay to redirect targets.
+- Requests with values that cannot be JSON encoded bypass the response cache.
+  Previously, serialization error messages were hashed as request content,
+  allowing distinct invalid requests to share a cache entry.
+
 ## [1.5.11] — 2026-10-27
 
 Security fixes. No API or configuration changes. Building the gateway, or a

@@ -7,19 +7,17 @@ package cache
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/binary"
-	"encoding/hex"
 	"encoding/json"
-	"hash"
-	"sort"
-	"strconv"
+	"errors"
 	"time"
+	"unicode/utf8"
 
 	cachestore "github.com/ferro-labs/ai-gateway/pkg/cache"
 	"github.com/ferro-labs/ai-gateway/plugin"
 	"github.com/ferro-labs/ai-gateway/providers"
 )
+
+const metadataCacheBypass = "response_cache_bypass"
 
 func init() {
 	plugin.RegisterFactory("response-cache", func() plugin.Plugin {
@@ -29,7 +27,7 @@ func init() {
 
 // ResponseCache is a transform plugin that caches LLM responses using
 // exact-match hashing of the request fields that can affect provider output.
-// It aliases Memory from the internal cache package.
+// It embeds Memory from the public cache package.
 type ResponseCache struct {
 	*cachestore.Memory
 }
@@ -95,12 +93,35 @@ func (c *ResponseCache) Execute(_ context.Context, pctx *plugin.Context) error {
 		return nil
 	}
 
-	// The credential is part of the key, not just the request content. See
-	// cacheKey. Metadata carries the opaque APIKey.ID, never the bearer secret,
-	// and it is populated before the before_request stage, so both stages of one
-	// request read the same value.
-	apiKey, _ := pctx.Metadata["api_key"].(string)
-	key := cacheKey(pctx.Request, apiKey)
+	// The store is shared across callers, so content alone could serve one
+	// credential's answer to another. Scope with the opaque APIKey.ID, never
+	// the bearer secret. Metadata is populated before before_request, so both
+	// stages use the same ID. Empty IDs share an unauthenticated namespace that
+	// remains separate from every authenticated ID.
+	//
+	// The provider is not part of the key: Context.Target is unresolved during
+	// before_request, when a hit must decide whether to skip the provider. This
+	// assumes a model name has the same meaning across its routing targets.
+	// Routing metadata can select a different target, so include it in the
+	// namespace. JSON sorts map keys and keeps the ID and metadata unambiguous.
+	keyID, _ := pctx.Metadata["api_key"].(string)
+	if bypass, _ := pctx.Metadata[metadataCacheBypass].(bool); bypass {
+		return nil
+	}
+	namespace, err := responseCacheNamespace(keyID, pctx.Request.RoutingMetadata)
+	var key string
+	if err == nil {
+		key, err = cachestore.Fingerprint(pctx.Request, string(namespace))
+	}
+	if err != nil {
+		// Keep both stages out of the cache, even if a later plugin changes
+		// the request into a serializable form.
+		if pctx.Metadata == nil {
+			pctx.Metadata = make(map[string]any)
+		}
+		pctx.Metadata[metadataCacheBypass] = true
+		return nil
+	}
 
 	if pctx.Stage == plugin.StageBeforeRequest {
 		if resp, ok := c.Get(key); ok {
@@ -129,6 +150,23 @@ func (c *ResponseCache) Execute(_ context.Context, pctx *plugin.Context) error {
 	return nil
 }
 
+// responseCacheNamespace rejects strings that JSON would normalize, preserving
+// the byte-for-byte distinctions used by conditional routing and credential IDs.
+func responseCacheNamespace(keyID string, metadata map[string]string) ([]byte, error) {
+	if !utf8.ValidString(keyID) {
+		return nil, errors.New("cache namespace: invalid UTF-8 identifier")
+	}
+	for key, value := range metadata {
+		if !utf8.ValidString(key) || !utf8.ValidString(value) {
+			return nil, errors.New("cache namespace: invalid UTF-8 routing metadata")
+		}
+	}
+	return json.Marshal(struct {
+		KeyID           string            `json:"key_id"`
+		RoutingMetadata map[string]string `json:"routing_metadata,omitempty"`
+	}{KeyID: keyID, RoutingMetadata: metadata})
+}
+
 // PreservesModel declares that this plugin never changes the model a request
 // routes to — it reads the request and answers from a store, and rewrites
 // nothing. See plugin.ModelPreserving: it reports TypeTransform, and that alone
@@ -148,197 +186,4 @@ func (c *ResponseCache) Close() error { return nil }
 func cloneResponse(resp *providers.Response) *providers.Response {
 	clone := *resp
 	return &clone
-}
-
-// cacheKey hashes every request field that can change the answer a provider
-// gives, plus the credential the request was served under. The set is expected
-// to GROW: a field added to providers.Request that reaches the provider belongs
-// here, and adding one is safe — a longer key only separates entries that were
-// previously conflated, so the worst outcome is a cold cache, while a missing
-// field serves one request's answer to a different question.
-//
-// apiKey is the opaque APIKey.ID from Context.Metadata, never the bearer
-// secret. It is in the key because the store is process-global and identical
-// prompts are the common case, so keying on content alone let a response primed
-// by one credential be served to another — the caller inherits an answer it was
-// never authorised to receive, and the guardrails, budget and rate limits that
-// would have run against its own call are all evaluated against a request that
-// never reaches a provider. The gateway's other two per-request plugins already
-// scope on exactly this value (plugin/ratelimit, plugin/budget); this makes the
-// cache consistent with them rather than the one plugin that ignores identity.
-//
-// An empty apiKey — an unauthenticated request — is a value like any other, so
-// unauthenticated callers share one bucket and never share with an
-// authenticated one. Length-prefixed writes keep "" from colliding with any
-// real ID. That mirrors the request log, where api_key_id=none deliberately
-// folds every unattributable row together: with no identity there is nothing to
-// separate on, and refusing to cache instead would silently disable caching for
-// a whole deployment rather than isolate anything.
-//
-// The provider is deliberately NOT in the key. Context.Target is empty at
-// before_request by design, so the target that will serve a request is unknown
-// when the key is computed, and resolving it later would break the SkipProvider
-// contract. The assumption this bakes in: a model id names the same model
-// whichever target serves it. That is the same assumption a fallback target
-// makes, so a deployment where it does not hold has a routing problem, not a
-// cache problem.
-func cacheKey(req *providers.Request, apiKey string) string {
-	h := sha256.New()
-	writeCacheKeyString(h, "api_key")
-	writeCacheKeyString(h, apiKey)
-	writeCacheKeyString(h, "model")
-	writeCacheKeyString(h, req.Model)
-	writeCacheKeyString(h, "messages")
-	writeCacheKeyInt(h, len(req.Messages))
-	for _, m := range req.Messages {
-		writeCacheKeyString(h, m.Role)
-		writeCacheKeyString(h, m.Name)
-		writeCacheKeyString(h, m.Content)
-		writeCacheKeyContentParts(h, m.ContentParts)
-		writeCacheKeyToolCalls(h, m.ToolCalls)
-		writeCacheKeyString(h, m.ToolCallID)
-		writeCacheKeyString(h, m.ReasoningContent)
-	}
-	writeCacheKeyOptionalFloat64(h, "temperature", req.Temperature)
-	writeCacheKeyOptionalFloat64(h, "top_p", req.TopP)
-	writeCacheKeyOptionalInt(h, "n", req.N)
-	writeCacheKeyOptionalInt64(h, "seed", req.Seed)
-	writeCacheKeyOptionalInt(h, "max_tokens", req.MaxTokens)
-	writeCacheKeyOptionalInt(h, "max_completion_tokens", req.MaxCompletionTokens)
-	writeCacheKeyOptionalFloat64(h, "presence_penalty", req.PresencePenalty)
-	writeCacheKeyOptionalFloat64(h, "frequency_penalty", req.FrequencyPenalty)
-	writeCacheKeyStringSlice(h, "stop", req.Stop)
-	writeCacheKeyJSON(h, "tools", req.Tools)
-	writeCacheKeyJSON(h, "tool_choice", req.ToolChoice)
-	writeCacheKeyOptionalBool(h, "parallel_tool_calls", req.ParallelToolCalls)
-	writeCacheKeyJSON(h, "response_format", req.ResponseFormat)
-	writeCacheKeyBool(h, "logprobs", req.LogProbs)
-	writeCacheKeyOptionalInt(h, "top_logprobs", req.TopLogProbs)
-	writeCacheKeyBool(h, "stream", req.Stream)
-	writeCacheKeyString(h, "user")
-	writeCacheKeyString(h, req.User)
-	writeCacheKeyFloatMap(h, "logit_bias", req.LogitBias)
-
-	return hex.EncodeToString(h.Sum(nil))
-}
-
-func writeCacheKeyBool(h hash.Hash, label string, v bool) {
-	writeCacheKeyString(h, label)
-	writeCacheKeyString(h, strconv.FormatBool(v))
-}
-
-// writeCacheKeyOptionalBool distinguishes unset from both settings, because the
-// provider does: an absent parallel_tool_calls leaves the upstream default in
-// place, which is not the same request as one that pinned it either way.
-func writeCacheKeyOptionalBool(h hash.Hash, label string, v *bool) {
-	writeCacheKeyString(h, label)
-	if v == nil {
-		writeCacheKeyString(h, "<nil>")
-		return
-	}
-	writeCacheKeyString(h, strconv.FormatBool(*v))
-}
-
-func writeCacheKeyInt(h hash.Hash, v int) {
-	writeCacheKeyString(h, strconv.Itoa(v))
-}
-
-func writeCacheKeyOptionalInt(h hash.Hash, label string, v *int) {
-	writeCacheKeyString(h, label)
-	if v == nil {
-		writeCacheKeyString(h, "<nil>")
-		return
-	}
-	writeCacheKeyString(h, strconv.Itoa(*v))
-}
-
-func writeCacheKeyOptionalInt64(h hash.Hash, label string, v *int64) {
-	writeCacheKeyString(h, label)
-	if v == nil {
-		writeCacheKeyString(h, "<nil>")
-		return
-	}
-	writeCacheKeyString(h, strconv.FormatInt(*v, 10))
-}
-
-func writeCacheKeyOptionalFloat64(h hash.Hash, label string, v *float64) {
-	writeCacheKeyString(h, label)
-	if v == nil {
-		writeCacheKeyString(h, "<nil>")
-		return
-	}
-	writeCacheKeyString(h, strconv.FormatFloat(*v, 'g', -1, 64))
-}
-
-func writeCacheKeyStringSlice(h hash.Hash, label string, values []string) {
-	writeCacheKeyString(h, label)
-	writeCacheKeyInt(h, len(values))
-	for _, value := range values {
-		writeCacheKeyString(h, value)
-	}
-}
-
-// writeCacheKeyContentParts hashes a multipart message body. Message.UnmarshalJSON
-// collapses only text parts into Content, so an image part reaches the provider
-// — and changes the answer — without leaving any trace in Content.
-//
-// Every part writes the same number of values so a part's fields can never shift
-// into the next part's.
-func writeCacheKeyContentParts(h hash.Hash, parts []providers.ContentPart) {
-	writeCacheKeyInt(h, len(parts))
-	for _, part := range parts {
-		writeCacheKeyString(h, part.Type)
-		writeCacheKeyString(h, part.Text)
-		var url, detail string
-		if part.ImageURL != nil {
-			url, detail = part.ImageURL.URL, part.ImageURL.Detail
-		}
-		writeCacheKeyString(h, url)
-		writeCacheKeyString(h, detail)
-	}
-}
-
-// writeCacheKeyToolCalls hashes the tool calls carried by a message. An assistant
-// turn that called one tool and one that called another are different
-// conversations, and the follow-up answer differs with them.
-func writeCacheKeyToolCalls(h hash.Hash, calls []providers.ToolCall) {
-	writeCacheKeyInt(h, len(calls))
-	for _, call := range calls {
-		writeCacheKeyOptionalInt(h, "index", call.Index)
-		writeCacheKeyString(h, call.ID)
-		writeCacheKeyString(h, call.Type)
-		writeCacheKeyString(h, call.Function.Name)
-		writeCacheKeyString(h, call.Function.Arguments)
-	}
-}
-
-func writeCacheKeyFloatMap(h hash.Hash, label string, values map[string]float64) {
-	writeCacheKeyString(h, label)
-	writeCacheKeyInt(h, len(values))
-	keys := make([]string, 0, len(values))
-	for key := range values {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	for _, key := range keys {
-		writeCacheKeyString(h, key)
-		writeCacheKeyString(h, strconv.FormatFloat(values[key], 'g', -1, 64))
-	}
-}
-
-func writeCacheKeyJSON(h hash.Hash, label string, v any) {
-	writeCacheKeyString(h, label)
-	b, err := json.Marshal(v)
-	if err != nil {
-		writeCacheKeyString(h, err.Error())
-		return
-	}
-	writeCacheKeyString(h, string(b))
-}
-
-func writeCacheKeyString(h hash.Hash, s string) {
-	var lenBuf [8]byte
-	binary.BigEndian.PutUint64(lenBuf[:], uint64(len(s)))
-	_, _ = h.Write(lenBuf[:])
-	_, _ = h.Write([]byte(s))
 }
