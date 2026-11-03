@@ -15,6 +15,7 @@ import (
 	databrickspkg "github.com/ferro-labs/ai-gateway/providers/databricks"
 	deepinfrapkg "github.com/ferro-labs/ai-gateway/providers/deepinfra"
 	deepseekpkg "github.com/ferro-labs/ai-gateway/providers/deepseek"
+	edenaipkg "github.com/ferro-labs/ai-gateway/providers/edenai"
 	fireworkspkg "github.com/ferro-labs/ai-gateway/providers/fireworks"
 	geminipkg "github.com/ferro-labs/ai-gateway/providers/gemini"
 	groqpkg "github.com/ferro-labs/ai-gateway/providers/groq"
@@ -176,6 +177,17 @@ func providerNameStabilityCoreCases() []providerNameStabilityCase {
 				p, err := deepseekpkg.New(testAPIKey, "")
 				if err != nil {
 					t.Fatalf("NewDeepSeek: %v", err)
+				}
+				return p
+			},
+		},
+		{
+			wantName: NameEdenAI,
+			build: func(t *testing.T) Provider {
+				t.Helper()
+				p, err := edenaipkg.New(testAPIKey, "")
+				if err != nil {
+					t.Fatalf("NewEdenAI: %v", err)
 				}
 				return p
 			},
