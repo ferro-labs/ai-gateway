@@ -5,6 +5,51 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.1] — 2026-11-15
+
+Security fixes for v1.6.1. No API, configuration, or dashboard sign-in changes.
+Building the gateway, or a module that imports it, now needs Go 1.26.11 or later.
+
+### Security
+
+- Go 1.26.10 → 1.26.11 fixes GO-2026-6859 (CVE-2026-97054): an HTTP/1
+  server using `MaxBytesReader` could panic when an over-limit body read raced
+  with a response-header write. CI, release builds and the Docker build use
+  the patched toolchain.
+- OpenTelemetry v1.45.0 → v1.47.0 fixes GHSA-q7gw-24fr-5p69: strings
+  containing Unicode replacement characters could bypass attribute length
+  limits. The SDK, API and trace exporters are upgraded together.
+- chi v5.3.0 → v5.4.0 fixes GHSA-j6qf-3m9c-vwj3, client-IP spoofing in
+  `ClientIPFromXFF`. The gateway continues to use its own trusted-proxy-aware
+  IP resolver rather than the affected helper.
+- `golang.org/x/net` v0.60.0 → v0.62.0 removes GO-2026-6860 and
+  GO-2026-6866 from the dependency graph. The affected HTML functions are
+  not called by the gateway.
+- Dashboard development dependencies are patched: `systeminformation`
+  5.33.22, `hono` 4.13.18 and `@hono/node-server` 2.1.8. Vulnerable
+  transitive `minimatch` versions use 11.0.1 to prevent glob preprocessing
+  amplification; the unaffected legacy ESLint matcher remains unchanged.
+
+### Fixed
+
+- The RPM installation smoke test now verifies the release's signed checksum
+  manifest before installing the package. Fedora's enforced embedded-signature
+  policy rejected these externally signed packages; the test now uses the
+  release's cosign identity for authentication and retains RPM digest checks.
+
+### Known limitations
+
+- Dashboard session tokens remain in `sessionStorage` to preserve sign-in
+  across reloads. The cleartext-storage alert is not resolved by this release.
+- The development-only `deepmerge` prototype-poisoning advisory
+  (GHSA-gcqx-w48m-w2h4) has no patched upstream version. It remains a
+  dependency of the component-generation tooling; avoid untrusted registry
+  input when running that tooling.
+- GO-2026-6911 remains associated with `mcp-go`, with no upstream fix listed.
+  Its affected Streamable HTTP transport is not called by the gateway: the
+  gateway uses its own HTTP client, which rejects redirects by default, and
+  uses the dependency's client only for stdio transport.
+
 ## [1.6.0] — 2026-10-30
 
 ### Added

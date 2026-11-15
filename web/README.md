@@ -68,6 +68,15 @@ Run `make help` for the complete list. Direct npm commands remain available.
 
 ## Validation
 
+The lockfile patches development-tool dependencies independently of the runtime
+bundle. The `minimatch` override applies only to vulnerable versions 7–10;
+ESLint's legacy 3.x matcher is intentionally retained. Remove the override when
+the callers require a patched version themselves.
+
+The component-generation tool still depends on `deepmerge` 4.3.1, which has no
+upstream fix for GHSA-gcqx-w48m-w2h4. Avoid untrusted registry input when running
+the generator. This dependency is not imported by the dashboard application.
+
 ```bash
 make check   # lint, unit tests, TypeScript, production build
 make e2e     # Playwright, real Chromium

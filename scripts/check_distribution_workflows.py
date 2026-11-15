@@ -99,4 +99,30 @@ for job, needed in REQUIRED_EDGES.items():
             f"gates anything."
         )
 
+# Packages have a signed checksum manifest instead of native RPM signatures.
+# Never let a skipped or reordered verification step expose --nosignature to
+# unauthenticated packages.
+package_steps = yaml.safe_load(matrix)["jobs"]["linux-packages"]["steps"]
+step_names = [step.get("name") for step in package_steps]
+verify_name = "Verify package signature and checksum"
+install_name = "Install package and verify binary"
+if verify_name not in step_names or install_name not in step_names:
+    raise SystemExit(f"{matrix_path}: package verification or installation is missing")
+verify_index = step_names.index(verify_name)
+if verify_index >= step_names.index(install_name):
+    raise SystemExit(f"{matrix_path}: packages must be verified before installation")
+verify_step = package_steps[verify_index]
+if "if" in verify_step or verify_step.get("continue-on-error"):
+    raise SystemExit(f"{matrix_path}: package verification must not be optional")
+verification = verify_step.get("run", "")
+for needle in (
+    "cosign verify-blob checksums.txt",
+    "--certificate checksums.txt.pem",
+    "--signature checksums.txt.sig",
+    '--certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@refs/tags/${TAG}"',
+    "--certificate-oidc-issuer https://token.actions.githubusercontent.com",
+    "sha256sum --check --strict --ignore-missing checksums.txt",
+):
+    require(verification, needle, matrix_path)
+
 print("distribution workflow invariants are present")
