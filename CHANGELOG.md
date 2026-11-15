@@ -30,6 +30,13 @@ Building the gateway, or a module that imports it, now needs Go 1.26.11 or later
   transitive `minimatch` versions use 11.0.1 to prevent glob preprocessing
   amplification; the unaffected legacy ESLint matcher remains unchanged.
 
+### Fixed
+
+- The RPM installation smoke test now verifies the release's signed checksum
+  manifest before installing the package. Fedora's enforced embedded-signature
+  policy rejected these externally signed packages; the test now uses the
+  release's cosign identity for authentication and retains RPM digest checks.
+
 ### Known limitations
 
 - Dashboard session tokens remain in `sessionStorage` to preserve sign-in

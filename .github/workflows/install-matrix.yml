@@ -843,6 +843,25 @@ jobs:
         run: |
           mkdir package
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir package --pattern "$PATTERN"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir package \
+            --pattern checksums.txt --pattern checksums.txt.sig --pattern checksums.txt.pem
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
+
+      - name: Verify package signature and checksum
+        working-directory: package
+        env:
+          TAG: ${{ needs.resolve.outputs.tag }}
+        run: |
+          cosign verify-blob checksums.txt \
+            --certificate checksums.txt.pem \
+            --signature checksums.txt.sig \
+            --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@refs/tags/${TAG}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com
+          # This directory contains only the selected package and its signing
+          # metadata. No matching checksum is an error, not a skipped check.
+          sha256sum --check --strict --ignore-missing checksums.txt
 
       - name: Install package and verify binary
         env:
@@ -858,7 +877,10 @@ jobs:
             "$IMAGE" /bin/sh -eu -c '
               case "$FORMAT" in
                 deb) dpkg -i /package/*.deb ;;
-                rpm) rpm -i /package/*.rpm ;;
+                # Releases use a cosign-signed checksum manifest rather than
+                # embedded OpenPGP signatures. Authentication ran above; retain
+                # RPM digest checks while accommodating Fedora signature policy.
+                rpm) rpm --nosignature -i /package/*.rpm ;;
                 apk) apk add --allow-untrusted /package/*.apk ;;
               esac
               raw="$(ferrogw version)"
